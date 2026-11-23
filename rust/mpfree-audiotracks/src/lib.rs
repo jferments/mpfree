@@ -238,6 +238,18 @@ pub enum Command {
         from: Tick,
         to: Tick,
     },
+    /// [`Command::Erase`] as an undo step of song edit `song` (not 0):
+    /// Rec song's block of an audio clip replacing the regions under it
+    /// (phase 2, step 2d). As for [`Command::Retime`], only
+    /// [`Command::SongUndo`] and [`Command::SongRedo`] take it back and
+    /// bring it back; [`Command::Undo`] and [`Command::Redo`] stop at it.
+    /// Refused while the track records.
+    EraseSong {
+        song: u32,
+        track: usize,
+        from: Tick,
+        to: Tick,
+    },
     /// Move the region of `track` playing at `at` to start at `to`, over
     /// what is there (its audio moves with it).
     Move {
@@ -300,6 +312,17 @@ pub enum Command {
     Retime {
         song: u32,
         retime: Retime,
+    },
+    /// Undo step `step` (a recording's or a sound's put on a lane,
+    /// [`AudioTracks::take_took`]) becomes one of song edit `song` (not
+    /// 0): the song edit that cut the blocks under it (phase 2, step 2d).
+    /// From then on it is as a [`Command::Retime`]'s step: only
+    /// [`Command::SongUndo`] and [`Command::SongRedo`] take it back and
+    /// bring it back. Refused when Undo can't reach that step, or it
+    /// belongs to a song edit already.
+    TieStep {
+        step: u32,
+        song: u32,
     },
     /// Take back, or bring back, song edit `song`'s steps (one a
     /// [`Command::Retime`] it was made of: + Bar pressed in a row is one
@@ -1271,8 +1294,31 @@ impl Reader<'_> {
     }
 }
 
+/// Sound put on a track's lane by an undo step of its own (a take
+/// punched out, a swipe on a take lane, a region moved, a sound brought
+/// in): the track, the song ticks it covers and the step, for the app to
+/// cut the song's blocks there and tie the step to that cut (the audio
+/// tracks rethink's phase 2, step 2d; [`AudioTracks::take_took`],
+/// [`Command::TieStep`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Took {
+    pub track: usize,
+    pub start: Tick,
+    pub end: Tick,
+    pub step: u32,
+}
+
+/// [`Took`]s kept between two asks: far more than a period's commands
+/// put.
+const TOOK: usize = 32;
+
 /// The audio tracks: see the module notes.
 pub struct AudioTracks {
+    /// Sound put on lanes since the app last asked ([`Took`]), oldest
+    /// first, and how many were lost for want of room.
+    took: [Took; TOOK],
+    took_n: usize,
+    took_lost: u32,
     rate: u32,
     /// Where new takes' lasting ids come from.
     ids: Ids,
@@ -1358,6 +1404,9 @@ impl AudioTracks {
             hist,
             scratch: Box::new(Snap::new()),
             step: 0,
+            took: [Took::default(); TOOK],
+            took_n: 0,
+            took_lost: 0,
             last_map: TempoMap::constant(120.0).expect("a valid tempo"),
             pending: [None; MAX_TRACKS],
             h_base: 0,
@@ -1901,12 +1950,122 @@ impl AudioTracks {
         true
     }
 
+    /// [`AudioTracks::edit`] putting sound on `track`'s lane over
+    /// `start..end`: once it goes in, a [`Took`] says so.
+    fn put_edit(
+        &mut self,
+        track: usize,
+        (start, end): (Tick, Tick),
+        f: impl FnOnce(&mut Track, &TempoMap, u32) -> bool,
+        map: &TempoMap,
+    ) {
+        let step = self.step;
+        self.edit(track, f, map);
+        if self.step == step {
+            return;
+        }
+        let took = Took {
+            track,
+            start,
+            end,
+            step: self.step,
+        };
+        if self.took_n == TOOK {
+            // Never, as the app asks every period: the oldest goes,
+            // counted ([`AudioTracks::took_lost`]).
+            self.took.copy_within(1.., 0);
+            self.took_n -= 1;
+            self.took_lost = self.took_lost.saturating_add(1);
+        }
+        self.took[self.took_n] = took;
+        self.took_n += 1;
+    }
+
+    /// The oldest sound put on a lane since the last ask ([`Took`]), for
+    /// the app to cut the song's blocks there.
+    pub fn take_took(&mut self) -> Option<Took> {
+        if self.took_n == 0 {
+            return None;
+        }
+        let t = self.took[0];
+        self.took.copy_within(1..self.took_n, 0);
+        self.took_n -= 1;
+        Some(t)
+    }
+
+    /// [`Took`]s lost for want of room (never, as the app asks every
+    /// period), for the status line.
+    pub fn took_lost(&self) -> u32 {
+        self.took_lost
+    }
+
+    /// Undo step `step` becomes one of song edit `song`
+    /// ([`Command::TieStep`]): false, nothing changed, when Undo can't
+    /// reach it or it belongs to a song edit.
+    fn tie_step(&mut self, step: u32, song: u32) -> bool {
+        let (base, done) = (self.h_base, self.h_done);
+        let mine = move |k: usize| (base + k) % HISTORY;
+        let snaps = || (0..done).map(mine);
+        let mut found = false;
+        for i in snaps() {
+            if self.hist[i].step == step {
+                if self.hist[i].song != 0 {
+                    return false;
+                }
+                found = true;
+            }
+        }
+        if song == 0 || !found {
+            return false;
+        }
+        for i in snaps() {
+            if self.hist[i].step == step {
+                self.hist[i].song = song;
+            }
+        }
+        true
+    }
+
+    /// Silence `track` from `from` to `to`, as an undo step of song edit
+    /// `song` (0: none); refused where no region plays.
+    fn erase(&mut self, track: usize, from: Tick, to: Tick, song: u32, map: &TempoMap) {
+        if !self.tracks[track]
+            .regions()
+            .iter()
+            .any(|r| r.start < to && r.end > from)
+        {
+            return self.refuse();
+        }
+        self.edit_of(
+            track,
+            song,
+            |t, m, rate| {
+                t.clear_fits(from, to, 0) && {
+                    t.clear(m, rate, from, to);
+                    true
+                }
+            },
+            map,
+        );
+    }
+
     /// An edit of one track's regions: `f` changes them and says whether it
     /// did; if so, the regions before it become an undo step, and if not,
     /// they are put back as they were.
     fn edit(
         &mut self,
         track: usize,
+        f: impl FnOnce(&mut Track, &TempoMap, u32) -> bool,
+        map: &TempoMap,
+    ) {
+        self.edit_of(track, 0, f, map)
+    }
+
+    /// [`AudioTracks::edit`], its step one of song edit `song` (0: none).
+    fn edit_of(
+        &mut self,
+        track: usize,
+        song: u32,
         f: impl FnOnce(&mut Track, &TempoMap, u32) -> bool,
         map: &TempoMap,
     ) {
@@ -1922,7 +2081,7 @@ impl AudioTracks {
         let rate = self.rate;
         if f(&mut self.tracks[track], map, rate) {
             let step = self.next_step();
-            self.push_history(step, 0);
+            self.push_history(step, song);
         } else {
             let (t, s) = (&mut self.tracks[track], &*self.scratch);
             t.n = s.n;
@@ -1990,7 +2149,12 @@ impl AudioTracks {
                     into: 0,
                     left: 0,
                 };
-                self.edit(tk.track as usize, |t, m, rate| t.put(m, rate, r), map);
+                self.put_edit(
+                    tk.track as usize,
+                    (from, to),
+                    |t, m, rate| t.put(m, rate, r),
+                    map,
+                );
             }
             Command::Split { track, at } if ok_track(track) => {
                 let Some(i) = self.tracks[track]
@@ -2016,30 +2180,24 @@ impl AudioTracks {
                 );
             }
             Command::Erase { track, from, to } if ok_track(track) && from < to => {
-                if !self.tracks[track]
-                    .regions()
-                    .iter()
-                    .any(|r| r.start < to && r.end > from)
-                {
-                    return self.refuse();
-                }
-                self.edit(
-                    track,
-                    |t, m, rate| {
-                        t.clear_fits(from, to, 0) && {
-                            t.clear(m, rate, from, to);
-                            true
-                        }
-                    },
-                    map,
-                );
+                self.erase(track, from, to, 0, map)
+            }
+            Command::EraseSong {
+                song,
+                track,
+                from,
+                to,
+            } if ok_track(track) && from < to && song != 0 && self.tracks[track].rec.is_none() => {
+                self.erase(track, from, to, song, map)
             }
             Command::Move { track, at, to } if ok_track(track) && to >= 0 => {
                 let Some(i) = self.tracks[track].at(at) else {
                     return self.refuse();
                 };
-                self.edit(
+                let r = self.tracks[track].regions[i];
+                self.put_edit(
                     track,
+                    (to, to + (r.end - r.start)),
                     |t, m, rate| {
                         let mut r = t.regions[i];
                         t.regions.copy_within(i + 1..t.n, i);
@@ -2100,6 +2258,11 @@ impl AudioTracks {
             Command::Retime { song, retime } => {
                 if !self.retime(song, &retime) {
                     self.refuse();
+                }
+            }
+            Command::TieStep { step, song } => {
+                if !self.tie_step(step, song) {
+                    return self.refuse();
                 }
             }
             Command::SongUndo(song) => {
@@ -2477,8 +2640,10 @@ impl AudioTracks {
             .map(|&c| tick(c).round() as Tick)
             .chain(std::iter::once(tick(frames).floor() as Tick));
         let before = self.stats.refused;
-        self.edit(
+        let span = (a.ceil() as Tick, tick(frames).floor() as Tick);
+        self.put_edit(
             tk.track as usize,
+            span,
             |t, m, rate| {
                 let mut start = a.ceil() as Tick;
                 let mut placed = false;
@@ -2685,7 +2850,7 @@ impl AudioTracks {
                 into: 0,
                 left: 0,
             };
-            self.edit(t, |tr, m, rate| tr.put(m, rate, r), map);
+            self.put_edit(t, (start, end_t), |tr, m, rate| tr.put(m, rate, r), map);
         }
     }
 

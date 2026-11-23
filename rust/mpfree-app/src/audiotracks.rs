@@ -1799,6 +1799,66 @@ impl TrackHost {
         }
     }
 
+    /// The oldest sound put on an audio track's lane since the last ask
+    /// (a take punched out, a take lane swiped, a region moved, a sound
+    /// brought in), for the time engine to cut the song's blocks there
+    /// ([`crate::time::TimeHost::audio_took`]): its track's lasting id,
+    /// the song ticks it covers and its undo step, for
+    /// [`TrackHost::tie_step`]. Ones on an engine track no project track
+    /// plays are passed over.
+    pub fn take_took(&mut self) -> Option<(TrackId, (Tick, Tick), u32)> {
+        while let Some(t) = self.host.tracks.take_took() {
+            if let Some(id) = self.slots.id_of(t.track).filter(|_| self.shows(t.track)) {
+                return Some((id, (t.start, t.end), t.step));
+            }
+        }
+        None
+    }
+
+    /// Undo step `step` (a [`TrackHost::take_took`]'s) becomes one of song
+    /// edit `song`, the cut of the blocks under it, so either UNDO takes
+    /// back both ([`Command::TieStep`]).
+    pub fn tie_step(&mut self, step: u32, song: u32) -> Result<(), String> {
+        self.send(Command::TieStep { step, song })
+    }
+
+    /// Rec song put blocks of audio clips on audio tracks' lanes over
+    /// `spans` (each track's lasting id, and song ticks), as song edit
+    /// `song`: the regions there go (Joshi 23 Nov: the launch replaces
+    /// them), as steps of that song edit, so the song's UNDO takes them
+    /// back with the blocks and the audio tracks' UNDO stops at them
+    /// (phase 2, step 2d, [`Command::EraseSong`]). Only where a region
+    /// plays. How many spans it erased; a send refused (the queue full)
+    /// stops it there, and the count says how far it got.
+    pub fn replace_under(&mut self, song: u32, spans: &[(TrackId, Tick, Tick)]) -> usize {
+        let mut done = 0;
+        for &(id, from, to) in spans {
+            let Some(track) = self.slots.slot_of(id) else {
+                continue;
+            };
+            let under = self
+                .host
+                .tracks
+                .regions(track)
+                .iter()
+                .any(|r| r.start < to && r.end > from);
+            if !under || from >= to {
+                continue;
+            }
+            let c = Command::EraseSong {
+                song,
+                track,
+                from,
+                to,
+            };
+            if self.send(c).is_err() {
+                break;
+            }
+            done += 1;
+        }
+        done
+    }
+
     /// The blocks of audio clips on the Song view's audio lanes (phase 2,
     /// step 2d, layout spec 4c): for each, where its clip's passes start
     /// and how long one is, whether it is a once clip, and what one pass
@@ -2701,8 +2761,14 @@ impl TrackHost {
         let tr = &self.host.tracks;
         let m = tr.memory();
         let s = tr.stats();
+        // Sound put on a lane the song's blocks never heard of (never:
+        // the app asks every period), shown only if any.
+        let lost = match tr.took_lost() {
+            0 => String::new(),
+            n => format!(", {n} recordings not checked against the song's blocks"),
+        };
         format!(
-            "audio tracks: {} takes, {:.0} of {:.0} s used, {} refused, {} dropped, {} cut short{}",
+            "audio tracks: {} takes, {:.0} of {:.0} s used, {} refused, {} dropped, {} cut short{lost}{}",
             tr.takes().count(),
             m.used as f64 / (2.0 * self.rate as f64),
             m.capacity as f64 / (2.0 * self.rate as f64),
@@ -3055,6 +3121,33 @@ impl crate::time::SongAudio for TrackHost {
         // There is room: asked first (busy).
         let _ = self.send(c);
     }
+
+    fn regions(&self) -> Vec<(TrackId, Vec<mpfree_seq::ClipRegion>)> {
+        let tr = &self.host.tracks;
+        (0..MAX_TRACKS)
+            .filter_map(|s| {
+                let id = self.slots.id_of(s).filter(|_| self.shows(s))?;
+                let regions: Vec<mpfree_seq::ClipRegion> = tr
+                    .regions(s)
+                    .iter()
+                    .filter_map(|r| {
+                        Some(mpfree_seq::ClipRegion {
+                            start: r.start,
+                            end: r.end,
+                            rec: RecId(tr.take(r.take)?.rec.0),
+                            src: r.src,
+                            gain: r.gain,
+                            fade_in: r.fade_in,
+                            fade_out: r.fade_out,
+                            into: r.into,
+                            left: r.left,
+                        })
+                    })
+                    .collect();
+                (!regions.is_empty()).then_some((id, regions))
+            })
+            .collect()
+    }
 }
 
 /// How full and writable the drive holding `dir` is, for System status
@@ -3235,7 +3328,8 @@ mod tests {
                 &mpfree_play::Takes::new(4),
             );
             self.h.fill(&mut st, self.t.tempo_map());
-            self.h.fill_blocks(&mut st, &self.project, self.t.tempo_map());
+            self.h
+                .fill_blocks(&mut st, &self.project, self.t.tempo_map());
             st
         }
 
@@ -3250,6 +3344,117 @@ mod tests {
                 std::thread::sleep(Duration::from_micros(100));
             }
         }
+    }
+
+    /// Rec song's blocks over regions (phase 2, step 2d, Joshi 23 Nov:
+    /// replace): the regions under them go as steps of the song edit,
+    /// which the audio tracks' own UNDO stops at and the song's UNDO and
+    /// REDO take back and bring back. A span over no region, or on a
+    /// track that isn't an audio track's, erases nothing.
+    #[test]
+    fn rec_songs_blocks_replace_the_regions_under_them_as_a_song_step() {
+        let mut r = Rig::with(1);
+        r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), false)
+            .unwrap();
+        r.periods(CHECK_EVERY as usize);
+        r.live = true;
+        r.command(T::Record);
+        while r.t.position() < 2 * 3840 {
+            r.period();
+        }
+        r.command(T::Stop);
+        r.live = false;
+        r.periods(20);
+        let tr = |r: &Rig| -> Vec<(Tick, Tick)> {
+            r.h.host
+                .tracks
+                .regions(0)
+                .iter()
+                .map(|x| (x.start, x.end))
+                .collect()
+        };
+        let before = tr(&r);
+        assert_eq!(before.len(), 1);
+        let (start, end) = (before[0].0, before[0].1);
+        let id = r.h.slots.id_of(0).unwrap();
+        let other = mpfree_seq::TrackId(id.0 + 100);
+        let spans = [
+            (id, 3840, 4 * 3840),
+            (id, 10 * 3840, 11 * 3840),
+            (other, 0, 3840),
+        ];
+        assert_eq!(r.h.replace_under(7, &spans), 1, "one span over a region");
+        r.periods(2);
+        assert_eq!(tr(&r), [(start, 3840)], "replaced from bar 2 on");
+        assert_eq!(
+            r.h.host.tracks.history().0,
+            2,
+            "the take, then the song's step"
+        );
+        // The audio tracks' UNDO stops at it; the song's takes it back.
+        let refused = r.h.host.tracks.stats().refused;
+        assert!(r.h.host.command(Command::Undo));
+        r.periods(2);
+        assert_eq!(r.h.host.tracks.stats().refused, refused + 1);
+        assert_eq!(tr(&r), [(start, 3840)]);
+        crate::time::SongAudio::song_undo(&mut r.h, 7, true);
+        r.periods(2);
+        assert_eq!(tr(&r), [(start, end)], "back as recorded");
+        crate::time::SongAudio::song_undo(&mut r.h, 7, false);
+        r.periods(2);
+        assert_eq!(tr(&r), [(start, 3840)], "and replaced again");
+    }
+
+    /// A block of an audio clip on the Song view (phase 2, step 2d): its
+    /// lane has where its clip's passes start, a pass's length, and the
+    /// take each region plays with the frames it spans; a block whose
+    /// clip is gone has none.
+    #[test]
+    fn an_audio_clips_block_gives_its_lane_its_wave() {
+        let mut r = Rig::with(1);
+        r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), false)
+            .unwrap();
+        r.periods(CHECK_EVERY as usize);
+        r.live = true;
+        r.command(T::Record);
+        while r.t.position() < 3840 {
+            r.period();
+        }
+        r.command(T::Stop);
+        r.live = false;
+        r.periods(20);
+        let k = r.h.host.tracks.takes().next().expect("a take");
+        let mut riff = mpfree_seq::Clip::new("Riff", 3840);
+        riff.audio = Some(mpfree_seq::AudioClip::of(
+            RecId(k.rec.0),
+            0,
+            k.frames as i64,
+            3840,
+            120.0,
+        ));
+        let guitar = r.h.place(0).unwrap();
+        let id = r.project.put_new_clip(guitar, 0, riff).unwrap();
+        let song = &mut r.project.arrangement;
+        // Two passes from bar 3.
+        song.placements
+            .push(mpfree_seq::Placement::new(guitar, id, 2 * 3840, 2 * 3840));
+        let st = r.state();
+        assert_eq!(st.audio[0].row, guitar);
+        let clips = &st.audio[0].clips;
+        assert_eq!(clips.len(), 1);
+        let c = &clips[0];
+        assert_eq!(
+            (c.index, c.origin, c.pass, c.once),
+            (0, 2 * 3840, 3840, false)
+        );
+        assert_eq!(c.pieces.len(), 1);
+        let p = c.pieces[0];
+        assert_eq!((p.start, p.end, p.take, p.src), (0, 3840, k.id, 0));
+        // A bar at 120 BPM: two seconds.
+        assert!((p.frames - 2.0 * RATE as f64).abs() < 1.0, "{}", p.frames);
+        // Its clip gone: a block with no wave and no header.
+        r.project.tracks[guitar].slots[0] = None;
+        assert!(r.state().audio[0].clips.is_empty());
     }
 
     /// Takes the project's audio clips name stay (the audio tracks

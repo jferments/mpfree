@@ -1505,7 +1505,10 @@ impl SongLanes {
 
     /// Take `take`'s waveform in `wave` (its columns from `cols.x` to
     /// `cols.right()`): the column at x shows the frames from `src + (x -
-    /// x0) * per_px` on.
+    /// x0) * per_px` on. `peaks` draws each column's peak up from the
+    /// bottom over all of `wave`'s height (a block of an audio clip's
+    /// wave under its header strip, where a lane leaves little room),
+    /// else its swing either way of the middle.
     #[allow(clippy::too_many_arguments)]
     fn paint_wave(
         &self,
@@ -1517,6 +1520,7 @@ impl SongLanes {
         src: f64,
         per_px: f64,
         ink: Color,
+        peaks: bool,
     ) {
         let Some(w) = self.wave_of(take) else {
             return;
@@ -1535,8 +1539,15 @@ impl SongLanes {
                     hi = hi.max(h);
                 }
             }
-            let top = mid - (f64::from(hi.clamp(0.0, 1.0)) * half).round() as i32;
-            let bottom = mid - (f64::from(lo.clamp(-1.0, 0.0)) * half).round() as i32;
+            let (top, bottom) = if peaks {
+                let up = f64::from(hi.max(-lo).clamp(0.0, 1.0)) * f64::from(wave.h - 1);
+                (wave.bottom() - up.round() as i32, wave.bottom())
+            } else {
+                (
+                    mid - (f64::from(hi.clamp(0.0, 1.0)) * half).round() as i32,
+                    mid - (f64::from(lo.clamp(-1.0, 0.0)) * half).round() as i32,
+                )
+            };
             cx.canvas
                 .fill_rect(Rect::new(x, top, 1, (bottom - top).max(1)), ink);
         }
@@ -1566,7 +1577,17 @@ impl SongLanes {
             let x1 = self.x_of(g.lanes, take.end).max(x0 + 1);
             let per_px = take.frames / f64::from(x1 - x0);
             let ink = lane.color.mix(t.text, 0.45);
-            self.paint_wave(cx, take.take, br.inset_xy(0, 1), br, x0, 0.0, per_px, ink);
+            self.paint_wave(
+                cx,
+                take.take,
+                br.inset_xy(0, 1),
+                br,
+                x0,
+                0.0,
+                per_px,
+                ink,
+                false,
+            );
         }
         if let Some((id, x0, x1)) = self.swipe {
             if id == take.take {
@@ -2069,8 +2090,7 @@ impl SongLanes {
                     // Red where it would run over a region (the app
                     // refuses it and says so).
                     let end = b.start + length;
-                    let ink = if self.region_between(b.track, b.start + b.length.min(length), end)
-                    {
+                    let ink = if self.region_between(b.track, b.start + b.length.min(length), end) {
                         t.bad
                     } else {
                         t.accent
@@ -2215,7 +2235,8 @@ impl SongLanes {
     /// wave's ink, a header strip in the track's colour with the clip's
     /// name (and "once" for a once clip), and under it the clip's wave
     /// pass after pass, with a faint line where each pass after the first
-    /// starts. Lanes too thin for the strip show the name over the wave.
+    /// starts. Lanes too thin for the strip (under 24 pixels) show the
+    /// name over the wave.
     fn paint_clip_block(
         &self,
         cx: &mut PaintCx,
@@ -2235,7 +2256,11 @@ impl SongLanes {
         let x0 = self.x_of(g.lanes, start);
         let x1 = self.x_of(g.lanes, end).max(x0 + 1);
         let full = Rect::new(x0, br.y, x1 - x0, br.h);
-        let strip_h = if br.h >= 30 { 15 } else { 0 };
+        let strip_h = match br.h {
+            h if h >= 40 => 15,
+            h if h >= 24 => 13,
+            _ => 0,
+        };
         let old = cx.canvas.clip();
         cx.canvas
             .set_clip(old.intersect(Rect::new(full.x, full.y, full.w, strip_h)));
@@ -2248,7 +2273,7 @@ impl SongLanes {
         )));
         cx.canvas.fill_round_rect(full, t.round(6), body);
         cx.canvas.set_clip(old);
-        let wave = Rect::new(br.x, br.y + strip_h + 2, br.w, br.h - strip_h - 4);
+        let wave = Rect::new(br.x, br.y + strip_h + 1, br.w, br.h - strip_h - 2);
         // The passes in view; none where a pass is too thin to see.
         let pass = c.pass.max(1);
         let (from, to) = self.ticks_shown();
@@ -2268,7 +2293,7 @@ impl SongLanes {
                     let per_px = p.frames / f64::from(px1 - px0);
                     let l = px0.max(br.x);
                     let cols = Rect::new(l, wave.y, (px1.min(br.right()) - l).max(0), wave.h);
-                    self.paint_wave(cx, p.take, wave, cols, px0, p.src as f64, per_px, ink);
+                    self.paint_wave(cx, p.take, wave, cols, px0, p.src as f64, per_px, ink, true);
                 }
                 if o > start {
                     let x = self.x_of(g.lanes, o);
@@ -2291,7 +2316,14 @@ impl SongLanes {
             } else {
                 (Rect::new(br.x + 5, br.y, room, br.h), t.text)
             };
-            cx.text(FontId::Bold, t.size_small - 3.0, at, Align::Left, text, &name);
+            cx.text(
+                FontId::Bold,
+                t.size_small - 3.0,
+                at,
+                Align::Left,
+                text,
+                &name,
+            );
         }
     }
 
@@ -2317,7 +2349,7 @@ impl SongLanes {
         let label_h = if br.h >= 26 { 14 } else { 0 };
         let wave = br.inset_xy(0, 2);
         let ink = lane.color.mix(t.text, 0.6);
-        self.paint_wave(cx, b.take, wave, br, x0, b.src as f64, per_px, ink);
+        self.paint_wave(cx, b.take, wave, br, x0, b.src as f64, per_px, ink, false);
         // Fades: the part above each slope is dimmed. A cut shows its share
         // of the fades of the region it was cut from.
         let shade = t.surface.mix(lane.color, 0.15);
@@ -3647,6 +3679,89 @@ mod tests {
         assert_eq!(
             s.touch(6, Touch::Down, vocal.x + 3, vocal.y + 3, r),
             Some(EventKind::Cell { row: 5, col: 0 })
+        );
+    }
+
+    /// A block of an audio clip (phase 2, step 2d, layout spec 4c): it
+    /// sits on its audio track's lane, draws a header strip in the track's
+    /// colour over its wave, is picked and dragged as any block, and shows
+    /// red where it would land over a region.
+    #[test]
+    fn a_block_of_an_audio_clip_sits_on_its_lane_with_a_header_strip() {
+        let bar = 3840;
+        let mut s = lanes();
+        put_audio(
+            &mut s,
+            vec![audio_lane(0, "Guitar", vec![block(0, bar, 0)])],
+        );
+        let row = s.audio[0].row;
+        let mut all: Vec<SongBlock> = s.blocks.iter().cloned().collect();
+        let index = all.len();
+        all.push(SongBlock {
+            index,
+            track: row,
+            start: 2 * bar,
+            length: 2 * bar,
+            name: "Riff".into(),
+            unique: false,
+        });
+        s.blocks = SongBlocks::new(all);
+        s.audio[0].clips.push(ClipBlock {
+            index,
+            origin: 2 * bar,
+            pass: bar,
+            once: false,
+            pieces: vec![ClipPiece {
+                start: 0,
+                end: bar,
+                take: 0,
+                src: 0,
+                frames: 1000.0,
+            }],
+        });
+        let mut ui = mpfree_ui::Ui::new(
+            mpfree_ui::Theme::dark(),
+            mpfree_ui::Fonts::embedded(),
+            1280,
+            800,
+        );
+        ui.add("song", s.clone());
+        ui.add_page("p", "song").unwrap();
+        ui.show("p").unwrap();
+        let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        let r = ui.rect_of("song").unwrap();
+        let region = s.region_rect(r, 0, 0).unwrap();
+        let br = s.block_rect(r, s.block(index).unwrap()).unwrap();
+        assert_eq!((br.y, br.h), (region.y, region.h), "on Guitar's lane");
+        assert!(br.x > region.right());
+        // The strip in the track's colour along its top; the lane's dark
+        // fill under it.
+        let colour = s.audio[0].color;
+        let x = br.x + br.w - 6;
+        assert_eq!(c.pixel(x, br.y + 3).xrgb(), colour.xrgb(), "the strip");
+        assert_ne!(
+            c.pixel(x, br.bottom() - 3).xrgb(),
+            colour.xrgb(),
+            "the body"
+        );
+        // Picked by a tap, as any block.
+        let (x, y) = (br.x + 8, br.y + br.h / 2);
+        assert_eq!(s.touch(1, Touch::Down, x, y, r), None);
+        assert_eq!(
+            s.touch(1, Touch::Up, x, y, r),
+            Some(EventKind::Select(index))
+        );
+        // Dragged back over the region on bar 1: it lands there (the app
+        // refuses it and says why), and shows red on the way.
+        assert!(s.region_between(row, 0, 2 * bar));
+        assert!(!s.region_between(row, 2 * bar, 4 * bar));
+        let to = region.x + 2;
+        s.touch(2, Touch::Down, x, y, r);
+        s.touch(2, Touch::Move, to, y, r);
+        assert_eq!(
+            s.touch(2, Touch::Up, to, y, r),
+            Some(EventKind::Place { index, row, at: 0 })
         );
     }
 

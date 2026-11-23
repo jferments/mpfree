@@ -1183,7 +1183,10 @@ pub fn song_audio_blocks_state() -> Result<TimeState, String> {
     };
     let mut placements = state.placements.to_vec();
     let riff = placements.len();
-    for (name, start, pass, once) in [("Riff", 8 * BAR, 2 * BAR, false), ("Outro", 12 * BAR, 4 * BAR, true)] {
+    for (name, start, pass, once) in [
+        ("Riff", 8 * BAR, 2 * BAR, false),
+        ("Outro", 12 * BAR, 4 * BAR, true),
+    ] {
         state.audio[g].clips.push(ClipBlock {
             index: placements.len(),
             origin: start,
