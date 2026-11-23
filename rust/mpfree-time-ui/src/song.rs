@@ -79,6 +79,8 @@ use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{frames_from, Input, Monitor, Region, TakeInfo};
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
+use std::cell::RefCell;
+use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -627,6 +629,8 @@ pub struct SongLanes {
     /// The clips launched over the song, each drawn over its track's
     /// lane (the Arrange refactor's 5.1, D3).
     pub over: Vec<LaneOver>,
+    /// What the last whole paint showed: see [`Painted`].
+    pub(crate) painted: Painted,
 }
 
 /// A clip launched over the song (the Arrange refactor's 5.1, D3): the
@@ -821,8 +825,61 @@ impl Default for SongLanes {
             tempo_pick: None,
             report: None,
             over: Vec::new(),
+            painted: Painted::default(),
         }
     }
+}
+
+/// The playhead's line on the Song view, in pixels.
+const PLAYHEAD_W: i32 = 2;
+
+/// What the Song view's last whole paint showed: its rectangle, a copy
+/// of it (without the waveforms, with the playhead since drawn) and its
+/// waveforms' keys. A frame that only moves the playhead, as every frame
+/// does while the song plays, then draws the two strips the line left and
+/// reached ([`SongLanes::changed_parts`]) rather than the whole view.
+/// It is never compared (two views that show the same are equal), and a
+/// copy starts with none, so a view the app puts in place paints whole.
+#[derive(Default)]
+pub(crate) struct Painted(RefCell<Option<Box<Shown>>>);
+
+/// A whole paint's rectangle, its copy of the view and its waveforms' keys.
+type Shown = (Rect, SongLanes, Vec<WaveKey>);
+
+impl Clone for Painted {
+    fn clone(&self) -> Painted {
+        Painted::default()
+    }
+}
+
+impl PartialEq for Painted {
+    fn eq(&self, _: &Painted) -> bool {
+        true
+    }
+}
+
+impl fmt::Debug for Painted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Painted")
+    }
+}
+
+/// What [`same_waves`] compares of a waveform.
+type WaveKey = (u16, usize, usize, usize, usize);
+
+fn wave_keys(waves: &[TakeWave]) -> Vec<WaveKey> {
+    waves
+        .iter()
+        .map(|w| {
+            (
+                w.id,
+                w.frames,
+                w.channels,
+                w.frames_per_column,
+                w.columns.len(),
+            )
+        })
+        .collect()
 }
 
 struct Geo {
@@ -1025,6 +1082,28 @@ impl SongLanes {
         }
     }
 
+    /// Where the playhead's line is drawn at `p`: its left edge, while it
+    /// is over the lanes (not the names).
+    fn playhead_x(&self, g: &Geo, p: Option<Tick>) -> Option<i32> {
+        let x = self.x_of(g.lanes, p?);
+        (x >= g.lanes.x + NAME_W && x < g.lanes.right()).then_some(x)
+    }
+
+    /// Keeps what a paint of `r`, clipped to `clip`, showed: a whole
+    /// paint a copy of the view, a strip the playhead it drew ([`Painted`]).
+    fn keep_painted(&self, r: Rect, clip: Rect) {
+        let mut p = self.painted.0.borrow_mut();
+        if clip.intersect(r) == r {
+            *p = Some(Box::new((
+                r,
+                self.clone_without_waves(),
+                wave_keys(&self.waves),
+            )));
+        } else if let Some(p) = p.as_mut() {
+            p.1.playhead = self.playhead;
+        }
+    }
+
     /// A copy with no waveforms (they can be large).
     pub fn clone_without_waves(&self) -> SongLanes {
         let waves = Vec::new();
@@ -1065,6 +1144,7 @@ impl SongLanes {
             tempo_pick: self.tempo_pick,
             report: self.report.clone(),
             over: self.over.clone(),
+            painted: Painted::default(),
         }
     }
 
@@ -2979,56 +3059,69 @@ impl SongLanes {
 impl Widget for SongLanes {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        // The view chip and the title, the legend, then Rec song.
-        let rec = self.rec_rect(r);
-        let show = self.show_rect(r);
-        let end = show.map_or(rec.x, |s| s.x);
-        view_title(cx, r, ArrangeView::Song, &self.title, end - 12);
-        // The zoom chip (6.4): "Bars", then 4 to 64, the one shown lit.
-        let zoom = self.zoom_rect(r);
-        cx.canvas.fill_round_rect(zoom, t.round(10), t.raised);
-        cx.text(
-            FontId::Sans,
-            t.size_small - 1.0,
-            Rect::new(zoom.x + 10, zoom.y, ZOOM_LABEL_W - 10, zoom.h),
-            Align::Left,
-            t.text_dim,
-            "Bars",
-        );
-        for (k, n) in ZOOMS.iter().enumerate() {
-            let b = self.zoom_part_rect(r, k);
-            let ink = if *n == self.bars {
-                cx.canvas
-                    .fill_round_rect(b.inset_xy(2, 2), t.round(8), t.accent);
-                t.ink_on(t.accent)
-            } else {
-                t.text
-            };
-            cx.text(
-                FontId::Bold,
-                t.size_small,
-                b,
-                Align::Center,
-                ink,
-                &n.to_string(),
-            );
-        }
-        let head = r.inset(14).take_top(26).0;
-        let legend_x = zoom.right() + 12;
-        cx.text(
-            FontId::Sans,
-            t.size_small,
-            Rect::new(legend_x, head.y, (end - legend_x - 12).max(0), head.h),
-            Align::Right,
-            if self.alert { t.warn } else { t.text_dim },
-            &self.legend,
-        );
-        if let Some(b) = show {
-            cx.canvas.fill_round_rect(b, t.round(10), t.raised);
-            cx.text(FontId::Bold, t.size_small, b, Align::Center, t.text, "Show");
-        }
-        rec_song_pill(cx, rec, self.rec);
+        let clip = cx.canvas.clip();
+        self.keep_painted(r, clip);
         let g = self.geo(r);
+        // The title line, above the ruler, only where the clip reaches it
+        // (a frame that moves the playhead draws strips below it); the
+        // panel under everything either way.
+        if !clip
+            .intersect(Rect::new(r.x, r.y, r.w, g.ruler.y - r.y))
+            .is_empty()
+        {
+            // The view chip and the title, the legend, then Rec song.
+            let rec = self.rec_rect(r);
+            let show = self.show_rect(r);
+            let end = show.map_or(rec.x, |s| s.x);
+            view_title(cx, r, ArrangeView::Song, &self.title, end - 12);
+            // The zoom chip (6.4): "Bars", then 4 to 64, the one shown lit.
+            let zoom = self.zoom_rect(r);
+            cx.canvas.fill_round_rect(zoom, t.round(10), t.raised);
+            cx.text(
+                FontId::Sans,
+                t.size_small - 1.0,
+                Rect::new(zoom.x + 10, zoom.y, ZOOM_LABEL_W - 10, zoom.h),
+                Align::Left,
+                t.text_dim,
+                "Bars",
+            );
+            for (k, n) in ZOOMS.iter().enumerate() {
+                let b = self.zoom_part_rect(r, k);
+                let ink = if *n == self.bars {
+                    cx.canvas
+                        .fill_round_rect(b.inset_xy(2, 2), t.round(8), t.accent);
+                    t.ink_on(t.accent)
+                } else {
+                    t.text
+                };
+                cx.text(
+                    FontId::Bold,
+                    t.size_small,
+                    b,
+                    Align::Center,
+                    ink,
+                    &n.to_string(),
+                );
+            }
+            let head = r.inset(14).take_top(26).0;
+            let legend_x = zoom.right() + 12;
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                Rect::new(legend_x, head.y, (end - legend_x - 12).max(0), head.h),
+                Align::Right,
+                if self.alert { t.warn } else { t.text_dim },
+                &self.legend,
+            );
+            if let Some(b) = show {
+                cx.canvas.fill_round_rect(b, t.round(10), t.raised);
+                cx.text(FontId::Bold, t.size_small, b, Align::Center, t.text, "Show");
+            }
+            rec_song_pill(cx, rec, self.rec);
+        } else {
+            // The view's panel, as `view_title` starts it.
+            cx.panel(r);
+        }
         // The ruler: bar numbers, then the markers' names over them.
         // Every bar's number up to 16 bars, every 4th at 32, every 8th
         // at 64 (6.4); at 4 and 8 bars a faint line on each beat too.
@@ -3220,6 +3313,11 @@ impl Widget for SongLanes {
             }
         }
         for (b, br) in self.blocks_in_view(&g) {
+            // Wholly outside the clip (a glowing theme's halo included):
+            // nothing of it to draw.
+            if br.inset(-4).intersect(clip).is_empty() {
+                continue;
+            }
             let color = self.tracks.get(b.track).map_or(t.accent, |c| c.1);
             let audio = self.clip_block(b);
             match audio {
@@ -3325,13 +3423,12 @@ impl Widget for SongLanes {
                 }
             }
         }
-        if let Some(p) = self.playhead {
-            let x = self.x_of(g.lanes, p);
-            if x >= g.lanes.x + NAME_W && x < g.lanes.right() {
-                let c = if self.on { t.good } else { t.text_faint };
-                cx.canvas
-                    .fill_rect(Rect::new(x, g.ruler.y, 2, g.lanes.bottom() - g.ruler.y), c);
-            }
+        if let Some(x) = self.playhead_x(&g, self.playhead) {
+            let c = if self.on { t.good } else { t.text_faint };
+            cx.canvas.fill_rect(
+                Rect::new(x, g.ruler.y, PLAYHEAD_W, g.lanes.bottom() - g.ruler.y),
+                c,
+            );
         }
         if let Some(p) = self.panel_parts(r) {
             self.paint_panel(cx, &p);
@@ -3412,6 +3509,40 @@ impl Widget for SongLanes {
         if let Some(card) = &self.report {
             card.paint(cx, r);
         }
+    }
+
+    /// While the song plays, a frame that only moves the playhead draws
+    /// the strip its line left and the one it reached: the rest is as the
+    /// last whole paint showed it ([`Painted`]). Anything else changed, a
+    /// lane recording (its red runs to the playhead) or no whole paint
+    /// yet: all of it.
+    fn changed_parts(&self, r: Rect) -> Option<Vec<Rect>> {
+        let p = self.painted.0.borrow();
+        let (at, was, waves) = p.as_deref()?;
+        if *at != r || self.audio.iter().any(|l| l.recording.is_some()) {
+            return None;
+        }
+        let mut now = self.clone_without_waves();
+        now.playhead = was.playhead;
+        if now != *was || wave_keys(&self.waves) != *waves {
+            return None;
+        }
+        let g = self.geo(r);
+        let strip = |p: Option<Tick>| {
+            let x = self.playhead_x(&g, p)?;
+            Some(Rect::new(
+                x - 2,
+                g.ruler.y,
+                PLAYHEAD_W + 4,
+                g.lanes.bottom() - g.ruler.y,
+            ))
+        };
+        let (old, new) = (strip(was.playhead), strip(self.playhead));
+        Some(if old == new {
+            Vec::new()
+        } else {
+            old.into_iter().chain(new).collect()
+        })
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {

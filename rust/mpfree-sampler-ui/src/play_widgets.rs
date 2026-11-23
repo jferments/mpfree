@@ -669,7 +669,7 @@ const DB_TOP: f32 = 24.0;
 const DB_BOTTOM: f32 = -36.0;
 
 /// The filter's gain in dB at `hz`, as the pad's state-variable filter
-/// shapes it (4 poles are two 2-pole stages), or its ladder or its two
+/// shapes it at its slope (the Peak too), or its ladder or its two
 /// formants (sampler R5.6).
 pub fn filter_db(f: &Filter, hz: f32) -> f32 {
     match f.kind {
