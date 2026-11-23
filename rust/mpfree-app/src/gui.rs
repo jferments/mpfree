@@ -1120,6 +1120,8 @@ fn loops_info(v: &crate::looping::LooperView) -> mpfree_time_ui::view::LoopsInfo
         f.overdubbing = s.phase == Phase::Overdubbing;
         f.copying = v.copy_into == Some(n) || s.copying.is_some();
         f.wave = *w;
+        // A closed layer not on the stick yet (4c.3): the cell's amber dot.
+        f.writing = v.unsaved[n];
     }
     info.in_use = v.loops.iter().filter(|s| s.phase != Phase::Empty).count();
     info.waiting = v.loops.iter().any(|s| s.phase == Phase::Armed);
@@ -32827,6 +32829,18 @@ mod tests {
         st.loop_cell = Some((vocal, empty));
         p.apply(ToUi::Time(Box::new(st)));
         assert_eq!(p.rec_chip().alert, RecAlert::None);
+    }
+
+    /// The audio tracks rethink's phase 4c.3 and board 2: a loop holding a
+    /// closed layer not yet on the stick gives its cells the writing dot;
+    /// the others don't.
+    #[test]
+    fn a_loop_with_a_layer_not_on_the_stick_gives_its_cells_the_writing_dot() {
+        let mut v = crate::looping::LooperView::default();
+        v.unsaved[2] = true;
+        let info = loops_info(&v);
+        assert!(info.loops[2].writing);
+        assert!(info.loops.iter().enumerate().all(|(n, f)| f.writing == (n == 2)));
     }
 
     /// The audio tracks rethink's phase 4, board 6: with Dev's "Loops on
