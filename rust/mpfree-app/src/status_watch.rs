@@ -67,10 +67,21 @@ pub struct Look<'a> {
     /// rack (`mpfree_plughost::rack::Summary::crashes`); None when the
     /// rack was busy and couldn't say.
     pub plugin_crashes: Option<u64>,
+    /// The MPC's hottest zone, °C, and the line over which it is running
+    /// hot (`heat::RUNNING_HOT_C`, measured on the MPC; None keeps MPC
+    /// running hot off).
+    pub temp_c: Option<f32>,
+    pub hot_line: Option<f32>,
+    /// A core's top clock is below where it was at the start (`heat::Heat::slowed`).
+    pub slowed: Option<bool>,
 }
 
+/// How far under its line the MPC must cool before running hot ends, °C,
+/// so a temperature sitting on the line doesn't flicker.
+pub const HOT_BACK_C: f32 = 3.0;
+
 /// The states a look follows, each a kind that begins and ends.
-const STATES: [&Kind; 7] = [
+const STATES: [&Kind; 9] = [
     &kinds::NEAR_LIMIT,
     &kinds::MEMORY_LOW,
     &kinds::NO_SESSION,
@@ -78,6 +89,8 @@ const STATES: [&Kind; 7] = [
     &kinds::PARTS_MISSING,
     &kinds::ONE_CORE,
     &kinds::CLOCK_STOPPED,
+    &kinds::MPC_HOT,
+    &kinds::PROCESSOR_SLOWED,
 ];
 
 /// The watcher's memory of the last look.
@@ -88,7 +101,7 @@ pub struct Watch {
     /// The plugins' crashes at the last look that could read them.
     crashes: Option<u64>,
     /// Each of [`STATES`] reported going.
-    on: [bool; 7],
+    on: [bool; 9],
     /// Every port named missing this session: port `i` is
     /// `Subject::midi_port(i)`.
     ports: Vec<String>,
@@ -150,6 +163,16 @@ impl Watch {
             // Between the lines: as it was.
             Some(self.on[1])
         };
+        // Running hot: over the line, until it cools a little under it.
+        let hot = l.temp_c.zip(l.hot_line).map(|(t, line)| {
+            if t >= line {
+                true
+            } else if t <= line - HOT_BACK_C {
+                false
+            } else {
+                self.on[7]
+            }
+        });
         let states = [
             l.near_limit,
             memory,
@@ -158,6 +181,8 @@ impl Watch {
             l.parts_missing,
             l.one_core,
             l.clock_lost,
+            hot,
+            l.slowed,
         ];
         for (i, going) in states.into_iter().enumerate() {
             let Some(going) = going else { continue };
@@ -401,6 +426,57 @@ mod tests {
             look(&mut w, crashes(Some(3))),
             ["+1 plugins/plugin-stopped"]
         );
+    }
+
+    /// Phase 3: the MPC running hot over its line until it cools a little
+    /// under it, off while the line isn't measured; a slowed processor
+    /// while a core's top clock is down.
+    #[test]
+    fn the_mpc_runs_hot_over_its_line_and_its_processor_slows() {
+        let mut w = Watch::default();
+        let temp = |c: f32, line: Option<f32>| Look {
+            temp_c: Some(c),
+            hot_line: line,
+            ..Look::default()
+        };
+        // No line yet (the app's today): never.
+        assert!(look(&mut w, temp(99.0, None)).is_empty());
+        let line = Some(80.0);
+        assert!(look(&mut w, temp(79.5, line)).is_empty());
+        assert_eq!(look(&mut w, temp(80.0, line)), ["began mpc/running-hot"]);
+        assert!(
+            look(&mut w, temp(78.0, line)).is_empty(),
+            "between: as it was"
+        );
+        assert!(
+            look(
+                &mut w,
+                Look {
+                    hot_line: line,
+                    ..Look::default()
+                }
+            )
+            .is_empty(),
+            "not read: as it was"
+        );
+        assert_eq!(
+            look(&mut w, temp(80.0 - HOT_BACK_C, line)),
+            ["ended mpc/running-hot"]
+        );
+        assert!(
+            look(&mut w, temp(79.0, line)).is_empty(),
+            "between: as it was"
+        );
+        let slowed = |on| Look {
+            slowed: Some(on),
+            ..Look::default()
+        };
+        assert!(look(&mut w, slowed(false)).is_empty());
+        assert_eq!(look(&mut w, slowed(true)), ["began mpc/processor-slowed"]);
+        assert!(look(&mut w, slowed(true)).is_empty());
+        assert_eq!(look(&mut w, slowed(false)), ["ended mpc/processor-slowed"]);
+        // Today's app: no line, so nothing however hot.
+        assert_eq!(crate::heat::RUNNING_HOT_C, None);
     }
 
     #[test]

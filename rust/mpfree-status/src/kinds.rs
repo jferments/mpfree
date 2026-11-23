@@ -603,6 +603,38 @@ pub static PLUGIN_STOPPED: Kind = Kind {
 
 // ---------------------------------------------------------------- The MPC
 
+/// The MPC hotter than its line (the app's `heat::RUNNING_HOT_C`), which is
+/// measured on the MPC, never guessed; until it is, this stays off.
+pub static MPC_HOT: Kind = Kind {
+    id: "mpc/running-hot",
+    system: System::Mpc,
+    level: Level::Warn,
+    shape: Shape::Lasts,
+    short: "MPC running hot",
+    title: "The MPC is running hot",
+    what: "The MPC is hotter than it gets even with all its cores busy, so it may slow its processor to cool down, and then the sound has less room before it runs late.",
+    to_try: "Keep it out of the sun and away from heat, with room around it, and play fewer effects and instruments at once until it cools.",
+    action: None,
+    manual: "the-mpc-is-running-hot",
+    hides: &[&PROCESSOR_SLOWED],
+};
+
+/// A core's top clock fell below where it was at MPFree's start: the
+/// kernel's cooling or a governor slowed the processor (heat.rs).
+pub static PROCESSOR_SLOWED: Kind = Kind {
+    id: "mpc/processor-slowed",
+    system: System::Mpc,
+    level: Level::Warn,
+    shape: Shape::Lasts,
+    short: "Processor slowed",
+    title: "The MPC slowed its processor",
+    what: "The MPC turned its processor's top speed down, usually to cool down, so the sound has less room before it runs late.",
+    to_try: "Let it cool: keep it out of the sun and away from heat, and play fewer effects and instruments at once for now. It ends by itself when the speed comes back.",
+    action: None,
+    manual: "the-mpc-slowed-its-processor",
+    hides: &[],
+};
+
 /// A strict sound helper couldn't get its core or priority, so its part
 /// runs with the rest of the sound on one core (cores.rs).
 pub static ONE_CORE: Kind = Kind {
@@ -655,6 +687,8 @@ pub static ALL: &[&Kind] = &[
     &THEME_NOT_FOUND,
     &SKIN_COLOURS_MOVED,
     &PLUGIN_STOPPED,
+    &MPC_HOT,
+    &PROCESSOR_SLOWED,
     &ONE_CORE,
 ];
 
@@ -794,6 +828,8 @@ mod tests {
             &STREAMING_AT_LIMIT,
             &STICK_NEARLY_FULL,
             &CLOCK_STOPPED,
+            &MPC_HOT,
+            &PROCESSOR_SLOWED,
         ] {
             assert_eq!(k.level, Level::Warn, "{}", k.id);
         }

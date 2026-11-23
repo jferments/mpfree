@@ -112,6 +112,7 @@ mod expr_rec;
 mod fxmodes;
 mod gui;
 mod hand;
+mod heat;
 mod imagecopy;
 mod instrument_list;
 mod instruments;

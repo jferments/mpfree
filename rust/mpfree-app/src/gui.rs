@@ -2217,6 +2217,9 @@ pub struct Player {
     /// The audio tracks' last look at the stick ([`ToUi::Drive`]): System
     /// status's stick meter.
     drive: Option<std::sync::Arc<mpfree_audiotracks::files::DriveSeen>>,
+    /// The MPC's temperature and processor clock at the screen thread's
+    /// last read (every 2 s, heat.rs).
+    heat: Option<crate::heat::Heat>,
     /// BROWSE's Plugins place: the Open MPC catalog, installed plugins and
     /// zips on the stick (plugin_page.rs).
     plugin_page: crate::plugin_page::PluginPage,
@@ -2899,6 +2902,7 @@ impl Player {
             project_defaults: None,
             project_plugins: std::sync::Arc::new(crate::plugins::Plugins::none()),
             drive: None,
+            heat: None,
             plugin_page: crate::plugin_page::PluginPage::new(),
             plugins_hinted: false,
             track_sounds: [None; crate::instruments::HOLDERS],
@@ -8202,6 +8206,7 @@ impl Player {
             ram_pct: self.ram_pct,
             free: self.mem_free,
             stick: self.drive.as_ref().and_then(|d| d.get()).flatten(),
+            heat: self.heat,
         };
         let v = crate::status_screen::view(
             &self.status_board,
@@ -8390,6 +8395,9 @@ impl Player {
             missing_ports: missing.as_deref(),
             clock_lost: Some(t.audio.clock_lost),
             plugin_crashes: self.project_plugins.summary().map(|s| s.crashes),
+            temp_c: self.heat.and_then(|h| h.temp_c),
+            hot_line: crate::heat::RUNNING_HOT_C,
+            slowed: self.heat.and_then(|h| h.slowed),
         };
         // Audio tracks by lasting id, for problems about one.
         self.status_watch.set_audio_tracks(
@@ -8409,6 +8417,12 @@ impl Player {
     /// Memory free now (MemAvailable, bytes), for the status watcher.
     pub fn set_free(&mut self, free: u64) {
         self.mem_free = Some(free);
+    }
+
+    /// The MPC's temperature and processor clock, read now (every 2 s),
+    /// for the status watcher and System status's head.
+    pub fn set_heat(&mut self, h: crate::heat::Heat) {
+        self.heat = Some(h);
     }
 
     /// The problems shown this session that aren't in `allowed`, by id:
@@ -15290,6 +15304,8 @@ pub fn spawn(
             let mut perf = crate::perf::Sampler::new();
             let (mut perf_at, mut perf_logged): (Option<Instant>, Option<Instant>) = (None, None);
             let mut ram_at: Option<Instant> = None;
+            // The MPC's temperature and clock, every 2 s with the RAM.
+            let mut heat = crate::heat::HeatReader::default();
             let mut memory_watch = crate::memory::Watch::default();
             // The touchscreen stopped answering and hasn't opened again.
             let mut touch_lost = false;
@@ -15419,6 +15435,10 @@ pub fn spawn(
                 // line when free memory falls under the floor loads keep.
                 if ram_at.is_none_or(|t| t.elapsed() >= PERF_EVERY) {
                     ram_at = Some(Instant::now());
+                    player.set_heat(heat.read());
+                    if let Some(line) = heat.cost_line() {
+                        println!("{line}");
+                    }
                     if let Ok(m) = std::fs::read_to_string("/proc/meminfo") {
                         if let Some(p) = crate::perf::ram_used_pct(&m) {
                             player.set_ram(p);
@@ -15816,6 +15836,15 @@ fn sample_stick(p: &mut Player) {
         total: 15_500_000_000,
     }));
     p.apply(ToUi::Drive(std::sync::Arc::new(d)));
+    // And the MPC as the disk streaming round saw it (23 Nov).
+    p.set_heat(crate::heat::Heat {
+        temp_c: Some(55.5),
+        critical_c: Some(113.0),
+        clock_mhz: Some(1608),
+        top_mhz: Some(1608),
+        full_mhz: Some(1608),
+        slowed: Some(false),
+    });
 }
 
 pub fn sample_player(fonts: Fonts) -> Player {

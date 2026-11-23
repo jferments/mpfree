@@ -30,7 +30,7 @@ Tap the status chip, or pick **System status** in Prefs, to open the page over t
 
 {{shot: system-status | System status: the sound dropped out three times just now (red), Juno-X isn't plugged in (yellow), and some voices were faded out 30 seconds ago.}}
 
-- **The top line** says the worst problem happening now, in its colour, or **Everything is working**, with how many problems there are now and earlier. On its right are the CPU and RAM meters and, once MPFree has looked at the stick it records to, the stick's meter with how much space is free (yellow while the stick is nearly full).
+- **The top line** says the worst problem happening now, in its colour, or **Everything is working**, with how many problems there are now and earlier. On its right are the CPU and RAM meters and, once MPFree has looked at the stick it records to, the stick's meter with how much space is free (yellow while the stick is nearly full), and the **Temp** meter with the MPC's temperature, filled towards the temperature at which it turns itself off (yellow while it is running hot).
 - **The systems** are always listed on the left, all nine: Sound, Memory, Storage, Pads and buttons, MIDI and sync, Project, Screen, Plugins and The MPC. Each has a dot in its colour, a few plain words ("41 % used · 1.1 GB free", "Juno-X: not plugged in") and a count of its problems. The page opens on the worst one.
 - **The picked system's problems** are on the right, worst and newest first. A problem happening now shows in full: what happened, what to try and, where MPFree can do it for you, a button. One that is over folds to a line with when it happened; tap it to open it. Each kind of problem has one card, with how many times and when ("3 times · last 12 s ago · first 4 min ago").
 - **Now | This session**, at the top right, shows only what is happening now, or everything since MPFree started.
@@ -184,6 +184,14 @@ Each problem below starts with its colour. A **Note** is listed on the System st
 ### A plugin stopped
 
 **Red.** A plugin crashed, so its sound stopped for a moment. MPFree starts it again where it was. After four crashes in a minute it stays off: an effect then lets the sound through, and an instrument is silent. **Try:** save your project. If it keeps happening, take the plugin out and add it again, or use another one. See [Plugins](../making-music/effects.md#plugins) for how plugins run apart from the rest of MPFree.
+
+### The MPC is running hot
+
+**Yellow.** The MPC is hotter than it gets even with all its cores busy, so it may slow its processor to cool down, and then the sound has less room before it runs late. **Try:** keep it out of the sun and away from heat, with room around it, and play fewer effects and instruments at once until it cools. The **Temp** meter at the top of System status shows how hot it is; the problem ends once it has cooled a few degrees.
+
+### The MPC slowed its processor
+
+**Yellow.** The MPC turned its processor's top speed down, usually to cool down, so the sound has less room before it runs late. **Try:** let it cool: keep it out of the sun and away from heat, and play fewer effects and instruments at once for now. It ends by itself when the speed comes back. **The MPC**'s numbers on System status say how far the top speed came down.
 
 ### The sound is running on fewer cores
 
