@@ -80,6 +80,13 @@ pub struct Watch {
     /// found a moment after the start, or unplugged and plugged straight
     /// back, says nothing.
     maybe: Vec<String>,
+    /// The project's audio tracks by lasting id, with their names, for
+    /// the takes' and the drive's problems about one
+    /// (`Subject::audio_track`); and the takes found at start whose check
+    /// failed, by their names in Recordings (`Subject::found_take(n)` is
+    /// `found[n - 1]`).
+    audio_tracks: Vec<(u32, String)>,
+    found: Vec<String>,
 }
 
 impl Watch {
@@ -167,9 +174,37 @@ impl Watch {
         self.maybe.extend(missing.iter().cloned());
     }
 
+    /// The project's audio tracks as they are now: each one's lasting id
+    /// and its name.
+    pub fn set_audio_tracks<'a>(&mut self, tracks: impl IntoIterator<Item = (u32, &'a str)>) {
+        self.audio_tracks.clear();
+        self.audio_tracks
+            .extend(tracks.into_iter().map(|(id, n)| (id, n.to_string())));
+    }
+
+    /// The takes recovery found at start whose check failed, by their
+    /// names in Recordings (the audio tracks' `Recovered::found`).
+    pub fn set_found_takes(&mut self, names: Vec<String>) {
+        self.found = names;
+    }
+
     /// What a problem is about, in words, where the watcher named it: a
-    /// port's own name.
+    /// port's own name, an audio track's name, or a take found at start
+    /// by its file's name.
     pub fn subject_name(&self, kind: &Kind, subject: Subject) -> Option<&str> {
+        if let Some(id) = subject.audio_track_id() {
+            return self
+                .audio_tracks
+                .iter()
+                .find(|(i, _)| *i == id)
+                .map(|(_, n)| n.as_str());
+        }
+        if let Some(n) = subject.found_take_number() {
+            return self
+                .found
+                .get(n.checked_sub(1)? as usize)
+                .map(String::as_str);
+        }
         if kind != &kinds::PORT_MISSING || subject == Subject::NONE {
             return None;
         }
@@ -341,6 +376,31 @@ mod tests {
             ["began midi/port-missing #1"],
             "the same subject as before"
         );
+    }
+
+    #[test]
+    fn an_audio_track_and_a_found_take_are_named_by_their_tag() {
+        let mut w = Watch::default();
+        w.set_audio_tracks([(7, "Vocal"), (9, "Gtr")]);
+        w.set_found_takes(vec!["Bass_0123abcd.unverified.wav".into()]);
+        let k = &kinds::RECORDING_AT_RISK;
+        assert_eq!(w.subject_name(k, Subject::audio_track(9)), Some("Gtr"));
+        assert_eq!(w.subject_name(k, Subject::audio_track(8)), None);
+        assert_eq!(
+            w.subject_name(&kinds::TAKE_DAMAGED, Subject::found_take(1)),
+            Some("Bass_0123abcd.unverified.wav")
+        );
+        assert_eq!(
+            w.subject_name(&kinds::TAKE_DAMAGED, Subject::found_take(2)),
+            None
+        );
+        // A port's subject is still a port's, and only for Port missing.
+        assert_eq!(w.subject_name(&kinds::PORT_MISSING, Subject(1)), None);
+        assert_eq!(w.subject_name(k, Subject::NONE), None);
+        // The tracks as they are now: a renamed track's new name.
+        w.set_audio_tracks([(9, "Guitar")]);
+        assert_eq!(w.subject_name(k, Subject::audio_track(9)), Some("Guitar"));
+        assert_eq!(w.subject_name(k, Subject::audio_track(7)), None);
     }
 
     #[test]

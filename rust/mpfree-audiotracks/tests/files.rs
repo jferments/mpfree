@@ -256,6 +256,52 @@ fn a_track_whose_files_cant_be_made_doesnt_arm_and_says_why() {
     assert_eq!(r.h.tracks.takes().count(), 0);
 }
 
+/// Step 5d: the drive the takes record to is looked at on a thread of its
+/// own; when it goes, System status hears Stick missing, and when it is
+/// back, that it ended.
+#[test]
+fn the_drive_going_and_coming_back_is_told_to_system_status() {
+    use mpfree_audiotracks::files::{Problem, Room};
+    use mpfree_status::{kinds, Report};
+    fn probe(dir: &Path) -> Option<Room> {
+        dir.exists().then_some(Room {
+            writable: true,
+            free: 1 << 40,
+        })
+    }
+    let dir = scratch("drive");
+    let mut r = Rig::new(&dir);
+    r.run_until(|r| r.frame > 10 * P && dir.exists());
+    // The stick is pulled, then the drive is looked at.
+    std::fs::remove_dir_all(&dir).unwrap();
+    r.h.watch_drive(probe);
+    let mut got = Vec::new();
+    r.run_until(|r| {
+        got.extend(std::iter::from_fn(|| r.h.take_problem()));
+        !got.is_empty()
+    });
+    let missing = Problem {
+        report: Report::began(&kinds::STICK_MISSING),
+        track: None,
+    };
+    assert_eq!(got, [missing]);
+    // Back: the next look (within three seconds) ends it.
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut back = Vec::new();
+    r.run_until(|r| {
+        back.extend(std::iter::from_fn(|| r.h.take_problem()));
+        !back.is_empty()
+    });
+    assert_eq!(
+        back,
+        [Problem {
+            report: Report::ended(&kinds::STICK_MISSING),
+            track: None,
+        }]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_take_cut_off_is_recovered_at_the_next_start_up_to_its_last_checkpoint() {
     let dir = scratch("cut");
@@ -277,7 +323,8 @@ fn a_take_cut_off_is_recovered_at_the_next_start_up_to_its_last_checkpoint() {
     drop(r);
     std::thread::sleep(Duration::from_millis(300));
     assert!(dir.join(format!("Gtr_{rec}.wav.recording")).exists());
-    let lines = recover_into(&dir, &keep).unwrap();
+    let found = recover_into(&dir, &keep).unwrap();
+    let lines = &found.lines;
     assert!(
         lines[0].contains("cut off while it recorded; recovered up to 0:0"),
         "{lines:?}"
@@ -286,6 +333,16 @@ fn a_take_cut_off_is_recovered_at_the_next_start_up_to_its_last_checkpoint() {
         lines[1].contains("1 take not saved in a project was kept in Recordings"),
         "{lines:?}"
     );
+    // System status hears it was recovered; its whole check matched, so
+    // nothing is damaged and no found take needs a name.
+    assert_eq!(
+        found.reports,
+        [mpfree_status::Report::happened(
+            &mpfree_status::kinds::TAKE_RECOVERED,
+            1
+        )]
+    );
+    assert!(found.found.is_empty());
     let got = keep.join(format!("Gtr_{rec}.wav"));
     let (audio, ch) = wav_at(&got);
     assert_eq!(ch, 1);
@@ -306,7 +363,7 @@ fn a_take_cut_off_is_recovered_at_the_next_start_up_to_its_last_checkpoint() {
         .collect();
     assert!(left.is_empty(), "{left:?}");
     // A second start finds nothing more.
-    assert!(recover_into(&dir, &keep).unwrap().is_empty());
+    assert_eq!(recover_into(&dir, &keep).unwrap(), Default::default());
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&keep);
 }

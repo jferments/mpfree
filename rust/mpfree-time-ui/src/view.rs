@@ -506,6 +506,9 @@ impl ClipInfo {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrackInfo {
     pub name: String,
+    /// Its lasting id (`Track::id`), so what is said about the track
+    /// elsewhere (System status) finds its name.
+    pub id: mpfree_seq::TrackId,
     /// What it plays, under its name ("Kit", "FM · Glass Keys"); empty
     /// shows only the name.
     pub sound: String,
@@ -1003,6 +1006,7 @@ impl TimeState {
             .enumerate()
             .map(|(i, t)| TrackInfo {
                 name: t.name.clone(),
+                id: t.id,
                 sound: String::new(),
                 mute: t.mute,
                 solo: t.solo,

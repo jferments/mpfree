@@ -775,6 +775,7 @@ version = "0.1.0"
 name = "mpfree-app"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "mpfree-arp",
  "mpfree-arp-ui",
  "mpfree-audiotracks",
@@ -847,6 +848,7 @@ name = "mpfree-audiotracks"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "mpfree-status",
  "mpfree-stream",
  "mpfree-stretch",
  "mpfree-transport",
