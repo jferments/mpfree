@@ -164,6 +164,13 @@
 //! stop them, so a project with one says it needs `scene-keep` (the
 //! app's project gate) and such a build refuses it first.
 //!
+//! A scene's `bpm <tempo>` line (the Arrange refactor's 5.2b,
+//! [`crate::Scene::tempo`]) is the tempo it sets on its line, to 0.1 BPM,
+//! after its `keep` line; none written, it leaves the tempo as it is. (Not
+//! `tempo`, which is the song's tempo point after the scenes.) A build
+//! from before would skip it and play on at the tempo before, so a project
+//! with one needs `scene-tempo`.
+//!
 //! Reading is careful: every number is checked, every clip and the whole
 //! project go through [`Project::check`]-level checks, and a part that
 //! doesn't hold together is refused whole (the engine keeps what it had).
@@ -288,6 +295,9 @@ pub fn to_text(p: &Project) -> String {
         }
         if sc.keep != 0 {
             let _ = writeln!(s, "keep {}", sc.keep);
+        }
+        if let Some(t) = sc.tempo {
+            let _ = writeln!(s, "bpm {}.{}", t / 10, t % 10);
         }
         if let Some(f) = sc.follow {
             let _ = writeln!(s, "follow {}", follow_text(f));
@@ -977,6 +987,13 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             }
             ("keep", At::Scene) => {
                 last_scene(&mut p).keep = num(w.next()).ok_or_else(|| bad("keep"))?
+            }
+            ("bpm", At::Scene) => {
+                let tenths = num::<f64>(w.next())
+                    .map(|b| b * 10.0)
+                    .filter(|t| (t - t.round()).abs() < 1e-6)
+                    .and_then(|t| crate::scenes::scene_tempo(t / 10.0));
+                last_scene(&mut p).tempo = Some(tenths.ok_or_else(|| bad("bpm"))?);
             }
             ("follow", At::Scene) => {
                 last_scene(&mut p).follow = Some(follow(&mut w).ok_or_else(|| bad("follow"))?)
@@ -2228,6 +2245,34 @@ mod tests {
         // Out of place, or not a number: the part is refused.
         for bad in ["keep x", "keep", "keep -1"] {
             let t = text.replacen(&format!("keep {}", 1u128 << 127 | 1), bad, 1);
+            assert!(from_text(&t).is_err(), "{bad}");
+        }
+    }
+
+    /// The Arrange refactor's 5.2b: a scene's tempo is a `bpm` line after
+    /// its `keep` line, to 0.1 BPM, written only when it sets one.
+    #[test]
+    fn a_scenes_tempo_reads_back() {
+        let mut p = full();
+        assert!(!to_text(&p).contains("\nbpm "), "none: no line");
+        p.scene_mut(2).unwrap().set_keep(1, true).unwrap();
+        p.scene_mut(2).unwrap().set_bpm(Some(128.5)).unwrap();
+        p.scene_mut(0).unwrap().set_bpm(Some(90.0)).unwrap();
+        let text = to_text(&p);
+        assert!(text.contains("keep 2\nbpm 128.5\n"), "{text}");
+        assert!(text.contains("bpm 90.0\n"), "{text}");
+        let back = from_text(&text).unwrap();
+        assert_eq!(back, p);
+        assert_eq!(back.scenes[2].bpm(), Some(128.5));
+        // A song tempo point after the scenes is still the song's.
+        let mut q = p.clone();
+        q.arrangement.set_tempo(0, 100.0, None).unwrap();
+        let back = from_text(&to_text(&q)).unwrap();
+        assert_eq!(back, q);
+        assert_eq!(back.arrangement.tempo.len(), 1);
+        // Out of range, finer than 0.1 or not a number: the part is refused.
+        for bad in ["bpm 29.9", "bpm 300.1", "bpm 128.55", "bpm x", "bpm"] {
+            let t = text.replacen("bpm 128.5", bad, 1);
             assert!(from_text(&t).is_err(), "{bad}");
         }
     }

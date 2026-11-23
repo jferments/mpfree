@@ -35,12 +35,13 @@ use mpfree_time_ui::continuing::{ContinueAction, ContinueAsk};
 
 use super::compose::{more_bars, Composing, LineWait};
 use mpfree_play::{
-    ClipDrop, Cue, Decisions, Includes, Launch, MuteCue, MuteLanded, PlayView, SongChange, Started,
-    Takes,
+    ClipDrop, Cue, Decisions, Includes, Launch, MuteCue, MuteLanded, PlayView, SceneTempo,
+    SongChange, Started, Takes,
 };
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
 use mpfree_seq::arrange::{
-    list_spans, scene_title, song_sections, song_to_scenes, Arrangement, Difference, Differs,
+    list_spans, put_scene_tempo, scene_title, song_sections, song_to_scenes, Arrangement,
+    Difference, Differs,
 };
 use mpfree_seq::loops::{self, LoopNow, LoopPlan};
 use mpfree_seq::mpfree_moves::{Kind, MoveLog};
@@ -502,6 +503,11 @@ pub struct TimeControl {
     /// queue), and the queue's number: the player lands their cues.
     mute_queue: Option<(u32, MuteWait)>,
     mute_ids: u32,
+    /// The tempo the scene launched last sets, on the song tick its line
+    /// falls on (the Arrange refactor's 5.2b), for the view; and the ids
+    /// given so far.
+    scene_tempo: Option<SceneTempo>,
+    tempo_ids: u32,
     /// The current period's landed mute cues.
     landed: Vec<MuteLanded>,
     /// Clips' saved states (Save state, sequencer S4), as (track, slot,
@@ -687,6 +693,8 @@ impl TimeControl {
             started: Vec::with_capacity(STARTED_ROOM),
             mute_queue: None,
             mute_ids: 0,
+            scene_tempo: None,
+            tempo_ids: 0,
             landed: Vec::with_capacity(MAX_TRACKS),
             saved: Vec::new(),
             reloads: Vec::new(),
@@ -1367,8 +1375,10 @@ impl TimeControl {
                 )
                 .changed();
             // A follow's or the song list's scene: its mutes for tracks it
-            // gave no cue wait in the mute queue for its line.
+            // gave no cue wait in the mute queue for its line, and its
+            // tempo for its tick.
             compile |= self.queue_scene_mutes();
+            compile |= self.scene_tempo_on_its_line();
         }
         // A linked song's sections bring their scenes' mutes and program
         // changes (4b.4).
@@ -1730,6 +1740,7 @@ impl TimeControl {
         v.set_song(&self.project, self.song)
             .map_err(|e| format!("song: {e:?}"))?;
         v.set_tempo_map(self.song_tempo()?);
+        v.set_scene_tempo(self.scene_tempo);
         // A scene's mutes switch with its cues; while a track is soloed,
         // one it unmutes stays silent unless it is soloed too.
         self.perform.dress(&mut v);
@@ -3605,10 +3616,13 @@ impl TimeControl {
                     }
                 };
                 // The scene's mutes for tracks it gave no cue wait in the
-                // mute queue for its line.
+                // mute queue for its line, and its tempo for its tick.
                 self.queue_scene_mutes();
+                let tempo_was = self.scene_tempo;
+                self.scene_tempo_on_its_line();
                 if let Err(e) = self.compile() {
                     self.song = song_was;
+                    self.scene_tempo = tempo_was;
                     (self.launches, self.cues, self.perform) = (before.0, before.1, before.2);
                     for (t, m) in self.project.tracks.iter_mut().zip(before.3) {
                         t.mute = m;
@@ -5246,6 +5260,17 @@ impl TimeControl {
                     what: Differs::SceneProgram,
                 });
             }
+            // A scene's tempo (5.2b): a tempo point where its step starts,
+            // so song mode changes tempo where the rows did.
+            if let Some(bpm) = scene.and_then(|s| s.bpm()) {
+                if !put_scene_tempo(&mut song, t, bpm, Some(self.project_bpm)) {
+                    differences.push(Difference {
+                        track: None,
+                        at: t,
+                        what: Differs::SceneTempo,
+                    });
+                }
+            }
             song.mark(t, &scene_title(&self.project, row))
                 .map_err(|e| format!("{e:?}"))?;
         }
@@ -6457,6 +6482,36 @@ impl TimeControl {
     /// Each replaces what waited for its track (the scene is the later
     /// change), and the queue lands on the scene's line from then on,
     /// with whatever else waits in it. True when the queue changed.
+    /// The tempo the last launch asked for ([`mpfree_perform::Perform::take_tempo`])
+    /// on the song tick its line falls on from the playhead as this half
+    /// heard it, where the player lands the scene's cues: the first line
+    /// at or after it (a line the audio half has already played by then
+    /// makes it late, at once, as the cues are). Stopped, or with no line,
+    /// at once. A launch of a scene with none, and Stop all, take a tempo
+    /// still waiting back. True when the view needs compiling again.
+    fn scene_tempo_on_its_line(&mut self) -> bool {
+        let Some(ask) = self.perform.take_tempo() else {
+            return false;
+        };
+        let bar = self.info.meter.bar_ticks();
+        let rolling = self.info.state.rolling();
+        let at = ask
+            .line
+            .filter(|_| rolling)
+            .map(|l| l.next(self.info.position, bar));
+        let was = self.scene_tempo;
+        self.scene_tempo = ask.bpm.map(|bpm| {
+            self.tempo_ids += 1;
+            SceneTempo {
+                bpm,
+                at,
+                from: self.project_bpm,
+                id: self.tempo_ids,
+            }
+        });
+        was.is_some() || self.scene_tempo.is_some()
+    }
+
     fn queue_scene_mutes(&mut self) -> bool {
         let Some((line, mutes)) = self.perform.take_line_mutes() else {
             return false;

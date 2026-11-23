@@ -1162,6 +1162,11 @@ pub fn scenes_to_song(
             if !s.programs.is_empty() {
                 differences.push(Difference::song(t, Differs::SceneProgram));
             }
+            if let Some(bpm) = s.bpm() {
+                if !put_scene_tempo(&mut song, t, bpm, None) {
+                    differences.push(Difference::song(t, Differs::SceneTempo));
+                }
+            }
         }
         for (track, tr) in project.tracks.iter().enumerate() {
             let Some(clip) = tr.slots[row].as_ref() else {
@@ -1207,6 +1212,35 @@ pub fn scenes_to_song(
         t += length;
     }
     Ok(ToSong { song, differences })
+}
+
+/// A row's scene tempo (the Arrange refactor's 5.2b) as the song plays it
+/// (Scenes → song, List → song, [`scenes_to_song`]): a tempo point on song
+/// tick `at`, where the row starts, unless the song's tempo there is `bpm`
+/// already (`before`: the tempo before the song's first point, if known).
+/// The song's last point, when it ramps and comes before `at`, stops
+/// ramping first: a ramp on the last point waits for a point after it, so
+/// it played flat and still does. False, with no point put in, when the
+/// song can't hold another ([`MAX_TEMPO_POINTS`]).
+pub fn put_scene_tempo(song: &mut Arrangement, at: Tick, bpm: f64, before: Option<f64>) -> bool {
+    let now = song
+        .tempo
+        .iter()
+        .rev()
+        .find(|p| p.at <= at)
+        .map(|p| p.bpm)
+        .or(before);
+    if now == Some(bpm) {
+        return true;
+    }
+    if song.set_tempo(at, bpm, Some(false)).is_err() {
+        return false;
+    }
+    let k = song.tempo.partition_point(|p| p.at < at);
+    if k + 1 == song.tempo.len() && k > 0 {
+        song.tempo[k - 1].ramp = false;
+    }
+    true
 }
 
 /// Row `row`'s scene by name, as a marker made from it is named: its
@@ -1512,10 +1546,18 @@ pub fn song_to_scenes(project: &mut Project, bar: Tick) -> Result<ToScenes, Mode
         } else {
             FollowAction::Next
         };
-        // Every field of the row's scene, not only the two it sets.
+        // A tempo point on its start: the row's tempo (5.2b).
+        let tempo = project
+            .arrangement
+            .tempo
+            .iter()
+            .find(|t| t.at == *a)
+            .and_then(|t| row_tempo(t.bpm));
+        // Every field of the row's scene, not only the three it sets.
         *p.scene_mut(row).ok_or(ModelError::NoRoom)? = Scene {
             name,
             follow: Some(Follow::after(bars as u16, action)),
+            tempo,
             ..Scene::default()
         };
     }
@@ -1602,6 +1644,9 @@ pub enum Differs {
     /// Scenes → song, List → song ([`scenes_to_song`] too): the scene's
     /// program changes, which the song doesn't send.
     SceneProgram,
+    /// Scenes → song, List → song ([`scenes_to_song`] too): the scene's
+    /// tempo, which the song had no room for as a tempo point.
+    SceneTempo,
     /// [`scenes_to_song`]: the clip's own follow action, which the song
     /// leaves out (the clip plays on for the row).
     ClipFollow,
@@ -1674,7 +1719,8 @@ impl Difference {
             ),
             Differs::Silence { length } => format!("{} of silence left out", bars(length)),
             Differs::Tempo => {
-                "the song's tempo changes; the rows play at the project's tempo".into()
+                "the song's tempo changes inside a part or glides; a row changes tempo only as it starts"
+                    .into()
             }
             Differs::Morph => "the song's morph moves; the rows don't play them".into(),
             Differs::Random => "plays in Random order; the copy rolls its own order".into(),
@@ -1690,10 +1736,19 @@ impl Difference {
             Differs::Program => "its program change is sent again here".into(),
             Differs::HeldNote => "a note held over the row change is cut there".into(),
             Differs::SceneProgram => "the scene's program changes aren't in the song".into(),
+            Differs::SceneTempo => {
+                "the scene's tempo isn't in the song: no room for another tempo change".into()
+            }
             Differs::ClipFollow => "the clip's follow action isn't in the song; it plays on".into(),
             Differs::Legato => "the clip is legato; the song starts it from its top".into(),
         }
     }
+}
+
+/// A song tempo as a row's ([`crate::scenes::scene_tempo`]), only when it
+/// is one exactly: 0.1 BPM steps in the app's range.
+fn row_tempo(bpm: f64) -> Option<u16> {
+    crate::scenes::scene_tempo(bpm).filter(|&t| (f64::from(t) / 10.0 - bpm).abs() < 1e-9)
 }
 
 /// The ways Song → scenes can't follow the whole song (`parts` are its
@@ -1722,7 +1777,16 @@ fn song_differences(
         }
         last = *b;
     }
-    if let Some(t) = song.tempo.first() {
+    // A tempo point on a part's start becomes its row's tempo (5.2b); one
+    // anywhere else, a ramp to another, or a tempo a scene can't hold, the
+    // rows can't play.
+    let last = song.tempo.len().saturating_sub(1);
+    let off = song.tempo.iter().enumerate().find(|(k, t)| {
+        !parts.iter().any(|(a, _, _)| *a == t.at)
+            || (t.ramp && *k < last)
+            || row_tempo(t.bpm).is_none()
+    });
+    if let Some((_, t)) = off {
         out.push(Difference::song(t.at, Differs::Tempo));
     }
     if !song.lanes.is_empty() || !song.morphs.is_empty() {
@@ -2971,6 +3035,89 @@ mod tests {
         let rows = [(2, 4 * BAR), (4, BAR)];
         let done = scenes_to_song(&p, &rows, 0).unwrap();
         assert!(!done.differences.iter().any(|d| d.what == Differs::Legato));
+    }
+
+    /// The Arrange refactor's 5.2b: a row's tempo is a tempo point where it
+    /// starts in the song laid by rule (none where the tempo is that
+    /// already, and named past the song's room), and Song → scenes gives a
+    /// row the tempo point on its part's start, naming a point inside a
+    /// part, a ramp to another point, or a tempo a scene can't hold.
+    #[test]
+    fn scene_tempi_become_tempo_points_and_back() {
+        let mut p = project();
+        p.scene_mut(0).unwrap().set_bpm(Some(100.0)).unwrap();
+        p.scene_mut(1).unwrap().set_bpm(Some(140.5)).unwrap();
+        let rows = [(0, BAR), (1, 2 * BAR), (0, BAR), (0, BAR)];
+        let done = scenes_to_song(&p, &rows, 0).unwrap();
+        let points = |s: &Arrangement| -> Vec<(Tick, f64, bool)> {
+            s.tempo.iter().map(|t| (t.at, t.bpm, t.ramp)).collect()
+        };
+        assert_eq!(
+            points(&done.song),
+            [
+                (0, 100.0, false),
+                (BAR, 140.5, false),
+                (3 * BAR, 100.0, false)
+            ]
+        );
+        assert!(done.differences.is_empty(), "{:?}", done.differences);
+        // And back: each row the tempo on its part's start.
+        let back = |song: &Arrangement| {
+            let mut q = project();
+            q.arrangement = song.clone();
+            let to = song_to_scenes(&mut q, BAR).unwrap();
+            let tempi: Vec<Option<f64>> =
+                to.rows.iter().map(|&r| q.scene(r).unwrap().bpm()).collect();
+            let named: Vec<Tick> = to
+                .differences
+                .iter()
+                .filter(|d| d.what == Differs::Tempo)
+                .map(|d| d.at)
+                .collect();
+            (tempi, named)
+        };
+        assert_eq!(
+            back(&done.song),
+            (vec![Some(100.0), Some(140.5), Some(100.0), None], vec![])
+        );
+        // A ramp on the last point plays flat: still exact.
+        let mut song = done.song.clone();
+        song.tempo[2].ramp = true;
+        assert!(back(&song).1.is_empty());
+        // A ramp to another point, a point inside a part, and a tempo
+        // finer than 0.1 BPM are named.
+        let mut song = done.song.clone();
+        song.tempo[1].ramp = true;
+        assert_eq!(back(&song).1, [BAR]);
+        let mut song = done.song.clone();
+        song.set_tempo(2 * BAR, 120.0, None).unwrap();
+        assert_eq!(back(&song).1, [2 * BAR]);
+        let mut song = done.song.clone();
+        song.set_tempo(0, 100.05, None).unwrap();
+        assert_eq!(back(&song).1, [0]);
+        // Past the song's room for points: named, each that changes it.
+        let rows: Vec<(usize, Tick)> = (0..40).map(|k| (k % 2, BAR)).collect();
+        let done = scenes_to_song(&p, &rows, 0).unwrap();
+        assert_eq!(done.song.tempo.len(), MAX_TEMPO_POINTS);
+        let named = done
+            .differences
+            .iter()
+            .filter(|d| d.what == Differs::SceneTempo)
+            .count();
+        // The rows after the 31st point: those at 140.5 BPM (the odd ones)
+        // can't change it; those at 100 play at the tempo already there.
+        assert_eq!(named, 5);
+        // A song whose last point ramps (and so plays flat) stops ramping
+        // when a point comes after it.
+        let mut song = Arrangement::default();
+        song.set_tempo(0, 90.0, Some(true)).unwrap();
+        assert!(put_scene_tempo(&mut song, 4 * BAR, 90.0, None));
+        assert_eq!(points(&song), [(0, 90.0, true)], "the same tempo: none");
+        assert!(put_scene_tempo(&mut song, 4 * BAR, 120.0, None));
+        assert_eq!(points(&song), [(0, 90.0, false), (4 * BAR, 120.0, false)]);
+        let mut song = Arrangement::default();
+        assert!(put_scene_tempo(&mut song, 0, 120.0, Some(120.0)));
+        assert!(song.tempo.is_empty(), "the project's tempo already");
     }
 
     #[test]

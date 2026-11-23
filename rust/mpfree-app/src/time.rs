@@ -1312,6 +1312,14 @@ impl TimeHost {
         self.audio.follow_tempo(bpm);
     }
 
+    /// A scene's tempo that landed on its line since last asked (the
+    /// Arrange refactor's 5.2b), taken: the app makes it its tempo
+    /// (`App::set_tempo`), so the tempo chip, Note Repeat and the arps
+    /// follow, and the project saves it.
+    pub fn take_scene_tempo(&mut self) -> Option<f64> {
+        self.audio.take_scene_tempo()
+    }
+
     /// Song mode plays the song's tempo points: the tempo turned sets the
     /// point in effect at the playhead (`TempoEdit::AtPlayhead`), not the
     /// project's tempo.
@@ -3861,7 +3869,10 @@ mod tests {
             ]
         );
         let said = h.act(TimeAction::SplitPlacement(None)).unwrap_err();
-        assert!(said.contains("no block plays across bar 2 beat 3"), "{said}");
+        assert!(
+            said.contains("no block plays across bar 2 beat 3"),
+            "{said}"
+        );
         let said = h.act(TimeAction::SplitPlacement(Some(0))).unwrap_err();
         assert!(said.contains("move the playhead inside Beat"), "{said}");
         let said = h.act(TimeAction::Undo).unwrap();
@@ -6994,6 +7005,99 @@ mod tests {
         assert_eq!(h.dropped(), 0);
     }
 
+    /// The Arrange refactor's 5.2b: a scene's tempo comes in on its line,
+    /// on the frame its clips start, and the app takes it once; a scene
+    /// with none leaves the tempo be. A tempo turned after a launch is
+    /// the newer and wins; while song mode plays the song's tempo points
+    /// they lead; stopped, it comes in at once.
+    #[test]
+    fn a_scenes_tempo_comes_in_on_its_line() {
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        let one_bar = |note: u8| {
+            let mut c = Clip::new("beat", 3840);
+            c.notes = vec![mpfree_seq::Note::new(0, 100, note, 100)];
+            c
+        };
+        for row in 0..3 {
+            h.control.project.tracks[0].slots[row] = Some(one_bar(4 + row as u8));
+        }
+        let p = &mut h.control.project;
+        p.scene_mut(1).unwrap().set_bpm(Some(150.0)).unwrap();
+        p.scene_mut(2).unwrap().set_bpm(Some(90.0)).unwrap();
+        // The app's side: its tempo each period, taking what landed.
+        let mut app = 120.0;
+        let mut took = vec![];
+        let period = |h: &mut TimeHost, pads: &mut Fake, app: &mut f64, took: &mut Vec<_>| {
+            if let Some(bpm) = h.take_scene_tempo() {
+                took.push((pads.frame, bpm));
+                *app = bpm;
+            }
+            h.follow_tempo(*app);
+            h.period(PERIOD, pads);
+            pads.frame += u64::from(PERIOD);
+        };
+        h.act(TimeAction::LaunchScene(0)).unwrap();
+        h.command(Command::Play);
+        while pads.frame < BAR / 2 {
+            period(&mut h, &mut pads, &mut app, &mut took);
+        }
+        // Scene 2 at 150 BPM, on bar 2: bar 2 is two seconds in, bar 3
+        // 1.6 s after it.
+        h.act(TimeAction::LaunchScene(1)).unwrap();
+        let mut heard = vec![];
+        while pads.frame < BAR + BAR * 4 / 5 + BAR / 2 {
+            period(&mut h, &mut pads, &mut app, &mut took);
+            heard.push((h.info().position, h.info().bpm));
+        }
+        let hits: Vec<(u64, usize)> = pads.hits.iter().map(|&(f, p, _)| (f, p)).collect();
+        let want = [(0, 4), (BAR, 5), (BAR + BAR * 4 / 5, 5)];
+        assert_eq!(hits.len(), want.len(), "{hits:?}");
+        for ((f, p), (at, pad)) in hits.iter().zip(want) {
+            assert!(f.abs_diff(at) <= 23 && *p == pad, "{hits:?}");
+        }
+        assert!(heard.iter().filter(|x| x.0 < 3840).all(|x| x.1 == 120.0));
+        assert!(heard.iter().filter(|x| x.0 > 3840).all(|x| x.1 == 150.0));
+        assert_eq!(took.len(), 1, "{took:?}");
+        assert!(took[0].0.abs_diff(BAR) <= u64::from(2 * PERIOD));
+        assert_eq!((took[0].1, app), (150.0, 150.0));
+        // Scene 1, with none: the tempo stays.
+        h.act(TimeAction::LaunchScene(0)).unwrap();
+        for _ in 0..BAR / u64::from(PERIOD) {
+            period(&mut h, &mut pads, &mut app, &mut took);
+        }
+        assert_eq!((h.info().bpm, took.len()), (150.0, 1));
+        // Scene 3 at 90, then the tempo turned to 100 before its line:
+        // the turn is the newer.
+        h.act(TimeAction::LaunchScene(2)).unwrap();
+        app = 100.0;
+        for _ in 0..2 * BAR / u64::from(PERIOD) {
+            period(&mut h, &mut pads, &mut app, &mut took);
+        }
+        assert_eq!(h.state().scene_playing, Some(2));
+        assert_eq!((h.info().bpm, took.len()), (100.0, 1));
+        // Song mode with a tempo point: the song's tempo leads.
+        h.act(TimeAction::SongTempo(mpfree_time_ui::TempoEdit::Add(0)))
+            .unwrap();
+        h.act(TimeAction::SongMode(true)).unwrap();
+        h.act(TimeAction::LaunchScene(1)).unwrap();
+        for _ in 0..2 * BAR / u64::from(PERIOD) {
+            period(&mut h, &mut pads, &mut app, &mut took);
+        }
+        assert_eq!(h.state().scene_playing, Some(1));
+        assert_eq!(took.len(), 1);
+        assert!(h.song_tempo_plays());
+        h.act(TimeAction::SongMode(false)).unwrap();
+        // Stopped: at once.
+        h.command(Command::Stop);
+        period(&mut h, &mut pads, &mut app, &mut took);
+        h.act(TimeAction::LaunchScene(2)).unwrap();
+        period(&mut h, &mut pads, &mut app, &mut took);
+        period(&mut h, &mut pads, &mut app, &mut took);
+        assert_eq!((h.info().bpm, app, took.len()), (90.0, 90.0, 2));
+        assert_eq!(h.dropped(), 0);
+    }
+
     /// A scene that mutes a track it gives no cue (an empty cell, nothing
     /// launched): in song mode that track plays the song, so its mute
     /// waits in the mute queue and lands on the scene's bar line with the
@@ -9470,6 +9574,77 @@ mod tests {
                 assert_eq!(programs, [(0, 5), (4 * BAR, 9)], "{why}");
             }
         }
+    }
+
+    /// Arrange 5.2b: the scenes' tempi come in where their rows start,
+    /// whether the list plays the rows live or a linked song plays its
+    /// sections in song mode, on the same frames; and List → song writes
+    /// them into the song as tempo points.
+    #[test]
+    fn the_lists_scenes_bring_their_tempo_live_and_from_a_linked_song() {
+        let tempi = |p: &mut mpfree_seq::Project| {
+            p.scene_mut(1).unwrap().set_bpm(Some(150.0)).unwrap();
+            p.scene_mut(2).unwrap().set_bpm(Some(90.0)).unwrap();
+        };
+        // Each period as the app runs it, with the tempo it takes: the
+        // frames each new tempo was first heard on.
+        let play = |h: &mut TimeHost| {
+            let mut pads = Fake::default();
+            let mut app = 120.0;
+            let mut changes = vec![];
+            h.command(Command::Play);
+            while pads.frame < 5 * BAR {
+                if let Some(bpm) = h.take_scene_tempo() {
+                    app = bpm;
+                }
+                h.follow_tempo(app);
+                h.period(PERIOD, &mut pads);
+                pads.frame += u64::from(PERIOD);
+                let bpm = h.info().bpm;
+                if changes.last().is_none_or(|c: &(u64, f64)| c.1 != bpm) {
+                    changes.push((pads.frame, bpm));
+                }
+            }
+            (changes, app)
+        };
+        // Row 2 starts two seconds in at 120 BPM; row 3 two bars later at
+        // 150, 3.2 s on.
+        let want = [(2 * BAR, 150.0), (2 * BAR + 2 * BAR * 4 / 5, 90.0)];
+        let near = |got: &[(u64, f64)]| {
+            got.len() == 3
+                && got[0].1 == 120.0
+                && got[1..]
+                    .iter()
+                    .zip(want)
+                    .all(|(g, w)| g.1 == w.1 && g.0.abs_diff(w.0) <= u64::from(PERIOD))
+        };
+        let mut p = section_grid();
+        tempi(&mut p);
+        let mut live = TimeHost::with_project(RATE, 120.0, p).unwrap();
+        live.act(TimeAction::ListPlay(0)).unwrap();
+        let (got, app) = play(&mut live);
+        assert!(near(&got), "live: {got:?}");
+        assert_eq!(app, 90.0);
+        let mut song = section_song();
+        tempi(&mut song.control.project);
+        song.act(TimeAction::SongMode(true)).unwrap();
+        let (got, app) = play(&mut song);
+        assert!(near(&got), "linked song: {got:?}");
+        assert_eq!(app, 90.0);
+        // List → song: a tempo point where each row with one starts.
+        let mut p = section_grid();
+        tempi(&mut p);
+        let mut h = TimeHost::with_project(RATE, 120.0, p).unwrap();
+        h.act(TimeAction::ListToSong).unwrap();
+        let points: Vec<(Tick, f64)> = h
+            .control
+            .project
+            .arrangement
+            .tempo
+            .iter()
+            .map(|t| (t.at, t.bpm))
+            .collect();
+        assert_eq!(points, [(2 * 3840, 150.0), (4 * 3840, 90.0)]);
     }
 
     /// Arrange 4b.5: Link on a list that isn't linked. Song from the list

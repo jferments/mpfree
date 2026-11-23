@@ -19445,6 +19445,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             st.scenes = vec![String::new(), "Drop".into()];
             st.scene = mpfree_seq::SceneSettings {
                 keep: 0,
+                tempo: None,
                 name: "Drop".into(),
                 mutes: Some(0b10),
                 follow: Some(mpfree_seq::Follow {

@@ -10794,6 +10794,11 @@ fn player_session(
             }
             fx.extend(app.set_notes_open(time.editing()));
         }
+        // A scene's tempo landed on its line (Arrange 5.2b): the app's
+        // tempo becomes it, as if turned there.
+        if let Some(bpm) = time.take_scene_tempo() {
+            fx.extend(app.set_tempo(bpm));
+        }
         if let Some(bpm) = followed_tempo.take() {
             let bpm = (bpm * 10.0).round() / 10.0;
             // Without the log line set_tempo writes: the tempo follows

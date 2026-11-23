@@ -59,5 +59,5 @@ pub use takes::{
 };
 pub use view::{
     anchored, CompileError, Cue, InPlace, Launch, MuteCue, MuteLanded, NowPlaying, PlayView,
-    SceneProgram, Started, EARLIEST, IN_PLACE_WORK, MAX_IN_PLACE,
+    SceneProgram, SceneTempo, Started, EARLIEST, IN_PLACE_WORK, MAX_IN_PLACE,
 };
