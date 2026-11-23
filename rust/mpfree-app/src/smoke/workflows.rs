@@ -5373,6 +5373,83 @@ mod tests {
         });
     }
 
+    /// Save to browser and From the browser (layout spec 4o): Setup keeps
+    /// a layout of yours in the library; the XY pad's list's From the
+    /// browser opens the browser on the saved ones, and Load makes one a
+    /// layout of yours again, playing, under a name of its own, and goes
+    /// back to Play. Cancel goes back too.
+    #[test]
+    fn a_layout_saved_to_the_browser_comes_back_from_the_list() {
+        on_big_stack(|| {
+            use crate::xy_song::XyAction;
+            let dir = std::env::temp_dir().join(format!("mpfree-xy-browse-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("a scratch folder");
+            let mut s = Session::with_library(&dir);
+            s.play_view("All");
+            s.press(crate::play_page::XY, "xy-chip", "").settle();
+            s.press(crate::xy_list::XY_LIST, "new", "+ New layout")
+                .settle();
+            let volume = mpfree_play::mpfree_param::ParamAddr::new(
+                mpfree_play::mpfree_param::Owner::Strip(mpfree_play::mpfree_param::Strip::Track(0)),
+                mpfree_fx::ids::mixer::VOLUME,
+            );
+            s.route(crate::gui::FromUi::Xy(XyAction::Chip {
+                addr: volume,
+                up: false,
+                pick: None,
+            }));
+            s.settle();
+            assert_eq!(s.xy_yours.yours[0].layout.way_of(volume), Some(false));
+            s.press(crate::xy_setup::XY_SETUP, "save", "Save to browser")
+                .settle();
+            let file = s
+                .library
+                .as_ref()
+                .unwrap()
+                .root()
+                .join(mpfree_library::Place::Instruments.folder())
+                .join(mpfree_browser_ui::XY_FOLDER)
+                .join("Layout 1.preset");
+            let text = std::fs::read_to_string(&file).expect("saved in the library");
+            assert!(text.starts_with("xy 1\nlayout\tLayout 1\n"), "{text}");
+            assert!(
+                s.hint().starts_with("Saved Layout 1 to the browser"),
+                "{}",
+                s.hint()
+            );
+            s.press(crate::xy_setup::XY_SETUP, "done", "Done").settle();
+
+            // From the browser: Cancel comes back to Play with nothing new.
+            s.press(crate::play_page::XY, "xy-chip", "").settle();
+            s.press(crate::xy_list::XY_LIST, "browser", "From the browser")
+                .settle();
+            assert_eq!(s.view(), View::Browser);
+            s.button("BROWSE").settle();
+            assert_eq!(s.view(), View::Play);
+            assert_eq!(s.xy_yours.yours.len(), 1);
+            // Load: one of yours again, playing, as Layout 2.
+            s.press(crate::play_page::XY, "xy-chip", "").settle();
+            s.press(crate::xy_list::XY_LIST, "browser", "From the browser")
+                .settle();
+            s.button("DATA DIAL PUSH").run_for(0.2).settle();
+            assert_eq!(s.view(), View::Play, "{:?}", s.lines);
+            assert_eq!(s.xy_yours.yours.len(), 2, "{:?}", s.lines);
+            assert_eq!(s.xy_yours.playing, Some(1));
+            let m = &s.xy_yours.yours[1];
+            assert_eq!(m.layout.name, "Layout 2");
+            assert_eq!(m.layout.way_of(volume), Some(false));
+            assert!(
+                s.lines
+                    .iter()
+                    .any(|l| l.contains("Layout 2 from the browser: a layout of yours")),
+                "{:?}",
+                s.lines
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        });
+    }
+
     /// A synth's own setting on a layout of yours (the XY plan's phase 2,
     /// "a synth's settings gain the hand layer"): SHIFT + a touch on a
     /// Synth tab knob joins it; the pad plays it without changing its own

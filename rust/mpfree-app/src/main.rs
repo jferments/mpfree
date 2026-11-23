@@ -8855,8 +8855,6 @@ fn synth_turn_said(synth: &synth::Synth, id: u16, redo: bool) -> String {
     }
 }
 
-/// Your XY layouts as the screen shows them ([`gui::ToUi::Xy`]), each
-/// setting named afresh.
 /// Your XY layouts with what an action on them reads and changes: the
 /// screen's `FromUi::Xy`, and Learn's XY Hold and layout buttons (the
 /// smoke session's too).
@@ -8929,6 +8927,8 @@ impl XyHere<'_> {
     }
 }
 
+/// Your XY layouts as the screen shows them ([`gui::ToUi::Xy`]), each
+/// setting named afresh.
 fn xy_view(
     song: &mut xy_song::XySong,
     mix: &mixing::MixHost,
@@ -10593,6 +10593,11 @@ fn player_session(
                         out.show(gui::ToUi::Tell(line));
                     }
                     out.show(xy.view());
+                    // Save to browser: the layout's text, for the screen's
+                    // browser to keep.
+                    if let Some((name, text)) = xy_yours.saving.take() {
+                        out.show(gui::ToUi::XyLayoutText { name, text });
+                    }
                 }
                 // UNDO on the Synth tab and the mixer: their turns' history.
                 gui::FromUi::UndoHistory(on) => {

@@ -66,7 +66,21 @@ At the foot:
 - **A touch:** **Jumps** puts the pad under your finger. **Moves from here** moves it from where it is by as much as your finger moves, so nothing jumps when you land.
 - **Follow the selected track:** a synth's settings on the layout then mean the synth of whichever track you've selected, so one layout plays the bass's filter on the bass track and the lead's on the lead track. What a touch plays is fixed when your finger lands: selecting another track while you play changes the next touch, not this one. The mixer's and the effects' settings stay where they are.
 
-**Delete** takes the layout out of the song. **Done** takes you back to the pad.
+**Save to browser** keeps a copy of the layout in the browser for your other songs (see below). **Delete** takes the layout out of the song. **Done** takes you back to the pad.
+
+## Using a layout in another song
+
+A layout lives in the song it was made in. To use it in other songs too, tap **Save to browser** at the top of its Setup. The browser keeps it under **Instruments › XY pad**, by its name. Saving it again under the same name replaces the copy there, and the old copy goes to the Trash, so you can get it back.
+
+In another song, tap the XY pad's chip, then **From the browser** next to + New layout. The browser opens on your saved layouts. Turn the wheel to one and push it (or tap **Load**): it becomes one of yours in this song, playing, and you're back on Play. **Cancel** or **BROWSE** comes back with nothing changed. If the song already has a layout of that name, the new one is numbered ("Squelch 2"). You can also load a saved layout from **Instruments › XY pad** in the full browser.
+
+{{shot: browser-xy-layouts | From the browser: three layouts saved from other songs, Wobble picked.}}
+
+A layout brings what it can into the new song:
+
+- The mixer's and the effects' settings come where this song has the same setting in the same place: the same strip's volume, or the same effect in the same slot. A setting this song doesn't have there, or has a different setting in its place, is left out, and the hint line names what was left out. It is never put on whatever happens to be there.
+- A copy of a ready-made XY FX layout plays this song's XY FX. If the pad hasn't played that effect in this song yet, the hint line asks you to play it once first.
+- On a layout that follows the selected track, a synth's settings come as they are: they mean the selected track's synth, so these layouts travel best.
 
 ## Hold and Let go
 

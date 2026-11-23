@@ -140,6 +140,13 @@ pub enum XyAction {
         up: bool,
         pick: Option<usize>,
     },
+    /// Setup's Save to browser on layout `i`: its text, for the screen to
+    /// keep in the browser ([`XySong::saving`]).
+    Save(usize),
+    /// From the browser: a layout saved from another song (`text`, read
+    /// from file `file`) becomes one of yours and plays. A setting this
+    /// song doesn't have is left out, and said.
+    Import { file: String, text: String },
 }
 
 /// A setting as the sound loop sees it now ([`Look`]).
@@ -263,6 +270,9 @@ pub struct XySong {
     /// The layout of yours the pad plays (None: a ready-made one).
     pub playing: Option<usize>,
     pub wait: Option<Wait>,
+    /// Save to browser's answer: a layout's name and its text, for the
+    /// sound loop to hand the screen ([`XyAction::Save`]).
+    pub saving: Option<(String, String)>,
 }
 
 /// Your layouts as the screen shows them.
@@ -458,6 +468,103 @@ impl XySong {
             .unwrap_or_default()
     }
 
+    /// Layout `i` as Save to browser keeps it: its name, and the song's
+    /// part with it alone (nothing playing).
+    pub fn layout_text(&self, i: usize) -> (String, String) {
+        let m = self.yours[i].clone();
+        let name = m.layout.name.clone();
+        let one = XySong {
+            yours: vec![m],
+            ..XySong::default()
+        };
+        (name, one.text())
+    }
+
+    /// A layout saved from another song (From the browser), made this
+    /// song's: a name none of yours has; on a copy of an XY FX effect, the
+    /// settings on that song's XY FX moved to this song's (`ready` makes
+    /// one, None when the effect isn't on the master yet); and each
+    /// setting checked against what this song has there. One that isn't
+    /// there, or is another setting by now, is left out (never re-bound to
+    /// whatever took its place), named in the second value. A layout that
+    /// follows the selected track keeps its synth's settings: they mean
+    /// the selected track's synth.
+    fn imported(
+        &self,
+        file: &str,
+        text: &str,
+        ready: impl FnOnce(Option<usize>, &str) -> Option<Mine>,
+        look: Look<'_>,
+    ) -> Result<(Mine, Vec<String>), String> {
+        let (song, notes) = XySong::parse(text);
+        let Some(mut m) = song.yours.into_iter().next() else {
+            let why = notes.first().map_or(String::new(), |n| format!(" ({n})"));
+            return Err(format!("{file} isn't an XY layout this app reads{why}"));
+        };
+        if self.yours.iter().any(|y| y.layout.name == m.layout.name) {
+            // "Squelch" comes in as "Squelch 2", "Layout 1" as "Layout 2".
+            let name = m.layout.name.clone();
+            m.layout.name = match name.rsplit_once(' ') {
+                Some((base, n)) if !base.is_empty() => match n.parse::<usize>() {
+                    Ok(k) => self.free_name(base, k + 1),
+                    Err(_) => self.free_name(&name, 2),
+                },
+                _ => self.free_name(&name, 2),
+            };
+        }
+        if let (Some(k), Some(gate)) = (m.fx, m.layout.gate) {
+            let base = crate::play_page::XY_CHOICES[k + 1];
+            let here = ready(Some(k), &m.layout.name)
+                .and_then(|r| r.layout.gate)
+                .ok_or_else(|| {
+                    format!("Play {base} on the pad once first: its effect isn't on the master yet")
+                })?;
+            let moved = |a: ParamAddr| {
+                if a.owner == gate.owner {
+                    ParamAddr::new(here.owner, a.param)
+                } else {
+                    a
+                }
+            };
+            for up in [false, true] {
+                for t in m.axis_mut(up) {
+                    t.addr = moved(t.addr);
+                }
+            }
+            m.layout.gate = Some(moved(gate));
+            for n in &mut m.names {
+                n.0 = moved(n.0);
+            }
+        }
+        let follows = m.layout.follow;
+        let mut left = Vec::new();
+        let mut seen = Vec::new();
+        for up in [false, true] {
+            let targets = std::mem::take(m.axis_mut(up));
+            let mut kept = Vec::new();
+            for t in targets {
+                let (was, place) = m.name_of(t.addr);
+                let remembered = m.names.iter().any(|(a, ..)| *a == t.addr);
+                match look(t.addr) {
+                    _ if follows && matches!(t.addr.owner, Owner::Inst(_)) => kept.push(t),
+                    Ok(s) if !remembered || s.name == was => {
+                        seen.push((t.addr, s.name, s.place));
+                        kept.push(t);
+                    }
+                    _ if place.is_empty() => left.push(was),
+                    _ => left.push(format!("{was} ({place})")),
+                }
+            }
+            *m.axis_mut(up) = kept;
+        }
+        m.names.retain(|(a, ..)| m.layout.way_of(*a).is_some());
+        for (a, name, place) in seen {
+            m.remember(a, &name, &place);
+        }
+        m.layout.compile().map_err(|e| format!("{file}: {e}"))?;
+        Ok((m, left))
+    }
+
     fn add(&mut self, m: Mine) -> Result<(usize, Done), String> {
         if self.yours.len() >= MAX_LAYOUTS {
             return Err(format!(
@@ -536,6 +643,26 @@ impl XySong {
                 tell(format!(
                     "{name}: a layout of yours made from {base}, which stays as it was"
                 ));
+                Ok(d)
+            }
+            XyAction::Save(i) => {
+                edit(self, i)?;
+                self.saving = Some(self.layout_text(i));
+                Ok(Done::default())
+            }
+            XyAction::Import { file, text } => {
+                let (m, left) = self.imported(&file, &text, ready, look)?;
+                let name = m.layout.name.clone();
+                let (_, d) = self.add(m)?;
+                let mut line =
+                    format!("{name} from the browser: a layout of yours in this song now");
+                if !left.is_empty() {
+                    line.push_str(&format!(
+                        " · left out, not in this song: {}",
+                        left.join(", ")
+                    ));
+                }
+                tell(line);
                 Ok(d)
             }
             XyAction::Delete(i) => {
@@ -1428,6 +1555,158 @@ mod tests {
 
     fn join(song: &mut XySong, addr: ParamAddr) -> Result<Done, String> {
         act(song, XyAction::Join(crate::gui::LearnValue::Param(addr)))
+    }
+
+    /// Save to browser keeps a layout alone as text; From the browser
+    /// brings it into another song as one of yours, playing, under a name
+    /// none of that song's layouts has. A setting that song doesn't have,
+    /// or has as another setting by now, is left out and named; a layout
+    /// that follows the selected track keeps its synth's settings; an XY
+    /// FX's copy moves to that song's XY FX.
+    #[test]
+    fn a_layout_saved_to_the_browser_comes_into_another_song_with_what_it_has() {
+        let chip = |addr, up| XyAction::Chip {
+            addr,
+            up,
+            pick: None,
+        };
+        let mut a = XySong::default();
+        act(&mut a, XyAction::New).unwrap();
+        for (addr, up) in [(SEND, false), (CUTOFF, false), (MIX, true)] {
+            act(&mut a, chip(addr, up)).unwrap();
+        }
+        assert_eq!(act(&mut a, XyAction::Save(0)).unwrap(), Done::default());
+        let (name, text) = a.saving.take().unwrap();
+        assert_eq!(name, "Layout 1");
+        assert!(
+            text.starts_with(HEAD) && !text.contains("playing"),
+            "{text}"
+        );
+        assert!(act(&mut a, XyAction::Save(4)).is_err());
+        // Another song: a layout called Layout 1 already, Cutoff's track
+        // gone and the master's effect 1 another effect.
+        const RATIO: ParamAddr = ParamAddr::new(Owner::Insert(Strip::Master, 3), 0);
+        let there = |addr: ParamAddr| match addr {
+            CUTOFF => Err("Track 2 was removed.".to_string()),
+            RATIO => Ok(Seen {
+                name: "Ratio".into(),
+                place: "Master · Squeeze, effect 1".into(),
+                ..look(MIX).unwrap()
+            }),
+            _ => look(addr),
+        };
+        let mut b = XySong::default();
+        b.act(XyAction::New, 1, |_, _| None, &there, &mut |_| {})
+            .unwrap();
+        let mut told = Vec::new();
+        let import = |file: &str, text: &str| XyAction::Import {
+            file: file.into(),
+            text: text.into(),
+        };
+        let d = b
+            .act(
+                import("Layout 1", &text),
+                1,
+                |_, _| None,
+                &there,
+                &mut |l| told.push(l),
+            )
+            .unwrap();
+        assert!(matches!(d.load, Some(Some(_))), "it plays: {d:?}");
+        assert_eq!(b.playing, Some(1));
+        let m = &b.yours[1];
+        assert_eq!(m.layout.name, "Layout 2");
+        assert_eq!(m.layout.across.targets.len(), 1);
+        assert_eq!(m.layout.way_of(SEND), Some(false));
+        assert!(m.layout.up.targets.is_empty(), "never re-bound to Ratio");
+        assert_eq!(m.names.len(), 1);
+        assert_eq!(
+            told,
+            [
+                "Layout 2 from the browser: a layout of yours in this song now · left out, \
+              not in this song: Cutoff (Bass · Poly), Mix (Master · Room, effect 1)"
+            ]
+        );
+        // Following the selected track, the synth's setting comes too.
+        act(
+            &mut a,
+            XyAction::Follow {
+                layout: 0,
+                on: true,
+            },
+        )
+        .unwrap();
+        act(&mut a, XyAction::Save(0)).unwrap();
+        let (_, follows) = a.saving.take().unwrap();
+        b.act(
+            import("Layout 1", &follows),
+            1,
+            |_, _| None,
+            &there,
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(b.yours[2].layout.way_of(CUTOFF), Some(false));
+        // An XY FX's copy: that song's XY FX is effect 1 there, this one's
+        // is effect 3.
+        let mut wash = Mine::new("Wash 2");
+        wash.fx = Some(3);
+        let active = |slot| ParamAddr::new(Owner::Insert(Strip::Master, slot), 1);
+        wash.layout.gate = Some(active(3));
+        wash.layout.up.targets.push(Target::linear(MIX, 20.0, 80.0));
+        wash.remember(MIX, "Mix", "Master · Room, effect 1");
+        let saved = XySong {
+            yours: vec![wash],
+            ..XySong::default()
+        }
+        .text();
+        const MIX_HERE: ParamAddr = ParamAddr::new(Owner::Insert(Strip::Master, 5), 0);
+        let fx_here = |addr: ParamAddr| match addr {
+            MIX_HERE => look(MIX),
+            _ => Err("not here".to_string()),
+        };
+        let mut c = XySong::default();
+        let e = c
+            .act(
+                import("Wash 2", &saved),
+                1,
+                |_, _| None,
+                &fx_here,
+                &mut |_| {},
+            )
+            .unwrap_err();
+        assert!(e.contains("Play Wash on the pad once first"), "{e}");
+        c.act(
+            import("Wash 2", &saved),
+            1,
+            |pick, name| {
+                assert_eq!(pick, Some(3));
+                let mut r = Mine::new(name);
+                r.layout.gate = Some(active(5));
+                Some(r)
+            },
+            &fx_here,
+            &mut |_| {},
+        )
+        .unwrap();
+        let m = &c.yours[0];
+        assert_eq!(m.layout.gate, Some(active(5)));
+        assert_eq!(m.layout.way_of(MIX_HERE), Some(true));
+        assert_eq!(m.layout.up.targets[0].from, 20.0, "its range kept");
+        // Not a layout at all.
+        let e = c
+            .act(
+                import("Notes", "hello\n"),
+                1,
+                |_, _| None,
+                &fx_here,
+                &mut |_| {},
+            )
+            .unwrap_err();
+        assert!(
+            e.starts_with("Notes isn't an XY layout this app reads"),
+            "{e}"
+        );
     }
 
     /// XY → and XY ↑ on the Modulate row: on a ready-made layout a copy

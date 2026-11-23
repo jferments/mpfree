@@ -2631,6 +2631,9 @@ impl Session {
                     self.out.show(ToUi::Tell(line));
                 }
                 self.out.show(v);
+                if let Some((name, text)) = self.xy_yours.saving.take() {
+                    self.out.show(ToUi::XyLayoutText { name, text });
+                }
             }
             FromUi::SaveProject => self.save_asked = true,
             FromUi::OpenProject(o) => self.open_project(o),
