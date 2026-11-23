@@ -10,9 +10,9 @@ MPFree already takes keyboards, interfaces and USB synths on the **USB-A** socke
 |---|---|---|
 | A USB device controller `ff580000.usb` (driver `dwc2`, up to high speed) is registered; it read `not attached` with nothing plugged in | OBSERVED, 3.6.0, 9 Nov | [Ethernet and USB](ethernet-usb.md), section 3 |
 | `/sys/kernel/config/usb_gadget` exists, so configfs gadgets are possible | OBSERVED, 3.6.0, 9 Nov | [Ethernet and USB](ethernet-usb.md) |
-| The USB-B port "allows MPC One to send/receive MIDI and audio data to/from the MPC software on your computer" | DOCUMENTED | MPC 3.6 user guide, MPC One rear panel |
-| In Standalone Mode the toolbar's In and Out boxes show MIDI "receiving or sending … from or to your computer" | DOCUMENTED | MPC 3.6 user guide, toolbar |
-| Controller Mode is a separate mode, switched from the toolbar, which closes the project | DOCUMENTED | MPC 3.6 user guide, Mode |
+| The USB-B port "allows MPC One to send/receive MIDI and audio data to/from the MPC software on your computer" | DOCUMENTED | MPC 3.10.1 user guide, MPC One rear panel (p. 360) |
+| In Standalone Mode the toolbar's In and Out boxes show MIDI "receiving or sending … from or to your computer" | DOCUMENTED | MPC 3.10.1 user guide, toolbar (p. 70) |
+| Controller Mode is a separate mode, switched from the toolbar, which closes the project | DOCUMENTED | MPC 3.10.1 user guide, Mode (p. 56) |
 | The same socket carries Akai's desktop updater, and factory U-Boot's Fastboot update mode before Linux starts | OBSERVED (device tree) and DOCUMENTED | [Boot architecture](mpc-one-boot-architecture.md) |
 
 **Not known:** whether Akai's system sets up a USB MIDI function (Linux's `f_midi`) on USB-B in Standalone Mode, or does it another way (its own program through functionfs); which program holds it; whether the kernel has the gadget MIDI and audio functions built in; and what a computer sees when it is plugged in. The [Ethernet and USB](ethernet-usb.md) page's rule stands until this check is read: **no binding, unbinding or writing a USB gadget configuration.**

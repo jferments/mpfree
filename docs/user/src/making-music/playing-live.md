@@ -150,4 +150,4 @@ Swing reads **off** at 50 %, which is straight time, as it does in the transport
 While you hold **NOTE REPEAT**, or the Arp panel is open, the knobs control the repeat instead: rate, gate, swing and octaves. See [Note Repeat, Latch and the arpeggiator](note-repeat-and-arp.md).
 
 > [!MPC]
-> The MPC's XYFX mode and Pad Perform are full-screen modes, and Track Mute opens a page of its own. In MPFree, the XY pad and the throws sit on the Play page next to your pattern and loops, and TRACK MUTE only changes what the pads do, so you can perform without leaving the page you are on. When you want the XY pad big, as on the MPC, SHIFT + NEXT SEQ puts it full screen.
+> On the MPC, XYFX turns the whole screen into the XY pad, Track Mute is a mode with a page of its own, and Pad Perform opens in a window. In MPFree, the XY pad and the throws sit on the Play page next to your pattern and loops, and TRACK MUTE only changes what the pads do, so you can perform without leaving the page you are on. When you want the XY pad big, as on the MPC, SHIFT + NEXT SEQ puts it full screen.
