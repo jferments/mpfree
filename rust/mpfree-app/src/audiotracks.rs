@@ -55,24 +55,90 @@
 //! takes also stay in RAM until streaming plays them from their files
 //! (phase 3b).
 
-use mpfree_audiotracks::host::{AudioHost, ImportRefused, TakeWave, MAX_COLUMNS};
+use mpfree_audiotracks::host::FitCopy;
+use mpfree_audiotracks::host::{AudioHost, CueAudio, ImportRefused, TakeWave, MAX_COLUMNS};
 use mpfree_audiotracks::save::{Saved, TrackFile};
 use mpfree_audiotracks::streaming::StreamConfig;
 use mpfree_audiotracks::{
-    Command, Input, Monitor, Retime, RetimeRefused, SongStep, TakeInfo, MAX_REGIONS, MAX_TAKES,
+    Answer, Change, ClipPlay, ClipRegion, Command, Input, Monitor, Plays, RecordingId, Retime,
+    RetimeRefused, SongStep, TakeInfo, MAX_CHANGES, MAX_CLIP_REGIONS, MAX_REGIONS, MAX_TAKES,
     MAX_TRACKS, PEAK_BLOCK,
 };
-use mpfree_seq::TrackId;
-use mpfree_time_ui::song::{audio_blocks, input_chip, take_lanes, AudioLane, MixFrom, MONITORS};
+use mpfree_play::{AudioAnswer, AudioPlays};
+use mpfree_seq::{RecId, TrackId};
+use mpfree_time_ui::song::{
+    audio_blocks, input_chip, take_lanes, AudioLane, ClipBlock, ClipPiece, MixFrom, MONITORS,
+};
 use mpfree_time_ui::view::{
     audio_color, track_color, AudioAction, RegionId, TimeState, TransportInfo,
 };
+use mpfree_time_ui::widgets::CELL_WAVE;
 use mpfree_transport::{Block, TempoMap, Tick};
 use mpfree_ui::qlink::QLinkCard;
 
 use crate::mixing::MixHost;
+use crate::time::{AudioNeed, CueKey};
 use crate::PERIOD;
 use mpfree_fx::ids::mixer as mx;
+
+/// Fit to tempo on an audio clip's card, under way
+/// ([`TrackHost::fit_clip`]): one fitted copy a recording the clip names,
+/// one after another, then the clip pointed at them.
+struct ClipFit {
+    track: usize,
+    slot: usize,
+    /// The clip's id, so an edit to the cell meanwhile is seen.
+    id: mpfree_seq::ClipId,
+    name: String,
+    /// The clip's audio as it was asked, and the tempos from and to.
+    audio: mpfree_seq::AudioClip,
+    from: f64,
+    to: f64,
+    /// The recordings still to fit, the one fitting first.
+    todo: Vec<RecId>,
+    total: usize,
+    done: Vec<FitCopy>,
+}
+
+/// Put in a cell under way ([`TrackHost::bring_to_cell`]): the sound
+/// copying in as a take of its own, for a clip in project track `track`.
+struct CellSound {
+    track: usize,
+    name: String,
+    frames: usize,
+    bpm: f64,
+}
+
+/// How a Fit to tempo ended ([`TrackHost::tend_clip_fit`]).
+#[derive(Debug, PartialEq)]
+pub enum ClipFitDone {
+    /// The clip at (`track`, `slot`), still `id`, plays `audio`: its
+    /// regions on the fitted copies, made at `bpm`.
+    Fitted {
+        track: usize,
+        slot: usize,
+        id: mpfree_seq::ClipId,
+        name: String,
+        audio: mpfree_seq::AudioClip,
+        bpm: f64,
+        /// The copies it plays: forgotten if the cell can't take it
+        /// ([`TrackHost::forget_copies`]).
+        copies: Vec<FitCopy>,
+    },
+    /// The worker couldn't make a copy (or a recording went); nothing
+    /// changed.
+    Failed { name: String },
+}
+
+/// A tempo as the hint line says it: "92 BPM", "92.5 BPM".
+pub fn bpm_words(bpm: f64) -> String {
+    let tenths = (bpm * 10.0).round();
+    if tenths % 10.0 == 0.0 {
+        format!("{} BPM", tenths / 10.0)
+    } else {
+        format!("{:.1} BPM", tenths / 10.0)
+    }
+}
 
 /// Prefs "Audio track memory" (layout spec 4c): the stereo seconds every
 /// take shares, 60 s by default (about 21 MB at 44.1 kHz). It is set aside,
@@ -217,6 +283,77 @@ pub struct Inside {
 }
 
 /// The audio tracks, their host and what the Song view was last given.
+const NO_CLIP_REGION: ClipRegion = ClipRegion {
+    start: 0,
+    end: 0,
+    rec: RecordingId::NONE,
+    src: 0,
+    phase: 0.0,
+    gain: 1.0,
+    fade_in: 0,
+    fade_out: 0,
+    into: 0,
+    left: 0,
+};
+
+/// What the player's `p` says, in the engine's words: a clip's regions
+/// copied into `room` (the first [`MAX_CLIP_REGIONS`]), each naming its
+/// recording by the same lasting id.
+fn plays_in<'r>(p: &AudioPlays, room: &'r mut [ClipRegion; MAX_CLIP_REGIONS]) -> Plays<'r> {
+    match *p {
+        AudioPlays::Nothing => Plays::Nothing,
+        AudioPlays::Song => Plays::Song,
+        AudioPlays::Clip {
+            regions,
+            origin,
+            len,
+            last_frame,
+            gain,
+            clip,
+            stamp,
+        } => {
+            let n = regions.len().min(MAX_CLIP_REGIONS);
+            for (d, r) in room.iter_mut().zip(regions) {
+                *d = ClipRegion {
+                    start: r.start,
+                    end: r.end,
+                    rec: RecordingId(r.rec.0),
+                    src: r.src,
+                    phase: r.phase,
+                    gain: r.gain,
+                    fade_in: r.fade_in,
+                    fade_out: r.fade_out,
+                    into: r.into,
+                    left: r.left,
+                };
+            }
+            Plays::Clip(ClipPlay {
+                regions: &room[..n],
+                origin,
+                len,
+                last_frame,
+                gain,
+                clip: clip.0,
+                stamp,
+            })
+        }
+    }
+}
+
+/// Looks between asking again for a waiting cue's audio that couldn't be
+/// held (about a quarter of a second).
+pub const WAIT_RETRY: u32 = 64;
+
+/// A cue waiting for its audio, as the host holds it: the time engine's
+/// key, the host's number, what it needs, and what the host last said
+/// (None: asked, no answer yet).
+struct Waiting {
+    key: CueKey,
+    cue: u32,
+    needs: Vec<(RecordingId, i64, i64)>,
+    held: Option<bool>,
+}
+
 pub struct TrackHost {
     pub host: AudioHost,
     rate: u32,
@@ -267,6 +404,9 @@ pub struct TrackHost {
     /// What the lanes showed at the last check, and whether that changed.
     seen: u64,
     changed: bool,
+    /// The regions' spans as last handed to the time engine
+    /// ([`TrackHost::spans_if_changed`]), as a fingerprint.
+    spans_seen: u64,
     /// A project opening: the tracks empty once nothing records, then the
     /// project's part (if it has come) goes in.
     clearing: bool,
@@ -284,6 +424,10 @@ pub struct TrackHost {
     /// that track is in the track list as last found ([`TrackHost::sync`]).
     pub slots: Slots,
     place: [Option<usize>; MAX_TRACKS],
+    /// Room for what each track's clips play this period, at its start
+    /// and at each change: the player's regions, copied in the engine's
+    /// words ([`TrackHost::period`]).
+    clip_room: Box<[[[ClipRegion; MAX_CLIP_REGIONS]; 1 + MAX_CHANGES]; MAX_TRACKS]>,
     /// Each engine track's project track's name as last found, for the
     /// hint and log lines ([`TrackHost::who`]); room made at start, so
     /// [`TrackHost::sync`] never allocates. A track gone keeps its name.
@@ -302,6 +446,24 @@ pub struct TrackHost {
     /// Frames each take on its file has played as silence, as last said
     /// in the log ([`TrackHost::take_file_line`]).
     silent_seen: [u64; MAX_TAKES],
+    /// The recordings the project's audio clips, and the clips its undo
+    /// steps could bring back, name, sorted ([`TrackHost::keep_named`]).
+    named: Vec<RecId>,
+    /// Cues waiting for their audio ([`TrackHost::hold_waits`]), the
+    /// host's number for the next, and looks since short ones were last
+    /// asked again.
+    waits: Vec<Waiting>,
+    next_cue: u32,
+    waits_looked: u32,
+    /// Fit to tempo on an audio clip's card, under way.
+    clip_fit: Option<ClipFit>,
+    /// Put in a cell, the sound copying in.
+    cell_sound: Option<CellSound>,
+    /// The frame the last period ended on, for a ringing clip's playhead.
+    frame_now: u64,
+    /// The recordings the project opened last listed, with the take each
+    /// was ("take 4"), for a clip whose audio is missing.
+    opened: Vec<(RecId, String)>,
     /// The song's meter, for the bar a dropout was at.
     time_sig: mpfree_transport::time::Meter,
 }
@@ -354,6 +516,7 @@ impl TrackHost {
             grown_at: 0,
             periods: 0,
             seen: 0,
+            spans_seen: 0,
             changed: false,
             clearing: false,
             pending: None,
@@ -364,10 +527,21 @@ impl TrackHost {
             slots: Slots::default(),
             names: std::array::from_fn(|_| String::with_capacity(NAME_ROOM)),
             place: [None; MAX_TRACKS],
+            clip_room: Box::new(
+                [[[NO_CLIP_REGION; MAX_CLIP_REGIONS]; 1 + MAX_CHANGES]; MAX_TRACKS],
+            ),
             silent: [false; MAX_TRACKS],
             arm_next: None,
             files_dir: None,
             silent_seen: [0; MAX_TAKES],
+            named: Vec::new(),
+            waits: Vec::new(),
+            next_cue: 0,
+            waits_looked: 0,
+            clip_fit: None,
+            cell_sound: None,
+            frame_now: 0,
+            opened: Vec::new(),
             time_sig: mpfree_transport::time::Meter::default(),
         }
     }
@@ -560,6 +734,136 @@ impl TrackHost {
                 self.changed = true;
             }
         }
+        if look && !self.clearing && self.pending.is_none() {
+            self.keep_takes();
+        }
+    }
+
+    /// The recordings the project's audio clips name, with the clips its
+    /// undo steps could bring back and the clip COPY holds (the audio
+    /// tracks rethink, phase 2: [`crate::time::TimeHost::recordings`]),
+    /// sorted. Their takes are kept from the next look on, and a take no
+    /// longer named is let go: forgotten if nothing else uses it.
+    pub fn keep_named(&mut self, names: Vec<RecId>) {
+        debug_assert!(names.windows(2).all(|w| w[0] < w[1]));
+        self.named = names;
+    }
+
+    /// Where the project's audio clips' regions start in their
+    /// recordings, for the host to hold in the cache while takes stream
+    /// ([`AudioHost::clip_starts`]): so a clip launched with the transport
+    /// stopped starts from memory at PLAY (no cue waits for it).
+    pub fn clip_starts(&mut self, project: &mpfree_seq::Project) {
+        let mut starts: Vec<(RecordingId, u64)> = project
+            .tracks
+            .iter()
+            .filter(|t| t.is_audio())
+            .flat_map(|t| t.slots.iter().map(|(_, c)| c))
+            .filter_map(|c| c.audio.as_ref())
+            .flat_map(|a| a.regions.iter())
+            .map(|r| (RecordingId(r.rec.0), r.src.max(0) as u64))
+            .collect();
+        starts.sort_unstable();
+        starts.dedup();
+        self.host.clip_starts(starts);
+    }
+
+    /// The cues waiting for their audio, as the time engine lists them
+    /// (`TimeHost::audio_needs`, asked again when its `needs_rev` rises):
+    /// each new key's audio goes to the host to hold, a key whose needs
+    /// changed is asked again, and a key gone (its cues landed or were
+    /// cancelled) lets its hold go. The answers come through
+    /// [`TrackHost::wait_answers`].
+    pub fn hold_waits(&mut self, needs: &[AudioNeed]) {
+        let mut keys: Vec<CueKey> = Vec::new();
+        for n in needs {
+            if !keys.contains(&n.cue) {
+                keys.push(n.cue);
+            }
+        }
+        let host = &mut self.host;
+        self.waits.retain(|w| {
+            let stays = keys.contains(&w.key);
+            if !stays {
+                host.let_cue_go(w.cue);
+            }
+            stays
+        });
+        for key in keys {
+            let wanted: Vec<(RecordingId, i64, i64)> = needs
+                .iter()
+                .filter(|n| n.cue == key)
+                .map(|n| (RecordingId(n.rec.0), n.from, n.to))
+                .collect();
+            match self.waits.iter_mut().find(|w| w.key == key) {
+                Some(w) if w.needs == wanted => {}
+                Some(w) => {
+                    w.needs = wanted;
+                    w.held = None;
+                    self.host.hold_cue(w.cue, &w.needs);
+                }
+                None => {
+                    let cue = self.next_cue;
+                    self.next_cue = self.next_cue.wrapping_add(1);
+                    self.host.hold_cue(cue, &wanted);
+                    self.waits.push(Waiting {
+                        key,
+                        cue,
+                        needs: wanted,
+                        held: None,
+                    });
+                }
+            }
+        }
+    }
+
+    /// A new time engine (a project opened): no cue of the last one waits
+    /// any more, and what was held for them goes.
+    pub fn forget_waits(&mut self) {
+        for w in self.waits.drain(..) {
+            self.host.let_cue_go(w.cue);
+        }
+    }
+
+    /// What the host says about the waiting cues' audio, for the time
+    /// engine (`TimeHost::audio_held`, `TimeHost::audio_given_back`):
+    /// call it every look. A cue whose audio couldn't be held is asked
+    /// again every [`WAIT_RETRY`] looks, until its cues land or are
+    /// cancelled.
+    pub fn wait_answers(&mut self, mut f: impl FnMut(CueKey, CueAudio)) {
+        while let Some((cue, a)) = self.host.cue_audio() {
+            if let Some(w) = self.waits.iter_mut().find(|w| w.cue == cue) {
+                w.held = Some(a == CueAudio::Held);
+                f(w.key, a);
+            }
+        }
+        self.waits_looked += 1;
+        if self.waits_looked >= WAIT_RETRY {
+            self.waits_looked = 0;
+            for w in self.waits.iter_mut().filter(|w| w.held == Some(false)) {
+                w.held = None;
+                self.host.hold_cue(w.cue, &w.needs);
+            }
+        }
+    }
+
+    /// Each take kept while [`TrackHost::keep_named`]'s recordings name
+    /// it, and let go once they don't ([`Command::Keep`]): told at each
+    /// look, so takes that come in later (an open) are kept too. Nothing
+    /// allocates.
+    fn keep_takes(&mut self) {
+        for id in 0..MAX_TAKES as u16 {
+            let Some(k) = self.host.tracks.take(id) else {
+                continue;
+            };
+            let named = self.named.binary_search(&RecId(k.rec.0)).is_ok();
+            if named != self.host.tracks.kept(id) {
+                let _ = self.host.command(Command::Keep {
+                    take: id,
+                    keep: named,
+                });
+            }
+        }
     }
 
     /// Each engine track's sound of the last period into its project
@@ -713,26 +1017,81 @@ impl TrackHost {
     }
 
     /// One period: the line input (`line`) in, the tracks' sound out into
-    /// `out` (overwritten). `song_on` is song mode.
-    pub fn period(
+    /// `out` (overwritten). `song_on` is song mode: the tracks record and
+    /// play their song regions only then. `plays` says what a project
+    /// track (by its place in the track list) played in the period, as the
+    /// arranger's player has it ([`mpfree_play::Player::audio`]): its
+    /// clips, its song or nothing; None plays every track's song, as
+    /// before clips.
+    pub fn period<'a>(
         &mut self,
         block: &Block,
         map: &TempoMap,
         song_on: bool,
         line: (&[f32; PERIOD], &[f32; PERIOD]),
+        plays: Option<&dyn Fn(usize) -> AudioAnswer<'a>>,
     ) {
         if song_on != self.active && self.host.command(Command::SetActive(song_on)) {
             self.active = song_on;
         }
+        self.frame_now = block.start_frame + u64::from(block.frames);
         for f in 0..PERIOD {
             self.input[2 * f] = line.0[f];
             self.input[2 * f + 1] = line.1[f];
         }
         self.out.fill(0.0);
+        // Each track's answer in the engine's words: its project track's,
+        // or its song for one with none.
+        let none = Change {
+            frame: 0,
+            tick: 0.0,
+            plays: Plays::Nothing,
+            muted: false,
+            ring: false,
+        };
+        let mut changes = [[none; MAX_CHANGES]; MAX_TRACKS];
+        let mut answers = [Answer::default(); MAX_TRACKS];
+        let mut n = 0;
+        if let Some(plays) = plays {
+            n = MAX_TRACKS;
+            let rows = self.clip_room.iter_mut().zip(changes.iter_mut());
+            for (s, ((rooms, ch), ans)) in rows.zip(answers.iter_mut()).enumerate() {
+                let Some(p) = self.place[s] else {
+                    continue;
+                };
+                let a = plays(p);
+                let (first, rest) = rooms.split_at_mut(1);
+                let start = plays_in(&a.start, &mut first[0]);
+                let mut k = 0;
+                for ((c, room), slot) in a.changes().iter().zip(rest.iter_mut()).zip(ch.iter_mut())
+                {
+                    *slot = Change {
+                        frame: c.frame,
+                        tick: c.tick,
+                        plays: plays_in(&c.plays, room),
+                        muted: c.muted,
+                        ring: c.ring,
+                    };
+                    k += 1;
+                }
+                let ch: &[Change] = ch;
+                *ans = Answer {
+                    start,
+                    muted: a.muted,
+                    changes: &ch[..k],
+                    superseded: a.superseded,
+                };
+            }
+        }
         // The engine's sum is no one's since phase 1b: each track plays
         // through its own channel (`play_into`).
-        self.host
-            .period(block, map, &self.input[..], &mut self.out[..]);
+        self.host.period_with(
+            block,
+            map,
+            &self.input[..],
+            &mut self.out[..],
+            &answers[..n],
+        );
         if let Some(sp) = block.spans().last() {
             self.time_sig = sp.meter;
         }
@@ -1014,6 +1373,10 @@ impl TrackHost {
             self.host.drop_saved(old);
         }
         self.clearing = true;
+        // A fit under way was the old project's clip's: the host stops it
+        // and forgets its copies with the rest.
+        self.clip_fit = None;
+        self.cell_sound = None;
         self.tend_open();
     }
 
@@ -1077,6 +1440,18 @@ impl TrackHost {
         let ids = self.slots;
         saved.tracks.retain(|t| ids.id_of(t.index).is_some());
         saved.takes.retain(|k| ids.id_of(k.track).is_some());
+        // Each recording as its track's take lane numbers it, for a clip
+        // whose take's file doesn't open.
+        self.opened = saved
+            .takes
+            .iter()
+            .map(|k| {
+                let mut mine: Vec<_> = saved.takes.iter().filter(|o| o.track == k.track).collect();
+                mine.sort_by_key(|o| (o.group, o.pass, o.id));
+                let n = mine.iter().position(|o| o.id == k.id).map_or(0, |n| n + 1);
+                (RecId(k.rec.0), format!("take {n}"))
+            })
+            .collect();
         self.silent = [false; MAX_TRACKS];
         let (tracks, takes) = (saved.tracks.len(), saved.takes.len());
         let inside: Vec<(usize, Inside)> = saved
@@ -1225,6 +1600,24 @@ impl TrackHost {
                 h.add(u64::from(r.gain.to_bits()));
                 h.add(u64::from(r.fade_in));
                 h.add(u64::from(r.fade_out));
+                h.add(u64::from(r.into));
+                h.add(u64::from(r.left));
+            }
+        }
+        // The history UNDO on Arrange may follow.
+        let (done, redo) = tr.history();
+        h.add(done as u64);
+        h.add(redo as u64);
+        // The cells' Fit to tempo bar and ringing playheads, in steps of a
+        // percent and of 1/64.
+        if let Some((t, slot, f)) = self.clip_fit_progress() {
+            h.add((t * 64 + slot) as u64);
+            h.add((f * 100.0) as u64);
+        }
+        for t in 0..MAX_TRACKS {
+            if let Some((clip, f)) = tr.ringing(t, self.frame_now) {
+                h.add(u64::from(clip));
+                h.add((f * 64.0) as u64);
             }
         }
         let s = tr.stats();
@@ -1279,6 +1672,8 @@ impl TrackHost {
                     .recording(t)
                     .and_then(|id| tr.take(id))
                     .map(|k| k.anchor.floor() as Tick),
+                // [`TrackHost::fill_blocks`]'s.
+                clips: Vec::new(),
             })
             .collect();
         st.waves = self.waves.clone();
@@ -1303,6 +1698,475 @@ impl TrackHost {
         .filter(|c| c.1 > 0)
         .map(|&(w, n)| (w.to_string(), n))
         .collect();
+    }
+
+    /// Each project audio track's regions as the spans of song ticks they
+    /// cover, in order, by the track's lasting id, when they changed since
+    /// the last call (or `project`'s audio tracks did): for the time
+    /// engine, which refuses a block over a region (phase 2, step 2d,
+    /// [`crate::time::TimeHost::set_audio_spans`]). Regions that touch
+    /// make one span. Allocates only when something changed.
+    pub fn spans_if_changed(
+        &mut self,
+        project: &mpfree_seq::Project,
+    ) -> Option<crate::time::AudioSpans> {
+        let tr = &self.host.tracks;
+        let audio = || {
+            project
+                .tracks
+                .iter()
+                .filter(|t| t.is_audio())
+                .map(|t| (t.id, self.slots.slot_of(t.id)))
+        };
+        let mut h = Fnv::new();
+        for (id, slot) in audio() {
+            h.add(u64::from(id.0));
+            for r in slot.map_or(&[][..], |s| tr.regions(s)) {
+                h.add(r.start as u64);
+                h.add(r.end as u64);
+            }
+        }
+        if h.0 == self.spans_seen {
+            return None;
+        }
+        self.spans_seen = h.0;
+        Some(
+            audio()
+                .map(|(id, slot)| {
+                    let mut spans: Vec<(Tick, Tick)> = Vec::new();
+                    for r in slot.map_or(&[][..], |s| tr.regions(s)) {
+                        match spans.last_mut() {
+                            Some(last) if last.1 >= r.start => last.1 = last.1.max(r.end),
+                            _ => spans.push((r.start, r.end)),
+                        }
+                    }
+                    (id, spans)
+                })
+                .collect(),
+        )
+    }
+
+    /// The audio clips' cells and cards (audio tracks phase 2, layout spec
+    /// 4f and 4j): each clip's small wave over one pass (from its takes'
+    /// waveforms), its sound's length in seconds, why its audio is missing
+    /// if it is, and how far a once clip still sounding past its stop has
+    /// got; the Fit to tempo under way; and the audio tracks' history,
+    /// for UNDO on Arrange. Into `st` as
+    /// [`crate::time::TimeHost::state`] made it of `project`.
+    pub fn fill_cells(&self, st: &mut TimeState, project: &mpfree_seq::Project) {
+        st.fitting = self.clip_fit_progress();
+        let tr = &self.host.tracks;
+        st.audio_history = tr.history();
+        for (i, t) in project.tracks.iter().enumerate() {
+            if !t.is_audio() {
+                continue;
+            }
+            let ring = self
+                .slots
+                .slot_of(t.id)
+                .and_then(|s| tr.ringing(s, self.frame_now));
+            for (row, c) in t.slots.shown().enumerate() {
+                let Some((c, a)) = c.as_ref().and_then(|c| Some((c, c.audio.as_ref()?))) else {
+                    continue;
+                };
+                let Some(info) = st
+                    .tracks
+                    .get_mut(i)
+                    .and_then(|x| x.slots.get_mut(row))
+                    .and_then(|x| x.as_mut())
+                    .and_then(|x| x.audio.as_mut())
+                else {
+                    continue;
+                };
+                let per_tick = f64::from(self.rate) * 60.0
+                    / (a.bpm.max(1.0) * f64::from(mpfree_transport::time::PPQ));
+                info.secs = a.regions.last().map_or(0.0, |r| {
+                    (r.start as f64 * per_tick + (a.last_frame - r.src).max(0) as f64)
+                        / f64::from(self.rate)
+                });
+                let gone = a
+                    .regions
+                    .iter()
+                    .find(|r| tr.take_of(RecordingId(r.rec.0)).is_none())
+                    .map(|r| r.rec);
+                info.missing = gone.map(|rec| match self.opened.iter().find(|o| o.0 == rec) {
+                    Some((_, take)) => {
+                        format!("{take}'s file wasn't found when the project opened")
+                    }
+                    None => "its recording isn't in the project".to_string(),
+                });
+                info.wave = self.clip_wave(a, c.length, per_tick);
+                info.ring = ring.filter(|r| r.0 == c.id.0).map(|r| r.1);
+            }
+        }
+    }
+
+    /// The oldest sound put on an audio track's lane since the last ask
+    /// (a take punched out, a take lane swiped, a region moved, a sound
+    /// brought in), for the time engine to cut the song's blocks there
+    /// ([`crate::time::TimeHost::audio_took`]): its track's lasting id,
+    /// the song ticks it covers and its undo step, for
+    /// [`TrackHost::tie_step`]. Ones on an engine track no project track
+    /// plays are passed over.
+    pub fn take_took(&mut self) -> Option<(TrackId, (Tick, Tick), u32)> {
+        while let Some(t) = self.host.tracks.take_took() {
+            if let Some(id) = self.slots.id_of(t.track).filter(|_| self.shows(t.track)) {
+                return Some((id, (t.start, t.end), t.step));
+            }
+        }
+        None
+    }
+
+    /// Undo step `step` (a [`TrackHost::take_took`]'s) becomes one of song
+    /// edit `song`, the cut of the blocks under it, so either UNDO takes
+    /// back both ([`Command::TieStep`]).
+    pub fn tie_step(&mut self, step: u32, song: u32) -> Result<(), String> {
+        self.send(Command::TieStep { step, song })
+    }
+
+    /// Rec song put blocks of audio clips on audio tracks' lanes over
+    /// `spans` (each track's lasting id, and song ticks), as song edit
+    /// `song`: the regions there go (Joshi 23 Nov: the launch replaces
+    /// them), as steps of that song edit, so the song's UNDO takes them
+    /// back with the blocks and the audio tracks' UNDO stops at them
+    /// (phase 2, step 2d, [`Command::EraseSong`]). Only where a region
+    /// plays. How many spans it erased, and how many over regions it
+    /// couldn't (the queue full: it stops there).
+    pub fn replace_under(&mut self, song: u32, spans: &[(TrackId, Tick, Tick)]) -> (usize, usize) {
+        let (mut done, mut left) = (0, 0);
+        for &(id, from, to) in spans {
+            let Some(track) = self.slots.slot_of(id) else {
+                continue;
+            };
+            let under = self
+                .host
+                .tracks
+                .regions(track)
+                .iter()
+                .any(|r| r.start < to && r.end > from);
+            if !under || from >= to {
+                continue;
+            }
+            let c = Command::EraseSong {
+                song,
+                track,
+                from,
+                to,
+            };
+            if left > 0 || self.send(c).is_err() {
+                left += 1;
+                continue;
+            }
+            done += 1;
+        }
+        (done, left)
+    }
+
+    /// The blocks of audio clips on the Song view's audio lanes (phase 2,
+    /// step 2d, layout spec 4c): for each, where its clip's passes start
+    /// and how long one is, whether it is a once clip, and what one pass
+    /// plays, take by take, with the frames along `map` at the block's
+    /// first pass. Into `st` after [`TrackHost::fill`] made its lanes of
+    /// `project`; a block whose clip or takes are gone draws its header
+    /// without a wave.
+    pub fn fill_blocks(&self, st: &mut TimeState, project: &mpfree_seq::Project, map: &TempoMap) {
+        let tr = &self.host.tracks;
+        for (index, p) in project.arrangement.placements.iter().enumerate() {
+            let Some(lane) = st.audio.iter_mut().find(|l| l.row == p.track) else {
+                continue;
+            };
+            let Some((c, a)) = project
+                .block_clip(p)
+                .and_then(|c| Some((c, c.audio.as_ref()?)))
+            else {
+                continue;
+            };
+            let origin = p.origin(c);
+            let pass = c.length.max(1);
+            // The first pass the block plays some of.
+            let base = origin + (p.start - origin).div_euclid(pass) * pass;
+            let pieces = a
+                .regions
+                .iter()
+                .filter_map(|r| {
+                    Some(ClipPiece {
+                        start: r.start,
+                        end: r.end,
+                        take: tr.take_of(RecordingId(r.rec.0))?,
+                        src: r.src,
+                        frames: mpfree_audiotracks::frames_from(
+                            map,
+                            (base + r.start) as f64,
+                            (base + r.end) as f64,
+                            self.rate,
+                        ),
+                    })
+                })
+                .collect();
+            lane.clips.push(ClipBlock {
+                index,
+                origin,
+                pass,
+                once: c.once,
+                pieces,
+            });
+        }
+    }
+
+    /// An audio clip's small wave over one pass of `length` clip ticks
+    /// (`per_tick` frames a tick at the tempo it was made at): each
+    /// column's peak, 0 to 255, from its takes' waveforms read so far
+    /// (silent where none is yet), with the regions' and clip's gains.
+    fn clip_wave(&self, a: &mpfree_seq::AudioClip, length: Tick, per_tick: f64) -> [u8; CELL_WAVE] {
+        let mut out = [0u8; CELL_WAVE];
+        let tr = &self.host.tracks;
+        let length = length.max(1) as f64;
+        for (c, v) in out.iter_mut().enumerate() {
+            let (t0, t1) = (
+                length * c as f64 / CELL_WAVE as f64,
+                length * (c + 1) as f64 / CELL_WAVE as f64,
+            );
+            let mut peak = 0f32;
+            for r in &a.regions {
+                let (a0, a1) = (t0.max(r.start as f64), t1.min(r.end as f64));
+                if a0 >= a1 {
+                    continue;
+                }
+                let Some(w) = tr
+                    .take_of(RecordingId(r.rec.0))
+                    .and_then(|id| self.waves.iter().find(|w| w.id == id))
+                else {
+                    continue;
+                };
+                let f0 = r.src as f64 + (a0 - r.start as f64) * per_tick;
+                let f1 = r.src as f64 + (a1 - r.start as f64) * per_tick;
+                let fpc = w.frames_per_column.max(1) as f64;
+                let (k0, k1) = (
+                    (f0.max(0.0) / fpc) as usize,
+                    (f1.max(0.0) / fpc).ceil() as usize,
+                );
+                for &(lo, hi) in w.columns.iter().take(k1.max(k0 + 1)).skip(k0) {
+                    peak = peak.max(lo.abs().max(hi.abs()) * r.gain);
+                }
+            }
+            *v = ((peak * a.gain).min(1.0) * 255.0).round() as u8;
+        }
+        out
+    }
+
+    /// To a cell (audio tracks phase 2): the audio clip that plays what
+    /// region `r` plays in the song, and the project track it goes on.
+    /// The clip holds one region of the region's recording on its own
+    /// ticks, with the region's gain and fades (and how much of a cut
+    /// region lies either side, so its fades stay exactly its share); it
+    /// is as long as the region, made at the tempo the song (`map`) has at
+    /// the region's start, its sound ending where the region's does, and
+    /// named after its track and bars ("Vocal 5–8", in `meter`'s bars);
+    /// with the words for where it was ("Vocal, bars 5 to 8"). Err says
+    /// why not: no such region, its take still recording, or its
+    /// track not in the project.
+    pub fn region_clip(
+        &self,
+        r: RegionId,
+        map: &TempoMap,
+        meter: mpfree_transport::time::Meter,
+    ) -> Result<(usize, mpfree_seq::Clip, String), String> {
+        let tr = &self.host.tracks;
+        let reg = region(tr, r)?;
+        let take = tr
+            .take(reg.take)
+            .filter(|t| !t.recording)
+            .ok_or("that region's take is still recording")?;
+        let track = self
+            .place(r.track)
+            .ok_or_else(|| format!("{} is not in the track list", self.who(r.track)))?;
+        let length = reg.end - reg.start;
+        let frames = reg.frames_to(map, reg.start as f64, reg.end as f64, self.rate);
+        let bar = meter.bar_ticks().max(1);
+        let (first, last) = (reg.start / bar + 1, (reg.end + bar - 1) / bar);
+        let who = self.who(r.track);
+        let (name, place) = if last > first {
+            (
+                format!("{who} {first}–{last}"),
+                format!("{who}, bars {first} to {last}"),
+            )
+        } else {
+            (format!("{who} {first}"), format!("{who}, bar {first}"))
+        };
+        let mut one = mpfree_seq::ClipRegion::new(0, length, RecId(take.rec.0), reg.src);
+        one.phase = reg.phase;
+        one.gain = reg.gain;
+        one.fade_in = reg.fade_in;
+        one.fade_out = reg.fade_out;
+        one.into = reg.into;
+        one.left = reg.left;
+        let mut clip = mpfree_seq::Clip::new(&name, length);
+        clip.audio = Some(mpfree_seq::AudioClip {
+            regions: vec![one],
+            bpm: map.bpm_at(reg.start),
+            gain: 1.0,
+            last_frame: reg.src + frames.max(1),
+        });
+        clip.check()
+            .map_err(|_| format!("{place} can't be a clip: it is longer than a clip holds"))?;
+        Ok((track, clip, place))
+    }
+
+    /// Fit to tempo on an audio clip's card (audio tracks phase 2): clip
+    /// `clip`, in cell `slot` of project track `track`, made at its own
+    /// tempo, fitted to `bpm` keeping its pitch. Each recording it names
+    /// gets a fitted copy, one after another, as takes of their own the
+    /// song never plays (the song keeps the originals); once all are in,
+    /// [`TrackHost::tend_clip_fit`] gives the clip pointed at them, for
+    /// the clips to put in its cell as one UNDO step. A line for the hint,
+    /// or why not: a fit under way, a once clip (it plays to its end at
+    /// any tempo), a clip made at `bpm` already, its audio missing or
+    /// still recording, or no worker.
+    pub fn fit_clip(
+        &mut self,
+        track: usize,
+        slot: usize,
+        clip: &mpfree_seq::Clip,
+        bpm: f64,
+    ) -> Result<String, String> {
+        let name = clip.name.clone();
+        let audio = clip
+            .audio
+            .as_ref()
+            .ok_or_else(|| format!("{name} plays notes: Fit to tempo is for audio clips"))?;
+        if self.clip_fit.is_some() || self.host.fitting().is_some() {
+            return Err("a fit is under way: one at a time".into());
+        }
+        if clip.settings().once {
+            return Err(format!(
+                "{name} plays once, to its end, at any tempo: there is nothing to fit"
+            ));
+        }
+        if (audio.bpm - bpm).abs() < 0.005 {
+            return Err(format!(
+                "{name} was made at {}, the project's tempo: there is nothing to fit",
+                bpm_words(bpm)
+            ));
+        }
+        let mut todo: Vec<RecId> = audio.regions.iter().map(|r| r.rec).collect();
+        todo.sort_unstable();
+        todo.dedup();
+        let tr = &self.host.tracks;
+        for &rec in &todo {
+            match tr.take_of(RecordingId(rec.0)).and_then(|id| tr.take(id)) {
+                None => return Err(format!("{name}'s audio is missing: it can't be fitted")),
+                Some(t) if t.recording => return Err(format!("{name}'s audio is still recording")),
+                Some(_) => {}
+            }
+        }
+        let first = todo[0];
+        let id = tr.take_of(RecordingId(first.0)).expect("checked");
+        if !self.host.fit_copy(id, audio.bpm, bpm) {
+            return Err(format!("{name} can't be fitted now: try again"));
+        }
+        let total = todo.len();
+        self.clip_fit = Some(ClipFit {
+            track,
+            slot,
+            id: clip.id,
+            name: name.clone(),
+            audio: audio.clone(),
+            from: audio.bpm,
+            to: bpm,
+            todo,
+            total,
+            done: Vec::with_capacity(total),
+        });
+        Ok(format!("{name}: fitting to {}…", bpm_words(bpm)))
+    }
+
+    /// Each loop: the Fit to tempo under way moved on. Some once it ends:
+    /// fitted (the clip to put in its cell) or failed (its copies
+    /// forgotten, nothing changed).
+    pub fn tend_clip_fit(&mut self) -> Option<ClipFitDone> {
+        let f = self.clip_fit.as_mut()?;
+        match self.host.fitted_copy() {
+            Some(c) if Some(&RecId(c.from.0)) == f.todo.first() => {
+                f.done.push(c);
+                f.todo.remove(0);
+                if let Some(&next) = f.todo.first() {
+                    let started = self
+                        .host
+                        .tracks
+                        .take_of(RecordingId(next.0))
+                        .is_some_and(|id| self.host.fit_copy(id, f.from, f.to));
+                    return if started { None } else { self.fit_failed() };
+                }
+            }
+            Some(c) => {
+                // Not the copy asked for: let it go.
+                if let Some(id) = self.host.tracks.take_of(c.to) {
+                    let _ = self.host.command(Command::Forget(id));
+                }
+                return self.fit_failed();
+            }
+            None if self.host.fitting().is_some() => return None,
+            None => return self.fit_failed(),
+        }
+        let f = self.clip_fit.take()?;
+        let mut audio = f.audio.clone();
+        let copy_of = |rec: RecId| f.done.iter().find(|c| RecId(c.from.0) == rec);
+        let scale = |n: f64, ratio: f64| (n * ratio).round();
+        for r in &mut audio.regions {
+            if let Some(c) = copy_of(r.rec) {
+                r.rec = RecId(c.to.0);
+                let x = (r.src as f64 + f64::from(r.phase)) * c.ratio;
+                (r.src, r.phase) = (x.round() as i64, (x - x.round()) as f32);
+                r.into = scale(f64::from(r.into), c.ratio) as u32;
+                r.left = scale(f64::from(r.left), c.ratio) as u32;
+            }
+        }
+        if let Some(c) = f.audio.regions.last().and_then(|r| copy_of(r.rec)) {
+            audio.last_frame = scale(audio.last_frame as f64, c.ratio) as i64;
+        }
+        audio.bpm = f.to;
+        Some(ClipFitDone::Fitted {
+            track: f.track,
+            slot: f.slot,
+            id: f.id,
+            name: f.name,
+            audio,
+            bpm: f.to,
+            copies: f.done,
+        })
+    }
+
+    /// The fit under way ended without its copies: those made go.
+    fn fit_failed(&mut self) -> Option<ClipFitDone> {
+        let f = self.clip_fit.take()?;
+        self.forget_copies(&f.done);
+        Some(ClipFitDone::Failed { name: f.name })
+    }
+
+    /// Fitted copies no clip will name (the fit failed, or its clip
+    /// couldn't take them): forgotten, their memory back.
+    pub fn forget_copies(&mut self, copies: &[FitCopy]) {
+        for c in copies {
+            if let Some(id) = self.host.tracks.take_of(c.to) {
+                let _ = self.host.command(Command::Forget(id));
+            }
+        }
+    }
+
+    /// A recording no clip will name (a sound Put in a cell whose cell
+    /// went meanwhile): forgotten, its memory back.
+    pub fn forget_recording(&mut self, rec: RecId) {
+        if let Some(id) = self.host.tracks.take_of(RecordingId(rec.0)) {
+            let _ = self.host.command(Command::Forget(id));
+        }
+    }
+
+    /// The cell whose clip is fitting, and how far it has got, 0 to 1.
+    pub fn clip_fit_progress(&self) -> Option<(usize, usize, f32)> {
+        let f = self.clip_fit.as_ref()?;
+        let now = self.host.fit_progress().unwrap_or(0.0);
+        let share = (f.done.len() as f32 + now) / f.total.max(1) as f32;
+        Some((f.track, f.slot, share.clamp(0.0, 1.0)))
     }
 
     /// What a touch on the Song view's audio lanes asked for. `t` is the
@@ -1390,6 +2254,9 @@ impl TrackHost {
                 region(tr, r)?;
                 "Q3 turns the region's gain, SHIFT for fine steps".into()
             }
+            // The clip goes to the time engine's cells: the app builds it
+            // with `region_clip` and puts it in (`main::time_action`).
+            AudioAction::ToCell(_) => return Err("To a cell goes through the clips".into()),
             AudioAction::Fades(r) => {
                 region(tr, r)?;
                 "Q4 turns the region's fades, SHIFT for fine steps".into()
@@ -1646,6 +2513,7 @@ impl TrackHost {
             audio,
             cuts,
             bpm,
+            ..
         } = s;
         let tr = &self.host.tracks;
         let refuse = |h: &mut TrackHost, audio: Vec<f32>, why: String| {
@@ -1702,6 +2570,113 @@ impl TrackHost {
                 "{secs:.1} s is more than the audio tracks' memory has left: erase takes, or more memory in Prefs > Audio track memory"
             )),
         }
+    }
+
+    /// Put in a cell (audio tracks phase 2, the Sample page's Put on Audio
+    /// track with In a cell): sound `s`, whole, as a take of its own on
+    /// project track `track` (an audio track) that the song doesn't play.
+    /// Once it is in, [`TrackHost::tend_cell_sound`] gives the clip that
+    /// plays it, for the clips to put in the track's first empty cell.
+    /// Ok is a line for the log; Err says why not (another sound still
+    /// coming in, no take or memory left, not an audio track). Call it
+    /// between periods, as [`TrackHost::bring`].
+    pub fn bring_to_cell(
+        &mut self,
+        s: Sound,
+        track: usize,
+        project: &mpfree_seq::Project,
+    ) -> Result<String, String> {
+        let Sound {
+            name,
+            channels,
+            audio,
+            bpm,
+            ..
+        } = s;
+        let engine = project
+            .tracks
+            .get(track)
+            .filter(|t| t.is_audio())
+            .and_then(|t| self.slots.slot_of(t.id));
+        let Some(engine) = engine.filter(|_| self.cell_sound.is_none()) else {
+            self.host.drop_audio(audio);
+            return Err(if self.cell_sound.is_some() {
+                "another sound is still going into its cell: a moment".into()
+            } else {
+                format!("there is no audio track {}", track + 1)
+            });
+        };
+        let frames = audio.len() / channels.max(1);
+        let secs = frames as f64 / f64::from(self.rate);
+        match self.host.import_for_clip(engine, channels, audio, bpm) {
+            Ok(_) => {
+                let who = self.who(engine);
+                self.cell_sound = Some(CellSound {
+                    track,
+                    name: name.clone(),
+                    frames,
+                    bpm,
+                });
+                Ok(format!("{name} going into {who}"))
+            }
+            Err(ImportRefused::Busy) => {
+                Err("another sound is still going onto its track: a moment".into())
+            }
+            Err(ImportRefused::NoTake) => Err(format!(
+                "the audio tracks hold {} takes, the most: forget some takes first",
+                mpfree_audiotracks::MAX_TAKES
+            )),
+            Err(ImportRefused::NoRoom) => Err(format!(
+                "{secs:.1} s is more than the audio tracks' memory has left: erase takes, or more memory in Prefs > Audio track memory"
+            )),
+        }
+    }
+
+    /// Each loop: the sound Put in a cell has come in. Some once it has:
+    /// the project track and the clip that plays it (or why not). A sound
+    /// with a tempo loops, made at its tempo, as long as it is to the
+    /// nearest beat; one with none plays once, made at `bpm` (the
+    /// project's), its length up to the next beat, and rings to its end.
+    pub fn tend_cell_sound(
+        &mut self,
+        bpm: f64,
+    ) -> Option<Result<(usize, mpfree_seq::Clip), String>> {
+        self.cell_sound.as_ref()?;
+        let id = match self.host.imported() {
+            Some(id) => id,
+            None if self.host.importing().is_some() => return None,
+            None => {
+                let c = self.cell_sound.take()?;
+                return Some(Err(format!("{} didn't come in: try again", c.name)));
+            }
+        };
+        let rec = self.host.tracks.take(id).map(|t| RecId(t.rec.0));
+        let c = self.cell_sound.take()?;
+        let Some(rec) = rec else {
+            return Some(Err(format!("{} didn't come in: try again", c.name)));
+        };
+        let secs = c.frames as f64 / f64::from(self.rate);
+        let ppq = f64::from(mpfree_transport::time::PPQ);
+        let (made, beats, once) = if mpfree_transport::time::valid_bpm(c.bpm) {
+            (c.bpm, (secs * c.bpm / 60.0).round().max(1.0), false)
+        } else {
+            (bpm, (secs * bpm / 60.0 - 1e-9).ceil().max(1.0), true)
+        };
+        let length = (beats * ppq) as Tick;
+        let mut clip = mpfree_seq::Clip::new(&c.name, length);
+        clip.audio = Some(mpfree_seq::AudioClip::of(
+            rec,
+            0,
+            c.frames.max(1) as i64,
+            length,
+            made,
+        ));
+        clip.once = once;
+        if clip.check().is_err() {
+            let _ = self.host.command(Command::Forget(id));
+            return Some(Err(format!("{} is longer than a clip holds", c.name)));
+        }
+        Some(Ok((c.track, clip)))
     }
 
     /// Track `t`'s number as the screen writes it, if there is one.
@@ -1789,6 +2764,12 @@ impl TrackHost {
         let tr = &self.host.tracks;
         let m = tr.memory();
         let s = tr.stats();
+        // Sound put on a lane the song's blocks never heard of (never:
+        // the app asks every period), shown only if any.
+        let lost = match tr.took_lost() {
+            0 => String::new(),
+            n => format!(", {n} recordings not checked against the song's blocks"),
+        };
         // While takes play from their files: how many are on them, what
         // played as silence because the drive was late (since the start),
         // and the region starts held (the stream test reads these, D3).
@@ -1799,7 +2780,7 @@ impl TrackHost {
             )
         });
         format!(
-            "audio tracks: {} takes, {:.0} of {:.0} s used, {} refused, {} dropped, {} cut short{}{files}",
+            "audio tracks: {} takes, {:.0} of {:.0} s used, {} refused, {} dropped, {} cut short{lost}{}{files}",
             tr.takes().count(),
             m.used as f64 / (2.0 * self.rate as f64),
             m.capacity as f64 / (2.0 * self.rate as f64),
@@ -2003,7 +2984,8 @@ fn take_name(tr: &mpfree_audiotracks::AudioTracks, take: u16) -> String {
 /// A sound from the Sample page for an audio track ([`TrackHost::bring`]):
 /// `audio` interleaved, `channels` 1 or 2, at the tracks' rate, cut into
 /// slices at its frames `cuts` (rising), and its tempo `bpm` (0: not
-/// known), named `name`.
+/// known), named `name`. With `cell` it goes in a cell, whole, as a clip
+/// (Put in a cell, [`TrackHost::bring_to_cell`]), not on the song.
 #[derive(PartialEq)]
 pub struct Sound {
     pub name: String,
@@ -2011,6 +2993,7 @@ pub struct Sound {
     pub audio: Vec<f32>,
     pub cuts: Vec<u64>,
     pub bpm: f64,
+    pub cell: bool,
 }
 
 /// Not the samples: a sound is long, and actions are logged by name.
@@ -2149,6 +3132,34 @@ impl crate::time::SongAudio for TrackHost {
         };
         // There is room: asked first (busy).
         let _ = self.send(c);
+    }
+
+    fn regions(&self) -> Vec<(TrackId, Vec<mpfree_seq::ClipRegion>)> {
+        let tr = &self.host.tracks;
+        (0..MAX_TRACKS)
+            .filter_map(|s| {
+                let id = self.slots.id_of(s).filter(|_| self.shows(s))?;
+                let regions: Vec<mpfree_seq::ClipRegion> = tr
+                    .regions(s)
+                    .iter()
+                    .filter_map(|r| {
+                        Some(mpfree_seq::ClipRegion {
+                            start: r.start,
+                            end: r.end,
+                            rec: RecId(tr.take(r.take)?.rec.0),
+                            src: r.src,
+                            phase: r.phase,
+                            gain: r.gain,
+                            fade_in: r.fade_in,
+                            fade_out: r.fade_out,
+                            into: r.into,
+                            left: r.left,
+                        })
+                    })
+                    .collect();
+                (!regions.is_empty()).then_some((id, regions))
+            })
+            .collect()
     }
 }
 
@@ -2300,7 +3311,7 @@ mod tests {
             let r = [0.0f32; PERIOD];
             self.t.process(PERIOD as u32, &mut self.b);
             let map = *self.t.tempo_map();
-            self.h.period(&self.b, &map, self.song, (&l, &r));
+            self.h.period(&self.b, &map, self.song, (&l, &r), None);
             // What the tracks played, each into its own channel.
             self.heard = (0..MAX_TRACKS)
                 .flat_map(|s| self.h.host.tracks.track_out(s, PERIOD).iter())
@@ -2334,6 +3345,8 @@ mod tests {
                 &mpfree_play::Takes::new(4),
             );
             self.h.fill(&mut st, self.t.tempo_map());
+            self.h
+                .fill_blocks(&mut st, &self.project, self.t.tempo_map());
             st
         }
 
@@ -2348,6 +3361,158 @@ mod tests {
                 std::thread::sleep(Duration::from_micros(100));
             }
         }
+    }
+
+    /// Rec song's blocks over regions (phase 2, step 2d, Joshi 23 Nov:
+    /// replace): the regions under them go as steps of the song edit,
+    /// which the audio tracks' own UNDO stops at and the song's UNDO and
+    /// REDO take back and bring back. A span over no region, or on a
+    /// track that isn't an audio track's, erases nothing.
+    #[test]
+    fn rec_songs_blocks_replace_the_regions_under_them_as_a_song_step() {
+        let mut r = Rig::with(1);
+        r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), false)
+            .unwrap();
+        r.periods(CHECK_EVERY as usize);
+        r.live = true;
+        r.command(T::Record);
+        while r.t.position() < 2 * 3840 {
+            r.period();
+        }
+        r.command(T::Stop);
+        r.live = false;
+        r.periods(20);
+        let tr = |r: &Rig| -> Vec<(Tick, Tick)> {
+            r.h.host
+                .tracks
+                .regions(0)
+                .iter()
+                .map(|x| (x.start, x.end))
+                .collect()
+        };
+        let before = tr(&r);
+        assert_eq!(before.len(), 1);
+        let (start, end) = (before[0].0, before[0].1);
+        let id = r.h.slots.id_of(0).unwrap();
+        let other = mpfree_seq::TrackId(id.0 + 100);
+        let spans = [
+            (id, 3840, 4 * 3840),
+            (id, 10 * 3840, 11 * 3840),
+            (other, 0, 3840),
+        ];
+        assert_eq!(
+            r.h.replace_under(7, &spans),
+            (1, 0),
+            "one span over a region"
+        );
+        r.periods(2);
+        assert_eq!(tr(&r), [(start, 3840)], "replaced from bar 2 on");
+        assert_eq!(
+            r.h.host.tracks.history().0,
+            2,
+            "the take, then the song's step"
+        );
+        // The audio tracks' UNDO stops at it; the song's takes it back.
+        let refused = r.h.host.tracks.stats().refused;
+        assert!(r.h.host.command(Command::Undo));
+        r.periods(2);
+        assert_eq!(r.h.host.tracks.stats().refused, refused + 1);
+        assert_eq!(tr(&r), [(start, 3840)]);
+        crate::time::SongAudio::song_undo(&mut r.h, 7, true);
+        r.periods(2);
+        assert_eq!(tr(&r), [(start, end)], "back as recorded");
+        crate::time::SongAudio::song_undo(&mut r.h, 7, false);
+        r.periods(2);
+        assert_eq!(tr(&r), [(start, 3840)], "and replaced again");
+    }
+
+    /// A block of an audio clip on the Song view (phase 2, step 2d): its
+    /// lane has where its clip's passes start, a pass's length, and the
+    /// take each region plays with the frames it spans; a block whose
+    /// clip is gone has none.
+    #[test]
+    fn an_audio_clips_block_gives_its_lane_its_wave() {
+        let mut r = Rig::with(1);
+        r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), false)
+            .unwrap();
+        r.periods(CHECK_EVERY as usize);
+        r.live = true;
+        r.command(T::Record);
+        while r.t.position() < 3840 {
+            r.period();
+        }
+        r.command(T::Stop);
+        r.live = false;
+        r.periods(20);
+        let k = r.h.host.tracks.takes().next().expect("a take");
+        let mut riff = mpfree_seq::Clip::new("Riff", 3840);
+        riff.audio = Some(mpfree_seq::AudioClip::of(
+            RecId(k.rec.0),
+            0,
+            k.frames as i64,
+            3840,
+            120.0,
+        ));
+        let guitar = r.h.place(0).unwrap();
+        let id = r.project.put_new_clip(guitar, 0, riff).unwrap();
+        let song = &mut r.project.arrangement;
+        // Two passes from bar 3.
+        song.placements
+            .push(mpfree_seq::Placement::new(guitar, id, 2 * 3840, 2 * 3840));
+        let st = r.state();
+        assert_eq!(st.audio[0].row, guitar);
+        let clips = &st.audio[0].clips;
+        assert_eq!(clips.len(), 1);
+        let c = &clips[0];
+        assert_eq!(
+            (c.index, c.origin, c.pass, c.once),
+            (0, 2 * 3840, 3840, false)
+        );
+        assert_eq!(c.pieces.len(), 1);
+        let p = c.pieces[0];
+        assert_eq!((p.start, p.end, p.take, p.src), (0, 3840, k.id, 0));
+        // A bar at 120 BPM: two seconds.
+        assert!((p.frames - 2.0 * RATE as f64).abs() < 1.0, "{}", p.frames);
+        // Its clip gone: a block with no wave and no header.
+        r.project.tracks[guitar].slots[0] = None;
+        assert!(r.state().audio[0].clips.is_empty());
+    }
+
+    /// Takes the project's audio clips name stay (the audio tracks
+    /// rethink, phase 2): kept from the next look, so a Forget is refused
+    /// with no region or undo step on them; let go once nothing names
+    /// them, and forgotten then.
+    #[test]
+    fn takes_named_by_clips_are_kept_until_none_names_them() {
+        let mut r = Rig::with(1);
+        r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), false)
+            .unwrap();
+        r.periods(CHECK_EVERY as usize);
+        r.live = true;
+        r.command(T::Record);
+        while r.t.position() < 960 {
+            r.period();
+        }
+        r.command(T::Stop);
+        r.live = false;
+        r.periods(20);
+        let k = r.h.host.tracks.takes().next().expect("a take");
+        // Only a clip names it: its region erased, the history forgotten.
+        assert!(r.h.host.command(Command::Erase {
+            track: 0,
+            from: 0,
+            to: 100 * 3840,
+        }));
+        assert!(r.h.host.command(Command::ClearHistory));
+        r.h.keep_named(vec![RecId(k.rec.0)]);
+        r.periods(2 * CHECK_EVERY as usize);
+        assert!(r.h.host.tracks.kept(k.id));
+        assert!(r.h.host.command(Command::Forget(k.id)));
+        r.periods(2);
+        assert!(r.h.host.tracks.take(k.id).is_some(), "a kept take stays");
+        r.h.keep_named(Vec::new());
+        r.periods(2 * CHECK_EVERY as usize);
+        assert!(r.h.host.tracks.take(k.id).is_none(), "let go: forgotten");
     }
 
     #[test]
@@ -2444,6 +3609,7 @@ mod tests {
                 audio: vec![0.25; 4410],
                 cuts: Vec::new(),
                 bpm: 120.0,
+                cell: false,
             },
             &TransportInfo::default(),
         )
@@ -2512,6 +3678,7 @@ mod tests {
                 audio: vec![0.25; 44_100],
                 cuts: Vec::new(),
                 bpm: 120.0,
+                cell: false,
             },
             &TransportInfo::default(),
         )
@@ -3392,9 +4559,12 @@ mod tests {
                     end,
                     take: 0,
                     src: 0,
+                    phase: 0.0,
                     gain: 1.0,
                     fade_in: 0,
                     fade_out: 0,
+                    into: 0,
+                    left: 0,
                 }],
             }],
             takes: vec![TakeFile {
@@ -3596,6 +4766,7 @@ mod tests {
                 .collect(),
             cuts,
             bpm: 120.0,
+            cell: false,
         };
         let bar = mpfree_transport::Meter::default().bar_ticks();
         let at = |b: i64| TransportInfo {

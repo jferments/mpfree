@@ -11,7 +11,9 @@
 //! put back as found. Each run that reads says what the rest of the stick
 //! (a stand-in for sysfs) did beside the reads. With `--heat` the cores are
 //! kept busy until the stand-in's temperature settles, and nothing is
-//! written.
+//! written. With `--cut-test` takes and imports are written until the
+//! program is killed, and `--after-cut` then finds every promise kept and
+//! deletes them, or a broken one and keeps them.
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
@@ -909,9 +911,286 @@ fn only_one_kind_of_run_at_a_time() {
         ["--read-only", "--under-load"],
         ["--heat", "--read-only"],
         ["--heat", "--recorder"],
+        ["--cut-test", "--recorder"],
+        ["--cut-test", "--heat"],
     ] {
         let out = bin().args(pair).output().unwrap();
         assert_eq!(out.status.code(), Some(2), "{pair:?}");
         assert!(String::from_utf8_lossy(&out.stderr).contains("are different runs"));
+    }
+}
+
+/// Start a quick cut test in `base`, its text going to `saved`.
+fn cut_test(base: &Path, saved: &Path) -> std::process::Child {
+    bin()
+        .arg("--desktop-test")
+        .arg(base)
+        .args(["--cut-test", "--quick"])
+        .stdout(std::fs::File::create(saved).unwrap())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+fn after_cut(base: &Path, saved: &Path) -> (std::process::ExitStatus, String) {
+    let out = bin()
+        .arg("--desktop-test")
+        .arg(base)
+        .arg("--after-cut")
+        .arg(saved)
+        .arg("--quick")
+        .output()
+        .unwrap();
+    (
+        out.status,
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+/// The frames promised to take 1 in a cut run's text, from its last
+/// promise.
+fn promised_take_1(text: &str) -> u64 {
+    text.lines()
+        .rev()
+        .find_map(|l| l.strip_prefix("promised: takes 1="))
+        .and_then(|r| r.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+#[test]
+fn a_cut_test_killed_mid_take_keeps_every_promise_and_is_then_cleared() {
+    for round in 0..3u64 {
+        let d = scratch(&format!("cut-{round}"));
+        std::fs::write(d.join("notes.txt"), b"keep me").unwrap();
+        let saved = scratch(&format!("cut-saved-{round}")).join("run.txt");
+        let mut child = cut_test(&d, &saved);
+        // Wait for the cut's moment and a promise with audio in it, then
+        // a little more, different each round.
+        let t = std::time::Instant::now();
+        loop {
+            let text = std::fs::read_to_string(&saved).unwrap_or_default();
+            if text.contains("CUT NOW") && promised_take_1(&text) > 0 {
+                break;
+            }
+            assert!(t.elapsed().as_secs() < 30, "{text}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50 + 150 * round));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let cut = d.join("mpfree-cuttest");
+        assert!(
+            std::fs::read_dir(&cut)
+                .unwrap()
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().ends_with(".wav.recording")),
+            "killed mid-take"
+        );
+        let (status, text) = after_cut(&d, &saved);
+        assert!(status.success(), "{text}");
+        for want in [
+            "recovery, take 1: cut off while recording; finished at ",
+            "take 1: the whole-take check passes",
+            "every sample as recorded; promised ",
+            "imports: ",
+            "RESULT: PASS, every promise kept; the folder is deleted",
+        ] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+        // Every take is judged: back as recorded and as promised, or (cut
+        // off as it started, before anything was committed for it) kept
+        // apart unproved with nothing promised.
+        let judged = text
+            .lines()
+            .filter(|l| {
+                l.contains("every sample as recorded; promised ")
+                    || l.ends_with(", and nothing was promised")
+            })
+            .count();
+        assert_eq!(judged, 4, "{text}");
+        assert!(!text.contains("FAIL"), "{text}");
+        // Only its folder went.
+        assert!(!cut.exists());
+        assert_eq!(std::fs::read(d.join("notes.txt")).unwrap(), b"keep me");
+        std::fs::remove_dir_all(&d).unwrap();
+        std::fs::remove_dir_all(saved.parent().unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn a_cut_test_without_a_cut_is_checked_and_a_broken_promise_fails() {
+    let d = scratch("cut-whole");
+    let saved = scratch("cut-whole-saved").join("run.txt");
+    let child = cut_test(&d, &saved);
+    let out = child.wait_with_output().unwrap();
+    let text = std::fs::read_to_string(&saved).unwrap();
+    assert!(out.status.success(), "{text}");
+    for want in [
+        "cut test: 4 takes (stereo float, 48 kHz, 1.54 MB/s in all)",
+        "keep this text off the stick",
+        "CUT NOW: pull the stick",
+        "the takes stopped after ",
+        "4 of 4 saved",
+        "no cut was made",
+    ] {
+        assert!(text.contains(want), "missing {want:?} in\n{text}");
+    }
+    let cut = d.join("mpfree-cuttest");
+    // A second start is refused while the folder is there.
+    let again = bin()
+        .arg("--desktop-test")
+        .arg(&d)
+        .args(["--cut-test", "--quick"])
+        .output()
+        .unwrap();
+    assert_eq!(again.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&again.stderr).contains("is already there: run --after-cut"));
+
+    // A promise of more than was recorded fails, and keeps the folder.
+    let want = promised_take_1(&text);
+    assert!(want > 0, "{text}");
+    let broken = saved.with_file_name("broken.txt");
+    std::fs::write(
+        &broken,
+        format!(
+            "{text}promised: takes 1={} 2=0 3=0 4=0; imports none\n",
+            want + 1
+        ),
+    )
+    .unwrap();
+    let (status, out) = after_cut(&d, &broken);
+    assert_eq!(status.code(), Some(1), "{out}");
+    assert!(
+        out.contains("take 1: ") && out.contains("FAIL: 1 short"),
+        "{out}"
+    );
+    assert!(
+        out.contains("RESULT: FAIL, see above; the folder is kept for a look"),
+        "{out}"
+    );
+    assert!(cut.exists());
+
+    // A sample changed in a take's file fails too.
+    let take1 = std::fs::read_dir(&cut)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            let n = p.file_name().unwrap().to_string_lossy().into_owned();
+            n.starts_with("rec1_") && n.ends_with(".wav") && !n.contains("unverified")
+        })
+        .unwrap();
+    let mut bytes = std::fs::read(&take1).unwrap();
+    let at = bytes.len() - 1000;
+    bytes[at] ^= 0x40;
+    std::fs::write(&take1, &bytes).unwrap();
+    let (status, out) = after_cut(&d, &saved);
+    assert_eq!(status.code(), Some(1), "{out}");
+    assert!(out.contains("FAIL: as recorded only up to frame "), "{out}");
+    bytes[at] ^= 0x40;
+    std::fs::write(&take1, &bytes).unwrap();
+
+    // Another file in its folder: nothing is touched.
+    std::fs::write(cut.join("notes.txt"), b"mine").unwrap();
+    let (status, out) = after_cut(&d, &saved);
+    assert_eq!(status.code(), Some(3), "{out}");
+    assert!(
+        out.contains("notes.txt in ") && out.contains("nothing is touched"),
+        "{out}"
+    );
+    std::fs::remove_file(cut.join("notes.txt")).unwrap();
+
+    // Take 4 cut off as it started: its audio there, nothing committed for
+    // it (no checkpoint), so recovery can't prove it and keeps it apart. A
+    // promise for it fails; with none, it is said and the rest passes.
+    let take4 = std::fs::read_dir(&cut)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            let n = p.file_name().unwrap().to_string_lossy().into_owned();
+            n.starts_with("rec4_") && n.ends_with(".wav") && !n.contains("unverified")
+        })
+        .unwrap();
+    let take4_bytes = std::fs::read(&take4).unwrap();
+    let recording = take4.with_extension("wav.recording");
+    let unproved = take4.with_extension("unverified.wav");
+    let promised_4 = text
+        .lines()
+        .rev()
+        .find(|l| l.starts_with("promised: takes "))
+        .unwrap()
+        .to_string();
+    let none_for_4 = saved.with_file_name("none-for-4.txt");
+    let w4 = promised_4
+        .split(' ')
+        .find_map(|w| w.strip_prefix("4="))
+        .unwrap()
+        .trim_end_matches(';')
+        .to_string();
+    assert_ne!(w4, "0", "{promised_4}");
+    std::fs::write(
+        &none_for_4,
+        format!(
+            "{text}{}\n",
+            promised_4.replace(&format!(" 4={w4}"), " 4=0")
+        ),
+    )
+    .unwrap();
+    for promised in [true, false] {
+        std::fs::remove_file(&take4).ok();
+        std::fs::remove_file(&unproved).ok();
+        std::fs::write(&recording, &take4_bytes).unwrap();
+        let (status, out) = after_cut(&d, if promised { &saved } else { &none_for_4 });
+        assert!(
+            out.contains("recovery, take 4: its audio can't be proved (nothing committed for it); kept apart as rec4_"),
+            "{out}"
+        );
+        assert!(
+            out.contains("take 4: ") && out.contains("only audio that can't be proved came back ("),
+            "{out}"
+        );
+        if promised {
+            assert_eq!(status.code(), Some(1), "{out}");
+            assert!(
+                out.contains(&format!(
+                    "of them as recorded; kept apart); {w4} frames were promised"
+                )),
+                "{out}"
+            );
+            assert!(cut.exists());
+        } else {
+            assert!(status.success(), "{out}");
+            assert!(
+                out.contains("of them as recorded; kept apart), and nothing was promised"),
+                "{out}"
+            );
+            assert!(!out.contains("FAIL"), "{out}");
+            // As recorded, every other promise holds, and the folder goes.
+            assert!(out.contains("RESULT: PASS"), "{out}");
+            assert!(!cut.exists());
+        }
+    }
+    let (status, out) = after_cut(&d, &saved);
+    assert_eq!(status.code(), Some(3), "{out}");
+    assert!(out.contains("isn't there: nothing to check"), "{out}");
+    std::fs::remove_dir_all(&d).unwrap();
+    std::fs::remove_dir_all(saved.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn the_cut_test_runs_only_on_a_desktop_for_now() {
+    for args in [vec!["--cut-test"], vec!["--after-cut", "run.txt"]] {
+        let out = bin().args(&args).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("waits for its own safety review"),
+            "{args:?}"
+        );
     }
 }

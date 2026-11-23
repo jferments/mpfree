@@ -19,8 +19,9 @@
 //!   markers' count);
 //! - the buttons along the bottom: `Tab(k)` for [`SONG_BUTTONS`]`[k]`, or
 //!   for [`AUDIO_BUTTONS`]`[k]` while an audio region is picked;
-//! - Rec song, at the right of the title line: `Tab(REC)`; List, left of
-//!   it (the song list, Arrange's third view): `Tab(LIST)`;
+//! - Rec song, at the right of the title line: `Tab(REC)`; the view chip
+//!   at its left (the Arrange refactor's 5.7): its Clips `Tab(CLIPS)` and
+//!   its List (the song list, Arrange's third view) `Tab(LIST)`;
 //! - an audio region: `Cell { row: audio track, col: region index }` as
 //!   the finger goes down; dragged sideways and let go, `Marker { index:
 //!   audio track * REGION_SLOTS + region index, frame: its new start in
@@ -70,7 +71,10 @@
 
 use crate::report::ReportCard;
 use crate::view::PlacementInfo;
-use crate::widgets::{rec_song_pill, REC_SONG_W};
+use crate::widgets::{
+    dashed_outline, hatch, rec_song_pill, view_chip_rect, view_part_at, view_part_rect, view_title,
+    ArrangeView, REC_SONG_W,
+};
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{frames_from, Input, Monitor, Region, TakeInfo};
 use mpfree_transport::time::{TempoMap, Tick};
@@ -88,8 +92,10 @@ pub const SONG_BUTTONS: [&str; 6] = [
     "Delete",
 ];
 /// The buttons along the bottom while an audio region is picked (layout
-/// spec 4c). SHIFT + Undo redoes.
-pub const AUDIO_BUTTONS: [&str; 6] = ["Split", "Erase", "Fades", "Gain", "Takes", "Undo"];
+/// spec 4c). To a cell puts the region in its track's first empty cell;
+/// UNDO and SHIFT + UNDO undo and redo the region edits while they are
+/// what changed last.
+pub const AUDIO_BUTTONS: [&str; 6] = ["Split", "Erase", "Fades", "Gain", "Takes", "To a cell"];
 /// The last two buttons while a tempo point is picked (tempo ramps).
 pub const TEMPO_BUTTONS: [&str; 2] = ["Ramp", "Delete"];
 /// The last four buttons while a section is picked (Arrange 3.3).
@@ -197,10 +203,13 @@ pub const ADD_ABOUT: [&str; 3] = [
 /// The hint line while the "+ Track" chooser is open.
 pub const ADD_HINT: &str =
     "Pick the kind of track to add: Note, Audio or Loop   ·   it goes at the end of the track list   ·   UNDO takes it away   ·   tap anywhere else: nothing is added";
-/// What Tab reports for List, left of Rec song: the song list.
+/// What Tab reports for the view chip's List: the song list.
 pub const LIST: usize = 0x310;
-/// The List button's width.
-const LIST_W: i32 = 64;
+/// What Tab reports for the view chip's Clips: the grid.
+pub const CLIPS: usize = 0x311;
+/// What Tab reports for Show, left of Rec song while a set is open: back
+/// to the Show view (live shows B1).
+pub const SHOW_VIEW: usize = 0x312;
 /// A region drag's `Marker` index is the audio track times this, plus
 /// the region's index (`mpfree_audiotracks::MAX_REGIONS`).
 pub const REGION_SLOTS: usize = mpfree_audiotracks::MAX_REGIONS;
@@ -382,9 +391,13 @@ pub struct AudioBlock {
     pub frames: f64,
     /// Its level, 0 to 4 (1 is as recorded).
     pub gain: f32,
-    /// Its fades, in frames.
+    /// Its fades, in frames, measured on the region it was cut from:
+    /// `into` frames of that region lie before `start` and `left` after
+    /// `end` (0 for a region never cut), so a cut shows its share.
     pub fade_in: u32,
     pub fade_out: u32,
+    pub into: u32,
+    pub left: u32,
 }
 
 /// One of an audio track's takes, as its take lane shows it: see
@@ -440,6 +453,40 @@ pub struct AudioLane {
     /// Recording: the punch in (the take's anchor). The red block runs
     /// from it to the playhead.
     pub recording: Option<Tick>,
+    /// The blocks of audio clips on its lane, by placement (phase 2,
+    /// step 2d): what each one's wave draws.
+    pub clips: Vec<ClipBlock>,
+}
+
+/// A block of an audio clip on an audio track's lane, as the Song view
+/// draws it (the audio tracks rethink's phase 2, step 2d): a header strip
+/// with its clip's name over its wave, pass after pass, with a faint line
+/// where each pass after the first starts, so it never looks like a
+/// region.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClipBlock {
+    /// The placement: its index in the arrangement.
+    pub index: usize,
+    /// The song tick its clip's passes count from (before the block's
+    /// start when it starts inside a pass), and a pass's song ticks.
+    pub origin: Tick,
+    pub pass: Tick,
+    /// A once clip: its header says so.
+    pub once: bool,
+    /// What one pass plays, in ticks from the pass's start.
+    pub pieces: Vec<ClipPiece>,
+}
+
+/// One region of an audio clip as its block draws it ([`ClipBlock`]):
+/// ticks `start..end` of each pass play take `take` from frame `src`, for
+/// `frames` frames (along the tempo map, at the block's first pass).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClipPiece {
+    pub start: Tick,
+    pub end: Tick,
+    pub take: u16,
+    pub src: i64,
+    pub frames: f64,
 }
 
 /// What an audio track records from inside the mix (the instrument
@@ -480,6 +527,9 @@ pub struct SongLanes {
     pub on: bool,
     /// Live to song armed.
     pub rec: bool,
+    /// A set is open (live shows B1): **Show** (72 px), left of Rec song,
+    /// gives `Tab(`[`SHOW_VIEW`]`)`.
+    pub show_button: bool,
     /// The audio tracks' lanes, each in its track's place
     /// ([`AudioLane::row`]).
     pub audio: Vec<AudioLane>,
@@ -527,6 +577,29 @@ pub struct SongLanes {
     /// The last conversion's report card, open over the lanes (the
     /// Arrange refactor's 4.3): it takes their touches and their targets.
     pub report: Option<ReportCard>,
+    /// The clips launched over the song, each drawn over its track's
+    /// lane (the Arrange refactor's 5.1, D3).
+    pub over: Vec<LaneOver>,
+}
+
+/// A clip launched over the song (the Arrange refactor's 5.1, D3): the
+/// Song view draws it over its track's lane, from `from` to `until` (the
+/// view's right edge while nothing waits), the song's blocks hatched
+/// under it, silent while it plays.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LaneOver {
+    /// The track (an index into [`SongLanes::tracks`]).
+    pub track: usize,
+    pub name: String,
+    /// Where it started, or the line it starts on while it waits.
+    pub from: Tick,
+    /// The line it ends on, while a cue waits on the track.
+    pub until: Option<Tick>,
+    /// The cue is a stop or Back to song: the song comes back at `until`
+    /// (an amber dashed line there).
+    pub back: bool,
+    /// Not started yet: it waits for `from` (a dashed amber outline).
+    pub waiting: bool,
 }
 
 /// What a finger holds on the Song view, and where in it (song ticks from
@@ -653,7 +726,7 @@ pub struct PanelParts {
 impl Default for SongLanes {
     fn default() -> SongLanes {
         SongLanes {
-            title: "Song".to_string(),
+            title: String::new(),
             legend: String::new(),
             alert: false,
             tracks: Vec::new(),
@@ -668,6 +741,7 @@ impl Default for SongLanes {
             selected: None,
             on: false,
             rec: false,
+            show_button: false,
             audio: Vec::new(),
             waves: Vec::new(),
             region: None,
@@ -685,6 +759,7 @@ impl Default for SongLanes {
             tempo_base: 120.0,
             tempo_pick: None,
             report: None,
+            over: Vec::new(),
         }
     }
 }
@@ -864,6 +939,8 @@ pub fn audio_blocks(
                 gain: r.gain,
                 fade_in: r.fade_in,
                 fade_out: r.fade_out,
+                into: r.into,
+                left: r.left,
             }
         })
         .collect()
@@ -906,6 +983,7 @@ impl SongLanes {
             selected: self.selected,
             on: self.on,
             rec: self.rec,
+            show_button: self.show_button,
             audio: self.audio.clone(),
             waves,
             region: self.region,
@@ -923,6 +1001,70 @@ impl SongLanes {
             tempo_base: self.tempo_base,
             tempo_pick: self.tempo_pick,
             report: self.report.clone(),
+            over: self.over.clone(),
+        }
+    }
+
+    /// The clips launched over the song ([`SongLanes::over`]), over
+    /// their tracks' lanes: the song's blocks hatched under one that
+    /// plays, a band in the track's colour with its name, outlined green;
+    /// one waiting only a dashed amber outline. Where the song comes back
+    /// (a stop or Back to song waits), an amber dashed line.
+    fn paint_over(&self, cx: &mut PaintCx, g: &Geo) {
+        let t = cx.theme.clone();
+        let view_end = (self.first_bar + self.bars) * self.bar;
+        for o in &self.over {
+            let Some((_, color)) = self.tracks.get(o.track) else {
+                continue;
+            };
+            let k = self.track_k(o.track);
+            let end = o.until.unwrap_or(view_end).max(o.from + 1);
+            let Some(span) = self.span_rect(g, k, o.from, end) else {
+                continue;
+            };
+            let px = t.size_small - 2.0;
+            if o.waiting {
+                dashed_outline(cx, span, t.warn);
+                if span.w > 40 {
+                    cx.text(
+                        FontId::Sans,
+                        px,
+                        span.inset_xy(8, 0),
+                        Align::Left,
+                        t.readable(t.warn, t.surface),
+                        &o.name,
+                    );
+                }
+                continue;
+            }
+            // The song under it waits, silent.
+            hatch(cx, span, t.surface);
+            let band = span.inset_xy(0, (span.h / 5).max(3));
+            let fill = t.raised.mix(*color, 0.62);
+            cx.canvas.fill_round_rect(band, t.round(6), fill);
+            cx.canvas.stroke_round_rect(band, t.round(6), 2, t.good);
+            if band.w > 40 {
+                cx.text(
+                    FontId::Bold,
+                    px,
+                    band.inset_xy(8, 0),
+                    Align::Left,
+                    t.readable(t.text, fill),
+                    &o.name,
+                );
+            }
+            if let (true, Some(at)) = (o.back, o.until) {
+                let x = self.x_of(g.lanes, at);
+                if x >= g.lanes.x + NAME_W && x < g.lanes.right() {
+                    let row = self.lane_rect(g, k).unwrap_or(span);
+                    let mut y = row.y;
+                    while y < row.bottom() {
+                        let h = 4.min(row.bottom() - y);
+                        cx.canvas.fill_rect(Rect::new(x - 1, y, 2, h), t.warn);
+                        y += 7;
+                    }
+                }
+            }
         }
     }
 
@@ -1152,28 +1294,39 @@ impl SongLanes {
         Rect::new(head.right() - REC_SONG_W, head.y - 4, REC_SONG_W, 30)
     }
 
-    /// Where List is: left of Rec song.
-    pub fn list_rect(&self, r: Rect) -> Rect {
+    /// Where the view chip is: the left end of the title line (5.7).
+    pub fn view_rect(&self, r: Rect) -> Rect {
+        view_chip_rect(r)
+    }
+
+    /// Where Show is, while a set is open: left of Rec song.
+    pub fn show_rect(&self, r: Rect) -> Option<Rect> {
         let rec = self.rec_rect(r);
-        Rect::new(rec.x - 8 - LIST_W, rec.y, LIST_W, rec.h)
+        let w = crate::widgets::SHOW_W;
+        self.show_button
+            .then(|| Rect::new(rec.x - 8 - w, rec.y, w, rec.h))
     }
 
     /// The buttons along the bottom (the audio region's while one is
-    /// picked).
+    /// picked). Button 0 is the audio region's Split alone: the view chip
+    /// took the place of the Clips button that was there (5.7), so
+    /// otherwise it has no width and the others start at the left.
     pub fn button_rects(&self, r: Rect) -> [Rect; 6] {
         let g = self.geo(r);
         let widths = if self.region.is_some() {
             [84, 84, 84, 84, 84, 84]
         } else if self.section_buttons() {
-            [84, 124, 90, 110, 150, 150]
+            [0, 124, 90, 110, 150, 150]
         } else {
-            [84, 124, 140, 140, 124, 96]
+            [0, 124, 140, 140, 124, 96]
         };
         let mut out = [Rect::new(0, 0, 0, 0); 6];
         let mut x = g.tools.x;
         for (k, w) in widths.iter().enumerate() {
             out[k] = Rect::new(x, g.tools.y, *w, g.tools.h);
-            x += w + 8;
+            if *w > 0 {
+                x += w + 8;
+            }
         }
         out
     }
@@ -1477,7 +1630,10 @@ impl SongLanes {
 
     /// Take `take`'s waveform in `wave` (its columns from `cols.x` to
     /// `cols.right()`): the column at x shows the frames from `src + (x -
-    /// x0) * per_px` on.
+    /// x0) * per_px` on. `peaks` draws each column's peak up from the
+    /// bottom over all of `wave`'s height (a block of an audio clip's
+    /// wave under its header strip, where a lane leaves little room),
+    /// else its swing either way of the middle.
     #[allow(clippy::too_many_arguments)]
     fn paint_wave(
         &self,
@@ -1489,6 +1645,7 @@ impl SongLanes {
         src: f64,
         per_px: f64,
         ink: Color,
+        peaks: bool,
     ) {
         let Some(w) = self.wave_of(take) else {
             return;
@@ -1507,8 +1664,15 @@ impl SongLanes {
                     hi = hi.max(h);
                 }
             }
-            let top = mid - (f64::from(hi.clamp(0.0, 1.0)) * half).round() as i32;
-            let bottom = mid - (f64::from(lo.clamp(-1.0, 0.0)) * half).round() as i32;
+            let (top, bottom) = if peaks {
+                let up = f64::from(hi.max(-lo).clamp(0.0, 1.0)) * f64::from(wave.h - 1);
+                (wave.bottom() - up.round() as i32, wave.bottom())
+            } else {
+                (
+                    mid - (f64::from(hi.clamp(0.0, 1.0)) * half).round() as i32,
+                    mid - (f64::from(lo.clamp(-1.0, 0.0)) * half).round() as i32,
+                )
+            };
             cx.canvas
                 .fill_rect(Rect::new(x, top, 1, (bottom - top).max(1)), ink);
         }
@@ -1538,7 +1702,17 @@ impl SongLanes {
             let x1 = self.x_of(g.lanes, take.end).max(x0 + 1);
             let per_px = take.frames / f64::from(x1 - x0);
             let ink = lane.color.mix(t.text, 0.45);
-            self.paint_wave(cx, take.take, br.inset_xy(0, 1), br, x0, 0.0, per_px, ink);
+            self.paint_wave(
+                cx,
+                take.take,
+                br.inset_xy(0, 1),
+                br,
+                x0,
+                0.0,
+                per_px,
+                ink,
+                false,
+            );
         }
         if let Some((id, x0, x1)) = self.swipe {
             if id == take.take {
@@ -1586,6 +1760,9 @@ impl SongLanes {
         lanes
             .filter_map(move |k| match self.lane(k) {
                 Some(Lane::Midi(t)) => Some((k, t)),
+                // An audio track's lane holds blocks of audio clips too
+                // (phase 2, step 2d).
+                Some(Lane::Audio(a)) => Some((k, self.audio[a].row)),
                 _ => None,
             })
             .flat_map(move |(k, t)| {
@@ -2046,8 +2223,10 @@ impl SongLanes {
                 if let (Some((l, _)), Some((k, start))) = (at, land) {
                     // Red where it would run into another block (the app
                     // refuses it and says so).
+                    // and on an audio track's lane, into a region.
                     let end = start + b.length;
-                    let clash = self.blocks.between(k, start, end).any(|o| o.index != index);
+                    let clash = self.blocks.between(k, start, end).any(|o| o.index != index)
+                        || self.region_between(k, start, end);
                     let ink = if clash { t.bad } else { t.accent };
                     cx.canvas.stroke_round_rect(l.inset(-2), t.round(8), 3, ink);
                 }
@@ -2085,8 +2264,15 @@ impl SongLanes {
                     let color = self.tracks.get(b.track).map_or(t.accent, |c| c.1);
                     cx.canvas
                         .fill_round_rect(l, t.round(6), t.raised.mix(color, 0.3));
-                    cx.canvas
-                        .stroke_round_rect(l.inset(-2), t.round(8), 3, t.accent);
+                    // Red where it would run over a region (the app
+                    // refuses it and says so).
+                    let end = b.start + length;
+                    let ink = if self.region_between(b.track, b.start + b.length.min(length), end) {
+                        t.bad
+                    } else {
+                        t.accent
+                    };
+                    cx.canvas.stroke_round_rect(l.inset(-2), t.round(8), 3, ink);
                     if l.w > 30 {
                         cx.text(
                             FontId::Sans,
@@ -2199,6 +2385,125 @@ impl SongLanes {
             .map(|k| self.audio[a].takes[k].take)
     }
 
+    /// Block `b` when it plays an audio clip on an audio track's lane:
+    /// that lane and what its wave draws ([`ClipBlock`]).
+    fn clip_block(&self, b: &SongBlock) -> Option<(&AudioLane, &ClipBlock)> {
+        let lane = &self.audio[self.audio_at(b.track)?];
+        let k = lane
+            .clips
+            .binary_search_by_key(&b.index, |c| c.index)
+            .ok()?;
+        Some((lane, &lane.clips[k]))
+    }
+
+    /// Whether a region on the lane of the track in place `row` plays some
+    /// of `start..end` (a block can't go there).
+    fn region_between(&self, row: usize, start: Tick, end: Tick) -> bool {
+        self.audio_at(row).is_some_and(|a| {
+            self.audio[a]
+                .blocks
+                .iter()
+                .any(|r| r.start < end && r.end > start)
+        })
+    }
+
+    /// A block of an audio clip (phase 2, step 2d, layout spec 4c), in
+    /// `br` (the canvas clipped to it): the lane's dark fill edged in its
+    /// wave's ink, a header strip in the track's colour with the clip's
+    /// name (and "once" for a once clip), and under it the clip's wave
+    /// pass after pass, with a faint line where each pass after the first
+    /// starts. Lanes too thin for the strip (under 24 pixels) show the
+    /// name over the wave.
+    fn paint_clip_block(
+        &self,
+        cx: &mut PaintCx,
+        g: &Geo,
+        lane: &AudioLane,
+        c: &ClipBlock,
+        b: &SongBlock,
+        br: Rect,
+    ) {
+        let t = cx.theme.clone();
+        let color = lane.color;
+        let ink = color.mix(t.text, 0.6);
+        let body = t.raised.mix(color, 0.2);
+        // The block's whole stretch, unclipped, so its corners, its strip
+        // and its passes line up when it runs off an edge.
+        let (start, end) = (b.start, b.start + b.length);
+        let x0 = self.x_of(g.lanes, start);
+        let x1 = self.x_of(g.lanes, end).max(x0 + 1);
+        let full = Rect::new(x0, br.y, x1 - x0, br.h);
+        let strip_h = match br.h {
+            h if h >= 40 => 15,
+            h if h >= 24 => 13,
+            _ => 0,
+        };
+        let old = cx.canvas.clip();
+        cx.canvas
+            .set_clip(old.intersect(Rect::new(full.x, full.y, full.w, strip_h)));
+        cx.canvas.fill_round_rect(full, t.round(6), color);
+        cx.canvas.set_clip(old.intersect(Rect::new(
+            full.x,
+            full.y + strip_h,
+            full.w,
+            full.h - strip_h,
+        )));
+        cx.canvas.fill_round_rect(full, t.round(6), body);
+        cx.canvas.set_clip(old);
+        let wave = Rect::new(br.x, br.y + strip_h + 1, br.w, br.h - strip_h - 2);
+        // The passes in view; none where a pass is too thin to see.
+        let pass = c.pass.max(1);
+        let (from, to) = self.ticks_shown();
+        let (lo, hi) = (start.max(from), end.min(to));
+        let pass_px = self.x_of(g.lanes, c.origin + pass) - self.x_of(g.lanes, c.origin);
+        if pass_px >= 3 {
+            let seam = t.text.with_alpha(0x38);
+            let mut o = c.origin + (lo - c.origin).div_euclid(pass) * pass;
+            while o < hi {
+                for p in &c.pieces {
+                    let (s, e) = (o + p.start, o + p.end);
+                    if e <= lo || s >= hi {
+                        continue;
+                    }
+                    let px0 = self.x_of(g.lanes, s);
+                    let px1 = self.x_of(g.lanes, e).max(px0 + 1);
+                    let per_px = p.frames / f64::from(px1 - px0);
+                    let l = px0.max(br.x);
+                    let cols = Rect::new(l, wave.y, (px1.min(br.right()) - l).max(0), wave.h);
+                    self.paint_wave(cx, p.take, wave, cols, px0, p.src as f64, per_px, ink, true);
+                }
+                if o > start {
+                    let x = self.x_of(g.lanes, o);
+                    cx.canvas
+                        .fill_rect(Rect::new(x, br.y + strip_h, 1, br.h - strip_h), seam);
+                }
+                o += pass;
+            }
+        }
+        cx.canvas.stroke_round_rect(full, t.round(6), 1, ink);
+        if br.w > 30 {
+            let name = if c.once {
+                format!("{} · once", b.name)
+            } else {
+                b.name.clone()
+            };
+            let room = br.w - 10 - if b.unique { 10 } else { 0 };
+            let (at, text) = if strip_h > 0 {
+                (Rect::new(br.x + 5, br.y, room, strip_h), t.ink_on(color))
+            } else {
+                (Rect::new(br.x + 5, br.y, room, br.h), t.text)
+            };
+            cx.text(
+                FontId::Bold,
+                t.size_small - 3.0,
+                at,
+                Align::Left,
+                text,
+                &name,
+            );
+        }
+    }
+
     /// An audio region: its block, waveform, fades and tag.
     fn paint_region(
         &self,
@@ -2221,16 +2526,22 @@ impl SongLanes {
         let label_h = if br.h >= 26 { 14 } else { 0 };
         let wave = br.inset_xy(0, 2);
         let ink = lane.color.mix(t.text, 0.6);
-        self.paint_wave(cx, b.take, wave, br, x0, b.src as f64, per_px, ink);
-        // Fades: the part above each slope is dimmed.
+        self.paint_wave(cx, b.take, wave, br, x0, b.src as f64, per_px, ink, false);
+        // Fades: the part above each slope is dimmed. A cut shows its share
+        // of the fades of the region it was cut from.
         let shade = t.surface.mix(lane.color, 0.15);
-        for (frames, rising) in [(b.fade_in, true), (b.fade_out, false)] {
-            let px = (f64::from(frames) / per_px.max(1e-9)).round() as i32;
-            if px < 2 {
+        let px_of = |frames: u32| (f64::from(frames) / per_px.max(1e-9)).round() as i32;
+        for (frames, cut, rising) in [(b.fade_in, b.into, true), (b.fade_out, b.left, false)] {
+            let (px, off) = (px_of(frames), px_of(cut));
+            if px < 2 || off >= px {
                 continue;
             }
-            for k in 0..px {
-                let x = if rising { x0 + k } else { x1 - 1 - k };
+            for k in off..px {
+                let x = if rising {
+                    x0 - off + k
+                } else {
+                    x1 - 1 + off - k
+                };
                 if x < br.x || x >= br.right() {
                     continue;
                 }
@@ -2312,28 +2623,24 @@ impl SongLanes {
 impl Widget for SongLanes {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        cx.titled_panel(r, &self.title, "");
-        // The legend, then List and Rec song.
+        // The view chip and the title, the legend, then Rec song.
         let rec = self.rec_rect(r);
-        let list = self.list_rect(r);
+        let show = self.show_rect(r);
+        let end = show.map_or(rec.x, |s| s.x);
+        view_title(cx, r, ArrangeView::Song, &self.title, end - 12);
         let head = r.inset(14).take_top(26).0;
         cx.text(
             FontId::Sans,
             t.size_small,
-            Rect::new(head.x, head.y, list.x - head.x - 12, head.h),
+            Rect::new(head.x, head.y, end - head.x - 12, head.h),
             Align::Right,
             if self.alert { t.warn } else { t.text_dim },
             &self.legend,
         );
-        cx.canvas.fill_round_rect(list, t.round(10), t.raised);
-        cx.text(
-            FontId::Bold,
-            t.size_small,
-            list,
-            Align::Center,
-            t.text,
-            "List",
-        );
+        if let Some(b) = show {
+            cx.canvas.fill_round_rect(b, t.round(10), t.raised);
+            cx.text(FontId::Bold, t.size_small, b, Align::Center, t.text, "Show");
+        }
         rec_song_pill(cx, rec, self.rec);
         let g = self.geo(r);
         // The ruler: bar numbers, then the markers' names over them.
@@ -2501,12 +2808,28 @@ impl Widget for SongLanes {
         }
         for (b, br) in self.blocks_in_view(&g) {
             let color = self.tracks.get(b.track).map_or(t.accent, |c| c.1);
-            cx.canvas
-                .fill_round_rect(br, t.round(6), t.raised.mix(color, 0.42));
+            let audio = self.clip_block(b);
+            match audio {
+                Some((lane, c)) => {
+                    let old = cx.canvas.clip();
+                    cx.canvas.set_clip(old.intersect(br));
+                    self.paint_clip_block(cx, &g, lane, c, b, br);
+                    cx.canvas.set_clip(old);
+                }
+                None => cx
+                    .canvas
+                    .fill_round_rect(br, t.round(6), t.raised.mix(color, 0.42)),
+            }
             if b.unique {
-                // Its own copy: a corner mark.
+                // Its own copy: a corner mark (on an audio clip's header
+                // strip, in its ink).
+                let ink = if audio.is_some() {
+                    t.ink_on(color)
+                } else {
+                    t.text
+                };
                 cx.canvas
-                    .fill_round_rect(Rect::new(br.right() - 10, br.y + 4, 6, 6), 3, t.text);
+                    .fill_round_rect(Rect::new(br.right() - 10, br.y + 4, 6, 6), 3, ink);
             }
             if self.selected == Some(b.index) {
                 cx.canvas.stroke_round_rect(br, t.round(6), 2, t.accent);
@@ -2519,7 +2842,7 @@ impl Widget for SongLanes {
                     }
                 }
             }
-            if br.w > 30 {
+            if audio.is_none() && br.w > 30 {
                 cx.text(
                     FontId::Sans,
                     t.size_small - 1.0,
@@ -2530,6 +2853,7 @@ impl Widget for SongLanes {
                 );
             }
         }
+        self.paint_over(cx, &g);
         for (a, lane) in self.audio.iter().enumerate() {
             for (i, b) in lane.blocks.iter().enumerate() {
                 let Some(br) = self.region_rect(r, a, i) else {
@@ -2590,6 +2914,9 @@ impl Widget for SongLanes {
             .filter(|_| !audio);
         let section = self.section_buttons();
         for (k, br) in self.button_rects(r).iter().enumerate() {
+            if br.w == 0 {
+                continue;
+            }
             let lit = (k == 1 && self.on && !audio) || (k == 4 && tempo.is_some_and(|p| p.2));
             let live = audio || tempo.is_some() || section || !(k >= 4 && !selected);
             let fill = if lit {
@@ -2661,6 +2988,7 @@ impl Widget for SongLanes {
             .button_rects(r)
             .iter()
             .enumerate()
+            .filter(|(_, b)| b.w > 0)
             .map(|(k, b)| {
                 let tempo = !audio && k >= 4 && self.tempo_pick.is_some();
                 let (id, word) = if audio {
@@ -2694,7 +3022,22 @@ impl Widget for SongLanes {
             out.push(Target::tap("tempo-lane", 0, "Tempo", free));
         }
         out.push(Target::tap("rec-song", 0, "Rec song", self.rec_rect(r)));
-        out.push(Target::tap("list", 0, "List", self.list_rect(r)));
+        if let Some(b) = self.show_rect(r) {
+            out.push(Target::tap("show-view", 0, "Show", b));
+        }
+        let chip = self.view_rect(r);
+        out.push(Target::tap(
+            "view",
+            0,
+            "Clips",
+            view_part_rect(chip, ArrangeView::Clips),
+        ));
+        out.push(Target::tap(
+            "view",
+            1,
+            "List",
+            view_part_rect(chip, ArrangeView::List),
+        ));
         if let Some(b) = self.add_track_rect(r) {
             out.push(Target::tap("add-track", 0, "+ Track", b));
         }
@@ -2937,14 +3280,24 @@ impl Widget for SongLanes {
                 return None;
             }
         }
-        if let Some(k) = self.button_rects(r).iter().position(|b| b.contains(x, y)) {
+        if let Some(k) = self
+            .button_rects(r)
+            .iter()
+            .position(|b| b.w > 0 && b.contains(x, y))
+        {
             return Some(EventKind::Tab(k));
         }
         if self.rec_rect(r).contains(x, y) {
             return Some(EventKind::Tab(REC));
         }
-        if self.list_rect(r).contains(x, y) {
-            return Some(EventKind::Tab(LIST));
+        match view_part_at(self.view_rect(r), x, y) {
+            Some(ArrangeView::Clips) => return Some(EventKind::Tab(CLIPS)),
+            Some(ArrangeView::List) => return Some(EventKind::Tab(LIST)),
+            Some(ArrangeView::Song) => return None,
+            None => {}
+        }
+        if self.show_rect(r).is_some_and(|b| b.contains(x, y)) {
+            return Some(EventKind::Tab(SHOW_VIEW));
         }
         if self.add_track_rect(r).is_some_and(|b| b.contains(x, y)) {
             return Some(EventKind::Tab(ADD_TRACK));
@@ -3109,7 +3462,11 @@ mod tests {
             s.touch(1, Touch::Down, empty.x - 20, empty.y + 3, r),
             Some(EventKind::Select(NONE))
         );
-        for (k, br) in s.button_rects(r).iter().enumerate() {
+        let buttons = s.button_rects(r);
+        // The first, Clips, went to the view chip (5.7).
+        assert_eq!(buttons[0].w, 0);
+        assert_eq!(buttons[1].x, r.x + 14);
+        for (k, br) in buttons.iter().enumerate().skip(1) {
             assert!(br.right() <= r.right() - 14, "{k}: {br:?}");
             assert_eq!(
                 s.touch(1, Touch::Down, br.x + 3, br.y + 3, r),
@@ -3122,11 +3479,29 @@ mod tests {
             s.touch(1, Touch::Down, rec.x + 3, rec.y + 3, r),
             Some(EventKind::Tab(REC))
         );
-        let list = s.list_rect(r);
-        assert!(list.right() < rec.x, "{list:?}");
+        let chip = s.view_rect(r);
+        assert!(chip.right() < rec.x, "{chip:?}");
+        for (v, want) in [
+            (ArrangeView::Clips, Some(EventKind::Tab(CLIPS))),
+            (ArrangeView::List, Some(EventKind::Tab(LIST))),
+            (ArrangeView::Song, None),
+        ] {
+            let b = view_part_rect(chip, v);
+            assert_eq!(s.touch(1, Touch::Down, b.x + 3, b.y + 3, r), want, "{v:?}");
+        }
+        // While a set is open, Show sits left of Rec song (live shows B1).
+        assert_eq!(s.show_rect(r), None);
+        assert!(s.targets(r).iter().all(|t| t.id != "show-view"));
+        s.show_button = true;
+        let show = s.show_rect(r).unwrap();
+        assert!(
+            show.right() < rec.x && show.x > chip.right() && show.w == 72,
+            "{show:?}"
+        );
+        assert!(s.targets(r).iter().any(|t| t.id == "show-view"));
         assert_eq!(
-            s.touch(1, Touch::Down, list.x + 3, list.y + 3, r),
-            Some(EventKind::Tab(LIST))
+            s.touch(1, Touch::Down, show.x + 3, show.y + 3, r),
+            Some(EventKind::Tab(SHOW_VIEW))
         );
     }
 
@@ -3444,6 +3819,7 @@ mod tests {
             blocks,
             takes: Vec::new(),
             recording: None,
+            clips: Vec::new(),
         }
     }
 
@@ -3458,6 +3834,8 @@ mod tests {
             gain: 1.0,
             fade_in: 0,
             fade_out: 0,
+            into: 0,
+            left: 0,
         }
     }
 
@@ -3541,6 +3919,89 @@ mod tests {
         assert_eq!(
             s.touch(6, Touch::Down, vocal.x + 3, vocal.y + 3, r),
             Some(EventKind::Cell { row: 5, col: 0 })
+        );
+    }
+
+    /// A block of an audio clip (phase 2, step 2d, layout spec 4c): it
+    /// sits on its audio track's lane, draws a header strip in the track's
+    /// colour over its wave, is picked and dragged as any block, and shows
+    /// red where it would land over a region.
+    #[test]
+    fn a_block_of_an_audio_clip_sits_on_its_lane_with_a_header_strip() {
+        let bar = 3840;
+        let mut s = lanes();
+        put_audio(
+            &mut s,
+            vec![audio_lane(0, "Guitar", vec![block(0, bar, 0)])],
+        );
+        let row = s.audio[0].row;
+        let mut all: Vec<SongBlock> = s.blocks.iter().cloned().collect();
+        let index = all.len();
+        all.push(SongBlock {
+            index,
+            track: row,
+            start: 2 * bar,
+            length: 2 * bar,
+            name: "Riff".into(),
+            unique: false,
+        });
+        s.blocks = SongBlocks::new(all);
+        s.audio[0].clips.push(ClipBlock {
+            index,
+            origin: 2 * bar,
+            pass: bar,
+            once: false,
+            pieces: vec![ClipPiece {
+                start: 0,
+                end: bar,
+                take: 0,
+                src: 0,
+                frames: 1000.0,
+            }],
+        });
+        let mut ui = mpfree_ui::Ui::new(
+            mpfree_ui::Theme::dark(),
+            mpfree_ui::Fonts::embedded(),
+            1280,
+            800,
+        );
+        ui.add("song", s.clone());
+        ui.add_page("p", "song").unwrap();
+        ui.show("p").unwrap();
+        let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
+        ui.paint(&mut c);
+        let r = ui.rect_of("song").unwrap();
+        let region = s.region_rect(r, 0, 0).unwrap();
+        let br = s.block_rect(r, s.block(index).unwrap()).unwrap();
+        assert_eq!((br.y, br.h), (region.y, region.h), "on Guitar's lane");
+        assert!(br.x > region.right());
+        // The strip in the track's colour along its top; the lane's dark
+        // fill under it.
+        let colour = s.audio[0].color;
+        let x = br.x + br.w - 6;
+        assert_eq!(c.pixel(x, br.y + 3).xrgb(), colour.xrgb(), "the strip");
+        assert_ne!(
+            c.pixel(x, br.bottom() - 3).xrgb(),
+            colour.xrgb(),
+            "the body"
+        );
+        // Picked by a tap, as any block.
+        let (x, y) = (br.x + 8, br.y + br.h / 2);
+        assert_eq!(s.touch(1, Touch::Down, x, y, r), None);
+        assert_eq!(
+            s.touch(1, Touch::Up, x, y, r),
+            Some(EventKind::Select(index))
+        );
+        // Dragged back over the region on bar 1: it lands there (the app
+        // refuses it and says why), and shows red on the way.
+        assert!(s.region_between(row, 0, 2 * bar));
+        assert!(!s.region_between(row, 2 * bar, 4 * bar));
+        let to = region.x + 2;
+        s.touch(2, Touch::Down, x, y, r);
+        s.touch(2, Touch::Move, to, y, r);
+        assert_eq!(
+            s.touch(2, Touch::Up, to, y, r),
+            Some(EventKind::Place { index, row, at: 0 })
         );
     }
 
@@ -4028,9 +4489,12 @@ mod tests {
             end: 960,
             take: 7,
             src: 0,
+            phase: 0.0,
             gain: 1.0,
             fade_in: 0,
             fade_out: 0,
+            into: 0,
+            left: 0,
         }];
         let lanes = take_lanes(0, &regions, &takes, &map, 44_100);
         let shown: Vec<_> = lanes.iter().map(|l| (l.take, l.name.as_str())).collect();
@@ -4255,9 +4719,12 @@ mod tests {
             end,
             take,
             src: 10,
+            phase: 0.0,
             gain: 1.0,
             fade_in: 5,
             fade_out: 7,
+            into: 3,
+            left: 0,
         };
         // Track 0's takes: 4 (group 0), 2 (group 1, pass 0), 9 (group 1,
         // pass 1, the newest). Take 1 is another track's.
@@ -4284,7 +4751,10 @@ mod tests {
         // A beat at 120 BPM and 48 kHz is 24 000 frames.
         assert_eq!(b[0].frames, 24_000.0);
         assert_eq!(b[2].frames, 48_000.0);
-        assert_eq!((b[1].src, b[1].fade_in, b[1].fade_out), (10, 5, 7));
+        assert_eq!(
+            (b[1].src, b[1].fade_in, b[1].fade_out, b[1].into, b[1].left),
+            (10, 5, 7, 3, 0)
+        );
     }
 
     #[test]

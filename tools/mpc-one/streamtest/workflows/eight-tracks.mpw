@@ -18,7 +18,7 @@ wait 1
 expect project: Night Market is in
 mark tracks
 tap header tab Arrange
-tap clips song Song
+tap clips view Song
 tap song button Play song
 expect time: song on
 # Eight audio tracks, each armed as it is added.
@@ -98,7 +98,7 @@ expect project: Night Market is in
 expect project: 8 audio tracks and 10 takes in
 mark play-again
 tap header tab Arrange
-tap clips song Song
+tap clips view Song
 tap song button Play song
 button PLAY START
 wait 60
