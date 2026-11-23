@@ -1853,4 +1853,77 @@ mod tests {
             s.pad_edge(pad, 0, false);
         });
     }
+
+    /// Sampler step 15c: NOTE REPEAT while the pads play a kit on their
+    /// own repeats that kit's pad (the pads' arp), never the track's, and
+    /// the pads keep the kit; let go, the repeats stop. Held again, Follow
+    /// track ends what the arp has on there, the pad's let-go is taken
+    /// quietly, and the next hit plays the track's kit.
+    #[test]
+    fn note_repeat_on_a_kit_the_pads_play_on_their_own_repeats_it_and_keeps_the_pads() {
+        use crate::PadsPreview;
+        on_big_stack(|| {
+            let mut session = Session::new();
+            let s = &mut session;
+            s.make_sounds();
+            s.run_periods(2);
+            let kit_2 = s.instrument_list.of_kit(1).expect("kit 2 has an id");
+            let part = format!("mpfree-pads 2\nplay instrument {kit_2}\n");
+            let (notes, fx) = s.app.open_pads(Some(&part));
+            assert!(notes.is_empty(), "{notes:?}");
+            s.fx.extend(fx);
+            s.run_periods(4);
+            assert_eq!(s.app.pads_kit(), Some(1), "the pads play kit 2");
+            let player = s.sounds.as_ref().expect("the kits");
+            let pad = (0..16)
+                .find(|&p| player.has_sound(1, p) && player.has_sound(0, p))
+                .expect("a pad both kits fill");
+            s.button_edge("NOTE REPEAT", true);
+            s.run_periods(2);
+            assert!(s.app.generating(), "NOTE REPEAT held");
+            s.arp_played.clear();
+            s.pad_edge(pad, 100, true);
+            s.run_for(1.0);
+            let repeats = |s: &Session| {
+                s.arp_played
+                    .iter()
+                    .filter(|&&(to, n, _)| to == PadsPreview::Kit(1) && usize::from(n) == pad)
+                    .count()
+            };
+            assert!(repeats(s) >= 4, "kit 2's pad repeats: {:?}", s.arp_played);
+            assert_eq!(repeats(s), s.arp_played.len(), "nothing else plays");
+            assert_eq!(s.app.pads_kit(), Some(1), "the pads keep kit 2");
+            let player = s.sounds.as_ref().expect("the kits");
+            assert_eq!(player.kit_pad_voices(0, pad), 0, "kit 1's pad never plays");
+            s.pad_edge(pad, 0, false);
+            s.run_for(0.3);
+            let n = s.arp_played.len();
+            s.run_for(0.5);
+            assert_eq!(s.arp_played.len(), n, "let go: the repeats stop");
+            assert_eq!(s.pads_arp_sounding(), 0);
+            // Held again, then Follow track: the arp's notes end on kit 2.
+            s.pad_edge(pad, 100, true);
+            s.run_for(0.5);
+            assert!(s.pads_arp_sounding() <= 1);
+            s.fx.extend(s.app.pads_follow_track());
+            s.run_periods(4);
+            assert_eq!(s.app.pads_kit(), None);
+            assert_eq!(s.pads_arp_sounding(), 0, "ended where it played");
+            let n = s.arp_played.len();
+            s.run_for(0.5);
+            assert_eq!(s.arp_played.len(), n, "nothing more on kit 2");
+            s.pad_edge(pad, 0, false);
+            s.run_periods(2);
+            s.button_edge("NOTE REPEAT", false);
+            s.run_for(1.0);
+            // The next hit plays the track's kit 1, through the track.
+            s.previewed.clear();
+            s.pad_edge(pad, 100, true);
+            s.run_periods(2);
+            let player = s.sounds.as_ref().expect("the kits");
+            assert!(player.kit_pad_voices(0, pad) > 0, "kit 1's pad plays");
+            assert!(s.previewed.is_empty(), "through the track");
+            s.pad_edge(pad, 0, false);
+        });
+    }
 }

@@ -20,9 +20,8 @@
 //! in REC's list, REC, a kit picked for the selected track (the pads that
 //! follow the track play its new kit; a choice of their own, a bank's own
 //! and the layers stay), or an instrument gone from the list (its entry
-//! stays, missing, below). What does: a choice you make for the pads,
-//! Follow track, a project opened (its own map), and, until step 15c, the
-//! arp (below).
+//! stays, missing, below), or the arp (below). What does: a choice you
+//! make for the pads, Follow track, and a project opened (its own map).
 //!
 //! **One pad map** (sampler step 15b, [`PadMap`]; the plan's "Step 15,
 //! revised after the 23 Nov review", Jay's go 23 Nov 09:02 UTC): what the
@@ -45,7 +44,8 @@
 //! selected track plays the shared synth itself, the pads play it the
 //! usual way, through the arp and the recorder, as the track's; while it
 //! plays anything else, the loop plays the pad hits on the synth before the
-//! arp and the recorder see them, so nothing records them there.
+//! track's arp and the recorder see them (through the pads' arp while the
+//! arp is on, below), so nothing records them there.
 //!
 //! **REC** (rule 3, step 1's way with today's per-track instruments): while
 //! the pads have the synth and the armed track plays something else, REC
@@ -81,14 +81,16 @@
 //! own wait. Follow track gives every bank back to the track. The banks'
 //! own are saved in the pads part with the map (`bank B instrument 3`).
 //!
-//! **The arp** (point C): the arp plays through the selected track, so
-//! while the pads have the synth over a track that plays something else,
-//! it can't play them: the button won't choose the synth while the arp
-//! plays the pads (NOTE REPEAT held, Latch, or the Arp panel), and the arp
-//! starting there gives the pads back to the track
-//! ([`App::arp_ends_pads_synth`]). So a take never goes through an arp the
-//! try-out didn't. Over a track that plays the synth, the arp plays it as
-//! the track's. The arp by instrument comes with a later step.
+//! **The arp** (sampler step 15c): NOTE REPEAT, Latch and the arp play
+//! what the pads play, and never give the pads back. While the pads play
+//! through the selected track, the track's arp plays them as before. While
+//! they play an instrument on their own (a synth, a whole kit, a bank's
+//! own), the pads' arp in the audio loop (`main.rs`, `PadsArp`) takes the
+//! hits instead: the selected track's arp as the Arp panel sets it, on an
+//! engine of its own, playing that instrument: a kit's pads, a synth's
+//! notes (its pad layout's), a host instrument's pads. Its notes end
+//! where they started when the pads move to another instrument. Layers
+//! play each hit once, as pressed (through the arp with step 15f).
 
 use super::{App, Effect};
 use crate::instrument_list::InstrumentId;
@@ -842,12 +844,6 @@ impl App {
         if self.pad_layout.is_some() || self.track_plays_instrument(self.track) {
             return Vec::new();
         }
-        if self.generating() {
-            return vec![Effect::Tell(
-                "The pads play the synth as pressed: let go of NOTE REPEAT or Latch, or close the Arp panel, first"
-                    .into(),
-            )];
-        }
         // A pad held on the kit now still lets go there: the audio loop
         // plays on the synth only the hits that start from here.
         self.pad_map.base = PadFocus::SYNTH;
@@ -922,38 +918,6 @@ impl App {
                 track + 1
             )),
         ]
-    }
-
-    /// Once a period: the arp plays the pads now (NOTE REPEAT, Latch or
-    /// the Arp panel) while they have the synth over a track that plays
-    /// something else, so the pads follow the track again and play its
-    /// instrument through the arp, as a take would. Nothing (and no
-    /// allocation) otherwise: over a track that plays the synth the arp
-    /// plays it.
-    pub fn arp_ends_pads_synth(&mut self) -> Vec<Effect> {
-        // The shared synth over a track that plays something else (no
-        // synth layout on the pads), or an instrument of the host's that
-        // the track doesn't play.
-        let over = match self.pads_focus() {
-            PadFocus::Track => false,
-            _ if self.pads_chose_synth() => self.pad_layout.is_none(),
-            // A whole kit (sampler step 15b) the track doesn't play.
-            PadFocus::Instrument(_) if self.pads_kit().is_some() => {
-                !self.plays_pads_kit(self.track)
-            }
-            PadFocus::Instrument(_) => self
-                .pads_holder()
-                .is_some_and(|h| self.track_owner(self.track) != Some(h)),
-        };
-        // Layers (step 11a) play the pads as pressed, which the arp
-        // doesn't.
-        let over = over || (self.has_layers() && self.layers_apply());
-        if !over || !self.generating() {
-            return Vec::new();
-        }
-        self.pads_back(|t| {
-            format!("The arp plays Track {t}'s instrument: the pads follow the track")
-        })
     }
 
     /// The holder whose instrument track `track` plays: its own, else the

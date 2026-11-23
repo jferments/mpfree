@@ -15,8 +15,9 @@
 //!   track that plays a synth chooses that synth first; over a kit the
 //!   synth added is what the pads play, alone ([`App::toggle_pad_layer`]).
 //!   Taking off the first gives its place to the next. Follow track gives
-//!   the layers up with the rest, and so does the arp starting (it plays
-//!   the pads through the track, where the layers can't follow). A bank
+//!   the layers up with the rest; the arp never does (sampler step 15c):
+//!   each hit plays the layers once, as pressed, while the arp plays the
+//!   first (layers through the arp come with step 15f). A bank
 //!   with a synth of its own (step 6c) plays that alone; the layers play
 //!   on the other banks.
 //! - **How the audio loop plays them** (`main.rs`, `PadLayers`): each
@@ -227,17 +228,11 @@ impl App {
     /// [`PAD_LAYERS`] in all. While the pads follow a track that plays a
     /// synth, that synth is chosen first; over a kit, `id` is what they
     /// play, alone. Taking off the first gives its place to the next
-    /// layer. Not while the arp plays the pads, nor on a bank with a synth
-    /// of its own.
+    /// layer. Not on a bank with a synth of its own. With the arp on, a
+    /// layer plays each hit once, as pressed (sampler step 15c).
     pub fn toggle_pad_layer(&mut self, id: InstrumentId) -> Vec<Effect> {
         if self.instrument_list.kind(id).is_none() {
             return Vec::new();
-        }
-        if self.generating() {
-            return vec![Effect::Tell(
-                "Layers play the pads as pressed: let go of NOTE REPEAT or Latch, or close the Arp panel, first"
-                    .into(),
-            )];
         }
         if let Some(b) = self.pads_bank() {
             return vec![Effect::Tell(format!(
@@ -321,7 +316,7 @@ impl App {
         fx
     }
 
-    /// The layers given up (Follow track, the arp, a project opened).
+    /// The layers given up (Follow track, a project opened).
     pub(super) fn clear_layers(&mut self) {
         self.pad_map.layers = [None; MORE];
         self.layer_to = [None; MORE];

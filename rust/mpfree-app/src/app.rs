@@ -2962,6 +2962,12 @@ impl App {
         self.repeat_held || self.latched
     }
 
+    /// Whether the arp keeps its own swing, not the transport's (the
+    /// pads' arp takes it, main.rs `PadsArp`).
+    pub fn arp_own_swing(&self) -> bool {
+        !self.swing_from_transport
+    }
+
     /// The engine makes notes of its own (Repeat, Arp or Pattern), so a hit
     /// may sound later than the press, and latched pads stay lit.
     pub fn generating(&self) -> bool {
@@ -8704,51 +8710,31 @@ mod tests {
         assert_eq!(take(got[1]), Some((SynthTake::Full, false)));
     }
 
-    /// The arp and the synth chosen for the pads (the design review of 20
-    /// Nov, point C): over a track that plays a kit the pads play the
-    /// synth as pressed, so the button won't choose it while the arp plays
-    /// the pads, and the arp coming on there gives the pads back to the
-    /// track; a take then never goes through an arp the try-out didn't.
-    /// Over a track that plays the synth, the arp plays it.
+    /// The arp and the synth chosen for the pads (sampler step 15c, after
+    /// the design review of 20 Nov, point C): NOTE REPEAT, Latch and the
+    /// arp never give the pads back, and the button chooses the synth with
+    /// the arp on; the pads' arp in the audio loop plays it (main.rs,
+    /// `PadsArp`). Over a track that plays the synth, the track's arp
+    /// plays it, as before.
     #[test]
-    fn the_arp_and_the_synth_on_the_pads_never_play_apart() {
+    fn the_arp_never_gives_the_pads_back() {
         let mut app = ready();
         app.open_tab(View::Synth);
         app.toggle_pads_synth();
         assert!(app.pads_chose_synth());
-        assert!(app.arp_ends_pads_synth().is_empty(), "no arp, no change");
-        // NOTE REPEAT held: the arp plays the pads, through the track's kit.
+        // NOTE REPEAT held: the pads keep the synth.
         app.button(REPEAT, true, 0.0);
         assert!(app.generating());
-        let fx = app.arp_ends_pads_synth();
-        assert_eq!(fx[0], Effect::PadsFocus(PadFocus::Track), "{fx:?}");
-        assert!(
-            matches!(&fx[1], Effect::Note(n) if n == "The arp plays Track 1's instrument: the pads follow the track"),
-            "{fx:?}"
-        );
+        assert!(app.pads_chose_synth());
+        // Held still: the button gives the pads back when you press it, and
+        // chooses the synth again.
+        app.toggle_pads_synth();
         assert!(!app.pads_chose_synth() && app.pads_play_kit());
-        // Held still: the button won't choose the synth, and says why.
         let fx = app.toggle_pads_synth();
-        assert!(
-            matches!(&fx[..], [Effect::Tell(t)] if t.contains("NOTE REPEAT")),
-            "{fx:?}"
-        );
-        assert!(!app.pads_chose_synth());
+        assert!(app.pads_chose_synth(), "{fx:?}");
         app.button(REPEAT, false, 0.0);
         assert!(!app.generating());
-        app.toggle_pads_synth();
-        assert!(app.pads_chose_synth(), "the arp let go: it chooses");
-        // The selected track plays the synth (its layout on the pads): the
-        // arp plays it, and the pads keep it.
-        use mpfree_arp::scale::pads::{layout, PadLayout, PadSetup};
-        app.set_pad_layout(Some(layout(&PadSetup {
-            layout: PadLayout::Chromatic,
-            ..PadSetup::default()
-        })));
-        app.button(REPEAT, true, 0.0);
-        assert!(app.generating());
-        assert!(app.arp_ends_pads_synth().is_empty());
-        assert!(app.pads_chose_synth());
+        assert!(app.pads_chose_synth(), "the arp let go: nothing moves");
     }
 
     /// Step 4: the Instrument row offers the other tracks' own
@@ -12044,19 +12030,15 @@ mod tests {
         // Follow track: gone.
         app.pads_follow_track();
         assert!(!app.has_layers() && !app.pads_layer_synth());
-        // The arp starting gives them up too.
+        // The arp starting keeps them (sampler step 15c), and a layer can
+        // be added with it on.
         app.toggle_pad_layer(fm);
-        app.toggle_pad_layer(shared);
-        assert!(app.has_layers());
         app.button(REPEAT, true, 0.0);
-        let fx = app.arp_ends_pads_synth();
-        assert_eq!(fx[0], Effect::PadsFocus(PadFocus::Track), "{fx:?}");
+        assert!(app.generating());
         assert!(!app.has_layers());
-        let fx = app.toggle_pad_layer(fm);
-        assert!(
-            matches!(&fx[..], [Effect::Tell(t)] if t.contains("NOTE REPEAT")),
-            "{fx:?}"
-        );
+        app.toggle_pad_layer(shared);
+        assert!(app.has_layers() && app.pads_layer_synth());
+        assert_eq!(app.pads_focus(), PadFocus::Instrument(fm));
     }
 
     /// Sampler step 15b: the layers are saved in the pads part with the

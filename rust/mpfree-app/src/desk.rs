@@ -1140,8 +1140,8 @@ fn track_set_up(app: &app::App, mix: &mixing::MixHost, t: usize) -> Option<&'sta
 /// loop armed (it records what is heard), or a take already going or
 /// ready. `Some(empty)` when nowhere fits (a pinned arm on a track set
 /// up, or a full project): the line says why and nothing changes. The arp
-/// playing the pads now gives them back to the track first, and REC is
-/// REC's own.
+/// never gives the pads back (sampler step 15c): with it on, the take's
+/// track plays them through its arp.
 #[allow(clippy::too_many_arguments)]
 fn rec_synth(
     app: &mut app::App,
@@ -1160,14 +1160,6 @@ fn rec_synth(
     }
     let plan = rec_plan(app, time, mix)?;
     let armed = time.armed().unwrap_or(0);
-    // The arp came on this period: the pads play the track again, through
-    // it, before the take starts (`App::arp_ends_pads_synth`).
-    let ended = app.arp_ends_pads_synth();
-    if !ended.is_empty() {
-        let mut fx = ended;
-        fx.push(app::Effect::Rec(p));
-        return Some(fx);
-    }
     let name = plan.synth;
     let tell = |out: &mut Out, s: String| {
         out.note(&s);
@@ -2218,8 +2210,8 @@ mod tests {
     /// clip changes, the pads keep the synth, and the next press records
     /// there; with the loop armed REC is the loop's as ever. A track with a kit or MIDI output picked or mixer
     /// settings is passed over; with none free a new track is added; a
-    /// pinned arm stays, and REC goes nowhere, saying why. The arp come on
-    /// gives the pads back to the track, and REC is REC's own.
+    /// pinned arm stays, and REC goes nowhere, saying why. The arp on
+    /// changes none of it (sampler step 15c).
     #[test]
     fn rec_while_the_pads_play_the_synth_records_it_on_a_track_nobody_set_up() {
         use crate::rec_arm::{Press, Target};
@@ -2344,21 +2336,20 @@ mod tests {
             .iter()
             .any(|e| matches!(e, app::Effect::Note(n) if n.contains("on a new track, Track"))));
         assert_eq!(time.project().tracks[0], drums, "the drums unchanged");
-        // The arp on: the try-out ends and REC is REC's own next period.
+        // The arp on (sampler step 15c): it never gives the pads back, and
+        // REC records the synth as without it, on a new track again.
         time.act(mpfree_time_ui::TimeAction::Arm(Some(0))).unwrap();
         assert!(app.pads_chose_synth());
         app.toggle_panel();
         assert!(app.generating());
-        let fx = rec(&mut app, &mut time, &mut mix, &mut out).expect("the arp's end");
-        assert_eq!(
-            fx[0],
-            app::Effect::PadsFocus(app::PadFocus::Track),
+        let count = time.track_count();
+        let fx = rec(&mut app, &mut time, &mut mix, &mut out).expect("the synth's take");
+        assert_eq!(to(&fx), Some(count), "{fx:?}");
+        assert!(
+            !fx.iter().any(|e| matches!(e, app::Effect::PadsFocus(_))),
             "{fx:?}"
         );
-        assert_eq!(to(&fx), None);
-        assert_eq!(fx.last(), Some(&app::Effect::Rec(Press::Rec)));
-        assert!(!app.pads_chose_synth());
-        assert_eq!(rec(&mut app, &mut time, &mut mix, &mut out), None);
+        assert!(app.pads_chose_synth(), "the pads keep the synth");
     }
 
     /// The audio tracks rethink, phase 1b: an audio track's strip's M and
