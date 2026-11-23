@@ -2171,6 +2171,16 @@ impl TimeHost {
         self.with(|c| c.set_notes_tracks(tracks));
     }
 
+    /// The scales the note editor's Scale option offers (piano roll plan
+    /// 2B.1): the synth pads' scale, if any, and the owner's own.
+    pub fn set_scale_offers(
+        &mut self,
+        pads: Option<mpfree_seq::Scale>,
+        own: &[(String, u16, u16)],
+    ) {
+        self.with(|c| c.set_scale_offers(pads, own));
+    }
+
     /// The notes each of track `track`'s 16 pads plays: a clip of notes
     /// shows each pad's root on the step grid's pad rows, and a tap on a
     /// pad's row edits its notes (step 5c).
@@ -10566,6 +10576,18 @@ mod tests {
                 rev: mid.rev,
                 ticks: 240,
                 notes: 0,
+                scale: false,
+            },
+            // Plan 1B.2: a handle and a note tapped while one is held.
+            E::Resize {
+                index: 0,
+                rev: mid.rev,
+                start: false,
+                ticks: 240,
+            },
+            E::Add {
+                index: 0,
+                rev: mid.rev,
             },
         ] {
             assert!(h.act(TimeAction::Edit(a)).is_err());
@@ -10612,8 +10634,8 @@ mod tests {
 
     /// Piano roll plan 0C.1: an editor edit on the playing clip goes into
     /// the view in place, as a step edit does (no compile, the view just
-    /// what a compile gives, timed for the status line); a drag of the
-    /// velocity lane, sent once as the finger lifts, is one take; and the
+    /// what a compile gives, timed for the status line); a stroke along
+    /// the velocity lane, sent once as the finger lifts, is one take; and the
     /// screens get one shared copy of the clip, the same while it is
     /// unchanged, a new one when it changed.
     #[test]
@@ -10642,8 +10664,16 @@ mod tests {
         let compiles = h.control.costs.compiles;
         h.act(TimeAction::Edit(E::Button(4))).unwrap();
         let takes = h.state().done.len();
-        for v in [0.5, 1.0] {
-            h.act(TimeAction::Edit(E::Velocity(v))).unwrap();
+        for v in [64, 127] {
+            // A stroke along the velocity lane over the picked notes.
+            let e = info(&mut h);
+            let set = e.editor.sel.iter().map(|&i| (i, v)).collect();
+            let lane = E::Lane {
+                field: mpfree_seq::notes::Field::Velocity,
+                rev: e.rev,
+                set,
+            };
+            h.act(TimeAction::Edit(lane)).unwrap();
             h.audio.receive();
             assert_eq!(
                 *h.audio.view,
@@ -10651,7 +10681,7 @@ mod tests {
                 "in place, as a compile gives"
             );
         }
-        assert_eq!(h.state().done.len(), takes + 2, "a take a drag");
+        assert_eq!(h.state().done.len(), takes + 2, "a take a stroke");
         let c = h.control.costs;
         assert_eq!(
             (c.compiles, c.notes_in_place, c.notes_compiled),
@@ -10671,6 +10701,370 @@ mod tests {
         assert!(!Arc::ptr_eq(&b.clip, &d.clip));
         assert_eq!(d.clip.notes.len(), 4);
         assert!(Arc::ptr_eq(&d.clip, &info(&mut h).clip));
+    }
+
+    /// Piano roll plan 2B.1: the clip's scale is set from the note editor
+    /// as a clip setting, a take each (UNDO takes it back, no note moves),
+    /// and saved with the clip; the editor offers the pads' scale it was
+    /// given; a drag with the scale's flag moves by its notes.
+    #[test]
+    fn the_note_editor_sets_the_clips_scale_and_undo_takes_it_back() {
+        use mpfree_seq::mpfree_scale::{DORIAN, MAJOR};
+        use mpfree_seq::Scale;
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        // A clip of pad hits takes no scale (its numbers are pads).
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let line = h
+            .act(TimeAction::Edit(E::Scale(Some(Scale::new(0, MAJOR)))))
+            .unwrap();
+        assert_eq!(line, "edit: a clip of pads has no scale");
+        // A clip of notes, which a synth's track plays, does.
+        h.control.project.tracks[0].slots[0].as_mut().unwrap().holds = mpfree_seq::Holds::Notes;
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        for (tick, note) in [(960, 60), (1920, 64)] {
+            h.act(TimeAction::Edit(E::Draw {
+                tick,
+                note,
+                len: 240,
+            }))
+            .unwrap();
+        }
+        h.set_scale_offers(Some(Scale::new(2, DORIAN)), &[("Mine".into(), 0b11, 0b11)]);
+        h.take_changed();
+        let edit = |h: &mut TimeHost| {
+            h.take_changed();
+            h.state().edit.unwrap()
+        };
+        assert_eq!(edit(&mut h).editor.offers.pads, Some(Scale::new(2, DORIAN)));
+        assert_eq!(edit(&mut h).editor.offers.own.len(), 1);
+        let line = h
+            .act(TimeAction::Edit(E::Scale(Some(Scale::new(0, MAJOR)))))
+            .unwrap();
+        assert_eq!(line, "edit: scale C Major (UNDO takes it back)");
+        h.act(TimeAction::Edit(E::Root(2))).unwrap();
+        let e = edit(&mut h);
+        assert_eq!(e.clip.scale, Some(Scale::new(2, MAJOR)));
+        let mut notes: Vec<u8> = e.clip.notes.iter().map(|n| n.note).collect();
+        notes.sort_unstable();
+        assert_eq!(notes, [0, 60, 64], "no note moved");
+        let saved = mpfree_seq::save::to_text(h.project());
+        assert!(saved.contains("\nscale D 0 2 4 5 7 9 11\n"), "{saved}");
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(edit(&mut h).clip.scale, Some(Scale::new(0, MAJOR)));
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(edit(&mut h).clip.scale, None);
+        h.act(TimeAction::Redo).unwrap();
+        // C major: the C a scale step up is D.
+        let e = edit(&mut h);
+        let c = e.clip.notes.iter().position(|n| n.note == 60).unwrap();
+        h.act(TimeAction::Edit(E::Drop {
+            index: c,
+            rev: e.rev,
+            ticks: 0,
+            notes: 1,
+            scale: true,
+        }))
+        .unwrap();
+        let mut notes: Vec<u8> = edit(&mut h).clip.notes.iter().map(|n| n.note).collect();
+        notes.sort_unstable();
+        assert_eq!(notes, [0, 62, 64]);
+    }
+
+    /// Piano roll plans 2B.2 and 2B.3: with the Chord chip on, a note
+    /// drawn puts in the chord, picked, and one UNDO takes the whole chord
+    /// back; the inspector names the picked chord. Strum opened on it
+    /// turns on the screen's preview alone (the clip and its revision
+    /// stay), and Done is one take.
+    #[test]
+    fn the_note_editor_draws_chords_and_a_tools_done_is_one_take() {
+        use mpfree_time_ui::editor::{
+            ChordShape, EditAction as E, ToolAct, ToolKind, STRUM_ROW, STRUM_TICKS,
+        };
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        h.act(TimeAction::Edit(E::Draw {
+            tick: 960,
+            note: 48,
+            len: 240,
+        }))
+        .unwrap();
+        let line = h
+            .act(TimeAction::Edit(E::Chord {
+                shape: ChordShape::Triad,
+                minor: false,
+            }))
+            .unwrap();
+        assert!(
+            line.starts_with("edit: drawing chords: Major triad"),
+            "{line}"
+        );
+        let edit = |h: &mut TimeHost| {
+            h.take_changed();
+            h.state().edit.unwrap()
+        };
+        let line = h
+            .act(TimeAction::Edit(E::Draw {
+                tick: 1920,
+                note: 62,
+                len: 960,
+            }))
+            .unwrap();
+        assert!(line.starts_with("edit: chord D drawn"), "{line}");
+        let e = edit(&mut h);
+        let mut picked: Vec<u8> = e.editor.sel.iter().map(|&i| e.clip.notes[i].note).collect();
+        picked.sort_unstable();
+        assert_eq!(picked, [62, 66, 69], "D F# A, picked");
+        assert_eq!(
+            mpfree_time_ui::view::note_cards(&e)
+                .map(|(head, _)| head)
+                .as_deref(),
+            Some("3 notes · D")
+        );
+        // Strum opens on the picks; two turns of Q1 change its preview,
+        // not the clip.
+        h.act(TimeAction::Edit(E::Row {
+            row: STRUM_ROW,
+            delta: 1,
+        }))
+        .unwrap();
+        let rev = edit(&mut h).rev;
+        for turn in 1..=2 {
+            h.act(TimeAction::Edit(E::Knob {
+                k: 0,
+                ticks: 2,
+                fine: false,
+                turn,
+            }))
+            .unwrap();
+        }
+        let e = edit(&mut h);
+        let at = |e: &mpfree_time_ui::view::EditInfo, n: u8| {
+            e.clip.notes.iter().find(|x| x.note == n).map(|x| x.tick)
+        };
+        assert_eq!(e.editor.open_tool.map(|t| t.kind), Some(ToolKind::Strum));
+        assert_eq!((e.rev, at(&e, 69)), (rev, Some(1920)), "nothing went in");
+        let (p, _) = e.editor.preview(&e.clip).unwrap();
+        let p69 = p.notes.iter().find(|x| x.note == 69).map(|x| x.tick);
+        assert_eq!(p69, Some(1920 + 8 * STRUM_TICKS));
+        // Done: one take.
+        let line = h.act(TimeAction::Edit(E::Tool(ToolAct::Done))).unwrap();
+        assert_eq!(line, "edit: 1 chord strummed");
+        let e = edit(&mut h);
+        assert_eq!(e.editor.open_tool, None);
+        assert_eq!(at(&e, 69), Some(1920 + 8 * STRUM_TICKS));
+        h.act(TimeAction::Undo).unwrap();
+        let e = edit(&mut h);
+        assert_eq!(
+            (at(&e, 62), at(&e, 66), at(&e, 69)),
+            (Some(1920), Some(1920), Some(1920))
+        );
+        // One UNDO takes the whole chord back.
+        h.act(TimeAction::Undo).unwrap();
+        let e = edit(&mut h);
+        assert_eq!((at(&e, 62), at(&e, 66), at(&e, 69)), (None, None, None));
+        assert_eq!(at(&e, 48), Some(960));
+    }
+
+    /// Piano roll plan 3A.1: pressure drawn on the Pressure lane is one
+    /// take a stroke, and UNDO brings the old pressure back. Once the
+    /// clip's pressure is past half its room, the next period tidies it
+    /// (refactor B4b): the picks stay, and UNDO and REDO still find each
+    /// stroke's pressure.
+    /// The note editor's lock lanes (piano roll plan 3A.2): a stroke
+    /// sets the lock where each note plays, as the Steps' lock lanes do
+    /// (notes in one step share a whole-step lock), one take that UNDO
+    /// takes back; ERASE + a tap takes it off; the picks stay.
+    #[test]
+    fn locks_set_on_notes_are_the_steps_locks_and_one_take() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        // A second note on step 1, and one on step 5.
+        for (tick, note) in [(0, 7), (960, 0)] {
+            h.act(TimeAction::Edit(E::Draw {
+                tick,
+                note,
+                len: 120,
+            }))
+            .unwrap();
+        }
+        let edit = |h: &mut TimeHost| {
+            h.take_changed();
+            h.state().edit.unwrap()
+        };
+        let cutoff = RelAddr::new(OnTrack::Inst, 3);
+        let locks = |h: &mut TimeHost| -> Vec<(i64, Option<u8>, f32)> {
+            let mut v: Vec<_> = edit(h)
+                .clip
+                .locks
+                .iter()
+                .filter(|l| l.addr == cutoff)
+                .map(|l| (l.tick, l.sound, l.value))
+                .collect();
+            v.sort_by_key(|l| l.0);
+            v
+        };
+        let e = edit(&mut h);
+        let at = |t: i64| e.clip.notes.iter().position(|n| n.tick == t).unwrap();
+        let (first, later) = (at(0), at(960));
+        let picks = e.editor.sel.clone();
+        let line = h
+            .act(TimeAction::Edit(E::Lock {
+                rev: e.rev,
+                addr: cutoff,
+                set: vec![(first, 800.0), (later, 1200.0)],
+            }))
+            .unwrap();
+        assert_eq!(line, "edit: 2 locks set");
+        assert_eq!(
+            locks(&mut h),
+            [(0, None, 800.0), (960, None, 1200.0)],
+            "a whole-step lock each"
+        );
+        assert_eq!(edit(&mut h).editor.sel, picks, "the picks stay");
+        // ERASE + a tap on step 5's bar.
+        let e = edit(&mut h);
+        let line = h
+            .act(TimeAction::Edit(E::Unlock {
+                rev: e.rev,
+                addr: cutoff,
+                notes: vec![later],
+            }))
+            .unwrap();
+        assert_eq!(line, "edit: lock taken off");
+        assert_eq!(locks(&mut h), [(0, None, 800.0)]);
+        // UNDO, UNDO: each a take.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(locks(&mut h).len(), 2);
+        h.act(TimeAction::Undo).unwrap();
+        assert!(locks(&mut h).is_empty());
+        // A stale picture: refused.
+        let rev = edit(&mut h).rev;
+        assert!(h
+            .act(TimeAction::Edit(E::Lock {
+                rev: rev - 1,
+                addr: cutoff,
+                set: vec![(first, 1.0)],
+            }))
+            .is_err());
+    }
+
+    #[test]
+    fn pressure_drawn_is_one_take_a_stroke_and_survives_a_tidy() {
+        use mpfree_seq::TouchPoint;
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut pads = Fake::default();
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        h.act(TimeAction::Edit(E::Draw {
+            tick: 960,
+            note: 48,
+            len: 960,
+        }))
+        .unwrap();
+        let edit = |h: &mut TimeHost| {
+            h.take_changed();
+            h.state().edit.unwrap()
+        };
+        // The pressure of the note at 960, and whether it is picked.
+        let run_of = |e: &mpfree_time_ui::view::EditInfo| -> (Vec<(u32, u8)>, bool) {
+            let i = e.clip.notes.iter().position(|n| n.tick == 960).unwrap();
+            let run = e.clip.touch_of(&e.clip.notes[i]);
+            (
+                run.iter().map(|p| (p.at, p.value)).collect(),
+                e.editor.sel.contains(&i),
+            )
+        };
+        let stroke = |h: &mut TimeHost, points: Vec<(i64, u8)>, end: i64| {
+            let rev = edit(h).rev;
+            h.act(TimeAction::Edit(E::Pressure { rev, points, end }))
+        };
+        let one = stroke(&mut h, vec![(960, 30), (1200, 90)], 1920).unwrap();
+        assert_eq!(one, "edit: pressure drawn on 1 note");
+        assert_eq!(run_of(&edit(&mut h)), (vec![(0, 30), (240, 90)], true));
+        stroke(&mut h, vec![(1440, 10)], 1920).unwrap();
+        assert_eq!(
+            run_of(&edit(&mut h)),
+            (vec![(0, 30), (240, 90), (480, 10)], true)
+        );
+        // UNDO: the old pressure.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(run_of(&edit(&mut h)).0, [(0, 30), (240, 90)]);
+        // A stale picture: refused, nothing drawn.
+        let rev = edit(&mut h).rev;
+        assert!(h
+            .act(TimeAction::Edit(E::Pressure {
+                rev: rev - 1,
+                points: vec![(960, 1)],
+                end: 1000,
+            }))
+            .is_err());
+        // Past half the room with pressure nothing names (as old strokes
+        // whose takes are gone leave); a stroke, then a period, tidies.
+        let chunk: Vec<TouchPoint> = (0..1000).map(|k| TouchPoint { at: k, value: 1 }).collect();
+        let clip = h.control.project.tracks[0].slots[0].as_mut().unwrap();
+        for _ in 0..33 {
+            clip.add_touch(&chunk).unwrap();
+        }
+        // UNDO left nothing picked (the picked note went): pick it.
+        let e = edit(&mut h);
+        if !run_of(&e).1 {
+            let i = e.clip.notes.iter().position(|n| n.tick == 960).unwrap();
+            h.act(TimeAction::Edit(E::Note {
+                index: i,
+                rev: e.rev,
+            }))
+            .unwrap();
+        }
+        let three = stroke(&mut h, vec![(1680, 64)], 1920).unwrap();
+        assert_eq!(three, "edit: pressure drawn on 1 note");
+        let rev = edit(&mut h).rev;
+        run(&mut h, &mut pads, u64::from(PERIOD), &[]);
+        let (freed, times) = h.control.touch_freed();
+        assert!(freed >= 33_000 && times == 1, "{freed} {times}");
+        let e = edit(&mut h);
+        assert!(e.clip.touch.len() < 100, "{}", e.clip.touch.len());
+        assert!(e.rev > rev, "the picture moved on");
+        assert_eq!(
+            run_of(&e),
+            (vec![(0, 30), (240, 90), (720, 64)], true),
+            "the picks stay"
+        );
+        // UNDO and REDO find each stroke's pressure.
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(run_of(&edit(&mut h)).0, [(0, 30), (240, 90)]);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(run_of(&edit(&mut h)).0, []);
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(run_of(&edit(&mut h)).0, [(0, 30), (240, 90)]);
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(run_of(&edit(&mut h)).0, [(0, 30), (240, 90), (720, 64)]);
     }
 
     /// Piano roll plan 0C.2: the copy of the clip the screen reads carries
@@ -10707,6 +11101,7 @@ mod tests {
             rev,
             ticks: 240,
             notes: 2,
+            scale: false,
         }))
         .unwrap();
         let a = answer(&mut h);
@@ -10730,6 +11125,266 @@ mod tests {
             matches!(&a.outcome, O::Refused(why) if why.contains("the clip changed")),
             "{a:?}"
         );
+    }
+
+    /// COPY + a note copies the picked notes, apart from the clip, and
+    /// COPY + empty space pastes them, here or in another track's clip,
+    /// as one take: their pressure comes along, and a lock another track
+    /// may not have the setting of is left out and said (piano roll plan
+    /// 1B.4).
+    #[test]
+    fn the_note_editor_copies_notes_into_another_tracks_clip() {
+        use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::{Lock, TouchPoint};
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for step in [0, 4] {
+            h.step_action(StepAction::Tap {
+                pad: 0,
+                step,
+                velocity: 100,
+            })
+            .unwrap();
+        }
+        let p = |at, value| TouchPoint { at, value };
+        let cut = RelAddr::new(OnTrack::Inst, 1);
+        let level = RelAddr::new(OnTrack::Strip, 0);
+        {
+            let c = h.control.project.tracks[0].slots[0].as_mut().unwrap();
+            let i = c.notes.iter().position(|n| n.tick == 0).unwrap();
+            c.notes[i].touch = c.add_touch(&[p(0, 30), p(60, 90)]).unwrap();
+            let note = c.notes[i].note;
+            c.add_lock(Lock::new(0, Some(note), cut, 900.0)).unwrap();
+            c.add_lock(Lock::new(0, Some(note), level, 0.25)).unwrap();
+        }
+        h.control.project.tracks[1].slots[0] = Some(Clip::new("Chorus", 3840));
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let why = h.act(TimeAction::Edit(E::Paste { tick: 0 })).unwrap_err();
+        assert!(why.contains("nothing copied yet"), "{why}");
+        let st = h.state().edit.unwrap();
+        let first = st.clip.notes.iter().position(|n| n.tick == 0).unwrap();
+        let said = h
+            .act(TimeAction::Edit(E::Copy {
+                index: first,
+                rev: st.rev,
+            }))
+            .unwrap();
+        let name = st.clip.name.clone();
+        assert_eq!(
+            h.state().notes_copied.as_deref(),
+            Some(format!("1 note from {name}").as_str()),
+            "{said}"
+        );
+        assert_eq!(h.state().edit.unwrap().editor.sel, [first], "picked");
+        // Into track 2's clip: the pressure comes, the synth's lock not.
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        // Not pad hits into a clip of notes.
+        h.control.project.tracks[1].slots[0].as_mut().unwrap().holds = mpfree_seq::Holds::Notes;
+        let why = h.act(TimeAction::Edit(E::Paste { tick: 480 })).unwrap_err();
+        assert!(
+            why.contains("Chorus holds notes and the copy is pad hits"),
+            "{why}"
+        );
+        // Its pressure nearly full of runs nothing names: taken back first.
+        {
+            let c = h.control.project.tracks[1].slots[0].as_mut().unwrap();
+            c.holds = mpfree_seq::Holds::Hits;
+            c.touch = vec![p(0, 1); mpfree_seq::MAX_TOUCH_POINTS - 1];
+        }
+        let takes = h.state().done.len();
+        let said = h.act(TimeAction::Edit(E::Paste { tick: 480 })).unwrap();
+        let track = h.control.project.tracks[1].name.clone();
+        assert!(
+            said.starts_with(&format!("paste: 1 note from {name} into Chorus on {track}")),
+            "{said}"
+        );
+        assert!(
+            said.ends_with(&format!(
+                "1 lock left out, as {track} may not have its setting: 1 on the instrument"
+            )),
+            "{said}"
+        );
+        let c = h.control.project.clip(1, 0).unwrap().clone();
+        assert_eq!(c.notes.len(), 1);
+        assert_eq!(c.notes[0].tick, 480);
+        assert_eq!(c.touch_of(&c.notes[0]), [p(0, 30), p(60, 90)]);
+        assert_eq!(c.touch.len(), 2, "the room nothing named was taken back");
+        assert_eq!(
+            c.locks,
+            [Lock::new(480, Some(c.notes[0].note), level, 0.25)]
+        );
+        let st = h.state();
+        assert_eq!(st.done.len(), takes + 1, "one take");
+        assert_eq!(st.edit.unwrap().editor.sel, [0], "the pasted notes picked");
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.control.project.clip(1, 0).unwrap().notes.is_empty());
+        // Back on track 1, both locks come with a paste.
+        h.act(TimeAction::Arm(Some(0))).unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let said = h.act(TimeAction::Edit(E::Paste { tick: 1920 })).unwrap();
+        assert!(!said.contains("left out"), "{said}");
+        let c = h.control.project.clip(0, 0).unwrap();
+        assert_eq!(c.locks.iter().filter(|l| l.tick == 1920).count(), 2);
+    }
+
+    /// A lock on the synth pastes into another track's clip when that
+    /// track plays the same synth (refactor F1), not when it plays
+    /// another, nor into a clip whose synth locks were made for another.
+    #[test]
+    fn a_synth_lock_pastes_onto_a_track_that_plays_the_same_synth() {
+        use mpfree_node::Node;
+        use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::Lock;
+        use mpfree_time_ui::editor::EditAction as E;
+        let poly = crate::synth::engine_node("mpfree.poly", RATE).unwrap();
+        let fm = crate::synth::engine_node("mpfree.fm", RATE).unwrap();
+        let of = |n: &dyn Node| -> Option<InstRef> { Some((n.info(), n.params())) };
+        let cutoff = poly.params().iter().find(|p| p.name == "Cutoff").unwrap();
+        let cut = RelAddr::new(OnTrack::Inst, cutoff.id);
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.set_instruments(&[of(&*poly), of(&*poly), of(&*fm)]);
+        h.step_action(StepAction::Tap {
+            pad: 0,
+            step: 0,
+            velocity: 100,
+        })
+        .unwrap();
+        {
+            let c = h.control.project.tracks[0].slots[0].as_mut().unwrap();
+            let note = c.notes[0].note;
+            c.add_lock(Lock::new(0, Some(note), cut, 0.7)).unwrap();
+        }
+        for t in [1, 2] {
+            h.control.project.tracks[t].slots[0] = Some(Clip::new("Verse", 3840));
+        }
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        // The lock put in by hand gets its tag with the first action, so
+        // the picture moves on once.
+        let why = h.act(TimeAction::Edit(E::Paste { tick: 0 })).unwrap_err();
+        assert!(why.contains("nothing copied yet"), "{why}");
+        let st = h.state().edit.unwrap();
+        h.act(TimeAction::Edit(E::Copy {
+            index: 0,
+            rev: st.rev,
+        }))
+        .unwrap();
+        let paste = |h: &mut TimeHost, track: usize| {
+            h.act(TimeAction::Arm(Some(track))).unwrap();
+            h.act(TimeAction::Edit(E::Open)).unwrap();
+            h.act(TimeAction::Edit(E::Paste { tick: 480 })).unwrap()
+        };
+        // Track 2 plays Poly too: the lock comes, and the clip's locks are
+        // now made for Poly.
+        let said = paste(&mut h, 1);
+        assert!(!said.contains("left out"), "{said}");
+        let c = h.control.project.clip(1, 0).unwrap();
+        assert_eq!(c.locks.len(), 1);
+        assert_eq!(c.locks[0].addr, cut);
+        assert_eq!(
+            c.made_for.as_ref().map(|m| m.node.as_str()),
+            Some("mpfree.poly")
+        );
+        // Track 3 plays FM: left out, and said.
+        let said = paste(&mut h, 2);
+        let fm_track = h.control.project.tracks[2].name.clone();
+        assert!(
+            said.ends_with(&format!(
+                "1 lock left out, as {fm_track} may not have its setting: \
+                 1 on the instrument (made for Poly, {fm_track} plays FM)"
+            )),
+            "{said}"
+        );
+        assert!(h.control.project.clip(2, 0).unwrap().locks.is_empty());
+        // A clip on track 2 whose synth locks were made for FM takes none
+        // of Poly's.
+        h.act(TimeAction::Undo).unwrap();
+        h.act(TimeAction::Arm(Some(1))).unwrap();
+        h.act(TimeAction::Undo).unwrap();
+        {
+            let c = h.control.project.tracks[1].slots[0].as_mut().unwrap();
+            c.add_lock(Lock::new(960, None, cut, 0.1)).unwrap();
+            c.made_for = Some(mpfree_seq::inst::Inst {
+                node: "mpfree.fm".into(),
+                name: "FM".into(),
+                params: vec![],
+            });
+        }
+        let said = paste(&mut h, 1);
+        assert!(
+            said.ends_with("1 on the instrument (Verse's are made for FM)"),
+            "{said}"
+        );
+        assert_eq!(h.control.project.clip(1, 0).unwrap().locks.len(), 1);
+    }
+
+    /// The note inspector (piano roll plan 1C.1): every detent of a turn,
+    /// whichever knob, goes in at once and joins one take; the next turn is
+    /// another; UNDO takes a turn back whole. – / + nudge as the Nudge row.
+    #[test]
+    fn the_note_inspector_makes_one_take_a_turn() {
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        for step in [0, 4] {
+            h.step_action(StepAction::Tap {
+                pad: 0,
+                step,
+                velocity: 100,
+            })
+            .unwrap();
+        }
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        h.act(TimeAction::Edit(E::Choose(0))).unwrap();
+        assert_eq!(h.state().edit.unwrap().editor.sel.len(), 2, "All");
+        let notes = |h: &TimeHost| {
+            let mut v: Vec<(Tick, u8, u8)> = h
+                .control
+                .project
+                .clip(0, 0)
+                .unwrap()
+                .notes
+                .iter()
+                .map(|n| (n.tick, n.note, n.velocity))
+                .collect();
+            v.sort_unstable();
+            v
+        };
+        let before = notes(&h);
+        let takes = h.state().done.len();
+        for (k, ticks) in [(0, 1), (3, -10), (0, 1)] {
+            h.act(TimeAction::Edit(E::Knob {
+                k,
+                ticks,
+                fine: false,
+                turn: 1,
+            }))
+            .unwrap();
+        }
+        assert_eq!(h.state().done.len(), takes + 1, "one take a turn");
+        let turned = notes(&h);
+        let pad = before[0].1;
+        assert_eq!(turned, [(480, pad, 90), (1440, pad, 90)]);
+        h.act(TimeAction::Edit(E::Knob {
+            k: 2,
+            ticks: 1,
+            fine: false,
+            turn: 2,
+        }))
+        .unwrap();
+        assert_eq!(h.state().done.len(), takes + 2, "the next turn, another");
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(notes(&h), turned);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(notes(&h), before, "the whole turn back");
+        // – / +: a snap later, the picks kept.
+        h.act(TimeAction::Edit(E::Choose(0))).unwrap();
+        h.act(TimeAction::Edit(E::Nudge {
+            steps: 1,
+            fine: false,
+        }))
+        .unwrap();
+        assert_eq!(notes(&h)[0].0, 240);
+        assert_eq!(h.state().edit.unwrap().editor.sel.len(), 2);
     }
 
     /// An editor edit that what plays can't follow (the play view would not
@@ -12499,7 +13154,7 @@ mod tests {
     /// (`time_action`'s `act_then`) and answer as together does, in the
     /// same order and words: a pick, a move, a tap made on the picture
     /// from before the move's answer came back (refused: the clip changed
-    /// under the finger), a velocity drag, Draw, a drawn note, ERASE + a
+    /// under the finger), a stroke along the velocity lane, Draw, a drawn note, ERASE + a
     /// tap, UNDO. The copy the screen reads comes to match together's:
     /// the clip, its revision, the picks and the last touch's answer.
     #[test]
@@ -12535,10 +13190,19 @@ mod tests {
             rev,
             ticks: 240,
             notes: 2,
+            scale: false,
         };
         touch(&mut together, drop, &note);
         touch(&mut together, E::Tap { index: 0, rev }, &note);
-        touch(&mut together, E::Velocity(0.5), &note);
+        // A stroke along the velocity lane over the picks (plan 2A.1).
+        let now = info(&mut together);
+        let lane = E::Lane {
+            field: mpfree_seq::notes::Field::Velocity,
+            rev: now.rev,
+            set: now.editor.sel.iter().map(|&i| (i, 64)).collect(),
+        };
+        assert!(!now.editor.sel.is_empty());
+        touch(&mut together, lane, &note);
         touch(&mut together, E::Button(2), &note);
         touch(&mut together, E::Empty { tick: 480, note: 5 }, &note);
         let drawn = info(&mut together);
@@ -12551,11 +13215,39 @@ mod tests {
         let rev = drawn.rev;
         touch(&mut together, E::Erase { index, rev }, &note);
         touch(&mut together, E::Note { index: 0, rev }, &note);
-        let r = together
-            .act_then(TimeAction::Undo, Say::Undo)
-            .expect("together");
-        sent.push((TimeAction::Undo, Say::Undo));
-        want.push((Say::Undo, r));
+        // COPY + a note, then COPY + empty roll (plan 1B.4): a paste; then
+        // a Q-Link turn of two detents on the pasted notes (plan 1C.1), one
+        // take. The first UNDO takes the turn back, the second the paste,
+        // the third the erase.
+        let rev = info(&mut together).rev;
+        touch(&mut together, E::Copy { index: 0, rev }, &note);
+        touch(&mut together, E::Paste { tick: 2000 }, &note);
+        assert!(info(&mut together)
+            .clip
+            .notes
+            .iter()
+            .any(|n| n.tick == 2000));
+        for ticks in [1, 1] {
+            let k = E::Knob {
+                k: 0,
+                ticks,
+                fine: true,
+                turn: 1,
+            };
+            touch(&mut together, k, &note);
+        }
+        assert!(info(&mut together)
+            .clip
+            .notes
+            .iter()
+            .any(|n| n.tick == 2008));
+        for _ in 0..3 {
+            let r = together
+                .act_then(TimeAction::Undo, Say::Undo)
+                .expect("together");
+            sent.push((TimeAction::Undo, Say::Undo));
+            want.push((Say::Undo, r));
+        }
         let refused = |r: &Result<String, String>| {
             r.as_ref()
                 .is_err_and(|why| why.contains("the clip changed under your finger"))
@@ -12565,9 +13257,11 @@ mod tests {
             2,
             "the tap from before the move and the pick from before the erase: {want:?}"
         );
-        // UNDO took the erase back: the drawn note is there again.
+        // UNDO took the paste and the erase back: the drawn note is there
+        // again.
         let end = info(&mut together);
         assert!(end.clip.notes.iter().any(|n| (n.tick, n.note) == (480, 5)));
+        assert!(!end.clip.notes.iter().any(|n| n.tick == 2000));
         // Apart: every touch sent at once, as a quick hand does.
         let (mut h, why) = host_with_a_clip().into_apart();
         assert_eq!(why, None);
@@ -12584,8 +13278,8 @@ mod tests {
         let a = h.state().edit.expect("open").answer;
         assert_eq!(a, end.answer);
         assert!(
-            matches!(a.outcome, O::Refused(_)),
-            "the last editor touch was the stale pick: {a:?}"
+            matches!(a.outcome, O::Taken { .. }),
+            "the last editor touch was the turn: {a:?}"
         );
         // A new copy for something else (a track added) shares the clip
         // while it is unchanged (plan 0C.1), so the roll isn't built again.
