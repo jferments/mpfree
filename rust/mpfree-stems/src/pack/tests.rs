@@ -203,7 +203,7 @@ fn a_checkpoint_packs_to_the_model_of_its_weights() {
     assert_eq!(report.kernels, 4 * kernels as u64);
     let read = Model::read_shaped(&file[..], shape).unwrap();
     let mut it = want.into_iter();
-    let built = Model::build(shape, |_, _| it.next().unwrap());
+    let built = Model::build(shape, |_, _| crate::net::Values::F32(it.next().unwrap()));
     assert!(read
         .stems
         .iter()

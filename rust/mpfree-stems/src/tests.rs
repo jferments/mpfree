@@ -1,5 +1,5 @@
 use super::*;
-use crate::net::{Kind, Shape};
+use crate::net::{Kind, Shape, Values};
 
 /// A small network, the same code as Spleeter's: 64-frame segments
 /// (1.5 s), narrow layers.
@@ -23,9 +23,11 @@ fn noise(n: usize, seed: u32, level: f32) -> Vec<f32> {
 /// Every weight zero, every batch norm the identity: each U-Net's mask is
 /// sigmoid(0) = 1/2, so each stem's soft mask is 1/4.
 fn quarters() -> Model {
-    Model::build(SMALL, |n, kind| match kind {
-        Kind::Scale => vec![1.0; n],
-        _ => vec![0.0; n],
+    Model::build(SMALL, |n, kind| {
+        Values::F32(match kind {
+            Kind::Scale => vec![1.0; n],
+            _ => vec![0.0; n],
+        })
     })
 }
 
@@ -233,4 +235,29 @@ fn spleeters_promise_is_about_76_mb_at_1024_bins_and_97_at_1536() {
     let (narrow, full) = (mb(Band::Spleeter), mb(Band::Full));
     assert!((70.0..82.0).contains(&narrow), "{narrow} MB");
     assert!((90.0..105.0).contains(&full), "{full} MB");
+}
+
+/// For counting instructions under qemu-arm (`-d in_asm,exec,nochain`):
+/// one 64-frame segment at full band on one thread. Each layer has an
+/// eighth of a real segment's rows, so its work is an eighth too, in the
+/// same proportions between the stages.
+#[test]
+#[ignore]
+fn profile_a_short_segment() {
+    let shape = Shape {
+        rows: 64,
+        ..Shape::SPLEETER
+    };
+    let model = Model::synthetic_shaped(shape, 1);
+    // 60 hops: with the leading window, exactly 64 frames.
+    let input = noise(60 * HOP * 2, 3, 0.3);
+    let mut sep = Separator::at(&model, &input, 2, Band::Full.bins(), true, 1).unwrap();
+    let mut keep = Keep::default();
+    while sep.step(&mut keep).unwrap() {}
+    let s = sep.stats();
+    assert_eq!(s.segments, 1);
+    println!(
+        "STFT {:?}, U-Nets {:?} (unpacking {:?}), masks {:?}, {} multiply-adds",
+        s.analyse, s.nets, s.unpack, s.masks, s.macs
+    );
 }

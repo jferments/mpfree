@@ -10,7 +10,7 @@
 //! Spleeter's 4stems.
 
 use crate::half::is_weight;
-use crate::net::{Kind, Shape, Unet};
+use crate::net::{Kind, Shape, Unet, Values};
 use crate::Error;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -57,13 +57,13 @@ impl Model {
         let model = Model::build(shape, |n, kind| {
             at += 1;
             if fail.is_some() {
-                return vec![0.0; n];
+                return Values::F32(vec![0.0; n]);
             }
             match read_tensor(&mut r, n, kind) {
                 Ok(v) => v,
                 Err(m) => {
                     fail = Some(bad(format!("tensor {at}: {m}")));
-                    vec![0.0; n]
+                    Values::F32(vec![0.0; n])
                 }
             }
         });
@@ -87,12 +87,14 @@ impl Model {
 
     pub(crate) fn synthetic_shaped(shape: Shape, seed: u32) -> Model {
         let mut tensors = synthetic_tensors(shape, seed);
-        Model::build(shape, |_, _| tensors.next().expect("a tensor per entry"))
+        Model::build(shape, |_, _| {
+            Values::F32(tensors.next().expect("a tensor per entry"))
+        })
     }
 
     /// The four stems' networks from their tensors in file order:
     /// `next(values, kind)` gives each.
-    pub(crate) fn build(shape: Shape, mut next: impl FnMut(usize, Kind) -> Vec<f32>) -> Model {
+    pub(crate) fn build(shape: Shape, mut next: impl FnMut(usize, Kind) -> Values) -> Model {
         let layout = shape.stem_layout();
         let stems = (0..STEMS)
             .map(|_| {
@@ -142,7 +144,9 @@ pub(crate) fn synthetic_tensors(shape: Shape, seed: u32) -> impl Iterator<Item =
     })
 }
 
-fn read_tensor(r: &mut impl Read, want: usize, kind: Kind) -> Result<Vec<f32>, String> {
+/// One tensor: a kernel's halves as they are (checked, never widened), the
+/// rest f32.
+fn read_tensor(r: &mut impl Read, want: usize, kind: Kind) -> Result<Values, String> {
     let mut word = || -> Result<u32, String> {
         let mut b = [0u8; 4];
         r.read_exact(&mut b).map_err(|_| "cut short".to_string())?;
@@ -161,11 +165,24 @@ fn read_tensor(r: &mut impl Read, want: usize, kind: Kind) -> Result<Vec<f32>, S
     let mut raw = vec![0u8; size * n];
     r.read_exact(&mut raw)
         .map_err(|_| "cut short".to_string())?;
-    let v: Vec<f32> = if size == 4 {
-        raw.chunks_exact(4)
+    if matches!(kind, Kind::Kernel(_)) != (tag == F16) {
+        return Err(if tag == F16 {
+            "halves that aren't a kernel's".into()
+        } else {
+            "a kernel not in halves".into()
+        });
+    }
+    if size == 4 {
+        let v: Vec<f32> = raw
+            .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect()
+            .collect();
+        if v.iter().any(|x| !x.is_finite()) {
+            return Err("a value that is not finite".into());
+        }
+        Ok(Values::F32(v))
     } else {
+        // A normal half or a zero is finite, and widens exactly.
         let halves: Vec<u16> = raw
             .chunks_exact(2)
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
@@ -175,18 +192,8 @@ fn read_tensor(r: &mut impl Read, want: usize, kind: Kind) -> Result<Vec<f32>, S
                 "a half ({h:#06x}) that is not a normal number or zero"
             ));
         }
-        halves
-            .iter()
-            .map(|&h| mpfree_simd::plain::half(h))
-            .collect()
-    };
-    if v.iter().any(|x| !x.is_finite()) {
-        return Err("a value that is not finite".into());
+        Ok(Values::Half(halves))
     }
-    if matches!(kind, Kind::Kernel(_)) && tag != F16 {
-        return Err("a kernel not in halves".into());
-    }
-    Ok(v)
 }
 
 /// Writes a model file: every stem's tensors in file order from
@@ -293,9 +300,15 @@ mod tests {
         let mut count = good.clone();
         count[16] ^= 1;
         refuse(&count, "values, not");
-        let mut kind = good;
+        let mut kind = good.clone();
         kind[12] = 9;
         refuse(&kind, "unknown kind");
+        // The second tensor (the first bias, after the first kernel's 100
+        // halves) said to be halves.
+        let mut bias = good;
+        assert_eq!(bias[220], 1);
+        bias[220] = 2;
+        refuse(&bias, "aren't a kernel's");
     }
 
     #[test]

@@ -48,8 +48,8 @@ impl Work {
 }
 
 impl PackedB {
-    /// B from `get(row, column)`, each value rounded to a half.
-    pub fn new(k: usize, n: usize, get: impl Fn(usize, usize) -> f32) -> PackedB {
+    /// B from `get(row, column)`, each value a half.
+    pub fn new(k: usize, n: usize, get: impl Fn(usize, usize) -> u16) -> PackedB {
         let panels = n.div_ceil(NR);
         let mut halves = Vec::with_capacity(k * panels * NR);
         let mut k0 = 0;
@@ -59,8 +59,7 @@ impl PackedB {
                 for kk in 0..kc {
                     for j in 0..NR {
                         let col = p * NR + j;
-                        let v = if col < n { get(k0 + kk, col) } else { 0.0 };
-                        halves.push(crate::half::to_f16(v));
+                        halves.push(if col < n { get(k0 + kk, col) } else { 0 });
                     }
                 }
             }
@@ -187,7 +186,7 @@ mod tests {
         ] {
             let a: Vec<f32> = (0..m * k).map(|_| rnd()).collect();
             let bm: Vec<f32> = (0..k * n).map(|_| rnd()).collect();
-            let pb = PackedB::new(k, n, |r, c| bm[r * n + c]);
+            let pb = PackedB::new(k, n, |r, c| crate::half::to_f16(bm[r * n + c]));
             let mut work = Work::new(pb.len());
             let mut ap = Vec::new();
             pack_a(&a, m, k, &mut ap);
@@ -214,8 +213,8 @@ mod tests {
 
     #[test]
     fn unpacking_never_grows_the_scratch_past_the_widest() {
-        let big = PackedB::new(300, 20, |r, c| (r + c) as f32);
-        let small = PackedB::new(7, 3, |r, c| (r * c) as f32);
+        let big = PackedB::new(300, 20, |r, c| (r + c) as u16);
+        let small = PackedB::new(7, 3, |r, c| (r * c) as u16);
         let mut work = Work::new(big.len());
         let cap = work.scratch.capacity();
         for b in [&small, &big, &small] {

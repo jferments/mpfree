@@ -51,6 +51,40 @@ fn sigmoid(x: f32) -> f32 {
 /// The network's shape: the encoder's filters (the decoder's mirror them)
 /// and the rows of a segment. Spleeter's is [`Shape::SPLEETER`]; the tests
 /// run the same code on small ones.
+/// A tensor's values as they come: from a model file (kernels as their
+/// halves, the rest f32) or made in f32 (seeded weights, tests). A kernel
+/// goes into the network as halves either way, so a model file's are
+/// packed as they are, never through f32 and back.
+pub(crate) enum Values {
+    F32(Vec<f32>),
+    Half(Vec<u16>),
+}
+
+impl Values {
+    pub fn len(&self) -> usize {
+        match self {
+            Values::F32(v) => v.len(),
+            Values::Half(v) => v.len(),
+        }
+    }
+
+    /// As halves: f32 values rounded to their nearest.
+    pub fn halves(self) -> Vec<u16> {
+        match self {
+            Values::F32(v) => v.iter().map(|&x| crate::half::to_f16(x)).collect(),
+            Values::Half(v) => v,
+        }
+    }
+
+    /// As f32: halves widened exactly.
+    pub fn floats(self) -> Vec<f32> {
+        match self {
+            Values::F32(v) => v,
+            Values::Half(v) => v.iter().map(|&h| mpfree_simd::plain::half(h)).collect(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Shape {
     pub filters: [usize; 6],
@@ -307,29 +341,29 @@ pub(crate) fn run_gather(
                     while gx0 < at.grid_w {
                         let m = tile.min(at.grid_w - gx0);
                         let rp = m.div_ceil(MR);
-                        for p in 0..rp * MR {
-                            let (pn, lane) = (p / MR, p % MR);
-                            let gx = gx0 + p;
+                        // A row panel's four pixels share their row, so a
+                        // tap reads one input row for all four lanes.
+                        for pn in 0..rp {
                             for (t, &(dy, dx)) in g.taps.iter().enumerate() {
                                 let iy = (gy * g.stride) as i32 + dy;
-                                let ix = (gx * g.stride) as i32 + dx;
+                                let row = (iy >= 0 && (iy as usize) < ih).then_some(iy as usize);
+                                let px: [Option<usize>; MR] = std::array::from_fn(|lane| {
+                                    let p = pn * MR + lane;
+                                    let ix = ((gx0 + p) * g.stride) as i32 + dx;
+                                    let inside = p < m && ix >= 0 && (ix as usize) < iw;
+                                    row.filter(|_| inside).map(|y| y * iw + ix as usize)
+                                });
                                 let col = t * g.cin;
-                                let inside = p < m
-                                    && iy >= 0
-                                    && ix >= 0
-                                    && (iy as usize) < ih
-                                    && (ix as usize) < iw;
-                                if !inside {
-                                    put(&mut packed, k, rp, pn, lane, col, &zeros);
-                                    continue;
-                                }
-                                let px = iy as usize * iw + ix as usize;
                                 let ca = input.a.c;
-                                let a = &input.a.data[px * ca..(px + 1) * ca];
-                                put(&mut packed, k, rp, pn, lane, col, a);
+                                let a = px.map(|q| {
+                                    q.map_or(&zeros[..ca], |q| &input.a.data[q * ca..(q + 1) * ca])
+                                });
+                                put4(&mut packed, k, rp, pn, col, a);
                                 if let Some(b) = input.b {
-                                    let bp = &b.data[px * b.c..(px + 1) * b.c];
-                                    put(&mut packed, k, rp, pn, lane, col + ca, bp);
+                                    let bp = px.map(|q| {
+                                        q.map_or(&zeros[..b.c], |q| &b.data[q * b.c..(q + 1) * b.c])
+                                    });
+                                    put4(&mut packed, k, rp, pn, col + ca, bp);
                                 }
                             }
                         }
@@ -360,20 +394,26 @@ pub(crate) fn run_gather(
     });
 }
 
-/// Values for columns `col..` of packed row (pn, lane), in
-/// [`pack_a`]'s layout: KC blocks of row panels, each panel kc columns of
-/// MR lanes.
+/// Four lanes' values for columns `col..` of row panel `pn`, in
+/// [`pack_a`]'s layout (KC blocks of row panels, each panel kc columns of
+/// MR lanes): each column's four lanes side by side, as the kernel reads
+/// them. The four sources are as long as each other.
 #[inline]
-fn put(packed: &mut [f32], k: usize, rp: usize, pn: usize, lane: usize, col: usize, src: &[f32]) {
+fn put4(packed: &mut [f32], k: usize, rp: usize, pn: usize, col: usize, src: [&[f32]; MR]) {
+    const { assert!(MR == 4) };
+    let n = src[0].len();
+    debug_assert!(src.iter().all(|s| s.len() == n));
     let (mut col, mut i) = (col, 0);
-    while i < src.len() {
+    while i < n {
         let (b, kk) = (col / KC, col % KC);
         let kc = KC.min(k - b * KC);
-        let run = (KC - kk).min(src.len() - i);
-        let mut off = b * KC * rp * MR + pn * kc * MR + kk * MR + lane;
-        for &v in &src[i..i + run] {
-            packed[off] = v;
-            off += MR;
+        let run = (KC - kk).min(n - i);
+        let off = b * KC * rp * MR + pn * kc * MR + kk * MR;
+        let (dst, _) = packed[off..off + run * MR].as_chunks_mut::<MR>();
+        let [s0, s1, s2, s3] = src.map(|s| &s[i..i + run]);
+        let lanes = s0.iter().zip(s1).zip(s2.iter().zip(s3));
+        for (d, ((&a, &b), (&c, &e))) in dst.iter_mut().zip(lanes) {
+            *d = [a, b, c, e];
         }
         i += run;
         col += run;
@@ -390,8 +430,9 @@ pub(crate) struct Scatter {
 }
 
 impl Scatter {
-    /// From TF's kernel [5, 5, cout = 1, cin]: column kh·5 + kw, row ci.
-    fn new(kernel: &[f32], bias: &[f32], cin: usize) -> Scatter {
+    /// From TF's kernel [5, 5, cout = 1, cin] as halves: column kh·5 + kw,
+    /// row ci.
+    fn new(kernel: &[u16], bias: &[f32], cin: usize) -> Scatter {
         let b = PackedB::new(cin, 25, |ci, t| kernel[t * cin + ci]);
         Scatter {
             cin,
@@ -543,8 +584,9 @@ pub(crate) fn run_mask(
     });
 }
 
-/// A 5×5 stride-2 'same' convolution from TF's kernel [5, 5, cin, cout].
-fn conv_s2(kernel: &[f32], bias: &[f32], cin: usize, cout: usize) -> Gather {
+/// A 5×5 stride-2 'same' convolution from TF's kernel [5, 5, cin, cout]
+/// as halves.
+fn conv_s2(kernel: &[u16], bias: &[f32], cin: usize, cout: usize) -> Gather {
     let taps = (0..25).map(|t| (t / 5 - 1, t % 5 - 1)).collect();
     let b = PackedB::new(25 * cin, cout, |r, c| kernel[r * cout + c]);
     Gather {
@@ -558,11 +600,11 @@ fn conv_s2(kernel: &[f32], bias: &[f32], cin: usize, cout: usize) -> Gather {
 }
 
 /// One output parity (py, px) of a 5×5 stride-2 'same' transposed
-/// convolution, TF kernel [5, 5, cout, cin]: output (2i + py, 2j + px)
+/// convolution, TF kernel [5, 5, cout, cin] as halves: output (2i + py, 2j + px)
 /// takes input (i + (py + 1 − kh) / 2, j + (px + 1 − kw) / 2) for the kh,
 /// kw of its parity.
 fn deconv_part(
-    kernel: &[f32],
+    kernel: &[u16],
     bias: &[f32],
     cin: usize,
     cout: usize,
@@ -582,11 +624,13 @@ fn deconv_part(
             which.push((kh, kw));
         }
     }
-    let b = PackedB::new(taps.len() * cin, cout, |r, co| {
-        let (t, ci) = (r / cin, r % cin);
-        let (kh, kw) = which[t];
-        kernel[((kh * 5 + kw) * cout + co) * cin + ci]
-    });
+    // Where each row (tap t, input channel ci) starts in the kernel; its
+    // output channels are cin apart.
+    let rows: Vec<usize> = which
+        .iter()
+        .flat_map(|&(kh, kw)| (0..cin).map(move |ci| (kh * 5 + kw) * cout * cin + ci))
+        .collect();
+    let b = PackedB::new(rows.len(), cout, |r, co| kernel[rows[r] + co * cin]);
     Gather {
         taps,
         stride: 1,
@@ -618,23 +662,20 @@ pub(crate) struct Unet {
 
 impl Unet {
     /// From the stem's tensors in file order ([`Shape::stem_layout`]).
-    pub fn build(shape: &Shape, mut next: impl FnMut() -> Vec<f32>) -> Unet {
+    pub fn build(shape: &Shape, mut next: impl FnMut() -> Values) -> Unet {
         let mut enc = Vec::new();
         let mut cin = 2;
         for &f in &shape.filters {
-            let (k, b) = (next(), next());
+            let (k, b) = (next().halves(), next().floats());
             enc.push(conv_s2(&k, &b, cin, f));
             cin = f;
         }
-        let (mk, mask_b) = (next(), next());
-        let mask_w = mk
-            .iter()
-            .map(|&v| mpfree_simd::plain::half(crate::half::to_f16(v)))
-            .collect();
+        let (mk, mask_b) = (next().halves(), next().floats());
+        let mask_w = mk.iter().map(|&h| mpfree_simd::plain::half(h)).collect();
         let (outs, ins) = (shape.outs(), shape.ins());
         let mut dec = Vec::new();
         for j in 0..6 {
-            let (k, b) = (next(), next());
+            let (k, b) = (next().halves(), next().floats());
             if j == 5 {
                 dec.push(Deconv::Scatter(Scatter::new(&k, &b, ins[j])));
                 continue;
@@ -647,7 +688,9 @@ impl Unet {
             }
             dec.push(Deconv::Parts(parts, outs[j]));
         }
-        let bn = (0..12).map(|_| (next(), next())).collect();
+        let bn = (0..12)
+            .map(|_| (next().floats(), next().floats()))
+            .collect();
         Unet {
             enc,
             dec,
@@ -934,6 +977,10 @@ mod tests {
         }
     }
 
+    fn halves(k: &[f32]) -> Vec<u16> {
+        k.iter().map(|&v| crate::half::to_f16(v)).collect()
+    }
+
     /// Weights as the network holds them: each its half.
     fn halved(k: &[f32]) -> Vec<f32> {
         k.iter()
@@ -960,7 +1007,7 @@ mod tests {
             let k = r.vec(25 * cin * cout, 0.3);
             let bias = r.vec(cout, 0.1);
             let (scale, shift) = (r.vec(cout, 1.0), r.vec(cout, 0.2));
-            let g = conv_s2(&k, &bias, cin, cout);
+            let g = conv_s2(&halves(&k), &bias, cin, cout);
             let (oh, ow) = (h.div_ceil(2), w.div_ceil(2));
             let (mut out, mut next) = (Tensor::zeros(oh, ow, cout), Tensor::zeros(oh, ow, cout));
             let mut work = Work::new(g.b.len());
@@ -1012,7 +1059,7 @@ mod tests {
             let mut work = Work::new(25 * cin * 2 * cout);
             for py in 0..2 {
                 for px in 0..2 {
-                    let g = deconv_part(&k, &bias, cin, cout, py, px);
+                    let g = deconv_part(&halves(&k), &bias, cin, cout, py, px);
                     let at = Place {
                         grid_h: h,
                         grid_w: w,
@@ -1055,7 +1102,7 @@ mod tests {
             let cin = ca + cb;
             let k = r.vec(25 * cin, 0.3);
             let bias = r.vec(1, 0.1);
-            let s = Scatter::new(&k, &bias, cin);
+            let s = Scatter::new(&halves(&k), &bias, cin);
             let input = Input {
                 a: &a,
                 b: (cb > 0).then_some(&b),
@@ -1113,7 +1160,7 @@ mod tests {
             })
             .collect();
         let mut it = tensors.iter().cloned();
-        let net = Unet::build(&shape, || it.next().unwrap());
+        let net = Unet::build(&shape, || Values::F32(it.next().unwrap()));
         let x = Tensor {
             data: r.vec(64 * 128 * 2, 1.0).iter().map(|v| v.abs()).collect(),
             ..Tensor::zeros(64, 128, 2)
