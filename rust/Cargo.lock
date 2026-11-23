@@ -775,6 +775,7 @@ version = "0.1.0"
 name = "mpfree-app"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "mpfree-arp",
  "mpfree-arp-ui",
  "mpfree-audiotracks",
@@ -848,6 +849,7 @@ name = "mpfree-audiotracks"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "mpfree-status",
  "mpfree-stream",
  "mpfree-stretch",
  "mpfree-transport",
@@ -859,6 +861,8 @@ version = "0.1.0"
 dependencies = [
  "mpfree-arp",
  "mpfree-audiotracks",
+ "mpfree-compose",
+ "mpfree-context",
  "mpfree-fx",
  "mpfree-grain",
  "mpfree-instruments",
@@ -938,8 +942,11 @@ name = "mpfree-compose"
 version = "0.1.0"
 dependencies = [
  "mpfree-context",
+ "mpfree-midi",
+ "mpfree-node",
  "mpfree-play",
  "mpfree-seq",
+ "mpfree-synth",
  "mpfree-transport",
 ]
 

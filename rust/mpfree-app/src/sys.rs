@@ -1,7 +1,9 @@
 //! The few C library calls this program needs that std does not offer:
 //! ioctl (ALSA), fcntl (clear O_NONBLOCK), sched_setscheduler, mlockall,
 //! and a stop handler (signal, unlink, raise) for the safe start
-//! ([`remove_on_stop`], crash.rs).
+//! ([`remove_on_stop`], crash.rs); and statvfs, through the `libc` crate's
+//! own definitions for the target, which only reads how full the drive
+//! the audio tracks record to is ([`drive_room`]).
 //!
 //! Every ioctl request number and structure size here is for the MPC One's
 //! 32-bit ARM (armv7, EABI5 hard-float). They were checked against the
@@ -180,6 +182,25 @@ extern "C" fn on_stop(sig: c_int) {
         signal(sig, SIG_DFL);
         raise(sig);
     }
+}
+
+/// Whether the drive holding `dir` answers and isn't read-only, and the
+/// bytes free on it for MPFree (`f_bavail` x `f_frsize`); None when it
+/// doesn't answer (it isn't there). statvfs only reads the file system's
+/// counts, and may wait on a failing drive: call it off the screen and
+/// audio threads. As `mpfree-disktest` reads the room (its `free_bytes`).
+pub fn drive_room(dir: &Path) -> Option<(bool, u64)> {
+    let c = CString::new(dir.as_os_str().as_bytes()).ok()?;
+    // SAFETY: a statvfs is plain integers, so all zeros is a valid one.
+    let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: c is a valid C string and s a valid statvfs to fill.
+    if unsafe { libc::statvfs(c.as_ptr(), &mut s) } != 0 {
+        return None;
+    }
+    let writable = s.f_flag & libc::ST_RDONLY == 0;
+    // `as`, not `from`: the fields are 32-bit on a 32-bit Arm build and
+    // 64-bit here, as disktest's `free_bytes` reads them.
+    Some((writable, s.f_bavail as u64 * s.f_frsize as u64))
 }
 
 /// From now on a stop from outside (SIGTERM as `systemctl stop` sends it,

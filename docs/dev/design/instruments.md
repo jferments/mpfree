@@ -4,7 +4,7 @@ checked: 2026-11-20 c5b97009
 -->
 # Instruments apart from tracks
 
-**Status:** step 1 on main (Play on the pads, #722, train 124, 20 Nov 2026); step 2a built (the shared synth as instrument 1 of the project's list, project format 2, `rust/mpfree-app/src/instrument_list.rs`, 20 Nov 2026); step 2b built (the tracks' own instruments in the list, 20 Nov 2026); step 2c built (tracks get lasting ids, `rust/mpfree-seq`, 20 Nov 2026); step 3 built (pad focus: the synth chosen for the pads stays whichever track is selected, saved with the project, `app/pads_focus.rs`, 20 Nov 2026); step 4a built (a track plays another track's own instrument, `instruments.rs`, 20 Nov 2026); step 4b built (knob owners, `locks.rs`, 20 Nov 2026); step 4c built (Duplicate: a copy of another track's instrument as its own; New instrument track: the preset picker's New track, 20 Nov 2026); step 4d's audit done and the instrument channels named for their instruments (20 Nov 2026); a clip's "this track's strip" follows the track's instrument (`time/strips.rs`, 20 Nov 2026); step 5a built (the shared synth ends notes by source: the pads, a track's arp, a track's clip, 20 Nov 2026); steps 5b to 5d built (one recording plan behind the REC chip and REC, clips of notes, arps in notes, 20 Nov 2026); step 6 built (free places for synths with no track, the list of synths for the pads, and banks that play a synth of their own, built on the recommended answer to Jay's open card about where a bank is given its instrument, 20 Nov 2026); step 7 built except a MIDI route to an instrument and scripts (keys play a track's own synth by note and what the pads play, 20 Nov 2026); step 8 built in part (stems per instrument by default, the Synth tab says who plays its synth; layers wait for a place on the screen, 20 Nov 2026); step 9 built (an audio track records an instrument, a submix or the master from inside, before or after its effects, 20 Nov 2026); step 10 built (pad mutes on one track, on every kit and bank, as Jay chose on his card of 22 Nov 2026). Jay approved the plan and its five answers on 20 Nov 2026 (11:16 UTC). The plan, its rules and the reviews it went through: "Instruments, pads and tracks: the redesign" (https://claude.ai/artifact/A2iE1bDqPxk2uSJABCgTJg). Nothing here has run on the MPC One yet.
+**Status:** step 1 on main (Play on the pads, #722, train 124, 20 Nov 2026); step 2a built (the shared synth as instrument 1 of the project's list, project format 2, `rust/mpfree-app/src/instrument_list.rs`, 20 Nov 2026); step 2b built (the tracks' own instruments in the list, 20 Nov 2026); step 2c built (tracks get lasting ids, `rust/mpfree-seq`, 20 Nov 2026); step 3 built (pad focus: the synth chosen for the pads stays whichever track is selected, saved with the project, `app/pads_focus.rs`, 20 Nov 2026); step 4a built (a track plays another track's own instrument, `instruments.rs`, 20 Nov 2026); step 4b built (knob owners, `locks.rs`, 20 Nov 2026); step 4c built (Duplicate: a copy of another track's instrument as its own; New instrument track: the preset picker's New track, 20 Nov 2026); step 4d's audit done and the instrument channels named for their instruments (20 Nov 2026); a clip's "this track's strip" follows the track's instrument (`time/strips.rs`, 20 Nov 2026); step 5a built (the shared synth ends notes by source: the pads, a track's arp, a track's clip, 20 Nov 2026); steps 5b to 5d built (one recording plan behind the REC chip and REC, clips of notes, arps in notes, 20 Nov 2026); step 6 built (free places for synths with no track, the list of synths for the pads, and banks that play a synth of their own, built on the recommended answer to Jay's open card about where a bank is given its instrument, 20 Nov 2026); step 7 built except a MIDI route to an instrument and scripts (keys play a track's own synth by note and what the pads play, 20 Nov 2026); step 8 built in part (stems per instrument by default, the Synth tab says who plays its synth; layers wait for a place on the screen, 20 Nov 2026); step 9 built (an audio track records an instrument, a submix or the master from inside, before or after its effects, 20 Nov 2026); step 10 built (pad mutes on one track, on every kit and bank, as Jay chose on his card of 22 Nov 2026); kits joined the list in the sampler refactor's step 14 (every kit with a lasting id, tracks' picks saved by id only, project format 3, older projects refused, 23 Nov 2026: [below](#kits-in-the-list-sampler-refactor-step-14)). Jay approved the plan and its five answers on 20 Nov 2026 (11:16 UTC). The plan, its rules and the reviews it went through: "Instruments, pads and tracks: the redesign" (https://claude.ai/artifact/A2iE1bDqPxk2uSJABCgTJg). Nothing here has run on the MPC One yet.
 
 ## The model
 
@@ -35,6 +35,8 @@ The step goes in three slices, each proven with the shared Poly before the next:
 - **2a (built):** the shared synth becomes instrument 1 of the project's list, and tracks on it point at it by that id. It saves, loads and plays exactly as before.
 - **2b (built):** the tracks' own instruments join the list, each with its own id.
 - **2c (built):** tracks get lasting ids too, so knob owners (step 4) and anything else that must survive moving tracks has something steady to point at.
+
+What 2a and 2b say about older projects opening (format 1, the track kits part's version 1) held until the sampler refactor's step 14 (23 Nov 2026), which made the project format 3 and refuses every older one: [Kits in the list](#kits-in-the-list-sampler-refactor-step-14).
 
 ### 2a as built
 
@@ -82,6 +84,36 @@ What plays is unchanged: the track kits a project opens with are the same as bef
 - **Saved in the clips part:** `nexttrack <n>` before the tracks and `id <n>` after each track's name. An older build skips both lines. A project without them gets 1, 2, 3 ... as it opens, saying nothing; one that has `nexttrack` but a track without an id, or two sharing one, gets new ones for those, said (`project::opening`).
 - **Nothing reads them yet.** Tracks can't be moved or deleted from the middle today (UNDO takes away only the last added), so a track's place still names it, and the list of instruments, the track kits and the instruments part keep naming tracks by place. Step 4's knob owners are the first to use the ids (their priority), and anything that lets tracks move will switch those parts to ids as it goes in. `Project::track_with(id)` finds a track by its id.
 - **Tests:** `mpfree_seq` `track_id_tests::tracks_get_lasting_ids_that_are_never_given_twice`, `save::track_id_tests::track_ids_and_the_next_id_come_back`; `mpfree_play` `takes::tests::an_added_track_has_a_lasting_id_that_undo_and_redo_keep`; `project::tests::tracks_get_lasting_ids_as_a_project_opens`; the whole-session test above also checks that an old song's tracks get 1, 2, 3 ... and keep them through a save and an open.
+
+## Kits in the list (sampler refactor step 14)
+
+The sampler refactor's phase 3, as revised and approved on 23 Nov 2026, makes kits instruments; its step 14 puts them in this list ([sampler-architecture.md](sampler-architecture.md#kits-in-the-list-of-instruments-step-14)).
+
+- **Every kit place has an id** (`Kind::Kit { kit }`, `InstrumentList::of_kit`, `follow_kits`). The places are fixed while mpfree runs, so the audio loop gives them ids when it makes its list and again after each open; a new project's list gets them then, after any track's own. The part:
+
+  ```text
+  mpfree-instrument-list 2
+  next 6
+  instrument 1 shared-synth
+  instrument 2 kit 1
+  instrument 3 kit 2
+  instrument 4 kit 3
+  instrument 5 own track 1
+  ```
+
+- **Tracks name what they play by id only**, entry and send alike (`mpfree-track-kits 3`):
+
+  ```text
+  mpfree-track-kits 3
+  track 2 instrument 3
+  track 4 instrument 1
+  track 6 instrument 4
+  track 6 instrument 5
+  ```
+
+  Track 2 plays kit 2, track 4 the shared synth, and track 6 kit 3 under track 1's own instrument, which it sends to (written entry first, then the send, as 4a's two lines were).
+- **The project format is 3**, and a project with an older format, or none, is refused before anything changes ([Project safety](project-safety.md)): "it was saved by an older MPFree, which this one doesn't open (project format 2; this one opens 3)". There are no serious projects yet (the owner, 22 Nov 2026), so nothing converts the older parts; the older list and track kits versions are refused too.
+- **The Sample page's commands** name a kit by its id here (`ToUi::KitIds`).
 
 ## Step 3: pad focus
 

@@ -75,6 +75,8 @@ mpfree-browser-ui = { path = "../mpfree-browser-ui" }
 # Sound file headers: memory.rs works out what decoding a file will hold
 # from its header (memory.rs `decode_need`).
 mpfree-stream = { path = "../mpfree-stream" }
+# statvfs for the drive the audio tracks record to (sys::drive_room).
+libc = "0.2"
 # Export: the mixdown, the stems and the MIDI file (export.rs).
 mpfree-export = { path = "../mpfree-export" }
 # The first start on a creator stick (setup.rs): the MPC's own kits and

@@ -64,9 +64,6 @@ use crate::resample::Rate;
 use crate::storage::{Card, Located};
 use crate::writer::Gate;
 
-/// Past this much of a recording's capture memory, background reads stop.
-pub const STOP_BACKGROUND: f64 = 0.75;
-
 /// How far ahead to read, and how reads are made.
 #[derive(Clone, Copy, Debug)]
 pub struct Plan {
@@ -85,6 +82,9 @@ pub struct Plan {
     /// seconds (the stick test measures it). A whole-file read step starts
     /// only while every playing cursor has at least this long, or the
     /// longest stall seen lately, before it needs a unit not yet in hand.
+    /// 2.5 s by default: on the MPC's stick reads waited up to 1.6 s
+    /// beside a recording and 2.4 s with every core busy as well (D2b,
+    /// 23 Nov).
     pub stall_s: f64,
     /// The stall comes from measuring this stick (the stick test, D1), not
     /// from a default. Until it does, admission calls a workload untested
@@ -100,7 +100,7 @@ impl Default for Plan {
             min_window_s: 4.0,
             in_flight: 8,
             join_bytes: 512 * 1024,
-            stall_s: 0.5,
+            stall_s: 2.5,
             measured: false,
         }
     }
@@ -1652,9 +1652,10 @@ impl Coordinator {
             self.jobs.retain(|j| j.id != id);
             self.finished.insert(id, Err(CARD_GONE.into()));
         }
-        // Recording pressure: past three quarters of capture memory,
-        // background work stops.
-        let pressed = self.gate.capture_fill() >= STOP_BACKGROUND;
+        // Recording pressure: while anything records, background work
+        // waits (the stick can't take a recording and a heavy read at once:
+        // D2b on the MPC, 23 Nov); the next song still prepares.
+        let pressed = self.gate.recording();
         let Some(i) = (0..self.jobs.len())
             .filter(|&i| !pressed || self.jobs[i].tier == JobTier::NextSong)
             .min_by_key(|&i| (self.jobs[i].tier, self.jobs[i].id))

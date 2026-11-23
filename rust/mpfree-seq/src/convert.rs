@@ -12,15 +12,23 @@
 //!
 //! - **Each hit becomes the notes its pad plays**, a chord pad every one,
 //!   each keeping everything else about the hit: time, length, velocity,
-//!   condition, ratchet and its ramp, tie or slide, on or off, and its
-//!   pressure (a chord's notes share the hit's run of values, which
+//!   chance, condition, ratchet and its ramp, tie or slide, on or off, and
+//!   its pressure (a chord's notes share the hit's run of values, which
 //!   `Takes::reclaim_touch` renumbers as one).
+//! - **A hit's notes are its pad's trigger group** ([`pad_group`], see
+//!   [`crate::groups`]): they decide once whether they play, with the key
+//!   the hit had, so its chance and condition play exactly as they did, a
+//!   one-note pad's too.
 //! - **Two pads that play one note never meet in it.** A note cuts the
 //!   same note already sounding on its track, and a tie continues it,
 //!   while two pads are two sounds; so where two pads' notes on one pitch
 //!   overlap (or one ties onto the other's end), the notes couldn't play
 //!   the same, and it refuses ([`Refused::Overlap`]) rather than merge or
 //!   change them.
+//! - **One pad hit twice on one step** is one trigger: its two hits
+//!   rolled with one key, so with the same chance, condition and on they
+//!   decided alike already. With different ones it refuses
+//!   ([`Refused::Twice`]).
 //! - **A lock on the synth's sound** stays on its step, on the row of its
 //!   pad's root.
 //! - **The clip as it was before its first Mutate** ([`Clip::original`])
@@ -28,16 +36,18 @@
 //!   Move lanes stay as they are.
 //!
 //! **All or nothing.** It refuses, and lists every reason at once
-//! ([`Refused`]), when the result couldn't play the same: a step with
-//! chance below 100 % (a chord's notes would each roll their own dice),
-//! a lock on a pad's own setting (it has no note to follow), a hit or a
+//! ([`Refused`]), when the result couldn't play the same: a lock on a
+//! pad's own setting (it has no note to follow), a hit or a
 //! lock on a pad that plays no note now, two pads' notes meeting on one
-//! pitch, more notes than a clip holds, or two pads that share a root with
-//! locks of one setting on one step. The
+//! pitch, one pad hit twice on one step in two ways, more notes than a
+//! clip holds, or two pads that share a root with locks of one setting on
+//! one step. The
 //! caller makes the result one take, so one UNDO brings the clip back.
 
-use crate::{Clip, Holds, Lock, Note, Tick, MAX_NOTES};
+use crate::groups::pad_group;
+use crate::{Clip, Cond, Holds, Lock, Note, Tick, MAX_NOTES};
 use mpfree_param::OnTrack;
+use std::collections::HashMap;
 
 /// What [`Clip::convert_to_notes`] made.
 #[derive(Clone, Debug, PartialEq)]
@@ -58,8 +68,6 @@ pub enum Refused {
     Notes,
     /// A loop's cell holds a loop.
     Loop,
-    /// `steps` hits have chance below 100 %.
-    Chance { steps: usize, original: bool },
     /// A lock on pad `pad`'s own setting `param` (`OnTrack::Pad`), on the
     /// step at `tick`.
     PadLock {
@@ -79,6 +87,10 @@ pub enum Refused {
     /// Pads `a` and `b` share a root, and their locks of one setting on
     /// the step at `tick` would land in one place.
     LocksMeet { a: u8, b: u8, tick: Tick },
+    /// Pad `pad` is hit twice on the step at `tick`, with a different
+    /// chance, condition or on: as notes, one pad's notes on a step are
+    /// one trigger, which has one of each.
+    Twice { pad: u8, tick: Tick },
 }
 
 impl Clip {
@@ -99,12 +111,12 @@ impl Clip {
         }
         let mut why = Vec::new();
         overlaps(&self.notes, &pad_notes, self.length, &mut why);
-        let notes = notes_of(&self.notes, &pad_notes, false, &mut why);
+        let notes = notes_of(&self.notes, &pad_notes, &mut why);
         let locks = locks_of(&self.locks, &pad_notes, false, &mut why);
         let original = self.original.as_ref().map(|o| {
             overlaps(&o.notes, &pad_notes, o.length, &mut why);
             (
-                notes_of(&o.notes, &pad_notes, true, &mut why),
+                notes_of(&o.notes, &pad_notes, &mut why),
                 locks_of(&o.locks, &pad_notes, true, &mut why),
             )
         });
@@ -145,14 +157,18 @@ impl Clip {
 fn notes_of<'a>(
     hits: &[Note],
     pad_notes: &impl Fn(u8) -> &'a [u8],
-    original: bool,
     why: &mut Vec<Refused>,
 ) -> Vec<Note> {
     let mut out: Vec<Note> = Vec::with_capacity(hits.len());
-    let mut chance = 0;
+    // Each pad's first hit on each tick, for a second one there.
+    let mut first: HashMap<(Tick, u8), (u8, Cond, bool)> = HashMap::new();
     for h in hits {
-        if h.chance < 100 {
-            chance += 1;
+        let shared = (h.chance, h.cond, h.on);
+        if *first.entry((h.tick, h.note)).or_insert(shared) != shared {
+            why.push(Refused::Twice {
+                pad: h.note,
+                tick: h.tick,
+            });
         }
         let pitches = pad_notes(h.note);
         if pitches.is_empty() {
@@ -161,16 +177,17 @@ fn notes_of<'a>(
         }
         // Far past the room: stop growing (the count still refuses).
         if out.len() <= MAX_NOTES {
-            out.extend(pitches.iter().map(|&p| Note { note: p, ..*h }));
+            // The pad's trigger group: its notes decide as its hit did,
+            // with the same key, so its chance and condition play the same.
+            let group = pad_group(h.note);
+            out.extend(pitches.iter().map(|&p| Note {
+                note: p,
+                group,
+                ..*h
+            }));
         } else {
             out.extend(std::iter::repeat_n(*h, pitches.len()));
         }
-    }
-    if chance > 0 {
-        why.push(Refused::Chance {
-            steps: chance,
-            original,
-        });
     }
     out
 }
@@ -325,9 +342,10 @@ mod tests {
             first,
             Note {
                 note: 48,
+                group: 1,
                 ..c.notes[0]
             },
-            "everything but the number"
+            "everything but the number, in its pad's trigger group"
         );
         assert_ne!(first.touch, Touch::NONE);
         let chord: Vec<(Tick, u8)> = made.clip.notes[1..]
@@ -397,7 +415,6 @@ mod tests {
     #[test]
     fn every_reason_it_refuses_is_listed_and_nothing_changes() {
         let mut c = hits();
-        c.notes[1].chance = 50;
         c.add_note(Note::new(960, 100, 7, 100)).unwrap();
         c.add_note(Note::new(1200, 100, 7, 100)).unwrap();
         let tune = RelAddr {
@@ -413,10 +430,6 @@ mod tests {
             why,
             vec![
                 Refused::NoNote { pad: 7 },
-                Refused::Chance {
-                    steps: 1,
-                    original: false
-                },
                 Refused::PadLock {
                     pad: 1,
                     param: 2,
@@ -475,15 +488,59 @@ mod tests {
         let o = made.clip.original.as_ref().expect("kept");
         let notes: Vec<u8> = o.notes.iter().map(|n| n.note).collect();
         assert_eq!(notes, vec![48, 52, 55, 48]);
-        // A chance below 100 in the original alone is named as such.
+        // A reason found in the original alone is named as such.
         let mut c = mutated();
-        c.original.as_mut().unwrap().notes[0].chance = 10;
+        c.original.as_mut().unwrap().notes[0].note = 7;
         assert_eq!(
             c.convert_to_notes(pads).unwrap_err(),
-            vec![Refused::Chance {
-                steps: 1,
-                original: true
-            }]
+            vec![Refused::NoNote { pad: 7 }]
+        );
+    }
+
+    /// Each hit's notes are its pad's trigger group, keeping its chance
+    /// and condition: a chord pad's and a one-note pad's.
+    #[test]
+    fn a_hits_notes_are_its_pads_trigger_group_and_keep_its_chance() {
+        let mut c = hits();
+        c.notes[0].chance = 50;
+        c.notes[1].chance = 25;
+        c.notes[1].cond = Cond::Fill;
+        let made = c.convert_to_notes(pads).unwrap();
+        let got: Vec<(u8, u8, u8, Cond)> = made
+            .clip
+            .notes
+            .iter()
+            .map(|n| (n.note, n.group, n.chance, n.cond))
+            .collect();
+        let half = Cond::Every { a: 1, b: 2 };
+        assert_eq!(
+            got,
+            vec![
+                (48, 1, 50, half),
+                (52, 2, 25, Cond::Fill),
+                (55, 2, 25, Cond::Fill),
+                (48, 2, 25, Cond::Fill)
+            ]
+        );
+        assert!(made.clip.groups_ok());
+        assert_eq!(made.clip.check(), Ok(()));
+    }
+
+    /// One pad hit twice on one step is one trigger: alike, it converts;
+    /// with two chances, it refuses.
+    #[test]
+    fn one_pad_hit_twice_on_a_step_converts_only_when_alike() {
+        let mut c = hits();
+        c.notes.push(Note {
+            cond: Cond::Every { a: 1, b: 2 },
+            ..Note::new(0, 120, 0, 60)
+        });
+        let made = c.convert_to_notes(pads).unwrap();
+        assert!(made.clip.groups_ok());
+        c.notes[2].chance = 50;
+        assert_eq!(
+            c.convert_to_notes(pads).unwrap_err(),
+            vec![Refused::Twice { pad: 0, tick: 0 }]
         );
     }
 }

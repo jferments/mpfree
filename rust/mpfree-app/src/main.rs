@@ -7845,8 +7845,11 @@ fn player_session(
     // The project's instruments, each with its lasting id (the shared
     // synth is instrument 1). Made here, before the sound starts; an open
     // swaps in the project's, and this one goes back to be freed on the
-    // screen thread.
+    // screen thread. Each kit place has its id (phase 3 step 14): the
+    // places are fixed while mpfree runs.
     let mut listed = instrument_list::InstrumentList::new();
+    listed.follow_kits(drum_kits);
+    out.show(gui::ToUi::KitIds(Box::new(listed.kit_ids())));
     // The time engine's REDOs seen so far: a track one brings back gets its
     // kit back (`TrackKits::follow`).
     let mut redos_seen = 0u64;
@@ -9114,7 +9117,19 @@ fn player_session(
                     }
                     // The project's list of instruments; the old one goes
                     // back in the box, to be freed on the screen thread.
+                    // Every kit place here has an id: one the project
+                    // hadn't got gets a new one, and a kit's past the
+                    // places here is gone (a track that played it was
+                    // said above).
                     std::mem::swap(&mut listed, &mut o.instrument_list);
+                    let gone = listed.kit_ids().listed_from(drum_kits);
+                    if gone > 0 {
+                        out.note(&format!(
+                            "project: {gone} of its kits aren't here ({drum_kits} kits), so they are gone from its list of instruments"
+                        ));
+                    }
+                    listed.follow_kits(drum_kits);
+                    out.show(gui::ToUi::KitIds(Box::new(listed.kit_ids())));
                     if let Some((options, sounds)) = o.synth.take() {
                         for line in synth.set_sounds(&sounds) {
                             out.note(&line);
@@ -12402,6 +12417,9 @@ fn player_session(
         }
         if let Some(line) = tracks.take_file_line() {
             out.note(&line);
+        }
+        while let Some(r) = tracks.take_problem() {
+            out.show(gui::ToUi::Problem(r));
         }
         if let Some(what) = tracks.take_left_out() {
             out.left_out(what);

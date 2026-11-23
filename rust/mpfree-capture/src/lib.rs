@@ -127,6 +127,10 @@ pub struct Took {
     pub holds: Holds,
     /// The same touch is in the history as the other kind too.
     pub paired: bool,
+    /// A note's trigger group in a clip of notes: its pad's
+    /// (`mpfree_seq::groups::pad_group`), so a pad of chords is kept as
+    /// one trigger; 0 for a pad, or a note no pad played.
+    pub group: u8,
 }
 
 impl Took {
@@ -134,6 +138,7 @@ impl Took {
     pub const PAD: Took = Took {
         holds: Holds::Hits,
         paired: false,
+        group: 0,
     };
 }
 
@@ -158,6 +163,8 @@ struct Hit {
     holds: Holds,
     /// Its touch is in the history as the other kind too.
     paired: bool,
+    /// Its trigger group ([`Took::group`]).
+    group: u8,
     note: u8,
     velocity: u8,
 }
@@ -169,6 +176,7 @@ const NO_HIT: Hit = Hit {
     track: ARMED,
     holds: Holds::Hits,
     paired: false,
+    group: 0,
     note: 0,
     velocity: 0,
 };
@@ -712,6 +720,7 @@ impl Capture {
             track,
             holds,
             paired: took.paired,
+            group: took.group,
             note: 0,
             velocity: 0,
         };
@@ -915,6 +924,7 @@ impl Capture {
                         on: true,
                         ramp: 0,
                         join: mpfree_seq::Join::Attack,
+                        group: x.group,
                     };
                     open.insert((x.track, key(x.holds, x.note)), (played.len(), x.at));
                     played.push(Played {
