@@ -78,6 +78,9 @@ fn a_separation_holds_no_more_than_its_promise_and_not_much_less() {
             while sep.step(&mut Drop).unwrap() {}
         }
         let most = MOST.load(Ordering::Relaxed) - base;
+        // Read before printing: the test harness's captured output grows
+        // on the heap too.
+        let kept = HELD.load(Ordering::Relaxed) - base;
         let mb = |b: i64| b as f64 / 1e6;
         println!(
             "{band:?}: promised {:.1} MB, held at most {:.1} MB",
@@ -92,10 +95,6 @@ fn a_separation_holds_no_more_than_its_promise_and_not_much_less() {
             most as f64 >= 0.95 * promise as f64,
             "{band:?}: held {most} bytes, promised {promise}: the promise is loose"
         );
-        assert_eq!(
-            HELD.load(Ordering::Relaxed),
-            base,
-            "{band:?}: it kept something"
-        );
+        assert_eq!(kept, 0, "{band:?}: it kept {kept} bytes");
     }
 }
