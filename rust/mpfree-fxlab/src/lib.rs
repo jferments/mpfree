@@ -64,6 +64,7 @@ pub mod plan;
 pub mod programme;
 pub mod prototype;
 pub mod quality;
+pub mod readers;
 pub mod reference;
 pub mod response;
 pub mod robust;

@@ -12,5 +12,9 @@ mpfree-grain = { path = "../mpfree-grain" }
 mpfree-instruments = { path = "../mpfree-instruments" }
 mpfree-sampler = { path = "../mpfree-sampler" }
 mpfree-sampler-ui = { path = "../mpfree-sampler-ui" }
+# The streaming cursor and the stretch, measured as pitched reads
+# (readers.rs); the testkit plays a file as a stem plays.
+mpfree-stream = { path = "../mpfree-stream", features = ["testkit"] }
+mpfree-stretch = { path = "../mpfree-stretch" }
 mpfree-synth = { path = "../mpfree-synth" }
 mpfree-synth-ui = { path = "../mpfree-synth-ui" }
