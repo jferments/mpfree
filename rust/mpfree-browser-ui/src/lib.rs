@@ -58,8 +58,8 @@ pub use sets::{
     Stepper,
 };
 pub use state::{
-    in_xy_folder, BrowseAction, Browser, Button, Filter, Input, MapCell, MapShown, PadMap, Pick,
-    PresetFrom, PresetNow, Screen, Sort, Source, NO_XY_LAYOUTS, XY_FOLDER,
+    in_xy_folder, BrowseAction, Browser, Button, CardState, Filter, Input, MapCell, MapShown,
+    PadMap, Pick, PresetFrom, PresetNow, Screen, Sort, Source, NO_XY_LAYOUTS, XY_FOLDER,
 };
 pub use view::BrowserView;
 
