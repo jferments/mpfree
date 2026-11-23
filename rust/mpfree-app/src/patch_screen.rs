@@ -152,7 +152,11 @@ fn zone_look(z: &Zone, insts: &[Inst]) -> ZoneLook {
     let i = inst(insts, &z.plays);
     ZoneLook {
         name: name_of(insts, &z.plays),
-        color: i.map_or(Color::rgb(0x8A93A6), |i| i.color),
+        // A missing instrument's zone is hatched red, never drawn in
+        // this colour.
+        color: i.map_or(Color::rgb(mpfree_time_ui::view::TRACK_COLORS[0]), |i| {
+            i.color
+        }),
         low: z.low,
         high: z.high,
         vel_low: z.vel_low,
