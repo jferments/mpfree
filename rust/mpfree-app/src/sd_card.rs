@@ -107,6 +107,8 @@ pub struct Status {
     pub fs: String,
     pub sectors: u64,
     pub mount: Option<PathBuf>,
+    /// The card's filesystem was left marked as in use (`dirty=yes`).
+    pub dirty: bool,
 }
 
 pub fn parse_status(text: &str) -> Option<Status> {
@@ -123,6 +125,7 @@ pub fn parse_status(text: &str) -> Option<Status> {
             "fs" => s.fs = v.to_string(),
             "sectors" => s.sectors = v.parse().unwrap_or(0),
             "mount" if !v.is_empty() => s.mount = Some(PathBuf::from(v)),
+            "dirty" => s.dirty = v == "yes",
             _ => {}
         }
     }
@@ -153,6 +156,11 @@ pub struct Card {
     pub sectors: u64,
     /// Where its files are.
     pub mount: PathBuf,
+    /// It wasn't safely removed last time: its filesystem is still marked as
+    /// in use by the system that last wrote to it (a power cut, or a card
+    /// pulled out). Reading is fine; it should be checked on a computer
+    /// before anything is saved to it.
+    pub dirty: bool,
 }
 
 impl Card {
@@ -282,10 +290,15 @@ impl SdCard {
                     "open" => match open_card(&s) {
                         Some(card) => {
                             say(format!(
-                                "sd card: open, read-only: {} on {}, at {}",
+                                "sd card: open, read-only: {} on {}, at {}{}",
                                 card.describe(),
                                 s.card,
-                                card.mount.display()
+                                card.mount.display(),
+                                if card.dirty {
+                                    " (it wasn't safely removed last time)"
+                                } else {
+                                    ""
+                                }
                             ));
                             return Ok(SdCard::start(paths, timing, card, ask));
                         }
@@ -424,6 +437,7 @@ fn open_card(s: &Status) -> Option<Card> {
         fs: s.fs.clone(),
         sectors: s.sectors,
         mount: s.mount.clone()?,
+        dirty: s.dirty,
     })
 }
 
@@ -542,7 +556,7 @@ mod tests {
             status(
                 &p,
                 &format!(
-                    "state=open\nmessage=The SD card is open, read-only.\nask={word}\ncard=mmcblk1\nfs=exfat\nsectors=124735488\nmount={}\n",
+                    "state=open\nmessage=The SD card is open, read-only.\nask={word}\ncard=mmcblk1\nfs=exfat\nsectors=124735488\nmount={}\ndirty=no\n",
                     card.display()
                 ),
             );
@@ -578,9 +592,11 @@ mod tests {
     #[test]
     fn a_status_reads() {
         let s = parse_status(
-            "state=open\nmessage=The SD card is open, read-only.\nask=ab12\ncard=mmcblk1\nfs=vfat\nsectors=4096\nmount=/run/mpfree-sd\n",
+            "state=open\nmessage=The SD card is open, read-only.\nask=ab12\ncard=mmcblk1\nfs=vfat\nsectors=4096\nmount=/run/mpfree-sd\ndirty=no\n",
         )
         .unwrap();
+        assert!(!s.dirty);
+        assert!(parse_status("state=open\ndirty=yes\n").unwrap().dirty);
         assert_eq!(s.state, "open");
         assert_eq!(s.ask, "ab12");
         assert_eq!(s.fs, "vfat");
@@ -593,6 +609,7 @@ mod tests {
             fs: "exfat".into(),
             sectors: 124_735_488,
             mount: "/run/mpfree-sd".into(),
+            dirty: false,
         };
         assert_eq!(big.describe(), "exFAT, 63.9 GB");
         assert_eq!(new_word().len(), 32);

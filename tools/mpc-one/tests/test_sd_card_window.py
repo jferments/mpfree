@@ -41,15 +41,19 @@ REFUSED = "[  812.40] Trying to write to read-only block-device mmcblk1p1\n"
 ASK = "5f0c1d2e3a4b59687766554433221100"
 
 
-def boot_sector(kind):
-    """The first sector of a filesystem, as FAT and exFAT write it (the names at 3, 54 and 82), the rest noise."""
+def boot_sector(kind, flags=0):
+    """The first sector of a filesystem, as FAT and exFAT write it (the names at 3, 54 and 82), the rest noise,
+    but for the byte that holds the in-use mark (FAT32 65, FAT16 37, exFAT's VolumeFlags 106-107): `flags`."""
     s = bytearray(blob(kind, 512))
     if kind == "fat32":
         s[3:11], s[82:90] = b"MSDOS5.0", b"FAT32   "
+        s[65] = flags
     elif kind == "fat16":
         s[3:11], s[54:62] = b"MSDOS5.0", b"FAT16   "
+        s[37] = flags
     elif kind == "exfat":
         s[3:11] = b"EXFAT   "
+        s[106:108] = flags.to_bytes(2, "little")
     elif kind == "ntfs":
         s[3:11] = b"NTFS    "
     elif kind == "ext4":   # ext4 keeps nothing in its first sector; its superblock is at 1024
@@ -69,8 +73,8 @@ class FakeSdKernel:
     `writable` (a card that stays writable), `ignore_rule`, `ignore_unbind`."""
 
     def __init__(self, root, card="fat32", parts=1, emmc_too=False, boot_area=False, writable=False,
-                 ignore_rule=False, ignore_unbind=False):
-        self.root, self.card, self.parts = root, card, parts
+                 ignore_rule=False, ignore_unbind=False, flags=0):
+        self.root, self.card, self.parts, self.flags = root, card, parts, flags
         self.emmc_too, self.boot_area, self.writable = emmc_too, boot_area, writable
         self.ignore_rule, self.ignore_unbind = ignore_rule, ignore_unbind
         self.bound, self.unbound, self.rule = [], [], None
@@ -141,7 +145,7 @@ class FakeSdKernel:
         disk_ro = "0\n" if self.writable else ("link", "force_ro")
         part_ro = "0\n" if self.writable else ("link", "../force_ro")
         stat = STAT.format(w=0, ws=0, d=0)
-        fs = boot_sector(self.card)
+        fs = boot_sector(self.card, self.flags)
         parts = []
         if self.parts == 0:
             write(os.path.join(self.root, "dev/mmcblk1"), fs + bytes(1024))
@@ -372,8 +376,13 @@ class WindowTests(unittest.TestCase):
             self.assertTrue(self.calls("umount: ")[-1].endswith(MNT), self.calls("umount: "))
 
     def assert_read_only(self, dev="/dev/mmcblk1p1"):
-        """The card was read only as one sector of its filesystem, and mounted read-only."""
-        self.assertEqual(self.calls("dd: "), [f"if={self.root}{dev} bs=512 count=1"])
+        """The card was read only as one sector of its filesystem, and mounted read-only; the in-use mark was
+        read from the sector's copy in RAM."""
+        reads = self.calls("dd: ")
+        self.assertEqual([r for r in reads if "/dev/" in r], [f"if={self.root}{dev} bs=512 count=1"])
+        sector = f"if={self.root}/run/mpfree-setup/sd-card-sector bs=1 skip="
+        self.assertEqual(len([r for r in reads if r.startswith(sector) and r.endswith(" count=1")]), 1, reads)
+        self.assertEqual(len(reads), 2, reads)
         for call in self.calls("mount: "):
             self.assertRegex(call, rf"^-t (vfat|exfat) -o {re.escape(OPTIONS)} {re.escape(dev)} {re.escape(MNT)}$")
 
@@ -386,7 +395,7 @@ class WindowTests(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(self.root, "run/mpfree-app/sd-card.request")),
                          "the request is taken away, so the path unit stays quiet")
         self.assertEqual(st, {"state": "open", "message": "The SD card is open, read-only.", "card": "mmcblk1",
-                              "fs": "vfat", "sectors": str(CARD_SECTORS), "mount": MNT})
+                              "fs": "vfat", "sectors": str(CARD_SECTORS), "mount": MNT, "dirty": "no"})
         self.assertEqual(self.kernel.rule, RO_RULE, "the rule is there before the bind")
         self.assertEqual(read_text(os.path.join(self.root, CARD_DIR, "force_ro")), "1\n")
         self.assertIn(f"/dev/mmcblk1p1 {MNT} vfat {OPTIONS},", read_text(os.path.join(self.root, "proc/mounts")))
@@ -417,6 +426,32 @@ class WindowTests(unittest.TestCase):
                 self.assertEqual(code, 0, out + self.notes())
                 self.assert_closed()
                 self.assert_read_only(f"/dev/{dev}")
+
+    def test_a_card_not_safely_removed_last_time_is_still_opened_and_said(self):
+        # (card, flags, dirty): only the in-use bit counts, and exFAT's disk-error bit.
+        for card, flags, dirty in (("fat32", 0x01, "yes"), ("fat32", 0x02, "no"), ("fat16", 0x01, "yes"),
+                                   ("fat16", 0x00, "no"), ("exfat", 0x0002, "yes"), ("exfat", 0x0001, "no"),
+                                   ("exfat", 0x0004, "yes"), ("exfat", 0x0100, "no")):
+            with self.subTest(card=card, flags=flags):
+                self.tearDown()
+                self.setUp()
+                self.kernel = FakeSdKernel(self.root, card=card, flags=flags)
+                self.start()
+                st = self.wait_state("open")
+                self.assertEqual(st["dirty"], dirty)
+                if dirty == "yes":
+                    self.assertEqual(st["message"], "The SD card is open, read-only. It wasn't safely removed "
+                                                    "last time: check it on a computer.")
+                    self.assertIn("the card was not unmounted cleanly last time", self.notes())
+                else:
+                    self.assertEqual(st["message"], "The SD card is open, read-only.")
+                    self.assertNotIn("not unmounted cleanly", self.notes())
+                self.assertEqual("disk error" in self.notes(), flags == 0x0004)
+                code, out = self.close_card()
+                self.assertEqual(code, 0, out + self.notes())
+                self.assert_closed()
+                self.assert_read_only()
+                self.assertFalse(os.path.exists(os.path.join(self.root, "run/mpfree-setup/sd-card-sector")))
 
     def test_an_empty_slot(self):
         self.kernel = FakeSdKernel(self.root, card=None)
@@ -726,8 +761,10 @@ class StaticTests(unittest.TestCase):
     def test_never_writes_the_card(self):
         code = self.code()
         # The card is read once, one sector, into a pipe; nothing is written to a device but the kernel log.
-        self.assertEqual([m.strip("( ") for m in re.findall(r"(?:^|[\s;|&(])dd\s[^\n|]*", code)],
-                         ['dd if="$R/dev/$dev" bs=512 count=1 2>/dev/null'])
+        self.assertEqual([m.strip("(\n ") for m in re.findall(r"(?:^|[\s;|&(])dd\s[^\n|]*", code)],
+                         ['dd if="$R/dev/$dev" bs=512 count=1 2>/dev/null > "$SECTOR"',
+                          'dd if="$SECTOR" bs=1 skip="$1" count=1 2>/dev/null'])
+        self.assertIn('SECTOR="$S/sd-card-sector"\n', code)
         self.assertEqual(re.findall(r"\bof=\S+", code), [])
         self.assertEqual(re.findall(r'>\s*"?\$R/dev/[^\s;]+', code), ['> "$R/dev/kmsg"'])
         # One mount, read-only first; no other way to change a filesystem.
@@ -755,7 +792,7 @@ class StaticTests(unittest.TestCase):
         self.assertEqual(sorted(set(re.findall(r"\brm -f \"[^\"]+\"(?: \"[^\"]+\")*", code))),
                          sorted({'rm -f "$ASK/sd-card.request" "$ASK/sd-card.close" "$ALIVE"', 'rm -f "$l"',
                                  'rm -f "$RULE"', 'rm -f "$ASK/sd-card.close"', 'rm -f "$S/sd-card-counters-now.txt"',
-                                 'rm -f "$ALIVE"'}))
+                                 'rm -f "$ALIVE" "$S/sd-card-sector"'}))
         self.assertIn('ALIVE="$ASK/sd-card.alive"\n', code)
         self.assertNotIn("rm -r", code)
         self.assertIn('rmdir "$R$MNT"', code)

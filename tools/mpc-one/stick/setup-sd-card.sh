@@ -19,7 +19,8 @@ R=''
 #   3. finds the filesystem: the card holds one partition, or none (a card formatted without a table), and
 #      its first sector says FAT (12, 16 or 32) or exFAT, which the kernel must have (/proc/filesystems:
 #      no module can load after the soft-reboot, so the stick loads them before it). One sector is read,
-#      from a disk the kernel already holds read-only;
+#      from a disk the kernel already holds read-only, into RAM; it also says whether the card was safely
+#      removed last time (the in-use mark FAT and exFAT keep), which the status gives as dirty;
 #   4. mounts it read-only (ro,nosuid,nodev,noexec,noatime; files root's and readable by the pad player's
 #      group) at /run/mpfree-sd, and records the card's write and discard counters (block layer stat fields
 #      5-7 and 12-14) and the kernel's count of refused writes to read-only disks;
@@ -38,13 +39,13 @@ R=''
 # the block layer of this kernel (6.x) only warns about a write to a read-only disk, once per disk ("Trying
 # to write to read-only block-device mmcblk1p1"), and lets it through; so both the counters and that
 # warning are checked, and either fails the window.
-# The only writes are /run (RAM: the status, the notes, the udev rule, the mount point and the requests,
-# removed), the kernel log, the controller's sysfs bind and unbind files and the card's force_ro files
-# (which only switch read-only on).
+# The only writes are /run (RAM: the status, the notes, the udev rule, the mount point, the sector's copy
+# and the requests, removed), the kernel log, the controller's sysfs bind and unbind files and the card's
+# force_ro files (which only switch read-only on).
 # Every program of Akai's system it runs is in NEEDS: it stops before anything else when one is missing.
 # Progress and the result: /run/mpfree-setup/sd-card-status (key=value lines), read by the pad player:
 # state (checking, opening, open, closing, closed, none, failed), message, ask (the request's word), and while
-# open card, fs, sectors and mount. Notes: /run/mpfree-setup/sd-card-log.txt and the kernel log.
+# open card, fs, sectors, mount and dirty. Notes: /run/mpfree-setup/sd-card-log.txt and the kernel log.
 [ -n "$R" ] || PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 SD=ff0c0000
@@ -60,9 +61,10 @@ APPEAR=10
 LETGO=10
 QUIET=120
 ALIVE="$ASK/sd-card.alive"
-NEEDS='cat cut dd dmesg grep mkdir mount mv readlink rm rmdir sleep sync systemctl tr udevadm umount'
+NEEDS='cat cut dd dmesg grep mkdir mount mv od readlink rm rmdir sleep sync systemctl tr udevadm umount'
 opened=''
 mounted=''
+dirty=''
 card=''
 fs=''
 sectors=''
@@ -79,7 +81,9 @@ ask=$(printf '%s' "$ask" | cut -c1-32)
 rm -f "$ASK/sd-card.request" "$ASK/sd-card.close" "$ALIVE"
 status() {   # state message
   { echo "state=$1"; echo "message=$2"; echo "ask=$ask"
-    if [ "$1" = open ]; then echo "card=$card"; echo "fs=$fs"; echo "sectors=$sectors"; echo "mount=$MNT"; fi
+    if [ "$1" = open ]; then
+      echo "card=$card"; echo "fs=$fs"; echo "sectors=$sectors"; echo "mount=$MNT"; echo "dirty=$dirty"
+    fi
   } > "$S/sd-card-status.new" && mv "$S/sd-card-status.new" "$S/sd-card-status"
 }
 say() { { echo "mpfree-sd-card: $*" > "$R/dev/kmsg"; } 2>/dev/null; echo "$*" >> "$S/sd-card-log.txt"; }
@@ -118,7 +122,7 @@ unmount() {
 close_window() {
   trap '' TERM INT   # a stop from the system waits for the close: it takes LETGO + 10 s at the most
   unmount
-  rm -f "$ALIVE"
+  rm -f "$ALIVE" "$S/sd-card-sector"
   [ -n "$opened" ] || return 0
   [ -e "$devdir/driver" ] && echo "$name" > "$devdir/driver/unbind" 2>/dev/null
   n=0
@@ -249,8 +253,14 @@ case $# in
 esac
 [ -e "$R/dev/$dev" ] && [ ! -L "$R/dev/$dev" ] || fail "the card's device ($dev) is missing"
 
-# 3. The filesystem, from its first sector: the names FAT and exFAT write there, every other byte a dot.
-first=$(dd if="$R/dev/$dev" bs=512 count=1 2>/dev/null | tr -c 'A-Z0-9' '.')
+# 3. The filesystem, from its first sector, read once into RAM: the names FAT and exFAT write there (every
+# other byte a dot here), and the flag each keeps while a system has it mounted for writing.
+SECTOR="$S/sd-card-sector"
+dd if="$R/dev/$dev" bs=512 count=1 2>/dev/null > "$SECTOR" || fail "the card's first sector could not be read"
+first=$(tr -c 'A-Z0-9' '.' < "$SECTOR")
+byte() {   # the byte at offset $1 of the sector, in octal (Akai's BusyBox has no od -t)
+  dd if="$SECTOR" bs=1 skip="$1" count=1 2>/dev/null | od -b | { read -r _ b _; echo "${b:-0}"; }
+}
 kind=''
 case "$(printf '%s' "$first" | cut -c4-11)" in
   EXFAT...) fs=exfat; kind=exFAT ;;
@@ -266,6 +276,19 @@ fi
 [ -n "$fs" ] || fail "the card is $kind; MPFree reads FAT and exFAT"
 grep -q "[[:space:]]$fs\$" "$R/proc/filesystems" 2>/dev/null ||
   fail "the card is $kind, and this kernel has no $fs filesystem loaded (the stick must load it before the switch)"
+# Left marked as in use: the last system that wrote to it did not unmount it (a cut, or a card pulled out).
+# Linux sets the mark when it mounts FAT for writing and exFAT at its first write, and clears it at the
+# unmount; a read-only mount leaves it as it is (fs/fat/inode.c fat_set_state, fs/exfat/super.c
+# exfat_set_vol_flags). FAT32 keeps it in bit 0 of byte 65, FAT12/16 of byte 37, exFAT in bit 1 of its
+# VolumeFlags (byte 106); exFAT's bit 2 says a disk error was seen.
+case $kind in
+  FAT32) flags=$(byte 65); mark='[1357]' ;;
+  FAT12|FAT16) flags=$(byte 37); mark='[1357]' ;;
+  exFAT) flags=$(byte 106); mark='[2367]' ;;
+esac
+case "$flags" in *$mark) dirty=yes ;; *) dirty=no ;; esac
+[ "$kind" = exFAT ] && case "$flags" in *[4567]) dirty=yes; say "the card's exFAT says a disk error was seen" ;; esac
+[ "$dirty" = yes ] && say "the card was not unmounted cleanly last time (its $kind says it is still in use)"
 
 # 4. Mounted read-only.
 mkdir -p "$R$MNT" || fail "could not make $MNT"
@@ -275,7 +298,11 @@ mount -t "$fs" -o "ro,nosuid,nodev,noexec,noatime,uid=0,gid=$APP_GID,fmask=0137,
 grep -q "^/dev/$dev $MNT $fs ro," "$R/proc/mounts" || fail "the card is not mounted read-only at $MNT"
 counters > "$S/sd-card-counters-before.txt"
 say "window open: $card, $sectors sectors, $kind on $dev, read-only at $MNT"
-status open "The SD card is open, read-only."
+if [ "$dirty" = yes ]; then
+  status open "The SD card is open, read-only. It wasn't safely removed last time: check it on a computer."
+else
+  status open "The SD card is open, read-only."
+fi
 
 # 5. Open until the pad player asks to close it or stops answering, the card goes or the system stops this.
 why=''
