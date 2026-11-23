@@ -621,6 +621,10 @@ fn check(dir: &Path, p: &Promise, names: &[String], z: Sizes) -> Result<bool, St
     let mut pass = true;
     let found = recover::recover(&mut fs_, dir).map_err(|e| format!("recovery failed: {e}"))?;
     let mut finished: BTreeMap<u32, PathBuf> = BTreeMap::new();
+    // Audio recovery couldn't prove (nothing committed for it yet: a take
+    // cut off as it started), kept apart by design. A promise for that take
+    // fails below; without one it is said, not judged.
+    let mut unproved: BTreeMap<u32, PathBuf> = BTreeMap::new();
     for f in &found {
         let k = take_of(f.stem());
         let what = match f {
@@ -640,9 +644,11 @@ fn check(dir: &Path, p: &Promise, names: &[String], z: Sizes) -> Result<bool, St
                 )
             }
             Found::Unverified { path, .. } => {
-                pass = false;
+                if let Some(k) = take_of(f.stem()) {
+                    unproved.insert(k, path.clone());
+                }
                 format!(
-                    "FAIL: its audio can't be proved; kept as {}",
+                    "its audio can't be proved (nothing committed for it); kept apart as {}",
                     file_name(path)
                 )
             }
@@ -691,11 +697,19 @@ fn check(dir: &Path, p: &Promise, names: &[String], z: Sizes) -> Result<bool, St
     }
     for (&k, &want) in &p.takes {
         let Some(path) = finished.get(&k) else {
+            let kept = unproved.get(&k).map(|u| match check_audio(u, k, 0) {
+                Ok(b) => format!(
+                    "only audio that can't be proved came back ({} frames, {} of them as recorded; kept apart)",
+                    b.frames, b.good
+                ),
+                Err(e) => format!("only audio that can't be proved came back ({e}; kept apart)"),
+            });
+            let what = kept.unwrap_or_else(|| "nothing came back".to_string());
             if want > 0 {
                 pass = false;
-                say!("  take {k}: FAIL: nothing came back; {want} frames were promised");
+                say!("  take {k}: FAIL: {what}; {want} frames were promised");
             } else {
-                say!("  take {k}: nothing came back, and nothing was promised");
+                say!("  take {k}: {what}, and nothing was promised");
             }
             continue;
         };
