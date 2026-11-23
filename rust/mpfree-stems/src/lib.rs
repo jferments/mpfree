@@ -73,6 +73,21 @@ pub fn steps(samples: usize) -> usize {
     segments(samples) * (2 + Stem::ALL.len())
 }
 
+/// The bytes Spleeter's model takes in memory once read (its kernels as
+/// halves): for a memory check before the file is read. A test checks it
+/// against the model.
+pub const SPLEETER_BYTES: u64 = 78_651_984;
+
+/// [`Model::need`] on Spleeter's model with two threads (the job service's
+/// sound lane), by band: for a memory check before the file is read. A
+/// test checks it against the model.
+pub fn spleeter_need(band: Band) -> u64 {
+    match band {
+        Band::Spleeter => 75_902_976,
+        Band::Full => 96_903_168,
+    }
+}
+
 /// One of the four stems, in the model's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Stem {

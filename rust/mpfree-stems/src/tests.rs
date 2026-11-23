@@ -302,3 +302,13 @@ fn the_segments_and_steps_are_counted_as_spleeters_separator_counts_them() {
     let seconds = SEGMENT as f64 / f64::from(RATE);
     assert!((11.8..12.0).contains(&seconds), "{seconds} s");
 }
+
+#[test]
+fn the_spleeter_figures_are_spleeters_models() {
+    let model = Model::synthetic(1);
+    assert_eq!(model.bytes(), SPLEETER_BYTES);
+    for band in [Band::Spleeter, Band::Full] {
+        let settings = Settings { band, threads: 2 };
+        assert_eq!(model.need(&settings), spleeter_need(band), "{band:?}");
+    }
+}

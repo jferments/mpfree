@@ -25,13 +25,15 @@
 
 use std::cell::Cell;
 
-use mpfree_sampler::stems::{segments, Peaks, RATE, SEGMENT};
+use mpfree_sampler::model::{Layer, LayerSelect, Pad, Project, Region, Source, StemsTo};
+use mpfree_sampler::stems::{segments, Made, Peaks, RATE, SEGMENT};
 use mpfree_ui::qlink::{QLinkCard, QLinkColumn};
-use mpfree_ui::{Align, EventKind, FontId, PaintCx, Rect, Target, Touch, Ui, Widget};
+use mpfree_ui::{Align, EventKind, FontId, Fonts, PaintCx, Rect, Target, Touch, Ui, Widget};
 
+use crate::command::{Change, Recorded};
 use crate::panel::{Control, Item, Look, PadCell, Panel, Section};
 use crate::slice_tool::BANK;
-use crate::wave_tab::pad_label;
+use crate::wave_tab::{pad_label, WaveState, WaveTab};
 use crate::widgets::{Setting, SettingList};
 
 /// The page, and the widgets it adds (the app's own are `header`, `hint`,
@@ -131,6 +133,19 @@ pub enum Phase {
     /// Landed where this says ("On A6–A9"); the main button stays faint
     /// until something changes.
     Landed(String),
+}
+
+/// What a finished split lands as ([`Stems::land`]).
+#[derive(Debug)]
+pub enum Landing {
+    /// On the kit: its pads, the sound's pad's layers or takes, as one
+    /// undo step.
+    Kit(Change),
+    /// On a new kit's pads from A1, on a new track: the app adds the kit,
+    /// as a chop's New kit does.
+    NewKit { pads: Vec<Pad>, sounds: Vec<Source> },
+    /// Saved in the library under Samples › Stems; the kit doesn't change.
+    Library(Vec<Source>),
 }
 
 /// The panel's rows, in the list's order.
@@ -276,6 +291,9 @@ pub struct Stems {
     pub from: Option<usize>,
     /// The bank the map shows.
     pub bank: usize,
+    /// While it splits on Put on Pads, and once it has landed: the first
+    /// pad, fixed when it started ([`Stems::started`]).
+    pub fixed: Option<usize>,
     pub phase: Phase,
     /// Seconds a segment takes, as the last split here went.
     pub segment_s: f32,
@@ -295,6 +313,7 @@ impl Stems {
             levels: [0.0; 4],
             from: None,
             bank,
+            fixed: None,
             phase: Phase::Ready,
             segment_s: SEGMENT_S,
         }
@@ -328,7 +347,7 @@ impl Stems {
         if n == 0 || n > pads {
             return None;
         }
-        if let Some(a) = self.from {
+        if let Some(a) = self.fixed.or(self.from) {
             return (a + n <= pads).then(|| (a..a + n).collect());
         }
         let after = self.sound.pad.map_or(0, |p| p + 1);
@@ -519,12 +538,76 @@ impl Stems {
         self.kept() as u64 * self.sound.samples(self.reads) as u64 * 2 * per
     }
 
-    /// Started: Ready → Splitting.
+    /// Started: Ready → Splitting. Where they land is fixed now: on Put on
+    /// Pads, from the first pad shown, whatever lands on the pads
+    /// meanwhile.
     pub fn started(&mut self) {
+        self.fixed = None;
+        if self.put == Put::Pads {
+            self.fixed = self.landing().map(|p| p[0]);
+        }
         self.phase = Phase::Splitting {
             progress: 0.0,
             ran_s: 0.0,
         };
+    }
+
+    /// What a finished split lands as, made from its stems (`made`, as
+    /// [`mpfree_sampler::stems::Split`] made them) and the sound's pad as
+    /// the kit has it now (for Layers): each kept stem a sound named after
+    /// the sound ("Soul loop Vocals"), at its level.
+    pub fn land(&self, made: Made, pad: Option<&Pad>) -> Result<Landing, String> {
+        let mut sounds = Vec::new();
+        let mut layers = Vec::new();
+        for (k, stem) in made.stems.into_iter().enumerate() {
+            let Some(data) = stem.filter(|_| self.keep[k]) else {
+                continue;
+            };
+            let name = format!("{} {}", self.sound.name, NAMES[k]);
+            let source = Source::new(&name, RATE, 2, data).map_err(|e| e.to_string())?;
+            let mut layer = Layer::new(Region::whole(&source));
+            layer.level_db = self.levels[k];
+            layers.push((name, layer));
+            sounds.push(source);
+        }
+        if sounds.is_empty() {
+            return Err("No stem was kept".into());
+        }
+        let pads = || -> Vec<Pad> {
+            layers
+                .iter()
+                .map(|(name, l)| Pad::new(name, l.clone()))
+                .collect()
+        };
+        let kit = |to| {
+            Ok(Landing::Kit(Change::Stems {
+                sounds: sounds.iter().cloned().map(Recorded).collect(),
+                to,
+            }))
+        };
+        match self.put {
+            Put::Pads => {
+                let at = self
+                    .landing()
+                    .ok_or("The stems don't fit on the pads from there")?;
+                kit(StemsTo::Pads(at.into_iter().zip(pads()).collect()))
+            }
+            Put::Layers => {
+                let (Some(at), Some(pad)) = (self.sound.pad, pad) else {
+                    return Err("The sound's pad has gone: its layers can't take them".into());
+                };
+                let mut to = pad.clone();
+                to.layers = layers.iter().map(|(_, l)| l.clone()).collect();
+                to.select = LayerSelect::All;
+                kit(StemsTo::Layers(at, Box::new(to)))
+            }
+            Put::Takes => kit(StemsTo::Takes(pads())),
+            Put::NewKit => Ok(Landing::NewKit {
+                pads: pads(),
+                sounds,
+            }),
+            Put::Library => Ok(Landing::Library(sounds)),
+        }
     }
 
     /// Landed after `took_s` seconds: the main button says where, and the
@@ -537,10 +620,17 @@ impl Stems {
         self.phase = Phase::Landed(self.landed_text());
     }
 
+    /// Stopped, or it failed: Splitting → Ready.
+    pub fn stopped(&mut self) {
+        self.fixed = None;
+        self.phase = Phase::Ready;
+    }
+
     /// Something changed after it landed: the main button goes again.
     fn changed(&mut self) {
         if matches!(self.phase, Phase::Landed(_)) {
             self.phase = Phase::Ready;
+            self.fixed = None;
         }
     }
 
@@ -1518,7 +1608,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Screen>, String> {
         }),
     ];
     for (name, about, set) in screens {
-        let (mut ui, mut page, source) = sample_with(fonts())?;
+        let (mut ui, mut page, source, _) = sample_with(fonts())?;
         let filled = set(&mut page.stems);
         page.set_lanes(&mut ui, &made_up_stems(&source, filled));
         page.show(&mut ui);
@@ -1529,12 +1619,13 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Screen>, String> {
 }
 
 /// The Stems page open on the preview's kit ("Soul loop" on A5, sounds on
-/// A1 to A4 and A13), ready to split, in the Sample page's frame.
-pub fn sample(fonts: Fonts) -> Result<(Ui, StemsPage), String> {
-    sample_with(fonts).map(|(ui, page, _)| (ui, page))
+/// A1 to A4 and A13), ready to split, in the Sample page's frame, and the
+/// kit.
+pub fn sample(fonts: Fonts) -> Result<(Ui, StemsPage, Project), String> {
+    sample_with(fonts).map(|(ui, page, _, project)| (ui, page, project))
 }
 
-fn sample_with(fonts: Fonts) -> Result<(Ui, StemsPage, Source), String> {
+fn sample_with(fonts: Fonts) -> Result<(Ui, StemsPage, Source, Project), String> {
     use crate::sample::{self, PAD};
     let (project, view) = soul_loop();
     let state = WaveState::from_project(&project, PAD, 0, view).ok_or("no pad")?;
@@ -1546,7 +1637,7 @@ fn sample_with(fonts: Fonts) -> Result<(Ui, StemsPage, Source), String> {
     let page = StemsPage::open(&mut ui, preview_sound(&source), preview_room(&project));
     set_hint(&mut ui, &page.stems.hint());
     ui.show(PAGE)?;
-    Ok((ui, page, source))
+    Ok((ui, page, source, project))
 }
 
 /// The app's hint line says `text`.
@@ -1555,10 +1646,6 @@ fn set_hint(ui: &mut Ui, text: &str) {
         l.text = text.to_string();
     }
 }
-
-use crate::wave_tab::{WaveState, WaveTab};
-use mpfree_sampler::model::{Layer, Pad, Project, Region, Source};
-use mpfree_ui::Fonts;
 
 /// The preview's kit: "Soul loop", 24.6 s of the sample drums, on A5,
 /// with A1 to A4 and A13 holding sounds.

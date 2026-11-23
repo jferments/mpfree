@@ -25,9 +25,17 @@
 //!
 //! While it runs, [`Split::peaks`] is each stem's picture so far, a column
 //! at a time, for the Stems page's lanes to fill as the stems come.
+//!
+//! The app hands it the sound and where the model file is
+//! ([`Input::Sound`], [`ModelFrom::File`]): the split's first step reads
+//! the model (about 2.6 s from the stick, by the plan's estimate) and the
+//! part of the sound asked for, converted to 44.1 kHz, so neither holds up
+//! the screen. [`Split::model`] then has the model, for the next split.
 
 use crate::jobs::{Job, Jobs, Key, Lane, Running};
+use crate::model::Source;
 use mpfree_stems::{Model, Separator, Settings, Sink};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -49,15 +57,33 @@ pub struct Made {
     pub took: Duration,
 }
 
+/// Where a split's model comes from.
+pub enum ModelFrom {
+    /// Read already (by an earlier split, [`Split::model`]).
+    Loaded(Arc<Model>),
+    /// Read from this file by the split's first step.
+    File(PathBuf),
+}
+
+/// What a split works through.
+pub enum Input {
+    /// Samples read already, interleaved, at 44.1 kHz, `channels` (1 or 2)
+    /// a frame.
+    Samples {
+        samples: Arc<[f32]>,
+        channels: usize,
+    },
+    /// Frames `span` of `source`, read and converted to 44.1 kHz by the
+    /// split's first step ([`read`]).
+    Sound { source: Source, span: (u64, u64) },
+}
+
 /// What to split and how.
 pub struct Ask {
     /// The sound (its id), for the split's key.
     pub id: u128,
-    pub model: Arc<Model>,
-    /// The samples read, interleaved, at 44.1 kHz.
-    pub input: Arc<[f32]>,
-    /// 1 or 2.
-    pub channels: usize,
+    pub model: ModelFrom,
+    pub input: Input,
     pub settings: Settings,
     /// Which stems are kept, in [`Stem::ALL`]'s order. All four are worked
     /// out whatever this says, since each mask needs all four networks.
@@ -86,15 +112,29 @@ pub struct Split {
     stop: Arc<AtomicBool>,
     done: Arc<AtomicU32>,
     peaks: Arc<Mutex<Peaks>>,
+    model: Arc<Mutex<Option<Arc<Model>>>>,
     rx: Receiver<Result<Made, String>>,
+}
+
+/// The separation and where its stems go, once the model and the sound
+/// are read.
+struct Work {
+    sep: Separator<Arc<Model>, Arc<[f32]>>,
+    sink: Gather,
 }
 
 /// What moves from one step's job to the next.
 struct State {
     jobs: Jobs,
     key: Key,
-    sep: Separator<Arc<Model>, Arc<[f32]>>,
-    sink: Gather,
+    /// Until the first step has read them: the model and the sound.
+    read: Option<(ModelFrom, Input)>,
+    settings: Settings,
+    keep: [bool; 4],
+    columns: usize,
+    work: Option<Work>,
+    peaks: Arc<Mutex<Peaks>>,
+    model: Arc<Mutex<Option<Arc<Model>>>>,
     sixteen: bool,
     stop: Arc<AtomicBool>,
     done: Arc<AtomicU32>,
@@ -106,32 +146,30 @@ struct State {
 
 impl Split {
     /// Starts splitting `ask` on `jobs`' sound lane, holding `hold` (the
-    /// memory promised for it) until it ends. Err, with nothing started,
-    /// if the separation can't take the sound (its channels).
+    /// memory promised for it) until it ends. With the model read and the
+    /// samples given, the separation starts here, and Err, with nothing
+    /// started, says why it can't take the sound (its channels); else the
+    /// first step reads them, and [`Split::poll`] says if that fails.
     pub fn start(jobs: &Jobs, ask: Ask, hold: impl Send + 'static) -> Result<Split, String> {
-        let frames = ask.input.len() / ask.channels.max(1);
-        let sep = Separator::new(
-            ask.model,
-            ask.input,
-            ask.channels,
-            mpfree_stems::RATE,
-            &ask.settings,
-        )
-        .map_err(|e| e.to_string())?;
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let done = Arc::new(AtomicU32::new(0));
         let key = Key::new(KIND, ask.id);
         let peaks = Arc::new(Mutex::new(Peaks {
-            per: frames.div_ceil(ask.columns.max(1)).max(1),
             columns: ask.columns.max(1),
-            stems: Default::default(),
+            ..Peaks::default()
         }));
-        let state = State {
+        let model = Arc::new(Mutex::new(None));
+        let mut state = State {
             jobs: jobs.clone(),
             key,
-            sep,
-            sink: Gather::new(ask.keep, frames, peaks.clone()),
+            read: None,
+            settings: ask.settings,
+            keep: ask.keep,
+            columns: ask.columns,
+            work: None,
+            peaks: peaks.clone(),
+            model: model.clone(),
             sixteen: ask.sixteen,
             stop: stop.clone(),
             done: done.clone(),
@@ -139,14 +177,27 @@ impl Split {
             started: None,
             _hold: Box::new(hold),
         };
+        match (ask.model, ask.input) {
+            (ModelFrom::Loaded(m), Input::Samples { samples, channels }) => {
+                state.begin(m, samples, channels)?;
+            }
+            read => state.read = Some(read),
+        }
         post(Box::new(state), true);
         Ok(Split {
             key,
             stop,
             done,
             peaks,
+            model,
             rx,
         })
+    }
+
+    /// The model, once the split has read it (or was given it): kept for
+    /// the next split, so it is read once.
+    pub fn model(&self) -> Option<Arc<Model>> {
+        self.model.lock().ok().and_then(|m| m.clone())
     }
 
     /// The split's key on the job service.
@@ -198,6 +249,68 @@ fn post(state: Box<State>, first: bool) {
     }
 }
 
+impl State {
+    /// The separation of `samples` on `model`, and where its stems go.
+    fn begin(
+        &mut self,
+        model: Arc<Model>,
+        samples: Arc<[f32]>,
+        channels: usize,
+    ) -> Result<(), String> {
+        let frames = samples.len() / channels.max(1);
+        if let Ok(mut m) = self.model.lock() {
+            *m = Some(model.clone());
+        }
+        let sep = Separator::new(model, samples, channels, RATE, &self.settings)
+            .map_err(|e| e.to_string())?;
+        if let Ok(mut p) = self.peaks.lock() {
+            p.per = frames.div_ceil(self.columns.max(1)).max(1);
+        }
+        self.work = Some(Work {
+            sep,
+            sink: Gather::new(self.keep, frames, self.peaks.clone()),
+        });
+        Ok(())
+    }
+
+    /// The first step, when it has the model and the sound to read.
+    fn read_in(&mut self, (model, input): (ModelFrom, Input)) -> Result<(), String> {
+        let model = match model {
+            ModelFrom::Loaded(m) => m,
+            ModelFrom::File(path) => Arc::new(Model::open(&path).map_err(|e| e.to_string())?),
+        };
+        let (samples, channels) = match input {
+            Input::Samples { samples, channels } => (samples, channels),
+            Input::Sound { source, span } => read(&source, span)?,
+        };
+        self.begin(model, samples, channels)
+    }
+}
+
+/// Frames `span` (from, to) of `source`, interleaved, converted to 44.1 kHz
+/// when it is at another rate, and its channels a frame. Heavy for a long
+/// sound: call it off the audio and screen threads.
+pub fn read(source: &Source, (from, to): (u64, u64)) -> Result<(Arc<[f32]>, usize), String> {
+    let ch = usize::from(source.channels());
+    let to = to.min(source.frames());
+    if from >= to {
+        return Err("Start and End are together: nothing to split".into());
+    }
+    let samples: Vec<f32> = source
+        .data()
+        .iter()
+        .skip(from as usize * ch)
+        .take((to - from) as usize * ch)
+        .collect();
+    if source.rate() == RATE {
+        return Ok((samples.into(), ch));
+    }
+    let part = Source::new(&source.name, source.rate(), source.channels(), samples)
+        .map_err(|e| e.to_string())?;
+    let (at, _) = part.at_rate(RATE).map_err(|e| e.to_string())?;
+    Ok((at.data().to_vec().into(), ch))
+}
+
 /// One step, then the next posted, or the stems sent.
 fn step(mut st: Box<State>, run: &Running) {
     if st.stop.load(Ordering::Relaxed) || run.cancelled() {
@@ -205,11 +318,28 @@ fn step(mut st: Box<State>, run: &Running) {
         return;
     }
     let started = *st.started.get_or_insert_with(Instant::now);
-    let State { sep, sink, .. } = &mut *st;
+    if let Some(read) = st.read.take() {
+        // The first step reads the model and the sound; the separation's
+        // own steps follow.
+        match st.read_in(read) {
+            Ok(()) if st.stop.load(Ordering::Relaxed) || run.cancelled() => {
+                let _ = st.tx.send(Err("stopped".to_string()));
+            }
+            Ok(()) => post(st, false),
+            Err(e) => {
+                let _ = st.tx.send(Err(e));
+            }
+        }
+        return;
+    }
+    let Some(Work { sep, sink }) = st.work.as_mut() else {
+        let _ = st.tx.send(Err("nothing to split".to_string()));
+        return;
+    };
     match sep.step(sink) {
         Ok(true) => {
-            st.done
-                .store(st.sep.progress().to_bits(), Ordering::Relaxed);
+            let p = sep.progress();
+            st.done.store(p.to_bits(), Ordering::Relaxed);
             // Stopped during the step: no next one.
             if st.stop.load(Ordering::Relaxed) || run.cancelled() {
                 let _ = st.tx.send(Err("stopped".to_string()));
@@ -218,12 +348,12 @@ fn step(mut st: Box<State>, run: &Running) {
             post(st, false);
         }
         Ok(false) => {
+            sink.finish();
             st.done.store(1f32.to_bits(), Ordering::Relaxed);
-            st.sink.finish();
             let State {
-                sink, sixteen, tx, ..
+                work, sixteen, tx, ..
             } = *st;
-            let mut stems = sink.stems;
+            let mut stems = work.map(|w| w.sink.stems).unwrap_or_default();
             if sixteen {
                 let mut seed = 0x5eed_u32;
                 for s in stems.iter_mut().flatten() {
@@ -344,9 +474,11 @@ mod tests {
     fn ask(model: &Arc<Model>, input: &Arc<[f32]>, keep: [bool; 4], sixteen: bool) -> Ask {
         Ask {
             id: 7,
-            model: model.clone(),
-            input: input.clone(),
-            channels: 2,
+            model: ModelFrom::Loaded(model.clone()),
+            input: Input::Samples {
+                samples: input.clone(),
+                channels: 2,
+            },
             settings: Settings::default(),
             keep,
             sixteen,
@@ -421,6 +553,68 @@ mod tests {
                 let want_hi = col.iter().copied().fold(0.0f32, f32::max);
                 assert_eq!((lo, hi), (want_lo, want_hi), "stem {k} column {c}");
             }
+        }
+    }
+
+    #[test]
+    fn its_first_step_reads_the_part_asked_for_at_44_1_khz() {
+        let model = Arc::new(Model::small(3));
+        // Two seconds at 48 kHz; the second from 0.5 s.
+        let source = Source::new("Break", 48_000, 2, noise(2 * 48_000 * 2, 9, 0.4)).unwrap();
+        let jobs = Jobs::new(Config::default());
+        let ask = Ask {
+            input: Input::Sound {
+                source: source.clone(),
+                span: (24_000, 72_000),
+            },
+            ..ask(&model, &Arc::from(Vec::new()), [true; 4], false)
+        };
+        let split = Split::start(&jobs, ask, ()).unwrap();
+        let made = wait(&split).unwrap();
+        let (read, channels) = read(&source, (24_000, 72_000)).unwrap();
+        assert_eq!(channels, 2);
+        assert!(
+            (read.len() as i64 / 2 - 44_100).abs() <= 2,
+            "{} frames",
+            read.len() / 2
+        );
+        assert_eq!(made.stems[0].as_ref().map(Vec::len), Some(read.len()));
+        // The same stems as a split of what it read.
+        assert_eq!(
+            made.stems[2].as_deref(),
+            Some(&straight(&model, &read)[2][..])
+        );
+        assert!(Arc::ptr_eq(&split.model().unwrap(), &model));
+        // Its first job read the sound; one segment of six steps followed.
+        assert_eq!(jobs.counts().done, 7);
+        assert!(read_of_nothing_is_refused(&source));
+    }
+
+    fn read_of_nothing_is_refused(source: &Source) -> bool {
+        read(source, (500, 500)).is_err() && read(source, (500, 400)).is_err()
+    }
+
+    #[test]
+    fn a_model_file_that_isnt_there_says_why_and_nothing_is_kept() {
+        let jobs = Jobs::new(Config::default());
+        let held = Arc::new(());
+        let model = Arc::new(Model::small(3));
+        let input: Arc<[f32]> = noise(44_100 * 2, 5, 0.4).into();
+        let ask = Ask {
+            model: ModelFrom::File(PathBuf::from("/nonexistent/spleeter-4stems.mpfstem")),
+            ..ask(&model, &input, [true; 4], false)
+        };
+        let split = Split::start(&jobs, ask, held.clone()).unwrap();
+        let why = wait(&split).unwrap_err();
+        assert!(why.starts_with("stem model:"), "{why}");
+        assert!(split.model().is_none());
+        let t = Instant::now();
+        while Arc::strong_count(&held) > 1 {
+            assert!(
+                t.elapsed() < Duration::from_secs(10),
+                "the promise was kept"
+            );
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 

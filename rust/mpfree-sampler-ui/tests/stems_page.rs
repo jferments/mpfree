@@ -3,18 +3,37 @@
 //! progress on the lanes, the levels on the Q-Links, all on the preview's
 //! kit ("Soul loop", 24.6 s, on A5; sounds on A1 to A4 and A13).
 
-use mpfree_sampler::stems::Peaks;
+use std::time::Duration;
+
+use mpfree_sampler::model::LayerSelect;
+use mpfree_sampler::stems::{Made, Peaks};
 use mpfree_sampler_ui::panel::Look;
 use mpfree_sampler_ui::stems_page::{
-    self, sample, Ask, Phase, Put, Reads, Row, StemsPage, StemsView, LIST, NAMES, QLINKS, TINTS,
-    VIEW,
+    self, sample, Ask, Landing, Phase, Put, Reads, Row, StemsPage, StemsView, LIST, NAMES, QLINKS,
+    TINTS, VIEW,
 };
 use mpfree_sampler_ui::widgets::SettingList;
 use mpfree_ui::qlink::QLinkColumn;
 use mpfree_ui::{Fonts, Gesture, SoftCanvas, Touch, Ui};
 
 fn page() -> (Ui, StemsPage) {
-    sample(Fonts::embedded()).expect("the preview's page")
+    let (ui, page, _) = sample(Fonts::embedded()).expect("the preview's page");
+    (ui, page)
+}
+
+/// What a split of the preview's sound made: each stem a quiet tone, the
+/// kept ones, `frames` long.
+fn made(keep: [bool; 4], frames: usize) -> Made {
+    Made {
+        stems: [0, 1, 2, 3].map(|k| {
+            keep[k].then(|| {
+                (0..frames * 2)
+                    .map(|i| ((i + k * 11) as f32 * 0.01).sin() * 0.2)
+                    .collect()
+            })
+        }),
+        took: Duration::from_secs(29),
+    }
 }
 
 fn list(ui: &Ui) -> &SettingList {
@@ -303,5 +322,103 @@ fn every_screen_paints_and_every_control_answers() {
                 t.target.gesture
             );
         }
+    }
+}
+
+#[test]
+fn landed_on_pads_the_stems_are_one_undo_step_at_their_levels() {
+    let (_, mut page, mut project) = sample(Fonts::embedded()).unwrap();
+    page.stems.levels = [1.5, 0.0, -3.0, -6.0];
+    page.stems.started();
+    let before = project.sources().len();
+    let Landing::Kit(change) = page.stems.land(made([true; 4], 4_410), None).unwrap() else {
+        panic!("on the kit");
+    };
+    change.apply(&mut project, None).expect("landed");
+    for (k, pad) in (5..9).enumerate() {
+        let p = project.pad(pad).expect("a stem's pad");
+        assert_eq!(p.name, format!("Soul loop {}", NAMES[k]));
+        assert_eq!(p.layers[0].level_db, page.stems.levels[k]);
+        let sound = project.source(p.layers[0].region.source).unwrap();
+        assert_eq!(
+            (sound.rate(), sound.channels(), sound.frames()),
+            (44_100, 2, 4_410)
+        );
+    }
+    assert_eq!(project.sources().len(), before + 4);
+    assert!(project.undo());
+    assert!((5..9).all(|i| project.pad(i).is_none()));
+    assert_eq!(project.sources().len(), before);
+}
+
+#[test]
+fn where_they_land_is_fixed_when_the_split_starts() {
+    let (_, mut page, mut project) = sample(Fonts::embedded()).unwrap();
+    page.stems.started();
+    // A6 gets a sound while it splits: the stems still go on A6 to A9.
+    let hit = project.pad(0).unwrap().clone();
+    project.set_pad(5, Some(hit), None).unwrap();
+    page.stems.room.filled[5] = true;
+    assert_eq!(page.stems.landing(), Some(vec![5, 6, 7, 8]));
+    page.stems.landed(29.0);
+    assert_eq!(page.stems.lane_text(0), "on A6");
+    // Once landed and something changes, the next split goes on the next
+    // empty pads (A6 to A9 are taken now).
+    page.stems.room.filled[5..9].fill(true);
+    page.stems.step(Row::Reads, 1);
+    // A10 to A12 are free, but A13 has a sound: A14 to B1.
+    assert_eq!(page.stems.landing(), Some(vec![13, 14, 15, 16]));
+    // Stopped: where it lands is free again.
+    page.stems.started();
+    page.stems.stopped();
+    assert_eq!(page.stems.fixed, None);
+}
+
+#[test]
+fn as_layers_the_sounds_pad_plays_the_kept_stems_together() {
+    let (_, mut page, mut project) = sample(Fonts::embedded()).unwrap();
+    page.stems.put = Put::Layers;
+    page.stems.keep = [true, false, true, true];
+    page.stems.started();
+    let pad = project.pad(4).unwrap().clone();
+    let Landing::Kit(change) = page
+        .stems
+        .land(made([true, false, true, true], 4_410), Some(&pad))
+        .unwrap()
+    else {
+        panic!("on the kit");
+    };
+    change.apply(&mut project, None).expect("landed");
+    let p = project.pad(4).unwrap();
+    assert_eq!(p.name, "Soul loop", "the pad keeps its name");
+    assert_eq!(p.layers.len(), 3);
+    assert_eq!(p.select, LayerSelect::All);
+    assert!(p.layers.iter().all(|l| (l.vel_lo, l.vel_hi) == (1, 127)));
+    assert!(project.undo());
+    assert_eq!(project.pad(4), Some(&pad));
+    // Its pad gone meanwhile: it says so, and nothing lands.
+    assert!(page.stems.land(made([true; 4], 100), None).is_err());
+}
+
+#[test]
+fn new_kit_and_library_hand_the_app_the_sounds() {
+    let (_, mut page, _) = sample(Fonts::embedded()).unwrap();
+    page.stems.put = Put::NewKit;
+    match page.stems.land(made([true; 4], 100), None).unwrap() {
+        Landing::NewKit { pads, sounds } => {
+            assert_eq!((pads.len(), sounds.len()), (4, 4));
+            assert_eq!(pads[3].name, "Soul loop Other");
+        }
+        l => panic!("{l:?}"),
+    }
+    page.stems.put = Put::Library;
+    page.stems.keep[0] = false;
+    match page
+        .stems
+        .land(made([false, true, true, true], 100), None)
+        .unwrap()
+    {
+        Landing::Library(sounds) => assert_eq!(sounds.len(), 3),
+        l => panic!("{l:?}"),
     }
 }
