@@ -522,7 +522,7 @@ Everything else works as on a drum's steps (see [Your first beat](sequencer.md#t
 
 ## Tuning
 
-Out of the box every synth plays in standard tuning: twelve equal steps to the octave, with the A above middle C at 440 Hz. You can change that for the synth on the pads in the Synth tab's options (press MENU on the Synth tab; see [Controls](../reference/controls.md)).
+Out of the box every synth and kit plays in standard tuning: twelve equal steps to the octave, with the A above middle C at 440 Hz. You can change that for the song in the Synth tab's options (press MENU on the Synth tab; see [Controls](../reference/controls.md)): the synths and the kits' keygroups follow it.
 
 {{shot: synth-options | The Synth tab's options, with the Tuning, Tuning root and A4 rows.}}
 
@@ -537,6 +537,15 @@ Out of the box every synth plays in standard tuning: twelve equal steps to the o
 - **A4** is the pitch of the A above middle C, from 380 to 480 Hz, so the synth can match a recording or another instrument. 432 Hz and 442 Hz are common choices.
 
 The drum synth keeps its own pitches whatever you pick here.
+
+Kits follow it where they play notes:
+
+- **Keygroups** (pads that play notes, see [Playing a kit on keys](shaping-a-pad.md#playing-a-kit-on-keys)) play every key at the tuning's pitch. MPFree takes a keygroup's sound to be at its root note's standard pitch, so A4 = 432 Hz moves a keygroup just as it moves a synth.
+- **16 Levels by Tune** steps by the tuning's notes from the pad's root note (C4 on a pad without keys), with pad 9 as recorded.
+- **The pitch wheel** moves a keygroup's notes along the tuning's notes, as it does a synth's.
+- **A pad you hit**, and a slice, plays as you tuned it on the pad, whatever the tuning, as the drum synth does.
+
+Notes already sounding move to a new tuning as you pick it, gliding there if the pad glides. [Auto-sample](sampling.md#auto-sample-a-synth-or-your-gear-onto-the-pads) records the synth in standard tuning, so the keygroups it makes play the tuning once, not twice.
 
 Everything else in the Synth tab's options (the scale, pad layouts and tuning) is the song's: it is saved in your project and comes back when you open it, and New project starts chromatic in C at A4 = 440 Hz (see [Saving your work](saving.md)). If a tuning file or one of your own scales is gone by then, that one choice goes back to its default, and the Console says so.
 

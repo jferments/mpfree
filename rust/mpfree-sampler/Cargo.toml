@@ -12,6 +12,7 @@ mpfree-grain = { path = "../mpfree-grain" }
 mpfree-stretch = { path = "../mpfree-stretch" }
 mpfree-prof = { path = "../mpfree-prof" }
 mpfree-node = { path = "../mpfree-node" }
+mpfree-tuning = { path = "../mpfree-tuning" }
 mpfree-lanes = { path = "../mpfree-lanes" }
 mpfree-flac = { path = "../mpfree-flac" }
 

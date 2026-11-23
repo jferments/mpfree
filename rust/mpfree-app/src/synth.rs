@@ -2666,6 +2666,48 @@ mod tests {
         assert!(fresh_node("mpfree.poly", &[], &[0.5], 48_000).is_none());
     }
 
+    /// Auto-sample records a patch in 12-TET whatever the song's tuning
+    /// (tunings plan T3): its copy is made from the patch's values and
+    /// design, which a tuning doesn't touch, and starts in 12-TET, so a
+    /// keygroup made from it plays the tuning once, not twice.
+    #[test]
+    fn an_auto_sample_copy_plays_in_12_tet_whatever_the_tuning() {
+        let a432 = TuningPick {
+            a4_hz: 432,
+            ..TuningPick::default()
+        };
+        for engine in [
+            Engine::Poly,
+            Engine::Fm,
+            Engine::Drums,
+            Engine::Pluck,
+            Engine::Keys,
+            Engine::Drawbar,
+            Engine::Squelch,
+            Engine::Analog,
+            Engine::Strings,
+            Engine::Bass,
+            Engine::Wind,
+            Engine::Choir,
+        ] {
+            let mut s = Synth::new(48_000);
+            with(&mut s, |p| p.engine = engine);
+            let n = s.notes(0)[0];
+            let in_12 = note(s.node_mut(), n);
+            let plain = s.state();
+            with(&mut s, |p| p.tuning = a432);
+            let st = s.state();
+            let name = st.info.name;
+            assert_eq!(st.extras, plain.extras, "{name}");
+            assert_eq!(st.values, plain.values, "{name}");
+            if engine != Engine::Drums {
+                assert_ne!(note(s.node_mut(), n), in_12, "{name} plays the tuning");
+            }
+            let mut copy = fresh_node(st.info.id, &st.extras, &st.values, 48_000).unwrap();
+            assert_eq!(note(copy.as_mut(), n), in_12, "{name} records in 12-TET");
+        }
+    }
+
     #[test]
     fn pads_play_semitones_from_c3_and_octaves_move_them() {
         let mut s = Synth::new(44_100);

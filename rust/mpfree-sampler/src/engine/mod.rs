@@ -101,6 +101,7 @@ pub use mpfree_grain::{GrainView, MAX_GRAINS};
 pub use mpfree_lanes::{Config as LaneConfig, Setup as LaneSetup, Stats as LaneStats};
 use mpfree_lanes::{Lane, Setup};
 use mpfree_node::Cull;
+use mpfree_tuning::Tuning;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -114,6 +115,7 @@ mod render;
 mod routing;
 #[cfg(test)]
 mod tests;
+mod tuning;
 mod view;
 mod voices;
 
@@ -125,6 +127,7 @@ pub use master::*;
 use notes::*;
 pub use render::*;
 pub use routing::*;
+use tuning::*;
 pub use view::*;
 pub use voices::*;
 
@@ -200,6 +203,8 @@ pub struct Engine {
     tape_moved: bool,
     /// Each kit's live settings ([`Event::PadLive`], [`Event::ProgramLive`]).
     lives: Vec<Live>,
+    /// Each kit's tuning ([`Engine::set_tuning`]), about 1 KB a kit.
+    tunings: Vec<KitTuning>,
     /// The one-pole step playing voices follow them with, per
     /// [`FILTER_STEP`] frames.
     live_k: f32,
@@ -284,6 +289,7 @@ impl Engine {
                 };
                 kits
             ],
+            tunings: vec![KitTuning::default(); kits],
             live_k: 1.0 - (-(FILTER_STEP as f32) / (LIVE_SMOOTH_S * rate as f32)).exp(),
             stop_lane: false,
             edit_lane: vec![false; kits],

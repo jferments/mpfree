@@ -1303,6 +1303,7 @@ dependencies = [
  "mpfree-stream",
  "mpfree-stretch",
  "mpfree-synth",
+ "mpfree-tuning",
 ]
 
 [[package]]

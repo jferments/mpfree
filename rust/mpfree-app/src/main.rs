@@ -5799,6 +5799,29 @@ fn ask_plugin_presets(mix: &mut mixing::MixHost) {
     }
 }
 
+/// The kits follow the song's tuning (tunings plan T3): when the pick
+/// differs from `was` (None at the start), every kit's keygroups get it.
+/// Returns the pick now, and a line saying so (none for 12-TET at the
+/// start, or with no change). Allocates only for the line, on a change.
+fn kits_follow_tuning(
+    synth: &synth::Synth,
+    player: &mut sampler::Player,
+    was: Option<synth::TuningPick>,
+) -> (Option<synth::TuningPick>, Option<String>) {
+    let pick = synth.settings().tuning;
+    if was == Some(pick) {
+        return (was, None);
+    }
+    player.set_tuning(&synth.tuning_now());
+    let said = (was.is_some() || pick != synth::TuningPick::default()).then(|| {
+        format!(
+            "sampler: the kits' keygroups play {} (pad hits and slices as tuned on the pad)",
+            synth.tuning_label()
+        )
+    });
+    (Some(pick), said)
+}
+
 /// The tracks' own synths follow the Synth tab's pad layout, octave and
 /// tuning (Drums keeps its kit notes).
 fn own_follow_synth(synth: &synth::Synth, own: &mut instruments::Instruments) {
@@ -7845,6 +7868,8 @@ fn player_session(
         sampler::Player::with_user_kits(&mut kits, &mpc_one::PAD_NOTES, RATE, sampler::USER_KITS)?;
     // The empty kits kept for New kit, after the others and Grains.
     let user_kits = player.user_kits();
+    // The song's tuning the kits play, once the loop has handed it over.
+    let mut kits_tuned: Option<synth::TuningPick> = None;
     let sounds: usize = kits.iter().map(|k| k.sounds.len()).sum();
     out.say(&format!("pad player: {} kits, {sounds} sounds", kits.len()));
     for (k, kit) in kits
@@ -12338,6 +12363,13 @@ fn player_session(
         let t_render = Instant::now();
         // Warped pads play at the transport's tempo.
         player.set_tempo(time.info().bpm);
+        // Every kit's keygroups play the song's tuning (tunings plan T3),
+        // handed over when it changes.
+        let (now, said) = kits_follow_tuning(&synth, &mut player, kits_tuned);
+        kits_tuned = now;
+        if let Some(line) = said {
+            out.note(&line);
+        }
         // A synced pad LFO keeps to the beats while the transport rolls.
         player.set_beat(time.block().spans().first().and_then(|s| {
             s.state
@@ -16503,5 +16535,58 @@ mod tests {
         let mute = ParamAddr::new(Owner::Strip(Strip::Track(0)), mpfree_fx::ids::mixer::MUTE);
         let (info, v) = learn_describe(&mix, &synth, &app, &|_, _, _| None, now, mute).unwrap();
         assert_eq!((info.curve, v), (mpfree_node::Curve::Toggle, 0.0));
+    }
+
+    #[test]
+    fn the_kits_follow_the_songs_tuning_and_say_so_on_a_change() {
+        let tone: Vec<i16> = (0..2_000)
+            .flat_map(|i| [((i as f32 * 0.03).sin() * 12_000.0) as i16; 2])
+            .collect();
+        let kick = kit::build(&[(mpc_one::PAD_NOTES[4], "Kick", &tone[..])]);
+        let mut ks = kit::parse_kits(&kit::build_kits(&[("House", kick)])).unwrap();
+        let mut player = sampler::Player::new(&mut ks, &mpc_one::PAD_NOTES, RATE).unwrap();
+        let mut synth = synth::Synth::new(RATE);
+        let kits = |player: &sampler::Player| {
+            (0..)
+                .map_while(|k| player.kit_tuning(k).cloned())
+                .collect::<Vec<_>>()
+        };
+        // 12-TET at the start: handed over, said nothing.
+        let (was, said) = kits_follow_tuning(&synth, &mut player, None);
+        assert_eq!(was, Some(synth::TuningPick::default()));
+        assert_eq!(said, None);
+        let all = kits(&player);
+        assert!(!all.is_empty());
+        assert!(all.iter().all(|t| t.is_standard()));
+        // A just pick reaches every kit, once, with a line.
+        let just = synth::TuningPick {
+            builtin: synth::Builtin::Just,
+            root: 2,
+            ..synth::TuningPick::default()
+        };
+        let mut p = synth.settings();
+        p.tuning = just;
+        synth.set_settings(p);
+        let (was, said) = kits_follow_tuning(&synth, &mut player, was);
+        assert_eq!(was, Some(just));
+        let said = said.expect("a line");
+        assert!(
+            said.starts_with("sampler: the kits' keygroups play "),
+            "{said}"
+        );
+        assert!(said.contains(&synth.tuning_label()), "{said}");
+        let all = kits(&player);
+        assert_eq!(all.len(), player.kits());
+        assert!(all.iter().all(|t| *t == synth.tuning_now()));
+        // The same pick again: nothing to do.
+        assert_eq!(kits_follow_tuning(&synth, &mut player, was), (was, None));
+        // Back to 12-TET: said, as any change is.
+        synth.set_settings(synth::PadSettings {
+            tuning: synth::TuningPick::default(),
+            ..synth.settings()
+        });
+        let (_, said) = kits_follow_tuning(&synth, &mut player, was);
+        assert!(said.is_some());
+        assert!(kits(&player).iter().all(|t| t.is_standard()));
     }
 }
