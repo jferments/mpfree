@@ -297,8 +297,10 @@ fn copies_wait_behind_playback_and_recording_and_can_be_stopped() {
     );
     gate.set_cushion(5.0);
     assert_eq!(background(&gate, 2.0), Pace::Go);
-    gate.set_capture_fill(0.8);
-    assert_eq!(background(&gate, 2.0), Pace::Wait, "recording presses");
+    gate.set_recording(true);
+    assert_eq!(background(&gate, 2.0), Pace::Wait, "a take is recording");
+    gate.set_recording(false);
+    assert_eq!(background(&gate, 2.0), Pace::Go);
 }
 
 #[test]

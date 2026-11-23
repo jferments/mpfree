@@ -83,6 +83,9 @@ const HEADS_EVERY: u64 = 32;
 const HEADS_SPAN: Tick = 16 * mpfree_transport::time::PPQ as Tick;
 /// The shortest start held, in seconds.
 const MIN_HEAD_S: f64 = 0.25;
+/// A held start lasts the plan's stall and this much more, in seconds: the
+/// read for what follows it lands within the stall.
+const HEAD_MARGIN_S: f64 = 0.5;
 /// Takes being written to files at once: a sound brought in, a fit, or a
 /// project's takes converted from another rate (every take at most).
 const TO_WRITE: usize = MAX_TAKES;
@@ -507,16 +510,16 @@ impl AudioHost {
     /// at start, before [`AudioHost::record_to`], so the writer waits for
     /// playback's reads. False (nothing changed) once files are on, if it
     /// is on already, or with no worker. Makes the room for the regions'
-    /// starts it holds in the cache, each twice the longest stall the
-    /// plan expects of the drive (`cfg.plan.stall_s`): not on the audio
-    /// thread.
+    /// starts it holds in the cache, each the longest stall the plan
+    /// expects of the drive (`cfg.plan.stall_s`) and half a second more:
+    /// not on the audio thread.
     pub fn stream(&mut self, cfg: StreamConfig) -> bool {
         if self.tx.is_none() || self.streaming || self.tracks.records_to_files() {
             return false;
         }
         self.streaming = true;
         self.heads = Some(Vec::with_capacity(MAX_HEADS));
-        let head_s = (2.0 * cfg.plan.stall_s).max(MIN_HEAD_S);
+        let head_s = (cfg.plan.stall_s + HEAD_MARGIN_S).max(MIN_HEAD_S);
         self.head_frames = (head_s * f64::from(self.tracks.rate())) as u64;
         self.send(ToWorker::Stream(Box::new(cfg)));
         true
