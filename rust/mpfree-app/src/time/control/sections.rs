@@ -1,6 +1,7 @@
 //! A song linked to its list, as it plays (the Arrange refactor's 4b.4,
 //! plan D8: playing the list plays the song). In song mode each section
-//! made from a scene brings its scene's mutes and program changes in as
+//! made from a scene brings its scene's mutes, program changes and tempo
+//! (5.2b; unless the song has tempo points of its own, which lead) in as
 //! it starts, as the list launching the scene would for tracks it gives
 //! no cue ([`mpfree_perform::Perform::section_starts`]): the section's
 //! blocks were made with no scene's mutes, so the mutes come at play
@@ -101,6 +102,7 @@ impl TimeControl {
             return false;
         }
         self.queue_scene_mutes();
+        self.scene_tempo_on_its_line();
         self.changed = true;
         true
     }

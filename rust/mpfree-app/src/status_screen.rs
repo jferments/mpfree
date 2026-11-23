@@ -99,6 +99,9 @@ pub struct Readings {
     /// The MPC's temperature and processor clock at the last read (every
     /// 2 s, heat.rs).
     pub heat: Option<Heat>,
+    /// Where the sound's time goes, by engine, in the period's last window
+    /// (`engines::shares`, in `engines::SHARES`' order, %).
+    pub engines: Option<[f64; 6]>,
 }
 
 /// Where the page is: the system picked and the Now | This session switch.
@@ -426,6 +429,12 @@ fn numbers(system: System, r: &Readings) -> Vec<(String, String)> {
                     format!("{p:.0} %"),
                 ));
             }
+            // Where it goes: each engine's part of that share.
+            if let Some(s) = r.engines {
+                for ((_, name), p) in crate::engines::SHARES.iter().zip(s) {
+                    out.push((format!("  {name}"), crate::engines::share_words(p)));
+                }
+            }
         }
         System::Memory => {
             if let Some(p) = r.ram_pct {
@@ -557,6 +566,7 @@ mod tests {
             free: Some(1_100_000_000),
             stick: None,
             heat: None,
+            engines: None,
         };
         let v = view(&b, &Watch::default(), &r, &mut place, t);
         assert_eq!(v.head, "The sound dropped out");
@@ -658,6 +668,43 @@ mod tests {
         b.tick(later);
         let v = view(&b, &Watch::default(), &r, &mut place, later);
         assert_eq!(v.meters[1].3, Tone::Warn);
+    }
+
+    /// Sound's numbers say where the sound's time goes, engine by engine,
+    /// under its share of the CPU.
+    #[test]
+    fn the_sounds_numbers_say_where_its_time_goes() {
+        let mut place = Place::default();
+        let r = Readings {
+            cpu_pct: Some(41.0),
+            engines: Some([24.4, 0.0, 0.3, 2.0, 6.0, 8.2]),
+            ..Readings::default()
+        };
+        place.picked = System::Sound;
+        let v = view(
+            &Board::new(),
+            &Watch::default(),
+            &r,
+            &mut place,
+            Instant::now(),
+        );
+        let n: Vec<(&str, &str)> = v
+            .numbers
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(
+            n,
+            [
+                ("The sound's share of the CPU", "41 %"),
+                ("  The pads", "24 %"),
+                ("  Synths", "none"),
+                ("  The looper and line input", "under 1 %"),
+                ("  Clips and the arp", "2 %"),
+                ("  Mixing", "6 %"),
+                ("  MPFree's own work", "8 %"),
+            ]
+        );
     }
 
     /// Phase 3: the MPC's temperature on the head against where it turns

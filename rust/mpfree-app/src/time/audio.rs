@@ -235,6 +235,17 @@ pub struct TimeAudio {
     /// [`TimeAudio::follow_tempo`] doesn't queue it again. A tempo queued
     /// after it replaces it, so that forgets it.
     map_asked: Option<TempoMap>,
+    /// The scene's tempo (the Arrange refactor's 5.2b, the view's
+    /// [`mpfree_play::SceneTempo`]): the app's tempo as
+    /// [`TimeAudio::follow_tempo`] last had it; the launch carried out (or
+    /// left out) last; once it landed, the app's tempo before it until the
+    /// app's tempo moves from that (so the old one isn't put back before
+    /// the app takes the new); and the tempo for the host to take
+    /// ([`TimeAudio::take_scene_tempo`]).
+    app_bpm: Option<f64>,
+    scene_done: Option<u32>,
+    scene_hold: Option<f64>,
+    scene_landed: Option<f64>,
     /// Starts on a note refused ([`TimeAudio::start_at`]).
     starts_refused: u64,
     /// The song's timeline (step 0C): a fresh revision whenever something
@@ -328,6 +339,10 @@ impl TimeAudio {
             parts: 0,
             tempo_asked: None,
             map_asked: None,
+            app_bpm: None,
+            scene_done: None,
+            scene_hold: None,
+            scene_landed: None,
             starts_refused: 0,
             timeline: next_timeline(),
             timeline_why: "the song changed",
@@ -682,6 +697,7 @@ impl TimeAudio {
     /// playing them, the app's tempo throughout again. A tempo or map
     /// asked for and not applied yet counts as the transport's.
     pub fn follow_tempo(&mut self, bpm: f64) {
+        self.app_bpm = Some(bpm);
         if self.follower.bpm().is_some() {
             // The follower's tempo replaces a map waiting.
             self.map_asked = None;
@@ -703,12 +719,80 @@ impl TimeAudio {
             }
             return;
         }
+        // A scene's tempo landed: the app's tempo from before it doesn't
+        // come back while the app takes the scene's.
+        match self.scene_hold {
+            Some(before) if before == bpm => return,
+            Some(_) => self.scene_hold = None,
+            None => {}
+        }
         let now = self.tempo_asked.map_or(self.transport.bpm(), |(_, b)| b);
         // A song's map still in the transport, or on its way, goes too.
         let flat = self.tempo_asked.is_some()
             || (self.map_asked.is_none() && self.transport.tempo_map().segments().len() == 1);
         if (now - bpm).abs() > 1e-9 || !flat {
             self.command(Command::SetTempo(bpm));
+        }
+    }
+
+    /// A scene's tempo landed in the last period (the Arrange refactor's
+    /// 5.2b), taken: the app's tempo becomes it (the host's
+    /// `App::set_tempo`), as if turned on the scene's line.
+    pub fn take_scene_tempo(&mut self) -> Option<f64> {
+        self.scene_landed.take()
+    }
+
+    /// The scene's tempo (the view's [`mpfree_play::SceneTempo`]) comes in
+    /// on the frame its tick falls on, if that is in the coming period of
+    /// `frames`: `TempoNow`, so the song takes it from that tick with no
+    /// jump, as the scene's cues start there. With no tick (launched
+    /// stopped), or a tick played already (late, or a locate past it), at
+    /// once. Where the transport's loop jumps back before the tick, on the
+    /// jump, as the cues land after it. Left out while song mode plays the
+    /// song's tempo points or a followed clock leads, and when the app's
+    /// tempo changed after the launch (the newer decision). Counting in or
+    /// stopped with a tick, it waits for the music to play.
+    fn scene_tempo_due(&mut self, frames: u32) {
+        let Some(st) = self.view.scene_tempo() else {
+            return;
+        };
+        if self.scene_done == Some(st.id) {
+            return;
+        }
+        let turned = self.app_bpm.is_some_and(|b| b != st.from);
+        if self.follower.bpm().is_some() || self.view.tempo_map().is_some() || turned {
+            self.scene_done = Some(st.id);
+            return;
+        }
+        let now = self.transport.frame();
+        let playing = matches!(self.transport.state(), State::Playing | State::Recording);
+        let at = match st.at {
+            Some(tick) if playing => {
+                let pos = self.transport.position_exact();
+                let tick = match self.transport.loop_range() {
+                    Some((_, end)) if pos < end as f64 && tick >= end => end,
+                    _ => tick,
+                };
+                let ahead = self.transport.tempo_map().frames_between(
+                    pos,
+                    tick as f64,
+                    self.transport.rate(),
+                );
+                now + ahead.max(0.0).ceil() as u64
+            }
+            // Counting in or stopped: it waits for the music to play.
+            Some(_) => return,
+            None => now,
+        };
+        if at >= now + u64::from(frames) {
+            return;
+        }
+        if self.command_at(at, Command::TempoNow(st.bpm)) {
+            self.scene_done = Some(st.id);
+            self.scene_hold = Some(st.from);
+            self.scene_landed = Some(st.bpm);
+        } else {
+            self.refused += 1;
         }
     }
 
@@ -1578,6 +1662,7 @@ impl TimeAudio {
         // A timing change due in this period lands first (step 0C).
         self.commit_due(frames);
         self.follower.period(&mut self.transport);
+        self.scene_tempo_due(frames);
         let ok = self.transport.process(frames, &mut self.block);
         // A tempo asked for is in once the transport plays at it. A change
         // while rolling waits for the next 1/16 line, so until then it

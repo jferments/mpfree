@@ -20,6 +20,7 @@ use mpfree_ui::{Fonts, Gesture, PageTarget, SoftCanvas, Touch};
 
 mod catalogue;
 mod eq_sound;
+mod note_workflows;
 mod phases;
 mod scripts;
 mod session;

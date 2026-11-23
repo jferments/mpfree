@@ -776,7 +776,10 @@ data side is here:
   work, log lines, the meters and panels sent to the screen, the copy to the
   card's format), which the outside review of 12 Nov named as the first
   thing to move off the audio thread. It has no budget yet, so it is shown
-  on its worst block, dim, until the control thread moves it.
+  on its worst block, dim, until the control thread moves it. The same
+  windows feed System status's Sound numbers in musicians' words
+  (`engines::shares`: each stage's mean as a share of the period, adding up
+  to about the status chip's CPU; [status.md](status.md)).
 - **Slow periods outside the engines** (`parts.rs`): the `control` row is
   one number, so the loop also times its own parts outside the engines
   (screen actions, MIDI in and buttons, app and effects, pads and lights,

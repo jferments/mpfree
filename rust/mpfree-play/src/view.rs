@@ -112,6 +112,22 @@ pub struct SceneProgram {
     pub id: u32,
 }
 
+/// A scene's tempo (the Arrange refactor's 5.2b, `mpfree_seq::Scene::tempo`)
+/// as the view carries it: `bpm` from song tick `at` (None: at once, the
+/// scene launched while stopped). A tick already played when the view
+/// arrives (a late launch) is at once too, as the scene's cues are.
+/// `from` is the project's tempo when the launch was made: a tempo
+/// turned after it is the newer decision, and the scene's is left out.
+/// Every launch with a tempo has a new `id` (they rise), so the audio
+/// half changes the tempo once a launch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SceneTempo {
+    pub bpm: f64,
+    pub at: Option<Tick>,
+    pub from: f64,
+    pub id: u32,
+}
+
 /// A [`MuteCue`] the player carried out: from song tick `at`, `track` is
 /// `silent` (or heard). The host applies its queue `id` to the project.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -717,6 +733,8 @@ pub struct PlayView {
     /// The song's tempo map while song mode plays its tempo points
     /// ([`PlayView::set_tempo_map`]), for the host's transport.
     pub(crate) tempo: Option<TempoMap>,
+    /// The tempo the scene launched last sets ([`PlayView::set_scene_tempo`]).
+    pub(crate) scene_tempo: Option<SceneTempo>,
     /// The project's launch quantise ([`Project::launch`]): the line a
     /// live hit on a pad that starts on the line waits for (sampler
     /// R5.3b; the host waits, [`PlayView::launch`]).
@@ -825,6 +843,7 @@ impl PlayView {
             song_keys: Vec::new(),
             includes: None,
             tempo: None,
+            scene_tempo: None,
             launch: project.launch,
             audio: project
                 .tracks
@@ -847,6 +866,19 @@ impl PlayView {
 
     pub fn tempo_map(&self) -> Option<&TempoMap> {
         self.tempo.as_ref()
+    }
+
+    /// The tempo the scene launched last sets on its line (the Arrange
+    /// refactor's 5.2b), or None. The view only carries it; the host's
+    /// audio half changes the transport's tempo on the frame its tick
+    /// comes (`Command::TempoNow`), unless song mode plays the song's
+    /// tempo points or a followed clock leads.
+    pub fn set_scene_tempo(&mut self, t: Option<SceneTempo>) {
+        self.scene_tempo = t;
+    }
+
+    pub fn scene_tempo(&self) -> Option<SceneTempo> {
+        self.scene_tempo
     }
 
     /// The project's launch quantise as it was compiled: where a live hit
