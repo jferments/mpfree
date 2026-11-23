@@ -747,7 +747,8 @@ fn keys_make_the_pad_a_keygroup_rooted_at_the_note_it_is_heard_at() {
     }
     let bar = s.ui.get::<PadBar>(play_tab::BAR).unwrap();
     assert!(
-        bar.subtitle.ends_with("keys C2–G4, root C4"),
+        bar.subtitle
+            .ends_with("keys C2–G4, root C4 · tuning: song's"),
         "{}",
         bar.subtitle
     );
@@ -793,7 +794,8 @@ fn the_kits_pads_play_notes_from_the_keygroups_octave_an_octave_a_step() {
     }
     let bar = s.ui.get::<PadBar>(play_tab::BAR).unwrap();
     assert!(
-        bar.subtitle.ends_with("pads play notes from C8"),
+        bar.subtitle
+            .ends_with("pads play notes from C8 · tuning: song's"),
         "{}",
         bar.subtitle
     );
@@ -803,6 +805,55 @@ fn the_kits_pads_play_notes_from_the_keygroups_octave_an_octave_a_step() {
     assert_eq!(row_value(&mut s, Row::PadsPlay), "Their sounds");
     assert!(s.project.undo());
     assert_eq!(s.project.pads_play(), PadsPlay::Keys { from: 108 });
+}
+
+/// Tunings step T6 (layout spec 4e, board 4): the kit's Tuning under The
+/// kit's pads names the kit's tuning as the app does. A step asks the app,
+/// which keeps it with the project's instruments, so the kit doesn't
+/// change; a keygroup's line says which it plays, a plain pad's doesn't
+/// (hits keep their pitch).
+#[test]
+fn the_kits_tuning_asks_the_app_and_a_keygroups_line_says_it() {
+    use mpfree_sampler_ui::play_tab::KitTuning;
+    let mut s = tone();
+    assert_eq!(row_value(&mut s, Row::KitTuning), "Song's: 12-TET");
+    let before = s.project.pads_play();
+    for d in [1, -2] {
+        let a = step(&mut s, Row::KitTuning, d);
+        assert_eq!(a, Some(PlayAction::KitTuning(d)));
+        assert_eq!(a.unwrap().change(), None, "not the kit's to keep");
+    }
+    assert_eq!(s.project.pads_play(), before);
+    let line = |s: &PlaySample| s.ui.get::<PadBar>(play_tab::BAR).unwrap().subtitle.clone();
+    assert!(!line(&s).contains("tuning"), "{}", line(&s));
+    // A keygroup's line says it, as the app names it.
+    step_apply(&mut s, Row::Keys, 1);
+    assert!(line(&s).ends_with("tuning: song's"), "{}", line(&s));
+    s.state.kit_tuning = KitTuning {
+        value: "Meantone 1/4 comma on C · 415 Hz".into(),
+        line: "tuning: own".into(),
+    };
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
+    assert_eq!(
+        row_value(&mut s, Row::KitTuning),
+        "Meantone 1/4 comma on C · 415 Hz"
+    );
+    assert!(line(&s).ends_with("tuning: own"), "{}", line(&s));
+    // Under The kit's pads, with what follows it at the section's foot.
+    let l = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
+    let panel = l.panel.as_ref().expect("the Pad section's panel");
+    let kits = panel
+        .sections
+        .iter()
+        .find(|p| p.title == "The kit's pads")
+        .expect("The kit's pads");
+    assert!(kits
+        .lines
+        .iter()
+        .flatten()
+        .any(|it| it.row == Row::KitTuning.place()));
+    assert_eq!(kits.foot, play_tab::TUNING_FOOT);
 }
 
 #[test]

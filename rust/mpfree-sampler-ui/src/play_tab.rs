@@ -154,6 +154,14 @@ pub const KEYS_HINT: &str =
     "Drag the pad's zone edges and root dot · tap a zone to pick its pad · press keys to hear \
                              them · the wheel picks a control, - / + change it";
 
+/// Under the kit's Tuning (tunings step T6): what follows it.
+pub const TUNING_FOOT: &str = "keys, notes and 16 Levels follow; hits don't";
+
+/// The hint line while the kit's Tuning is picked.
+pub const TUNING_HINT: &str =
+    "Tuning: what keys, Notes and 16 Levels play in   ·   pad hits keep their own pitch   ·   \
+                               - / +, or push the wheel and turn";
+
 /// The highest note pad 1 may play, so that pad 16 is a MIDI note.
 const MAX_PADS_FROM: u8 = 127 - 15;
 /// Voices a pad may hold, as the arrows step them.
@@ -229,6 +237,10 @@ pub enum Row {
     PadsFrom,
     /// The kit's: what 16 Levels steps through.
     LevelsBy,
+    /// The kit's: the tuning its keys, Notes and 16 Levels play in, Song's
+    /// or its own (tunings step T6). The app keeps it, not the kit
+    /// ([`PlayState::kit_tuning`], [`PlayAction::KitTuning`]).
+    KitTuning,
     VelToLevel,
     VelToStart,
     /// The velocities over which each layer fades in and out at its edges.
@@ -337,7 +349,7 @@ pub fn is_value_target(t: &mpfree_ui::Target) -> bool {
 }
 
 impl Row {
-    pub const ALL: [Row; 68] = [
+    pub const ALL: [Row; 69] = [
         Row::Polyphony,
         Row::MuteGroup,
         Row::Chokes,
@@ -358,6 +370,7 @@ impl Row {
         Row::PadsPlay,
         Row::PadsFrom,
         Row::LevelsBy,
+        Row::KitTuning,
         Row::VelToLevel,
         Row::VelToStart,
         Row::VelFade,
@@ -430,6 +443,7 @@ impl Row {
             Row::PadsPlay => "Pads play",
             Row::PadsFrom => "Pads from",
             Row::LevelsBy => "Levels by",
+            Row::KitTuning => "Tuning",
             Row::VelToLevel => "Vel → level",
             Row::VelToStart => "Vel → start",
             Row::VelFade => "Vel fade",
@@ -528,7 +542,7 @@ impl Row {
     pub fn of_kit(self) -> bool {
         matches!(
             self,
-            Row::PadsPlay | Row::PadsFrom | Row::LevelsBy | Row::KeyFade
+            Row::PadsPlay | Row::PadsFrom | Row::LevelsBy | Row::KeyFade | Row::KitTuning
         )
     }
 }
@@ -659,6 +673,7 @@ impl Section {
                 Row::PadsPlay,
                 Row::PadsFrom,
                 Row::LevelsBy,
+                Row::KitTuning,
             ],
             Section::Slices => &[
                 Row::SlicePick,
@@ -834,10 +849,34 @@ pub struct PlayState {
     /// A take kept on the page, by name (its pad is
     /// [`crate::wave_tab::TAKE`]): the Wave page's Sound section edits it.
     pub take: Option<String>,
+    /// The kit's tuning as the app names it (tunings step T6; Song's
+    /// 12-TET until the app says).
+    pub kit_tuning: KitTuning,
     /// The slice of the Slice tool's chop this pad plays, from 0: the Wave
     /// page's Sound section follows the slice picked to the pad it is on
     /// (the one Sample page's step 3b; [`crate::wave_tab::WaveTab::sound_follows`]).
     pub slice: Option<usize>,
+}
+
+/// A kit's tuning, as the app names it (tunings step T6, the layout
+/// spec's 4e): what its keygroups, Notes and 16 Levels play in. Its pad
+/// hits and slices keep the pitch the pad gives them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KitTuning {
+    /// The Tuning stepper's value: "Song's: Just (5-limit) on D", or the
+    /// kit's own, "Meantone 1/4 comma on C · 415 Hz".
+    pub value: String,
+    /// On the pad's line: "tuning: song's", "tuning: own".
+    pub line: String,
+}
+
+impl Default for KitTuning {
+    fn default() -> KitTuning {
+        KitTuning {
+            value: "Song's: 12-TET".into(),
+            line: "tuning: song's".into(),
+        }
+    }
 }
 
 impl PlayState {
@@ -918,6 +957,7 @@ impl PlayState {
                 .collect(),
             bpm: 120.0,
             take: None,
+            kit_tuning: KitTuning::default(),
             slice: None,
         })
     }
@@ -947,6 +987,7 @@ impl PlayState {
             (Row::PadsFrom, PadsPlay::Keys { from }) => note_name(from),
             (Row::LevelsBy, PadsPlay::Levels { by, .. }) => by.label().into(),
             (Row::PadsFrom | Row::LevelsBy, _) => "–".into(),
+            (Row::KitTuning, _) => self.kit_tuning.value.clone(),
             (Row::KeyFade, _) => match (!self.zones.is_empty(), self.key_fade) {
                 (false, _) => "–".into(),
                 (true, None) => "Mixed".into(),
@@ -1052,6 +1093,10 @@ pub enum PlayAction {
     /// The kit's key fade, set: every keygroup fades over this many notes
     /// and the zones that meet overlap by it (one undo step).
     KeyFade(u8),
+    /// The kit's Tuning stepped by `delta`: Song's, then the built-in
+    /// tunings and the tuning files as its own (tunings step T6). The app
+    /// keeps it with the project, not the kit, so it isn't a change here.
+    KitTuning(i32),
     /// Pad `pad` picked (a tap on its zone on the keyboard): every tab
     /// edits it from now on.
     Pick(usize),
@@ -1128,7 +1173,8 @@ impl PlayAction {
             PlayAction::Pads
             | PlayAction::Pick(_)
             | PlayAction::Note { .. }
-            | PlayAction::Scene(_) => return None,
+            | PlayAction::Scene(_)
+            | PlayAction::KitTuning(_) => return None,
         };
         Some((c, None))
     }
@@ -1548,6 +1594,19 @@ impl PlayTab {
                 )),
                 PadsPlay::Pads => {}
             }
+            // What the kit's tuning moves: keys, Notes and 16 Levels by
+            // Tune (not a hit's own pitch).
+            let tuned = matches!(
+                st.pads_play,
+                PadsPlay::Keys { .. }
+                    | PadsPlay::Levels {
+                        by: Levels::Tune,
+                        ..
+                    }
+            );
+            if p.keys.is_some() || tuned {
+                about.push(st.kit_tuning.line.clone());
+            }
             bar.subtitle = about.join(" · ");
         }
         if let Some(m) = ui.get_mut::<LayerMap>(LAYERS) {
@@ -1919,9 +1978,11 @@ impl PlayTab {
                     vec![
                         vec![it(Row::PadsPlay)],
                         vec![it(Row::PadsFrom).labelled(), it(Row::LevelsBy).labelled()],
+                        vec![it(Row::KitTuning).labelled()],
                     ],
                 )
-                .note("every pad"),
+                .note("every pad")
+                .foot(TUNING_FOOT),
             ],
             Section::Slices => vec![
                 part("Slice", 200, vec![vec![it(Row::SlicePick).labelled()]]).note(
@@ -2341,6 +2402,9 @@ impl PlayTab {
             let fade = (now + delta).clamp(0, i32::from(MAX_KEY_FADE)) as u8;
             return (st.key_fade != Some(fade)).then_some(PlayAction::KeyFade(fade));
         }
+        if row == Row::KitTuning {
+            return Some(PlayAction::KitTuning(delta));
+        }
         if row.of_kit() {
             let play = st.pads_play_stepped(row, delta);
             return (play != st.pads_play).then_some(PlayAction::PadsPlay(play));
@@ -2740,6 +2804,7 @@ pub fn control_of(st: &PlayState, layer: usize, slice: usize, row: Row) -> Contr
         | Row::Chokes
         | Row::Links
         | Row::LevelsBy
+        | Row::KitTuning
         | Row::LfoWave => Look::Chip,
     };
     let why = match row {
@@ -3263,7 +3328,7 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
         }
         // The kit's rows: see [`PlayState::pads_play_stepped`] and
         // [`PlayAction::KeyFade`].
-        Row::PadsPlay | Row::PadsFrom | Row::LevelsBy | Row::KeyFade => {}
+        Row::PadsPlay | Row::PadsFrom | Row::LevelsBy | Row::KeyFade | Row::KitTuning => {}
         Row::VelToLevel => {
             p.vel_to_level = round_to(p.vel_to_level + d * 0.05, 0.05).clamp(0.0, 1.0)
         }
@@ -3510,7 +3575,7 @@ pub fn value_text(p: &Pad, row: Row) -> String {
             (Some(_), 1) => "1 note".into(),
             (Some(_), n) => format!("{n} notes"),
         },
-        Row::PadsPlay | Row::PadsFrom | Row::LevelsBy => String::new(),
+        Row::PadsPlay | Row::PadsFrom | Row::LevelsBy | Row::KitTuning => String::new(),
         Row::VelToLevel => format!("{} %", percent(p.vel_to_level)),
         Row::VelToStart => format!("{} %", percent(p.vel_to_start)),
         Row::VelFade => match p.vel_fade {

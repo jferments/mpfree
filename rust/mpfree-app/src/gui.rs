@@ -1097,6 +1097,11 @@ fn loops_info(v: &crate::looping::LooperView) -> mpfree_time_ui::view::LoopsInfo
     info
 }
 
+/// What the Sample and Pads pages' hint depends on ([`Player::sample_after`]):
+/// the keyboard shown, a row that pad hits edit or the kit's Tuning picked,
+/// the Wave page's REC, a take shown, and its Warp, Grain or Slice tool.
+type SampleKeys = (bool, (bool, bool), bool, bool, (bool, bool, bool));
+
 pub enum ToUi {
     /// Controller mode (controller_out.rs) is on, as shown, or off.
     Controller(Option<ControllerShow>),
@@ -1260,6 +1265,9 @@ pub enum ToUi {
     /// channel of its own, by kit and pad): the Pads tab's Effects row
     /// names them.
     PadFx(Vec<crate::modpanels::PadFx>),
+    /// Each kit's tuning as the app names it, in kit order (tunings step
+    /// T6): Edit pad's Tuning and the pad's line show the kit's.
+    KitTunings(Vec<mpfree_sampler_ui::play_tab::KitTuning>),
     /// The synth-voice pads that play through the Synth channel (past the
     /// sixteen with a synth of their own, or whose own couldn't be made),
     /// by kit and pad: the Pads tab says so under the pad.
@@ -1936,6 +1944,12 @@ pub enum FromUi {
         kit: usize,
         values: Vec<(u8, mpfree_sampler::engine::PadField, f32)>,
     },
+    /// Edit pad's Tuning, under The kit's pads, stepped by `delta`: kit
+    /// `kit`'s own tuning, or Song's (tunings step T6). The app keeps it.
+    KitTuning {
+        kit: usize,
+        delta: i32,
+    },
     /// A key pressed (`down`) or let go on the Play tab's keyboard: kit
     /// `kit`'s keygroups play `note`, while that kit is the one playing.
     SampleKey {
@@ -2315,8 +2329,9 @@ pub struct Player {
     /// The menu's selected row is open for the wheel (its push opened it).
     menu_editing: bool,
     /// The Sample page's Play tab showed its keyboard, a row that pad hits
-    /// edit, and the Wave page's REC on (each changes its hint).
-    sample_keys: (bool, bool, bool, bool, (bool, bool, bool)),
+    /// edit (or the kit's Tuning) picked, and the Wave page's REC on (each
+    /// changes its hint).
+    sample_keys: SampleKeys,
     /// What the REC chip last called the Wave page's REC take.
     here_chip: Option<String>,
     /// What the Play page's Q-Links turn, as its hint names them.
@@ -3100,7 +3115,7 @@ impl Player {
             screen_row: ("-".to_string(), Tone::Dim),
             timed,
             menu_editing: false,
-            sample_keys: (false, false, false, false, (false, false, false)),
+            sample_keys: (false, (false, false), false, false, (false, false, false)),
             here_chip: None,
             sample_qlinks: String::new(),
             sample_live: false,
@@ -8144,6 +8159,10 @@ impl Player {
                     "Hit pads to add them to the row picked or take them out   ·   Wheel: the next pad   ·   \
                      tap another row when done   ·   UNDO: undo".to_string()
                 }
+                // The kit's Tuning picked (tunings step T6).
+                View::Pads if self.sample.play_row(&self.ui) == Some(mpfree_sampler_ui::play_tab::Row::KitTuning) => {
+                    mpfree_sampler_ui::play_tab::TUNING_HINT.to_string()
+                }
                 View::Pads if self.sample.page() == sample_page::PLAY_PAGE && self.sample.play_keys_shown() => {
                     format!("Press keys to hear the kit   ·   drag the zone edges and root   ·   \
                      Q-Links 1-4: {}   ·   {ROWS_HINT}", self.sample.play_qlinks_text())
@@ -10506,6 +10525,7 @@ impl Player {
             }
             ToUi::MixerQLink(k, d) => self.mixer_qlink(k, d),
             ToUi::PadFx(fx) => self.sample.set_pad_fx(&mut self.ui, fx),
+            ToUi::KitTunings(t) => self.sample.set_kit_tunings(&mut self.ui, t),
             ToUi::PadsOnSynth(on) => self.sample.set_pads_on_synth(&mut self.ui, on),
             ToUi::MixerFaders => {
                 mpfree_mixer_ui::set_look(&mut self.ui, mpfree_mixer_ui::Look::Faders);
@@ -10747,10 +10767,21 @@ impl Player {
                         o.reset_view();
                     }
                     o.title = m.title;
+                    let mut marks = m.marks.into_iter();
                     o.rows = m
                         .rows
                         .into_iter()
-                        .map(|(name, value)| OptionRow { name, value })
+                        .map(|(name, value)| {
+                            let mark = marks.next().unwrap_or_default();
+                            OptionRow {
+                                name,
+                                value,
+                                tag: mark.tag.to_string(),
+                                sub: mark.sub,
+                                fixed: mark.fixed,
+                                heading: mark.heading,
+                            }
+                        })
                         .collect();
                     o.selected = m.selected;
                     o.editing = m.editing;
@@ -10761,16 +10792,31 @@ impl Player {
                 }
                 if let Some(c) = self.ui.get_mut::<Card>("help") {
                     c.heading = m.help_heading;
-                    // The row's facts first, brighter, then a gap (the
-                    // Instrument row's track line, step 11d).
-                    let gap = (!m.facts.is_empty()).then(String::new);
+                    // The row's facts first, brighter (amber when they
+                    // warn), then a gap (the Instrument row's track line,
+                    // step 11d) or the link to a page (a Tuning row's
+                    // Tunings button, tunings step T6).
+                    let facts = m.facts.len();
+                    let fact_tone = if m.facts_warn {
+                        Tone::Warn
+                    } else {
+                        Tone::Normal
+                    };
+                    let gap = (facts > 0 && m.help_link.is_none()).then(String::new);
                     c.lines = m
                         .facts
                         .into_iter()
-                        .chain(gap)
-                        .map(|l| (l, Tone::Normal))
+                        .map(|l| (l, fact_tone))
+                        .chain(gap.map(|l| (l, Tone::Normal)))
                         .chain(m.help.into_iter().map(|l| (l, Tone::Dim)))
                         .collect();
+                    c.link = m
+                        .help_link
+                        .map(|(title, sub)| mpfree_ui::widgets::CardLink {
+                            title,
+                            sub,
+                            after: facts,
+                        });
                     c.buttons = m.help_buttons;
                 }
             }
@@ -11694,14 +11740,16 @@ impl Player {
             self.sample_changed();
         }
         // The keyboard came or went on the Play tab, a row that pad hits
-        // edit was picked, another section (with its own Q-Links) opened,
+        // edit (or the kit's Tuning) was picked, another section (with its own Q-Links) opened,
         // the Slice tool went live, the Wave page's REC went on or off, a
         // take kept on the page came or went on the Wave page, or its
         // Slice, Warp or Grain tool was picked or put down: its hint with
         // it.
+        let tuning =
+            self.sample.play_row(&self.ui) == Some(mpfree_sampler_ui::play_tab::Row::KitTuning);
         let keys = (
             self.sample.play_keys_shown(),
-            self.sample.play_takes_pads(&self.ui),
+            (self.sample.play_takes_pads(&self.ui), tuning),
             self.sample.recorder_on(),
             self.sample.take_shown().is_some(),
             (
@@ -22382,6 +22430,99 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     fx.extend(a.select(3));
     apply_effects(&mut options, fx);
     out.push(("synth-options", options));
+    // The tuning screens (tunings step T6, layout spec 3): Track 2's Poly
+    // on Song's, Track 3's FM (Tracks 3 and 4) in its own meantone at 415
+    // Hz, Track 6's Bassline that takes only MIDI, the song in just on D.
+    let tunings_app = || {
+        use crate::instruments::Held;
+        let mut a = sample_app();
+        a.set_track_count(6);
+        let mut list = crate::instrument_list::InstrumentList::new();
+        list.follow_kits(2);
+        list.follow(0b10_0110);
+        a.set_instrument_list(&list);
+        a.set_kit_names(vec!["Classic House".to_string(), String::new()]);
+        for (t, id, name) in [
+            (1, "mpfree.poly", "Poly"),
+            (2, "mpfree.fm", "FM"),
+            (5, "clap:com.example.bassline", "Bassline"),
+        ] {
+            a.set_track_sound(
+                t,
+                Some(Held {
+                    id,
+                    name,
+                    instance: 0,
+                }),
+            );
+        }
+        let mut sends = [None; mpfree_seq::MAX_TRACKS];
+        sends[3] = Some(2);
+        a.set_track_sends(&sends);
+        let mut kit_of = [None; mpfree_seq::MAX_TRACKS];
+        kit_of[0] = Some(0);
+        a.set_tuning_facts((1 << 5, 0), kit_of);
+        let song = crate::synth::TuningPick {
+            builtin: crate::synth::Builtin::Just,
+            root: 2,
+            ..Default::default()
+        };
+        let meantone = crate::synth::TuningPick {
+            builtin: crate::synth::Builtin::Meantone,
+            a4_hz: 415,
+            ..Default::default()
+        };
+        a.set_song_tuning(song);
+        if let Some(fm) = list.own_of(2) {
+            a.set_own_tuning(fm, Some(meantone));
+        }
+        a
+    };
+    // Board 1: Track 2's Poly on Song's, the Tuning row picked.
+    let mut songs = sample_player(fonts());
+    let mut a = tunings_app();
+    let mut fx = a.set_track(1);
+    fx.extend(a.open_tab(View::Synth));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, true, 0.0));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, false, 0.0));
+    let at = a
+        .row_of(crate::app::Item::Synth(crate::app::SynthItem::Tuning))
+        .unwrap_or(5);
+    fx.extend(a.select(at));
+    apply_effects(&mut songs, fx);
+    out.push(("synth-options-tuning", songs));
+    // Board 2: Track 3's FM in its own tuning, its root and A4 under it.
+    let mut own_tuning = sample_player(fonts());
+    let mut a = tunings_app();
+    let mut fx = a.set_track(2);
+    fx.extend(a.open_tab(View::Synth));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, true, 0.0));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, false, 0.0));
+    fx.extend(a.select(at));
+    apply_effects(&mut own_tuning, fx);
+    out.push(("synth-options-own-tuning", own_tuning));
+    // Board 5: Track 6's Bassline can't follow.
+    let mut deaf = sample_player(fonts());
+    let mut a = tunings_app();
+    let mut fx = a.set_track(5);
+    fx.extend(a.open_tab(View::Synth));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, true, 0.0));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, false, 0.0));
+    fx.extend(a.select(at));
+    apply_effects(&mut deaf, fx);
+    out.push(("synth-options-cant-follow", deaf));
+    // Board 3: the Tunings page, FM's row picked.
+    let mut page = sample_player(fonts());
+    let mut a = tunings_app();
+    let mut fx = a.set_track(1);
+    fx.extend(a.open_tab(View::Synth));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, true, 0.0));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, false, 0.0));
+    fx.extend(a.select(at));
+    fx.extend(a.help_button(mpfree_ui::widgets::CARD_LINK));
+    fx.extend(a.select(8));
+    apply_effects(&mut page, fx);
+    out.push(("tunings-page", page));
     // The Instrument row on track 2 stepped past the engines to a plugin
     // synth (two found), its help open.
     let mut inst = sample_player(fonts());
@@ -22983,6 +23124,42 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         });
         keys.take_actions();
         out.push(("pads-edit-keys", keys));
+    }
+    // The kit's Tuning (tunings step T6, board 4): the pad a keygroup, the
+    // pads playing notes, the song in just on D and the kit on Song's,
+    // its Tuning picked.
+    {
+        use mpfree_sampler_ui::play_tab::{KitTuning, Row, LIST};
+        use mpfree_sampler_ui::widgets::SettingList;
+        let mut tuned = sample_sampler(fonts());
+        edit_pad(&mut tuned);
+        for (row, delta) in [
+            (Row::Keys, 1),
+            (Row::LowKey, 36),
+            (Row::HighKey, -43),
+            (Row::PadsPlay, 1),
+        ] {
+            let index = play_row(&mut tuned, row);
+            tuned.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+            tuned.apply(ToUi::SampleLift);
+        }
+        tuned.apply(ToUi::KitTunings(vec![KitTuning {
+            value: "Song's: Just (5-limit) on D".into(),
+            line: "tuning: song's".into(),
+        }]));
+        let index = play_row(&mut tuned, Row::KitTuning);
+        if let Some(list) = tuned.ui.get_mut::<SettingList>(LIST) {
+            list.selected = index;
+        }
+        tuned.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Select(index),
+        });
+        tuned.take_actions();
+        out.push(("pads-edit-kit-tuning", tuned));
     }
     // A bank mapped to keys on the Pads tab: five pads named by their
     // notes, one keygroup instrument; the Play tab's keyboard with A5's

@@ -39,6 +39,24 @@ mod tests {
         Lab { s, dir }
     }
 
+    /// The song's tuning on the Tunings page (tunings step T6): the Synth
+    /// tab's options, the Tuning row's help card link, the page's rows
+    /// stepped (`steps`: row, delta; row 1 the song's tuning, 2 its root,
+    /// 3 its A4), then MENU back to the Synth options and MENU shut.
+    fn song_tuning(s: &mut Session, steps: &[(usize, i32)]) {
+        use crate::gui::FromUi;
+        s.press("header", "tab", "Synth").settle();
+        s.button("MENU").settle();
+        s.press("options", "row", "Tuning").settle();
+        s.press("help", "link", "Tunings").settle();
+        for &(row, d) in steps {
+            s.route(FromUi::MenuStep(row, d));
+            s.run_for(0.05);
+        }
+        s.button("MENU").settle();
+        s.button("MENU").settle();
+    }
+
     /// BROWSE, Projects, the song's row tapped twice (the first picks it,
     /// the second opens it): as on the MPC.
     fn open(s: &mut Session, name: &str) {
@@ -720,7 +738,6 @@ mod tests {
     #[test]
     fn a_song_in_just_on_d_plays_its_keygroups_tuned_and_keeps_it() {
         on_big_stack(|| {
-            use crate::gui::FromUi;
             use mpfree_sampler::engine::EngineView;
             use mpfree_sampler::model::{Layer, Pad, Project, Region, Source};
             use mpfree_tuning::{Builtin, Tuning};
@@ -797,16 +814,8 @@ mod tests {
             );
             assert!(kits(s).iter().all(Tuning::is_standard));
 
-            // The Synth tab's options: Tuning to Just, its root to D.
-            s.press("header", "tab", "Synth").settle();
-            s.button("MENU").settle();
-            s.route(FromUi::MenuStep(5, 1));
-            s.run_for(0.05);
-            for _ in 0..2 {
-                s.route(FromUi::MenuStep(6, 1));
-                s.run_for(0.05);
-            }
-            s.button("MENU").settle();
+            // The song's tuning to Just, its root to D, on the Tunings page.
+            song_tuning(s, &[(1, 1), (2, 1), (2, 1)]);
             let just_d = Builtin::Just.tuning(2, 440.0);
             let said = "sampler: the kits' keygroups play Just (5-limit) on D \
                         (pad hits and slices as tuned on the pad)";
@@ -858,7 +867,6 @@ mod tests {
     #[test]
     fn instruments_play_their_own_tunings_and_the_songs_at_once() {
         on_big_stack(|| {
-            use crate::gui::FromUi;
             use crate::synth::{Builtin, TuningPick};
             use mpfree_sampler::engine::EngineView;
             use mpfree_sampler::model::{Layer, Pad, Project, Region, Source};
@@ -934,17 +942,8 @@ mod tests {
             keygroup(s, 1);
             let kit2 = s.instrument_list.of_kit(1).expect("kit 2 has an id");
 
-            // The song in just on D (the Synth tab's Tuning rows); kit 2 in
-            // its own meantone at 415.
-            s.press("header", "tab", "Synth").settle();
-            s.button("MENU").settle();
-            s.route(FromUi::MenuStep(5, 1));
-            s.run_for(0.05);
-            for _ in 0..2 {
-                s.route(FromUi::MenuStep(6, 1));
-                s.run_for(0.05);
-            }
-            s.button("MENU").settle();
+            // The song in just on D; kit 2 in its own meantone at 415.
+            song_tuning(s, &[(1, 1), (2, 1), (2, 1)]);
             let meantone = TuningPick {
                 builtin: Builtin::Meantone,
                 a4_hz: 415,
@@ -976,22 +975,14 @@ mod tests {
 
             // The song back to 12-TET: kit 1 and the Poly follow, kit 2
             // keeps its own.
-            s.press("header", "tab", "Synth").settle();
-            s.button("MENU").settle();
-            s.route(FromUi::MenuStep(5, -1));
-            s.run_for(0.05);
-            s.button("MENU").settle();
+            song_tuning(s, &[(1, -1)]);
             let said = "sampler: the kits' keygroups play 12-TET (pad hits and slices as tuned on the pad); 1 with a tuning of their own keep it";
             assert!(s.until_said(said, 1.0), "{:?}", s.said());
             assert!(kit_tuning(s, 0).is_standard());
             assert!(poly(s).is_standard());
             assert_eq!(kit_tuning(s, 1), mean);
             // And the song in just on D again, to save.
-            s.press("header", "tab", "Synth").settle();
-            s.button("MENU").settle();
-            s.route(FromUi::MenuStep(5, 1));
-            s.run_for(0.05);
-            s.button("MENU").settle();
+            song_tuning(s, &[(1, 1)]);
             assert_eq!(kit_tuning(s, 0), just_d);
 
             // Saved: the tunings part and the needs line.
@@ -1033,6 +1024,15 @@ mod tests {
                 l == "tunings: the song plays Just (5-limit) on D; with their own: Kit 2 Meantone 1/4 comma on C, A4 415 Hz"
             });
             assert!(opened, "{:?}", s.said());
+
+            // Edit pad's Tuning on the Pads tab (tunings step T6, board 4),
+            // as its arrows send it: kit 2 back on Song's.
+            s.route(crate::gui::FromUi::KitTuning { kit: 1, delta: -9 });
+            s.run_for(0.05);
+            let said = "tunings: Kit 2 plays the song's tuning, Just (5-limit) on D";
+            assert!(s.until_said(said, 1.0), "{:?}", s.said());
+            assert_eq!(s.app.tunings().own(kit2), None);
+            assert_eq!(kit_tuning(s, 1), just_d);
 
             // A tunings part that doesn't read: the project isn't opened.
             let mut bad = snap.clone();

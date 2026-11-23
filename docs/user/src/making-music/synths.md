@@ -526,9 +526,17 @@ Everything else works as on a drum's steps (see [Your first beat](sequencer.md#t
 
 ## Tuning
 
-Out of the box every synth and kit plays in standard tuning: twelve equal steps to the octave, with the A above middle C at 440 Hz. You can change that for the song in the Synth tab's options (press MENU on the Synth tab; see [Controls](../reference/controls.md)): the synths, CLAP plugin synths and the kits' keygroups follow it.
+Out of the box every synth and kit plays in standard tuning: twelve equal steps to the octave, with the A above middle C at 440 Hz. The song has a tuning, and every instrument plays it unless you give that instrument one of its own: one track's synth can play just intonation while another stays in standard tuning, or a kit can sit in meantone while the song moves. The synths, CLAP plugin synths and the kits' keygroups all follow.
 
-{{shot: synth-options | The Synth tab's options, with the Tuning, Tuning root and A4 rows.}}
+**An instrument's own tuning.** Press MENU on the Synth tab (see [Controls](../reference/controls.md)): its **Tuning** row is for the instrument the tab shows, the selected track's own or the shared synth. It starts on **Song's**, with what the song plays after it ("Song's: Just (5-limit) on D"), and the help beside it says what the instrument and the song play in. Step it on to give the instrument a tuning of its own: the row is tagged **OWN**, and a **Tuning root** and an **A4** row for that instrument come under it. Step back to the start, Song's, to follow the song again. Every track that plays the instrument plays its tuning.
+
+{{shot: synth-options-own-tuning | The Synth tab's options for Track 3's FM in a tuning of its own: the Tuning row tagged OWN, its own Tuning root and A4 under it.}}
+
+**The song's tuning, and every instrument's: the Tunings page.** Tap **Tunings** on the Tuning row's help to open it; Back or MENU goes back to the row. Its first rows are the song's **Tuning**, **Tuning root** and **A4**. Under them is every instrument of the project with what it plays in: the kits your tracks play, the shared synth, each track's own and the synths without a track. Step an instrument's row to give it its own tuning or put it back on Song's. A kit's own Tuning root and A4 come under its row there; a synth's are on the Synth tab, and its help has **Open its options** to go there.
+
+{{shot: tunings-page | The Tunings page: the song's tuning, then every instrument and what it plays in.}}
+
+The rows work the same wherever they are:
 
 - **Tuning** picks how the notes are tuned:
   - **12-TET** is standard tuning, the same in every key.
@@ -542,9 +550,15 @@ Out of the box every synth and kit plays in standard tuning: twelve equal steps 
 
 The drum synth keeps its own pitches whatever you pick here.
 
-A plugin synth plays each note at the tuning's pitch when it takes CLAP's own notes, as most CLAP synths do. A CLAP synth that takes only MIDI notes, and an MPC plugin instrument, can't follow a tuning: they play in standard tuning, and the Console says so when you pick another ("Track 3's own instrument, ... takes only MIDI notes, so it plays 12-TET").
+A plugin synth plays each note at the tuning's pitch when it takes CLAP's own notes, as most CLAP synths do. A CLAP synth that takes only MIDI notes, and an MPC plugin instrument, can't follow a tuning: they play in standard tuning, their Tuning row says **12-TET (can't follow)** in amber and can't be stepped, and the Console says so when the song's tuning first isn't standard ("Track 3's own instrument, ... takes only MIDI notes, so it plays 12-TET").
 
-Kits follow it where they play notes:
+{{shot: synth-options-cant-follow | A plugin synth that takes only MIDI notes: its Tuning row says it can't follow.}}
+
+Gear on MIDI out plays standard tuning for now.
+
+Kits follow it where they play notes. A kit's own tuning is also on the Pads tab: Edit pad's Pad section has a **Tuning** under The kit's pads, Song's first, with the same choices (see [Playing a kit on keys](shaping-a-pad.md#playing-a-kit-on-keys)).
+
+{{shot: pads-edit-kit-tuning | Edit pad's Pad section: the kit's Tuning under The kit's pads, on Song's.}}
 
 - **Keygroups** (pads that play notes, see [Playing a kit on keys](shaping-a-pad.md#playing-a-kit-on-keys)) play every key at the tuning's pitch. MPFree takes a keygroup's sound to be at its root note's standard pitch, so A4 = 432 Hz moves a keygroup just as it moves a synth.
 - **16 Levels by Tune** steps by the tuning's notes from the pad's root note (C4 on a pad without keys), with pad 9 as recorded.
@@ -553,7 +567,7 @@ Kits follow it where they play notes:
 
 Notes already sounding move to a new tuning as you pick it, gliding there if the pad glides. [Auto-sample](sampling.md#auto-sample-a-synth-or-your-gear-onto-the-pads) records the synth in standard tuning, so the keygroups it makes play the tuning once, not twice.
 
-Everything else in the Synth tab's options (the scale, pad layouts and tuning) is the song's: it is saved in your project and comes back when you open it, and New project starts chromatic in C at A4 = 440 Hz (see [Saving your work](saving.md)). If a tuning file or one of your own scales is gone by then, that one choice goes back to its default, and the Console says so.
+The scale, the pad layouts and the tunings are the song's: they are saved in your project, each instrument's own tuning with it, and come back when you open it. New project starts chromatic in C at A4 = 440 Hz, every instrument on Song's (see [Saving your work](saving.md)). A copy of an instrument (Duplicate) takes its tuning with it; loading a preset never changes it. If a tuning file or one of your own scales is gone by then, that one choice goes back to its default, and the Console says so.
 
 ### Your own tunings
 

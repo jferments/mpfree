@@ -227,7 +227,7 @@ pub struct Session {
     pub track_kits: crate::sampler::TrackKits,
     /// What each instrument plays in, as main.rs hands it over (tunings
     /// step T5).
-    tunings_handed: crate::TuningsHanded,
+    tunings_handed: Box<crate::TuningsHanded>,
     /// The project's instruments, as main.rs keeps them.
     pub instrument_list: crate::instrument_list::InstrumentList,
     /// The tracks' own instruments and sends the screen was last told of,
@@ -242,6 +242,11 @@ pub struct Session {
     /// What the screen shows the pads play, and their bank's letter (step
     /// 6c), as main.rs.
     pads_shown: (crate::app::PadFocus, Option<usize>),
+    /// Each kit's tuning as the Pads tab's Edit pad last showed it.
+    kit_tunings_shown: Option<(
+        mpfree_tuning::TuningPick,
+        [Option<mpfree_tuning::TuningPick>; crate::instrument_list::KITS],
+    )>,
     /// Who plays the Synth tab's instrument, as last shown (step 8b).
     who_shown: Option<String>,
     /// The time engine's REDOs seen so far, as player_session keeps them.
@@ -414,7 +419,7 @@ impl Session {
             kit: 0,
             synth_on: false,
             track_kits: crate::sampler::TrackKits::new(n),
-            tunings_handed: crate::TuningsHanded::new(),
+            tunings_handed: Box::new(crate::TuningsHanded::new()),
             instrument_list: {
                 // Each kit place has its id, as main.rs's (step 14).
                 let mut list = crate::instrument_list::InstrumentList::new();
@@ -424,6 +429,7 @@ impl Session {
             sounds_shown: [None; crate::instruments::HOLDERS],
             pads_host_shown: None,
             pads_shown: (crate::app::PadFocus::Track, None),
+            kit_tunings_shown: None,
             who_shown: None,
             sends_shown: [None; crate::instruments::TRACKS],
             plan_shown: None,
@@ -1473,6 +1479,12 @@ impl Session {
                 self.out.show(ToUi::PadsBank(pads_now.1));
             }
             self.pads_shown = pads_now;
+        }
+        // Each kit's tuning for the Pads tab's Edit pad, as main.rs.
+        let kit_tunings_now = Some(self.app.kit_tunings_key());
+        if kit_tunings_now != self.kit_tunings_shown {
+            self.kit_tunings_shown = kit_tunings_now;
+            self.out.show(ToUi::KitTunings(self.app.kit_tunings()));
         }
         // Who plays the Synth tab's instrument (step 8b), as main.rs.
         if self.app.view() == crate::app::View::Synth {

@@ -5992,6 +5992,9 @@ struct TuningsHanded {
         synth::TuningPick,
         &'static str,
     )>; instruments::HOLDERS],
+    /// The tracks' and free places' instruments that can't follow a
+    /// tuning, a bit each ([`TuningsHanded::deaf`]).
+    deaf: (u128, u16),
 }
 
 impl TuningsHanded {
@@ -6003,6 +6006,33 @@ impl TuningsHanded {
             puts: (u64::MAX, u64::MAX),
             song: None,
             twelve: [None; instruments::HOLDERS],
+            deaf: (0, 0),
+        }
+    }
+
+    /// The tracks' own instruments and the free places' that can't follow
+    /// a tuning (a plugin that takes only MIDI notes), a bit each, as of
+    /// the last [`TuningsHanded::follow`]: the tuning screens say so
+    /// (tunings step T6, `App::set_tuning_facts`).
+    fn deaf(&self) -> (u128, u16) {
+        self.deaf
+    }
+
+    /// Holder `h`'s bit in [`TuningsHanded::deaf`], set or cleared.
+    fn set_deaf(&mut self, h: usize, deaf: bool) {
+        if h < instruments::TRACKS {
+            let bit = 1u128 << h;
+            self.deaf.0 = if deaf {
+                self.deaf.0 | bit
+            } else {
+                self.deaf.0 & !bit
+            };
+        } else if let Some(bit) = 1u16.checked_shl((h - instruments::TRACKS) as u32) {
+            self.deaf.1 = if deaf {
+                self.deaf.1 | bit
+            } else {
+                self.deaf.1 & !bit
+            };
         }
     }
 
@@ -6054,6 +6084,7 @@ impl TuningsHanded {
             if !held {
                 self.holders[h] = None;
                 self.twelve[h] = None;
+                self.set_deaf(h, false);
                 continue;
             }
             let id = listed.of_holder(h);
@@ -6062,6 +6093,7 @@ impl TuningsHanded {
                 let t = tuning(pick);
                 mix.instruments.set_tuning(h, &t);
                 self.holders[h] = Some((id, pick));
+                self.set_deaf(h, !mix.instruments.follows_tuning(h));
                 // One that plays 12-TET whatever it's handed says so once.
                 let node = mix.instruments.held(h).map_or("", |i| i.id);
                 if t.is_standard() || mix.instruments.follows_tuning(h) {
@@ -8497,7 +8529,8 @@ fn player_session(
     let user_kits = player.user_kits();
     // What each instrument plays in, as the loop last handed it over
     // (tunings step T5).
-    let mut tunings_handed = TuningsHanded::new();
+    // Boxed: its tables would sit on the loop's stack.
+    let mut tunings_handed = Box::new(TuningsHanded::new());
     let sounds: usize = kits.iter().map(|k| k.sounds.len()).sum();
     out.say(&format!("pad player: {} kits, {sounds} sounds", kits.len()));
     for (k, kit) in kits
@@ -8556,6 +8589,8 @@ fn player_session(
     // What the screen shows the pads play, and their bank's letter when it
     // is the bank's own (step 6c).
     let mut pads_shown: (app::PadFocus, Option<usize>) = (app::PadFocus::Track, None);
+    // Each kit's tuning as the Pads tab's Edit pad last showed it.
+    let mut kit_tunings_shown = None;
     // Who plays the Synth tab's instrument, as last shown (step 8b), and
     // when to look again.
     let mut who_shown: Option<String> = None;
@@ -8724,6 +8759,20 @@ fn player_session(
     // 6. Sound.
     progress(out, 6, "Starting the sound", "Opening the sound card", 0.9);
     let mut app = app::App::new(RATE, timed && o.workflow.is_none());
+    // The kits by name, for the Tunings page (an empty kit for New kit has
+    // none).
+    app.set_kit_names(
+        kits.iter()
+            .enumerate()
+            .map(|(k, kit)| {
+                if user_kits.contains(&k) && kit.sounds.is_empty() {
+                    String::new()
+                } else {
+                    kit.name.clone()
+                }
+            })
+            .collect(),
+    );
     // Prefs > Backup and Akai kits: what the first start did or left out.
     app.set_setup(setup_prefs(o, &store));
     // Saved settings and found buttons, read now from the store (opened
@@ -12315,6 +12364,13 @@ fn player_session(
             }
             pads_shown = pads_now;
         }
+        // Each kit's tuning for the Pads tab's Edit pad (tunings step T6):
+        // nothing made while nothing changes.
+        let kit_tunings_now = Some(app.kit_tunings_key());
+        if kit_tunings_now != kit_tunings_shown {
+            kit_tunings_shown = kit_tunings_now;
+            out.show(gui::ToUi::KitTunings(app.kit_tunings()));
+        }
         // Who plays the Synth tab's instrument (step 8b), a few times a
         // second while the tab shows.
         if app.view() == app::View::Synth && mt >= who_at {
@@ -12341,6 +12397,15 @@ fn player_session(
             let name = synth.engine_name();
             let line = track_line(t, &mix, &track_kits, &homes, name, to_gear(t));
             fx.extend(app.set_track_line(line));
+            // What the tuning screens say (tunings step T6): who can't
+            // follow a tuning, and the kit each track plays.
+            let kit_of = std::array::from_fn(|t| {
+                track_kits
+                    .kit_of(t)
+                    .and_then(|k| u8::try_from(k).ok())
+                    .filter(|_| !to_gear(t))
+            });
+            fx.extend(app.set_tuning_facts(tunings_handed.deaf(), kit_of));
         }
         let playing_kit = if synth_on { synth_kit } else { player.kit() };
         let mut kit_switched = false;

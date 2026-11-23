@@ -50,8 +50,25 @@ pub enum SynthItem {
     A4,
 }
 
-/// The options menu opened from the Synth tab: the synth's own rows, then
-/// the Play rows as before.
+/// The options menu opened from the Synth tab while its instrument plays
+/// the song's tuning: no Tuning root or A4 rows (the song's are on the
+/// Tunings page, tunings step T6).
+pub(super) const SYNTH_OPTIONS_SONGS: [Item; 10] = [
+    Item::Synth(SynthItem::Engine),
+    Item::Synth(SynthItem::Scale),
+    Item::Synth(SynthItem::Root),
+    Item::Synth(SynthItem::Layout),
+    Item::Synth(SynthItem::Rows),
+    Item::Synth(SynthItem::Tuning),
+    Item::Rate,
+    Item::Tempo,
+    Item::PadLevel,
+    Item::Latch,
+];
+
+/// The options menu opened from the Synth tab: the synth's own rows (its
+/// own Tuning root and A4 under its Tuning while it has its own), then the
+/// Play rows as before.
 pub(super) const SYNTH_OPTIONS: [Item; 12] = [
     Item::Synth(SynthItem::Engine),
     Item::Synth(SynthItem::Scale),
@@ -117,19 +134,6 @@ fn rows_key(r: InKeyRows) -> &'static str {
 /// The tuning file prefix in the "synth" settings: `tuning = file NAME`.
 const FILE_PREFIX: &str = "file ";
 
-/// The longest value a row shows, as long as the longest built-in one.
-const VALUE_CHARS: usize = 20;
-
-/// `name`, cut to [`VALUE_CHARS`] with an ellipsis when it is longer.
-fn fit(name: &str) -> String {
-    if name.chars().count() <= VALUE_CHARS {
-        return name.to_string();
-    }
-    let mut s: String = name.chars().take(VALUE_CHARS - 1).collect();
-    s.push('…');
-    s
-}
-
 fn step_in<T: Copy + PartialEq>(all: &[T], now: T, d: i32) -> T {
     let at = all.iter().position(|&x| x == now).unwrap_or(0) as i32;
     all[(at + d).clamp(0, all.len() as i32 - 1) as usize]
@@ -172,33 +176,8 @@ impl App {
         }
     }
 
-    /// The Tuning row's choice: the built-in tunings, then the files.
-    fn tuning_choice(&self) -> usize {
-        let t = &self.tunings.song();
-        match t.file {
-            Some(f) if usize::from(f) < self.tuning_files.len() => {
-                Builtin::ALL.len() + usize::from(f)
-            }
-            _ => Builtin::ALL
-                .iter()
-                .position(|&b| b == t.builtin)
-                .unwrap_or(0),
-        }
-    }
-
-    /// The tuning file picked, as (name, whether its map sets root and A4).
-    fn tuning_file(&self) -> Option<&(String, bool)> {
-        self.tuning_files
-            .get(usize::from(self.tunings.song().file?))
-    }
-
     pub(super) fn synth_item_text(&self, item: SynthItem) -> (&'static str, String) {
         let p = &self.synth_pads;
-        // The Tuning rows are the song's (tunings step T5: an instrument's
-        // own gets its rows with the phase 2 screens).
-        let song = self.tunings.song();
-        let file = self.tuning_file();
-        let mapped = file.is_some_and(|f| f.1);
         match item {
             SynthItem::Engine => (instrument_label(self.track), self.engine_text()),
             SynthItem::Scale => (
@@ -225,38 +204,32 @@ impl App {
                 },
             ),
             SynthItem::Rows => ("In key rows", p.rows.label().to_string()),
-            SynthItem::Tuning => (
-                "Tuning",
-                match file {
-                    Some((name, _)) => fit(name),
-                    None => song.builtin.name().to_string(),
-                },
-            ),
-            SynthItem::TuningRoot => {
-                let root = NOTE_NAMES[usize::from(song.root % 12)];
-                (
-                    "Tuning root",
-                    if mapped {
-                        "set by its .kbm".to_string()
-                    } else if file.is_some() || song.builtin.has_root() {
-                        root.to_string()
-                    } else {
-                        format!("{root} (not used)")
-                    },
-                )
-            }
-            SynthItem::A4 => (
-                "A4",
-                if mapped {
-                    "set by its .kbm".to_string()
-                } else {
-                    format!("{} Hz", song.a4_hz)
-                },
-            ),
+            // The Tuning row is the instrument's (tunings step T6): Song's
+            // or its own, whose root and A4 come under it.
+            SynthItem::Tuning => ("Tuning", self.synth_tuning_value()),
+            SynthItem::TuningRoot => ("Tuning root", self.root_text(self.synth_tab_pick())),
+            SynthItem::A4 => ("A4", self.a4_text(self.synth_tab_pick())),
         }
     }
 
-    pub(super) fn synth_item_help(item: SynthItem) -> Vec<&'static str> {
+    /// A Synth row's marks: the Tuning row is tagged OWN with a tuning of
+    /// its own, and fixed for an instrument that can't follow one.
+    pub(super) fn synth_item_mark(&self, item: SynthItem) -> super::RowMark {
+        match item {
+            SynthItem::Tuning => super::RowMark {
+                tag: if self.synth_tab_owns_tuning() {
+                    "own"
+                } else {
+                    ""
+                },
+                fixed: self.synth_tab_deaf(),
+                ..super::RowMark::default()
+            },
+            _ => super::RowMark::default(),
+        }
+    }
+
+    pub(super) fn synth_item_help(&self, item: SynthItem) -> Vec<&'static str> {
         match item {
             SynthItem::Engine => vec![
                 "What the selected track plays: Kit (the pads'",
@@ -298,26 +271,44 @@ impl App {
                 "notes) above the row below, so a chord keeps",
                 "one shape.",
             ],
+            SynthItem::Tuning if self.synth_tab_deaf() => vec![
+                "Plugin synths that take CLAP's note expressions",
+                "play any tuning, the song's or their own. A",
+                "plugin that takes MIDI only, and an MPC plugin,",
+                "can't: the row says so and can't be stepped.",
+                "",
+                "The Console says it once, when the song's",
+                "tuning first isn't 12-TET.",
+            ],
+            SynthItem::Tuning if self.synth_tab_owns_tuning() => vec![
+                "Its own tuning stays when the song's changes.",
+                "Step back to the start, Song's, to follow the",
+                "song again.",
+                "",
+                "Tuning root and A4 under it are this",
+                "instrument's own. Every track that plays it",
+                "plays its tuning.",
+            ],
             SynthItem::Tuning => vec![
-                "How notes become pitches: 12-TET (the usual),",
-                "just intonation (pure thirds and fifths on",
-                "the root), Pythagorean (pure fifths),",
-                "quarter-comma meantone (pure thirds) or",
-                "24-TET (each pad a quarter tone). Scala .scl",
-                "files in files/tunings/ come after them.",
-                "Kits' keygroups play it too; drums, pad hits",
-                "and slices keep their own pitch. Held notes",
-                "follow at once.",
+                "Song's: this instrument plays the song's tuning",
+                "and moves when it changes. Step on to give it",
+                "its own: 12-TET, just intonation, Pythagorean,",
+                "meantone, 24-TET or a tuning file. Its own root",
+                "and A4 then come under this row.",
+                "",
+                "A copy (Duplicate) takes its tuning with it;",
+                "loading a preset never changes it.",
             ],
             SynthItem::TuningRoot => vec![
-                "The note just intonation, Pythagorean,",
-                "meantone and a tuning file start on. It keeps",
-                "its usual pitch and the others move around",
-                "it. The equal tunings don't use it, and a",
-                "file's .kbm keyboard map sets its own.",
+                "This instrument's own root: the note just",
+                "intonation, Pythagorean, meantone and a tuning",
+                "file start on. It keeps its usual pitch and the",
+                "others move around it. The equal tunings don't",
+                "use it, and a file's .kbm keyboard map sets its",
+                "own.",
             ],
             SynthItem::A4 => vec![
-                "The pitch of the A above middle C, 380 to",
+                "This instrument's own A above middle C, 380 to",
                 "480 Hz: 440 is the usual, 432 and 442 are",
                 "common, 415 is baroque pitch. A file's .kbm",
                 "keyboard map sets its own.",
@@ -327,14 +318,12 @@ impl App {
 
     /// One of the synth's option rows stepped by `d` (-1 or +1).
     pub(super) fn step_synth_item(&mut self, item: SynthItem, d: i32) -> Vec<Effect> {
-        let before = (
-            self.synth_pads,
-            self.pad_scale_pick,
-            self.pad_scale_root,
-            self.tunings.song(),
-        );
+        let before = (self.synth_pads, self.pad_scale_pick, self.pad_scale_root);
         match item {
             SynthItem::Engine => return self.step_track_sound(d),
+            SynthItem::Tuning | SynthItem::TuningRoot | SynthItem::A4 => {
+                return self.step_synth_tuning(item, d)
+            }
             SynthItem::Scale => {
                 self.pad_scale_pick = (self.pad_scale_choice() as i32 + d)
                     .clamp(0, self.pad_scale_choices() as i32 - 1)
@@ -358,38 +347,8 @@ impl App {
             SynthItem::Rows => {
                 self.synth_pads.rows = step_in(&InKeyRows::ALL, self.synth_pads.rows, d)
             }
-            SynthItem::Tuning => {
-                let last = Builtin::ALL.len() + self.tuning_files.len() - 1;
-                let at = (self.tuning_choice() as i32 + d).clamp(0, last as i32) as usize;
-                let mut t = self.tunings.song();
-                // With a file picked, the built-in tuning is 12-TET: what
-                // plays if the file were missing, and what a kept file
-                // pick comes back with.
-                (t.builtin, t.file) = match Builtin::ALL.get(at) {
-                    Some(&b) => (b, None),
-                    None => (Builtin::Equal12, Some((at - Builtin::ALL.len()) as u8)),
-                };
-                self.tunings.set_song(t);
-            }
-            SynthItem::TuningRoot => {
-                let mut t = self.tunings.song();
-                t.root = (i32::from(t.root % 12) + d).clamp(0, 11) as u8;
-                self.tunings.set_song(t);
-            }
-            SynthItem::A4 => {
-                let mut t = self.tunings.song();
-                t.a4_hz =
-                    (i32::from(t.a4_hz) + d).clamp(i32::from(A4_MIN), i32::from(A4_MAX)) as u16;
-                self.tunings.set_song(t);
-            }
         }
-        self.shared_tuning_follows();
-        let now = (
-            self.synth_pads,
-            self.pad_scale_pick,
-            self.pad_scale_root,
-            self.tunings.song(),
-        );
+        let now = (self.synth_pads, self.pad_scale_pick, self.pad_scale_root);
         if now == before {
             return Vec::new();
         }
@@ -738,7 +697,7 @@ impl App {
         // The song's tuning (the project's own part has it too, with each
         // instrument's: `App::tunings_part`).
         let t = &self.tunings.song();
-        match self.tuning_file() {
+        match self.pick_file(*t) {
             Some((name, _)) => out.set_str("tuning", &format!("{FILE_PREFIX}{name}")),
             None => out.set_str("tuning", builtin_key(t.builtin)),
         };
@@ -764,8 +723,8 @@ impl App {
         (self.pad_scale_pick, self.pad_scale_root) = (0, 0);
         // The song's tuning from the part, every instrument on Song's
         // until the tunings part says ([`App::open_tunings`]).
-        self.tunings = crate::tunings::Tunings::new();
-        self.tuning_copies = [None; mpfree_seq::MAX_TRACKS];
+        *self.tunings = crate::tunings::Tunings::new();
+        *self.tuning_copies = [None; mpfree_seq::MAX_TRACKS];
         let (notes, _) = self.restore_synth(s);
         (notes, vec![Effect::SynthPads(self.synth_pads)])
     }
@@ -857,15 +816,17 @@ impl App {
         let mut notes = Vec::new();
         if !s.is_empty() {
             let text = |item| self.synth_item_text(item).1;
+            // The song's tuning (the Tuning row is the instrument's).
+            let song = self.tunings.song();
             notes.push(format!(
                 "synth options: {}, scale {} on {}, pad layout {}, tuning {} (root {}, A4 {})",
                 self.synth_pads.engine.name(),
                 text(SynthItem::Scale),
                 text(SynthItem::Root),
                 text(SynthItem::Layout),
-                text(SynthItem::Tuning),
-                text(SynthItem::TuningRoot),
-                text(SynthItem::A4),
+                self.pick_name(song),
+                self.root_text(song),
+                self.a4_text(song),
             ));
         }
         if !skipped.is_empty() {

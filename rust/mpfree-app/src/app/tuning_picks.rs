@@ -167,7 +167,7 @@ impl App {
                     }
                     // The song's is the synth part's, read before.
                     let song = self.tunings.song();
-                    self.tunings = t;
+                    *self.tunings = t;
                     self.tunings.set_song(song);
                     self.tunings.follow(&self.instrument_list);
                 }

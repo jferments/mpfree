@@ -68,7 +68,7 @@ struct Rig {
     /// (tunings step T5): kit 1 in its own just, the rest on the song's
     /// 12-TET.
     listed: crate::instrument_list::InstrumentList,
-    tunings: crate::TuningsHanded,
+    tunings: Box<crate::TuningsHanded>,
 }
 
 fn tone(frames: usize, f: f32) -> Vec<i16> {
@@ -141,7 +141,7 @@ impl Rig {
             ),
             sent: None,
             listed,
-            tunings: crate::TuningsHanded::new(),
+            tunings: Box::new(crate::TuningsHanded::new()),
         }
     }
 

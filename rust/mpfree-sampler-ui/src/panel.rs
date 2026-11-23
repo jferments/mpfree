@@ -208,6 +208,9 @@ impl Item {
 pub struct Section {
     pub title: String,
     pub note: String,
+    /// A small line at the section's foot, under its controls (the Edit
+    /// pad's "keys, notes and 16 Levels follow; hits don't").
+    pub foot: String,
     /// Its share of the panel's width (the mockup's pixels; the panel
     /// scales them to the width it has).
     pub width: i32,
@@ -224,6 +227,7 @@ impl Section {
         Section {
             title: title.to_string(),
             note: String::new(),
+            foot: String::new(),
             width,
             lines,
             from_top: false,
@@ -233,6 +237,12 @@ impl Section {
 
     pub fn note(mut self, note: &str) -> Section {
         self.note = note.to_string();
+        self
+    }
+
+    /// The line at its foot ([`Section::foot`]).
+    pub fn foot(mut self, foot: &str) -> Section {
+        self.foot = foot.to_string();
         self
     }
 
@@ -261,6 +271,8 @@ const PAD: i32 = 12;
 const HEAD_H: i32 = 16;
 const HEAD_GAP: i32 = 10;
 const LINE_GAP: i32 = 12;
+/// A section's foot line ([`Section::foot`]).
+const FOOT_H: i32 = 16;
 /// The least the lines close up to when a section is full.
 const MIN_LINE_GAP: i32 = 4;
 /// Between the items of one slot ([`Item::under`]).
@@ -499,7 +511,10 @@ impl Panel {
         let mut out = Vec::new();
         for (s, sr) in self.sections.iter().zip(self.section_rects(r)) {
             let inner = sr.inset(PAD);
-            let body = inner.take_top(HEAD_H + HEAD_GAP).1;
+            let mut body = inner.take_top(HEAD_H + HEAD_GAP).1;
+            if !s.foot.is_empty() {
+                body = body.take_bottom(FOOT_H + MIN_LINE_GAP).1;
+            }
             let look = |row: usize| controls.get(row).map(|c| &c.look);
             // Each line's slots, with the items that have a control.
             let lines: Vec<Vec<Vec<(Item, &Look)>>> = s
@@ -929,6 +944,10 @@ pub fn paint(
             let tw = cx.measure(FontId::Bold, 12.0, &s.title.to_uppercase());
             let note = Rect::new(head.x + tw + 8, head.y, (head.w - tw - 8).max(0), head.h);
             cx.text(FontId::Sans, 12.0, note, Align::Right, t.text_dim, &s.note);
+        }
+        if !s.foot.is_empty() {
+            let foot = sr.inset(PAD).take_bottom(FOOT_H).0;
+            cx.text(FontId::Sans, 12.0, foot, Align::Center, t.text_dim, &s.foot);
         }
     }
     let ctrl = t.raised;

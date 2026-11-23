@@ -35,7 +35,7 @@ Its settings come in **sections**, a button each across the top of the page, wit
 | **Pitch** | Tune, Wow & flutter, Vintage, and the keys: Keys, Low key, High key, Root key, Key fade, and Mono, Legato, Glide and Glide on | tune, wow, low key, high key |
 | **Mod** | Vel → level, Vel → start, Vel → cutoff, Vel → pitch, Pressure and its Depth | vel → level, vel → start, pressure, depth |
 | **Movement** | LFO to, LFO wave, LFO rate, LFO depth, Sync to tempo, Retrigger, Pitch env and Pitch decay | LFO rate, LFO depth, pitch env, pitch decay |
-| **Pad** | Polyphony, Mute group, Stops, Also plays, Latch, and the kit's Pads play, Pads from and Levels by | voices, mute group, pads play, pads from |
+| **Pad** | Polyphony, Mute group, Stops, Also plays, Latch, and the kit's Pads play, Pads from, Levels by and Tuning | voices, mute group, pads play, pads from |
 
 On a Q-Link, SHIFT turns finer. Hold **SHIFT** and touch a knob to give it a knob on your MIDI controller instead (see [MIDI Learn](midi-and-cv.md#midi-learn)). A setting that has nothing to change right now (the filter's while it is off, the keys' while the pad isn't a keygroup) shows its control and its card faint, and a tap on it says why.
 
@@ -224,7 +224,7 @@ A keyboard on MIDI IN or USB plays a kit of keygroups by pitch too, and a key ou
 
 The Pitch section's Keys controls do the same with numbers: the Keys switch makes one pad a keygroup, Low key, High key and Root key set its range, and the Pad section's Pads play switches the pads between their own sounds and notes.
 
-Keygroups play the song's [tuning](synths.md#tuning), set in the Synth tab's options. In standard tuning a key plays its sound a semitone higher for each key above the root. In another tuning, MPFree takes the sound to be at its root note's standard pitch and plays every key, the root too, at the tuning's pitch for that key. The pad's own Tune still moves it as before, and a hit on the pad itself doesn't follow the tuning.
+Keygroups play their kit's [tuning](synths.md#tuning): the song's, or the kit's own. The Pad section's **Tuning**, under The kit's pads, picks it: **Song's** first (it says what the song plays in, "Song's: Just (5-limit) on D"), then the built-in tunings and your tuning files as the kit's own. The line under it says what follows: keys, notes and 16 Levels; hits don't. A keygroup's line at the top says "tuning: song's" or "tuning: own". A kit's own root and A4 are on the [Tunings page](synths.md#tuning), where every instrument is listed. In standard tuning a key plays its sound a semitone higher for each key above the root. In another tuning, MPFree takes the sound to be at its root note's standard pitch and plays every key, the root too, at the tuning's pitch for that key. The pad's own Tune still moves it as before, and a hit on the pad itself doesn't follow the tuning.
 
 ### Crossfades
 
