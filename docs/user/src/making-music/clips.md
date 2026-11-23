@@ -12,7 +12,7 @@ A **clip** is a piece of music you recorded or programmed: a drum pattern, a bas
 
 ## Tracks and slots
 
-The grid has a column per **track** and a row per **slot**. Each track plays one clip at a time, so a column might hold four different drum patterns, and you pick which one plays. In Make the grid shows 8 rows at a time, each clip with its name and length (and a small ring going round once a pass while it plays); in Perform it shows 5 bigger rows (see [Make and Perform](playing-live.md#make-and-perform)). SHIFT + the wheel scrolls the rest.
+The grid has a column per **track** and a row per **slot**. Each track plays one clip at a time, so a column might hold four different drum patterns, and you pick which one plays. An audio track's cells hold **audio clips**, stretches of your recordings that launch the same way (see [Audio clips](audio-tracks.md#audio-clips)). In Make the grid shows 8 rows at a time, each clip with its name and length (and a small ring going round once a pass while it plays); in Perform it shows 5 bigger rows (see [Make and Perform](playing-live.md#make-and-perform)). SHIFT + the wheel scrolls the rest.
 
 - **Tap a clip** to launch it. It starts on the next bar line (or the line **Launch** sets, below), so it always lands in time. Tap a playing clip to stop it at the next bar. A clip launches when you lift your finger, because you can also drag it.
 - **Tap +** in an empty slot to record a new clip there.

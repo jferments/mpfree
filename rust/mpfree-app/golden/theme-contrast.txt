@@ -45,6 +45,10 @@ abletown synth-table 6 # AbleTown (22 Nov): faded off-state labels and small mar
 abletown synth-voice 7 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 console arp-quick-band 1 # before the theme refactor (phase 0 baseline)
 console arrange-clips-audio 1 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
+console arrange-clips-audio-card 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+console arrange-clips-audio-cells 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+console arrange-clips-audio-fitting 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+console arrange-clips-audio-once 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has, and a once clip's faint Fit to tempo
 console arrange-instruments 1 # before the theme refactor (phase 0 baseline)
 console arrange-song-tempo 1 # before the theme refactor (phase 0 baseline)
 console browser 3 # before the theme refactor (phase 0 baseline)
@@ -171,6 +175,10 @@ console synth-voice 3 # before the theme refactor (phase 0 baseline)
 default arp-quick-band 9 # before the theme refactor (phase 0 baseline)
 default arp-workspace-record 3 # before the theme refactor (phase 0 baseline)
 default arrange-clips-audio 1 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
+default arrange-clips-audio-card 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+default arrange-clips-audio-cells 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+default arrange-clips-audio-fitting 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+default arrange-clips-audio-once 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has, and a once clip's faint Fit to tempo
 default arrange-instruments 1 # before the theme refactor (phase 0 baseline)
 default browser 3 # before the theme refactor (phase 0 baseline)
 default browser-kits 1 # before the theme refactor (phase 0 baseline)
@@ -363,6 +371,10 @@ spaceship arp-panel 5 # before the theme refactor (phase 0 baseline)
 spaceship arp-quick-band 18 # before the theme refactor (phase 0 baseline)
 spaceship arp-workspace-record 18 # before the theme refactor (phase 0 baseline)
 spaceship arrange-clips-audio 9 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
+spaceship arrange-clips-audio-card 9 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+spaceship arrange-clips-audio-cells 9 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+spaceship arrange-clips-audio-fitting 9 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+spaceship arrange-clips-audio-once 10 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has, and a once clip's faint Fit to tempo
 spaceship arrange-instruments 67 # before the theme refactor (phase 0 baseline)
 spaceship arrange-list 39 # before the theme refactor (phase 0 baseline)
 spaceship arrange-report 12 # the report card (Arrange 4.3) over arrange-song with nothing picked: arrange-song's 10 runs plus the faint Make unique and Delete, all under the card's dimming; the card adds none
@@ -372,6 +384,7 @@ spaceship arrange-report-scrolls 12 # as arrange-report, with nine rows scrollin
 spaceship arrange-song 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-add 12 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
 spaceship arrange-song-audio 10 # before the theme refactor (phase 0 baseline)
+spaceship arrange-song-audio-blocks 10 # the same Song view chrome as arrange-song-audio (none in the audio blocks, whose names use ink_on)
 spaceship arrange-song-loops 12 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-panel 12 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-panel-mix 12 # new screen (instrument redesign, step 9): the faint labels arrange-song-panel has
@@ -476,7 +489,7 @@ spaceship play-xy-list 5 # before the theme refactor (phase 0 baseline)
 spaceship sample 4 # before the theme refactor (phase 0 baseline)
 spaceship sample-auto 8 # before the theme refactor (phase 0 baseline)
 spaceship sample-chop 5 # before the theme refactor (phase 0 baseline)
-spaceship sample-chop-audio 15 # before the theme refactor (phase 0 baseline)
+spaceship sample-chop-audio 14 # before the theme refactor (phase 0 baseline)
 spaceship sample-chop-keys 9 # before the theme refactor (phase 0 baseline)
 spaceship sample-chop-live 5 # before the theme refactor (phase 0 baseline)
 spaceship sample-chop-new-kit 14 # before the theme refactor (phase 0 baseline)

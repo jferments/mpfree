@@ -12866,7 +12866,10 @@ mod tests {
                 }
                 let verse = h.control.project.clip(VOCAL, 0).unwrap().id;
                 let said = h.act(a.clone()).unwrap();
-                assert!(said.ends_with("exact"), "{a:?}: {said}");
+                assert!(
+                    said.ends_with("exact. UNDO takes it back."),
+                    "{a:?}: {said}"
+                );
                 let blocks: Vec<_> = h
                     .control
                     .project

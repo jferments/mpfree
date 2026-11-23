@@ -196,7 +196,7 @@ Approved by Jay at 22:34Z (the mod thread's card, "Approve as proposed"). The mo
 - **Blocks of audio clips** (phase 2, step 2d; board E): Rec song records an audio clip's launches as blocks on its track's lane. Recorded regions under such a block are replaced by it, as one step either UNDO takes back (Joshi's pick, 23 Nov 2026 04:38Z).
   - A block has a header strip in the track's colour with the clip's name ("Outro · once" for a once clip). The wave sits under the strip, drawn pass after pass with a faint line at each pass, so a block never looks like a region. On a lane under 24 px the strip goes and the name sits over the wave.
   - A block and a region never overlap. A block dropped, moved or stretched over a region is refused, with the reason ("Riff can't go over the region at bar 9: a block and a region never overlap on a lane"); while it is dragged, its outline is red where it would land over one.
-  - A take recorded over a block cuts the block at the take's edges, and either UNDO takes back both. So does other sound put on the lane: a swipe on a take lane, a region dragged, a sound brought in.
+  - A take recorded over a block cuts the block at the take's edges, and either UNDO takes back both. So does other sound put on the lane: a swipe on a take lane, a region dragged, a sound brought in (Joshi's pick, 23 Nov 2026 10:25Z).
   - A block stays on its lane, or goes to another audio track. A note clip's block never goes on an audio track's lane, nor an audio clip's on another lane.
 - **Take lanes (comping):**
   - Takes opens the track's takes as thin lanes (about 28 px each) under its lane, newest first. They borrow height from the other lanes.
