@@ -1463,7 +1463,8 @@ fn song_audio_blocks_sample(fonts: Fonts) -> Result<Sample, String> {
 /// by hand, so some notes sit a little off the 1/16 grid.
 pub fn keys_clip() -> Clip {
     let mut c = Clip::new("Keys", 2 * BAR);
-    // Played on a synth: notes, not pad hits (its scale goes by it).
+    // Played on a synth: notes, not pad hits (its scale and plan 4.2's
+    // rows go by it).
     c.holds = mpfree_seq::Holds::Notes;
     // (tick, length, note, velocity)
     let chords: [(Tick, Tick, [u8; 3]); 4] = [
@@ -1619,6 +1620,47 @@ pub fn notes_pads_state() -> Result<TimeState, String> {
     Ok(state)
 }
 
+/// The note editor on the drums (piano roll plan 4.2): a bar of kick,
+/// snare, closed and open hats, a clap and a rim shot on the kit's first
+/// pads, a row for each pad, which the app names after the kit's sounds.
+pub fn notes_drums_state() -> Result<TimeState, String> {
+    let mut s = playing()?;
+    let mut beat = Clip::new("Boom bap", BAR);
+    // (tick, pad, velocity): kick, snare, closed hat, open hat, clap, rim.
+    let mut hits: Vec<(Tick, u8, u8)> = vec![
+        (0, 0, 120),
+        (720, 0, 96),
+        (2160, 0, 110),
+        (960, 1, 118),
+        (2880, 1, 122),
+        (2880, 4, 90),
+        (3360, 3, 100),
+        (3600, 5, 64),
+    ];
+    hits.extend(
+        (0..7)
+            .map(|k| k * 480)
+            .map(|t| (t, 2, if t % 960 == 0 { 100 } else { 72 })),
+    );
+    for (tick, pad, velocity) in hits {
+        beat.add_note(Note::new(tick, SIXTEENTH, pad, velocity))
+            .map_err(|e| format!("beat: {e:?}"))?;
+    }
+    s.project.tracks[DRUMS].slots[0] = Some(beat.clone());
+    let mut state = s.state();
+    state.edit = Some(Box::new(crate::view::EditInfo {
+        editor: crate::editor::Editor::new(DRUMS, 0, &beat),
+        clip: beat.into(),
+        rev: 0,
+        track_name: "Drums".into(),
+        bar: BAR,
+        answer: Default::default(),
+        locks: Default::default(),
+        ghosts: Default::default(),
+    }));
+    Ok(state)
+}
+
 /// The note editor on "Keys" with two other clips faintly behind it
 /// (piano roll plan 4.1): "Pluck", the stab track's line on the same row,
 /// which plays with it, and "Keys take 1", an earlier take of the chords
@@ -1637,8 +1679,7 @@ pub fn notes_ghosts_state() -> Result<TimeState, String> {
         Ok(c)
     };
     let mut s = playing()?;
-    let mut keys = keys_clip();
-    keys.holds = mpfree_seq::Holds::Notes;
+    let keys = keys_clip();
     // (tick, length, note): an answer between the chords and the tune.
     let pluck = notes(
         "Pluck",

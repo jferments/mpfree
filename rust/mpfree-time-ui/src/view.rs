@@ -31,8 +31,8 @@ use std::collections::BTreeMap;
 
 use crate::editor::zoom::RollView;
 use crate::editor::{
-    box_of, chord_name, drop_of, edit_rows, knob_name, length_name, lit_scale, note_name, pads,
-    position_name, step_name, ChordShape, EditAction, Editor, Fold, GhostLayer, Hearing, LaneShow,
+    box_of, chord_name, drop_of, edit_rows, knob_name, length_name, lit_scale, pads, position_name,
+    sound_name, step_name, ChordShape, EditAction, Editor, Fold, GhostLayer, Hearing, LaneShow,
     Lens, LockMark, LockSetting, NoteBox, NoteGrid, NoteTool, ShowOffer, Tool, ToolAct, ToolBar,
     ToolKind, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, EDIT_BUTTON, FIELDS, GHOST_MOST,
     GHOST_TAP, LOCK_LANES, MENU, PADS_WRITE, PEN, PRESSURE_END, PRESSURE_LANE, ROOT_MENU,
@@ -223,14 +223,7 @@ pub fn note_cards(e: &EditInfo) -> Option<(String, [QLinkCard; 4])> {
             .map_or(name.clone(), |n| format!("{n}t"))
     };
     let pitch = span(&|n| i64::from(n.note));
-    let sound = |n: i64| {
-        let n = n.clamp(0, 127) as u8;
-        if pad {
-            format!("Pad {}", u16::from(n) + 1)
-        } else {
-            note_name(n)
-        }
-    };
+    let sound = |n: i64| sound_name(n.clamp(0, 127) as u8, pad);
     let vel = span(&|n| i64::from(n.velocity));
     let in_scale = lit_scale(c).is_some();
     let mut cards: [QLinkCard; 4] =
@@ -6014,6 +6007,11 @@ pub struct TimePage {
     /// The cursor last seen and on which clip (plan 1C.1): when the wheel
     /// moves it, the roll scrolls to keep it on screen.
     cursor_seen: Option<((usize, usize), Tick)>,
+    /// The kit's names for the pads of the clip the editor shows, and the
+    /// bank the pads play (plan 4.2): the app knows them and tells them
+    /// ([`TimePage::set_pads`]).
+    pad_names: Arc<Vec<String>>,
+    pad_bank: u8,
 }
 
 impl TimePage {
@@ -6176,6 +6174,41 @@ impl TimePage {
         let rows = self.rows_seen.max(1);
         if slot < self.first_row || slot >= self.first_row + rows {
             self.first_row = slot.min(SLOTS.saturating_sub(rows));
+        }
+    }
+
+    /// The pads of the clip the note editor shows (piano roll plan 4.2):
+    /// the kit's name for each (pad 1 first, "" for none; empty for a
+    /// track that plays no kit), shown on its pad rows, and the bank the
+    /// pads play (0 = A to 7 = H). A new bank (PAD BANK) scrolls a roll of
+    /// pad rows to its first pad; an empty pad clip opens there. Only a
+    /// change touches the roll.
+    pub fn set_pads(&mut self, ui: &mut Ui, names: &[Option<String>], bank: u8) {
+        let same = names.len() == self.pad_names.len()
+            && names
+                .iter()
+                .zip(self.pad_names.iter())
+                .all(|(a, b)| a.as_deref().unwrap_or("") == b);
+        if !same {
+            self.pad_names = Arc::new(
+                names
+                    .iter()
+                    .map(|n| n.clone().unwrap_or_default())
+                    .collect(),
+            );
+            if let Some(g) = ui.get_mut::<NoteGrid>(NOTES) {
+                g.pad_names = Arc::clone(&self.pad_names);
+            }
+        }
+        let bank = bank.min(7);
+        if bank != self.pad_bank {
+            self.pad_bank = bank;
+            let r = ui.rect_of(NOTES);
+            if let (Some(r), Some(g)) = (r, ui.get_mut::<NoteGrid>(NOTES)) {
+                // The page keeps the roll's view for its clip at the next
+                // update.
+                g.show_bank(r, bank);
+            }
         }
     }
 
@@ -6621,6 +6654,8 @@ impl TimePage {
             }
             Some(e) => {
                 let mut grid = note_grid(e, st);
+                grid.pad_names = Arc::clone(&self.pad_names);
+                grid.bank = self.pad_bank;
                 grid.drawer = self.edit_drawer;
                 grid.lane = self.edit_lane;
                 grid.hearing = self.edit_hearing;
@@ -7392,6 +7427,7 @@ mod tests {
     #[test]
     fn the_note_inspector_cards_and_the_cursor() {
         let mut c = Clip::new("A", 16 * BAR);
+        c.holds = mpfree_seq::Holds::Notes;
         c.add_note(Note::new(0, 240, 60, 80)).unwrap();
         c.add_note(Note::new(BAR + 480, 960, 67, 104)).unwrap();
         c.add_note(Note::new(2 * BAR, 37, 64, 90)).unwrap();
