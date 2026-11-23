@@ -57,11 +57,14 @@
 //!   from the drummer's groove or the style's shared drift (contract 3).
 //! - [`request`]: Continue end to end, from a clip in a project to the
 //!   proposal a preview plays and Keep writes, and Try again on one bar.
+//! - [`baseline`]: the simpler ways each job is played beside in the
+//!   listening tests.
 //!
 //! Nothing here runs on the audio thread. The composer runs as an
 //! idle-priority background job (phase 0C onwards).
 #![forbid(unsafe_code)]
 
+pub mod baseline;
 pub mod bind;
 pub mod dice;
 pub mod event;
