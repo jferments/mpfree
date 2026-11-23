@@ -103,8 +103,8 @@ impl Kind {
 }
 
 /// The scale a phrase was written in. Its steps are counted in that scale,
-/// and a note outside it (a `#4` in minor) keeps its half step when the
-/// phrase moves in another key.
+/// and a note outside it (a `#4` in minor) keeps its distance from the
+/// held note wherever the phrase is held ([`Phrase::pitch`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Written {
     Major,
@@ -371,6 +371,13 @@ impl Phrase {
     /// 0..=127 or the scale's snap skips the held note. In key with a
     /// scale, the held note is brought into the scale by `snap` and the
     /// note moves from it by steps of the scale; otherwise by semitones.
+    ///
+    /// A note written outside its scale (a blue note, a leading tone)
+    /// keeps the distance it was written at from the held note, In key
+    /// too. Moving it by the key's step and then by its half step lands
+    /// it on its neighbour wherever the key's own step is already there:
+    /// the lowered 7th of a major walk held on the key's fifth, where the
+    /// seventh step is lowered already, would play the 6th twice.
     pub fn pitch(
         &self,
         n: &PhraseNote,
@@ -383,15 +390,19 @@ impl Phrase {
         let note = match (follow, scale) {
             (Follow::InKey, Some(scale)) => {
                 let base = scale.snapped(held, snap)?;
-                let steps = i16::from(n.steps);
-                let (octave, step) = (steps.div_euclid(7), steps.rem_euclid(7));
-                let per_octave = scale.len() as i16;
-                let j = if per_octave == 7 {
-                    step
+                if n.alt != 0 {
+                    base + i16::from(n.semis)
                 } else {
-                    nearest_step(&scale, base, self.written.steps()[step as usize])
-                };
-                scale.walk(base, octave * per_octave + j) + i16::from(n.alt)
+                    let steps = i16::from(n.steps);
+                    let (octave, step) = (steps.div_euclid(7), steps.rem_euclid(7));
+                    let per_octave = scale.len() as i16;
+                    let j = if per_octave == 7 {
+                        step
+                    } else {
+                        nearest_step(&scale, base, self.written.steps()[step as usize])
+                    };
+                    scale.walk(base, octave * per_octave + j)
+                }
             }
             _ => held + i16::from(n.semis),
         };
@@ -1124,8 +1135,48 @@ mod tests {
         assert_eq!(p.notes()[1].len, 240);
     }
 
+    /// In key, a note written outside its scale keeps its distance from
+    /// the held note wherever the phrase is held, where a step of the key
+    /// and then a half step would land it on its neighbour.
     #[test]
-    fn a_note_outside_the_written_scale_keeps_its_half_step() {
+    fn a_note_outside_the_written_scale_keeps_its_distance_from_the_held_note() {
+        let play = |p: &Phrase, held: u8, scale: Scale| -> Vec<u8> {
+            p.notes()
+                .iter()
+                .filter_map(|n| p.pitch(n, held, Follow::InKey, Some(scale), Snap::Down))
+                .collect()
+        };
+        // A blues walk in C major: the 6th, then the lowered 7th.
+        let walk = Phrase::parse("bass major : 1 6 b7").unwrap();
+        let c_major = Scale::new(0, MAJOR);
+        assert_eq!(play(&walk, 48, c_major), [48, 57, 58], "C, A, B flat");
+        // Held on F, the key's seventh step is E: lowered, E flat.
+        assert_eq!(play(&walk, 53, c_major), [53, 62, 63], "F, D, E flat");
+        // Held on G it is F already, and F it stays: not the E below it,
+        // which the 6th plays.
+        assert_eq!(play(&walk, 55, c_major), [55, 64, 65], "G, E, F");
+        // A leading tone in A minor. Held on F, the step below is E, and
+        // the leading tone is E: raised, it would be F itself.
+        let turn = Phrase::parse("riff minor : 1 7- 1 b3").unwrap();
+        let a_minor = Scale::new(9, MINOR);
+        assert_eq!(
+            play(&turn, 57, a_minor),
+            [57, 56, 57, 60],
+            "A, G sharp, A, C"
+        );
+        assert_eq!(play(&turn, 53, a_minor), [53, 52, 53, 57], "F, E, F, A");
+        assert_eq!(
+            play(&turn, 55, a_minor),
+            [55, 54, 55, 59],
+            "G, F sharp, G, B"
+        );
+        // In a scale of five notes too.
+        let penta = Scale::new(9, PENTATONIC_MINOR);
+        assert_eq!(play(&turn, 57, penta), [57, 56, 57, 60]);
+    }
+
+    #[test]
+    fn notes_outside_the_written_scale_are_told_from_its_steps() {
         let p = Phrase::parse("riff minor : 1 #4 3 7").unwrap();
         let n = p.notes();
         // #4 in minor: the 4th raised; a 3 is minor's b3 raised; 7 is b7 raised.

@@ -27,7 +27,7 @@
 //! [`Playhead`]: crate::phrase::Playhead
 
 use super::{Engine, EventKind, Hit, Mode, SyncStart, PPQ};
-use crate::phrase::{self, Join, Phrase, Turn, MAX_PHRASE_NOTES};
+use crate::phrase::{self, Feel, Join, Phrase, Turn, MAX_PHRASE_NOTES};
 use crate::scale::Scale;
 
 /// The 1/16 a phrase starts on and swings on, in ticks.
@@ -281,7 +281,17 @@ impl Engine {
     /// some, else the arp's own on 1/16s, counted from the transport's
     /// tick 0 while it plays and from where the phrase started while it
     /// doesn't.
+    ///
+    /// A phrase written on a triplet grid is left where it is. Swing
+    /// moves the second of every two, so it would push the threes of a
+    /// triplet apart unevenly (at 58 % on 1/16s, the second 1/8 triplet
+    /// 13 ms late at 120 bpm and the third as much), and a triplet has
+    /// its lilt already: played straight it sits with a swung beat, whose
+    /// off-beats are near its third note.
     fn phrase_swung(&self, t: f64) -> f64 {
+        if self.phrase.feel() == Feel::Triplet {
+            return t;
+        }
         let own = f64::from(SIXTEENTH);
         let (grid, amount, base) = match self.sync {
             Some(s) => match s.swing {
@@ -870,6 +880,45 @@ mod tests {
             .map(|(t, _)| *t)
             .collect();
         assert_eq!(t, [0, 7920, 2 * STEP, 2 * STEP + 7920]);
+    }
+
+    /// A phrase on a triplet grid plays straight whatever swings: the
+    /// arp's own swing, or the transport's.
+    #[test]
+    fn swing_leaves_a_triplet_phrase_alone() {
+        let triplets = "line either 1/8T : 1 1 1 1 1 1";
+        // A triplet 1/8 at 120 bpm is 8000 frames.
+        let even = [0, 8_000, 16_000, 24_000, 32_000, 40_000];
+        let mut e = phrase_engine(
+            triplets,
+            Settings {
+                swing: 66,
+                ..Settings::default()
+            },
+        );
+        e.press(60, 100);
+        let t: Vec<u64> = ons(&run(&mut e, 8 * STEP, 128))
+            .iter()
+            .map(|(t, _)| *t)
+            .collect();
+        assert_eq!(t, even, "the arp's swing");
+        let mut e = phrase_engine(triplets, Settings::default());
+        let swung = Span {
+            swing: Some((PPQ / 4, 62)),
+            ..span(0, 0, 120.0)
+        };
+        let t: Vec<u64> = ons(&run_synced(&mut e, &[swung], &[(0, 60)], 8 * STEP, 128))
+            .iter()
+            .map(|(t, _)| *t)
+            .collect();
+        assert_eq!(t, even, "the transport's swing");
+        // The same swing does move a phrase written on 1/16s.
+        let mut e = phrase_engine(EVERY_SIXTEENTH, Settings::default());
+        let t: Vec<u64> = ons(&run_synced(&mut e, &[swung], &[(0, 60)], 2 * STEP, 128))
+            .iter()
+            .map(|(t, _)| *t)
+            .collect();
+        assert_eq!(t, [0, 7_440]);
     }
 
     /// Repeats sets how many times the phrase plays; then it stays quiet
