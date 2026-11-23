@@ -19,6 +19,7 @@
 //! | `looper` | the Looper | [`loops_part`], a WAV a layer in `samples/` | [`loops_open`] on a thread, then `LoopHost::open` |
 //! | `arp` | the arps | `App::arp_part` | `App::open_arp` |
 //! | `perform` | the Perform set (`perform_pads.rs`) | `PerformSet::text` | `PerformSet::parse`, then `App::set_perform_set` |
+//! | `xy` | your XY layouts and which one plays (`xy_song.rs`), written only while there are some | `XySong::text` | `XySong::parse` on the audio loop; the one it played plays once the mixer is in |
 //! | `pads` | what the pads play, the pad map (`app/pads_focus.rs`, sampler step 15b): the base for every bank (the selected track's instrument, or one chosen for them), each bank's own entry and the layers | `App::pads_part` (`PadMap::text`) | `App::open_pads`, after the list; none (New) follows the track |
 //! | `audiotracks` | the audio tracks | [`audio_part`]: each track's settings and regions, a WAV a take in `samples/` | [`audio_open`] on a thread, then [`crate::audiotracks::TrackHost::open`] |
 //!
@@ -72,6 +73,8 @@ pub const INSTRUMENTS: &str = "instruments";
 /// The Perform set: its pages and what each pad does
 /// (`perform_pads::PerformSet::text`).
 pub const PERFORM: &str = "perform";
+/// Your XY layouts and which one the pad plays (`xy_song::XySong::text`).
+pub const XY: &str = "xy";
 /// What each track plays: a kit or an instrument of the project's list
 /// (`sampler::TrackKits::text`).
 pub const TRACK_KITS: &str = "track-kits";
@@ -149,8 +152,18 @@ pub const AUDIO_TRACKS: &str = "audio-tracks";
 /// lose them. The clips part is `mpfree-clips 4` too, which such a build
 /// doesn't read; the line says it in words before anything is read.
 pub const LINKED_SONG_LIST: &str = "linked-song-list";
+/// A project with a scene whose empty cells keep playing on some track
+/// (the Arrange refactor's 5.2, `mpfree_seq::Scene::keep`): an older
+/// build would skip the scene's `keep` line and stop those tracks at the
+/// scene change, so it must not open it.
+pub const SCENE_KEEP: &str = "scene-keep";
 /// The features this build has, of those a project can need.
-pub const KNOWN_NEEDS: &[&str] = &[SYNTHS_WITHOUT_TRACKS, AUDIO_TRACKS, LINKED_SONG_LIST];
+pub const KNOWN_NEEDS: &[&str] = &[
+    SYNTHS_WITHOUT_TRACKS,
+    AUDIO_TRACKS,
+    LINKED_SONG_LIST,
+    SCENE_KEEP,
+];
 
 // ------------------------------------------------------------ the loop's side
 
@@ -168,6 +181,9 @@ pub struct Collected {
     pub arp: String,
     /// The Perform set ([`crate::perform_pads::PerformSet::text`]).
     pub perform: String,
+    /// Your XY layouts ([`crate::xy_song::XySong::text`]); not saved when
+    /// empty.
+    pub xy: String,
     /// Each track's own instrument ([`instruments_text`]).
     pub instruments: String,
     /// What each track plays (`sampler::TrackKits::text`).
@@ -215,6 +231,8 @@ pub struct Opening {
     /// had one) gives the new project's set: the loop keys on page A,
     /// Play's throws on B.
     pub perform: Option<String>,
+    /// Your XY layouts' part; None (New, or a project without any): none.
+    pub xy: Option<String>,
     /// Each track's own instrument, made here. Every track not in it
     /// (all of them for New, or a project saved before the part) plays
     /// the kit.
@@ -321,6 +339,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     if !c.pads.is_empty() {
         parts.push((PADS.to_string(), c.pads.clone()));
     }
+    if !c.xy.is_empty() {
+        parts.push((XY.to_string(), c.xy.clone()));
+    }
     parts.extend(extra);
     let mut extra = vec![
         (FORMAT_KEY.to_string(), FORMAT.to_string()),
@@ -335,6 +356,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     }
     if c.clips.arrangement.uses_sections() {
         needs.push(LINKED_SONG_LIST);
+    }
+    if c.clips.scenes.iter().any(|s| s.keep != 0) {
+        needs.push(SCENE_KEEP);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -748,6 +772,7 @@ pub fn opening(
         synth,
         arp: snap.part(ARP).map(str::to_string),
         perform: snap.part(PERFORM).map(str::to_string),
+        xy: snap.part(XY).map(str::to_string),
         instruments,
         track_kits,
         sends,
@@ -2774,6 +2799,7 @@ mod tests {
             synth: format!("{SYNTH_FORMAT}\n"),
             arp: format!("{}\n", crate::app::ARP_HEADER),
             perform: String::new(),
+            xy: String::new(),
             instruments: format!("{INSTRUMENTS_FORMAT}\n"),
             track_kits,
             instrument_list: InstrumentList::new().text(),
@@ -2838,6 +2864,7 @@ mod tests {
             synth: format!("{SYNTH_FORMAT}\n"),
             arp: format!("{}\n", crate::app::ARP_HEADER),
             perform: String::new(),
+            xy: String::new(),
             instruments: format!("{INSTRUMENTS_FORMAT}\n"),
             track_kits,
             instrument_list,
@@ -3122,6 +3149,12 @@ mod tests {
         }];
         let (snap, line) = needs(&c);
         assert_eq!(line.as_deref(), Some(LINKED_SONG_LIST));
+        assert_eq!(check(&snap), Ok(FORMAT));
+        // Arrange 5.2: a scene whose empty cell keeps a track playing.
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        c.clips.scene_mut(3).unwrap().set_keep(0, true).unwrap();
+        let (snap, line) = needs(&c);
+        assert_eq!(line.as_deref(), Some(SCENE_KEEP));
         assert_eq!(check(&snap), Ok(FORMAT));
     }
 
@@ -3474,6 +3507,7 @@ mod tests {
                 synth: format!("{SYNTH_FORMAT}\n"),
                 arp: format!("{}\n", crate::app::ARP_HEADER),
                 perform: String::new(),
+                xy: String::new(),
                 instruments: format!("{INSTRUMENTS_FORMAT}\n"),
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
@@ -3511,6 +3545,7 @@ mod tests {
             synth: format!("{SYNTH_FORMAT}\n"),
             arp: format!("{}\n", crate::app::ARP_HEADER),
             perform: set.text(),
+            xy: String::new(),
             instruments: format!("{INSTRUMENTS_FORMAT}\n"),
             track_kits: String::new(),
             instrument_list: InstrumentList::new().text(),
@@ -3593,6 +3628,7 @@ mod tests {
                 synth: format!("{SYNTH_FORMAT}\n"),
                 arp: format!("{}\n", crate::app::ARP_HEADER),
                 perform: String::new(),
+                xy: String::new(),
                 instruments: format!("{INSTRUMENTS_FORMAT}\n"),
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
@@ -3682,6 +3718,7 @@ mod tests {
                 synth: format!("{SYNTH_FORMAT}\n"),
                 arp: format!("{}\n", crate::app::ARP_HEADER),
                 perform: String::new(),
+                xy: String::new(),
                 instruments: format!("{INSTRUMENTS_FORMAT}\ntrack {track} mpfree.poly\n"),
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
@@ -3718,6 +3755,7 @@ mod tests {
             synth: format!("{SYNTH_FORMAT}\n"),
             arp: format!("{}\n", crate::app::ARP_HEADER),
             perform: String::new(),
+            xy: String::new(),
             instruments: format!("{INSTRUMENTS_FORMAT}\n"),
             track_kits: String::new(),
             instrument_list: InstrumentList::new().text(),

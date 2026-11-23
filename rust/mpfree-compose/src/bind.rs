@@ -127,6 +127,9 @@ pub fn revision(clip: &Clip) -> Revision {
         direction,
         // The step grid changes what Steps shows, never when a note plays.
         step: _,
+        // The scale the note editor keeps its moves to: a view, like the
+        // step grid, that changes no note (piano roll plan 2B.1).
+        scale: _,
         // Mutate's restore point: Restore changes the notes, which are in.
         original: _,
         holds,

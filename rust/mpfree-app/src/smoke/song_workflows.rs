@@ -712,6 +712,140 @@ mod tests {
         });
     }
 
+    /// Tunings T3 through the whole session: a song in just intonation on
+    /// D. Picked on the Synth tab's options, the tuning reaches the kit
+    /// (said on the Console), and a keygroup's key sounds at the tuning's
+    /// pitch; the project keeps it, New project puts 12-TET back, and
+    /// opening the song again tunes the kit again.
+    #[test]
+    fn a_song_in_just_on_d_plays_its_keygroups_tuned_and_keeps_it() {
+        on_big_stack(|| {
+            use crate::gui::FromUi;
+            use mpfree_sampler::engine::EngineView;
+            use mpfree_sampler::model::{Layer, Pad, Project, Region, Source};
+            use mpfree_tuning::{Builtin, Tuning};
+            const RATE: u32 = crate::RATE;
+            let mut l = lab("kit-tuning");
+            let s = &mut l.s;
+            let name = "Night Market";
+            let lib = s.library.clone().expect("a library");
+            let loc = mpfree_library::Loc::top(mpfree_library::Place::Projects)
+                .join(name)
+                .expect("a project's place");
+            open(s, name);
+            s.make_sounds().run_for(0.05);
+            // Kit 1 a keygroup over the whole keyboard: a 220 Hz tone on
+            // A3, short enough that its octave copies are made at once.
+            let keygroup = |s: &mut Session| {
+                let n = (RATE as f32 * 0.7) as usize;
+                let x = (0..n)
+                    .map(|i| 0.3 * (i as f32 * 220.0 * std::f32::consts::TAU / RATE as f32).sin())
+                    .collect();
+                let tone = Source::new("tone", RATE, 1, x).unwrap();
+                let mut p = Project::new();
+                p.add_source(tone.clone());
+                p.set_pad(
+                    0,
+                    Some(Pad::new("tone", Layer::new(Region::whole(&tone)))),
+                    None,
+                )
+                .unwrap();
+                p.spread_to_keys(0, 57).unwrap();
+                let mut swap = crate::sampler::ViewSwap {
+                    kit: 0,
+                    view: Some(EngineView::build(&p, RATE)),
+                    routes: vec![None; mpfree_sampler::model::PADS],
+                };
+                let player = s.sounds.as_mut().expect("a kit");
+                player.select(0);
+                assert!(player.swap_view(&mut swap));
+            };
+            // The pitch a key sounds at, from the left channel heard.
+            let key = |s: &mut Session, note: u8| -> f64 {
+                s.run_for(0.3);
+                s.heard = Some(Vec::new());
+                assert!(s
+                    .sounds
+                    .as_mut()
+                    .expect("a kit")
+                    .key_kit_at(0, note, 100, 0));
+                s.run_for(0.35);
+                let h = s.heard.take().unwrap();
+                let x: Vec<f64> = h.iter().step_by(2).map(|&v| f64::from(v)).collect();
+                let (from, to) = ((RATE / 20) as usize, (RATE as f64 * 0.3) as usize);
+                let ups: Vec<f64> = (from..to)
+                    .filter(|&i| x[i - 1] < 0.0 && x[i] >= 0.0)
+                    .map(|i| (i - 1) as f64 + x[i - 1] / (x[i - 1] - x[i]))
+                    .collect();
+                assert!(ups.len() > 50, "the key sounds: {}", ups.len());
+                let span = ups[ups.len() - 1] - ups[0];
+                (ups.len() - 1) as f64 * f64::from(RATE) / span
+            };
+            let cents = |a: f64, b: f64| 1200.0 * (a / b).log2();
+            let kits = |s: &Session| {
+                let p = s.sounds.as_ref().expect("a kit");
+                (0..p.kits())
+                    .map(|k| p.kit_tuning(k).cloned().expect("a kit place"))
+                    .collect::<Vec<_>>()
+            };
+            keygroup(s);
+            let f_sharp = 66u8;
+            let plain = key(s, f_sharp);
+            assert!(
+                cents(plain, Tuning::standard().hz(66.0).into()).abs() < 1.0,
+                "{plain}"
+            );
+            assert!(kits(s).iter().all(Tuning::is_standard));
+
+            // The Synth tab's options: Tuning to Just, its root to D.
+            s.press("header", "tab", "Synth").settle();
+            s.button("MENU").settle();
+            s.route(FromUi::MenuStep(5, 1));
+            s.run_for(0.05);
+            for _ in 0..2 {
+                s.route(FromUi::MenuStep(6, 1));
+                s.run_for(0.05);
+            }
+            s.button("MENU").settle();
+            let just_d = Builtin::Just.tuning(2, 440.0);
+            let said = "sampler: the kits' keygroups play Just (5-limit) on D \
+                        (pad hits and slices as tuned on the pad)";
+            assert!(s.until_said(said, 1.0), "{:?}", s.said());
+            assert!(kits(s).iter().all(|t| *t == just_d));
+            // F#4 is the just major third over D, 13.7 cents under 12-TET.
+            let tuned = key(s, f_sharp);
+            let want = f64::from(just_d.hz(66.0));
+            assert!(cents(tuned, want).abs() < 1.0, "{tuned} Hz, not {want}");
+            assert!((cents(tuned, plain) + 13.69).abs() < 1.0);
+
+            // Saved with the project; New project is 12-TET again.
+            s.button_with("SHIFT", "BROWSE");
+            let saved = format!("project: saved {name}");
+            assert!(s.until_said(&saved, 5.0), "{saved}: {:?}", s.said());
+            let snap = lib.open_project(&loc).expect("it opens");
+            let part = snap.part(crate::project::SYNTH).expect("a synth part");
+            for line in ["tuning = just", "tuning-root = D"] {
+                assert!(part.lines().any(|l| l == line), "{line}: {part}");
+            }
+            s.button("BROWSE");
+            s.press("browser", "place", "Projects");
+            s.press("browser", "button", "New project");
+            s.run_for(0.3);
+            assert!(kits(s).iter().all(Tuning::is_standard));
+            let back = "sampler: the kits' keygroups play 12-TET \
+                        (pad hits and slices as tuned on the pad)";
+            assert!(s.lines.iter().any(|l| l == back), "{:?}", s.said());
+
+            // Opened again: the kit is in just on D, and so is the key.
+            open(s, name);
+            s.run_for(0.05);
+            assert!(kits(s).iter().all(|t| *t == just_d));
+            keygroup(s);
+            let again = key(s, f_sharp);
+            assert!(cents(again, want).abs() < 1.0, "{again} Hz, not {want}");
+        });
+    }
+
     /// Layers (the instrument redesign's step 11a and 11b): FM picked for
     /// the pads, then Layer and Pluck in the list of synths. Each hit and
     /// each key plays both, each on its own strip; the header reads "Pads:
@@ -956,7 +1090,7 @@ mod tests {
             let s = &mut l.s;
             open(s, song.name);
             s.press("header", "tab", "Arrange");
-            s.press("clips", "song", "Song");
+            s.press("clips", "view", "Song");
             s.press("song", "button", "Play song");
             assert!(s.time.song_on(), "Play song turned song mode on");
             let from = s.t();
@@ -1208,7 +1342,7 @@ mod tests {
             open(s, song.name);
             assert!(s.time.project().arrangement.placements.is_empty());
             s.press("header", "tab", "Arrange");
-            s.press("clips", "song", "Song");
+            s.press("clips", "view", "Song");
             s.press("song", "button", "Scenes → song");
             let arr = s.time.project().arrangement.clone();
             let names: Vec<&str> = arr.markers.iter().map(|m| m.name.as_str()).collect();

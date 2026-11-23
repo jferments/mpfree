@@ -912,6 +912,39 @@ pub fn song_tempo_state() -> Result<TimeState, String> {
     Ok(state)
 }
 
+/// Clips played over the song (the Arrange refactor's 5.1, D3), in
+/// Perform with song mode on: rows 1 to 5 made into the song; Drums, Bass
+/// and Stab launched over it, Glitch launched from bar 3 and going back
+/// to the song at 6.1, the chords cued for 6.1; Hats, Dust and FX play
+/// the song. `song_view` shows it on the Song view in place of the grid.
+pub fn over_song_state(song_view: bool) -> Result<TimeState, String> {
+    let launches = launches()
+        .into_iter()
+        .filter(|l| [0, 2, 3, 5].contains(&l.track))
+        .collect();
+    let mut s = Session::new(project(), launches, Some(STAB))?;
+    let rows: Vec<(usize, Tick)> = (0..5)
+        .filter(|&r| s.project.row_filled(r))
+        .map(|r| (r, scene_length(&s.project, r, BAR)))
+        .collect();
+    s.project.arrangement = scenes_to_song(&s.project, &rows, 0)
+        .map(|t| t.song)
+        .map_err(|e| format!("{e:?}"))?;
+    s.command_at(0, Command::Play)?;
+    s.run_to(4 * BAR + 2 * BEAT)?;
+    s.act(TimeAction::Launch {
+        track: CHORDS,
+        slot: 0,
+    })?;
+    s.act(TimeAction::StopClip(3))?;
+    s.run_to(4 * BAR + 2 * BEAT + SIXTEENTH)?;
+    let mut state = s.state();
+    state.perform = true;
+    state.song_on = true;
+    state.song_view = song_view;
+    Ok(state)
+}
+
 /// Recordings into a real audio tracks engine for the Song view's audio
 /// lanes: "Guitar" (audio track 2, stereo) plays bars 1 to 4; "Vocal"
 /// (audio track 1, the left jack) was recorded over bars 1 to 8 and then
@@ -1195,6 +1228,8 @@ fn song_audio_sample(fonts: Fonts) -> Result<Sample, String> {
 /// by hand, so some notes sit a little off the 1/16 grid.
 pub fn keys_clip() -> Clip {
     let mut c = Clip::new("Keys", 2 * BAR);
+    // Played on a synth: notes, not pad hits (its scale goes by it).
+    c.holds = mpfree_seq::Holds::Notes;
     // (tick, length, note, velocity)
     let chords: [(Tick, Tick, [u8; 3]); 4] = [
         (0, 2 * BEAT - 40, [60, 63, 67]),
@@ -1276,7 +1311,144 @@ pub fn notes_state(lens: crate::editor::Lens) -> Result<TimeState, String> {
         track_name: "Chords".into(),
         bar: BAR,
         answer: Default::default(),
+        locks: Default::default(),
     }));
+    Ok(state)
+}
+
+/// The piano roll on the same clip with its scale on (piano roll plan
+/// 2B.1): C Dorian, so the G#2 of the second chord is off it and marked;
+/// the pads play C minor on the Synth tab, which the Scale menu offers
+/// first.
+pub fn notes_scale_state() -> Result<TimeState, String> {
+    use mpfree_seq::mpfree_scale::{DORIAN, MINOR};
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    let mut keys = (*e.clip).clone();
+    keys.scale = Some(mpfree_seq::Scale::new(0, DORIAN));
+    e.clip = keys.into();
+    e.editor.offers = std::sync::Arc::new(crate::editor::ScaleOffers {
+        pads: Some(mpfree_seq::Scale::new(0, MINOR)),
+        own: vec![("Hijaz".into(), 0b0101_1011_0011, 0b0101_1011_0011)],
+    });
+    Ok(state)
+}
+
+/// The keys clip with the Chord chip on Major seventh (piano roll plan
+/// 2B.2) and the chord with its G#2 picked, so the inspector names it.
+pub fn notes_chord_state() -> Result<TimeState, String> {
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    e.editor.chord = crate::editor::ChordShape::Seventh;
+    let all: Vec<usize> = (0..e.clip.notes.len()).collect();
+    let g_sharp = e
+        .clip
+        .notes
+        .iter()
+        .position(|n| n.note == 56)
+        .ok_or("no G#2")?;
+    e.editor.sel = mpfree_seq::notes::chords_of(&e.clip, &all)
+        .into_iter()
+        .find(|chord| chord.contains(&g_sharp))
+        .unwrap_or_default();
+    Ok(state)
+}
+
+/// Chop open on the two long melody notes (piano roll plan 2B.3), in four
+/// pieces: the roll previews the pieces, each with its share of the
+/// pressure, and the tool's bar takes the buttons' place.
+pub fn notes_tool_state() -> Result<TimeState, String> {
+    use crate::editor::{NoteTool, ToolKind};
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    e.editor.sel = (0..e.clip.notes.len())
+        .filter(|&i| !e.clip.notes[i].touch.is_none())
+        .collect();
+    let mut chop = NoteTool::new(ToolKind::Chop);
+    chop.q[0] = 4;
+    e.editor.open_tool = Some(chop);
+    e.editor.row = crate::editor::CHOP_ROW;
+    Ok(state)
+}
+
+/// The keys clip with Pads write on (piano roll plan 1C.2): the cursor
+/// on the second bar's last beat, where a pad pressed writes, nothing
+/// picked.
+pub fn notes_pads_state() -> Result<TimeState, String> {
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    e.editor.pads_write = true;
+    e.editor.cursor = BAR + 3 * BEAT;
+    e.editor.sel.clear();
+    Ok(state)
+}
+
+/// The note editor on "Keys" with the two melody notes that carry
+/// pressure picked (piano roll plan 3A.1): with the Pressure lane on,
+/// it draws their swells as lines under them.
+pub fn notes_pressure_state() -> Result<TimeState, String> {
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    e.editor.sel = (0..e.clip.notes.len())
+        .filter(|&i| !e.clip.notes[i].touch.is_none())
+        .collect();
+    Ok(state)
+}
+
+/// The setting the locks sample's lane shows: a filter cutoff, as a
+/// synth's knob turns it, a semitone a detent from 20 Hz to open.
+pub fn cutoff_setting(addr: mpfree_seq::mpfree_param::RelAddr) -> crate::editor::LockSetting {
+    let words = |v: f32| match v {
+        v if v >= 20_000.0 => "open".to_string(),
+        v if v >= 1000.0 => format!("{:.1} kHz", v / 1000.0),
+        v => format!("{v:.0} Hz"),
+    };
+    let mut values: Vec<(f32, String)> = (0..)
+        .map(|k| 20.0 * (k as f32 / 12.0).exp2())
+        .take_while(|&v| v < 20_000.0)
+        .map(|v| (v, words(v)))
+        .collect();
+    values.push((20_000.0, words(20_000.0)));
+    crate::editor::LockSetting {
+        addr,
+        name: "Cutoff".into(),
+        own: 20_000.0,
+        values,
+        centred: false,
+    }
+}
+
+/// The note editor on "Keys" with Cutoff locks on three steps (piano
+/// roll plan 3A.2), its lock lane showing: the second chord's three
+/// notes share their step's lock and are picked, so the lane says so; the
+/// notes the locks reach are marked, and a melody note with a 1:2
+/// condition is too. The steps with no lock play the filter open.
+pub fn notes_locks_state() -> Result<TimeState, String> {
+    use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    let cutoff = RelAddr::new(OnTrack::Inst, 3);
+    let mut clip = (*e.clip).clone();
+    let at = |c: &Clip, tick: Tick, note: u8| {
+        c.notes
+            .iter()
+            .position(|n| (n.tick, n.note) == (tick, note))
+            .ok_or(format!("no note {note} at {tick}"))
+    };
+    let set = [
+        (at(&clip, 0, 60)?, 640.0),
+        (at(&clip, 2 * BEAT + 12, 56)?, 2560.0),
+        (at(&clip, 3 * BEAT + 5, 72)?, 1280.0),
+    ];
+    clip.apply(&mpfree_seq::notes::lock_notes(&clip, cutoff, &set))
+        .map_err(|e| format!("{e:?}"))?;
+    let odd = at(&clip, BEAT + 14, 75)?;
+    clip.notes[odd].cond = mpfree_seq::Cond::Every { a: 1, b: 2 };
+    e.editor.sel = (0..clip.notes.len())
+        .filter(|&i| (2 * BEAT..3 * BEAT).contains(&clip.notes[i].tick) && clip.notes[i].len > BEAT)
+        .collect();
+    e.clip = clip.into();
+    e.locks = std::sync::Arc::new(vec![cutoff_setting(cutoff)]);
     Ok(state)
 }
 
@@ -1347,6 +1519,7 @@ pub fn tracker_state() -> Result<TimeState, String> {
         track_name: "Drums".into(),
         bar: BAR,
         answer: Default::default(),
+        locks: Default::default(),
     }));
     Ok(state)
 }

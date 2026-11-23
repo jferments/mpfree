@@ -1148,6 +1148,11 @@ pub enum RowKey {
     Step(i32),
     /// The wheel now changes the value (true), or picks rows again.
     Editing(bool),
+    /// – or + on the Sequencer's Notes view, and whether SHIFT is held:
+    /// the screen decides (piano roll plan 1C.1). With the Edit options'
+    /// drawer closed they nudge the picked notes and SHIFT zooms time;
+    /// otherwise they step the row, as [`RowKey::Step`].
+    Arrow { delta: i32, shift: bool },
 }
 
 /// Jay's wheel navigation on every page (13 Nov, after live test 3): a
@@ -3670,8 +3675,15 @@ impl App {
                 // SHIFT + - / +: zoom the waveform (Wave, Warp, Chop).
                 fx.push(Effect::SampleWheel(d));
             } else if self.has_rows() {
-                // - / + step the highlighted row, as in the menus.
-                fx.push(Effect::Rows(RowKey::Step(d)));
+                // - / + step the highlighted row, as in the menus; on the
+                // Notes view the screen knows whether the drawer is open.
+                fx.push(Effect::Rows(
+                    if self.view == View::Sequencer && self.notes_open {
+                        RowKey::Arrow { delta: d, shift }
+                    } else {
+                        RowKey::Step(d)
+                    },
+                ));
             } else if self.view == View::Mixer && !self.outline {
                 // The I/O view's row; on the strips the outline.
                 fx.push(Effect::MixerStep(d));
@@ -3893,6 +3905,12 @@ impl App {
     #[cfg(test)]
     pub fn notes_open(&self) -> bool {
         self.notes_open
+    }
+
+    /// The Sequencer tab shows the note editor (its Notes view): the pads
+    /// pick and write there (piano roll plan 1C.2).
+    pub fn notes_shown(&self) -> bool {
+        self.view == View::Sequencer && self.notes_open
     }
 
     /// A page from a mode button: shown, unless it shows already.
@@ -6112,6 +6130,23 @@ mod tests {
         assert_eq!(app.wheel(2), [Effect::Rows(RowKey::Pick(2))]);
         assert_eq!(app.wheel_push(), [Effect::Rows(RowKey::Editing(true))]);
         assert_eq!(app.wheel(-1), [Effect::Rows(RowKey::Step(-1))]);
+        // - / + go as their own key, SHIFT with them: the screen knows if
+        // the drawer is closed, where they nudge and zoom (plan 1C.1).
+        assert_eq!(
+            press(&mut app, button::PLUS),
+            [Effect::Rows(RowKey::Arrow {
+                delta: 1,
+                shift: false
+            })]
+        );
+        let fx = held(&mut app, button::SHIFT, |a| press(a, button::MINUS));
+        assert_eq!(
+            fx,
+            [Effect::Rows(RowKey::Arrow {
+                delta: -1,
+                shift: true
+            })]
+        );
         let fx = held(&mut app, button::SHIFT, |a| a.wheel(3));
         assert_eq!(
             fx,
