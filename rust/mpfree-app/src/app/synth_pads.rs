@@ -156,6 +156,13 @@ fn step_in<T: Copy + PartialEq>(all: &[T], now: T, d: i32) -> T {
 const MAJOR_CHOICE: usize = 1;
 
 impl App {
+    /// What the note editor's Scale option offers besides the built-in
+    /// scales (piano roll plan 2B.1): the scale the synth's pads play in,
+    /// if any, and the owner's own scales (name, notes up, notes down).
+    pub fn scale_offers(&self) -> (Option<Scale>, &[(String, u16, u16)]) {
+        (self.synth_pads.scale, &self.custom_scales)
+    }
+
     /// The Scale row's choices: 0 is Off, then the built-in scales but
     /// Chromatic (which lays the pads out as Off does), then the owner's.
     fn pad_scale_choices(&self) -> usize {
@@ -312,8 +319,9 @@ impl App {
                 "quarter-comma meantone (pure thirds) or",
                 "24-TET (each pad a quarter tone). Scala .scl",
                 "files in files/tunings/ come after them.",
-                "Drums keep their own pitch. Held notes follow",
-                "at once.",
+                "Kits' keygroups play it too; drums, pad hits",
+                "and slices keep their own pitch. Held notes",
+                "follow at once.",
             ],
             SynthItem::TuningRoot => vec![
                 "The note just intonation, Pythagorean,",

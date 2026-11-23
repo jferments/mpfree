@@ -825,7 +825,7 @@ mod tests {
             bars,
             starts: 1,
             playing,
-            waiting: false,
+            ..ListRow::default()
         };
         let now = Now {
             bpm: 120.0,

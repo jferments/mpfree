@@ -193,6 +193,8 @@ const WAIT_POLL: f64 = 0.02;
 /// Past this much of its capture memory a take's rounds stop waiting for
 /// playback.
 pub const MOVE_UP: f64 = 0.5;
+/// The writer's thread's name, as `/proc/PID/task/TID/comm` shows it.
+pub const THREAD: &str = "mpfree-rec";
 /// Rounds measured for the worst commit time.
 const MEASURED: usize = 64;
 /// Quick rounds in a row before a lengthened interval halves back.
@@ -619,7 +621,7 @@ impl Recorder {
         let w = Writer::new(fs, clock, gate, cfg);
         let s = Arc::clone(&shown);
         let thread = std::thread::Builder::new()
-            .name("mpfree-rec".into())
+            .name(THREAD.into())
             .spawn(move || run(w, &rx, &s))?;
         Ok(Recorder {
             tx: Some(tx),

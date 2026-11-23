@@ -2205,7 +2205,8 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| audio_tracks(rate, 0, false)));
     v.push(measured(|| audio_tracks(rate, 2, false)));
     v.push(measured(|| audio_tracks(rate, 2, true)));
-    v.push(measured(|| stream_voices(rate, 64, Read::Hermite, 1.5)));
+    v.push(measured(|| stream_voices(rate, 64, Read::Near, 0.75)));
+    v.push(measured(|| stream_voices(rate, 64, Read::Near, 1.5)));
     v.push(measured(|| stream_voices(rate, 64, Read::Sinc8, 1.5)));
     v.push(measured(|| stream_voices(rate, 64, Read::Sinc8, 3.0)));
     v.push(measured(|| stream_voices(rate, 64, Read::Sinc16, 1.5)));
@@ -4101,6 +4102,7 @@ fn roll_page(pressure: bool, two: bool) -> RollPage {
             track_name: "Keys".into(),
             bar,
             answer: Default::default(),
+            locks: Default::default(),
         })
     };
     let infos = [info(0, 1), info(if two { 1 } else { 0 }, 2)];
@@ -4234,8 +4236,8 @@ fn roll_frame(what: RollFrame) -> Case {
 /// What a note editor edit case does (piano roll plan 0C.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NoteEditCase {
-    /// One picked note's velocity set (a velocity lane drag, one edit on
-    /// the lift), then taken back by UNDO, a block each.
+    /// One note's velocity set (a stroke along the velocity lane, one edit
+    /// on the lift), then taken back by UNDO, a block each.
     VelocityAndUndo,
     /// Every note picked and transposed a semitone, up then down.
     TransposeAll,
@@ -4283,8 +4285,15 @@ fn note_edit(what: NoteEditCase) -> Case {
                 let clip = song.clip(0, 0).expect("the clip");
                 let a = match what {
                     NoteEditCase::VelocityAndUndo => {
-                        ed.sel = vec![(b as usize * 37) % clip.notes.len()];
-                        EditAction::Velocity((b % 64) as f32 / 64.0)
+                        // A stroke along the velocity lane over one note.
+                        let i = (b as usize * 37) % clip.notes.len();
+                        ed.sel = vec![i];
+                        let v = (1.0 + (b % 64) as f32 / 64.0 * 126.0).round() as i32;
+                        EditAction::Lane {
+                            field: mpfree_seq::notes::Field::Velocity,
+                            rev: 0,
+                            set: vec![(i, v)],
+                        }
                     }
                     NoteEditCase::TransposeAll => {
                         ed.sel = (0..clip.notes.len()).collect();
@@ -5774,7 +5783,7 @@ fn stream_voices(rate: u32, n: usize, read: Read, speed: f64) -> Case {
         .collect();
     let mut out = vec![0.0f32; MAX_BLOCK * 2];
     let read_name = match read {
-        Read::Hermite => "Hermite",
+        Read::Near => "8-point",
         Read::Sinc8 => "band-limited",
         Read::Sinc16 => "band-limited 16",
     };

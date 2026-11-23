@@ -117,6 +117,15 @@ impl StatusPage {
         r.take_top(HEAD_H).0
     }
 
+    /// A meter's width on the head: 150 px, or 128 when there are four.
+    fn meter_w(n: usize) -> i32 {
+        if n > 3 {
+            128
+        } else {
+            150
+        }
+    }
+
     fn switch_rects(r: Rect) -> (Rect, Rect) {
         let head = Self::head_rect(r).inset(12);
         let (w, h) = (150, 44);
@@ -196,16 +205,34 @@ impl Widget for StatusPage {
         cx.panel(head);
         let inner = head.inset(16);
         let (now_r, session_r) = Self::switch_rects(r);
+        // The meters from the switch leftwards, narrower when there are
+        // four (CPU, RAM, the stick and the temperature); the words have
+        // the room left of them.
+        let w = Self::meter_w(v.meters.len());
+        let n = v.meters.len() as i32;
+        let meters_x = now_r.x - 16 - n * (w + 8) + 8;
+        let room = if n > 0 {
+            meters_x - 16 - inner.x
+        } else {
+            inner.w
+        };
         let (title, _) = inner.take_top(36);
+        let title = Rect::new(title.x, title.y, room, title.h);
+        // A long title steps down a size before it is cut short.
+        let px = if cx.measure(FontId::Bold, t.size_title, &v.head) > room {
+            t.size_body
+        } else {
+            t.size_title
+        };
         cx.text(
             FontId::Bold,
-            t.size_title,
+            px,
             title,
             Align::Left,
             t.tone(v.head_tone),
             &v.head,
         );
-        let counts = Rect::new(inner.x, inner.y + 38, inner.w, 22);
+        let counts = Rect::new(inner.x, inner.y + 38, room, 22);
         cx.text(
             FontId::Sans,
             t.size_small,
@@ -216,7 +243,6 @@ impl Widget for StatusPage {
         );
         let mut mx = now_r.x - 16;
         for (name, value, full, tone) in v.meters.iter().rev() {
-            let w = 150;
             let m = Rect::new(mx - w, inner.y, w, inner.h);
             let (label, bar) = m.take_top(m.h - 12);
             cx.text(

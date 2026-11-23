@@ -222,13 +222,14 @@ impl Kind {
 pub struct Subject(pub u32);
 
 /// A subject's kind lives in its top 8 bits, its number in the low 24
-/// ([`Subject::audio_track`], [`Subject::found_take`]); the board keys a
-/// problem on its kind and subject, so the tags only keep the namers
-/// apart.
+/// ([`Subject::audio_track`], [`Subject::found_take`],
+/// [`Subject::midi_port`]); the board keys a problem on its kind and
+/// subject, so the tags only keep the namers apart.
 const TAG_SHIFT: u32 = 24;
 const NUMBER: u32 = (1 << TAG_SHIFT) - 1;
 const AUDIO_TRACK: u32 = 0x01;
 const FOUND_TAKE: u32 = 0x02;
+const MIDI_PORT: u32 = 0x03;
 
 impl Subject {
     pub const NONE: Subject = Subject(0);
@@ -249,9 +250,38 @@ impl Subject {
         (self.0 >> TAG_SHIFT == AUDIO_TRACK).then_some(self.0 & NUMBER)
     }
 
+    /// A MIDI port, the `i`th (from 0) the status watcher has named this
+    /// session (`status_watch::Watch` in the app keeps the names).
+    pub const fn midi_port(i: u32) -> Subject {
+        Subject(MIDI_PORT << TAG_SHIFT | (i.wrapping_add(1) & NUMBER))
+    }
+
     /// Which take found at start (from 1), if this is one.
     pub fn found_take_number(self) -> Option<u32> {
         (self.0 >> TAG_SHIFT == FOUND_TAKE).then_some(self.0 & NUMBER)
+    }
+
+    /// Which port the watcher named (from 0), if this is a MIDI port.
+    pub fn midi_port_index(self) -> Option<u32> {
+        (self.0 >> TAG_SHIFT == MIDI_PORT)
+            .then(|| (self.0 & NUMBER).checked_sub(1))
+            .flatten()
+    }
+}
+
+/// A subject for a developer's line when no name is known: "port 2" (the
+/// watcher's second port), "track 7", "found take 1", or the bare number.
+impl std::fmt::Display for Subject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(id) = self.audio_track_id() {
+            write!(f, "track {id}")
+        } else if let Some(n) = self.found_take_number() {
+            write!(f, "found take {n}")
+        } else if let Some(i) = self.midi_port_index() {
+            write!(f, "port {}", i + 1)
+        } else {
+            write!(f, "#{}", self.0)
+        }
     }
 }
 
@@ -316,25 +346,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn audio_track_and_found_take_subjects_never_meet() {
+    fn audio_track_found_take_and_midi_port_subjects_never_meet() {
         for i in [1u32, 2, 16, 255, 70_000, NUMBER] {
             let (t, f) = (Subject::audio_track(i), Subject::found_take(i));
-            assert_ne!(t, Subject::NONE);
-            assert_ne!(f, Subject::NONE);
+            // Ports count from 0, so the same number names port i - 1.
+            let p = Subject::midi_port(i - 1);
+            for s in [t, f, p] {
+                assert_ne!(s, Subject::NONE);
+            }
             assert_ne!(t, f);
+            assert_ne!(t, p);
+            assert_ne!(f, p);
             assert_eq!(t.audio_track_id(), Some(i));
             assert_eq!(f.found_take_number(), Some(i));
+            assert_eq!(p.midi_port_index(), Some(i - 1));
             assert_eq!(t.found_take_number(), None);
+            assert_eq!(t.midi_port_index(), None);
             assert_eq!(f.audio_track_id(), None);
+            assert_eq!(f.midi_port_index(), None);
+            assert_eq!(p.audio_track_id(), None);
+            assert_eq!(p.found_take_number(), None);
             for j in [1u32, 3, 900] {
                 assert_ne!(t, Subject::found_take(j));
+                assert_ne!(t, Subject::midi_port(j - 1));
+                assert_ne!(f, Subject::midi_port(j - 1));
                 assert_eq!(Subject::audio_track(j) == t, i == j);
+                assert_eq!(Subject::midi_port(j - 1) == p, i == j);
             }
         }
-        // A port's subject (Subject(i + 1)) is neither.
-        assert_eq!(Subject(5).audio_track_id(), None);
-        assert_eq!(Subject(5).found_take_number(), None);
-        assert_eq!(Subject::NONE.audio_track_id(), None);
+        // Each says what it is on a developer's line.
+        assert_eq!(Subject::audio_track(7).to_string(), "track 7");
+        assert_eq!(Subject::found_take(1).to_string(), "found take 1");
+        assert_eq!(Subject::midi_port(1).to_string(), "port 2");
+        assert_eq!(Subject(5).to_string(), "#5");
+        // The first port is never NONE, and an untagged subject is none
+        // of the three.
+        assert_eq!(Subject::midi_port(0).midi_port_index(), Some(0));
+        assert_ne!(Subject::midi_port(0), Subject::NONE);
+        for s in [Subject(5), Subject::NONE] {
+            assert_eq!(s.audio_track_id(), None);
+            assert_eq!(s.found_take_number(), None);
+            assert_eq!(s.midi_port_index(), None);
+        }
     }
 
     #[test]

@@ -152,7 +152,7 @@ A **lock lane** shows one setting step by step, under its sound, like a row of i
 3. Tap a square on the lane to lock that step at the sound's own setting.
 4. Drag it up or down (hold **SHIFT** for fine steps), or keep your finger on it and turn the data wheel. Each locked step shows a purple bar as high as its value, with the value over it.
 
-Tap a locked square again to take its lock off (the lane stays), or hold **ERASE** and tap it. The **×** in place of the lane's mute takes the lane off with all its locks; in Perform you hold it, and **UNDO** brings them back.
+Tap a locked square again to take its lock off (the lane stays), or hold **ERASE** and tap it. The note editor shows the same lanes under its roll, where you can draw the locks along the notes (see [Drawing locks](editing-notes.md#drawing-locks)). The **×** in place of the lane's mute takes the lane off with all its locks; in Perform you hold it, and **UNDO** brings them back.
 
 A send's lane throws on chosen steps: lock **Delay send** high on the last two steps of a bar and only they echo. A sound's lock plays when the sound hits on that step, so a lock on a step without a hit waits for one there.
 

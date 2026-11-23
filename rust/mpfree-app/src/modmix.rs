@@ -398,6 +398,102 @@ impl ModMix {
         }
     }
 
+    /// The XY pad's hand moves `addr` to `value` (a setting a layout of
+    /// yours plays by Set, `xy_play.rs`): a `Touch`, always, so the
+    /// setting's own value is left alone and the pad lets go back to it.
+    /// It beats a move lane always and a step's lock while `recording`
+    /// (`ModEvent::hand`'s rule). The setting becomes a target first.
+    /// False when the engine can't hold it.
+    pub fn pad_touch(
+        &mut self,
+        mixer: &Mixer,
+        addr: ParamAddr,
+        value: f32,
+        recording: bool,
+    ) -> bool {
+        if !self.hold(mixer, addr) {
+            return false;
+        }
+        match self.hands.moved(Hand::Pad, addr, value) {
+            Move::Same | Move::Lost => {}
+            // With no room to keep who holds it, the touch still holds it:
+            // the pad's let-go of a setting nobody holds goes through.
+            Move::Took | Move::Again | Move::Full => self.queue(
+                0,
+                ModEvent::Touch {
+                    addr,
+                    value,
+                    over_locks: recording,
+                },
+            ),
+        }
+        true
+    }
+
+    /// The XY pad lets go of `addr` over `frames` (Go back:
+    /// `ModEvent::LetGo`), if it still holds it.
+    pub fn pad_let_go(&mut self, addr: ParamAddr, frames: u32) {
+        if self.engine.is_target(addr) && self.hands.release(Hand::Pad, addr) {
+            self.queue(0, ModEvent::LetGo { addr, frames });
+        }
+    }
+
+    /// Stay: the XY pad's value becomes `addr`'s own, as a turn of its
+    /// knob, and the pad lets go of it. The own value it had before, for
+    /// UNDO; None when the pad no longer held it (a knob took it).
+    pub fn pad_keep(&mut self, addr: ParamAddr, value: f32) -> Option<f32> {
+        if !self.engine.is_target(addr) || !self.hands.release(Hand::Pad, addr) {
+            return None;
+        }
+        let before = self.engine.base(addr);
+        self.queue(0, ModEvent::Set { addr, value });
+        self.queue(0, ModEvent::Untouch { addr });
+        before
+    }
+
+    /// The XY pad's push on host source `n` (`mpfree_mod::XY_SOURCES`),
+    /// -1 to 1: what its Add settings' rows add.
+    pub fn pad_push(&mut self, n: u8, value: f32) {
+        self.queue(0, ModEvent::Source { n, value });
+    }
+
+    /// The push on host source `n` as the engine has it now.
+    pub fn pushed(&self, n: u8) -> f32 {
+        self.engine.source(Source::Host(n))
+    }
+
+    /// An Add setting of the XY pad's: a matrix row from host source `n`
+    /// to `addr` at `depth` (the setting becomes a target first).
+    pub fn pad_row(
+        &mut self,
+        mixer: &Mixer,
+        n: u8,
+        addr: ParamAddr,
+        depth: f32,
+    ) -> Result<(), ModError> {
+        self.change(
+            mixer,
+            Change::AddRow(mpfree_mod::Row {
+                source: Source::Host(n),
+                via: None,
+                target: addr,
+                depth,
+            }),
+        )
+    }
+
+    /// Takes the XY pad's row from host source `n` to `addr` out, if it is
+    /// there (the chain editor may have taken it out already).
+    pub fn pad_unrow(&mut self, n: u8, addr: ParamAddr) {
+        let row = self
+            .engine
+            .rows()
+            .position(|r| r.source == Source::Host(n) && r.target == addr);
+        if let Some(i) = row {
+            let _ = self.engine.change(Change::RemoveRow(i as u8));
+        }
+    }
+
     /// Who holds what by hand (`hand.rs`; the tests').
     #[cfg(test)]
     pub fn hands(&self) -> &Hands {
@@ -619,7 +715,7 @@ impl ModMix {
     /// value is the one that matters). Anything else is dropped, counted.
     fn full(&mut self, ev: ModEvent) {
         let late = match ev {
-            ModEvent::Untouch { addr } => Some((addr, LetGo::Touch)),
+            ModEvent::Untouch { addr } | ModEvent::LetGo { addr, .. } => Some((addr, LetGo::Touch)),
             ModEvent::Unlock { addr } => Some((addr, LetGo::Lock)),
             _ => None,
         };
@@ -627,6 +723,23 @@ impl ModMix {
             // Not a target: nothing holds it, so nothing to let go of.
             if self.engine.let_go_later(addr, what) {
                 self.late += 1;
+            }
+            return;
+        }
+        if let ModEvent::Source { n, .. } = ev {
+            // The XY pad's push: the newest value is the one that matters
+            // (and the pad sends it again until it lands).
+            let same = self
+                .events
+                .iter_mut()
+                .rev()
+                .find(|e| matches!(e.ev, ModEvent::Source { n: m, .. } if m == n));
+            match same {
+                Some(e) => {
+                    e.ev = ev;
+                    self.merged += 1;
+                }
+                None => self.dropped += 1,
             }
             return;
         }
@@ -703,7 +816,9 @@ fn value_addr(ev: &ModEvent) -> Option<ParamAddr> {
 /// The setting a let-go lets go of.
 fn late_addr(ev: &ModEvent) -> Option<ParamAddr> {
     match *ev {
-        ModEvent::Untouch { addr } | ModEvent::Unlock { addr } => Some(addr),
+        ModEvent::Untouch { addr } | ModEvent::Unlock { addr } | ModEvent::LetGo { addr, .. } => {
+            Some(addr)
+        }
         _ => None,
     }
 }

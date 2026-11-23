@@ -20,6 +20,14 @@
 //! The reference is trusted only where it has converged: with `sixteen`,
 //! each case is also rendered at 16 times the rate and the 8x reference is
 //! compared with it (see [`Y8::agrees`]). Desktop only.
+//!
+//! [`y3`] measures Y3 the same way: Analog's poly-mod at full from
+//! oscillator 2 into the cutoff, into oscillator 1's pitch (with sync, so
+//! the note repeats exactly and its harmonics can be read), and into
+//! both; and a fast filter envelope on each synth with one, struck again
+//! every eighth of a second. For a struck note, a harmonic is its line,
+//! the part every strike shares; the rest of each strike counts with the
+//! fizz, in the render and in its reference alike. Reported only.
 
 use std::f64::consts::PI;
 
@@ -238,24 +246,41 @@ fn worst_diff(a: &[f64], b: &[f64]) -> f64 {
         .fold(0.0, f64::max)
 }
 
+/// How often a struck case strikes its note (s); each strike is held
+/// half as long.
+const STRIKE_S: f64 = 0.125;
+
 /// One case's note rendered at `factor` times 44.1 kHz, as the A1 rows
-/// play it: held 2 s in a 2 s render, after as long a settle in seconds.
-fn render(e: Engine, set: &[(u16, f32)], key: u8, factor: usize) -> Vec<f64> {
+/// play it: held 2 s in a 2 s render, after as long a settle in seconds;
+/// or `struck`, played every [`STRIKE_S`] for the 2 s.
+fn render(e: Engine, set: &[(u16, f32)], key: u8, factor: usize, struck: bool) -> Vec<f64> {
     let rate = 44_100 * factor as u32;
     let mut n = e.plain(rate);
     for &(id, v) in set {
         n.set_param(id, v);
     }
-    let score = synth::score(rate, &[(key, 100, 0.0, 2.0)]);
+    let notes: Vec<(u8, u8, f64, f64)> = if struck {
+        let strikes = (2.0 / STRIKE_S).round() as usize;
+        (0..strikes)
+            .map(|i| (key, 100, i as f64 * STRIKE_S, STRIKE_S / 2.0))
+            .collect()
+    } else {
+        vec![(key, 100, 0.0, 2.0)]
+    };
+    let score = synth::score(rate, &notes);
     let len = synth::frames(2.0, rate);
     synth::render_after(n.as_mut(), rate, len, &score, synth::SETTLE_BLOCKS * factor).mid()
 }
 
 /// A render at `factor` times 44.1 kHz brought down to 44.1 kHz.
-fn reference(e: Engine, set: &[(u16, f32)], key: u8, factor: usize) -> Vec<f64> {
-    let x = render(e, set, key, factor);
+fn reference(e: Engine, set: &[(u16, f32)], key: u8, factor: usize, struck: bool) -> Vec<f64> {
+    let x = render(e, set, key, factor, struck);
     decimate(&x, &decimation_taps(44_100 * factor as u32), factor)
 }
+
+/// One case at one note: its name, the engine and settings over its plain
+/// patch, the note, and whether it is struck again and again.
+type Job = (String, Engine, Vec<(u16, f32)>, u8, bool);
 
 /// Y8 for every A1 case at C5, C6 and C7; with `sixteen`, the 16x check
 /// as well. Cases run on every core.
@@ -263,20 +288,139 @@ pub fn y8(sixteen: bool) -> Vec<Y8> {
     let mut jobs = Vec::new();
     for (what, e, set) in synth::alias_cases() {
         for (k, label) in [(72u8, "C5"), (84, "C6"), (96, "C7")] {
-            jobs.push((format!("{what}, {label}"), e, set.clone(), k));
+            jobs.push((format!("{what}, {label}"), e, set.clone(), k, false));
         }
     }
+    measure(&jobs, sixteen)
+}
+
+/// A Y3 case: its name, the engine and settings over its plain patch, and
+/// whether it is struck again and again.
+type Y3Case = (&'static str, Engine, Vec<(u16, f32)>, bool);
+
+/// Y3's cases: Analog's poly-mod at full, and a fast filter envelope on
+/// each synth with one (struck).
+fn y3_cases() -> Vec<Y3Case> {
+    use mpfree_synth::{
+        analog_params as an, bass_params as bp, params as pp, squelch_params as sp,
+    };
+    // Oscillator 2 exactly at the note (its fine tune is 6 cents up
+    // otherwise), heard only through the poly-mod (into the pitch unless
+    // turned off).
+    let pm = |more: &[(u16, f32)]| {
+        let mut v = vec![(an::OSC2_FINE, 0.0), (an::PM_OSC2, 100.0)];
+        v.extend_from_slice(more);
+        v
+    };
+    vec![
+        (
+            "Analog poly-mod > cutoff 100",
+            Engine::Analog,
+            pm(&[
+                (an::PM_PITCH, 0.0),
+                (an::PM_CUTOFF, 1.0),
+                (an::CUTOFF, 1_000.0),
+                (an::RESONANCE, 50.0),
+            ]),
+            false,
+        ),
+        (
+            "Analog poly-mod > pitch 100, sync",
+            Engine::Analog,
+            pm(&[(an::PM_PITCH, 1.0), (an::SYNC, 1.0)]),
+            false,
+        ),
+        (
+            "Analog poly-mod > pitch and cutoff 100, sync",
+            Engine::Analog,
+            pm(&[
+                (an::PM_PITCH, 1.0),
+                (an::PM_CUTOFF, 1.0),
+                (an::SYNC, 1.0),
+                (an::CUTOFF, 1_000.0),
+                (an::RESONANCE, 50.0),
+            ]),
+            false,
+        ),
+        // Each envelope at its fastest decay or 20 ms, its whole sweep up
+        // from a low cutoff, resonance at half.
+        (
+            "Poly fast filter envelope",
+            Engine::Poly,
+            vec![
+                (pp::CUTOFF, 200.0),
+                (pp::RESONANCE, 50.0),
+                (pp::FENV_AMOUNT, 5.0),
+                (pp::FENV_A, 0.1),
+                (pp::FENV_D, 20.0),
+                (pp::FENV_S, 0.0),
+            ],
+            true,
+        ),
+        (
+            "Analog fast filter envelope",
+            Engine::Analog,
+            vec![
+                (an::CUTOFF, 200.0),
+                (an::RESONANCE, 50.0),
+                (an::ENV_AMT, 100.0),
+                (an::F_ATTACK, 1.0),
+                (an::F_DECAY, 20.0),
+                (an::F_SUSTAIN, 0.0),
+            ],
+            true,
+        ),
+        (
+            "Squelch fast filter envelope",
+            Engine::Squelch,
+            vec![
+                (sp::CUTOFF, 200.0),
+                (sp::RESONANCE, 50.0),
+                (sp::ENV_MOD, 100.0),
+                (sp::DECAY, 200.0),
+            ],
+            true,
+        ),
+        (
+            "Bass fast filter envelope",
+            Engine::Bass,
+            vec![
+                (bp::CUTOFF, 200.0),
+                (bp::RESONANCE, 50.0),
+                (bp::ENV_AMOUNT, 100.0),
+                (bp::FILTER_DECAY, 20.0),
+            ],
+            true,
+        ),
+    ]
+}
+
+/// Y3 (reported only) at C4 and C6; with `sixteen`, the 16x check as well.
+pub fn y3(sixteen: bool) -> Vec<Y8> {
+    let mut jobs = Vec::new();
+    for (what, e, set, struck) in y3_cases() {
+        for (k, label) in [(60u8, "C4"), (84, "C6")] {
+            jobs.push((format!("{what}, {label}"), e, set.clone(), k, struck));
+        }
+    }
+    measure(&jobs, sixteen)
+}
+
+/// Each job against its 8x reference (and the 16x check with `sixteen`),
+/// on every core.
+fn measure(jobs: &[Job], sixteen: bool) -> Vec<Y8> {
     let rate = 44_100;
     let from = synth::frames(0.3, rate);
-    let run = |(case, e, set, k): &(String, Engine, Vec<(u16, f32)>, u8)| {
-        let x = render(*e, set, *k, 1);
-        let r8 = reference(*e, set, *k, 8);
-        let near = 440.0 * ((f64::from(*k) - 69.0) / 12.0).exp2();
+    let run = |(case, e, set, k, struck): &Job| {
+        let (e, k, struck) = (*e, *k, *struck);
+        let x = render(e, set, k, 1, struck);
+        let r8 = reference(e, set, k, 8, struck);
+        let near = 440.0 * ((f64::from(k) - 69.0) / 12.0).exp2();
         let f0 = synth::freq_near(&r8, rate, near, from).unwrap_or(near);
         let fx = synth::freq_near(&x, rate, near, from).unwrap_or(near);
         let (px, p8) = (picture(&x, rate, fx, from), picture(&r8, rate, f0, from));
         let (converge, f16) = if sixteen {
-            let r16 = reference(*e, set, *k, 16);
+            let r16 = reference(e, set, k, 16, struck);
             let f = synth::freq_near(&r16, rate, near, from).unwrap_or(near);
             let p16 = picture(&r16, rate, f, from);
             (
@@ -326,13 +470,24 @@ pub fn y8(sixteen: bool) -> Vec<Y8> {
 
 /// The rows as text, one case a line.
 pub fn to_text(rows: &[Y8]) -> String {
-    let mut s = String::from(
-        "Y8   case                                     fizz  ref fizz  16x fizz  harmonics     top  envelope   level  8x vs 16x  agrees\n",
+    table("Y8", rows)
+}
+
+/// Y3's rows as text, one case a line.
+pub fn y3_text(rows: &[Y8]) -> String {
+    table("Y3", rows)
+}
+
+fn table(id: &str, rows: &[Y8]) -> String {
+    let w = rows.iter().map(|r| r.case.len()).max().unwrap_or(0).max(38);
+    let mut s = format!(
+        "{id}   {:<w$}    fizz  ref fizz  16x fizz  harmonics     top  envelope   level  8x vs 16x  agrees\n",
+        "case"
     );
     for r in rows {
         let opt = |v: Option<f64>, p: usize| v.map_or("-".to_string(), |v| format!("{v:.p$}"));
         s.push_str(&format!(
-            "Y8   {:<38} {:>7.1} {:>9.1} {:>9} {:>10.2} {:>7} {:>9.2} {:>7.2} {:>10} {:>7}\n",
+            "{id}   {:<w$} {:>7.1} {:>9.1} {:>9} {:>10.2} {:>7} {:>9.2} {:>7.2} {:>10} {:>7}\n",
             r.case,
             r.fizz_db,
             r.ref_fizz_db,
@@ -348,7 +503,7 @@ pub fn to_text(rows: &[Y8]) -> String {
     let checked: Vec<_> = rows.iter().filter_map(|r| r.agrees()).collect();
     if !checked.is_empty() {
         s.push_str(&format!(
-            "Y8: the 8x reference agrees with 16x in {} of {} cases\n",
+            "{id}: the 8x reference agrees with 16x in {} of {} cases\n",
             checked.iter().filter(|a| **a).count(),
             checked.len()
         ));

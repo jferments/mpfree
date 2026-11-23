@@ -14,3 +14,4 @@ mpfree-transport = { path = "../mpfree-transport" }
 mpfree-param = { path = "../mpfree-param" }
 mpfree-moves = { path = "../mpfree-moves" }
 mpfree-notefx = { path = "../mpfree-notefx" }
+mpfree-scale = { path = "../mpfree-scale" }

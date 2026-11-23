@@ -469,6 +469,9 @@ pub struct SongLanes {
     pub sounds: Vec<String>,
     pub blocks: SongBlocks,
     pub markers: Vec<(Tick, String)>,
+    /// Each marker's passes and their length while its part follows its
+    /// scene on a linked song, with more than one ([`crate::view::TimeState::passes`]).
+    pub passes: Vec<Option<(u16, Tick)>>,
     /// Ticks a bar.
     pub bar: Tick,
     /// The first bar shown (0-based) and how many.
@@ -663,6 +666,7 @@ impl Default for SongLanes {
             sounds: Vec::new(),
             blocks: SongBlocks::default(),
             markers: Vec::new(),
+            passes: Vec::new(),
             bar: 3840,
             first_bar: 0,
             bars: 16,
@@ -901,6 +905,7 @@ impl SongLanes {
             sounds: self.sounds.clone(),
             blocks: self.blocks.clone(),
             markers: self.markers.clone(),
+            passes: self.passes.clone(),
             bar: self.bar,
             first_bar: self.first_bar,
             bars: self.bars,
@@ -1873,6 +1878,58 @@ impl SongLanes {
         )
     }
 
+    /// Where each pass after the first of a linked song's part starts
+    /// (4b.4): a dashed line in a faint warning colour across the ruler
+    /// and the lanes, under the blocks, and "pass 2 of 3" on the ruler
+    /// where it has room before the next line.
+    fn paint_passes(&self, cx: &mut PaintCx, g: &Geo) {
+        let t = cx.theme.clone();
+        let line = t.warn.mix(t.surface, 0.45);
+        let ink = t.readable(t.warn.mix(t.surface, 0.25), t.surface);
+        let size = t.size_small - 2.0;
+        let (top, bottom) = (g.ruler.y + 14, g.lanes.bottom());
+        for (k, (at, name)) in self.markers.iter().enumerate() {
+            let Some((n, pass)) = self.passes.get(k).copied().flatten() else {
+                continue;
+            };
+            let next = self.markers.get(k + 1).map(|m| m.0);
+            // The part's name, "Verse ×2", ends here on the ruler.
+            let named = self.x_of(g.ruler, *at)
+                + 4
+                + cx.measure(FontId::Bold, size, &format!("{name} ×{n}"))
+                + 6;
+            for j in 1..Tick::from(n) {
+                let tick = at + j * pass.max(1);
+                let x = self.x_of(g.ruler, tick);
+                if x < g.ruler.x + NAME_W || x >= g.ruler.right() {
+                    continue;
+                }
+                let mut y = top;
+                while y < bottom {
+                    let h = 5.min(bottom - y);
+                    cx.canvas.fill_rect(Rect::new(x, y, 1, h), line);
+                    y += 9;
+                }
+                let label = format!("pass {} of {n}", j + 1);
+                let after = match j + 1 < Tick::from(n) {
+                    true => Some(tick + pass),
+                    false => next,
+                };
+                let room = after.map_or(g.ruler.right(), |a| self.x_of(g.ruler, a)) - x - 8;
+                if x >= named && cx.measure(FontId::Sans, size, &label) <= room {
+                    cx.text(
+                        FontId::Sans,
+                        size,
+                        Rect::new(x + 4, g.ruler.y + 12, room, 14),
+                        Align::Left,
+                        ink,
+                        &label,
+                    );
+                }
+            }
+        }
+    }
+
     /// The tempo lane: "Tempo" in the name column, the song's tempo as a
     /// line across the bars (flat from each point, sloping where it
     /// ramps), a dot on each point with its tempo beside it, the picked
@@ -2324,6 +2381,7 @@ impl Widget for SongLanes {
                 );
             }
         }
+        self.paint_passes(cx, &g);
         for (k, (at, name)) in self.markers.iter().enumerate() {
             let x = self.x_of(g.ruler, *at);
             if x < g.ruler.x + NAME_W || x >= g.ruler.right() {
@@ -2333,6 +2391,11 @@ impl Widget for SongLanes {
                 Rect::new(x, g.ruler.y + 14, 2, g.lanes.bottom() - g.ruler.y - 14),
                 t.warn,
             );
+            // A part of N passes: "Verse ×2" (4b.4).
+            let name = &match self.passes.get(k).copied().flatten() {
+                Some((n, _)) => format!("{name} ×{n}"),
+                None => name.clone(),
+            };
             let mut ink = t.warn;
             if self.section == Some(k) {
                 // Picked, for the wheel: the name on a pill, and its grip

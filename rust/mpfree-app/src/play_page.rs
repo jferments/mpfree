@@ -579,7 +579,7 @@ pub const LOCKED: Color = Color::rgb(0xA0_40_FF);
 impl SoundKind {
     /// The value as the card writes it, where its ring is, and whether it
     /// is lit both ways.
-    fn read(self, v: f32) -> (String, f32, bool) {
+    pub(crate) fn read(self, v: f32) -> (String, f32, bool) {
         match self {
             SoundKind::Tune => {
                 let st = v / 100.0;
@@ -644,7 +644,7 @@ impl SoundKind {
     }
 
     /// `v` turned by `ticks` detents (`fine`: SHIFT held).
-    fn turn(self, v: f32, ticks: i32, fine: bool) -> f32 {
+    pub(crate) fn turn(self, v: f32, ticks: i32, fine: bool) -> f32 {
         let d = ticks as f32;
         match self {
             SoundKind::Tune => (v + d * if fine { 10.0 } else { 100.0 }).clamp(-2400.0, 2400.0),
