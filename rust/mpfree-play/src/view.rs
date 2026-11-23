@@ -279,17 +279,7 @@ pub(crate) struct ClipView {
 impl ClipView {
     /// A note of the clip, compiled: quantise and speed applied.
     fn note_view(&self, n: &Note) -> NoteView {
-        let at = self
-            .quantise
-            .map_or(n.tick as f64, |q| q.apply(n.tick as f64));
-        NoteView {
-            // Quantise can move a note at the very end onto the next pass's start.
-            local: at.rem_euclid(self.length as f64),
-            len: self.speed.to_song(n.len as f64),
-            note: n.note,
-            velocity: n.velocity,
-            src: *n,
-        }
+        note_view(self.quantise, self.length, self.speed, n)
     }
 
     /// A lock of the clip, compiled: quantise applied, like its note.
@@ -1474,6 +1464,13 @@ pub(crate) fn view_of(
     } else {
         clip.moves.clone()
     };
+    let (quantise, length, speed) = (clip.quantise, clip.length, clip.speed);
+    let mut notes: Vec<NoteView> = clip
+        .notes
+        .iter()
+        .map(|n| note_view(quantise, length, speed, n))
+        .collect();
+    notes.sort_by(|a, b| a.local.total_cmp(&b.local));
     let mut view = ClipView {
         slot,
         origin,
@@ -1483,7 +1480,7 @@ pub(crate) fn view_of(
         quantise: clip.quantise,
         song_len: clip.speed.to_song(clip.length as f64),
         swing: clip.swing.or(track_swing),
-        notes: Vec::new(),
+        notes,
         locks: Vec::new(),
         moves,
         touch: clip.touch.clone(),
@@ -1501,8 +1498,6 @@ pub(crate) fn view_of(
         }),
         looped: clip.loop_id().map(|id| LoopView { id, clip: clip.id }),
     };
-    view.notes = clip.notes.iter().map(|n| view.note_view(n)).collect();
-    view.notes.sort_by(|a, b| a.local.total_cmp(&b.local));
     view.locks = clip
         .locks
         .iter()
@@ -1512,6 +1507,21 @@ pub(crate) fn view_of(
     view.locks.sort_by(|a, b| a.local.total_cmp(&b.local));
     view.stamp = stamp_of(&view);
     view
+}
+
+/// Note `n` of a clip `length` ticks long at `speed` with `quantise`,
+/// compiled ([`ClipView::note_view`]); apart from the view, so a compile's
+/// loop over the notes keeps the three in registers.
+fn note_view(quantise: Option<Quantise>, length: Tick, speed: Speed, n: &Note) -> NoteView {
+    let at = quantise.map_or(n.tick as f64, |q| q.apply(n.tick as f64));
+    NoteView {
+        // Quantise can move a note at the very end onto the next pass's start.
+        local: at.rem_euclid(length as f64),
+        len: speed.to_song(n.len as f64),
+        note: n.note,
+        velocity: n.velocity,
+        src: *n,
+    }
 }
 
 /// FNV-1a over whole words, finished with a mix so that the sums in
