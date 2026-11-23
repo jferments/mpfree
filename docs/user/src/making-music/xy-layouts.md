@@ -67,3 +67,5 @@ Under the full-screen pad (**SHIFT + NEXT SEQ**) are three buttons:
 - **Setup** opens Setup for the layout playing (on a ready-made one, a copy becomes yours first).
 
 UNDO on the full-screen pad and in Setup undoes what Stay left behind, one lift at a time. Hold UNDO to see the list.
+
+A button, a key or a footswitch on your controller can switch Hold and step through your layouts: learn it on **XY Hold**, **XY layout next** or **XY layout back** in the [Learn section's Play card](midi-and-cv.md#plays-swing-filter-and-xy-pad-from-your-controller).

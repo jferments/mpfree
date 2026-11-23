@@ -7915,6 +7915,75 @@ fn synth_turn_said(synth: &synth::Synth, id: u16, redo: bool) -> String {
 
 /// Your XY layouts as the screen shows them ([`gui::ToUi::Xy`]), each
 /// setting named afresh.
+/// Your XY layouts with what an action on them reads and changes: the
+/// screen's `FromUi::Xy`, and Learn's XY Hold and layout buttons (the
+/// smoke session's too).
+struct XyHere<'a> {
+    song: &'a mut xy_song::XySong,
+    mix: &'a mut mixing::MixHost,
+    synth: &'a synth::Synth,
+    app: &'a app::App,
+    pads: PadNow<'a>,
+    time: &'a time::TimeHost,
+}
+
+impl XyHere<'_> {
+    /// An action on your layouts: the mixer plays what it asks; the lines
+    /// to tell.
+    fn act(&mut self, act: xy_song::XyAction) -> Vec<String> {
+        let track = u8::try_from(self.app.track()).unwrap_or(u8::MAX);
+        let (mix, synth, app, pads, time) = (&*self.mix, self.synth, self.app, self.pads, self.time);
+        let look = |a| xy_seen(mix, synth, app, pads, time, a);
+        let mut told = Vec::new();
+        let done = self.song.act(
+            act,
+            track,
+            |pick, name| mix.xy_ready(pick, name),
+            &look,
+            &mut |l| told.push(l),
+        );
+        match done {
+            Ok(d) => self.mix.xy_done(d),
+            Err(e) => told.push(e),
+        }
+        told
+    }
+
+    /// Learn's XY buttons pressed (the Play card): Hold switches on a
+    /// layout of yours (on a ready-made one the line says why it does
+    /// nothing), and the layout buttons step through the song's layouts
+    /// of yours, or the ready-made ones while there are none: the pick
+    /// for Prefs to keep, which the screen and the mixer then follow.
+    fn pressed(&mut self, p: remote::XyPresses) -> (Vec<String>, Option<Option<usize>>) {
+        let mut lines = Vec::new();
+        let mut pick = None;
+        if p.step != 0 {
+            match self.song.stepped(self.app.settings.xy_effect, p.step) {
+                xy_song::Stepped::Yours(i) => lines.extend(self.act(xy_song::XyAction::Play(i))),
+                xy_song::Stepped::Ready(e) => {
+                    let name = play_page::XY_CHOICES[e.map_or(0, |k| k + 1)];
+                    lines.push(format!("XY pad: {name}"));
+                    pick = Some(e);
+                }
+            }
+        }
+        if p.hold {
+            if self.song.playing.is_some() {
+                let on = !self.mix.xy_held();
+                lines.extend(self.act(xy_song::XyAction::Hold(on)));
+            } else {
+                lines.push(xy_song::NO_HOLD.to_string());
+            }
+        }
+        (lines, pick)
+    }
+
+    /// The screen's view of your layouts now.
+    fn view(&mut self) -> gui::ToUi {
+        xy_view(self.song, self.mix, self.synth, self.app, self.pads, self.time)
+    }
+}
+
 fn xy_view(
     song: &mut xy_song::XySong,
     mix: &mixing::MixHost,
@@ -9462,25 +9531,19 @@ fn player_session(
                 gui::FromUi::Xy(act) => {
                     let pad_now =
                         |t: u8, pad: u8, id: u16| pad_describe(&player, &track_kits, t, pad, id);
-                    let track = u8::try_from(app.track()).unwrap_or(u8::MAX);
-                    let look = |a| xy_seen(&mix, &synth, &app, &pad_now, &time, a);
-                    let mut told = None;
-                    let done = xy_yours.act(
-                        act,
-                        track,
-                        |pick, name| mix.xy_ready(pick, name),
-                        &look,
-                        &mut |l| told = Some(l),
-                    );
-                    match done {
-                        Ok(d) => mix.xy_done(d),
-                        Err(e) => told = Some(e),
-                    }
-                    if let Some(line) = told {
+                    let mut xy = XyHere {
+                        song: &mut xy_yours,
+                        mix: &mut mix,
+                        synth: &*synth,
+                        app: &app,
+                        pads: &pad_now,
+                        time: &time,
+                    };
+                    for line in xy.act(act) {
                         out.note(&format!("xy: {line}"));
                         out.show(gui::ToUi::Tell(line));
                     }
-                    out.show(xy_view(&mut xy_yours, &mix, &synth, &app, &pad_now, &time));
+                    out.show(xy.view());
                 }
                 // UNDO on the Synth tab and the mixer: their turns' history.
                 gui::FromUi::UndoHistory(on) => {
@@ -10788,7 +10851,28 @@ fn player_session(
             out.show(gui::ToUi::PadsLearned(std::mem::take(&mut pads_learned)));
         }
         // Play's Swing, Drums filter and XY pad, once a pass.
-        fx.extend(desk::play_remote(&time, &mut mix, out, &mut play_moves));
+        let (play_fx, xy_presses) = desk::play_remote(&time, &mut mix, out, &mut play_moves);
+        fx.extend(play_fx);
+        if xy_presses != remote::XyPresses::default() {
+            let pad_now = |t: u8, pad: u8, id: u16| pad_describe(&player, &track_kits, t, pad, id);
+            let mut xy = XyHere {
+                song: &mut xy_yours,
+                mix: &mut mix,
+                synth: &*synth,
+                app: &app,
+                pads: &pad_now,
+                time: &time,
+            };
+            let (lines, pick) = xy.pressed(xy_presses);
+            for line in lines {
+                out.note(&format!("xy: {line}"));
+                out.show(gui::ToUi::Tell(line));
+            }
+            out.show(xy.view());
+            if let Some(e) = pick {
+                fx.extend(app.set_xy_effect(e));
+            }
+        }
         if synth_learned && mt >= synth_learned_at {
             synth_learned = false;
             synth_learned_at = mt + 0.05;

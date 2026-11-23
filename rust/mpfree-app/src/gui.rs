@@ -357,8 +357,7 @@ const XY_FULL_HINT: &str =
     "The XY pad full screen: drag to play   ·   the chip: what it plays   ·   Setup: what it moves   ·   SHIFT + NEXT SEQ: back";
 
 /// Hold on a ready-made layout (phase 2): it comes with the XY page.
-const XY_NO_HOLD: &str =
-    "Hold works on a layout of yours for now: Setup makes a copy of this one yours";
+const XY_NO_HOLD: &str = crate::xy_song::NO_HOLD;
 
 /// The hint on Setup for a layout of yours ([`crate::xy_setup`]).
 const XY_SETUP_HINT: &str =

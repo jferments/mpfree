@@ -336,9 +336,47 @@ pub struct WaitView {
     pub just: String,
 }
 
+/// Hold on a ready-made layout, from the screen or a learned button
+/// (phase 2): it comes with the XY page.
+pub const NO_HOLD: &str =
+    "Hold works on a layout of yours for now: Setup makes a copy of this one yours";
+
 /// Why Add is greyed on a synth's or a pad's own setting.
 pub const NO_ADD: &str =
     "Add works on the mixer, effects and outside gear for now: a synth's or a pad's own setting moves by Set";
+
+/// What a learned layout button plays (Learn's Play card: XY layout next
+/// and back, `step` presses): the layout of yours `step` on from the one
+/// playing (the first, or the last going back, when none plays), or,
+/// while the song has none, the ready-made one `step` on from `ready`
+/// (None: Filter + echo), in the list's order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stepped {
+    Yours(usize),
+    Ready(Option<usize>),
+}
+
+impl XySong {
+    /// Where `step` presses of a learned layout button go ([`Stepped`]).
+    pub fn stepped(&self, ready: Option<usize>, step: i8) -> Stepped {
+        let step = i32::from(step);
+        let n = self.yours.len() as i32;
+        if n > 0 {
+            let i = match self.playing {
+                Some(i) => i as i32 + step,
+                None if step > 0 => step - 1,
+                None => n + step,
+            };
+            return Stepped::Yours(i.rem_euclid(n) as usize);
+        }
+        let len = crate::play_page::XY_CHOICES.len() as i32;
+        let at = ready.map_or(0, |k| k as i32 + 1);
+        match (at + step).rem_euclid(len) {
+            0 => Stepped::Ready(None),
+            k => Stepped::Ready(Some(k as usize - 1)),
+        }
+    }
+}
 
 /// An Add push as Setup writes it.
 fn push_text(p: f32) -> String {

@@ -1791,17 +1791,18 @@ pub fn looper_remote(
 /// card; `remote::PlayMoves`), on any page: its Swing and Drums filter
 /// as its Q-Links turn them (the project's, so the work is unsaved), and
 /// its XY pad as a finger moves it, the pad on the screen following.
-/// Nothing when nothing moved.
+/// The XY pad's buttons pressed come back for the caller, which has your
+/// layouts (`main.rs`'s `xy_pressed`). Nothing when nothing moved.
 pub fn play_remote(
     time: &time::TimeHost,
     mix: &mut mixing::MixHost,
     out: &mut Out,
     moves: &mut crate::remote::PlayMoves,
-) -> Vec<app::Effect> {
+) -> (Vec<app::Effect>, crate::remote::XyPresses) {
     use mpfree_transport::{time::Swing, Command};
     let mut fx = Vec::new();
-    if *moves == crate::remote::PlayMoves::default() {
-        return fx;
+    if moves.idle() {
+        return (fx, crate::remote::XyPresses::default());
     }
     let swing = time.info().swing;
     let acts = moves.take(play_now(time, mix));
@@ -1823,7 +1824,7 @@ pub fn play_remote(
         mix.play(mixing::PlayFx::Xy { x, y, down });
         out.show(gui::ToUi::PlayXy { x, y, down });
     }
-    fx
+    (fx, acts.xy_presses)
 }
 
 /// What Play's learned controls read (`remote::Now`): the swing, the
