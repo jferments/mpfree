@@ -224,7 +224,7 @@ The chip at the top of the screen says what the pads are ("Pads: steps · Kick")
 **TRACK MUTE** and **16 LEVEL** take the pads over too: only one of the three has them at a time, and the lit button tells you which.
 
 > [!MPC]
-> As on the MPC, **STEP SEQ** turns the pads into step buttons lit by velocity, and the Sequencer tab shows the whole pattern on the screen. The differences: the pads stay steps on every page until you press **STEP SEQ** again, you pick the sound by holding **STEP SEQ** and hitting its pad, and **PAD BANK** turns the pages. Velocity, length, nudge and chance live on the Q-Links for the step you hold (or pick on the screen), rather than in an event list, and holding a step then hitting a later one sets the note's length, as on the MPC Live III and XL's step buttons. Locks work as on an Elektron box: a held step's knob turn sets that one step's sound, rather than recording automation.
+> As on the MPC, **STEP SEQ** turns the pads into step buttons lit by velocity, and the Sequencer tab shows the whole pattern on the screen. The differences: the pads stay steps on every page until you press **STEP SEQ** again, you pick the sound by holding **STEP SEQ** and hitting its pad, and **PAD BANK** turns the pages. Velocity, length, nudge and chance live on the Q-Links for the step you hold (or pick on the screen), rather than in an event list, and holding a step then hitting a later one sets the note's length. Locks work as on an Elektron box: a held step's knob turn sets that one step's sound, rather than recording automation.
 
 ## Recording into the pattern
 

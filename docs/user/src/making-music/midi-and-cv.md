@@ -107,7 +107,7 @@ A track can play a synth or drum machine through **MIDI OUT**, or a USB synth or
 If a track would send nothing, it says why under the track's name: no port is picked, the device is unplugged or has no output, **Send MIDI and CV out** is off in Prefs, or the port's output didn't open (the log says why; turn **Send MIDI and CV out** off and on, or plug the device in again, to try again). A track that sends nothing plays its own sound inside MPFree instead. If you unplug a USB synth while it plays, MPFree can't send it the ends of its notes; switch it off and on, or send it **All notes off** once it is back.
 
 > [!MPC]
-> On the MPC, a MIDI track needs two settings with nearly the same name before a note leaves the jack: the track's MIDI output channel and its MIDI Out routing. In MPFree it's one setting, the port and the channel together.
+> On the MPC, a MIDI track's notes leave the jack once the track's **MIDI Output Port** and **MIDI Output Channel** are set and that port has **Track** switched on in Preferences > MIDI / Sync. In MPFree it's one setting, the port and the channel together.
 
 ### Moving the synth's controls step by step (CC lanes)
 
