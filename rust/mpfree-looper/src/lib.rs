@@ -9739,6 +9739,7 @@ mod tests {
                 speed: 0,
                 rate: 0,
                 id: 0,
+                clock: crate::Clock::Song,
                 layers: vec![layer(false, None), layer(muted, Some((64, 64)))],
                 raw: Some(RawShape {
                     seam: FADE,

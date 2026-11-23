@@ -32840,7 +32840,11 @@ mod tests {
         v.unsaved[2] = true;
         let info = loops_info(&v);
         assert!(info.loops[2].writing);
-        assert!(info.loops.iter().enumerate().all(|(n, f)| f.writing == (n == 2)));
+        assert!(info
+            .loops
+            .iter()
+            .enumerate()
+            .all(|(n, f)| f.writing == (n == 2)));
     }
 
     /// The audio tracks rethink's phase 4, board 6: with Dev's "Loops on
