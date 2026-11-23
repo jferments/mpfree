@@ -1055,6 +1055,7 @@ name = "mpfree-grain"
 version = "0.1.0"
 dependencies = [
  "mpfree-node",
+ "mpfree-stream",
 ]
 
 [[package]]

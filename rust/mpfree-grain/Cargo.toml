@@ -7,3 +7,6 @@ description = "The MPFree grain engine: granular playback of a region and granul
 
 [dependencies]
 mpfree-node = { path = "../mpfree-node" }
+# The 8-point read and the windowed-sinc kernel, shared with the sampler
+# and the streaming cursors (grains read clean, DSP quality).
+mpfree-stream = { path = "../mpfree-stream" }
