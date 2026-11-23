@@ -25,48 +25,48 @@ sampler/fold[30 kHz in a 96 kHz file]/heard_db	-77.2572
 sampler/loop[forward, 1000-frame crossfade]/step_db	0
 sampler/loop[forward, no crossfade]/step_db	42.0566
 sampler/loop[ping-pong]/step_db	29.6156
-sampler/pitch[a fifth down, 13.5 kHz out]/level_db	-4.6081
-sampler/pitch[a fifth down, 13.5 kHz out]/spur_worst_db	-3.4071
-sampler/pitch[a fifth down, 3 kHz out]/level_db	-0.0176
-sampler/pitch[a fifth down, 3 kHz out]/spur_worst_db	-50.163
-sampler/pitch[a fifth down, 9 kHz out]/level_db	-1.1334
-sampler/pitch[a fifth down, 9 kHz out]/spur_worst_db	-43.5529
+sampler/pitch[a fifth down, 13.5 kHz out]/level_db	-6.3109
+sampler/pitch[a fifth down, 13.5 kHz out]/spur_worst_db	-9.3058
+sampler/pitch[a fifth down, 3 kHz out]/level_db	-0.0255
+sampler/pitch[a fifth down, 3 kHz out]/spur_worst_db	-55.7022
+sampler/pitch[a fifth down, 9 kHz out]/level_db	-0.3484
+sampler/pitch[a fifth down, 9 kHz out]/spur_worst_db	-57.9235
 sampler/pitch[a fifth up, 3 kHz out]/level_db	0.0133
 sampler/pitch[a fifth up, 3 kHz out]/spur_worst_db	-73.5969
 sampler/pitch[a fifth up, 9 kHz out]/level_db	0.0081
 sampler/pitch[a fifth up, 9 kHz out]/spur_worst_db	-74.6254
-sampler/pitch[a semitone down, 13.5 kHz out]/level_db	-1.3972
-sampler/pitch[a semitone down, 13.5 kHz out]/spur_worst_db	-16.2857
-sampler/pitch[a semitone down, 3 kHz out]/level_db	-0.0045
-sampler/pitch[a semitone down, 3 kHz out]/spur_worst_db	-60.9642
-sampler/pitch[a semitone down, 9 kHz out]/level_db	-0.3191
-sampler/pitch[a semitone down, 9 kHz out]/spur_worst_db	-28.8937
-sampler/pitch[a semitone up, 13.5 kHz out]/level_db	-0.9253
-sampler/pitch[a semitone up, 13.5 kHz out]/spur_worst_db	-19.0368
-sampler/pitch[a semitone up, 3 kHz out]/level_db	-0.0028
-sampler/pitch[a semitone up, 3 kHz out]/spur_worst_db	-63.2896
-sampler/pitch[a semitone up, 9 kHz out]/level_db	-0.2067
-sampler/pitch[a semitone up, 9 kHz out]/spur_worst_db	-31.4533
+sampler/pitch[a semitone down, 13.5 kHz out]/level_db	-0.5944
+sampler/pitch[a semitone down, 13.5 kHz out]/spur_worst_db	-55.2113
+sampler/pitch[a semitone down, 3 kHz out]/level_db	-0.0167
+sampler/pitch[a semitone down, 3 kHz out]/spur_worst_db	-57.6787
+sampler/pitch[a semitone down, 9 kHz out]/level_db	0.01
+sampler/pitch[a semitone down, 9 kHz out]/spur_worst_db	-72.316
+sampler/pitch[a semitone up, 13.5 kHz out]/level_db	-0.1938
+sampler/pitch[a semitone up, 13.5 kHz out]/spur_worst_db	-55.1318
+sampler/pitch[a semitone up, 3 kHz out]/level_db	-0.0139
+sampler/pitch[a semitone up, 3 kHz out]/spur_worst_db	-57.5556
+sampler/pitch[a semitone up, 9 kHz out]/level_db	0.001
+sampler/pitch[a semitone up, 9 kHz out]/spur_worst_db	-64.916
 sampler/pitch[an octave and a fifth up, 3 kHz out]/level_db	0.0142
 sampler/pitch[an octave and a fifth up, 3 kHz out]/spur_worst_db	-73.5969
 sampler/pitch[an octave and a fifth up, 9 kHz out]/level_db	0.0087
 sampler/pitch[an octave and a fifth up, 9 kHz out]/spur_worst_db	-74.6254
-sampler/pitch[an octave down, 3 kHz out]/level_db	-0.0513
-sampler/pitch[an octave down, 3 kHz out]/spur_worst_db	-44.5432
-sampler/pitch[an octave down, 9 kHz out]/level_db	-3.004
-sampler/pitch[an octave down, 9 kHz out]/spur_worst_db	-7.677
-sampler/pitch[two semitones down, 13.5 kHz out]/level_db	-1.7124
-sampler/pitch[two semitones down, 13.5 kHz out]/spur_worst_db	-13.5279
-sampler/pitch[two semitones down, 3 kHz out]/level_db	-0.0056
-sampler/pitch[two semitones down, 3 kHz out]/spur_worst_db	-58.4507
-sampler/pitch[two semitones down, 9 kHz out]/level_db	-0.3958
-sampler/pitch[two semitones down, 9 kHz out]/spur_worst_db	-26.2578
-sampler/pitch[two semitones up, 13.5 kHz out]/level_db	-0.7508
-sampler/pitch[two semitones up, 13.5 kHz out]/spur_worst_db	-22.4192
-sampler/pitch[two semitones up, 3 kHz out]/level_db	-0.0023
-sampler/pitch[two semitones up, 3 kHz out]/spur_worst_db	-66.4847
-sampler/pitch[two semitones up, 9 kHz out]/level_db	-0.166
-sampler/pitch[two semitones up, 9 kHz out]/spur_worst_db	-34.7613
+sampler/pitch[an octave down, 3 kHz out]/level_db	-0.0359
+sampler/pitch[an octave down, 3 kHz out]/spur_worst_db	-48.4641
+sampler/pitch[an octave down, 9 kHz out]/level_db	-3.1602
+sampler/pitch[an octave down, 9 kHz out]/spur_worst_db	-22.4696
+sampler/pitch[two semitones down, 13.5 kHz out]/level_db	-0.9516
+sampler/pitch[two semitones down, 13.5 kHz out]/spur_worst_db	-56.232
+sampler/pitch[two semitones down, 3 kHz out]/level_db	-0.0182
+sampler/pitch[two semitones down, 3 kHz out]/spur_worst_db	-56.4621
+sampler/pitch[two semitones down, 9 kHz out]/level_db	0.0074
+sampler/pitch[two semitones down, 9 kHz out]/spur_worst_db	-67.7104
+sampler/pitch[two semitones up, 13.5 kHz out]/level_db	-0.0947
+sampler/pitch[two semitones up, 13.5 kHz out]/spur_worst_db	-63.1379
+sampler/pitch[two semitones up, 3 kHz out]/level_db	-0.0126
+sampler/pitch[two semitones up, 3 kHz out]/spur_worst_db	-59.5825
+sampler/pitch[two semitones up, 9 kHz out]/level_db	-0.0056
+sampler/pitch[two semitones up, 9 kHz out]/spur_worst_db	-63.5818
 sampler/read[at pitch, no filter]/flatness_db	0
 sampler/stop[choked]/step_db	12.8578
 sampler/stop[let go, 1 ms release]/step_db	32.9428

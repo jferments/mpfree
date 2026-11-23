@@ -1,6 +1,6 @@
 <!--
 covers: rust/mpfree-fxlab
-checked: 2026-11-19 01723ef1
+checked: 2026-11-23 27484a97
 -->
 # FX quality: targets, the report and the ratchet
 
@@ -17,6 +17,8 @@ An effect is good when it meets its measured targets, wins or ties in blind, lev
 **The sampler** (measuring built 2026-11-17; the sampler review's engine item 7): a pad of `mpfree-sampler` measured by the same kind of numbers, with its own ratchet: [The sampler](#the-sampler) below.
 
 **The synths** (measuring built 2026-11-18; synth library stage 2): every synth engine and factory preset by the same method, with its own ratchet (`tests/synth.rs`, `quality/synth.tsv`): [Synth quality](synth-quality.md).
+
+**The synth and sampler filters** (measuring built 2026-11-22; DSP quality steps Y1 to Y3): every synth and sampler filter against the curve its page draws, and moving as its engine moves it, with its own ratchet (`tests/filters.rs`, `quality/filters.tsv`): [DSP quality](dsp-quality.md#the-filter-measures-y1a-y1b-y1c-y2a-y2b-and-y3).
 
 ## The report
 
@@ -504,7 +506,7 @@ The string machine's chorus ([fx-modulation.md](fx-modulation.md#ensemble)) join
 
 | Id | Row | Target | How it is measured |
 |---|---|---|---|
-| S1 | `pitch[...]/spur_worst_db`, `spur_hz` | -50 dB | A -6 dBFS sine tuned so its output lands on one FFT bin, at 3 and 9 kHz out, a fifth down and a semitone up (the Hermite read), a fifth up (the band-limited read) and an octave and a fifth up (an octave copy): the loudest other bin from 20 Hz to 20 kHz against the tone, and where it is (shown, not kept) |
+| S1 | `pitch[...]/spur_worst_db`, `spur_hz` | -50 dB | A -6 dBFS sine tuned so its output lands on one FFT bin, at 3 and 9 kHz out, a fifth down and a semitone up (the 8-point read, the Hermite read before DSP quality step 1.4), a fifth up (the band-limited read) and an octave and a fifth up (an octave copy): the loudest other bin from 20 Hz to 20 kHz against the tone, and where it is (shown, not kept) |
 | S1 | `pitch[...]/level_db` | within 1 dB | The tone's level against the same tone played at pitch, which is a plain copy |
 | S2 | `fold[...]/heard_db` | -50 dB | What is heard of a tone that must fold away, against the tone: 15 kHz an octave up (30 kHz, above what 44.1 kHz holds), and a 96 kHz file's 30 kHz tone at pitch |
 | Y5 | `pitch[...]/spur_worst_db`, `spur_hz`, `level_db` | -50 dB; within 1 dB | The DSP quality plan's rows ([DSP quality](dsp-quality.md)): the same measure as S1 at 3, 9 and 13.5 kHz out, an octave, a fifth (13.5 kHz only), two semitones and a semitone down, and a semitone (13.5 kHz only) and two semitones up; a row whose tone would be above 21 kHz in the sound is left out |
@@ -522,7 +524,7 @@ A mutation check: with Vintage on, S2 reads -3.0 and -4.1 dB and the ratchet fai
 ### First numbers (2026-11-17)
 
 - **Met:** the band-limited read and the octave copies keep every spur 73 dB down or more, and fold the 30 kHz tones 86 and 77 dB down. Up to 3 kHz out every read is clean (-50 to -73 dB), and every level is within 0.02 dB. The read at pitch is flat to under 0.0001 dB. A crossfaded loop steps no more sharply than the sine itself. Four of the five filters are within 0.03 to 0.74 dB of their prototypes.
-- **Not yet, the Hermite read with high content:** a 9 kHz tone a semitone up has a spur at 6.4 kHz, 31 dB down, and a 13.5 kHz tone a fifth down has one at 5.8 kHz, 44 dB down and plays 1.1 dB quiet. These are the Hermite kernel's images folding back, not content above Nyquist, so `CLEAN_ABOVE`'s argument (nothing folds below 19.35 kHz up to two semitones) doesn't cover them. Closing them takes the band-limited read, or a longer interpolator, for every pitched voice, which is a cost the bench would count.
+- **Met since DSP quality step 1.4, the 8-point read:** a 9 kHz tone a semitone up had a spur at 6.4 kHz 31 dB down with the Hermite read, and has its loudest 65 dB down; a 13.5 kHz tone a fifth down had one 44 dB down, 1.1 dB quiet, and has it 58 dB down, 0.35 dB quiet. They were the Hermite kernel's images folding back, not content above Nyquist, so `CLEAN_ABOVE`'s argument (nothing folds below 19.35 kHz up to two semitones) didn't cover them. What the 8-point read still misses, tones above 18 kHz in the sound pitched a fifth or an octave down, is in Y5 ([DSP quality](dsp-quality.md#step-14-the-samplers-read)).
 - **Not yet, the band-pass:** 1.02 dB from its prototype at 8 kHz. This is the state-variable filter's bilinear mapping, which puts 8 kHz where the prototype has 8.98 kHz, and the band-pass's 6 dB an octave turns that into 1 dB.
 - **No target yet, the steps:** a forward loop with no crossfade steps 42 dB over the sine, and ping-pong 30 dB, as any reversal of a sine mid-wave does. A steal or a choke (the 32-frame linear fade, `STEAL_FRAMES`) steps 13 dB. A Gate pad let go steps 33 dB with the Play tab's shortest release (1 ms) and 47 dB with none: the release is exponential, so its first frames fall fastest (a 1 ms release loses about a fifth of the level in its first frame), and at 0 ms it is one frame, not the 64-frame fade of a hard stop (`KILL_FRAMES`).
 
@@ -781,7 +783,7 @@ Measured:
 A pad's grains pitched more than two semitones up read band-limited, as a sample voice pitched up does: a Kaiser-windowed sinc stretched to the grain's speed, and past an octave the sound's octave copies ([sampler architecture, Granular engine](sampler-architecture.md#granular-engine-mpfree-grain), Clean pitching). Each grain is aimed when it is born, so with pitch spray only the grains that go past two semitones pay for it. Vintage pads keep the Hermite read. The lab reads its sources as a pad does (`mpfree_sampler::grain_clip::GrainClip`, with octave copies for the pitched-up rows).
 
 - **G5 met where the grains go up past two semitones:** 15 kHz an octave up is heard at -82.5 dB (from -0.3: it folded back whole), 9 kHz a fifth up leaves its worst spur at -71.0 dB (from -30.5), 6 kHz two octaves up -86.1 dB (from -68.9) and 2 kHz three octaves up -85.7 dB (the same).
-- **Not yet, as for a sample voice:** 9 kHz a semitone up (-29.0 dB) and 13.5 kHz a fifth down (-44.2 dB). Those spurs are the Hermite read's own images of a tone near the top of the band, not folding: the sampler's pads keep the Hermite read there too (`sampler.tsv`: -31.5 and -43.6 dB), because the band-limited read costs 3 to 5 times as much a frame. A clean read at every pitch is a candidate for step C5's quality modes.
+- **Not yet, as for a sample voice:** 9 kHz a semitone up (-29.0 dB) and 13.5 kHz a fifth down (-44.2 dB). Those spurs are the Hermite read's own images of a tone near the top of the band, not folding: the sampler's pads kept the Hermite read there too (`sampler.tsv`: -31.5 and -43.6 dB) until DSP quality step 1.4 gave them an 8-point read (-64.9 and -57.9 dB); grains keep the Hermite read below two semitones up. [Pitched reads](pitched-reads.md) lists both grain reads as gaps against the one standard every read is held to, owned by DSP quality.
 - **Unchanged:** every other row (no grain there goes past two semitones up, so it reads as before, bit for bit).
 - **The Grains FX** (a live buffer) has no octave copies and keeps the Hermite read for now.
 - **Cost:** the band-limited read is 3 to 5 times Hermite's a frame. The bench's 4 granular pads (Pitch spray ±5 st, about 3 grains in 10 past two semitones) count 82 % more instructions, 20 pads 26 %, with the master grains 17 %, the song 8 %. A Vintage pad keeps the old cost. The MPC's numbers come from the device round (step A6).

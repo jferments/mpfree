@@ -461,10 +461,7 @@ mod tests {
         p.arrangement.list.steps = vec![step(2), step(1)];
         // And a section of the song made from row 3 (Arrange 4b).
         let section = |row| mpfree_seq::Marker {
-            scene: Some(mpfree_seq::FromScene {
-                row,
-                changed: false,
-            }),
+            scene: Some(mpfree_seq::FromScene::following(row, 1920)),
             ..mpfree_seq::Marker::new(0, "Drop")
         };
         p.arrangement.markers = vec![section(2)];

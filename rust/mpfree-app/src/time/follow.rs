@@ -42,7 +42,9 @@
 //!   follower lets go of the tempo: the transport plays on at the last one
 //!   until the app's tempo applies again (the app keeps the followed tempo
 //!   as its own, so nothing changes). If the leader was playing, it is
-//!   counted ([`FollowCounts::lost`]).
+//!   counted ([`FollowCounts::lost`]) and [`Follower::lost`] is true until
+//!   a pulse or a Stop comes, or following ends: System status's "The
+//!   clock MPFree follows stopped".
 //!
 //! Bytes the app reads once a period came during the period before, up to
 //! a period before it read them. Stamped with the period's start, the
@@ -146,6 +148,9 @@ pub struct Follower {
     err: Option<f64>,
     absolute: bool,
     counts: FollowCounts,
+    /// The leader's clock stopped arriving while it played, and no pulse
+    /// or Stop has come since.
+    lost: bool,
     /// A take is ready: at the leader's start it records, adding (true)
     /// or replacing.
     take: Option<bool>,
@@ -178,6 +183,7 @@ impl Follower {
             err: None,
             absolute: false,
             counts: FollowCounts::default(),
+            lost: false,
             take: None,
             took: false,
             hold: false,
@@ -247,6 +253,12 @@ impl Follower {
         self.counts
     }
 
+    /// Following, the leader's clock stopped arriving while it played:
+    /// true until a pulse or a Stop comes, or following changes.
+    pub fn lost(&self) -> bool {
+        self.follow.is_some() && self.lost
+    }
+
     /// The leader port's bytes, arrived at `frame` (on the transport's
     /// frame clock: [`Transport::frame`] for bytes read at the top of the
     /// period). Ignored while not following.
@@ -285,6 +297,7 @@ impl Follower {
         if gap > ClockIn::LOST_SECONDS * f64::from(self.rate) {
             if self.playing {
                 self.counts.lost += 1;
+                self.lost = true;
             }
             // The tempo is unknown again. The `ClockIn` keeps the leader's
             // play state and position, and averages afresh after a gap.
@@ -321,6 +334,7 @@ impl Follower {
             }
             InEvent::Stopped => {
                 self.playing = false;
+                self.lost = false;
                 self.start = None;
                 if f.start_stop && t.state().rolling() {
                     self.command(t, Command::Stop);
@@ -374,6 +388,7 @@ impl Follower {
     /// The leader's tempo, from the pulses' frames.
     fn tempo_pulse(&mut self, frame: u64) {
         self.last = Some(frame);
+        self.lost = false;
         self.pulses = self.pulses.saturating_add(1);
         self.since_beat += 1;
         if self.n_beats == 0 || self.since_beat >= PULSES_PER_BEAT {
@@ -1016,6 +1031,65 @@ mod tests {
         assert_eq!(r.transport.state(), State::Playing);
         assert!((r.transport.bpm() - 130.0).abs() < 1.0);
         assert_eq!(r.shown, None);
+    }
+
+    /// System status's "The clock MPFree follows stopped": `lost` is true
+    /// from when a playing leader's pulses stop until a pulse comes back,
+    /// or a Stop comes, and never for a leader that was stopped or once
+    /// following ends.
+    #[test]
+    fn a_lost_clock_lasts_until_a_pulse_or_a_stop() {
+        let s = script(&[
+            Lead::Clock(1.0, 130.0),
+            Lead::Quiet(2.0),
+            Lead::Clock(1.0, 130.0),
+            Lead::Start,
+            Lead::Clock(4.0, 130.0),
+            Lead::Quiet(2.0),
+            Lead::Clock(1.0, 130.0),
+            Lead::Quiet(2.0),
+            Lead::Stop,
+            Lead::Clock(1.0, 130.0),
+        ]);
+        let period = 128u32;
+        let mut t = Transport::new(RATE, 120.0).unwrap();
+        let mut fl = Follower::new(RATE);
+        fl.set(Some(ALL));
+        let mut b = Block::new();
+        let end = s.bytes.last().unwrap().0 + 2 * u64::from(period);
+        // Each change of `lost`, with the frame it was seen at.
+        let (mut changes, mut was, mut next) = (Vec::new(), false, 0);
+        while t.frame() < end {
+            let p = t.frame();
+            while next < s.bytes.len() && s.bytes[next].0 < p {
+                let (at, ref bytes) = s.bytes[next];
+                fl.bytes(&mut t, at, bytes);
+                next += 1;
+            }
+            fl.period(&mut t);
+            if fl.lost() != was {
+                was = fl.lost();
+                changes.push((p, was));
+            }
+            assert!(t.process(period, &mut b));
+        }
+        // Lost twice while it played (the quiet before Start says nothing):
+        // the first ends at the next pulse, the second at the Stop.
+        assert_eq!(fl.counts().lost, 2);
+        let ons: Vec<bool> = changes.iter().map(|c| c.1).collect();
+        assert_eq!(ons, [true, false, true, false], "{changes:?}");
+        let start = s.bytes.iter().find(|(_, b)| b[0] == START).unwrap().0;
+        let stop = s.bytes.iter().find(|(_, b)| b[0] == STOP).unwrap().0;
+        assert!(changes[0].0 > start);
+        // A pulse ends the first, the Stop the second.
+        let back = s.pulses.iter().find(|&&(g, _)| g > changes[0].0).unwrap().0;
+        assert_eq!(changes[1].0, after(back, period));
+        assert_eq!(changes[3].0, after(stop, period));
+        // Following something else (or nothing) ends it too.
+        fl.lost = true;
+        assert!(fl.lost());
+        fl.set(None);
+        assert!(!fl.lost());
     }
 
     #[test]
