@@ -514,6 +514,13 @@ pub fn fill_sets(lib: &Library) -> Result<(), String> {
                         created: 1_794_400_000,
                         saved: 1_794_430_000,
                         app: "preview".into(),
+                        // The format the pad player opens, so a sample
+                        // set's songs open (the sampler's step 14 made
+                        // older formats refused).
+                        extra: vec![(
+                            mpfree_library::project::PARTS_FORMAT_KEY.to_string(),
+                            mpfree_library::project::PARTS_FORMAT.to_string(),
+                        )],
                         ..Meta::default()
                     },
                     parts: vec![("transport".into(), format!("bpm = {tempo}\n"))],

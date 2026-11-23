@@ -12,7 +12,7 @@ The rules it keeps: one track list per project; instruments make the sound, trac
 | A2 | The engines an open replaced always go back to the screen thread, never freed on the audio thread | built ([Project safety](project-safety.md#the-engines-an-open-replaced-go-back-live-shows-a2-as-built)) |
 | A3 | Lasting project ids (Save As gives a new one, a rename keeps it, twins are noticed) and a manifest per project | built ([The browser and projects](browser.md#projects)) |
 | A4 | Real songs measured on the MPC (read-only, on the owner's go) | planned |
-| K1 | Keys play keygroups by note on the sampler's single note path, with each kit's Keys play: Pads, Keygroups or Both | planned |
+| K1 | Keys play keygroups by note on the sampler's single note path, with each kit's Keys play: Pads, Keygroups or Both | built by the sampler refactor as its step 15a2 (agreed 23 Nov): Keys play is the kit's setting, used by the armed track's keys and by routes alike |
 | B1, B2 | Sets, the Set editor and the Show view with cold changes; the set check as a preflight, Prepare show media and Soundcheck | B1 built: sets in the library, the Sets place, the Set editor, the Show view on Arrange, Play set, cold changes with each song's Ends, recovery copies, Learn's Show card and Quick advance ([below](#sets-b1-as-built), [playing a set](#playing-a-set-b1-as-built)). Screens: [layout spec 4o](layout-spec.md#4o-sets-the-show-view-and-the-set-editor). B2 planned |
 | C1 to C4 | Patches: zones, the note owner table, scenes and parts picking patches, REC with zones, knobs and pads per patch | planned |
 | D1, D2 | The next song prepared in the background; the switch at once or on its frame; Let it finish, Fade and Cut | planned |
