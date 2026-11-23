@@ -474,6 +474,167 @@ fn saves_keep_a_project_id_and_a_copy_made_outside_gets_its_own() {
     assert_eq!(lib.project_meta(&two).unwrap().saved, t + 180);
 }
 
+/// Live shows A1: an open checks the project's files against its manifest
+/// first. A file it needs that is missing or damaged keeps it from opening
+/// whole: nothing changes, and the browser asks whether to open what
+/// reads, which then saves beside it. At start no one is asked. A project
+/// with no manifest yet opens, saying its files weren't checked.
+#[test]
+fn an_open_checks_the_files_first_and_asks_to_open_what_reads() {
+    let (mut b, lib) = browser();
+    let night = Loc::new(Place::Projects, &["Night drive"]).unwrap();
+    let snap = || Snapshot {
+        meta: Meta::default(),
+        parts: vec![("transport".into(), "bpm = 92\n".into())],
+    };
+    let t = 1_794_431_040;
+    // The sample projects have no manifest yet: they open, said.
+    b.go_source(src("Projects"));
+    select(&mut b, "Night drive");
+    b.push();
+    assert!(b.take_actions().iter().any(|a| matches!(
+        a,
+        BrowseAction::ProjectOpened {
+            what_reads: false,
+            ..
+        }
+    )));
+    assert_eq!(
+        b.screen().status.unwrap().0,
+        "Opened Night drive. Its files weren\u{2019}t checked first: it has no list of them yet (saving it makes one)"
+    );
+    // A save makes one, with a sound in it.
+    let dir = lib.root().join("Projects/Night drive");
+    std::fs::write(dir.join("samples/pad.wav"), vec![3u8; 4000]).unwrap();
+    b.save(snap(), t);
+    assert!(lib.check_project(&night, false).unwrap().whole());
+    b.open_landed();
+    // Opened again, whole: "Opened".
+    select(&mut b, "Night drive");
+    b.push();
+    b.take_actions();
+    assert_eq!(b.screen().status.unwrap().0, "Opened Night drive");
+    b.open_landed();
+    // The sound goes missing (a card pulled too early, a hand edit).
+    b.input(Input::Button(Button::NewProject));
+    b.take_actions();
+    assert_eq!(b.project(), None);
+    std::fs::remove_file(dir.join("samples/pad.wav")).unwrap();
+    select(&mut b, "Night drive");
+    b.push();
+    assert!(b.take_actions().is_empty(), "nothing opens yet");
+    let s = b.screen();
+    match &s.modal {
+        Modal::Confirm { text, .. } => assert_eq!(
+            text,
+            "Night drive can\u{2019}t open whole: a file it needs is missing. Open what reads? Saving it then goes into a new project beside it, so Night drive stays as it is"
+        ),
+        m => panic!("{m:?}"),
+    }
+    // No: nothing changed.
+    b.input(Input::ConfirmNo);
+    assert!(b.take_actions().is_empty());
+    assert_eq!(b.project(), None);
+    assert_eq!(
+        b.screen().status.unwrap().0,
+        "Didn\u{2019}t open Night drive. The project you had open is unchanged"
+    );
+    // Yes: it opens with what reads, the missing file in its list, and a
+    // save goes beside it.
+    select(&mut b, "Night drive");
+    b.push();
+    b.input(Input::ConfirmYes);
+    assert!(b.take_actions().iter().any(
+        |a| matches!(a, BrowseAction::ProjectOpened { what_reads: true, loc, .. } if *loc == night)
+    ));
+    assert_eq!(
+        b.left_out_list(),
+        ["the file samples/pad.wav (missing)".to_string()]
+    );
+    assert_eq!(
+        b.screen().status.unwrap().0,
+        "Opened what reads of Night drive: saving puts it in a new project beside it"
+    );
+    b.open_landed();
+    b.save(snap(), t + 60);
+    let beside = Loc::new(Place::Projects, &["Night drive 2"]).unwrap();
+    assert_eq!(b.project(), Some(&beside));
+    assert!(lib.project_meta(&beside).is_ok());
+    // A damaged sound (same size, other bytes): "damaged". At start
+    // (Prefs > At start) nothing asks: it doesn't open, and the app hears.
+    let two = lib.root().join("Projects/Night drive 2");
+    std::fs::write(two.join("samples/take.wav"), vec![1u8; 300]).unwrap();
+    b.save(snap(), t + 120);
+    let take = two.join("samples/take.wav");
+    let before = std::fs::metadata(&take).unwrap().modified().unwrap();
+    std::fs::write(&take, vec![2u8; 300]).unwrap();
+    let f = std::fs::File::options().write(true).open(&take).unwrap();
+    f.set_modified(before + std::time::Duration::from_secs(3))
+        .unwrap();
+    drop(f);
+    b.input(Input::Button(Button::NewProject));
+    b.take_actions();
+    b.load_lists("project = Projects/Night drive 2\n");
+    assert!(b.open_last());
+    let a = b.take_actions();
+    assert!(
+        a.iter().any(|a| matches!(a, BrowseAction::LastNotOpened(l) if l == "Didn\u{2019}t open Night drive 2: a file it needs is damaged. Open it from Projects to open what reads")),
+        "{a:?}"
+    );
+    assert!(!a
+        .iter()
+        .any(|a| matches!(a, BrowseAction::ProjectOpened { .. })));
+    assert!(matches!(b.screen().modal, Modal::None));
+}
+
+/// Live shows A1: the app found the project would leave something out (an
+/// effect this stick can't make): what the open changed goes back, and the
+/// browser asks; yes opens it with what reads.
+#[test]
+fn an_open_the_app_finds_would_leave_things_out_asks_first() {
+    let (mut b, _) = browser();
+    let night = Loc::new(Place::Projects, &["Night drive"]).unwrap();
+    b.go_source(src("Projects"));
+    select(&mut b, "Night drive");
+    b.push();
+    let snap = b
+        .take_actions()
+        .into_iter()
+        .find_map(|a| match a {
+            BrowseAction::ProjectOpened { snap, .. } => Some(snap),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(b.project(), Some(&night));
+    b.open_would_leave_out(
+        night.clone(),
+        snap,
+        vec![
+            "the effect X on Master".into(),
+            "Wavetable on track 2".into(),
+        ],
+    );
+    assert_eq!(b.project(), None, "put back");
+    match &b.screen().modal {
+        Modal::Confirm { text, .. } => assert!(
+            text.starts_with("Night drive can\u{2019}t open whole: it would leave out the effect X on Master and 1 more. Open what reads?"),
+            "{text}"
+        ),
+        m => panic!("{m:?}"),
+    }
+    b.input(Input::ConfirmYes);
+    assert!(b.take_actions().iter().any(|a| matches!(
+        a,
+        BrowseAction::ProjectOpened {
+            what_reads: true,
+            ..
+        }
+    )));
+    assert_eq!(b.project(), Some(&night));
+    // The app adds what it leaves out itself as the open goes in.
+    assert!(b.left_out_list().is_empty());
+}
+
 #[test]
 fn lists_survive_a_restart_and_bad_lines_are_skipped() {
     let (mut b, _) = browser();
@@ -587,21 +748,16 @@ fn taps_and_drags_on_the_widget() {
     tap(&mut ui, x, y0 + 52);
     step(&mut ui, &mut b);
     assert_eq!(b.screen().path, "Samples / Field recordings");
-    // Tap Trash in the places.
-    let trash_y = {
-        let mut y = r.y + 34 + 4;
-        for (i, s) in SOURCES.iter().enumerate() {
-            if i > 0 && matches!(s.label(), "Recent" | "Trash") {
-                y += 14;
-            }
-            if s.label() == "Trash" {
-                break;
-            }
-            y += 50;
-        }
-        y + 20
-    };
-    tap(&mut ui, r.x + 80, trash_y);
+    // Tap Trash in the places (the rows close up to fit them all).
+    let trash = ui
+        .targets()
+        .into_iter()
+        .find(|t| t.target.id == "place" && t.target.label == "Trash")
+        .unwrap()
+        .target;
+    assert!(trash.rect.h >= 40, "{:?}", trash.rect);
+    let (tx, ty) = trash.centre();
+    tap(&mut ui, tx, ty);
     step(&mut ui, &mut b);
     assert_eq!(b.screen().path, "Trash");
     // Draw it, every sample screen too, without a panic.
@@ -874,7 +1030,7 @@ fn earlier_saves_of_a_project_open_in_its_place() {
     b.push();
     let a = b.take_actions();
     assert!(a.iter().any(|x| matches!(x,
-        BrowseAction::ProjectOpened { loc, snap } if *loc == night && snap.part("transport") == Some("bpm = 90\n"))));
+        BrowseAction::ProjectOpened { loc, snap, .. } if *loc == night && snap.part("transport") == Some("bpm = 90\n"))));
     assert!(b
         .screen()
         .status

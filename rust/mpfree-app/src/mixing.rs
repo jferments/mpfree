@@ -1852,11 +1852,61 @@ impl MixHost {
         self.xy_play.load(&mut reach, layout);
     }
 
+    /// What an action on your layouts asks of the mixer
+    /// (`xy_song::XySong::act`): a layout to play (a copy of an XY FX's
+    /// sets the XY FX's effect first), Hold.
+    pub fn xy_done(&mut self, d: crate::xy_song::Done) {
+        if let Some(load) = d.load {
+            if let Some((_, Some(k))) = load {
+                self.xy_fx_effect(k);
+            }
+            self.xy_yours(load.map(|(c, _)| c));
+        }
+        if let Some(on) = d.hold {
+            if self.xy_play.playing() {
+                self.xy_hold(on);
+            }
+        }
+    }
+
+    /// Whether Hold is on (a layout of yours).
+    pub fn xy_held(&self) -> bool {
+        self.xy_play.playing() && self.xy_play.hold()
+    }
+
+    /// Ready-made layout `pick` (None: Filter + echo) as a layout of yours
+    /// called `name`, on its insert: Setup on it. None while its effect
+    /// isn't on the master.
+    pub fn xy_ready(&self, pick: Option<usize>, name: &str) -> Option<crate::xy_song::Mine> {
+        let slot = match pick {
+            Some(_) => self.xy_slot()?,
+            None => PERFORM_SLOT,
+        };
+        let uid = self.mixer.chain(StripId::Master)?.uid(slot)?;
+        let layout = crate::xy_layouts::layout(pick, uid, name);
+        let glide_ms = match layout.lift {
+            mpfree_xy::Lift::GoBack { snap_ms } => snap_ms,
+            mpfree_xy::Lift::Stay => crate::xy_song::NEW_GLIDE_MS,
+        };
+        Some(crate::xy_song::Mine {
+            layout,
+            glide_ms,
+            names: Vec::new(),
+            fx: pick,
+        })
+    }
+
+    /// The master's XY FX plays effect `k` (a copy of its layout plays).
+    fn xy_fx_effect(&mut self, k: usize) {
+        use mpfree_fx::xyfx::ids as xy;
+        if let Some(slot) = self.xy_slot() {
+            self.insert(StripId::Master, slot, xy::EFFECT, k as f32);
+        }
+    }
+
     /// Hold on the XY pad (a layout of yours): while on, a lift leaves the
     /// pad in charge of its settings; turned off, the pad lets go as its
     /// layout says.
-    // The XY page's Hold and Stay's UNDO (the screens' pull request).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn xy_hold(&mut self, on: bool) {
         let recording = self.recording;
         let mut reach = crate::xy_play::ModReach::new(&mut self.modu, &self.mixer, recording);
@@ -1871,8 +1921,6 @@ impl MixHost {
 
     /// Stay's turns on a layout of yours since the last call, as one UNDO
     /// step: each setting, its own value before and after.
-    // The XY page's Hold and Stay's UNDO (the screens' pull request).
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn take_xy_kept(&mut self) -> std::vec::Drain<'_, (ParamAddr, f32, f32)> {
         self.xy_play.take_kept()
     }

@@ -34,6 +34,7 @@ pub mod manifest;
 pub mod name;
 pub mod preset;
 pub mod project;
+pub mod sets;
 pub mod worker;
 
 pub use audio::{read_info, AudioFormat, AudioInfo};
@@ -42,6 +43,7 @@ pub use manifest::{Check, Manifest, ManifestDone, MANIFEST_FILE};
 pub use name::{clean_name, natural_cmp, unique_folder_name, unique_name, valid_name};
 pub use preset::{preset_name, PresetSave, MAX_PRESET_TEXT, PRESET_EXT};
 pub use project::{Meta, NewSample, Part, SampleData, Saved, Snapshot, Version};
+pub use sets::{Ends, Found, Need, Set, SetSong, SongCheck, Starts, SET_EXT};
 pub use worker::{Done, Job, Outcome, Worker};
 
 use std::fs::{self, DirBuilder, File, OpenOptions};
@@ -75,6 +77,8 @@ pub const PROJECT_FILE: &str = "project.txt";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Place {
     Projects,
+    /// Set lists (live shows B1), one `.set` file each ([`sets`]).
+    Sets,
     Samples,
     Kits,
     /// User presets, one folder per engine by its display name
@@ -89,8 +93,9 @@ pub enum Place {
 impl Place {
     /// The places a person keeps things in, in the order the browser lists
     /// them (the Trash is apart).
-    pub const ALL: [Place; 6] = [
+    pub const ALL: [Place; 7] = [
         Place::Projects,
+        Place::Sets,
         Place::Samples,
         Place::Kits,
         Place::Instruments,
@@ -102,6 +107,7 @@ impl Place {
     pub fn folder(self) -> &'static str {
         match self {
             Place::Projects => "Projects",
+            Place::Sets => "Sets",
             Place::Samples => "Samples",
             Place::Kits => "Kits",
             Place::Instruments => "Instruments",
@@ -230,6 +236,8 @@ pub enum Kind {
     Pattern,
     /// A Standard MIDI File (`.mid`, `.midi`, `.smf`): loads as clips.
     Midi,
+    /// A set list (`.set`, in Sets: [`sets`]).
+    Set,
     Other,
 }
 
@@ -243,6 +251,7 @@ impl Kind {
             Some(e) if e == "preset" => Kind::Preset,
             Some(e) if e == "pattern" || e == "arp" => Kind::Pattern,
             Some(e) if e == "mid" || e == "midi" || e == "smf" => Kind::Midi,
+            Some(e) if e == "set" => Kind::Set,
             _ => Kind::Other,
         }
     }
@@ -1535,6 +1544,7 @@ pub(crate) mod tests {
         assert_eq!(Kind::of_file("Up down.arp"), Kind::Pattern);
         assert_eq!(Kind::of_file("Sequence01.MID"), Kind::Midi);
         assert_eq!(Kind::of_file("song.midi"), Kind::Midi);
+        assert_eq!(Kind::of_file("Friday.set"), Kind::Set);
         assert_eq!(Kind::of_file("notes.txt"), Kind::Other);
         assert_eq!(Place::from_label("Instruments"), Some(Place::Instruments));
     }

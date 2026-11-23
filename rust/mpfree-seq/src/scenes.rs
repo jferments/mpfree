@@ -117,6 +117,12 @@ pub struct TrackProgram {
 }
 
 /// A scene's programs in order of track, one a track, each in range.
+/// Whether a track bitmask has a bit past the last track.
+fn past_last_track(bits: u128) -> bool {
+    bits.checked_shr(MAX_TRACKS as u32)
+        .is_some_and(|rest| rest != 0)
+}
+
 fn check_programs(programs: &[TrackProgram]) -> Result<(), ModelError> {
     let in_order = programs.windows(2).all(|w| w[0].track < w[1].track);
     if !in_order
@@ -162,6 +168,8 @@ pub struct SceneSettings {
     pub follow: Option<Follow>,
     /// The program changes it sends as it starts, in order of track.
     pub programs: Vec<TrackProgram>,
+    /// The tracks whose empty cell keeps what they play: [`Scene::keep`].
+    pub keep: u128,
 }
 
 impl SceneSettings {
@@ -184,6 +192,7 @@ impl SceneSettings {
             .mutes
             .and_then(|m| m.checked_shr(MAX_TRACKS as u32))
             .is_some_and(|rest| rest != 0)
+            || past_last_track(self.keep)
             || self.name.chars().count() > MAX_SCENE_NAME
             || self.name.chars().any(char::is_control)
         {
@@ -260,6 +269,15 @@ pub struct Scene {
     /// Program changes it sends as it starts, in order of track, one a
     /// track (sequencer S5).
     pub programs: Vec<TrackProgram>,
+    /// What its empty cells do (the Arrange refactor's D4, phase 5.2), a
+    /// bit a track as `mutes`: set, the track's empty cell in this row
+    /// **keeps playing** what the track plays (its clip, or in song mode
+    /// the song) when the scene starts, so a drum loop runs on through a
+    /// scene change without a copy in every row; clear (as every scene
+    /// was before), it **stops** there. A cell with a clip launches it
+    /// either way. The scene's mute for the track still comes in on its
+    /// line.
+    pub keep: u128,
 }
 
 impl Scene {
@@ -278,6 +296,7 @@ impl Scene {
             mutes: self.mutes,
             follow: self.follow,
             programs: self.programs.clone(),
+            keep: self.keep,
         }
     }
 
@@ -291,6 +310,7 @@ impl Scene {
         self.mutes = s.mutes;
         self.follow = s.follow;
         self.programs.clone_from(&s.programs);
+        self.keep = s.keep;
         Ok(())
     }
 
@@ -305,6 +325,26 @@ impl Scene {
             return Err(ModelError::BadScene);
         }
         put_program(&mut self.programs, track, to);
+        Ok(())
+    }
+
+    /// Whether track `t`'s empty cell in this row keeps what it plays
+    /// ([`Scene::keep`]): false past the last track.
+    pub fn keeps(&self, t: usize) -> bool {
+        t < MAX_TRACKS && self.keep & (1 << t) != 0
+    }
+
+    /// Track `t`'s empty cell keeps playing (`on`) or stops. `BadScene`
+    /// past the last track.
+    pub fn set_keep(&mut self, t: usize, on: bool) -> Result<(), ModelError> {
+        if t >= MAX_TRACKS {
+            return Err(ModelError::BadScene);
+        }
+        if on {
+            self.keep |= 1 << t;
+        } else {
+            self.keep &= !(1 << t);
+        }
         Ok(())
     }
 
@@ -324,6 +364,7 @@ impl Scene {
             .mutes
             .and_then(|m| m.checked_shr(MAX_TRACKS as u32))
             .is_some_and(|rest| rest != 0)
+            || past_last_track(self.keep)
         {
             return Err(ModelError::BadScene);
         }
@@ -427,6 +468,7 @@ mod tests {
         s.set_value(a, 0.5).unwrap();
         let pc = |program, bank| ClipProgram { program, bank };
         let want = SceneSettings {
+            keep: 0b100,
             name: "Drop".into(),
             mutes: Some(0b10),
             follow: Some(Follow::after(8, FollowAction::Next)),

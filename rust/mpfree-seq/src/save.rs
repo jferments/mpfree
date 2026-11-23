@@ -101,6 +101,13 @@
 //! skip the line and open the track as an empty note track; a part with
 //! none is still `mpfree-clips 2`.
 //!
+//! An audio track's clip (phase 2, [`crate::audio`]) has an `audioclip`
+//! line (the tempo it was made at, its gain and its last frame) and a
+//! `region` line a region: start and end ticks, the recording's lasting
+//! id (32 hex digits), its first frame, gain, fade in, fade out, `into`
+//! and `left`. A project with one needs `audio-clips` (the app's project
+//! gate), so a build from before refuses it before reading this part.
+//!
 //! A marker's `section <passes>[ scene <row> pass <ticks>[ changed]]`
 //! line, right after its `marker` line, is what the marker says when the
 //! song list is linked to the song (the Arrange refactor's phase 4b,
@@ -170,6 +177,13 @@
 //! A scene's `program <track> <program>[ bank <bank>]` lines are the
 //! program changes it sends as it starts (sequencer S5), one a track, in
 //! order of track; an older build skips them.
+//!
+//! A scene's `keep <tracks>` line (the Arrange refactor's phase 5.2,
+//! [`crate::Scene::keep`]) is the tracks, a bit each as `mutes`, whose
+//! empty cell keeps playing when it starts; none written, every empty
+//! cell stops there, as before. A build from before would skip it and
+//! stop them, so a project with one says it needs `scene-keep` (the
+//! app's project gate) and such a build refuses it first.
 //!
 //! Reading is careful: every number is checked, every clip and the whole
 //! project go through [`Project::check`]-level checks, and a part that
@@ -293,6 +307,9 @@ pub fn to_text(p: &Project) -> String {
         if let Some(m) = sc.mutes {
             let _ = writeln!(s, "mutes {m}");
         }
+        if sc.keep != 0 {
+            let _ = writeln!(s, "keep {}", sc.keep);
+        }
         if let Some(f) = sc.follow {
             let _ = writeln!(s, "follow {}", follow_text(f));
         }
@@ -391,6 +408,21 @@ fn clip_body(s: &mut String, c: &Clip) {
     if c.step != crate::steps::DEFAULT_SIZE {
         if let Some(name) = crate::steps::size_name(c.step) {
             let _ = writeln!(s, "step {name}");
+        }
+    }
+    if let Some(a) = &c.audio {
+        let _ = writeln!(s, "audioclip {} {} {}", a.bpm, a.gain, a.last_frame);
+        for r in &a.regions {
+            let _ = write!(
+                s,
+                "region {} {} {:032x} {} {} {} {} {} {}",
+                r.start, r.end, r.rec.0, r.src, r.gain, r.fade_in, r.fade_out, r.into, r.left
+            );
+            // Where between frames it starts, when not on a frame.
+            if r.phase != 0.0 {
+                let _ = write!(s, " {}", r.phase);
+            }
+            s.push('\n');
         }
     }
     // A scale no scale could be, or one on a clip of pad hits, is not
@@ -905,6 +937,31 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 let word = w.next().ok_or_else(|| bad("holds"))?;
                 c.holds = crate::Holds::from_word(word).unwrap_or_default();
             }
+            // An audio clip (phase 2): its tempo, gain and last frame, then
+            // a line a region, checked with the clip at its end.
+            ("audioclip", At::Clip(c, _)) => {
+                let (bpm, gain, last_frame) = (num(w.next()), num(w.next()), num(w.next()));
+                let (Some(bpm), Some(gain), Some(last_frame)) = (bpm, gain, last_frame) else {
+                    return Err(bad("audioclip"));
+                };
+                if c.audio.is_some() {
+                    return Err(bad("audioclip"));
+                }
+                c.audio = Some(crate::AudioClip {
+                    regions: Vec::new(),
+                    bpm,
+                    gain,
+                    last_frame,
+                });
+            }
+            ("region", At::Clip(c, _)) => {
+                let a = c.audio.as_mut().ok_or_else(|| bad("region"))?;
+                if a.regions.len() >= crate::MAX_CLIP_REGIONS {
+                    return Err(bad("too many regions"));
+                }
+                a.regions
+                    .push(clip_region(&mut w).ok_or_else(|| bad("region"))?);
+            }
             // What its instrument locks were made for (refactor F1).
             ("madefor", At::Clip(c, _)) => {
                 let node = w.next().ok_or_else(|| bad("madefor"))?;
@@ -1042,6 +1099,9 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             }
             ("mutes", At::Scene) => {
                 last_scene(&mut p).mutes = Some(num(w.next()).ok_or_else(|| bad("mutes"))?)
+            }
+            ("keep", At::Scene) => {
+                last_scene(&mut p).keep = num(w.next()).ok_or_else(|| bad("keep"))?
             }
             ("follow", At::Scene) => {
                 last_scene(&mut p).follow = Some(follow(&mut w).ok_or_else(|| bad("follow"))?)
@@ -1399,6 +1459,33 @@ fn step_words<'a>(mut n: Note, w: impl Iterator<Item = &'a str>) -> Option<Note>
 
 fn num<T: FromStr>(w: Option<&str>) -> Option<T> {
     w?.parse().ok()
+}
+
+/// An audio clip's `region` line after its word: start and end ticks, the
+/// recording's lasting id (32 hex digits), its first frame, gain, fades,
+/// `into`, `left` and where in its first frame it starts (`phase`; 0 if
+/// left out).
+fn clip_region<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<crate::ClipRegion> {
+    let (start, end) = (num(w.next())?, num(w.next())?);
+    let rec = w
+        .next()
+        .filter(|h| h.len() == 32)
+        .and_then(|h| u128::from_str_radix(h, 16).ok())?;
+    Some(crate::ClipRegion {
+        start,
+        end,
+        rec: crate::RecId(rec),
+        src: num(w.next())?,
+        gain: num(w.next())?,
+        fade_in: num(w.next())?,
+        fade_out: num(w.next())?,
+        into: num(w.next())?,
+        left: num(w.next())?,
+        phase: match w.next() {
+            None => 0.0,
+            Some(p) => num::<f32>(Some(p)).filter(|p| p.abs() <= 0.5)?,
+        },
+    })
 }
 
 fn flag(w: Option<&str>) -> Option<bool> {
@@ -2403,6 +2490,33 @@ mod tests {
         assert!(from_text(&text.replacen(head, "original 7680\n", 1)).is_err());
     }
 
+    /// The Arrange refactor's 5.2: a scene's Keep playing tracks are a
+    /// `keep` line after its mutes, written only when it keeps any, so a
+    /// project with none saves as before.
+    #[test]
+    fn a_scenes_keep_playing_tracks_read_back() {
+        let mut p = full();
+        assert!(!to_text(&p).contains("keep"), "none: no line");
+        let sc = p.scene_mut(2).unwrap();
+        sc.set_keep(0, true).unwrap();
+        sc.set_keep(127, true).unwrap();
+        assert!(sc.set_keep(128, true).is_err());
+        let text = to_text(&p);
+        assert!(
+            text.contains(&format!("mutes 5\nkeep {}\n", 1u128 << 127 | 1)),
+            "{text}"
+        );
+        let back = from_text(&text).unwrap();
+        assert_eq!(back, p);
+        assert!(back.scenes[2].keeps(0) && back.scenes[2].keeps(127));
+        assert!(!back.scenes[2].keeps(1));
+        // Out of place, or not a number: the part is refused.
+        for bad in ["keep x", "keep", "keep -1"] {
+            let t = text.replacen(&format!("keep {}", 1u128 << 127 | 1), bad, 1);
+            assert!(from_text(&t).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn a_scenes_programs_read_back_in_order_and_bad_ones_refuse_the_part() {
         let text = to_text(&full());
@@ -2544,8 +2658,8 @@ mod tests {
 
     /// The audio tracks rethink, phase 1: an audio track is saved as a
     /// track with an `audio` line, and the part is then `mpfree-clips 3`;
-    /// with none it stays `mpfree-clips 2`. A clip or a song block on an
-    /// audio track is refused.
+    /// with none it stays `mpfree-clips 2`. A note clip, or a note
+    /// clip's song block, on an audio track is refused.
     #[test]
     fn audio_tracks_read_back_in_a_part_of_their_own_format() {
         let mut p = full();
@@ -2563,7 +2677,7 @@ mod tests {
         assert_eq!(back, p);
         assert!(back.tracks[1].is_audio() && !back.tracks[1].plays_notes());
         assert_eq!(back.tracks[1].loops(), None);
-        // A clip in an audio track's cell, or a block on its lane.
+        // A note clip in an audio track's cell, or its block on its lane.
         let mut cell = p.clone();
         cell.tracks[1].slots[0] = Some(Clip::new("Beat", 3840));
         assert_eq!(cell.check(), Err(crate::ModelError::AudioTrack));
@@ -2577,6 +2691,141 @@ mod tests {
             .placements
             .push(Placement::new(1, id, 0, 3840));
         assert_eq!(placed.check(), Err(crate::ModelError::AudioTrack));
+    }
+
+    /// An audio clip (phase 2) reads back exactly, its regions' ids,
+    /// fades, cut counts and place between frames included (that written
+    /// only when not 0); one out of place or out of range is refused.
+    #[test]
+    fn audio_clips_read_back_and_bad_ones_are_refused() {
+        use crate::{AudioClip, ClipRegion, RecId};
+        let mut p = full();
+        let mut a = Track::new_audio("Vocal", 5);
+        a.id = crate::TrackId(p.next_track.max(1));
+        p.next_track = a.id.0 + 1;
+        let rec = RecId(0x5b2f_0d9c_41e8_a776_3c0f_12ab_9e4d_8c01);
+        let mut clip = Clip::new("Hook", 7680);
+        let mut audio = AudioClip::of(rec, 1200, 90_000, 3840, 120.5);
+        audio.regions[0].fade_in = 300;
+        audio.regions.push(ClipRegion {
+            gain: 0.5,
+            fade_out: 64,
+            into: 22_050,
+            left: 7,
+            ..ClipRegion::new(3840, 7680, RecId(3), -40)
+        });
+        audio.regions[1].phase = -0.25;
+        audio.gain = 0.75;
+        clip.audio = Some(audio);
+        clip.once = true;
+        a.slots[2] = Some(clip);
+        p.tracks.insert(1, a);
+        p.check().unwrap();
+        let text = to_text(&p);
+        assert!(
+            text.contains(
+                "clip 2 7680 Hook\nonce\naudioclip 120.5 0.75 90000\n\
+                 region 0 3840 5b2f0d9c41e8a7763c0f12ab9e4d8c01 1200 1 300 0 0 0\n\
+                 region 3840 7680 00000000000000000000000000000003 -40 0.5 0 64 22050 7 -0.25\nend\n"
+            ),
+            "{text}"
+        );
+        assert_eq!(from_text(&text).unwrap(), p);
+        // Out of place: a region with no audioclip line before it, two
+        // audioclip lines, an id that isn't 32 hex digits, an audio clip
+        // on a note track, a note clip on an audio track, an audio clip
+        // that also holds a note, and one whose regions overlap.
+        let refused = |t: String, why: &str| assert!(from_text(&t).is_err(), "{why}");
+        refused(
+            text.replace("audioclip 120.5 0.75 90000\n", ""),
+            "no audioclip",
+        );
+        refused(
+            text.replace(
+                "audioclip 120.5 0.75 90000\n",
+                "audioclip 120.5 0.75 90000\naudioclip 1 1 1\n",
+            ),
+            "two",
+        );
+        refused(
+            text.replace("5b2f0d9c41e8a7763c0f12ab9e4d8c01", "5b2f"),
+            "short id",
+        );
+        refused(
+            text.replace("22050 7 -0.25", "22050 7 0.75"),
+            "phase past half a frame",
+        );
+        let mut on_notes = p.clone();
+        let c = on_notes.tracks[1].slots[2].take();
+        on_notes.tracks[0].slots[5] = c;
+        assert_eq!(on_notes.check(), Err(crate::ModelError::AudioTrack));
+        let mut with_note = p.clone();
+        let c = with_note.tracks[1].slots[2].as_mut().unwrap();
+        c.notes.push(crate::Note::new(0, 240, 36, 100));
+        assert_eq!(with_note.check(), Err(crate::ModelError::BadAudioClip));
+        let mut overlap = p.clone();
+        let c = overlap.tracks[1].slots[2].as_mut().unwrap();
+        c.audio.as_mut().unwrap().regions[1].start = 3000;
+        assert_eq!(overlap.check(), Err(crate::ModelError::BadAudioClip));
+        refused(to_text(&overlap), "overlap");
+    }
+
+    /// Phase 2, step 2d: an audio clip's block goes on an audio track's
+    /// lane and reads back, as a cell's clip and as the song's own; never
+    /// on a note track's, and a note clip's never on an audio track's. A
+    /// block moves or copies to another audio track only.
+    #[test]
+    fn an_audio_clips_block_goes_on_audio_lanes_only_and_reads_back() {
+        use crate::{AudioClip, Placement, RecId};
+        let mut p = full();
+        for (k, name) in ["Vocal", "Guitar"].into_iter().enumerate() {
+            let mut a = Track::new_audio(name, 5 + k as u16);
+            a.id = crate::TrackId(p.next_track.max(1));
+            p.next_track = a.id.0 + 1;
+            p.tracks.insert(1 + k, a);
+        }
+        let mut clip = Clip::new("Hook", 7680);
+        clip.audio = Some(AudioClip::of(RecId(9), 0, 180_000, 7680, 120.0));
+        p.tracks[1].slots[0] = Some(clip);
+        p.give_clip_ids();
+        p.arrangement.placements.clear();
+        p.arrangement.clips = Default::default();
+        let block = Placement::of(&p.tracks, 1, 0, 3840, 15_360);
+        p.arrangement.place(block.clone()).unwrap();
+        p.check().unwrap();
+        assert_eq!(from_text(&to_text(&p)).unwrap(), p);
+        // Made the song's own, it reads back too.
+        let mut own = p.clone();
+        own.make_unique(0).unwrap();
+        own.check().unwrap();
+        assert!(own.arrangement.clips.iter().all(|c| c.audio.is_some()));
+        assert_eq!(from_text(&to_text(&own)).unwrap(), own);
+        // On a note track's lane, refused; a note clip's block on an
+        // audio track's, refused.
+        let mut on_notes = p.clone();
+        on_notes.arrangement.placements[0].track = 0;
+        assert_eq!(on_notes.check(), Err(crate::ModelError::AudioTrack));
+        assert!(from_text(&to_text(&on_notes)).is_err());
+        let note = p.tracks[0].slots.clips().next().map(|c| c.id).unwrap();
+        let mut note_on_audio = p.clone();
+        note_on_audio.arrangement.placements[0].clip = note;
+        assert_eq!(note_on_audio.check(), Err(crate::ModelError::AudioTrack));
+        // Moved: onto Guitar it plays the same clip; onto a note track it
+        // stays where it was.
+        let mut moved = p.clone();
+        let tracks = moved.tracks.clone();
+        assert_eq!(
+            moved.arrangement.move_placement(&tracks, 0, 0, 0, false),
+            Err(crate::ModelError::AudioTrack)
+        );
+        assert_eq!(moved.arrangement.placements[0], block);
+        let i = moved
+            .arrangement
+            .move_placement(&tracks, 0, 2, 0, true)
+            .unwrap();
+        assert_eq!(moved.arrangement.placements[i].track, 2);
+        assert_eq!(moved.arrangement.placements[i].clip, block.clip);
+        moved.check().unwrap();
     }
 
     /// Arrange 4b.1: a marker's section line (its passes, its scene with

@@ -63,6 +63,13 @@
 //! Every run that reads the library also watches the rest of the stick
 //! beside the reads ([`watch`]): each partition's block counters in sysfs,
 //! read-only, and what was going on beside each slow read.
+//!
+//! `--cut-test` and `--after-cut FILE` are the pull test, WP ([`cut`]), on
+//! a spare stick on a computer, so only with `--desktop-test`: takes and
+//! imports are written in their own folder (`mpfree-cuttest/`) and what
+//! each promises is said as it goes; the stick is pulled mid-take; then
+//! the second half recovers the takes, checks every promise in the saved
+//! text and every sample, and deletes the folder if all held.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -133,6 +140,10 @@ mod watch;
 #[path = "disktest/prio.rs"]
 mod prio;
 
+/// The pull test (WP) and, later, the cut test (D6).
+#[path = "disktest/cut.rs"]
+mod cut;
+
 static STOP: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_signal(_: libc::c_int) {
@@ -155,6 +166,9 @@ struct Opts {
     under_load: bool,
     recorder: bool,
     heat: bool,
+    cut_test: bool,
+    /// `--after-cut`'s saved text of the cut run.
+    after_cut: Option<PathBuf>,
 }
 
 fn parse() -> Result<Opts, String> {
@@ -166,6 +180,8 @@ fn parse() -> Result<Opts, String> {
         under_load: false,
         recorder: false,
         heat: false,
+        cut_test: false,
+        after_cut: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -179,6 +195,13 @@ fn parse() -> Result<Opts, String> {
             "--under-load" => o.under_load = true,
             "--recorder" => o.recorder = true,
             "--heat" => o.heat = true,
+            "--cut-test" => o.cut_test = true,
+            "--after-cut" => {
+                o.after_cut = Some(PathBuf::from(
+                    args.next()
+                        .ok_or("--after-cut needs the cut run's saved text")?,
+                ))
+            }
             "-h" | "--help" => {
                 say!("usage: mpfree-disktest [--read-only | --under-load | --recorder | --heat] [--desktop-test DIR] [--quick]");
                 say!("Without --desktop-test it runs only on {MOUNT}, the stick's partition 4.");
@@ -192,6 +215,9 @@ fn parse() -> Result<Opts, String> {
                     "--heat keeps every core busy until the temperature settles (30 minutes at the"
                 );
                 say!("most, stopping at 75 C), reading the temperatures and clocks; it writes no file.");
+                say!("--cut-test records 4 takes and writes imports beside them in its own folder until");
+                say!("the stick is pulled; --after-cut FILE recovers them and checks every promise in");
+                say!("FILE (the cut run's saved text), then deletes the folder. Only with --desktop-test.");
                 std::process::exit(0);
             }
             _ => return Err(format!("unknown argument {a:?}")),
@@ -200,13 +226,23 @@ fn parse() -> Result<Opts, String> {
     if o.quick && !o.desktop {
         return Err("--quick is only for --desktop-test".into());
     }
-    if [o.read_only, o.under_load, o.recorder, o.heat]
-        .iter()
-        .filter(|&&m| m)
-        .count()
+    if [
+        o.read_only,
+        o.under_load,
+        o.recorder,
+        o.heat,
+        o.cut_test,
+        o.after_cut.is_some(),
+    ]
+    .iter()
+    .filter(|&&m| m)
+    .count()
         > 1
     {
-        return Err("--read-only, --under-load, --recorder and --heat are different runs".into());
+        return Err("--read-only, --under-load, --recorder, --heat, --cut-test and --after-cut are different runs".into());
+    }
+    if (o.cut_test || o.after_cut.is_some()) && !o.desktop {
+        return Err("--cut-test and --after-cut run only with --desktop-test for now: the cut on the MPC (D6) waits for its own safety review".into());
     }
     Ok(o)
 }
@@ -709,6 +745,73 @@ fn clean_one(dir: &Path, name: &str) -> Result<(), String> {
     fs::remove_file(dir.join(name)).map_err(|e| format!("remove {name}: {e}"))
 }
 
+/// The pull test's two halves, on a desktop.
+fn cut_main(base: &Path, o: &Opts) -> ExitCode {
+    let z = cut::Sizes::new(o.quick);
+    if let Some(saved) = &o.after_cut {
+        let text = match fs::read_to_string(saved) {
+            Ok(t) => t,
+            Err(e) => {
+                esay!(
+                    "mpfree-disktest: refused: {}: {e}. Nothing was changed.",
+                    saved.display()
+                );
+                return ExitCode::from(3);
+            }
+        };
+        return match cut::after(base, &text, z) {
+            Ok(true) => {
+                say!("done");
+                ExitCode::SUCCESS
+            }
+            Ok(false) => ExitCode::FAILURE,
+            Err(read::Fail::Refused(e)) => {
+                esay!("mpfree-disktest: refused: {e}. Nothing was changed.");
+                ExitCode::from(3)
+            }
+            Err(read::Fail::Failed(e)) => {
+                esay!("mpfree-disktest: after the cut: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if !o.quick {
+        if let Err(e) = cut::on_usb_disk(base) {
+            esay!("mpfree-disktest: refused: {e}. Nothing was written.");
+            return ExitCode::from(3);
+        }
+    }
+    match free_bytes(base) {
+        Ok(f) if f / 2 >= z.room() => {}
+        Ok(f) => {
+            esay!(
+                "mpfree-disktest: refused: {:.1} MiB free, it needs twice its {:.0} MiB. Nothing was written.",
+                f as f64 / MIB as f64,
+                z.room() as f64 / MIB as f64
+            );
+            return ExitCode::from(3);
+        }
+        Err(e) => {
+            esay!("mpfree-disktest: refused: {e}. Nothing was written.");
+            return ExitCode::from(3);
+        }
+    }
+    match cut::run(base, z) {
+        Ok(()) => {
+            say!("done");
+            ExitCode::SUCCESS
+        }
+        Err(read::Fail::Refused(e)) => {
+            esay!("mpfree-disktest: refused: {e}. Nothing was written.");
+            ExitCode::from(3)
+        }
+        Err(read::Fail::Failed(e)) => {
+            esay!("mpfree-disktest: cut test: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let o = match parse() {
         Ok(o) => o,
@@ -769,6 +872,9 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         };
+    }
+    if o.cut_test || o.after_cut.is_some() {
+        return cut_main(&base, &o);
     }
     if o.heat {
         // A desktop test may name stand-ins for the thermal zones and the

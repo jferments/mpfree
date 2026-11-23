@@ -28,21 +28,27 @@ impl Names {
     /// The name for a picture taken `secs` seconds after 1970 (UTC):
     /// "screen-20261119-083012.png", then "-2" and on within the second.
     pub fn next(&mut self, secs: u64) -> String {
+        self.next_named("screen", "png", secs)
+    }
+
+    /// The same for another kind of file: "report-20261123-114000.txt"
+    /// (System status's reports).
+    pub fn next_named(&mut self, what: &str, ext: &str, secs: u64) -> String {
         let stamp = stamp(secs);
         if stamp == self.last {
             self.same += 1;
-            format!("screen-{stamp}-{}.png", self.same)
+            format!("{what}-{stamp}-{}.{ext}", self.same)
         } else {
             self.last = stamp.clone();
             self.same = 1;
-            format!("screen-{stamp}.png")
+            format!("{what}-{stamp}.{ext}")
         }
     }
 }
 
 /// `secs` after 1970 as "YYYYMMDD-HHMMSS", UTC (Howard Hinnant's days to
 /// civil date).
-fn stamp(secs: u64) -> String {
+pub fn stamp(secs: u64) -> String {
     let days = (secs / 86_400) as i64;
     let rest = secs % 86_400;
     let z = days + 719_468;
