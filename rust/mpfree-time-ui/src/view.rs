@@ -35,9 +35,9 @@ use crate::editor::{
     sound_name, step_name, ChordShape, EditAction, Editor, Fold, GhostLayer, Hearing, LaneShow,
     Lens, LockMark, LockSetting, NoteBox, NoteGrid, NoteTool, ShowOffer, Tool, ToolAct, ToolBar,
     ToolKind, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, CLIP_END, EDIT_BUTTON, ERASE_SWEEP,
-    FIELDS, GHOST_MOST, GHOST_TAP, LOCK_LANES, MENU, PADS_WRITE, PEN, PRESSURE_END, PRESSURE_LANE,
-    ROOT_MENU, SCALE_MENU, SHOW_MENU, SHOW_NONE, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
-    TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
+    FIELDS, GHOST_MOST, GHOST_TAP, HELD_FINE, HELD_FIRST, HELD_TURN, LOCK_LANES, MENU, PADS_WRITE,
+    PEN, PRESSURE_END, PRESSURE_LANE, ROOT_MENU, SCALE_MENU, SHOW_MENU, SHOW_NONE, SNAP_AUTO_T,
+    START_HANDLE, STEP_FALLBACK, TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LINK, LIST_LINK_CLOSE, LIST_LINK_FROM_LIST,
@@ -163,8 +163,6 @@ pub fn clip_card_hint(st: &TimeState) -> String {
     }
 }
 
-/// The hint line while COPY is held over the note editor (piano roll
-/// plan 1B.4).
 /// The note inspector (piano roll plan 1C.1): while notes are picked in
 /// the note editor, the Q-Link column's header ("3 notes") and its four
 /// cards, Position, Length, Semitones and Velocity, each with its value
@@ -349,7 +347,7 @@ pub const EDIT_TRACKER_HINT: &str =
 /// options' drawer closed (piano roll plan 1C.1): the Q-Links are the
 /// note inspector.
 pub const EDIT_PICKED_HINT: &str =
-    "Q-Links: position, length, pitch, velocity (SHIFT: finer)   ·   - / +: nudge   ·   drag: move   ·   handles: start, length   ·   wheel: the cursor   ·   ERASE + tap or drag: erase";
+    "Q-Links: position, length, pitch, velocity (SHIFT: finer)   ·   - / +: nudge   ·   drag: move   ·   handles: start, length   ·   wheel: the cursor, or a held note's velocity   ·   ERASE + tap or drag: erase";
 
 /// The hint line under the note editor showing `lens`, with `tool`, and
 /// `picked` when notes are picked with the drawer closed.
@@ -2588,6 +2586,21 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                         ticks,
                         notes,
                         scale,
+                    }
+                }
+                // A finger on a note and the wheel (plan 1C.3): its
+                // velocity, the hold's first detent naming the note.
+                EventKind::Values { index, ref set }
+                    if index & !(HELD_FIRST | HELD_FINE) == HELD_TURN =>
+                {
+                    let (&(note, ticks), &(turn, _)) = (set.first()?, set.get(1)?);
+                    EditAction::Held {
+                        index: note,
+                        rev,
+                        ticks,
+                        fine: index & HELD_FINE != 0,
+                        turn: turn as u64,
+                        first: index & HELD_FIRST != 0,
                     }
                 }
                 // ERASE + a drag across the roll (plan 1B.5): the notes
@@ -7244,6 +7257,7 @@ impl TimePage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::HELD_PICKS;
 
     /// The Scale menu's taps (piano roll plan 2B.1) become the clip's
     /// scale, from the editor's offers on the clip's root, or its root.
@@ -7435,6 +7449,44 @@ mod tests {
                 to: 7680
             }),
             edit(EditAction::Length { to: 7680 })
+        );
+        // A finger on a note and the wheel (plan 1C.3): the first detent
+        // names the note, a later one only the hold.
+        assert_eq!(
+            ev(EventKind::Values {
+                index: HELD_TURN + HELD_FIRST + HELD_FINE,
+                set: vec![(3, -2), (7, 0)]
+            }),
+            edit(EditAction::Held {
+                index: 3,
+                rev: 0,
+                ticks: -2,
+                fine: true,
+                turn: 7,
+                first: true
+            })
+        );
+        assert_eq!(
+            ev(EventKind::Values {
+                index: HELD_TURN,
+                set: vec![(HELD_PICKS, 1), (7, 0)]
+            }),
+            edit(EditAction::Held {
+                index: HELD_PICKS,
+                rev: 0,
+                ticks: 1,
+                fine: false,
+                turn: 7,
+                first: false
+            })
+        );
+        assert_eq!(
+            ev(EventKind::Values {
+                index: HELD_TURN,
+                set: vec![(3, 1)]
+            }),
+            None,
+            "no hold's number"
         );
         // ERASE + a drag (plan 1B.5): the notes it crossed.
         assert_eq!(

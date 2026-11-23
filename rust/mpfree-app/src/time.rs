@@ -11236,6 +11236,35 @@ mod tests {
         h.act(TimeAction::Undo).unwrap();
         assert_eq!(length(&h), 3840);
         assert_eq!(sorted(&h), c.notes);
+        // A finger on a note and the wheel (piano roll plan 1C.3): a
+        // hold's detents are one take, its later ones naming no picture;
+        // a hold's first on an old picture is refused.
+        h.take_changed();
+        let e = h.state().edit.unwrap();
+        let (rev, at) = (e.rev, e.clip.notes.iter().position(|n| n.tick == 970));
+        let held = |index, ticks, turn, first| {
+            TimeAction::Edit(E::Held {
+                index,
+                rev,
+                ticks,
+                fine: false,
+                turn,
+                first,
+            })
+        };
+        let vels = |h: &TimeHost| -> Vec<u8> { sorted(h).iter().map(|n| n.velocity).collect() };
+        h.act(held(at.unwrap(), 5, 1, true)).unwrap();
+        h.act(held(mpfree_time_ui::editor::HELD_PICKS, 3, 1, false))
+            .unwrap();
+        assert_eq!(vels(&h), [100, 98, 110]);
+        let said = h.act(held(0, 5, 2, true)).unwrap_err();
+        assert!(
+            said.contains("the clip changed under your finger"),
+            "{said}"
+        );
+        assert_eq!(vels(&h), [100, 98, 110]);
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(sorted(&h), c.notes, "one UNDO, the whole hold");
         assert_eq!(
             h.act(TimeAction::Edit(E::Button(0))).unwrap(),
             "edit: closed"

@@ -11487,6 +11487,7 @@ impl Player {
                 self.sample.set_tempo(self.time.transport.bpm);
                 self.refresh_edit_pads();
                 self.time_page.update(&mut self.ui, &self.time);
+                self.retell_held_note();
                 self.refresh_show();
                 self.play.set_transport(self.time.transport);
                 self.refresh_play();
@@ -15281,6 +15282,25 @@ impl Player {
         }
     }
 
+    /// A note held on the roll while the wheel turns its velocity (piano
+    /// roll plan 1C.3): the hint line says the velocity the clip has
+    /// now, as each turn's edit comes back.
+    fn retell_held_note(&mut self) {
+        let Some(h) = self.ui.held() else {
+            return;
+        };
+        let told = self.told.as_ref().map(|(t, _, _)| t.clone());
+        if h.widget != time_view::NOTES || !told.as_ref().is_some_and(|t| t.ends_with(HELD_TOLD)) {
+            return;
+        }
+        if let Some(text) = self
+            .held_value(&h)
+            .filter(|t| told.as_ref() != Some(&tell_text(t)))
+        {
+            self.tell(&text);
+        }
+    }
+
     /// The held finger's touch is the wheel's now: a macro card's long
     /// press or the tempo's tap ends, as if the finger had lifted.
     fn held_used(&mut self) {
@@ -15297,6 +15317,15 @@ impl Player {
     fn held_value(&self, h: &mpfree_ui::PageTarget) -> Option<String> {
         if h.widget == synth_view::TILES {
             return self.synth.as_ref()?.wheel_text();
+        }
+        if h.widget == time_view::NOTES && h.target.id == mpfree_time_ui::editor::HELD_NOTE {
+            // A note on the roll (piano roll plan 1C.3): its velocity, or
+            // the picks' with it.
+            let v = self
+                .ui
+                .get::<NoteGrid>(time_view::NOTES)?
+                .held_velocity(h.target.index)?;
+            return Some(format!("{v}{HELD_TOLD}"));
         }
         if mpfree_chain_ui::ChainView::is_note_setting(&h.target) {
             // A MIDI effect's setting: the page knows its value.
@@ -25482,9 +25511,16 @@ mod tests {
                     .unwrap();
             (r.x + r.w / 2, r.y + r.h / 2)
         };
+        // A finger on a note tells the app it holds a value the wheel
+        // turns (piano roll plan 1C.3): the tap goes after that.
         let tap = |p: &mut Player, (x, y): (i32, i32)| {
             let down = p.touch(1, Touch::Down, x, y);
-            down.or(p.touch(1, Touch::Up, x, y))
+            let up = p.touch(1, Touch::Up, x, y);
+            down.or(up).or_else(|| {
+                p.take_actions()
+                    .into_iter()
+                    .find(|a| !matches!(a, FromUi::Held(_)))
+            })
         };
         let empty = cell(&p, 1, 0);
         assert_eq!(
@@ -25721,6 +25757,49 @@ mod tests {
                 to: 1200
             })))
         );
+        // A finger on a note and the wheel (piano roll plan 1C.3): the
+        // wheel goes to it, its first detent naming the note and later
+        // ones only the hold; the hint line says the velocity as each
+        // edit comes back, and the lift taps nothing.
+        timed(&mut p);
+        assert!(p.touch(1, Touch::Down, nx, ny).is_none());
+        assert!(p.take_actions().contains(&FromUi::Held(true)));
+        p.apply(ToUi::Held {
+            delta: 2,
+            fine: false,
+        });
+        let held_turn = |index, ticks, first| {
+            FromUi::Time(TimeAction::Edit(EditAction::Held {
+                index,
+                rev: 0,
+                ticks,
+                fine: false,
+                turn: 1,
+                first,
+            }))
+        };
+        assert_eq!(timed(&mut p), vec![held_turn(1, 2, true)]);
+        let said = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert_eq!(said(&p), "Velocity 90 · the wheel turns it while you hold");
+        let mut back = p.time.clone();
+        if let Some(e) = back.edit.as_mut() {
+            let mut c = (*e.clip).clone();
+            c.notes[1].velocity = 92;
+            e.clip = c.into();
+            e.editor.sel = vec![1];
+        }
+        p.apply(ToUi::Time(Box::new(back)));
+        assert_eq!(said(&p), "Velocity 92 · the wheel turns it while you hold");
+        p.apply(ToUi::Held {
+            delta: -1,
+            fine: false,
+        });
+        assert_eq!(
+            timed(&mut p),
+            vec![held_turn(mpfree_time_ui::editor::HELD_PICKS, -1, false)]
+        );
+        assert!(p.touch(1, Touch::Up, nx, ny).is_none());
+        assert!(timed(&mut p).is_empty(), "no tap");
         // COPY held (piano roll plan 1B.4): a tap on a note copies the
         // picked notes (or that one), a tap on empty roll pastes them
         // there, and the hint line says so.
