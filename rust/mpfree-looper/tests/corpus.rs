@@ -21,7 +21,7 @@
 //! and every machine.
 //!
 //! **The wrong moves.** Before the rules in [`ends`], over 160 seeds
-//! (31.9 million taps) it made 4,011, nearly all one kind: at 174 BPM a
+//! (31.9 million taps) it made 4,011, most of them one kind: at 174 BPM a
 //! tap almost a 16th early reaches back to a kick played an 8th before
 //! the downbeat (half time's pickup on the "and" of 4), which won on its
 //! likeness to the first hit, though the beat didn't fit it. (The reading
@@ -29,13 +29,16 @@
 //! than a 1/16 note at 174.) Now a soft note just ahead of the first kick
 //! is part of the opening hit ([`ends::FLAM_MS`]), and a hit far from the
 //! tap ([`ends::FAR`]) needs the beat to back it, at least
-//! [`ends::BEAT_BACKS`] and at least as well as it backs your tap. That
-//! leaves 13, for 0.17 % fewer of the taps off by 15 ms or more moved to
-//! the downbeat (99.28 to 99.11 %): all at 174 BPM with loose timing, on
-//! taps 75 or 80 ms early, to a hit the beat backs 0.11 or less, 12 of
-//! them 0.6 to 0.7 of the reach from the tap. The test plays five seeds,
-//! the first and four picked for the far rule's last part, and allows
-//! their [`KNOWN_WRONG`] moves of that kind, no more and no other.
+//! [`ends::BEAT_BACKS`] and at least as well as it backs your tap: that
+//! left 13, all at 174 BPM with loose timing, on taps 75 or 80 ms early,
+//! to a hit the beat backs 0.11 or less, most of them 0.6 to 0.7 of the
+//! reach from the tap. And once the loop has a beat to go on, any hit
+//! needs it to back it a little ([`ends::BEAT_FLOOR`]): that leaves 1
+//! (half time at 174, a tap 80 ms early, to a pickup the beat backs
+//! 0.11), for 0.34 % fewer of the taps off by 15 ms or more moved to the
+//! downbeat than main (99.28 to 98.94 %). The test plays five seeds, the
+//! first and four picked for the far rule's last part, and makes no wrong
+//! move.
 //!
 //! **By ear.** The same takes are also played on the hit track's kit
 //! ([`mpfree_looper::hits::kit`]) and heard as the line input is, then
@@ -49,7 +52,7 @@
 //! plays a seventh of one seed's takes ([`EAR_EVERY`]) and asserts no
 //! wrong move and a floor on the moves ([`EAR_MOVES_AT_LEAST`]).
 
-use mpfree_looper::ends::{self, decide, reach, Ask, NoteLog, Verdict};
+use mpfree_looper::ends::{decide, reach, Ask, NoteLog, Verdict};
 use mpfree_looper::find::{find, FindJob};
 use mpfree_looper::hits::kit::{Kit, Sound};
 use mpfree_looper::hits::{HitLog, HitTrack};
@@ -406,21 +409,6 @@ impl Tally {
 /// or after the kick, and either is the downbeat), or this near the kick.
 const RIGHT_MS: f64 = 30.0;
 
-/// The wrong moves the corpus is known to make, at most (see the top).
-const KNOWN_WRONG: usize = 2;
-
-/// Where those come from: taps at least this early, to a hit the beat
-/// backs less than [`ends::BEAT_BACKS`].
-const KNOWN_EARLY_MS: i32 = 75;
-
-/// A wrong move: what was played and the tap, how early the tap was,
-/// and how well the beat backs the loop that ends where it went.
-struct Wrong {
-    what: String,
-    early_ms: i32,
-    rhythm: f64,
-}
-
 /// The song's tempo before the first loop: a new project's, left from
 /// before (it counts lightly in the reading).
 const SONG: TempoHint = TempoHint {
@@ -435,7 +423,7 @@ const SONG: TempoHint = TempoHint {
 /// 1/16 note at 174), the bar count from that reading with the beat
 /// played in it, the same for every candidate, and Auto hearing to the
 /// end of the reach.
-fn taps(take: &Take, g: &Groove, wrongs: &mut Vec<Wrong>, what: &str) -> Tally {
+fn taps(take: &Take, g: &Groove, wrongs: &mut Vec<String>, what: &str) -> Tally {
     let mut log = NoteLog::new();
     let right = frames(RIGHT_MS) as u64;
     let bar = g.meter.bar;
@@ -485,19 +473,15 @@ fn taps(take: &Take, g: &Groove, wrongs: &mut Vec<Wrong>, what: &str) -> Tally {
             Verdict::Moved => {
                 t.wrong += 1;
                 let best = d.best.expect("moved to a candidate");
-                wrongs.push(Wrong {
-                    what: format!(
-                        "{what}, tap {off_ms:+} ms: moved {:+.1} ms from the downbeat (onset {:.2}, rhythm {:.2}, context {:.2}, score {:.2}; next {:.2})",
-                        (d.end as f64 - take.downbeat as f64) * 1000.0 / f64::from(RATE),
-                        best.onset,
-                        best.rhythm,
-                        best.context,
-                        best.score,
-                        d.second.map_or(0.0, |c| c.score),
-                    ),
-                    early_ms: -off_ms,
-                    rhythm: best.rhythm,
-                });
+                wrongs.push(format!(
+                    "{what}, tap {off_ms:+} ms: moved {:+.1} ms from the downbeat (onset {:.2}, rhythm {:.2}, context {:.2}, score {:.2}; next {:.2})",
+                    (d.end as f64 - take.downbeat as f64) * 1000.0 / f64::from(RATE),
+                    best.onset,
+                    best.rhythm,
+                    best.context,
+                    best.score,
+                    d.second.map_or(0.0, |c| c.score),
+                ));
             }
             _ => t.kept += 1,
         }
@@ -588,20 +572,11 @@ fn across_the_corpus_a_tap_moves_only_to_the_downbeat_you_played() {
         eprintln!("  {l}");
     }
     for w in &wrongs {
-        eprintln!("  wrong: {}", w.what);
+        eprintln!("  wrong: {w}");
     }
-    let new: Vec<_> = wrongs
-        .iter()
-        .filter(|w| w.early_ms < KNOWN_EARLY_MS || w.rhythm >= ends::BEAT_BACKS)
-        .map(|w| &w.what)
-        .collect();
     assert!(
-        new.is_empty(),
-        "wrong moves not of the known kind: {new:#?}"
-    );
-    assert!(
-        wrongs.len() <= KNOWN_WRONG,
-        "{} wrong moves, {KNOWN_WRONG} known",
+        wrongs.is_empty(),
+        "{} taps moved somewhere else",
         wrongs.len()
     );
 }
