@@ -6179,30 +6179,53 @@ mod tests {
         assert_eq!((s.phase, s.frames), (Phase::Overdubbing, 105_840));
     }
 
-    /// The opening thread's voluntary context switches: the times it
-    /// slept, waiting for something (Linux; None elsewhere). A thread
-    /// taken off its core for another is not counted. The file stays
-    /// open, so a read is one seek and one read, no path to look up.
-    struct Sleeps(Option<std::fs::File>, String);
+    /// The opening thread's own counts from the kernel (Linux; None
+    /// elsewhere): its voluntary context switches, the times it slept,
+    /// waiting for something (in /proc/thread-self/status; a thread taken
+    /// off its core for another is not counted), and its page faults,
+    /// minor and major (in /proc/thread-self/stat). The files stay open,
+    /// so a read is one seek and one read, no path to look up.
+    struct Counts {
+        status: Option<std::fs::File>,
+        stat: Option<std::fs::File>,
+        text: String,
+    }
 
-    impl Sleeps {
+    impl Counts {
         fn open() -> Self {
-            let f = std::fs::File::open("/proc/thread-self/status").ok();
-            Sleeps(f, String::with_capacity(4096))
+            let open = |p: &str| std::fs::File::open(p).ok();
+            Counts {
+                status: open("/proc/thread-self/status"),
+                stat: open("/proc/thread-self/stat"),
+                text: String::with_capacity(4096),
+            }
         }
 
-        fn read(&mut self) -> Option<u64> {
+        fn fill(f: &mut std::fs::File, text: &mut String) -> Option<()> {
             use std::io::{Read, Seek, SeekFrom};
-            let f = self.0.as_mut()?;
-            self.1.clear();
+            text.clear();
             f.seek(SeekFrom::Start(0)).ok()?;
-            f.read_to_string(&mut self.1).ok()?;
-            self.1
+            f.read_to_string(text).ok().map(|_| ())
+        }
+
+        fn sleeps(&mut self) -> Option<u64> {
+            Self::fill(self.status.as_mut()?, &mut self.text)?;
+            self.text
                 .lines()
                 .find_map(|l| l.strip_prefix("voluntary_ctxt_switches:"))?
                 .trim()
                 .parse()
                 .ok()
+        }
+
+        /// Fields 10 and 12 of stat (minflt, majflt), counted from the
+        /// state after the command's name in parentheses (field 3).
+        fn faults(&mut self) -> Option<u64> {
+            Self::fill(self.stat.as_mut()?, &mut self.text)?;
+            let mut f = self.text[self.text.rfind(')')? + 1..].split_whitespace();
+            let minor: u64 = f.nth(7)?.parse().ok()?;
+            let major: u64 = f.nth(1)?.parse().ok()?;
+            Some(minor + major)
         }
     }
 
@@ -6213,9 +6236,10 @@ mod tests {
     /// play. The finder, on its own thread at the normal priority, answers
     /// in time and the loop closes on the downbeat it heard, or Auto keeps
     /// your tap (counted, and said). Either way no period waits for it:
-    /// the period's thread never sleeps inside one (its voluntary context
-    /// switches, which a busy machine taking its core away doesn't add
-    /// to; judged natively, see below), and no period allocates.
+    /// the looper counts no ask that waited, a period that speaks to the
+    /// finder never sleeps (its thread's voluntary context switches,
+    /// which a busy machine taking its core away doesn't add to; judged
+    /// natively, see below), and no period allocates.
     #[test]
     fn auto_by_ear_while_long_prints_run_never_waits_for_the_finder() {
         by_ear_while_long_prints_run(true);
@@ -6318,11 +6342,14 @@ mod tests {
         let (mut tapped, mut printing_at_ask, mut started, mut rec_from) =
             (false, None, None, None);
         let (mut took, mut allocs) = (Vec::new(), 0);
-        // Sleeps inside the periods (which ones), and outside them (the
-        // pacing: the count is read for real).
-        let mut sleeps = Sleeps::open();
-        let (mut waits, mut slept) = (Some(Vec::new()), 0u64);
-        let mut last = sleeps.read();
+        // Sleeps inside the periods, with their page faults: in those
+        // that spoke to the finder (asked it, or looked for its answer)
+        // and in the others. And outside them (the pacing: the count is
+        // read for real).
+        let mut counts = Counts::open();
+        let (mut near, mut away, mut read, mut slept) = (Vec::new(), Vec::new(), true, 0u64);
+        let (mut faulting, mut spoke) = ((0u32, 0u64), 0u32);
+        let mut last = counts.sleeps();
         let beat = Duration::from_secs_f64(PERIOD as f64 / f64::from(RATE));
         let t0 = Instant::now();
         let mut p = 0u32;
@@ -6339,18 +6366,29 @@ mod tests {
                 *x = audio.get(2 * at).copied().unwrap_or(0.0);
             }
             let (now, from) = (Instant::now(), t.frame());
-            let before = sleeps.read();
+            let out = h.finder.job.is_none();
+            let faults = counts.faults();
+            let before = counts.sleeps();
             let ((), calls) = crate::sys::alloc_count::calls(|| period(&mut h, &mut t, &mut b, &l));
-            let after = sleeps.read();
+            let after = counts.sleeps();
+            let faulted = counts.faults();
             allocs += calls;
-            match (last, before, after, waits.as_mut()) {
-                (Some(l), Some(b), Some(a), Some(w)) => {
+            match (last, before, after, faults, faulted) {
+                (Some(l), Some(b), Some(a), Some(f), Some(g)) => {
                     slept += b - l;
+                    if g > f {
+                        faulting = (faulting.0 + 1, faulting.1 + (g - f));
+                    }
+                    // (It sent the job, or looked for the answer: the
+                    // job out, and its answers read.)
+                    let finder =
+                        (!out && h.finder.job.is_none()) || (out && h.finder.back.is_some());
+                    spoke += u32::from(finder);
                     if a > b {
-                        w.push((p, a - b));
+                        (if finder { &mut near } else { &mut away }).push((p, a - b, g - f));
                     }
                 }
-                _ => waits = None,
+                _ => read = false,
             }
             last = after;
             if let Some((_, r, at, into)) = h.take_tempo() {
@@ -6413,30 +6451,55 @@ mod tests {
         }
         took.sort();
         let worst = *took.last().unwrap();
-        // Waiting on the finder would sleep: on Linux, none did. (The
-        // periods' times are only reported: a loaded machine can take the
-        // core away from any of them.) Not judged as 32-bit ARM, which runs
-        // under qemu (CI's ARM job): there the count is that of qemu's own
-        // thread, which sleeps on qemu's locks while it translates code the
-        // period runs for the first time. The loop's closing periods slept
-        // there, though they made no blocking call (qemu's syscall trace),
-        // and the same pass again in the same program slept in none.
-        if let Some(w) = waits {
+        // Waiting on the finder would show in the looper's own count, and
+        // would sleep in a period that spoke to it: none did. A period
+        // away from the finder can sleep on a loaded machine with nothing
+        // of ours to wait on: on CI, with 36 app tests at once, one did,
+        // early in the recording, long before the ask. (The kernel can
+        // stop a thread on its memory, for one: a page it is moving, or
+        // another thread's hold on the process's memory map, both through
+        // a page fault.) Those are printed with their page faults, not
+        // judged. And the periods that spoke to the finder are not judged
+        // as 32-bit ARM, which runs under qemu (CI's ARM job): there the
+        // count is that of qemu's own thread, which sleeps on qemu's locks
+        // while it translates code the period runs for the first time.
+        // The loop's closing periods slept there, though they made no
+        // blocking call (qemu's syscall trace), and the same pass again in
+        // the same program slept in none.
+        assert_eq!(
+            h.finder.waited,
+            0,
+            "periods an ask waited for the finder: {}",
+            h.describe()
+        );
+        if read {
             assert!(slept > 0, "the pacing sleeps, so the count moves");
+            if !away.is_empty() {
+                eprintln!(
+                    "periods away from the finder that slept (period, times, page faults), \
+                     not judged: {away:?} of {p}"
+                );
+            }
             if cfg!(target_arch = "arm") {
-                eprintln!("periods that slept under qemu, not judged: {w:?} of {p}");
+                eprintln!(
+                    "periods that spoke to the finder and slept under qemu, not judged: {near:?}"
+                );
             } else {
                 assert!(
-                    w.is_empty(),
-                    "periods that slept (period, times): {w:?} of {p}: {}",
+                    near.is_empty(),
+                    "periods that spoke to the finder and slept (period, times, page faults): \
+                     {near:?} of {p}: {}",
                     h.describe()
                 );
             }
         }
         eprintln!(
-            "periods: 99th {:?}, 99.9th {:?}, worst {worst:?}; {line}",
+            "periods: 99th {:?}, 99.9th {:?}, worst {worst:?}; {spoke} of {p} spoke to the finder, \
+             {} took {} page faults; {line}",
             took[took.len() * 99 / 100],
-            took[took.len() * 999 / 1000]
+            took[took.len() * 999 / 1000],
+            faulting.0,
+            faulting.1
         );
         assert_eq!(allocs, 0, "allocations or frees on the audio thread's path");
         assert!(h.describe().contains("; by ear: "), "{}", h.describe());
