@@ -33,10 +33,10 @@ use crate::editor::zoom::RollView;
 use crate::editor::{
     box_of, chord_name, drop_of, edit_rows, knob_name, length_name, lit_scale, note_name, pads,
     position_name, step_name, ChordShape, EditAction, Editor, Fold, LaneShow, Lens, LockMark,
-    NoteBox, NoteGrid, NoteTool, Tool, ToolAct, ToolBar, ToolKind, ADD, CHORD_MAJOR, CHORD_MENU,
-    CHORD_MINOR, EDIT_BUTTON, FIELDS, MENU, PEN, PRESSURE_END, PRESSURE_LANE, ROOT_MENU,
-    SCALE_MENU, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK, TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE,
-    TOOL_OPTION,
+    LockSetting, NoteBox, NoteGrid, NoteTool, Tool, ToolAct, ToolBar, ToolKind, ADD, CHORD_MAJOR,
+    CHORD_MENU, CHORD_MINOR, EDIT_BUTTON, FIELDS, LOCK_LANES, MENU, PEN, PRESSURE_END,
+    PRESSURE_LANE, ROOT_MENU, SCALE_MENU, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK, TOOL_BUTTONS,
+    TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LINK, LIST_LINK_CLOSE, LIST_LINK_FROM_LIST,
@@ -1085,6 +1085,11 @@ pub struct EditInfo {
     pub bar: Tick,
     /// What became of the editor's last touch (piano roll plan 0C.2).
     pub answer: EditAnswer,
+    /// The settings its lock lanes show and set (piano roll plan 3A.2):
+    /// the Steps' lock lanes for the clip, which the app knows and fills
+    /// in (empty from the time engine, and while Steps shows another
+    /// clip), shared so an unchanged list costs nothing to tell.
+    pub locks: Arc<Vec<LockSetting>>,
 }
 
 /// What became of the note editor's last touch, in the copy of the clip
@@ -2280,6 +2285,32 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                             .map(|&(t, v)| (t as Tick, v.clamp(0, 127) as u8))
                             .collect(),
                         end: end as Tick,
+                    }
+                }
+                // A lock lane (plan 3A.2): each note the stroke set, with
+                // the setting's value at its place; a note whose lock is
+                // already that is left be, so a stroke never nudges a
+                // lock it only crossed.
+                EventKind::Values { index, ref set } if index >= LOCK_LANES => {
+                    let e = st.edit.as_ref()?;
+                    let s = e.locks.get(index - LOCK_LANES)?;
+                    let set: Vec<(usize, f32)> = set
+                        .iter()
+                        .filter_map(|&(i, k)| {
+                            let k = usize::try_from(k).ok()?;
+                            let now =
+                                mpfree_seq::notes::lock_of(&e.clip, e.clip.notes.get(i)?, s.addr);
+                            (now.map(|v| s.index_of(v)) != Some(k))
+                                .then_some((i, s.values.get(k)?.0))
+                        })
+                        .collect();
+                    if set.is_empty() {
+                        return None;
+                    }
+                    EditAction::Lock {
+                        rev,
+                        addr: s.addr,
+                        set,
                     }
                 }
                 EventKind::Values { index, ref set } => EditAction::Lane {
@@ -4843,6 +4874,7 @@ fn same_edit(a: &EditInfo, b: &EditInfo) -> bool {
         && a.editor == b.editor
         && a.bar == b.bar
         && a.track_name == b.track_name
+        && (Arc::ptr_eq(&a.locks, &b.locks) || a.locks == b.locks)
 }
 
 /// The note editor's roll or list for `e`, with the playhead where the
@@ -4905,6 +4937,8 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
         .collect();
     g.step = step;
     g.locks = c.locks.iter().map(LockMark::of).collect();
+    g.lock_step = mpfree_seq::notes::steps_grid(c).size();
+    g.lock_settings = e.locks.clone();
     g.length = c.length;
     g.bar = e.bar;
     g.pads = pads(c);
@@ -6231,6 +6265,7 @@ mod tests {
             track_name: "Drums".into(),
             bar: BAR,
             answer: EditAnswer::default(),
+            locks: Default::default(),
         };
         let g = note_grid(&e, &state());
         assert_eq!(g.touch, [point(0, 90), point(40, 30)]);
@@ -6266,6 +6301,7 @@ mod tests {
                 track_name: "Keys".into(),
                 bar: BAR,
                 answer: EditAnswer::default(),
+                locks: Default::default(),
             })
         };
         st.edit = Some(info(0, 4));
@@ -6365,6 +6401,7 @@ mod tests {
             track_name: "Keys".into(),
             bar: BAR,
             answer: EditAnswer::default(),
+            locks: Default::default(),
         };
         assert_eq!(note_cards(&e), None, "nothing picked");
         e.editor.sel = vec![1];
@@ -6433,6 +6470,7 @@ mod tests {
             track_name: "Drums".into(),
             bar: BAR,
             answer: EditAnswer::default(),
+            locks: Default::default(),
         }));
         page.update(&mut ui, &st);
         let start = ui.get::<NoteGrid>(NOTES).unwrap().view.start;
@@ -6469,6 +6507,7 @@ mod tests {
             track_name: "Drums".into(),
             bar: BAR,
             answer: EditAnswer::default(),
+            locks: Default::default(),
         }));
         page.update(&mut ui, &st);
         let e = st.edit.clone().unwrap();

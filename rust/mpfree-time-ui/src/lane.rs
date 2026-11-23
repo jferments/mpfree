@@ -64,7 +64,7 @@ pub enum LaneTouch {
     /// yet.
     Preview,
     /// The stroke ended: each bar it changed (on a [`LaneStyle::Line`],
-    /// each bar it set), in bar order, with its new value, for the
+    /// or with [`Lane::every`], each bar it set), in bar order, with its new value, for the
     /// caller's one edit. Empty when nothing changed, or when the touch
     /// was cancelled or a second finger came down.
     Done(Vec<(usize, i32)>),
@@ -89,6 +89,11 @@ pub struct Lane {
     /// Values go in steps of this from `min` (1 for velocity).
     pub step: i32,
     pub style: LaneStyle,
+    /// Its lift returns every bar the stroke set, changed or not, as a
+    /// [`LaneStyle::Line`]'s does: a lock lane's (piano roll plan 3A.2),
+    /// where a bar with no lock shows what its step plays and a stroke
+    /// over it locks that.
+    pub every: bool,
     stroke: Option<Stroke>,
 }
 
@@ -177,7 +182,7 @@ impl Lane {
             Touch::Up if ours => {
                 self.draw_to(x, y, r);
                 let set = self.stroke.take().map(|s| s.set).unwrap_or_default();
-                let line = self.style == LaneStyle::Line;
+                let line = self.style == LaneStyle::Line || self.every;
                 let mut changed: Vec<(usize, i32)> = set
                     .into_iter()
                     .filter(|&(k, v)| self.bars.get(k).is_some_and(|b| line || b.value != v))
@@ -512,6 +517,35 @@ mod tests {
         assert_eq!(line, theme.accent, "the line");
         assert_ne!(c.pixel(30, top + 20), line, "the fill under it");
         assert_ne!(c.pixel(30, top + 20), c.pixel(100, top + 20), "filled");
+    }
+
+    /// A lock lane's bars return every bar the stroke set, at the value
+    /// it shows too: a bar with no lock shows what its step plays, and a
+    /// tap on it locks that (piano roll plan 3A.2).
+    #[test]
+    fn a_lane_with_every_returns_bars_left_at_their_value() {
+        let r = Rect::new(0, 0, 200, 94);
+        let mut l = Lane::new(0, 10, 1);
+        l.every = true;
+        l.set_bars(vec![Bar {
+            x: 20,
+            w: 20,
+            value: 0,
+            dim: true,
+            ..Bar::default()
+        }]);
+        let foot = r.bottom() - 1;
+        l.touch(1, Touch::Down, 30, foot, r);
+        assert_eq!(
+            l.touch(1, Touch::Up, 30, foot, r),
+            LaneTouch::Done(vec![(0, 0)])
+        );
+        l.every = false;
+        l.touch(1, Touch::Down, 30, foot, r);
+        assert_eq!(
+            l.touch(1, Touch::Up, 30, foot, r),
+            LaneTouch::Done(Vec::new())
+        );
     }
 
     #[test]

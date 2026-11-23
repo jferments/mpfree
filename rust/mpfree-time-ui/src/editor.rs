@@ -73,6 +73,7 @@ use gesture::Pinch;
 use zoom::RollView;
 
 use crate::lane::{Bar, Lane, LaneStyle, LaneTouch};
+use mpfree_seq::mpfree_param::RelAddr;
 use mpfree_seq::mpfree_scale::chords::{self, ChordName, Shape};
 use mpfree_seq::mpfree_scale::{NOTE_NAMES, SCALES};
 use mpfree_seq::notes::{self, Field, Snap, Tc, TcKind, Which, DIVISIONS};
@@ -381,6 +382,24 @@ pub enum EditAction {
         rev: u64,
         points: Vec<(Tick, u8)>,
         end: Tick,
+    },
+    /// A stroke along a lock lane, as its finger lifted (plan 3A.2): the
+    /// lock of `addr` where each note plays it, by its index on the
+    /// picture of revision `rev`, with its new value
+    /// ([`notes::lock_notes`]: notes in one step and row share a lock).
+    /// One take; the picks stay.
+    Lock {
+        rev: u64,
+        addr: RelAddr,
+        set: Vec<(usize, f32)>,
+    },
+    /// ERASE + a tap on a lock lane (plan 3A.2): the locks of `addr`
+    /// where these notes play it come off ([`notes::unlock_notes`]). One
+    /// take; the picks stay.
+    Unlock {
+        rev: u64,
+        addr: RelAddr,
+        notes: Vec<usize>,
     },
     /// An Edit option stepped.
     Row { row: usize, delta: i32 },
@@ -715,6 +734,8 @@ impl EditAction {
             | EditAction::Copy { rev, .. }
             | EditAction::Lane { rev, .. }
             | EditAction::Pressure { rev, .. }
+            | EditAction::Lock { rev, .. }
+            | EditAction::Unlock { rev, .. }
             | EditAction::Drop { rev, .. } => Some(rev),
             _ => None,
         }
@@ -1675,6 +1696,37 @@ impl Editor {
                     ..Done::default()
                 };
             }
+            // A stroke along a lock lane, or ERASE + a tap on it: one
+            // take of locks (plan 3A.2). No note changes; the picks stay.
+            EditAction::Lock { addr, set, .. } => {
+                let edit = notes::lock_notes(clip, addr, &set);
+                let line = match edit.add_locks.len() {
+                    0 => String::new(),
+                    1 => "edit: 1 lock set".into(),
+                    n => format!("edit: {n} locks set"),
+                };
+                return Done {
+                    edit,
+                    line,
+                    kept,
+                    ..Done::default()
+                };
+            }
+            EditAction::Unlock {
+                addr, notes: of, ..
+            } => {
+                let edit = notes::unlock_notes(clip, addr, &of);
+                let line = match edit.is_empty() {
+                    true => "edit: no lock there to take off".into(),
+                    false => "edit: lock taken off".into(),
+                };
+                return Done {
+                    edit,
+                    line,
+                    kept,
+                    ..Done::default()
+                };
+            }
             EditAction::Choose(k) => return self.choose(k, clip, sel),
             // The app keeps the copy and makes the paste.
             EditAction::Copy { index, .. } => {
@@ -2527,21 +2579,57 @@ pub const PRESSURE_LANE: usize = FIELDS.len();
 /// The value that marks the end of a pressure stroke ([`PRESSURE_LANE`]).
 pub const PRESSURE_END: i32 = -1;
 
+/// The first lock lane's `index` in [`EventKind::Values`] (plan 3A.2):
+/// lock lane `k` (its place in [`NoteGrid::lock_settings`]) is
+/// `LOCK_LANES + k`, its `set` each note the stroke set, with the place
+/// of its new value in the setting's [`LockSetting::values`].
+pub const LOCK_LANES: usize = PRESSURE_LANE + 1;
+
+/// A setting a lock lane shows and sets (plan 3A.2), as the app knows it:
+/// one of the Steps' lock lanes for the clip (every setting the clip
+/// locks and each lane added there), with its name, what a step with no
+/// lock plays, and the values a stroke can set, lowest first, each with
+/// its words ("1.2 kHz"), in the steps its knob turns by.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LockSetting {
+    pub addr: RelAddr,
+    pub name: String,
+    pub own: f32,
+    pub values: Vec<(f32, String)>,
+    /// A value either side of 0 (a tune, a pan): drawn from the middle.
+    pub centred: bool,
+}
+
+impl LockSetting {
+    /// The place in [`LockSetting::values`] nearest `v`.
+    pub fn index_of(&self, v: f32) -> usize {
+        let k = self.values.partition_point(|x| x.0 < v);
+        match (k.checked_sub(1), self.values.get(k)) {
+            (Some(j), Some(hi)) if v - self.values[j].0 < hi.0 - v => j,
+            (Some(j), None) => j,
+            _ => k.min(self.values.len().saturating_sub(1)),
+        }
+    }
+}
+
 /// How wide each column of the Pressure lane is, in pixels: the line is
 /// drawn and set column by column.
 const PRESSURE_COL: i32 = 4;
 
-/// What the lane under the roll shows and draws (plan 2A.1, 3A.1): a
-/// value on each note, or the picked notes' pressure along them.
+/// What the lane under the roll shows and draws (plan 2A.1, 3A.1,
+/// 3A.2): a value on each note, the picked notes' pressure along them,
+/// or a setting's lock where each note plays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LaneKind {
     Value(Field),
     Pressure,
+    /// One of the [`NoteGrid::lock_settings`].
+    Lock(RelAddr),
 }
 
 impl LaneKind {
     /// The lanes in the order the chip steps through them (the ramp is
-    /// the Repeats lane with SHIFT).
+    /// the Repeats lane with SHIFT), before the lock lanes.
     pub const ALL: [LaneKind; 4] = [
         LaneKind::Value(Field::Velocity),
         LaneKind::Value(Field::Chance),
@@ -2549,19 +2637,12 @@ impl LaneKind {
         LaneKind::Pressure,
     ];
 
-    /// Its name.
+    /// Its name (a lock lane's is its setting's: [`NoteGrid::lane_name`]).
     pub fn name(self) -> &'static str {
         match self {
             LaneKind::Value(f) => f.name(),
             LaneKind::Pressure => "Pressure",
-        }
-    }
-
-    /// Its name as the chip says it, short where it must be.
-    fn chip(self) -> &'static str {
-        match self {
-            LaneKind::Value(Field::Velocity) => "Vel",
-            k => k.name(),
+            LaneKind::Lock(_) => "Lock",
         }
     }
 }
@@ -2742,14 +2823,16 @@ impl Rows {
 }
 
 /// A finger drawing along the lane: the lane as it was when it went down
-/// (its bars, one for each place where notes start), and the notes each
-/// bar sets; on the Pressure lane, each column's ticks instead.
+/// (its bars, one for each place where notes start, or on a lock lane
+/// each place a lock sits), and the notes each bar sets; on the Pressure
+/// lane, each column's ticks instead. And where the finger is across.
 #[derive(Clone, Debug, PartialEq)]
 struct Stroke {
     kind: LaneKind,
     lane: Lane,
     notes: Vec<Vec<usize>>,
     cols: Vec<(Tick, Tick)>,
+    x: i32,
 }
 
 /// A box pick's lowest and highest rows, from its `Span`'s index
@@ -2821,12 +2904,15 @@ impl Placed for NoteBox {
     }
 }
 
-/// A lock as the tracker counts it: its tick and its row (None for the
-/// whole step).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A lock as the roll knows it: its tick, its row (None for the whole
+/// step), its setting and value (the tracker counts them, the lock lanes
+/// show them, the notes are marked by them).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LockMark {
     pub tick: Tick,
     pub sound: Option<u8>,
+    pub addr: RelAddr,
+    pub value: f32,
 }
 
 impl LockMark {
@@ -2834,6 +2920,8 @@ impl LockMark {
         LockMark {
             tick: l.tick,
             sound: l.sound,
+            addr: l.addr,
+            value: l.value,
         }
     }
 }
@@ -2987,8 +3075,14 @@ pub struct NoteGrid {
     pub color: Color,
     /// The tracker's step, in ticks ([`step_grid`]).
     pub step: Tick,
-    /// The clip's locks, for the tracker's Locks column.
+    /// The clip's locks: the tracker's Locks column, the lock lanes and
+    /// the marks on notes.
     pub locks: Vec<LockMark>,
+    /// The clip's step size on the Steps view, where its locks sit
+    /// ([`notes::steps_grid`]).
+    pub lock_step: Tick,
+    /// The settings a lock lane can show (the app's, plan 3A.2).
+    pub lock_settings: Arc<Vec<LockSetting>>,
     /// The notes' pad pressure, each [`NoteBox::touch`] a run of it, timed
     /// in clip ticks from its note's start (as `Clip::touch`).
     pub touch: Vec<TouchPoint>,
@@ -3243,6 +3337,8 @@ impl Default for NoteGrid {
             color: crate::view::track_color(2),
             step: STEP_FALLBACK,
             locks: Vec::new(),
+            lock_step: STEP_FALLBACK,
+            lock_settings: Arc::default(),
             touch: Vec::new(),
             lane: LaneShow::default(),
             fine: false,
@@ -3316,6 +3412,8 @@ impl NoteGrid {
             && self.color == other.color
             && self.step == other.step
             && self.locks == other.locks
+            && self.lock_step == other.lock_step
+            && self.lock_settings == other.lock_settings
             && self.touch == other.touch
             && self.lane == other.lane
             && (self.scale, &self.scale_name, self.fold)
@@ -3331,6 +3429,137 @@ impl NoteGrid {
             .get(i)
             .and_then(|n| self.touch.get(n.touch.range()))
             .unwrap_or(&[])
+    }
+
+    /// The lane the chip has picked, while it can show: a lock lane whose
+    /// setting the app no longer offers shows Velocity.
+    pub fn lane_kind(&self) -> LaneKind {
+        match self.lane.kind {
+            LaneKind::Lock(a) if self.lock_index(a).is_none() => LaneKind::Value(Field::Velocity),
+            k => k,
+        }
+    }
+
+    /// Lock lane `addr`'s place in [`NoteGrid::lock_settings`].
+    fn lock_index(&self, addr: RelAddr) -> Option<usize> {
+        self.lock_settings.iter().position(|s| s.addr == addr)
+    }
+
+    /// Lane `kind`'s name: a lock lane's is its setting's.
+    pub fn lane_name(&self, kind: LaneKind) -> String {
+        match kind {
+            LaneKind::Lock(a) => self.lock_index(a).map_or_else(
+                || kind.name().to_string(),
+                |k| self.lock_settings[k].name.clone(),
+            ),
+            k => k.name().to_string(),
+        }
+    }
+
+    /// The lanes the chip steps through: Vel, Chance, Repeats and
+    /// Pressure, then each lock lane.
+    fn lane_kinds(&self) -> Vec<LaneKind> {
+        LaneKind::ALL
+            .into_iter()
+            .chain(self.lock_settings.iter().map(|s| LaneKind::Lock(s.addr)))
+            .collect()
+    }
+
+    /// The clip's steps as the Steps view cuts them: where its locks sit.
+    fn steps_grid(&self) -> Grid {
+        Grid::new(self.lock_step)
+            .or_else(|| Grid::new(mpfree_seq::steps::DEFAULT_SIZE))
+            .expect("a 1/16 is a step size")
+    }
+
+    /// Note `i`'s step and the row a lock of `addr` on it sits on
+    /// ([`notes::lock_row`]: its own pitch's when one is there, a pad's
+    /// setting on its pad, else the whole step); None when the setting
+    /// isn't the note's.
+    fn lock_place(&self, i: usize, addr: RelAddr) -> Option<(usize, Option<u8>)> {
+        let n = self.notes.get(i)?;
+        let g = self.steps_grid();
+        let step = g.place(self.length, n.tick).0;
+        let own = self.locks.iter().any(|l| {
+            l.addr == addr && l.sound == Some(n.note) && g.place(self.length, l.tick).0 == step
+        });
+        Some((step, notes::lock_row(addr, n.note, own)?))
+    }
+
+    /// The value of `addr` locked at `place` (a step and a row).
+    fn lock_at(&self, place: (usize, Option<u8>), addr: RelAddr) -> Option<f32> {
+        let g = self.steps_grid();
+        self.locks
+            .iter()
+            .find(|l| {
+                l.addr == addr && l.sound == place.1 && g.place(self.length, l.tick).0 == place.0
+            })
+            .map(|l| l.value)
+    }
+
+    /// Where the clip's locks sit, each a step and a row (None for the
+    /// whole step), in order, once each: what [`NoteGrid::marks_in`]
+    /// looks in.
+    fn lock_places(&self) -> Vec<(usize, Option<u8>)> {
+        if self.locks.is_empty() {
+            return Vec::new();
+        }
+        let g = self.steps_grid();
+        let mut v: Vec<(usize, Option<u8>)> = self
+            .locks
+            .iter()
+            .map(|l| (g.place(self.length, l.tick).0, l.sound))
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
+    /// Note `i`'s marks (plan 3A.2): whether a lock sits where it plays
+    /// (on its pitch or its whole step), and whether it has a condition
+    /// or a chance under 100 %.
+    fn marks(&self, i: usize) -> (bool, bool) {
+        self.marks_in(i, &self.lock_places())
+    }
+
+    /// [`NoteGrid::marks`] with the locks' `places` found once, for a
+    /// paint of every note.
+    fn marks_in(&self, i: usize, places: &[(usize, Option<u8>)]) -> (bool, bool) {
+        let Some(n) = self.notes.get(i) else {
+            return (false, false);
+        };
+        let locked = !places.is_empty() && {
+            let step = self.steps_grid().place(self.length, n.tick).0;
+            places.binary_search(&(step, None)).is_ok()
+                || places.binary_search(&(step, Some(n.note))).is_ok()
+        };
+        (locked, n.cond != Cond::Always || n.chance < 100)
+    }
+
+    /// The corner of note `i`'s box in `g` a tap on opens a lane (plan
+    /// 3A.2): its top right, 20 px, while it has a mark and room beside
+    /// it for a tap on the note itself (48 px wide).
+    fn mark_zone(&self, g: &Geo, i: usize) -> Option<Rect> {
+        let nr = self.note_rect_in(g, i)?;
+        let (lock, when) = self.marks(i);
+        ((lock || when) && nr.w >= 48 && nr.h >= 12)
+            .then(|| Rect::new(nr.right() - 20, nr.y, 20, nr.h.min(20)))
+    }
+
+    /// The lane a tap on note `i`'s marks opens: the first lock lane with
+    /// a lock where it plays, else Chance for a condition or a chance.
+    fn mark_lane(&self, i: usize) -> Option<LaneKind> {
+        let (lock, when) = self.marks(i);
+        let locked = lock.then(|| {
+            self.lock_settings.iter().find(|s| {
+                self.lock_place(i, s.addr)
+                    .is_some_and(|p| self.lock_at(p, s.addr).is_some())
+            })
+        });
+        match locked.flatten() {
+            Some(s) => Some(LaneKind::Lock(s.addr)),
+            None => when.then_some(LaneKind::Value(Field::Chance)),
+        }
     }
 
     /// Show what `other` shows, keeping what the fingers are doing.
@@ -4101,6 +4330,7 @@ impl NoteGrid {
         let top = t.accent;
         let shade = |v: u8| t.raised.mix(self.color, 0.35 + 0.65 * f32::from(v) / 127.0);
         let shown = self.in_view(g);
+        let places = self.lock_places();
         // While notes move or a handle drags, where they were: an outline
         // under where they go (plan 1B.2).
         if let Some(d) = self.drag.filter(|d| (d.ticks, d.notes) != (0, 0)) {
@@ -4143,6 +4373,28 @@ impl NoteGrid {
                     false => Rect::new(nr.x, nr.y, nr.w, 3),
                 };
                 cx.canvas.fill_round_rect(mark, 3.min(mark.h / 2), t.warn);
+            }
+            // A lock where it plays, and a condition or a chance under
+            // 100 % (plan 3A.2): a small mark each in its top right
+            // corner, the lock's a square, the other's a ring.
+            let (lock, when) = match nr.w >= 20 && nr.h >= 12 {
+                true => self.marks_in(i, &places),
+                false => (false, false),
+            };
+            if lock || when {
+                let ink = match n.on {
+                    true => t.ink_on(fill),
+                    false => t.text,
+                };
+                let mut x = nr.right() - 9;
+                if lock {
+                    cx.canvas.fill_rect(Rect::new(x, nr.y + 3, 6, 6), ink);
+                    x -= 9;
+                }
+                if when {
+                    cx.canvas
+                        .stroke_round_rect(Rect::new(x, nr.y + 3, 6, 6), 3, 1, ink);
+                }
             }
         }
         // A note being drawn with Draw on: where it goes when the finger
@@ -4489,8 +4741,11 @@ impl NoteGrid {
 
     fn paint_lane(&self, cx: &mut PaintCx, g: &Geo) {
         let t = cx.theme.clone();
-        let kind = self.stroke.as_ref().map_or(self.lane.kind, |s| s.kind);
-        let name = kind.chip();
+        let kind = self.stroke.as_ref().map_or(self.lane_kind(), |s| s.kind);
+        let name = match kind {
+            LaneKind::Value(Field::Velocity) => "Vel".to_string(),
+            k => self.lane_name(k),
+        };
         if !g.chip.is_empty() {
             // Folded, a caret up after the name says a tap opens it.
             let ink = t.ink_on(t.raised);
@@ -4505,7 +4760,7 @@ impl NoteGrid {
                 text,
                 Align::Center,
                 ink,
-                name,
+                &name,
             );
             if caret {
                 let y = g.chip.y + g.chip.h / 2;
@@ -4525,21 +4780,42 @@ impl NoteGrid {
             cx.canvas.fill_round_rect(grip, 1, t.text_faint);
         }
         let body = lane_body(g);
-        let lane = match (&self.stroke, kind) {
-            (Some(st), _) => st.lane.clone(),
-            (None, LaneKind::Pressure) => self.pressure_lane(g).0,
-            (None, LaneKind::Value(f)) => self.lane_of(g, f).0,
+        let (lane, bar_notes) = match (&self.stroke, kind) {
+            (Some(st), _) => (st.lane.clone(), st.notes.clone()),
+            (None, LaneKind::Pressure) => (self.pressure_lane(g).0, Vec::new()),
+            (None, LaneKind::Value(f)) => self.lane_of(g, f),
+            (None, LaneKind::Lock(a)) => self
+                .lock_index(a)
+                .map(|k| self.lock_lane(g, k))
+                .unwrap_or_default(),
         };
         lane.paint(cx, body, self.color);
-        if kind == LaneKind::Pressure && lane.bars.is_empty() {
+        let empty = match kind {
+            LaneKind::Pressure => "Pick notes to draw their pressure",
+            LaneKind::Lock(_) => "No notes in view use this setting",
+            LaneKind::Value(_) => "",
+        };
+        if lane.bars.is_empty() && !empty.is_empty() {
             cx.text(
                 FontId::Sans,
                 t.size_small - 2.0,
                 body,
                 Align::Center,
                 t.text_dim,
-                "Pick notes to draw their pressure",
+                empty,
             );
+        }
+        if let LaneKind::Lock(a) = kind {
+            if let Some(card) = self.lock_card(&lane, &bar_notes, a) {
+                cx.text(
+                    FontId::Sans,
+                    11.0,
+                    Rect::new(body.x + 4, body.y, body.w - 8, 14),
+                    Align::Right,
+                    t.text_dim,
+                    &card,
+                );
+            }
         }
         if kind != LaneKind::Value(Field::Velocity) {
             return;
@@ -4677,6 +4953,110 @@ impl NoteGrid {
         }
         lane.set_bars(bars);
         (lane, cols)
+    }
+
+    /// Lock lane `k` as the roll shows it now (plan 3A.2): a bar for each
+    /// place a lock of its setting sits for the notes starting in view (a
+    /// step and a row, [`notes::lock_row`]), at its first note's start, as
+    /// wide as the room to the next (6 to 28 px), as high as the place's
+    /// lock among the setting's values (from the middle for a centred
+    /// one), or faint at what the step plays when it has none; outlined
+    /// while a note there is picked. Places that start together (closer
+    /// than [`PLACE_PX`]) show one bar: the first with a picked note, else
+    /// the first. And each bar's notes, the place's in view.
+    fn lock_lane(&self, g: &Geo, k: usize) -> (Lane, Vec<Vec<usize>>) {
+        let Some(s) = self.lock_settings.get(k) else {
+            return Default::default();
+        };
+        let top = s.values.len() as i32 - 1;
+        let z = if s.centred { s.index_of(0.0) as i32 } else { 0 };
+        let mut lane = Lane::new(-z, top - z, 1);
+        lane.every = true;
+        if s.centred {
+            lane.style = LaneStyle::Centred;
+        }
+        if s.values.is_empty() {
+            return (lane, Vec::new());
+        }
+        type Place = (usize, Option<u8>);
+        let mut places: Vec<(Tick, Place, Vec<usize>)> = Vec::new();
+        for i in self.in_view(g) {
+            let Some(n) = self.notes.get(i) else {
+                continue;
+            };
+            let x = self.x_of(g, n.tick);
+            if x < g.roll.x || x >= g.roll.right() {
+                continue;
+            }
+            let Some(place) = self.lock_place(i, s.addr) else {
+                continue;
+            };
+            match places.iter_mut().find(|p| p.1 == place) {
+                Some(p) => {
+                    p.0 = p.0.min(n.tick);
+                    p.2.push(i);
+                }
+                None => places.push((n.tick, place, vec![i])),
+            }
+        }
+        places.sort_by_key(|p| (p.0, p.1 .1));
+        let picked = |all: &[usize]| all.iter().any(|&i| self.notes[i].selected);
+        let mut shown: Vec<(Tick, Place, Vec<usize>)> = Vec::new();
+        for (t, place, all) in places {
+            match shown.last_mut() {
+                Some(last) if self.x_of(g, t) - self.x_of(g, last.0) < PLACE_PX => {
+                    if picked(&all) && !picked(&last.2) {
+                        (last.1, last.2) = (place, all);
+                    }
+                }
+                _ => shown.push((t, place, all)),
+            }
+        }
+        let xs: Vec<i32> = shown.iter().map(|p| self.x_of(g, p.0)).collect();
+        let (mut bars, mut notes) = (Vec::new(), Vec::new());
+        for (j, (_, place, all)) in shown.into_iter().enumerate() {
+            let x = xs[j];
+            let next = xs.get(j + 1).copied().unwrap_or(g.roll.right());
+            let lock = self.lock_at(place, s.addr);
+            bars.push(Bar {
+                x,
+                w: (next - x).clamp(6, 28).min(g.roll.right() - x).max(2),
+                value: s.index_of(lock.unwrap_or(s.own)) as i32 - z,
+                picked: picked(&all),
+                dim: lock.is_none(),
+                label: String::new(),
+            });
+            notes.push(all);
+        }
+        lane.set_bars(bars);
+        (lane, notes)
+    }
+
+    /// What a lock lane says at its top right (plan 3A.2), for the bar
+    /// under the stroke or else the first picked one: its value in words,
+    /// that it is not locked (what its step plays), or how many notes
+    /// share the lock, since changing it changes them all.
+    fn lock_card(&self, lane: &Lane, bar_notes: &[Vec<usize>], addr: RelAddr) -> Option<String> {
+        let s = self.lock_settings.get(self.lock_index(addr)?)?;
+        let stroke = self.stroke.as_ref().map(|st| st.x);
+        let k = match stroke {
+            Some(x) => lane.bar_at(x)?,
+            None => lane.bars.iter().position(|b| b.picked)?,
+        };
+        let v = usize::try_from(lane.shown(k)? - lane.min).ok()?;
+        let mut text = s.values.get(v)?.1.clone();
+        if stroke.is_none() && lane.bars.get(k)?.dim {
+            text.push_str(" · not locked");
+            return Some(text);
+        }
+        let place = self.lock_place(*bar_notes.get(k)?.first()?, addr)?;
+        let share = (0..self.notes.len())
+            .filter(|&i| self.lock_place(i, addr) == Some(place))
+            .count();
+        if share > 1 {
+            text.push_str(&format!(" · shared by {share} notes"));
+        }
+        Some(text)
     }
 
     /// While a note moves or a handle drags (plan 1B.2), what it will be,
@@ -5245,7 +5625,15 @@ impl Widget for NoteGrid {
             // change.
             let body = lane_body(&g);
             let mut foot = Some(Rect::new(body.x, body.bottom() - 8, body.w, 6));
-            if self.lane.kind == LaneKind::Pressure {
+            let kind = self.lane_kind();
+            if let LaneKind::Lock(a) = kind {
+                // Up from the foot of its first bar.
+                let lane = self.lock_index(a).map(|k| self.lock_lane(&g, k).0);
+                foot = lane
+                    .and_then(|l| l.bars.first().cloned())
+                    .map(|b| Rect::new(b.x, body.bottom() - 8, b.w, 6));
+            }
+            if kind == LaneKind::Pressure {
                 // Along the first run of the picked notes' columns, side
                 // by side; with none, none.
                 let lane = self.pressure_lane(&g).0;
@@ -5262,7 +5650,7 @@ impl Widget for NoteGrid {
             }
             if let (false, Some(foot)) = (tool, foot) {
                 out.push(
-                    Target::drag("lane", 0, self.lane.kind.name(), foot).towards(0, 10 - body.h),
+                    Target::drag("lane", 0, self.lane_name(kind), foot).towards(0, 10 - body.h),
                 );
             }
             out.push(Target::drag("lane-edge", 0, "lane's top edge", g.edge).towards(0, -24));
@@ -5294,8 +5682,20 @@ impl Widget for NoteGrid {
         }
         let shown = self.in_view(&g);
         for &i in &shown {
-            if let Some(nr) = self.note_rect_in(&g, i) {
+            // The part on the roll: a note running past its edge is
+            // tapped where it shows.
+            let nr = self.note_rect_in(&g, i).map(|nr| nr.intersect(g.roll));
+            if let Some(nr) = nr.filter(|nr| !nr.is_empty()) {
                 out.push(Target::tap("note", i, format!("note {}", i + 1), nr));
+            }
+            // Its marks' corner opens their lane (plan 3A.2).
+            if let Some(z) = self.mark_zone(&g, i) {
+                out.push(Target::tap(
+                    "note-mark",
+                    i,
+                    format!("note {} marks", i + 1),
+                    z,
+                ));
             }
         }
         // The picked notes' handles: dragged out, a start earlier and an
@@ -5338,7 +5738,11 @@ impl Widget for NoteGrid {
         // what it changed, once, and another finger coming down calls it
         // off with nothing sent (and does nothing else).
         if let Some(st) = self.stroke.as_mut() {
-            let LaneTouch::Done(changed) = st.lane.touch(f, phase, x, y, lane_body(&g)) else {
+            let done = st.lane.touch(f, phase, x, y, lane_body(&g));
+            let LaneTouch::Done(changed) = done else {
+                if done == LaneTouch::Preview {
+                    st.x = x;
+                }
                 return None;
             };
             let st = self.stroke.take()?;
@@ -5358,6 +5762,18 @@ impl Widget for NoteGrid {
                         index: PRESSURE_LANE,
                         set,
                     });
+                }
+                // Each bar it set, changed or not, by its first note,
+                // with the place of its value among the setting's (plan
+                // 3A.2): the app leaves a lock already there be, or with
+                // ERASE held takes it off.
+                LaneKind::Lock(a) => {
+                    let index = LOCK_LANES + self.lock_index(a)?;
+                    let set: Vec<(usize, i32)> = changed
+                        .into_iter()
+                        .filter_map(|(b, v)| Some((*st.notes.get(b)?.first()?, v - st.lane.min)))
+                        .collect();
+                    return (!set.is_empty()).then_some(EventKind::Values { index, set });
                 }
             };
             let set: Vec<(usize, i32)> = changed
@@ -5697,10 +6113,26 @@ impl Widget for NoteGrid {
                         self.hand = Hand::Idle;
                         return if up { self.boxed(&g, at, now) } else { None };
                     }
-                    // A tap on a note, unless a hold picked it.
-                    Hand::Press { index, picked, .. } => {
+                    // A tap on a note, unless a hold picked it. On its
+                    // marks' corner, it opens their lane and picks the
+                    // note (plan 3A.2): never the tap's take-out.
+                    Hand::Press {
+                        index, picked, at, ..
+                    } => {
                         self.hand = Hand::Idle;
-                        return (up && !picked).then_some(EventKind::Toggle(index));
+                        if !up || picked {
+                            return None;
+                        }
+                        let lane = self
+                            .mark_zone(&g, index)
+                            .filter(|z| z.contains(at.0, at.1))
+                            .and_then(|_| self.mark_lane(index));
+                        if let Some(kind) = lane {
+                            self.lane.kind = kind;
+                            self.lane.folded = false;
+                            return Some(EventKind::Select(index));
+                        }
+                        return Some(EventKind::Toggle(index));
                     }
                     Hand::Pen { note, from, to, .. } => {
                         self.hand = Hand::Idle;
@@ -6229,8 +6661,9 @@ impl NoteGrid {
             if self.lane.folded {
                 self.lane.folded = false;
             } else {
-                let k = LaneKind::ALL.iter().position(|&l| l == self.lane.kind);
-                self.lane.kind = LaneKind::ALL[k.map_or(0, |k| (k + 1) % LaneKind::ALL.len())];
+                let kinds = self.lane_kinds();
+                let k = kinds.iter().position(|&l| l == self.lane_kind());
+                self.lane.kind = kinds[k.map_or(0, |k| (k + 1) % kinds.len())];
             }
             return Some(self.view_event());
         }
@@ -6263,7 +6696,7 @@ impl NoteGrid {
             if self.lane.folded {
                 return None;
             }
-            let kind = match self.lane.kind {
+            let kind = match self.lane_kind() {
                 LaneKind::Value(Field::Repeats) if self.fine => LaneKind::Value(Field::Ramp),
                 k => k,
             };
@@ -6276,6 +6709,13 @@ impl NoteGrid {
                     let (lane, cols) = self.pressure_lane(g);
                     (lane, Vec::new(), cols)
                 }
+                LaneKind::Lock(a) => {
+                    let (lane, notes) = self
+                        .lock_index(a)
+                        .map(|k| self.lock_lane(g, k))
+                        .unwrap_or_default();
+                    (lane, notes, Vec::new())
+                }
             };
             if !lane.bars.is_empty() {
                 lane.touch(f, Touch::Down, x, y, lane_body(g));
@@ -6284,6 +6724,7 @@ impl NoteGrid {
                     lane,
                     notes,
                     cols,
+                    x,
                 });
             }
             return None;
@@ -6345,6 +6786,7 @@ impl NoteGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mpfree_seq::mpfree_param::OnTrack;
 
     fn clip(notes: &[(Tick, Tick, u8)]) -> Clip {
         let mut c = Clip::new("Bass", 4 * 960);
@@ -7159,11 +7601,15 @@ mod tests {
                 LockMark {
                     tick: 960,
                     sound: Some(0),
+                    addr: RelAddr::new(OnTrack::Pad(0), 3),
+                    value: 0.5,
                 },
                 // A trigless lock on an empty step.
                 LockMark {
                     tick: 480,
                     sound: None,
+                    addr: RelAddr::new(OnTrack::Inst, 3),
+                    value: 0.5,
                 },
             ],
             ..NoteGrid::default()
@@ -8186,6 +8632,147 @@ mod tests {
         assert_eq!(g.lane.kind, LaneKind::Value(Field::Velocity));
     }
 
+    /// A lock lane (plan 3A.2): a bar where the notes play the setting
+    /// (a step and a row), as high as its lock or faint at what the step
+    /// plays; a stroke sends each bar it set by its first note, with the
+    /// place of its value; the notes a lock reaches are marked, and a tap
+    /// on a note's marks opens their lane. The chip steps through the
+    /// lock lanes after Pressure.
+    #[test]
+    fn a_lock_lane_shows_and_sets_each_steps_lock() {
+        let addr = RelAddr::new(OnTrack::Inst, 7);
+        let mut g = grid();
+        // A second note on step 0, a fifth up.
+        g.notes.push(NoteBox::of(&Note::new(0, 240, 55, 90), false));
+        g.lock_settings = Arc::new(vec![LockSetting {
+            addr,
+            name: "Cutoff".into(),
+            own: 5.0,
+            values: (0..=10).map(|k| (k as f32, format!("{k} k"))).collect(),
+            centred: false,
+        }]);
+        g.locks = vec![LockMark {
+            tick: 0,
+            sound: None,
+            addr,
+            value: 8.0,
+        }];
+        g.lane.kind = LaneKind::Lock(addr);
+        let geo = g.geo(R);
+        let (lane, notes) = g.lock_lane(&geo, 0);
+        assert_eq!(lane.bars.len(), 2, "step 1's and step 5's");
+        assert_eq!((lane.bars[0].value, lane.bars[0].dim), (8, false));
+        assert_eq!(
+            (lane.bars[1].value, lane.bars[1].dim),
+            (5, true),
+            "no lock: what the step plays"
+        );
+        assert_eq!(notes, [vec![0, 2], vec![1]], "step 1's notes share it");
+        assert!(lane.bars[1].picked && !lane.bars[0].picked);
+        assert_eq!(
+            g.lock_card(&lane, &notes, addr).as_deref(),
+            Some("5 k · not locked")
+        );
+        // Both of step 1's notes are marked; picked, it says they share.
+        assert_eq!(
+            (g.marks(0), g.marks(1), g.marks(2)),
+            ((true, false), (false, false), (true, false))
+        );
+        g.notes[0].selected = true;
+        g.notes[1].selected = false;
+        let (lane, notes) = g.lock_lane(&geo, 0);
+        assert_eq!(
+            g.lock_card(&lane, &notes, addr).as_deref(),
+            Some("8 k · shared by 2 notes")
+        );
+        // A stroke from step 1's foot to step 5's top: both, by their
+        // first notes, the faint one at the top too.
+        let body = lane_body(&geo);
+        let (a, b) = (lane.bars[0].x + 1, lane.bars[1].x + 1);
+        g.touch(1, Touch::Down, a, body.bottom() - 1, R);
+        g.touch(1, Touch::Move, b, body.y + 14, R);
+        let Some(EventKind::Values { index, set }) = g.touch(1, Touch::Up, b, body.y + 14, R)
+        else {
+            panic!("a stroke sends the bars it set");
+        };
+        assert_eq!(index, LOCK_LANES);
+        assert_eq!((set.len(), set[0].0, set[1]), (2, 0, (1, 10)), "{set:?}");
+        // A tap on note 2's marks (a lock on step 5 now) opens the lane,
+        // unfolded, from Velocity, and picks the note.
+        g.locks.push(LockMark {
+            tick: 960,
+            sound: None,
+            addr,
+            value: 2.0,
+        });
+        g.lane = LaneShow {
+            folded: true,
+            ..LaneShow::default()
+        };
+        let marks = |g: &NoteGrid| mid(g.mark_zone(&g.geo(R), 1).expect("note 2 is wide enough"));
+        let at = marks(&g);
+        g.touch(2, Touch::Down, at.0, at.1, R);
+        assert_eq!(
+            g.touch(2, Touch::Up, at.0, at.1, R),
+            Some(EventKind::Select(1))
+        );
+        assert_eq!((g.lane.kind, g.lane.folded), (LaneKind::Lock(addr), false));
+        // A chance under 100 % with no lock: its marks open Chance.
+        g.locks.clear();
+        g.notes[1].chance = 50;
+        assert_eq!(g.marks(1), (false, true));
+        let at = marks(&g);
+        g.touch(3, Touch::Down, at.0, at.1, R);
+        g.touch(3, Touch::Up, at.0, at.1, R);
+        assert_eq!(g.lane.kind, LaneKind::Value(Field::Chance));
+        // Elsewhere on the note, a tap is a tap.
+        let nr = g.note_rect_in(&g.geo(R), 1).unwrap();
+        g.touch(4, Touch::Down, nr.x + 8, at.1, R);
+        assert_eq!(
+            g.touch(4, Touch::Up, nr.x + 8, at.1, R),
+            Some(EventKind::Toggle(1))
+        );
+        // The chip: Pressure, then the lock lane, then Velocity again.
+        g.lane.kind = LaneKind::Pressure;
+        let chip = mid(geo.chip);
+        let chip_tap = |g: &mut NoteGrid| {
+            g.touch(5, Touch::Down, chip.0, chip.1, R);
+            g.touch(5, Touch::Up, chip.0, chip.1, R);
+            g.lane.kind
+        };
+        assert_eq!(chip_tap(&mut g), LaneKind::Lock(addr));
+        assert_eq!(chip_tap(&mut g), LaneKind::Value(Field::Velocity));
+        // A setting the app no longer offers: the lane shows Velocity.
+        g.lane.kind = LaneKind::Lock(addr);
+        g.lock_settings = Arc::default();
+        assert_eq!(g.lane_kind(), LaneKind::Value(Field::Velocity));
+    }
+
+    /// A setting either side of 0 draws from the middle: its lane runs
+    /// from below 0 to above it, a step without a lock at 0.
+    #[test]
+    fn a_centred_lock_lane_draws_from_the_middle() {
+        let addr = RelAddr::new(OnTrack::Pad(50), 1);
+        let mut g = grid();
+        g.lock_settings = Arc::new(vec![LockSetting {
+            addr,
+            name: "Tune".into(),
+            own: 0.0,
+            values: (-2..=2)
+                .map(|k| (k as f32 * 100.0, format!("{k:+} st")))
+                .collect(),
+            centred: true,
+        }]);
+        let (lane, notes) = g.lock_lane(&g.geo(R), 0);
+        assert_eq!(
+            (lane.min, lane.max, lane.style),
+            (-2, 2, LaneStyle::Centred)
+        );
+        // Pad 50's setting: only the note on pad 50 plays it.
+        assert_eq!(notes, [vec![0]]);
+        assert_eq!(lane.bars[0].value, 0);
+    }
+
     #[test]
     fn it_paints_every_lens() {
         use mpfree_ui::{Fonts, SoftCanvas, Theme, Ui};
@@ -8194,6 +8781,8 @@ mod tests {
         g.locks = vec![LockMark {
             tick: 960,
             sound: Some(52),
+            addr: RelAddr::new(OnTrack::Inst, 3),
+            value: 0.5,
         }];
         for lens in [Lens::Grid, Lens::List, Lens::Tracker] {
             g.lens = lens;

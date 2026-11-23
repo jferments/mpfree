@@ -54,6 +54,7 @@ Under the roll, each place where notes start has a bar in the lane, as tall as t
 - **Chance**: how likely each note is to play on a pass, 1 to 100 %. A note that never plays is an off note (tapped off on Steps), not 0 %. A chord whose notes play together or not at all (a chord pad's) has one chance, so drawing across it sets the whole chord to the last value you drew on it.
 - **Repeats**: how many times each note plays (a ratchet), 1 to 8. An arrow after the number says its ramp rises (↑) or falls (↓).
 - **Pressure**: the [pad pressure](clips.md#pad-pressure) of the picked notes, as a line along each one that rises where the pressure grows. Pick the notes first: with none picked the lane says "Pick notes to draw their pressure". See [Drawing pressure](#drawing-pressure).
+- **A setting's locks** ("Cutoff", "Tune"): one lane after Pressure for each [lock lane](sequencer.md#lock-lanes) the clip has on Steps, named for its setting. See [Drawing locks](#drawing-locks).
 
 Draw with one finger along the lane: every bar you pass takes the height under your finger, so a crescendo or a fade is one stroke. The bars follow your finger, and nothing changes until you lift it; then the stroke is one change, and one **UNDO** takes it back. A second finger on the screen calls the stroke off.
 
@@ -68,6 +69,22 @@ Pick the notes whose pressure you want to shape, then tap the lane's chip until 
 {{shot: sequencer-notes-pressure | The Pressure lane under two picked notes that were played with pressure: each swell is a line under its note.}}
 
 Draw along the lane with one finger and the line follows it: a swell, a fade, or pressure on a note that had none. Before and after your stroke each note keeps the pressure it had. Nothing changes until you lift your finger; then the stroke is one change to every picked note it crossed, and one **UNDO** brings their old pressure back. The roll's own pressure shape on each note shows the result. Pressure goes to your instrument as the pads' pressure does, so a synth or a sample program that listens to it plays the new line.
+
+#### Drawing locks
+
+A lock is a setting's own value on one step, such as a filter that closes on one chord and opens on the next. The lanes you add on **Steps** with **+ Lane**, and every setting the clip already locks, show here too: tap the lane's chip past **Pressure** until it names the setting.
+
+{{shot: sequencer-notes-locks | The Cutoff lane under a bar of chords: three steps locked, the second chord picked and its lock shared by its three notes; the locked notes and a 1:2 note carry marks.}}
+
+- **What it shows.** Each place a lock can sit has a bar, as tall as its lock. A bar with no lock is faint, at what that step plays without one. The lane's top right says the value of the picked note's bar ("2.6 kHz"), or of the bar under your finger while you draw.
+- **Draw** along the lane as on the others: each bar you pass gets a lock at the height under your finger, faint ones too, and the stroke is one change, so one **UNDO** takes it back. A bar you only cross keeps its lock as it was.
+- **Take one off.** Hold **ERASE** and tap a bar: its lock comes off, and the step plays the setting's own value again.
+- **Shared locks.** A lock belongs to a step, as on Steps, so notes that start in the same step share it: a chord has one lock, not one per note. Changing it changes all of them, and the lane's top right says so ("2.6 kHz · shared by 3 notes"). A pad's setting, such as a kit pad's tune, has its own lane for that pad, and only the notes on that pad show on it.
+- **These are Steps' locks.** A lock you draw here is on Steps too, under the same lane, and the other way round. To lock a setting with no lane yet, add its lane on Steps with **+ Lane**.
+
+#### Marks on notes
+
+A note with a lock where it plays has a small square in its top right corner. A note with a condition ("1:2") or a chance under 100 % has a small ring there. On a note wide enough, tap that corner to open the lane its mark is on: the first lock lane with a lock there, or **Chance**. The tap also picks the note, so its bar is outlined; it never takes a note out, even with **Draw** on.
 
 ### Change notes with the Q-Links
 

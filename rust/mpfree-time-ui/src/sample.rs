@@ -1278,6 +1278,7 @@ pub fn notes_state(lens: crate::editor::Lens) -> Result<TimeState, String> {
         track_name: "Chords".into(),
         bar: BAR,
         answer: Default::default(),
+        locks: Default::default(),
     }));
     Ok(state)
 }
@@ -1349,6 +1350,63 @@ pub fn notes_pressure_state() -> Result<TimeState, String> {
     Ok(state)
 }
 
+/// The setting the locks sample's lane shows: a filter cutoff, as a
+/// synth's knob turns it, a semitone a detent from 20 Hz to open.
+pub fn cutoff_setting(addr: mpfree_seq::mpfree_param::RelAddr) -> crate::editor::LockSetting {
+    let words = |v: f32| match v {
+        v if v >= 20_000.0 => "open".to_string(),
+        v if v >= 1000.0 => format!("{:.1} kHz", v / 1000.0),
+        v => format!("{v:.0} Hz"),
+    };
+    let mut values: Vec<(f32, String)> = (0..)
+        .map(|k| 20.0 * (k as f32 / 12.0).exp2())
+        .take_while(|&v| v < 20_000.0)
+        .map(|v| (v, words(v)))
+        .collect();
+    values.push((20_000.0, words(20_000.0)));
+    crate::editor::LockSetting {
+        addr,
+        name: "Cutoff".into(),
+        own: 20_000.0,
+        values,
+        centred: false,
+    }
+}
+
+/// The note editor on "Keys" with Cutoff locks on three steps (piano
+/// roll plan 3A.2), its lock lane showing: the second chord's three
+/// notes share their step's lock and are picked, so the lane says so; the
+/// notes the locks reach are marked, and a melody note with a 1:2
+/// condition is too. The steps with no lock play the filter open.
+pub fn notes_locks_state() -> Result<TimeState, String> {
+    use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+    let mut state = notes_state(crate::editor::Lens::Grid)?;
+    let e = state.edit.as_mut().ok_or("no editor")?;
+    let cutoff = RelAddr::new(OnTrack::Inst, 3);
+    let mut clip = (*e.clip).clone();
+    let at = |c: &Clip, tick: Tick, note: u8| {
+        c.notes
+            .iter()
+            .position(|n| (n.tick, n.note) == (tick, note))
+            .ok_or(format!("no note {note} at {tick}"))
+    };
+    let set = [
+        (at(&clip, 0, 60)?, 640.0),
+        (at(&clip, 2 * BEAT + 12, 56)?, 2560.0),
+        (at(&clip, 3 * BEAT + 5, 72)?, 1280.0),
+    ];
+    clip.apply(&mpfree_seq::notes::lock_notes(&clip, cutoff, &set))
+        .map_err(|e| format!("{e:?}"))?;
+    let odd = at(&clip, BEAT + 14, 75)?;
+    clip.notes[odd].cond = mpfree_seq::Cond::Every { a: 1, b: 2 };
+    e.editor.sel = (0..clip.notes.len())
+        .filter(|&i| (2 * BEAT..3 * BEAT).contains(&clip.notes[i].tick) && clip.notes[i].len > BEAT)
+        .collect();
+    e.clip = clip.into();
+    e.locks = std::sync::Arc::new(vec![cutoff_setting(cutoff)]);
+    Ok(state)
+}
+
 /// A bar of drums with a step's every setting in use: a nudged hat, a
 /// ghost snare at 50 %, a 1:2 hat, a ratchet, a FILL open hat and a lock
 /// on the second snare (what the tracker shows).
@@ -1416,6 +1474,7 @@ pub fn tracker_state() -> Result<TimeState, String> {
         track_name: "Drums".into(),
         bar: BAR,
         answer: Default::default(),
+        locks: Default::default(),
     }));
     Ok(state)
 }

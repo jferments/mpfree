@@ -4102,6 +4102,7 @@ fn roll_page(pressure: bool, two: bool) -> RollPage {
             track_name: "Keys".into(),
             bar,
             answer: Default::default(),
+            locks: Default::default(),
         })
     };
     let infos = [info(0, 1), info(if two { 1 } else { 0 }, 2)];
