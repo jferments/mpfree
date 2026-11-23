@@ -110,7 +110,6 @@ fn play_phrase(case: usize, engine: &mut Engine, p: Phrase) {
     periods(engine, 300);
     engine.release(48);
     periods(engine, 20);
-    drop(periods);
     assert!(
         on.iter().all(|&n| n == 0),
         "case {case}: a note is left sounding"
