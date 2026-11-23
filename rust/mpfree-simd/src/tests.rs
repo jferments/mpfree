@@ -599,6 +599,125 @@ fn the_shortest_slice_sets_how_many_buses_mix() {
     }
 }
 
+/// A random `kc`-step GEMM problem: packed `a`, packed `b` (each a little
+/// longer than it needs, as a slice of a bigger panel is) and a block.
+fn gemm_case(rng: &mut Rng, kc: usize) -> (Vec<f32>, Vec<f32>, [f32; 32]) {
+    let a: Vec<f32> = (0..kc * 4 + rng.below(5) as usize)
+        .map(|_| rng.unit())
+        .collect();
+    let b: Vec<f32> = (0..kc * 8 + rng.below(9) as usize)
+        .map(|_| rng.unit())
+        .collect();
+    let acc = std::array::from_fn(|_| rng.unit());
+    (a, b, acc)
+}
+
+/// The twin against a plain f64 sum of the same products.
+#[test]
+fn the_gemm_twin_adds_every_product_to_its_block() {
+    let mut rng = Rng(4096);
+    for kc in [0, 1, 2, 7, 64, 300] {
+        let (a, b, start) = gemm_case(&mut rng, kc);
+        let mut acc = start;
+        plain::gemm4x8(kc, &a, &b, &mut acc);
+        for r in 0..GEMM_MR {
+            for j in 0..GEMM_NR {
+                let mut want = f64::from(start[r * 8 + j]);
+                for k in 0..kc {
+                    want += f64::from(a[k * 4 + r]) * f64::from(b[k * 8 + j]);
+                }
+                let got = f64::from(acc[r * 8 + j]);
+                assert!(
+                    (got - want).abs() < 5e-4,
+                    "kc {kc} [{r}][{j}]: {got} vs {want}"
+                );
+            }
+        }
+        if kc == 0 {
+            assert_eq!(bits(&acc), bits(&start));
+        }
+    }
+}
+
+#[test]
+fn the_gemm_gives_the_same_block_on_either_path() {
+    let mut rng = Rng(31);
+    for kc in [0, 1, 3, 16, 129] {
+        let (a, b, start) = gemm_case(&mut rng, kc);
+        let mut want = start;
+        plain::gemm4x8(kc, &a, &b, &mut want);
+        for path in [Path::Plain, Path::Neon] {
+            let mut got = start;
+            gemm4x8_on(path, kc, &a, &b, &mut got);
+            assert_eq!(bits(&got), bits(&want), "{path:?} kc {kc}");
+        }
+    }
+}
+
+#[test]
+#[should_panic]
+fn a_gemm_panel_shorter_than_its_steps_panics() {
+    let a = vec![0.0f32; 4 * 9];
+    let b = vec![0.0f32; 8 * 10];
+    let mut acc = [0.0f32; 32];
+    gemm4x8(10, &a, &b, &mut acc);
+}
+
+/// Half-precision bits by hand: sign, a biased exponent (1 to 30) or 0 for
+/// a subnormal, and ten mantissa bits, read as the IEEE format says, in f64.
+fn half_by_hand(h: u16) -> f64 {
+    let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let e = i32::from((h >> 10) & 0x1f);
+    let m = f64::from(h & 0x3ff);
+    match e {
+        0 => sign * m * 2f64.powi(-24),
+        31 if m == 0.0 => sign * f64::INFINITY,
+        31 => f64::NAN,
+        _ => sign * (1.0 + m / 1024.0) * 2f64.powi(e - 15),
+    }
+}
+
+#[test]
+fn every_half_converts_exactly() {
+    for h in 0..=u16::MAX {
+        let got = plain::half(h);
+        let want = half_by_hand(h);
+        if want.is_nan() {
+            assert_eq!(got.to_bits(), 0x7fc0_0000, "{h:#06x}");
+        } else {
+            // Every half is an f32 exactly, so the f64 rounds to it with
+            // nothing lost, and the sign of a zero carries over.
+            assert_eq!(got.to_bits(), (want as f32).to_bits(), "{h:#06x}");
+        }
+    }
+    for (h, v) in [
+        (0x3c00u16, 1.0f32),
+        (0xc000, -2.0),
+        (0x7bff, 65504.0),
+        (0x0400, 6.103_515_6e-5),
+        (0x0001, 5.960_464_5e-8),
+        (0x8000, -0.0),
+        (0x7c00, f32::INFINITY),
+        (0xfc00, f32::NEG_INFINITY),
+    ] {
+        assert_eq!(plain::half(h).to_bits(), v.to_bits(), "{h:#06x}");
+    }
+}
+
+#[test]
+fn the_shorter_slice_sets_how_many_halves_convert() {
+    let src: Vec<u16> = (0..21).map(|i| 0x3c00 + i).collect();
+    for path in [Path::Plain, Path::Neon] {
+        let mut dst = vec![9.0f32; 30];
+        f16_to_f32_on(path, &src, &mut dst);
+        assert!(dst[21..].iter().all(|&x| x == 9.0), "{path:?}");
+        let mut fewer = vec![9.0f32; 11];
+        f16_to_f32_on(path, &src, &mut fewer);
+        let want: Vec<f32> = src[..11].iter().map(|&h| plain::half(h)).collect();
+        assert_eq!(bits(&fewer), bits(&want), "{path:?}");
+    }
+}
+
 // The kernel against its twin: run on the ARMv7 build, under qemu-arm in
 // CI (`cargo test --target armv7-unknown-linux-gnueabihf -p mpfree-simd`).
 #[cfg(all(target_arch = "arm", target_endian = "little", target_os = "linux"))]
@@ -935,6 +1054,71 @@ mod on_arm {
             mix4_on(Path::Neon, &waves, &mut ba, &damp, &mut b);
             assert_eq!(bus_bits(&a), bus_bits(&b), "case {case}");
             assert_eq!(row_bits(&aa), row_bits(&ba), "case {case}: levels");
+        }
+    }
+
+    /// The GEMM and half kernels run where VFPv4 is (qemu-arm's processor
+    /// has it, as the MPC One's Cortex-A17 does), so their tests below run
+    /// the kernels.
+    #[test]
+    fn vfpv4_is_there_for_the_half_kernel() {
+        assert!(crate::neon::half_available(), "no VFPv4 in AT_HWCAP");
+        let src = [0x3c00u16; 8];
+        let mut dst = [0.0f32; 8];
+        assert_eq!(f16_to_f32_on(Path::Neon, &src, &mut dst), Path::Neon);
+        assert_eq!(dst, [1.0; 8]);
+    }
+
+    #[test]
+    fn the_gemm_kernel_matches_its_twin_bit_for_bit() {
+        let mut rng = Rng(0x6e44);
+        for case in 0..400 {
+            let kc = match case % 8 {
+                0 => 0,
+                1 => 1,
+                2 => 2,
+                3 => 7,
+                4 => 64,
+                5 => 256,
+                _ => rng.below(600) as usize,
+            };
+            let (a, b, start) = gemm_case(&mut rng, kc);
+            let mut want = start;
+            plain::gemm4x8(kc, &a, &b, &mut want);
+            let mut got = start;
+            assert_eq!(gemm4x8_on(Path::Neon, kc, &a, &b, &mut got), Path::Neon);
+            assert_eq!(bits(&got), bits(&want), "case {case}: kc {kc}");
+        }
+    }
+
+    /// Weights the size real ones are (about ±0.3) and big sums: no product
+    /// near the subnormal range, where NEON would flush and the twin not.
+    #[test]
+    fn the_gemm_kernel_matches_on_a_long_real_sized_sum() {
+        let mut rng = Rng(77);
+        let kc = 25 * 512; // a 5 × 5 layer's 512 channels
+        let a: Vec<f32> = (0..kc * 4).map(|_| rng.unit() * 0.3).collect();
+        let b: Vec<f32> = (0..kc * 8).map(|_| rng.unit() * 4.0).collect();
+        let (mut want, mut got) = ([0.0f32; 32], [0.0f32; 32]);
+        plain::gemm4x8(kc, &a, &b, &mut want);
+        gemm4x8_on(Path::Neon, kc, &a, &b, &mut got);
+        assert_eq!(bits(&got), bits(&want));
+    }
+
+    /// All 65,536 halves, at every start within a group of eight and
+    /// lengths that leave a tail for the twin.
+    #[test]
+    fn the_half_kernel_matches_its_twin_on_every_half() {
+        let all: Vec<u16> = (0..=u16::MAX).collect();
+        for skip in 0..8 {
+            for tail in [0, 1, 7] {
+                let src = &all[skip..all.len() - tail];
+                let mut want = vec![0.0f32; src.len()];
+                plain::f16_to_f32(src, &mut want);
+                let mut got = vec![0.0f32; src.len()];
+                assert_eq!(f16_to_f32_on(Path::Neon, src, &mut got), Path::Neon);
+                assert_eq!(bits(&got), bits(&want), "skip {skip} tail {tail}");
+            }
         }
     }
 }

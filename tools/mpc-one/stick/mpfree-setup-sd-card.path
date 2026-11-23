@@ -1,0 +1,14 @@
+[Unit]
+Description=MPFree: wait for the pad player to ask for the SD card
+DefaultDependencies=no
+After=mpfree-test-internal-off.service
+Conflicts=shutdown.target
+Before=shutdown.target
+IgnoreOnIsolate=yes
+
+[Path]
+PathExists=/run/mpfree-app/sd-card.request
+Unit=mpfree-setup-sd-card.service
+
+[Install]
+WantedBy=sysinit.target

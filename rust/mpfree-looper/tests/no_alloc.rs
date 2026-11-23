@@ -332,7 +332,16 @@ fn commands_and_periods_never_allocate() {
         let n = sizes[(i % sizes.len() as u64) as usize];
         out[..2 * n].fill(0.0);
         assert!(t2.process(n as u32, &mut b));
-        l2.process(&b, &input[..2 * n], &mut out[..2 * n]);
+        // Every other period each loop apart, then summed (audio tracks
+        // phase 4a): no allocation either.
+        if i % 2 == 0 {
+            l2.process(&b, &input[..2 * n], &mut out[..2 * n]);
+        } else {
+            l2.process_each(&b, &input[..2 * n]);
+            let outs = l2.outs();
+            outs.mix_into(&mut out[..2 * n]);
+            sum += outs.loop_out(1).first().map_or(0.0, |v| *v as f64 * 0.0);
+        }
         let _ = l2.status();
     }
     watch(false);

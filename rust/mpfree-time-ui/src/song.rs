@@ -114,8 +114,9 @@ pub const START_ROW: usize = 0x502;
 /// moved `at` song ticks later under it, earlier below 0 (phase 6).
 pub const SLIDE_ROW: usize = 0x503;
 /// What Tab reports for Duplicate (phase 6), drawn between Song → scenes
-/// and Make unique.
-pub const DUPLICATE: usize = 0x312;
+/// and Make unique (after `SHOW_VIEW`: see
+/// `tests::the_song_views_tab_ids_are_all_different`).
+pub const DUPLICATE: usize = 0x313;
 /// How long a finger stays still on the picked block before a drag
 /// slides what the block plays instead of moving it (phase 6).
 pub const SLIDE_HOLD: Duration = Duration::from_millis(400);
@@ -3939,6 +3940,45 @@ mod tests {
                 },
             ]),
             ..SongLanes::default()
+        }
+    }
+
+    /// Each control's `Tab` says which control it is: no two share a
+    /// value (Duplicate once shared Show's, and the app took its tap for
+    /// Show).
+    #[test]
+    fn the_song_views_tab_ids_are_all_different() {
+        let mut ids: Vec<usize> = (0..SONG_BUTTONS.len()).collect();
+        ids.extend([
+            REC,
+            ADD_AUDIO,
+            PANEL_CLOSE,
+            PANEL_MUTE,
+            PANEL_SOLO,
+            PANEL_TAKES,
+            ADD_TRACK,
+            ADD_NOTE,
+            ADD_LOOP,
+            ADD_CLOSE,
+            LIST,
+            CLIPS,
+            SHOW_VIEW,
+            DUPLICATE,
+            BARS_BACK,
+            BARS_ON,
+            TEMPO_ROW,
+            RULER_ROW,
+            START_ROW,
+            SLIDE_ROW,
+        ]);
+        ids.extend((0..ZOOMS.len()).map(|k| ZOOM + k));
+        let mut seen = std::collections::HashSet::new();
+        for id in &ids {
+            assert!(seen.insert(*id), "{id:#x} is two controls' id");
+            assert!(
+                !(SECTION_TAP..BARS_BACK).contains(id),
+                "{id:#x} is a section's tap"
+            );
         }
     }
 

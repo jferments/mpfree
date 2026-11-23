@@ -1797,6 +1797,15 @@ impl TimeHost {
         self.audio.routed(track, offset, event);
     }
 
+    /// A note by its number as heard on `track`, another armed track (the
+    /// pads' arp's notes on a synth they play on their own, sampler step
+    /// 15c): its recorder takes it into a clip of notes while the
+    /// transport records, as the armed track takes its arp's notes; a clip
+    /// of pad hits has no pad for it. CAPTURE's history keeps it.
+    pub fn routed_note(&mut self, track: u8, offset: u32, event: Event) {
+        self.audio.routed_note(track, offset, event);
+    }
+
     /// Pad `pad`'s pressure (0 to 127, raw) in the coming period, at
     /// `offset`: recorded onto the pad's held note while the armed track
     /// records and records pressure (`Track::record_touch`), and kept on
