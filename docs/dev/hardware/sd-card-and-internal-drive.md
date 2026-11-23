@@ -99,6 +99,17 @@ The creator puts the script on partition 1 with two units, as it does the backup
 
 Nothing opens the card until the pad player asks, so a stick with these units starts exactly as before. The creator makes a stick only from an update whose root has every program the stick's scripts name in `NEEDS` (in `/usr/bin` or `/usr/sbin`); this script adds `mount`, `umount`, `dmesg` and `rmdir` to the backup's and the formatter's. **Not yet checked on the owner's update:** a `mpfree-stick build --out` to a file on the workstation checks it before any stick is written, and says which program is missing if one is.
 
+### The pad player's side
+
+[`mpfree-app/src/sd_card.rs`](../../../rust/mpfree-app/src/sd_card.rs) is the pad player's half, not yet used by a screen: the Browser's "SD card" place comes next.
+
+- `SdCard::open` asks with a new word of 32 hex digits in `sd-card.request` (written whole under a hidden name and renamed in) and waits up to 60 s for a status that gives that word back: `open` gives the `Card` (its filesystem, size and mount point), `none` and `failed` say why (`NotOpened`). A request nobody picked up in time is taken back, so the card never opens later unasked. A stick without the service says it needs making again.
+- While the card is open, a thread of its own writes the counter to `sd-card.alive` every 2 s (never through a link: a counter that can't be written lets the window close by itself after 120 s).
+- `SdCard::close` asks with `sd-card.close` and waits up to 60 s for the service's last word; dropping an `SdCard` asks without waiting.
+- A pad player started again while its earlier window is still open (the status says `open` and its own mounts list the card) takes that window over, counter and all, rather than asking again: a request made while a window is open would open the card again once it closed.
+
+Tests (`sd_card::tests`) run it against a stand-in service thread: open, the counter moving, close; an earlier opening's status (an empty slot, or open without its mount) not taken for this one's; an empty slot and a card it doesn't read; a request nobody answers, taken back; a stick without the service; a window taken over; a drop that closes; the counter and the close never written through a link.
+
 **What S0 settles before the Browser opens it:** whether Akai's kernel has `vfat` and `exfat` built in (or the stick preloads them, with the code pages FAT needs); how Akai's system mounted the card (the options to match); whether the card shows as one partition; and how long a card takes to answer after the bind (10 s allowed).
 
 ## Step S0: block for the owner

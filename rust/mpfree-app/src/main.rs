@@ -164,6 +164,9 @@ mod sampler_commands;
 mod screen_cost;
 mod screen_picture;
 mod script;
+// The SD card's read-only window, the pad player's side; the Browser's "SD card" place uses it next.
+#[allow(dead_code)]
+mod sd_card;
 mod set_play;
 mod setup;
 mod shed;
