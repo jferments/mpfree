@@ -7,9 +7,11 @@
 //! the song; free loops recorded over each other line up on its bars; STOP
 //! keeps what a free pass played; Undo brings the last free loop back with
 //! its clock; Play waits for the song's bar line; a note starts a free loop
-//! on the free clock's nearest bar line; saved free loops open stopped; and
-//! a project's free clock opens as soon as the old free loops are empty.
-//! The free clock itself counts as the song's spans do.
+//! on the free clock's nearest bar line; saved free loops open stopped; a
+//! project's free clock opens as soon as the old free loops are empty; and
+//! Capture into a free loop takes the free clock's bars (as it runs, or as
+//! it last ran), or with none, the song's, setting the free clock from
+//! them. The free clock itself counts as the song's spans do.
 //!
 //! 22.05 kHz at 240 BPM in 4/4 makes a bar exactly 22 050 frames (1 s).
 
@@ -670,6 +672,279 @@ fn a_project_opens_its_free_clock_as_soon_as_the_old_free_loops_are_empty() {
     r.run(f, &quiet);
     assert_eq!(r.status(0).phase, Phase::Empty);
     assert_eq!(r.l.stats().refused, refused + 1);
+}
+
+/// Runs until loop `n` has copied a capture in and plays (at most
+/// `most` frames more).
+fn until_captured(r: &mut Rig, n: usize, most: u64) {
+    let to = r.frame + most;
+    loop {
+        let s = r.status(n);
+        if s.capturing.is_none() && s.phase == Phase::Playing {
+            return;
+        }
+        assert!(r.frame < to, "still {s:?}");
+        let f = r.frame + r.period as u64;
+        r.run(f, &noise);
+    }
+}
+
+/// Loop `n`'s first layer, as it holds it.
+fn layer(r: &Rig, n: usize) -> Vec<[f32; 2]> {
+    let v = r.l.loop_layer(n, 0).expect("a layer");
+    let mut out = vec![[0.0; 2]; v.len() / 2];
+    v.read(0, &mut out);
+    out
+}
+
+/// Loop 0 free, recorded with the song (2 bars from START + BAR), muted;
+/// then the song stops, and the free clock (the song's, copied) runs on
+/// alone: its bar lines stay on the song's, START + k * BAR on tick k
+/// bars, from loop 0's first one on.
+fn free_loops_alone(r: &mut Rig) {
+    record_with_the_song(r, Clock::Free, 2);
+    r.cmd(L::Mute(true));
+    r.at(START + 4 * BAR + BAR / 3, T::Stop);
+    r.run(START + 5 * BAR, &noise);
+    assert_eq!(r.t.state(), State::Stopped);
+    assert!(r.l.free_clock().unwrap().running);
+}
+
+#[test]
+fn capture_into_a_free_loop_takes_the_free_clocks_last_bars_and_plays_them_on_it() {
+    let mut r = Rig::new(128);
+    free_loops_alone(&mut r);
+    // Bar 8, beat 2 (counting from the song's bar 1).
+    r.run(START + 7 * BAR + 6_000, &noise);
+    // The song's last bars ended where it stopped; the free clock's run on.
+    let song = r.l.capture_take(Clock::Song, 2).expect("the song's");
+    assert_eq!(song.origin, 2 * BAR_TICKS, "the song's bars 3 and 4");
+    let t = r.l.capture_take(Clock::Free, 2).expect("the free clock's");
+    assert_eq!(
+        (t.bars, t.start, t.frames, t.ticks, t.origin),
+        (
+            2,
+            START + 5 * BAR,
+            2 * BAR as usize,
+            2 * BAR_TICKS,
+            5 * BAR_TICKS
+        )
+    );
+    assert!(!r.l.capture_waits(Clock::Free));
+    // Its bar lines since it started (on loop 0's first frame).
+    let mut lines = [(0, 0); 16];
+    let n = r.l.heard_lines(Clock::Free, &mut lines);
+    let want: Vec<(i64, u64)> = (1..=7u64)
+        .map(|k| (k as i64 * BAR_TICKS, START + k * BAR))
+        .collect();
+    assert_eq!(&lines[..n], &want[..]);
+    r.select(1);
+    r.cmd(L::SetClock(Clock::Free));
+    r.cmd(L::Capture(2));
+    until_captured(&mut r, 1, BAR);
+    let s = r.status(1);
+    assert_eq!(
+        (s.clock, s.frames, s.ticks, s.origin),
+        (Clock::Free, 2 * BAR as usize, 2 * BAR_TICKS, 5 * BAR_TICKS)
+    );
+    let a = layer(&r, 1);
+    for (j, x) in a[..a.len() - FADE].iter().enumerate() {
+        assert_eq!(*x, noise(START + 5 * BAR + j as u64), "frame {j}");
+    }
+    // Once faded in it plays on the free clock: frame f plays its frame
+    // at f's place in the free clock's bars.
+    let from = r.frame + FADE as u64;
+    r.run(from + 2 * BAR, &noise);
+    for f in from..from + 2 * BAR {
+        let p = (f - START - 5 * BAR) % (2 * BAR);
+        if p < FADE as u64 || p > 2 * BAR - FADE as u64 {
+            continue;
+        }
+        assert!(close(r.out_at(f), a[p as usize]), "frame {f}");
+    }
+    assert_eq!(r.l.stats().refused, 0);
+}
+
+#[test]
+fn song_bars_captured_into_a_free_loop_set_the_free_clock_from_the_songs() {
+    // At 239 BPM a bar is 22 142.26 frames, so bar lines fall on rounded
+    // frames: a clock worked out from them would drift from the song's.
+    let stop = START + 8 * BAR + BAR / 3;
+    let play = |clock: Clock, stops: bool| {
+        let mut r = Rig::new(128);
+        r.t = Transport::new(RATE, 239.0).unwrap();
+        r.cmd(L::SetClock(clock));
+        r.at(START, T::Play);
+        // Bar 4, beat 2: the song's bars 2 and 3.
+        r.run(START + 3 * BAR + 6_000, &noise);
+        let t = r.l.capture_take(clock, 2).expect("two bars");
+        assert_eq!((t.origin, t.ticks), (BAR_TICKS, 2 * BAR_TICKS));
+        r.cmd(L::Capture(2));
+        if stops {
+            r.at(stop, T::Stop);
+        }
+        r.run(START + 12 * BAR, &noise);
+        assert_eq!(r.status(0).phase, Phase::Playing);
+        r
+    };
+    let song = play(Clock::Song, true);
+    let free = play(Clock::Free, true);
+    // The song never stops under this one.
+    let on = play(Clock::Song, false);
+    let s = 2 * stop as usize;
+    assert!(free.out[..s].iter().any(|&v| v != 0.0), "it plays");
+    assert_eq!(
+        first_difference(&free.out[..s], &song.out[..s]),
+        None,
+        "sample for sample a song loop until STOP"
+    );
+    assert_eq!(
+        first_difference(&free.out[s..], &on.out[s..]),
+        None,
+        "then it plays on as if the song had never stopped"
+    );
+    let c = free.l.free_clock().expect("set from the song's bars");
+    assert!(c.running);
+    assert_eq!(
+        (c.bpm, c.top, c.meter),
+        (239.0, BAR_TICKS, Meter { beats: 4, unit: 4 })
+    );
+    let st = free.status(0);
+    assert_eq!(
+        (st.clock, st.origin, st.ticks),
+        (Clock::Free, BAR_TICKS, 2 * BAR_TICKS)
+    );
+    assert!(song.l.free_clock().is_none());
+}
+
+#[test]
+fn the_songs_last_bars_captured_into_a_free_loop_once_it_stopped_wait_for_play() {
+    let mut r = Rig::new(128);
+    r.cmd(L::SetClock(Clock::Free));
+    r.at(START, T::Play);
+    r.at(START + 4 * BAR + BAR / 3, T::Stop);
+    r.run(START + 5 * BAR, &noise);
+    // The bars the song played last: 3 and 4.
+    r.cmd(L::Capture(2));
+    until_captured(&mut r, 0, BAR);
+    let s = r.status(0);
+    assert_eq!(
+        (s.clock, s.origin, s.ticks),
+        (Clock::Free, 2 * BAR_TICKS, 2 * BAR_TICKS)
+    );
+    // Their tempo, stopped on their first bar: nothing plays.
+    let c = r.l.free_clock().expect("set from them");
+    assert_eq!(
+        (c.bpm, c.running, c.top, c.anchor_tick),
+        (240.0, false, 2 * BAR_TICKS, 2 * BAR_TICKS)
+    );
+    let quiet_from = r.frame;
+    r.run(quiet_from + BAR, &noise);
+    assert!(r.silent(quiet_from, r.frame));
+    // PLAY: the song, and the free loop from its top with it.
+    let play = r.frame + 77;
+    r.at(play, T::Play);
+    r.run(play + 2 * BAR, &noise);
+    assert!(r.l.free_clock().unwrap().running);
+    let a = layer(&r, 0);
+    for j in FADE as u64..2 * BAR - FADE as u64 {
+        assert_eq!(a[j as usize], noise(START + 2 * BAR + j));
+        assert!(close(r.out_at(play + j), a[j as usize]), "frame {j}");
+    }
+}
+
+#[test]
+fn in_a_bars_last_beat_a_free_capture_waits_for_the_free_clocks_bar_line() {
+    let mut r = Rig::new(128);
+    free_loops_alone(&mut r);
+    // Bar 7, beat 4.
+    r.run(START + 6 * BAR + 17_000, &noise);
+    assert!(r.l.capture_waits(Clock::Free));
+    assert!(!r.l.capture_waits(Clock::Song), "the song is stopped");
+    r.select(1);
+    r.cmd(L::SetClock(Clock::Free));
+    r.cmd(L::Capture(2));
+    r.run(START + 7 * BAR - 256, &noise);
+    assert_eq!(r.status(1).capturing, Some(0.0), "waits for bar 8");
+    until_captured(&mut r, 1, BAR);
+    let s = r.status(1);
+    assert_eq!(
+        (s.origin, s.ticks),
+        (5 * BAR_TICKS, 2 * BAR_TICKS),
+        "bars 6 and 7"
+    );
+    assert_eq!(layer(&r, 1)[0], noise(START + 5 * BAR));
+    // Waiting again, but the free loops stop first: the bars up to the
+    // last line.
+    r.select(2);
+    r.cmd(L::SetClock(Clock::Free));
+    r.run(START + 9 * BAR + 17_000, &noise);
+    r.cmd(L::Capture(2));
+    r.run(r.frame + 128, &noise);
+    assert_eq!(r.status(2).capturing, Some(0.0), "waits for bar 11");
+    r.cmd(L::FreeStop);
+    until_captured(&mut r, 2, BAR);
+    let s = r.status(2);
+    assert_eq!(
+        (s.origin, s.ticks),
+        (7 * BAR_TICKS, 2 * BAR_TICKS),
+        "bars 8 and 9"
+    );
+    assert_eq!(layer(&r, 2)[0], noise(START + 7 * BAR));
+    assert!(!r.l.free_clock().unwrap().running);
+    assert_eq!(r.l.stats().refused, 0);
+}
+
+#[test]
+fn a_free_capture_waiting_for_its_bar_line_lets_go_once_the_free_loops_are_cleared() {
+    let mut r = Rig::new(128);
+    free_loops_alone(&mut r);
+    // Bar 7, beat 4: it waits for bar 8's line.
+    r.run(START + 6 * BAR + 17_000, &noise);
+    r.select(1);
+    r.cmd(L::SetClock(Clock::Free));
+    r.cmd(L::Capture(2));
+    r.run(r.frame + 128, &noise);
+    assert_eq!(r.status(1).capturing, Some(0.0));
+    // Loop 0, the only free loop, cleared first: the free clock goes, and
+    // the bars the capture waits for with it.
+    r.select(0);
+    r.cmd(L::Clear);
+    r.run(START + 7 * BAR + BAR / 2, &noise);
+    assert!(r.l.free_clock().is_none());
+    let s = r.status(1);
+    assert_eq!((s.phase, s.capturing), (Phase::Empty, None));
+    assert_eq!(r.l.stats().refused, 1);
+}
+
+#[test]
+fn stopped_free_loops_keep_their_last_bars_for_capture_until_they_start_again() {
+    let mut r = Rig::new(128);
+    free_loops_alone(&mut r);
+    r.run(START + 7 * BAR + 6_000, &noise);
+    r.cmd(L::FreeStop);
+    r.run(START + 8 * BAR, &noise);
+    assert!(!r.l.free_clock().unwrap().running);
+    // Stopped, the bars they played last can still be taken.
+    let t = r.l.capture_take(Clock::Free, 2).expect("the last run's");
+    assert_eq!((t.start, t.origin), (START + 5 * BAR, 5 * BAR_TICKS));
+    assert!(!r.l.capture_waits(Clock::Free), "nothing comes");
+    // Play: only bars since then count, so none yet.
+    r.cmd(L::FreePlay);
+    let play = r.frame;
+    r.run(play + BAR / 2, &noise);
+    assert_eq!(r.l.free_clock().unwrap().anchor_frame, play);
+    assert_eq!(r.l.capture_take(Clock::Free, 1), None);
+    r.select(1);
+    r.cmd(L::SetClock(Clock::Free));
+    r.cmd(L::Capture(1));
+    r.run(r.frame + 2 * r.period as u64, &noise);
+    assert_eq!(r.status(1).capturing, None);
+    assert_eq!(r.l.stats().refused, 1, "no whole bar since Play");
+    // A bar later there is one: the bar from Play, on the clock's bar 1.
+    r.run(play + BAR + BAR / 2, &noise);
+    let t = r.l.capture_take(Clock::Free, 4).expect("one bar");
+    assert_eq!((t.bars, t.start, t.origin), (1, play, BAR_TICKS));
 }
 
 /// A free clock copied from one of the song's spans gives the song's ticks

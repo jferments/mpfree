@@ -2391,6 +2391,10 @@ impl LoopHost {
             self.starts = w;
         }
         if let Command::SetClock(k) = c {
+            if k != self.clock {
+                // What you played counts the other clock's bars now.
+                self.capture_span = None;
+            }
             self.clock = k;
             // A loop with sound, or sound coming in, keeps its own: the
             // looper would refuse it.
@@ -3898,24 +3902,48 @@ impl LoopHost {
     fn span(&self) -> Option<(Option<Tick>, u32)> {
         let (end, bars) = self.capture_span?;
         match end {
-            Some(t) => self.looper.capture_take_to(t, 1).map(|_| (end, bars)),
+            Some(t) => self
+                .looper
+                .capture_take_to(self.clock, t, 1)
+                .map(|_| (end, bars)),
             None => Some((None, bars)),
         }
     }
 
     /// What Capture would take now, `bars` of it: up to the window's bar
-    /// line when it was moved back, else up to the newest.
+    /// line when it was moved back, else up to the newest. On the clock
+    /// the loop it goes into takes (Sync as last set): a free loop's are
+    /// the free clock's bars while it is set.
     fn capture_take_now(&self, bars: u32) -> Option<Take> {
         match self.span().and_then(|s| s.0) {
-            Some(end) => self.looper.capture_take_to(end, bars),
-            None => self.looper.capture_take(bars),
+            Some(end) => self.looper.capture_take_to(self.clock, end, bars),
+            None => self.looper.capture_take(self.clock, bars),
         }
     }
 
     /// A Capture now would wait for the bar line coming: the window keeps
-    /// up with the song, which is in a bar's last beat.
+    /// up with the song (or the free loops), which is in a bar's last
+    /// beat.
     fn capture_waits_now(&self) -> bool {
-        self.span().and_then(|s| s.0).is_none() && self.looper.capture_waits()
+        self.span().and_then(|s| s.0).is_none() && self.looper.capture_waits(self.clock)
+    }
+
+    /// The bars a Capture now counts in, for What you played and the log:
+    /// for a free loop (Sync: Free) while the free clock is set, the free
+    /// clock's, numbered from its bar 1 (where the free loops start);
+    /// else the song's. Their tempo, a bar's ticks and bar 1's tick.
+    fn capture_grid(&self) -> (f64, Tick, Tick) {
+        match (self.clock, self.looper.free_clock()) {
+            (Clock::Free, Some(c)) => (c.bpm, c.meter.bar_ticks(), c.top),
+            _ => (self.bpm, self.bar_ticks, 0),
+        }
+    }
+
+    /// The bar a Capture's tick `t` starts, numbered in its bars
+    /// ([`LoopHost::capture_grid`]).
+    fn capture_bar(&self, t: Tick) -> i64 {
+        let (_, bar, top) = self.capture_grid();
+        (t - top).div_euclid(bar.max(1)) + 1
     }
 
     /// What you played's window moved or resized on the Looper tab:
@@ -3926,8 +3954,8 @@ impl LoopHost {
     pub fn set_capture_span(&mut self, end: Option<i64>, bars: u32) -> String {
         let bars = bars.clamp(1, HEARD_MAX_BARS);
         let mut lines = [(0 as Tick, 0u64); HEARD_MAX_BARS as usize + 1];
-        let n = self.looper.heard_lines(&mut lines);
-        let number = |t: Tick| t.div_euclid(self.bar_ticks.max(1)) + 1;
+        let n = self.looper.heard_lines(self.clock, &mut lines);
+        let number = |t: Tick| self.capture_bar(t);
         let newest = n.checked_sub(1).map(|i| number(lines[i].0));
         let pinned = match end {
             Some(e) if Some(e) != newest => match lines[..n].iter().find(|l| number(l.0) == e) {
@@ -3959,8 +3987,9 @@ impl LoopHost {
             return w;
         }
         let now = self.looper.heard_at();
-        let bar = self.bar_ticks.max(1) as f64 / f64::from(PPQ) * 60.0 / self.bpm.max(1.0)
-            * f64::from(self.rate);
+        let (bpm, bar_ticks, _) = self.capture_grid();
+        let bar =
+            bar_ticks.max(1) as f64 / f64::from(PPQ) * 60.0 / bpm.max(1.0) * f64::from(self.rate);
         // Room for the window to grow to four times its unit (the
         // pattern), and a bar more than it takes.
         let into = self.capture_into();
@@ -3994,8 +4023,8 @@ impl LoopHost {
             };
         }
         let mut lines = [(0 as Tick, 0u64); HEARD_MAX_BARS as usize + 1];
-        let n = self.looper.heard_lines(&mut lines);
-        let number = |t: Tick| t.div_euclid(self.bar_ticks.max(1)) + 1;
+        let n = self.looper.heard_lines(self.clock, &mut lines);
+        let number = |t: Tick| self.capture_bar(t);
         for &(t, f) in &lines[..n] {
             if f as f64 >= from && w.n_lines < w.lines.len() {
                 w.lines[w.n_lines] = (number(t), x(f));
@@ -4048,6 +4077,9 @@ impl LoopHost {
         let pinned = span.and_then(|s| s.0);
         let waits = self.capture_waits_now();
         let take = self.capture_take_now(asked);
+        // A free loop takes the free clock's bars while it is set.
+        let free = self.clock == Clock::Free;
+        let on_free = free && self.looper.free_clock().is_some();
         let Some(t) = take.or(waits.then_some(Take {
             bars: asked,
             start: 0,
@@ -4055,6 +4087,12 @@ impl LoopHost {
             ticks: 0,
             origin: 0,
         })) else {
+            if on_free {
+                return "looper: Capture: no whole bar of the free loops heard yet: it takes the \
+                        bars they have played since they last started (and since Records from \
+                        changed)"
+                    .to_string();
+            }
             return "looper: Capture: no whole bar heard yet: it takes the bars the song has \
                     played since PLAY (and since Records from changed)"
                 .to_string();
@@ -4074,6 +4112,9 @@ impl LoopHost {
             }
             self.picked = n;
         }
+        // It records as a loop recorded now would: Sync as last set (the
+        // bars above were counted on that clock), and Starts.
+        self.sticky_settings(n);
         let c = match pinned {
             Some(end) => Command::CaptureTo(end, asked),
             None => Command::Capture(asked),
@@ -4083,22 +4124,27 @@ impl LoopHost {
         }
         // The window goes back to the Length's bars, keeping up.
         self.capture_span = None;
-        let number = |tick: Tick| tick.div_euclid(self.bar_ticks.max(1)) + 1;
+        let sync = if free { ", free" } else { "" };
         if take.is_none() || waits {
             return format!(
-                "looper: Capture: on the bar line coming, the last {} become Loop {}",
+                "looper: Capture: on the bar line coming, the last {} become Loop {}{sync}",
                 bars_words_n(asked),
                 n + 1
             );
         }
+        let since = if on_free {
+            "since the free loops started"
+        } else {
+            "since PLAY"
+        };
         let fewer = match (t.bars < asked, span.is_some()) {
             (false, _) => String::new(),
-            (true, false) => format!(" (its Length asks {asked}: fewer were played since PLAY)"),
+            (true, false) => format!(" (its Length asks {asked}: fewer were played {since})"),
             (true, true) => format!(" (the window asks {asked}: fewer were played or kept)"),
         };
         format!(
-            "looper: Capture: {} become Loop {}{fewer}",
-            bars_words(number(t.origin), t.bars),
+            "looper: Capture: {} become Loop {}{sync}{fewer}",
+            bars_words(self.capture_bar(t.origin), t.bars),
             n + 1
         )
     }
@@ -7141,6 +7187,88 @@ mod tests {
         let out = run_host(&mut h, &mut t, &mut b, 200);
         assert!(out.iter().any(|&v| v != 0.0), "it plays");
         assert!(h.looper.free_clock().is_some_and(|c| c.running));
+    }
+
+    /// Capture with Sync: Free, the picked loop playing: it goes into the
+    /// first empty loop, which takes Sync as last set though it was never
+    /// picked, and takes the free clock's last bars (the song has
+    /// stopped; its own last bars are long gone by), which What you
+    /// played numbers from the free clock's bar 1, where the free loops
+    /// started.
+    #[test]
+    fn capture_with_sync_free_takes_the_free_loops_bars_into_a_free_loop() {
+        const BAR: u64 = 88_200;
+        const BAR_TICKS: Tick = 3_840;
+        let mut h = LoopHost::new(44_100, 20);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        h.command(Command::SetLatency(0));
+        h.command(Command::SetClock(Clock::Free));
+        h.command(Command::SetBars(Some(1)));
+        t.command(0, T::Play);
+        let mut run = |h: &mut LoopHost, t: &mut Transport, to: u64, out: &mut Vec<(f32, f32)>| {
+            while (out.len() as u64) < to {
+                let frame = out.len() as u64;
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                for f in 0..PERIOD {
+                    (l[f], r[f]) = pads_at(frame + f as u64);
+                }
+                h.take_pads(&l, &r);
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(&b, &mut l, &mut r);
+                out.extend(l.iter().copied().zip(r.iter().copied()));
+            }
+        };
+        let mut out = Vec::new();
+        // Record half a bar in: the free loop starts on bar 2's line, the
+        // free clock's bar 1.
+        run(&mut h, &mut t, BAR / 2, &mut out);
+        h.command(Command::Record);
+        while h.looper.status().phase != Phase::Playing {
+            let to = out.len() as u64 + PERIOD as u64;
+            run(&mut h, &mut t, to, &mut out);
+        }
+        assert_eq!(h.looper.free_clock().map(|c| c.top), Some(BAR_TICKS));
+        // The song stops (its last bar line: bar 4's); the free loop plays
+        // on, and its clock with it, on the song's old bar lines.
+        run(&mut h, &mut t, 3 * BAR + 1_000, &mut out);
+        t.command(t.frame(), T::Stop);
+        // Bar 7, beat 2, of the song as it would have gone on.
+        run(&mut h, &mut t, 6 * BAR + 30_000, &mut out);
+        assert!(h.looper.free_clock().unwrap().running);
+        let v = h.view(120.0);
+        assert_eq!(
+            v.capture_into.map(|i| i.0),
+            Some(1),
+            "loop 2, the first empty"
+        );
+        let lines: Vec<i64> = v.heard.lines[..v.heard.n_lines]
+            .iter()
+            .map(|l| l.0)
+            .collect();
+        // The song's bars 2 to 7 are the free clock's 1 to 6.
+        assert_eq!(lines, [1, 2, 3, 4, 5, 6], "the free clock's bar lines");
+        let (_, _, from, bars) = v.heard.take.expect("a take");
+        assert_eq!(from + i64::from(bars), 6, "up to its last line");
+        let said = h.capture();
+        assert!(said.ends_with("become Loop 2, free"), "{said}");
+        let end = out.len() as u64 + 8_192;
+        run(&mut h, &mut t, end, &mut out);
+        let s = h.looper.loop_status(1).unwrap();
+        assert_eq!(
+            (s.phase, s.clock, s.capturing),
+            (Phase::Playing, Clock::Free, None)
+        );
+        assert_eq!(
+            (s.origin, s.ticks),
+            (
+                (6 - i64::from(bars)) * BAR_TICKS,
+                i64::from(bars) * BAR_TICKS
+            ),
+            "the free clock's bars, not the song's"
+        );
+        assert_eq!(h.looper.stats().refused, 0);
     }
 
     #[test]

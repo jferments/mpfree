@@ -1377,10 +1377,13 @@ mod looper {
             // In a bar's last beat it waits for the bar line, Loop 3's
             // ring waiting as an armed one; a tap on it calls it off.
             let end = s.t() + 2.5;
-            while !s.looper.looper.capture_waits() && s.t() < end {
+            while !s.looper.looper.capture_waits(mpfree_looper::Clock::Song) && s.t() < end {
                 s.run_periods(1);
             }
-            assert!(s.looper.looper.capture_waits(), "a bar's last beat");
+            assert!(
+                s.looper.looper.capture_waits(mpfree_looper::Clock::Song),
+                "a bar's last beat"
+            );
             s.button_with("SHIFT", "REC");
             let l3 = |s: &Session| s.looper.looper.loop_status(2).unwrap();
             assert_eq!(l3(&s).capturing, Some(0.0), "waits for the bar line");
