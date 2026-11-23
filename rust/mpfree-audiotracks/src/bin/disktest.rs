@@ -53,6 +53,11 @@
 //! partition mounted `noatime` (or read-only), so reading changes no
 //! access time.
 //!
+//! `--heat` writes nothing either: it keeps every core busy, as the
+//! under-load run's step 5 does, until the temperature settles (30 minutes
+//! at the most, stopping at 75 °C), and says the temperatures and clocks
+//! every 10 s ([`heat`]).
+//!
 //! Every run that reads the library also watches the rest of the stick
 //! beside the reads ([`watch`]): each partition's block counters in sysfs,
 //! read-only, and what was going on beside each slow read.
@@ -115,6 +120,9 @@ mod recorder;
 #[path = "disktest/vm.rs"]
 mod vm;
 
+#[path = "disktest/heat.rs"]
+mod heat;
+
 /// What the rest of the stick did beside the streams' reads.
 #[path = "disktest/watch.rs"]
 mod watch;
@@ -140,6 +148,7 @@ struct Opts {
     read_only: bool,
     under_load: bool,
     recorder: bool,
+    heat: bool,
 }
 
 fn parse() -> Result<Opts, String> {
@@ -150,6 +159,7 @@ fn parse() -> Result<Opts, String> {
         read_only: false,
         under_load: false,
         recorder: false,
+        heat: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -162,8 +172,9 @@ fn parse() -> Result<Opts, String> {
             "--read-only" => o.read_only = true,
             "--under-load" => o.under_load = true,
             "--recorder" => o.recorder = true,
+            "--heat" => o.heat = true,
             "-h" | "--help" => {
-                say!("usage: mpfree-disktest [--read-only | --under-load | --recorder] [--desktop-test DIR] [--quick]");
+                say!("usage: mpfree-disktest [--read-only | --under-load | --recorder | --heat] [--desktop-test DIR] [--quick]");
                 say!("Without --desktop-test it runs only on {MOUNT}, the stick's partition 4.");
                 say!("--read-only reads the audio in its library folder and writes nothing.");
                 say!("--under-load reads it with a recording, heavy reads and writes, busy cores and");
@@ -171,6 +182,10 @@ fn parse() -> Result<Opts, String> {
                 say!("--recorder records 8 takes with MPFree's own recorder while 8 streams read it,");
                 say!("writing only its takes in its own folder, and raises the kernel's writeback");
                 say!("limit (/proc/sys/vm/dirty_bytes) for two steps, putting it back as found.");
+                say!(
+                    "--heat keeps every core busy until the temperature settles (30 minutes at the"
+                );
+                say!("most, stopping at 75 C), reading the temperatures and clocks; it writes no file.");
                 std::process::exit(0);
             }
             _ => return Err(format!("unknown argument {a:?}")),
@@ -179,13 +194,13 @@ fn parse() -> Result<Opts, String> {
     if o.quick && !o.desktop {
         return Err("--quick is only for --desktop-test".into());
     }
-    if [o.read_only, o.under_load, o.recorder]
+    if [o.read_only, o.under_load, o.recorder, o.heat]
         .iter()
         .filter(|&&m| m)
         .count()
         > 1
     {
-        return Err("--read-only, --under-load and --recorder are different runs".into());
+        return Err("--read-only, --under-load, --recorder and --heat are different runs".into());
     }
     Ok(o)
 }
@@ -745,6 +760,33 @@ fn main() -> ExitCode {
             }
             Err(read::Fail::Failed(e)) => {
                 esay!("mpfree-disktest: failed: {e}. Nothing was written.");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if o.heat {
+        // A desktop test may name stand-ins for the thermal zones and the
+        // cores' clocks; the stick's run always reads the kernel's.
+        let thermal = match std::env::var_os("MPFREE_DISKTEST_THERMAL") {
+            Some(p) if o.desktop => PathBuf::from(p),
+            _ => PathBuf::from(load::THERMAL),
+        };
+        let cpu = match std::env::var_os("MPFREE_DISKTEST_CPU") {
+            Some(p) if o.desktop => PathBuf::from(p),
+            _ => PathBuf::from(heat::CPU),
+        };
+        let zones = load::zones(&thermal);
+        if zones.is_empty() {
+            esay!("mpfree-disktest: refused: no temperature to read in {}: the cores are never kept busy unwatched. Nothing was changed.", thermal.display());
+            return ExitCode::from(3);
+        }
+        return match heat::run(&zones, &cpu, heat::times(o.quick)) {
+            Ok(()) => {
+                say!("done");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                esay!("mpfree-disktest: heat: {e}. Nothing was written.");
                 ExitCode::FAILURE
             }
         };

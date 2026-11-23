@@ -255,6 +255,17 @@ D1 again found slow reads with nothing writing on partition 4. The stick has one
 - **When it can't watch.** If the stick's counters can't be read, the run says so and goes on. On a desktop nothing is watched, except a stand-in named by `MPFREE_DISKTEST_SYS` (a partition's folder in sysfs's shape, for the desktop tests only).
 - **Tests.** The unit tests in `watch.rs` cover the kernel's fields, each slow read matched with what was beside it, and the stick found from its partition and watched. `tests/disktest.rs` checks that a read-only run says it for every set and leaves the stand-in as it was, and that a recorder run says it for every step.
 
+### The heat run, for System status
+
+System status's "MPC running hot" needs to know where the MPC's temperature settles with every core busy ([status.md](status.md)). D2b's busy cores ran for about 3 minutes (55.5 to 62.5 °C, 1608 MHz throughout), which doesn't show that. `mpfree-disktest --heat` ([`src/bin/disktest/heat.rs`](../../../rust/mpfree-audiotracks/src/bin/disktest/heat.rs)) does:
+
+- **The load.** D2b's step 5: one ordinary thread pinned to each core, filtering a 256 KiB buffer over and over, so the pad player's real-time thread still comes first.
+- **How long.** Until the hottest zone has risen less than 0.5 °C over the last 5 minutes, or 30 minutes at the most. The threads stop at once at 75 °C, or at the lowest trip point the kernel gives that is lower, as the under-load run's do.
+- **What it says.** Every 10 s, each zone's temperature and each core's clock. At the start and the end, each core's `scaling_cur_freq`, `scaling_max_freq`, `cpuinfo_max_freq` and `scaling_governor`. Then where the temperature went and why it stopped.
+- **What it changes.** Nothing but the load: it reads `/sys/class/thermal` and `/sys/devices/system/cpu`, and writes no file anywhere. With no temperature to read it refuses, so the cores are never kept busy unwatched. Ctrl-C or the ssh session closing stops it.
+- **On the MPC:** `MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py --heat`. On a desktop, `--desktop-test DIR --heat --quick` with stand-ins for the zones and clocks (`MPFREE_DISKTEST_THERMAL`, `MPFREE_DISKTEST_CPU`, desktop tests only).
+- **Tests.** `heat.rs`'s unit tests cover when a rise counts as settled and the clock settings read. `tests/disktest.rs` covers a run that settles and writes nothing, one stopped at a lower trip point, one still rising at the time limit, and the refusal with no zones. The host script's tests cover the opt-in.
+
 ### D3: the app streaming on the stick
 
 The first run of the whole app with its takes on the stick. [`host_streamtest_mpc.py`](../../../tools/mpc-one/host_streamtest_mpc.py) plays the stream test's workflows ([`tools/mpc-one/streamtest/workflows/`](../../../tools/mpc-one/streamtest/workflows/)) as the [device suite](../hardware/device-suite.md) plays its own, with one difference: each run's data folder is on partition 4, so what it records goes to the stick and plays back from its files there.

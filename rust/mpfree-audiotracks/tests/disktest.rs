@@ -8,7 +8,10 @@
 //! nothing behind. With `--recorder` MPFree's own recorder writes its takes
 //! beside the reads, every take saved whole, and the writeback limit (a
 //! stand-in for `/proc/sys/vm` on a desktop) is raised for two steps and
-//! put back as found.
+//! put back as found. Each run that reads says what the rest of the stick
+//! (a stand-in for sysfs) did beside the reads. With `--heat` the cores are
+//! kept busy until the stand-in's temperature settles, and nothing is
+//! written.
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
@@ -732,12 +735,137 @@ fn a_cut_off_recorder_runs_takes_are_cleared_first_and_nothing_else() {
     std::fs::remove_dir_all(&d).unwrap();
 }
 
+/// Stand-ins for the thermal zones (`thermal_zoneN/type`, `temp`, trip
+/// points) and the cores' clocks (`cpuN/cpufreq/...`).
+fn heat_stand_ins(name: &str, cpu_c: &str, trip: Option<&str>) -> (PathBuf, PathBuf) {
+    let d = scratch(name);
+    let th = d.join("thermal");
+    let z = th.join("thermal_zone0");
+    std::fs::create_dir_all(&z).unwrap();
+    std::fs::write(z.join("type"), "cpu-thermal\n").unwrap();
+    std::fs::write(z.join("temp"), cpu_c).unwrap();
+    if let Some(t) = trip {
+        std::fs::write(z.join("trip_point_0_temp"), t).unwrap();
+        std::fs::write(z.join("trip_point_0_type"), "critical\n").unwrap();
+    }
+    let g = th.join("thermal_zone1");
+    std::fs::create_dir_all(&g).unwrap();
+    std::fs::write(g.join("type"), "gpu-thermal\n").unwrap();
+    std::fs::write(g.join("temp"), "51500\n").unwrap();
+    let cpu = d.join("cpu");
+    let f = cpu.join("cpu0/cpufreq");
+    std::fs::create_dir_all(&f).unwrap();
+    for n in ["scaling_cur_freq", "scaling_max_freq", "cpuinfo_max_freq"] {
+        std::fs::write(f.join(n), "1608000\n").unwrap();
+    }
+    std::fs::write(f.join("scaling_governor"), "performance\n").unwrap();
+    (th, cpu)
+}
+
+fn heat_run(data: &Path, th: &Path, cpu: &Path) -> (std::process::ExitStatus, String) {
+    let out = bin()
+        .arg("--desktop-test")
+        .arg(data)
+        .args(["--heat", "--quick"])
+        .env("MPFREE_DISKTEST_THERMAL", th)
+        .env("MPFREE_DISKTEST_CPU", cpu)
+        .output()
+        .unwrap();
+    (
+        out.status,
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+#[test]
+fn a_heat_run_keeps_the_cores_busy_until_the_temperature_settles_and_writes_nothing() {
+    let d = scratch("heat");
+    library(&d);
+    let (th, cpu) = heat_stand_ins("heat-sys", "55000\n", Some("113000\n"));
+    let before = (snapshot(&d), snapshot(&th), snapshot(&cpu));
+    let (status, text) = heat_run(&d, &th, &cpu);
+    assert!(status.success(), "{text}");
+    for want in [
+        "heat: one busy thread on each of ",
+        "until the hottest zone rises less than 0.5 °C in 0.5 s, or 1.5 s at the most; they stop at 75 °C. It writes no file.",
+        "zone cpu-thermal: trip points: critical 113 °C",
+        "zone gpu-thermal: trip points: none",
+        "clocks at the start:",
+        "cpu0: now 1608 MHz, max 1608 MHz (scaling_max_freq), 1608 MHz (cpuinfo_max_freq), governor performance",
+        "cpu-thermal 55.0 °C, gpu-thermal 51.5 °C; clocks 1608",
+        "clocks at the end:",
+        "the hottest zone went from 55.0 to 55.0 °C, 55.0 °C at the most",
+        "heat: settled at 55.0 °C after ",
+        "done",
+    ] {
+        assert!(text.contains(want), "missing {want:?} in\n{text}");
+    }
+    assert_eq!(text.matches("clocks at the ").count(), 2, "{text}");
+    // Nothing written: not the data folder, not the stand-ins.
+    assert_eq!((snapshot(&d), snapshot(&th), snapshot(&cpu)), before);
+    assert!(!d.join("mpfree-disktest").exists());
+
+    // At the stop (a trip point under 75 °C wins): the threads stop at once.
+    let (th2, cpu2) = heat_stand_ins("heat-hot", "71000\n", Some("70000\n"));
+    let (status, text) = heat_run(&d, &th2, &cpu2);
+    assert!(status.success(), "{text}");
+    assert!(text.contains("they stop at 70 °C"), "{text}");
+    assert!(text.contains("(at the stop, 70 °C)"), "{text}");
+    assert!(text.contains("heat: stopped at 71.0 °C after "), "{text}");
+    assert!(text.contains(": the stop is 70 °C"), "{text}");
+
+    // Still rising at the time limit.
+    let (th3, cpu3) = heat_stand_ins("heat-rising", "55000\n", None);
+    let temp = th3.join("thermal_zone0/temp");
+    let on = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let warmer = {
+        let (on, temp) = (on.clone(), temp.clone());
+        std::thread::spawn(move || {
+            let mut m = 55000;
+            while on.load(std::sync::atomic::Ordering::Relaxed) {
+                m += 100;
+                let part = temp.with_extension("part");
+                std::fs::write(&part, format!("{m}\n")).unwrap();
+                std::fs::rename(&part, &temp).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        })
+    };
+    let (status, text) = heat_run(&d, &th3, &cpu3);
+    on.store(false, std::sync::atomic::Ordering::Relaxed);
+    warmer.join().unwrap();
+    assert!(status.success(), "{text}");
+    assert!(text.contains("heat: still rising after "), "{text}");
+    assert!(text.contains("the longest it runs: "), "{text}");
+
+    // No temperature to read: refused, the cores never busy.
+    let empty = scratch("heat-none");
+    let (status, text) = heat_run(&d, &empty, &cpu);
+    assert_eq!(status.code(), Some(3), "{text}");
+    assert!(
+        text.contains("refused: no temperature to read in "),
+        "{text}"
+    );
+    assert!(!text.contains("busy threads:"), "{text}");
+    for x in [&th, &th2, &th3] {
+        std::fs::remove_dir_all(x.parent().unwrap()).unwrap();
+    }
+    std::fs::remove_dir_all(&d).unwrap();
+    std::fs::remove_dir_all(&empty).unwrap();
+}
+
 #[test]
 fn only_one_kind_of_run_at_a_time() {
     for pair in [
         ["--recorder", "--under-load"],
         ["--recorder", "--read-only"],
         ["--read-only", "--under-load"],
+        ["--heat", "--read-only"],
+        ["--heat", "--recorder"],
     ] {
         let out = bin().args(pair).output().unwrap();
         assert_eq!(out.status.code(), Some(2), "{pair:?}");
