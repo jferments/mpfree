@@ -24,6 +24,14 @@
 //!   only there. 16 regions is a budget for the MPC, not part of the
 //!   format: the save writes a line a region.
 //!
+//! - **Loop cells** (phase 4, step 4b,
+//!   docs/dev/design/loops-on-audio-tracks.md): a cell of an audio track
+//!   can hold a loop instead, [`LoopClip`], which names the looper's loop
+//!   by its lasting id ([`LoopId`]); the loop's audio, layers and edits are
+//!   the looper's. `Clip::check` holds that a clip is a take clip or a loop
+//!   cell, never both, and `Project::check` that a loop belongs to one
+//!   track (`Project::loop_track`).
+//!
 //! Whether each recording named is in the project's recordings table, and
 //! has the frames named, is the audio tracks part's to say, which is not
 //! this crate's: the app checks it as a project opens (`mpfree-app`
@@ -48,6 +56,44 @@ pub const MAX_GAIN: f32 = 4.0;
 /// engine's take numbers changing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RecId(pub u128);
+
+/// A loop's lasting id (phase 4): made once, when its first pass is
+/// armed, by the app's loop host from the audio tracks' id maker, and never
+/// given twice; [`LoopId::NONE`] (0) is none. What a loop cell names
+/// ([`LoopClip`]), so it survives saves, opens and the looper's slots
+/// changing: a slot is where the looper holds a loop, never its identity.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LoopId(pub u128);
+
+impl LoopId {
+    /// No id given.
+    pub const NONE: LoopId = LoopId(0);
+
+    /// Whether it is a given id (not [`LoopId::NONE`]).
+    pub fn is_given(self) -> bool {
+        self != LoopId::NONE
+    }
+}
+
+/// A loop cell on an audio track (phase 4, `Clip::loop_clip`): the loop it
+/// plays, by its lasting id. The clip holds nothing else, and is as long as
+/// its loop (`loops::length`); the loop's layers, its level and its history
+/// are the looper's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LoopClip {
+    pub id: LoopId,
+}
+
+impl LoopClip {
+    /// It names a loop: `BadLoop` for [`LoopId::NONE`].
+    pub fn check(&self) -> Result<(), ModelError> {
+        if self.id.is_given() {
+            Ok(())
+        } else {
+            Err(ModelError::BadLoop)
+        }
+    }
+}
 
 /// One region of an audio clip: clip ticks `start..end` play recording
 /// `rec` from frame `src` (which may be below 0: those frames are silent).

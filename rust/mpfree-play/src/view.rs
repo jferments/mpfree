@@ -30,7 +30,7 @@ use mpfree_seq::arrange::SONG_LANE_LEN;
 use mpfree_seq::mpfree_moves::{Kind, Map, Moves, Target};
 use mpfree_seq::steps::Edit;
 use mpfree_seq::{
-    touch_fits, Clip, ClipId, ClipProgram, ClipRegion, DestId, Direction, LaunchGrid, Lock,
+    touch_fits, Clip, ClipId, ClipProgram, ClipRegion, DestId, Direction, LaunchGrid, Lock, LoopId,
     ModelError, Note, Project, Quantise, Speed, Touch, TouchPoint, MAX_LOCKS, MAX_NOTES,
     MAX_TRACKS, ROWS,
 };
@@ -220,6 +220,14 @@ pub(crate) struct AudioView {
     pub once: bool,
 }
 
+/// A loop cell as the view keeps it (phase 4): its loop and the clip's
+/// lasting id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LoopView {
+    pub id: LoopId,
+    pub clip: ClipId,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ClipView {
     pub slot: usize,
@@ -262,6 +270,10 @@ pub(crate) struct ClipView {
     pub holds_notes: bool,
     /// An audio clip's regions; None for a note clip.
     pub audio: Option<AudioView>,
+    /// A loop cell's loop on an audio track (phase 4, step 4b): what the
+    /// track player has the looper play ([`crate::AudioPlays::Loop`]).
+    /// None for any other clip.
+    pub looped: Option<LoopView>,
 }
 
 impl ClipView {
@@ -918,6 +930,7 @@ impl PlayView {
                 steps: 0,
                 holds_notes: false,
                 audio: None,
+                looped: None,
             };
             // Recorded moves land here in place too: keep it as they would.
             song.stamp = stamp_of(&song);
@@ -1486,6 +1499,7 @@ pub(crate) fn view_of(
             last_frame: a.last_frame,
             once: clip.once,
         }),
+        looped: clip.loop_id().map(|id| LoopView { id, clip: clip.id }),
     };
     view.notes = clip.notes.iter().map(|n| view.note_view(n)).collect();
     view.notes.sort_by(|a, b| a.local.total_cmp(&b.local));
@@ -1739,6 +1753,7 @@ fn stamp_of(v: &ClipView) -> u64 {
         steps,
         holds_notes,
         audio,
+        looped,
     } = v;
     let mut h = Fnv::new();
     h.word(*length as u64);
@@ -1754,6 +1769,9 @@ fn stamp_of(v: &ClipView) -> u64 {
     h.word(u64::from(*steps));
     h.word(u64::from(*holds_notes));
     h.word(audio.as_ref().map_or(0, audio_hash));
+    // A loop cell's loop: its two halves, so another loop is another stamp.
+    h.word(looped.map_or(0, |l| l.id.0 as u64));
+    h.word(looped.map_or(0, |l| (l.id.0 >> 64) as u64));
     let notes = notes.iter().map(note_hash);
     let locks = locks.iter().map(lock_hash);
     let touch = touch.iter().enumerate().map(|(i, p)| touch_hash(i, *p));

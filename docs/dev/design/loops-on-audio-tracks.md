@@ -1,6 +1,6 @@
 # Loops on audio tracks: the contracts (phase 4)
 
-**Status:** designed 23 Nov 2026, before 4b's code, as the [phase 4 plan](https://claude.ai/artifact/HA92ecH36LM6UDwiLCwJHa) asks (approved by Jay on 23 Nov; its build steps are in [audio-tracks.md](audio-tracks.md#loops-joining-audio-tracks-phase-4)). Built: 4a only, each loop on its own output ([looper.md](looper.md#each-loop-on-its-own-output)). Everything else here is 4b to 4e, behind Dev's switch until 4e. The interfaces it builds on are phase 2's (audio clips, `Player::audio`) and Arrange 4b's (one song) as they merged; where this page names one of their types, it is that type, not a copy.
+**Status:** designed 23 Nov 2026, before 4b's code, as the [phase 4 plan](https://claude.ai/artifact/HA92ecH36LM6UDwiLCwJHa) asks (approved by Jay on 23 Nov; its build steps are in [audio-tracks.md](audio-tracks.md#loops-joining-audio-tracks-phase-4)). Built: 4a, each loop on its own output ([looper.md](looper.md#each-loop-on-its-own-output)), and 4b's model step: loop ids, loop cells on audio tracks, and one track a loop (marked built below). Everything else here is 4b to 4e, behind Dev's switch until 4e. The interfaces it builds on are phase 2's (audio clips, `Player::audio`) and Arrange 4b's (one song) as they merged; where this page names one of their types, it is that type, not a copy.
 
 Three contracts, so 4b, 4c and 4d each follow one written interface: the identities, the track player, and the transactions behind one UNDO.
 
@@ -33,16 +33,16 @@ Five, kept apart. A slot is never an identity, and a place in a history is never
 | **Slot** | `Slot(u8)`, 0 to 7: today's loop number | where the looper holds a loop in memory to play and record it | the loop host's table, `LoopId` to `Slot` | the session only |
 | **Playback** | no id: the track player's state for a track | what a track plays now: the clip, its origin, its voices or slot, its fades | the track player | the session only: one a track, two during a crossfade |
 
-**A clip's content** is one of two kinds. Phase 2's `Clip::audio: Option<AudioClip>` becomes `Option<AudioContent>`:
+**A clip's content** is one of two kinds, and an audio track's clip has exactly one (`Clip::is_audio_clip`):
 
-- `AudioContent::Regions(AudioClip)`: a take clip, as phase 2 built it.
-- `AudioContent::Loop(LoopClip)`: a loop cell, `LoopClip { id: LoopId }`. The clip is as long as its loop (`loops::length`, as a Loop cell is), and its loop's own level stays in the looper.
+- `Clip::audio: Option<AudioClip>`: a take clip, as phase 2 built it.
+- `Clip::loop_clip: Option<LoopClip>`: a loop cell, `LoopClip { id: LoopId }` (built, 4b's model step). The clip is as long as its loop (`loops::length`, as a Loop cell is: `Clip::new_audio_loop`), holds nothing a note clip holds, and its loop's own level stays in the looper. Both at once is `BadAudioClip`; a loop cell with notes, or naming `LoopId::NONE`, is `BadLoop`.
 
-Loop tracks' `Clip::looped: Option<u8>` stays, for Loop tracks while Dev's switch is off, and goes at 4e with them.
+Two fields rather than one enum, so phase 2's take-clip code keeps reading `Clip::audio` unchanged; `Clip::check` holds the either-or. Loop tracks' `Clip::looped: Option<u8>` stays, for Loop tracks while Dev's switch is off, and goes at 4e with them.
 
 **The rules**, enforced in the model, not left to the renderer:
 
-1. **A loop belongs to one track.** Cells of that track's rows may name it; so may the song's own clips on that track's lane. `Project::check` refuses a `LoopId` named on two tracks (`ModelError::BadLoop`). A track plays one clip at a time, so one playback a loop is enough.
+1. **A loop belongs to one track** (built). Cells of that track's rows may name it, and so may blocks on its lane, of a cell's clip or of the song's own. `Project::check` refuses a `LoopId` named on two tracks (`ModelError::BadLoop`), so a loop block moved to another track's lane is refused too. `Project::loop_places` lists every place a loop is named, `Project::loop_track(id)` gives its track, and `Project::loops_named` the loops that need a slot. A track plays one clip at a time, so one playback a loop is enough.
 2. **A copy onto another track is a new loop:** a new `LoopId`. From 4c its layers name the same recordings (nothing copied on the stick); in 4b it copies the audio, as a Loop track's copy does today. It takes a slot of its own either way.
 3. **Live or stored.** A loop is in a slot while a cell or a song clip names it. One nothing names is stored: its views and recordings are kept for UNDO, and it holds no slot and no memory. `LoopHost::slot_of(id) -> Option<Slot>`; bringing a stored loop back takes a free slot first (`LoopHost::bring_back(id) -> Result<Slot, Full>`), and is refused with the reason when all 8 are in use.
 4. **Later, not phase 4:** several read-only playbacks of one loop at once (the same loop on two tracks). The identities above are what that needs; phase 4 keeps one playback a slot.
@@ -137,11 +137,13 @@ This is Arrange 3.4's way (ask first, then apply in the first period the edit pl
 
 ## Saved
 
-- **The clips part:** a clip with loop content writes `loopclip <loop id>` in place of phase 2's `audioclip` and `region` lines, and the project needs `audio-loops`, so a build from before phase 4 refuses it instead of opening an empty clip. The project format stays 3.
+- **The clips part** (built): a loop cell writes `loopclip <loop id>` (32 hex digits, not 0, once) in place of phase 2's `audioclip` and `region` lines (`mpfree-seq` `save.rs`), and the project needs `audio-loops`, so a build from before phase 4 refuses it instead of opening an empty clip (the app's gate, still to come with the switch). The project format stays 3.
 - **The looper part** names each loop by its `LoopId` and, from 4c, each layer by its recording, with its view's lines.
 - **Until 4e** a project saved with Dev's switch on is a development file and may be refused later. From 4e a project with a Loop track is refused when opened, with the reason; old projects are not converted.
 
 ## What 4b's tests pin
+
+Built so far: `mpfree-seq`'s `save.rs` `loop_cells_read_back_and_a_loop_keeps_to_one_track` (two rows of one track name a loop and read back; the `loopclip` line's refusals; a loop cell on a note track, with a note, with regions or naming no loop refused; the loop's cell or block on another track refused, a copy with a loop of its own not; a block made the song's own still names it). To come:
 
 - A loop recorded into a cell of Audio 1 and overdubbed is heard only on Audio 1's channel, to the sample.
 - A `LoopId` named on two tracks is refused by `Project::check`; a copy onto another track gets a new one.

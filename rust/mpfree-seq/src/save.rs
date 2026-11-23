@@ -108,6 +108,12 @@
 //! and `left`. A project with one needs `audio-clips` (the app's project
 //! gate), so a build from before refuses it before reading this part.
 //!
+//! A loop cell on an audio track (phase 4, step 4b) has a `loopclip` line
+//! instead: the loop's lasting id, 32 hex digits, not 0. Its audio and
+//! layers are in the looper's part. A project with one needs
+//! `audio-loops` (the app's project gate), so a build from before phase 4
+//! refuses it instead of opening the cell as an empty clip.
+//!
 //! A marker's `section <passes>[ scene <row> pass <ticks>[ changed]]`
 //! line, right after its `marker` line, is what the marker says when the
 //! song list is linked to the song (the Arrange refactor's phase 4b,
@@ -429,6 +435,10 @@ fn clip_body(s: &mut String, c: &Clip) {
     // written, as a step size with no name isn't.
     if let Some(k) = c.scale.filter(|&k| crate::scale_ok(k) && c.takes_scale()) {
         let _ = writeln!(s, "scale {}", scale_text(k));
+    }
+    // A loop cell on an audio track (phase 4): the loop it plays.
+    if let Some(l) = &c.loop_clip {
+        let _ = writeln!(s, "loopclip {:032x}", l.id.0);
     }
     // What its instrument locks were made for (refactor F1). A node id is
     // one word; one that isn't is not written, and its locks play.
@@ -961,6 +971,21 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 }
                 a.regions
                     .push(clip_region(&mut w).ok_or_else(|| bad("region"))?);
+            }
+            // A loop cell on an audio track (phase 4): the loop it plays,
+            // by its lasting id.
+            ("loopclip", At::Clip(c, _)) => {
+                let id = w
+                    .next()
+                    .filter(|h| h.len() == 32 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+                    .and_then(|h| u128::from_str_radix(h, 16).ok())
+                    .map(crate::LoopId)
+                    .filter(|id| id.is_given())
+                    .ok_or_else(|| bad("loopclip"))?;
+                if c.loop_clip.is_some() {
+                    return Err(bad("loopclip"));
+                }
+                c.loop_clip = Some(crate::LoopClip { id });
             }
             // What its instrument locks were made for (refactor F1).
             ("madefor", At::Clip(c, _)) => {
@@ -2768,6 +2793,102 @@ mod tests {
         c.audio.as_mut().unwrap().regions[1].start = 3000;
         assert_eq!(overlap.check(), Err(crate::ModelError::BadAudioClip));
         refused(to_text(&overlap), "overlap");
+    }
+
+    /// Phase 4, step 4b: a loop cell on an audio track names its loop by
+    /// its lasting id, reads back, and holds nothing else; a loop belongs
+    /// to one track, its cells and its blocks alike.
+    #[test]
+    fn loop_cells_read_back_and_a_loop_keeps_to_one_track() {
+        use crate::{AudioClip, LoopId, ModelError, Placement, RecId};
+        let mut p = full();
+        for (k, name) in ["Vocal", "Guitar"].into_iter().enumerate() {
+            let mut a = Track::new_audio(name, 5 + k as u16);
+            a.id = crate::TrackId(p.next_track.max(1));
+            p.next_track = a.id.0 + 1;
+            p.tracks.insert(1 + k, a);
+        }
+        let id = LoopId(0x0c41_77e2_9a0b_4d13_8e55_60f1_23ab_cd09);
+        // Two rows of Vocal name one loop; Guitar has a take clip.
+        p.tracks[1].slots[0] = Some(Clip::new_audio_loop(id, "Vox loop", 7680));
+        p.tracks[1].slots[3] = Some(Clip::new_audio_loop(id, "Vox loop", 7680));
+        let mut take = Clip::new("Riff", 3840);
+        take.audio = Some(AudioClip::of(RecId(9), 0, 90_000, 3840, 120.0));
+        p.tracks[2].slots[0] = Some(take);
+        p.give_clip_ids();
+        p.arrangement.placements.clear();
+        p.arrangement.clips = Default::default();
+        let mut block = Placement::of(&p.tracks, 1, 0, 3840, 15_360);
+        block.offset = 1920;
+        p.arrangement.place(block).unwrap();
+        p.check().unwrap();
+        assert_eq!(p.loop_track(id), Some(1));
+        assert_eq!(p.loop_track(LoopId(5)), None);
+        assert_eq!(p.loops_named(), [id]);
+        assert_eq!(p.tracks[1].slots[0].as_ref().unwrap().loop_id(), Some(id));
+        let text = to_text(&p);
+        assert!(
+            text.contains("loopclip 0c4177e29a0b4d138e5560f123abcd09\nend\n"),
+            "{text}"
+        );
+        assert_eq!(from_text(&text).unwrap(), p);
+        // The line: 32 hex digits, not 0, once.
+        let refused = |t: String, why: &str| assert!(from_text(&t).is_err(), "{why}");
+        let line = "loopclip 0c4177e29a0b4d138e5560f123abcd09\n";
+        refused(text.replacen(line, "loopclip 0c41\n", 1), "short id");
+        refused(
+            text.replacen(line, "loopclip 0000000000000000000000000000000z\n", 1),
+            "not hex",
+        );
+        refused(
+            text.replacen(line, "loopclip 00000000000000000000000000000000\n", 1),
+            "no loop",
+        );
+        refused(text.replacen(line, &format!("{line}{line}"), 1), "twice");
+        // On a note track, with a note, with regions too, or with no loop.
+        let mut on_notes = p.clone();
+        let c = on_notes.tracks[1].slots[3].take();
+        on_notes.tracks[0].slots[5] = c;
+        assert_eq!(on_notes.check(), Err(ModelError::AudioTrack));
+        let mut with_note = p.clone();
+        let c = with_note.tracks[1].slots[3].as_mut().unwrap();
+        c.notes.push(crate::Note::new(0, 240, 36, 100));
+        assert_eq!(with_note.check(), Err(ModelError::BadLoop));
+        let mut both = p.clone();
+        let c = both.tracks[1].slots[3].as_mut().unwrap();
+        c.audio = Some(AudioClip::of(RecId(9), 0, 90_000, 3840, 120.0));
+        assert_eq!(both.check(), Err(ModelError::BadAudioClip));
+        let mut none = p.clone();
+        none.tracks[1].slots[3].as_mut().unwrap().loop_clip =
+            Some(crate::LoopClip { id: LoopId::NONE });
+        assert_eq!(none.check(), Err(ModelError::BadLoop));
+        // One loop, one track: a cell of it on Guitar, or its block on
+        // Guitar's lane, is refused; a copy with a loop of its own isn't.
+        let mut two = p.clone();
+        two.tracks[2].slots[4] = Some(Clip::new_audio_loop(id, "Vox loop", 7680));
+        assert_eq!(two.check(), Err(ModelError::BadLoop));
+        refused(to_text(&two), "two tracks");
+        let mut lane = p.clone();
+        lane.arrangement.placements[0].track = 2;
+        assert_eq!(lane.check(), Err(ModelError::BadLoop));
+        let mut copied = p.clone();
+        copied.tracks[2].slots[4] = Some(Clip::new_audio_loop(LoopId(7), "Vox copy", 7680));
+        copied.give_clip_ids();
+        copied.check().unwrap();
+        assert_eq!(copied.loops_named(), [id, LoopId(7)]);
+        assert_eq!(copied.loop_track(LoopId(7)), Some(2));
+        // Made the song's own, the block still names the loop on Vocal.
+        let mut own = p.clone();
+        own.make_unique(0).unwrap();
+        own.check().unwrap();
+        assert_eq!(
+            own.arrangement.clips.iter().next().unwrap().loop_id(),
+            Some(id)
+        );
+        assert_eq!(from_text(&to_text(&own)).unwrap(), own);
+        let mut own_lane = own.clone();
+        own_lane.arrangement.placements[0].track = 2;
+        assert_eq!(own_lane.check(), Err(ModelError::BadLoop));
     }
 
     /// Phase 2, step 2d: an audio clip's block goes on an audio track's

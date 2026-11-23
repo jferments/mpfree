@@ -901,3 +901,144 @@ fn clips_never_allocate() {
         assert_eq!(calls, 0, "period {period}");
     }
 }
+
+#[test]
+fn loops_through_the_track_player_never_allocate() {
+    // Phase 4, step 4b: on every track, a loop, a second crossing over, a
+    // third inside the fade (a voice taken), a mute, a take clip, the
+    // same loop from another origin, and loop jumps, at periods from 1 to
+    // 4096: the plan, the loops' runs and the mix never allocate.
+    use mpfree_audiotracks::{
+        Answer, Change, ClipPlay, ClipRegion, LoopPlay, LoopPlayer, Plays, RecordingId,
+    };
+    const RATE: u32 = 22_050;
+    const BT: i64 = 3_840;
+    let region = [ClipRegion {
+        start: 0,
+        end: BT,
+        rec: RecordingId(100),
+        src: 0,
+        phase: 0.0,
+        gain: 1.0,
+        fade_in: 0,
+        fade_out: 0,
+        into: 0,
+        left: 0,
+    }];
+    let what = |k: u8, origin: f64| match k {
+        0 => Plays::Clip(ClipPlay {
+            regions: &region,
+            origin,
+            len: BT,
+            last_frame: 20_000,
+            gain: 1.0,
+            clip: 9,
+            stamp: 1,
+        }),
+        id => Plays::Loop(LoopPlay {
+            id: u128::from(id),
+            origin,
+            len: BT,
+            clip: u32::from(id),
+            stamp: 1,
+        }),
+    };
+    let bufs: Vec<Vec<f32>> = (0..4).map(|k| vec![k as f32 * 0.1; 2 * 4096]).collect();
+    for period in [1usize, 64, 333, 4096] {
+        let mut t = Transport::new(RATE, 240.0).unwrap();
+        let mut a = AudioTracks::new(RATE, 30);
+        let mut loops = LoopPlayer::new();
+        let mut b = Block::new();
+        let audio = vec![0.25f32; 2 * 30_000];
+        let f = TakeFile {
+            id: 0,
+            rec: RecordingId(100),
+            track: 0,
+            group: 0,
+            pass: 0,
+            bpm: 240.0,
+            anchor: 0.0,
+            frames: 30_000,
+            channels: 2,
+            file: String::new(),
+            path: None,
+            audio,
+        };
+        assert!(a.load_take(f).is_ok());
+        let input = vec![0.0f32; 2 * period];
+        let mut out = vec![0.0f32; 2 * period];
+        let mut frame = 0u64;
+        while a.loading() > 0 {
+            assert!(t.process(period as u32, &mut b));
+            let map = *t.tempo_map();
+            a.process(&b, &map, &input, &mut out);
+            frame += period as u64;
+        }
+        assert!(t.command(frame, T::SetLoop(Some((0, 4 * BT)))));
+        assert!(t.command(frame, T::PlayStart));
+        let start = frame;
+        let at = |tick: i64| start + tick as u64 * 735 / 128;
+        // (frame, track, what, origin, muted)
+        let mut evs: Vec<(u64, usize, u8, f64, bool)> = Vec::new();
+        for tr in 0..MAX_TRACKS {
+            evs.push((at(0), tr, 1, 0.0, false));
+            evs.push((at(BT), tr, 2, BT as f64, false));
+            evs.push((at(BT) + 7, tr, 3, BT as f64, false));
+            evs.push((at(BT) + 3000, tr, 3, BT as f64, true));
+            evs.push((at(2 * BT), tr, 0, (2 * BT) as f64, false));
+            evs.push((at(3 * BT), tr, 1, (3 * BT) as f64, false));
+            evs.push((at(3 * BT) + 5000, tr, 1, 0.0, false));
+        }
+        evs.sort_by_key(|e| e.0);
+        let mut changes: Vec<Vec<Change>> =
+            (0..MAX_TRACKS).map(|_| Vec::with_capacity(16)).collect();
+        let end = at(9 * BT);
+        let mut calls = 0;
+        while frame < end {
+            let n = period as u64;
+            for (tr, cs) in changes.iter_mut().enumerate() {
+                cs.clear();
+                for e in evs
+                    .iter()
+                    .filter(|e| e.1 == tr && (frame..frame + n).contains(&e.0))
+                {
+                    if cs.len() == 4 {
+                        cs.remove(0);
+                    }
+                    cs.push(Change {
+                        frame: (e.0 - frame) as u32,
+                        tick: ((e.0 - start) as f64 * 128.0 / 735.0).round(),
+                        plays: what(e.2, e.3),
+                        muted: e.4,
+                        ring: false,
+                    });
+                }
+            }
+            let mut answers = [Answer::default(); MAX_TRACKS];
+            for (tr, ans) in answers.iter_mut().enumerate() {
+                let before = evs.iter().rev().find(|e| e.1 == tr && e.0 < frame);
+                *ans = Answer {
+                    start: before.map_or(Plays::Nothing, |e| what(e.2, e.3)),
+                    muted: before.is_some_and(|e| e.4),
+                    changes: &changes[tr],
+                    superseded: 0,
+                };
+            }
+            let src = |id: u128| bufs.get(id as usize).map(|v| &v[..2 * period]);
+            CALLS.with(|c| c.set(0));
+            watch(true);
+            assert!(t.process(n as u32, &mut b));
+            let map = *t.tempo_map();
+            loops.plan(&b, &answers);
+            let _ = (0..MAX_TRACKS)
+                .map(|tr| loops.runs(tr).len())
+                .sum::<usize>();
+            a.process_with_loops(&b, &map, &input, &mut out, &answers, &loops, &src);
+            watch(false);
+            calls += CALLS.with(Cell::get);
+            frame += n;
+        }
+        assert!(loops.stolen() > 0, "period {period}");
+        assert_eq!(calls, 0, "period {period}");
+    }
+}
