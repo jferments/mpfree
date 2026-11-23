@@ -3306,7 +3306,7 @@ impl Looper {
             let p = (from + i) % l.len;
             let mut x = layer_frame(&self.store, blocks, valid, view, l.seam, p);
             if replacing {
-                let d = l.ducks(&l.views, l.len, p, strength)[slot];
+                let d = l.ducks(&l.views, l.len, p, None, strength)[slot];
                 x = x.map(|v| v * d);
             }
             y.copy_from_slice(&x);
@@ -7058,7 +7058,7 @@ impl Loop {
             let strength = |s: &Slot| if s.heard(any_solo) { 1.0 } else { 0.0 };
             for (j, a) in acc.iter_mut().enumerate() {
                 let p = from + j;
-                let d = self.ducks(&self.views, self.len, p, strength);
+                let d = self.ducks(&self.views, self.len, p, None, strength);
                 for &k in &self.order[..self.in_order] {
                     let k = k as usize;
                     let g = gains[k];
@@ -7893,7 +7893,9 @@ impl Loop {
         // Nothing after STOP is kept.
         if self.finish_len(store, stats, me, end_t, len, false) {
             self.cut = len.min(f.saturating_sub(self.rec_from) as usize);
-            self.slots[0].valid = (0, KEEP_BEFORE + self.cut);
+            // What it has written of that: the rest comes in over the
+            // writer's `latency` frames ([`Loop::write_first`]).
+            self.slots[0].valid = (0, KEEP_BEFORE + self.cut.min(self.written));
         }
     }
 
@@ -7945,14 +7947,14 @@ impl Loop {
         self.len_ticks = t - self.origin;
         self.order[0] = 0;
         self.in_order = 1;
-        // A pass that closed after its end (smart loop end's Auto listens
-        // on past it) has written what it heard after the end already:
-        // that is the start of what it keeps after it.
-        let heard = if tail {
-            (KEEP_BEFORE + self.written).clamp(kept, kept + KEEP_AFTER)
-        } else {
-            kept
-        };
+        // What the writer has written: it runs `latency` frames behind,
+        // so a pass closed on its end has that much of it still to come,
+        // which is the loop's only once written ([`Loop::write_first`]):
+        // till then a reused block's old audio would play there. A pass
+        // that closed after its end (smart loop end's Auto listens on past
+        // it) has written what it heard after the end already: that is
+        // the start of what it keeps after it.
+        let heard = (KEEP_BEFORE + self.written).min(if tail { kept + KEEP_AFTER } else { kept });
         self.slots[0] = Slot {
             valid: (0, heard),
             ..Slot::NEW
@@ -8026,6 +8028,11 @@ impl Loop {
         }
         store.set(me, 0, q, x);
         self.written = self.written.max(j + 1);
+        // Closed (or cut by STOP) with its last frames still coming in:
+        // each is the loop's once it is written.
+        if self.len > 0 && self.slots[0].valid == (0, q) {
+            self.slots[0].valid.1 = q + 1;
+        }
     }
 
     /// What the writer hears after the loop's end, as frame `q` of the
@@ -8684,11 +8691,15 @@ impl Loop {
         views: &[View; MAX_LAYERS],
         len: usize,
         p: usize,
+        had: Option<&[u8]>,
         strength: impl Fn(&Slot) -> f32,
     ) -> [f32; MAX_LAYERS] {
         let mut out = [1.0f32; MAX_LAYERS];
         let mut d = 1.0f32;
         for &k in self.order[..self.in_order].iter().rev() {
+            if had.is_some_and(|h| !h.contains(&k)) {
+                continue;
+            }
             let k = k as usize;
             out[k] = d;
             let s = &self.slots[k];
@@ -8973,7 +8984,7 @@ impl Loop {
     /// The layers at the loop's place, through a jump's or an edit's
     /// crossfade.
     fn layers_at(&self, store: &Store, me: usize) -> [f32; 2] {
-        let now = (self.len, self.seam, &self.views);
+        let now = (self.len, self.seam, &self.views, None);
         let mut y = self.sample_at(store, me, self.pos, now);
         if self.jump > 0 {
             let w = self.jump as f32 * STEP;
@@ -8985,7 +8996,16 @@ impl Loop {
         if self.xf > 0 {
             let w = self.xf as f32 * STEP;
             let sh = &self.shapes[self.xf_shape];
-            let old = self.sample_at(store, me, self.xf_pos, (sh.len, sh.seam, &sh.views));
+            // The loop before the edit: the layers it had, through their
+            // views then. A layer that came in since (an overdub opened in
+            // the crossfade, in a slot another layer had before) has no
+            // view in it: read through the slot's old view, it would play
+            // wrong frames, or (a valid stretch past the old view's end)
+            // panic on the arithmetic. The layers it had are all still the
+            // loop's: Undo, Delete and Merge wait for the crossfade
+            // ([`Loop::must_wait`]).
+            let had = Some(&sh.order[..sh.in_order]);
+            let old = self.sample_at(store, me, self.xf_pos, (sh.len, sh.seam, &sh.views, had));
             for (v, o) in y.iter_mut().zip(old) {
                 *v = *v * (1.0 - w) + o * w;
             }
@@ -9029,15 +9049,16 @@ impl Loop {
 
     /// Every layer at `pos`, read between frames, at its gains, through
     /// a shape's views (the loop's `len`, `seam` and `views`, now or before
-    /// an edit). Only the frames a layer has written count.
+    /// an edit, with the layers it had then). Only the frames a layer has
+    /// written count.
     fn sample_at(
         &self,
         store: &Store,
         me: usize,
         pos: f64,
-        shape: (usize, usize, &[View; MAX_LAYERS]),
+        shape: (usize, usize, &[View; MAX_LAYERS], Option<&[u8]>),
     ) -> [f32; 2] {
-        let (len, seam, views) = shape;
+        let (len, seam, views, had) = shape;
         let i0 = (pos as usize).min(len - 1);
         let frac = (pos - i0 as f64) as f32;
         let i1 = if i0 + 1 == len { 0 } else { i0 + 1 };
@@ -9047,13 +9068,16 @@ impl Loop {
         let (d0, d1) = if self.replacing() {
             let strength = |s: &Slot| s.duck * s.presence;
             (
-                self.ducks(views, len, i0, strength),
-                self.ducks(views, len, i1, strength),
+                self.ducks(views, len, i0, had, strength),
+                self.ducks(views, len, i1, had, strength),
             )
         } else {
             ([1.0; MAX_LAYERS], [1.0; MAX_LAYERS])
         };
         for &k in &self.order[..self.in_order] {
+            if had.is_some_and(|h| !h.contains(&k)) {
+                continue;
+            }
             let k = k as usize;
             let s = &self.slots[k];
             let g = [s.gl * s.presence, s.gr * s.presence];
