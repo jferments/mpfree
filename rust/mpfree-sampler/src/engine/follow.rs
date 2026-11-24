@@ -118,15 +118,16 @@ pub(super) fn retarget(
 /// Playing voice `v` (with its grain voice `g`) follows an edit of its pad
 /// in `view` ([`Engine::edit_view`]), if its layer there still plays its
 /// sound: the loop points at once, a new tune at once, a granular voice's
-/// grain settings, and the level, pan, cutoff and resonance gliding there
-/// from where they are, under `live` (its pad's live row) and `program`.
+/// grain settings (with its layer's live values and locks, `kit_live`),
+/// and the level, pan, cutoff and resonance gliding there from where they
+/// are, under its pad's live row in `kit_live` and `program`.
 /// `was_live`: it followed a live value that the new view cleared, so it
 /// glides back to its own even if the edit didn't change it.
 pub(super) fn follow_edit(
     v: &mut Voice,
     g: &mut GrainVoice,
     view: &EngineView,
-    live: &[f32; PadField::COUNT],
+    kit_live: &Live,
     program: &[f32; ProgramField::COUNT],
     was_live: bool,
     bpm: f64,
@@ -134,6 +135,9 @@ pub(super) fn follow_edit(
     if !v.active || v.kill_left > 0 || v.audition {
         return;
     }
+    // Its pad's live row (the take's has none: all NaN).
+    let row = kit_live.row(usize::from(v.pad));
+    let live = &row;
     let Some(vp) = view.pad_or_take(usize::from(v.pad)) else {
         return;
     };
@@ -237,23 +241,8 @@ pub(super) fn follow_edit(
     if l.hits.is_none() {
         v.hits = None;
     }
-    if v.granular
-        && l.mode == PlayMode::Granular
-        && (l.grain != v.layer_grain || l.follow != v.grain_follow)
-    {
-        v.grain_follow = l.follow;
-        let mut p = pitched_grain(l.grain, v.grain_hit, v.grain_follow);
-        if v.grain_base.position != v.layer_grain.position {
-            p.position = v.grain_base.position;
-        }
-        v.grain_base = p;
-        v.layer_grain = l.grain;
-        g.set_params(tuned_grain(
-            pressed_grain(p, v.route, v.press),
-            v.follow.cents,
-            v.grain_follow,
-        ));
-        v.grain_cents = v.follow.cents;
+    if v.granular && l.mode == PlayMode::Granular {
+        follow_grain(v, g, kit_live.layer_grain(usize::from(v.pad), l), l);
     }
 
     if v.mode == Some(l.mode) && !v.granular && !v.reverse && !l.reverse {
@@ -262,6 +251,38 @@ pub(super) fn follow_edit(
     if moved {
         retarget(v, live, program);
     }
+}
+
+/// A granular voice takes its layer's grain settings `grain` (as
+/// [`Live::layer_grain`] gives them: the view's, or with live values and
+/// locks in place), and layer `l`'s key follow and routes, if they
+/// changed: what its hit added (a keygroup's semitones, 16 Levels'
+/// position) is kept, and the grain voice hears them from its next grain.
+pub(super) fn follow_grain(
+    v: &mut Voice,
+    g: &mut GrainVoice,
+    grain: mpfree_grain::Params,
+    l: &ViewLayer,
+) {
+    if grain == v.layer_grain && l.follow == v.grain_follow && l.routes == v.grain_routes {
+        return;
+    }
+    let was = v.routed_grain();
+    v.grain_follow = l.follow;
+    v.grain_routes = l.routes;
+    v.grain_press = l.routes.moves_from(RouteFrom::Pressure);
+    v.layer_grain = grain;
+    let mut p = pitched_grain(v.routed_grain(), v.grain_hit, v.grain_follow);
+    if v.grain_base.position != was.position {
+        p.position = v.grain_base.position;
+    }
+    v.grain_base = p;
+    g.set_params(tuned_grain(
+        v.pressed_grain(),
+        v.follow.cents,
+        v.grain_follow,
+    ));
+    v.grain_cents = v.follow.cents;
 }
 
 /// A voice of a looping mode follows its layer's loop ([`follow_edit`]):

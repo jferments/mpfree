@@ -2024,6 +2024,15 @@ impl SamplePage {
         self.page() == PAGE && self.tool() == Tool::Grain
     }
 
+    /// The Grain tool shows its Mod part (sampler step 17c).
+    pub fn grain_mod_part(&self) -> bool {
+        self.grain_tool()
+            && self
+                .tab
+                .as_ref()
+                .is_some_and(|t| t.grain_part() == mpfree_sampler_ui::grain_tool::GrainPart::Mod)
+    }
+
     /// The Wave page shows with the Slice tool.
     pub fn slice_tool(&self) -> bool {
         self.page() == PAGE && self.tool() == Tool::Slice

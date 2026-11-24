@@ -9264,6 +9264,11 @@ impl Player {
                     format!("Tap a hit: pin it to the grid   ·   Q-Links 1-4: pin, its beat, warp tempo, scroll   ·   \
                      {ROWS_HINT}   ·   SHIFT + - / +: zoom")
                 }
+                // Its Mod part (sampler step 17c): the routes.
+                View::Sample if self.sample.grain_mod_part() => {
+                    format!("Touch a route's knob, then pick its From and To   ·   hit the pad to hear it   ·   \
+                     From Off: the route does nothing   ·   {ROWS_HINT}")
+                }
                 View::Sample if self.sample.grain_tool() => {
                     format!("Drag GRAIN: where grains start, SIZE: how long   ·   Q-Links 1-4: position, size, \
                      density, pitch (SHIFT: sprays, finer)   ·   {ROWS_HINT}   ·   SHIFT + - / +: zoom")
@@ -25058,32 +25063,53 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // cloud 1.5 s after a hit, as the audio thread sends it. Then its
     // other parts, tapped on the Grain section's switch: LFO, with an LFO
     // and the envelope moving the cloud; Filter, a sprayed band pass;
-    // Shape, with Quality Tape; and Presets, with one put on the pad.
+    // Shape, with Quality Tape; Presets, with one put on the pad; and Mod,
+    // with three routes.
     {
         use mpfree_sampler_ui::grain_tab::View as GrainView;
         use mpfree_sampler_ui::grain_tool::{GrainPart, PARTS_ROW};
+        use mpfree_sampler_ui::sample::{grain_mod_project, grain_section_project};
         use mpfree_sampler_ui::wave_tab::Tool;
-        for (name, section, part) in [
-            ("sample-grain", GrainView::Grains, GrainPart::Grains),
-            ("sample-grain-movement", GrainView::Movement, GrainPart::Lfo),
+        type Made = Result<
+            (
+                mpfree_sampler::model::Project,
+                std::sync::Arc<mpfree_sampler_ui::source::SourceView>,
+            ),
+            String,
+        >;
+        type Screen = (&'static str, fn() -> Made, GrainPart);
+        let screens: [Screen; 6] = [
+            (
+                "sample-grain",
+                || grain_section_project(GrainView::Grains),
+                GrainPart::Grains,
+            ),
+            (
+                "sample-grain-movement",
+                || grain_section_project(GrainView::Movement),
+                GrainPart::Lfo,
+            ),
             (
                 "sample-grain-filter",
-                GrainView::FilterKeys,
+                || grain_section_project(GrainView::FilterKeys),
                 GrainPart::Filter,
             ),
             (
                 "sample-grain-shape",
-                GrainView::FilterKeys,
+                || grain_section_project(GrainView::FilterKeys),
                 GrainPart::Shape,
             ),
             (
                 "sample-grain-presets",
-                GrainView::Presets,
+                || grain_section_project(GrainView::Presets),
                 GrainPart::Presets,
             ),
-        ] {
+            // Mod (sampler step 17c): three routes, route 1 outlined.
+            ("sample-grain-mod", grain_mod_project, GrainPart::Mod),
+        ];
+        for (name, make, part) in screens {
             let mut grain = sample_sampler(fonts());
-            let Ok((project, _)) = mpfree_sampler_ui::sample::grain_section_project(section) else {
+            let Ok((project, _)) = make() else {
                 continue;
             };
             let (grains, head, live) = mpfree_sampler_ui::sample::grains_after(&project, 1.5);

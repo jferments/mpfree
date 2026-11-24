@@ -1331,6 +1331,31 @@ pub fn grain_section_project(
     Ok((p, view))
 }
 
+/// [`grain_section_project`]'s pad with three grain routes (sampler step
+/// 17c), as the Mod part's mockup drew them: velocity to the size, +40 %;
+/// pressure to the density, -30 %; the key to the scan, +25 % an octave.
+pub fn grain_mod_project() -> Result<(Project, Arc<SourceView>), String> {
+    use mpfree_sampler::model::{GrainField, GrainRoute, RouteFrom};
+    let (mut p, view) = grain_section_project(grain_tab::View::Grains)?;
+    let Some(mut pad) = p.pad(PAD).cloned() else {
+        return Err("no pad".into());
+    };
+    let routes = &mut pad.layers[0].region.grain_routes.0;
+    for (k, (from, to, depth)) in [
+        (RouteFrom::Velocity, GrainField::Size, 0.4),
+        (RouteFrom::Pressure, GrainField::Density, -0.3),
+        (RouteFrom::Key, GrainField::Scan, 0.25),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        routes[k] = GrainRoute { from, to, depth };
+    }
+    p.set_pad(PAD, Some(pad), None)
+        .map_err(|e| format!("{e:?}"))?;
+    Ok((p, view))
+}
+
 /// The Sample page with the Grain tool on `project`'s pad A5, shown.
 pub fn grain_on(fonts: Fonts, project: Project, view: Arc<SourceView>) -> Result<Sample, String> {
     // At 120 BPM, as the app's project starts (the Sound section's too).
@@ -1493,5 +1518,18 @@ pub fn grain_samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         show_played(&mut s, 1.5);
         out.push(s);
     }
+    let (p, source) = grain_mod_project()?;
+    let mut s = grain_on(fonts(), p, source)?;
+    (s.name, s.about) = (
+        "grain-mod",
+        "Mod: velocity, pressure and the key routed to the size, density and scan, route 1 outlined",
+    );
+    let st = s.state.clone();
+    s.tab.open_grain_part(&mut s.ui, &st, GrainPart::Mod);
+    if let Some(h) = s.ui.get_mut::<Label>("hint") {
+        h.text = s.tab.hint().into();
+    }
+    show_played(&mut s, 1.5);
+    out.push(s);
     Ok(out)
 }

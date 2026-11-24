@@ -395,7 +395,8 @@ pub(super) fn retune(v: &mut Voice, f: Filter, e: f32, rate: f32) {
 #[inline(always)]
 fn amp_gain(v: &mut Voice, start: f32) -> f32 {
     let mut amp = start;
-    if v.route.target != PressureTarget::Off {
+    // A grain layer's route from pressure (step 17c) follows it too.
+    if v.route.target != PressureTarget::Off || v.grain_press {
         follow_pressure(v);
         amp *= v.press_gain;
     }

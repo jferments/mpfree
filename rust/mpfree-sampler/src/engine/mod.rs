@@ -90,11 +90,11 @@ use crate::grain_clip::GrainClip;
 use crate::grain_share::{self, Claim, Rank};
 use crate::hits::{self, HitCell};
 use crate::model::{
-    edge_gain, ChannelPick, Fade, GrainMode, GrainParams, Keys, KeysPlay, LayerSelect, Levels,
-    LfoShape, LfoTarget, LoopMode, MasterFx, Mono, PadLfo, PadsPlay, Pcm, PitchEnv, PlayMode,
-    PressureRoute, PressureTarget, Project, SliceSet, WarpMethod, GLIDE_MS, GRAIN_GLIDE_MAX_MS,
-    LFO_BEATS, LFO_RATE_HZ, PADS, PITCH_DECAY_MS, PITCH_ENV_ST, RANDOM_OCTAVES, RANDOM_RES,
-    VEL_ATTACK_MS,
+    edge_gain, ChannelPick, Fade, GrainMode, GrainParams, GrainRoutes, Keys, KeysPlay, LayerSelect,
+    Levels, LfoShape, LfoTarget, LoopMode, MasterFx, Mono, PadLfo, PadsPlay, Pcm, PitchEnv,
+    PlayMode, PressureRoute, PressureTarget, Project, RouteFrom, SliceSet, WarpMethod, GLIDE_MS,
+    GRAIN_GLIDE_MAX_MS, LFO_BEATS, LFO_RATE_HZ, PADS, PITCH_DECAY_MS, PITCH_ENV_ST, RANDOM_OCTAVES,
+    RANDOM_RES, VEL_ATTACK_MS,
 };
 use crate::warp::{CopyMap, Warps};
 use mpfree_grain::{Budget, GrainFx, GrainSource, GrainVoice, MIN_SPAN};

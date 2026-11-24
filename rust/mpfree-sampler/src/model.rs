@@ -14,6 +14,9 @@ pub use mpfree_grain::{
 
 use crate::dsp::{as_i16, Sample};
 pub use crate::dsp::{Ahdsr, Filter, FilterKind};
+pub use crate::grain_field::{
+    GrainField, GrainRoute, GrainRoutes, RouteFrom, GRAIN_ROUTES, ROUTE_DEPTH,
+};
 
 /// Pads in a program: 8 banks of 16.
 pub const PADS: usize = 128;
@@ -1398,6 +1401,9 @@ pub struct Region {
     /// a new start; with more voices each new one glides from the pad's
     /// last key.
     pub grain_glide_ms: f32,
+    /// Its grain layer's routes from velocity, pressure and the key to its
+    /// grain settings (sampler refactor step 17c).
+    pub grain_routes: GrainRoutes,
     /// Plays at the project tempo (not in granular mode, whose grains have
     /// their own tempo sync).
     pub warp: Option<Warp>,
@@ -1539,6 +1545,7 @@ impl Region {
             grain_mode: GrainMode::Cloud,
             grain_keys: GrainKeys::default(),
             grain_glide_ms: 0.0,
+            grain_routes: GrainRoutes::OFF,
             warp: None,
             slices: Vec::new(),
             slice_sets: Vec::new(),
@@ -1816,6 +1823,9 @@ impl Region {
         }
         if !(0.0..=GRAIN_GLIDE_MAX_MS).contains(&self.grain_glide_ms) {
             return Err(ModelError::BadRegion("grain glide"));
+        }
+        if !self.grain_routes.ok() {
+            return Err(ModelError::BadRegion("grain routes"));
         }
         if let Some(w) = &self.warp {
             if !WARP_BPM.contains(&w.bpm) {

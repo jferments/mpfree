@@ -38,6 +38,9 @@ pub struct Stats {
     /// makes no new ones and finishes those it has
     /// ([`crate::grain_share`]).
     pub held_back_clouds: u64,
+    /// Layer grain settings a live value or a lock couldn't hold: the
+    /// kit's table of [`LAYER_VALUES`] was full ([`Event::LayerLive`]).
+    pub refused_layer_values: u64,
 }
 
 impl Engine {
