@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-sampler-ui/src/pads_tab.rs rust/mpfree-app/src/sample_page.rs rust/mpfree-app/src/sampler.rs rust/mpfree-app/src/perform_tab.rs rust/mpfree-app/src/perform_pads.rs rust/mpfree-app/src/pad_synths.rs rust/mpfree-app/src/kit.rs rust/mpfree-browser-ui
-checked: 2026-11-20 14cca201
+checked: 2026-11-23 6610c73a
 -->
 
 # The Pads tab
@@ -124,6 +124,7 @@ On the **Pads** tab, tap **Perform pads** at the right end of the **Pads of** ro
 - Under the list, for a throw: **Edit the effect ›** opens the Perform FX of the throw's strip in the **Mix** tab, on the page with the throw's own settings (**‹** comes back here). **Hear it** plays the throw for a bar on its strip, from its **Starts** while the song plays, without changing the mix.
 - **Learn a key**, beside them, lets a key, pad or footswitch on your gear play the picked pad: tap it, then press the key (or hold **SHIFT** and tap a pad on the map). The key plays that pad as hitting it does, on every page, whatever the MPC's pads are doing: a throw while you hold it, a macro, a loop key (hold it a second to clear the loop), a mute or a scene. It plays whatever is on that pad, so change the pad and the key follows. Tap **Learn a key** again before pressing anything to cancel. See [Playing a Perform pad from your gear](midi-and-cv.md#playing-a-perform-pad-from-your-gear).
 - The **Q-Links** turn the picked throw's own settings, named for its effect on the cards at the right: **Q1** its length and **Q2** its amount. A **Delay throw** has **Time** and **Feedback**; a **Reverb wash** has **Decay** only (on Q2); **Stutter**, **Beat repeat**, **Tape stop** and **Vinyl brake** have **Length** and **Mix**; a **Filter dip** has **Sweep** and **Depth**. **SHIFT** turns the amount finer. These settings belong to the Perform FX of the strip the throw plays on, so every pad that throws the same effect on the same strip shares them (the hint says so: "every Delay throw on Drums"). **Q3** and **Q4**, and all four on a pad that isn't a throw, are faint: turning one says why. If the strip's Perform FX is gone (taken off on the Mix tab), the cards are faint and say to pick the pad's On again. A turn records like any knob while you record; one turn, until you lift your finger, is one **UNDO** step. **Q-LINK** does nothing on this view.
+- **What the page is**, the chips at the top right: **Own pads** (each pad set up as above), **Clip window** or **Scenes**. See [Clip windows and scenes on the pads](#clip-windows-and-scenes-on-the-pads) below.
 - **Copy**, **Paste** and **Clear** work on the pad picked. **Name page** types the page's name on the keyboard; the name shows over the pads and in the log when PAD BANK turns to it. Each change is one step: **UNDO** takes it back and **SHIFT + UNDO** puts it back. The set is saved with the project.
 - **On the pads** at the top right puts the set on the pads at the page shown, as **SHIFT + SAMPLER** pressed again on the Looper tab does: Play and the Looper tab play it. Tap it again to give the pads back to the kit.
 
@@ -132,4 +133,18 @@ A throw's On, Starts, Let go and 1 bar are the pad's own: Play's throw tiles kee
 {{shot: pads-perform | The Pads tab showing the Perform set: page B's throws, a macro pad, two track mutes, a loop key and a scene, with Reverb wash on B2 picked.}}
 
 {{shot: pads-perform-knobs | The Perform view with B13, the Delay throw on Drums, picked: Q1 its Time and Q2 its Feedback on the Drums track's Perform FX.}}
+
+### Clip windows and scenes on the pads
+
+A page of the Perform set can play the **Clips** grid instead of pads of its own, so you can launch clips and scenes from the pads without looking at the screen. Pick the page (its letter over the pads, or **PAD BANK**), then tap one of the chips at the top right:
+
+- **Clip window:** the page's pads are four tracks by four rows of the grid, laid out as the grid is: the top row of pads is the window's first row, and the four columns its four tracks. A hit on a pad is a tap on its cell: it launches the clip on its line, stops it while it plays, and calls it off while it waits. A pad on an empty cell does nothing (the pads never make a clip; make one on the grid), and an empty **Loop** cell's pad arms it for the next loop, as a tap does. Move the window with the chips under **Clip window**: **Tracks 1–4**, **Tracks 5–8** and so on, then the rows (**Rows 1–4**, **Rows 5–8**, eight at a time around the window), or a track or a row at a time with **Tracks** and **Rows** in the list under them (a tap, the wheel, or **-** / **+**). While the window is on the pads, the grid on the **Arrange** tab outlines it.
+- **Scenes:** the page's pads are a bank's 16 rows (see [Scene banks](clips.md#scene-banks)): row 1 of the bank on the top-left pad, on along each row of pads as you read, so the bank's row 16 is the bottom-right pad. A hit launches the row, as its number on the grid does. Pick the bank with **Bank A** to **Bank D**, or **Bank** in the list. To have all four banks on the pads, make four pages scenes pages, one for each bank, and turn between them with **PAD BANK**.
+- **Own pads** gives the page its own pads back, as they were.
+
+The pads light as the grid shows their cells and rows: dark with no clip (a row with no clip on any track), dim green with a clip, green while it plays, blinking green while it waits for its line, red while it records; an armed empty Loop cell blinks red. A scene pad on a page of its own pads lights the same way. Each change of what a page is, or where its window is, is one **UNDO** step, and the set saves it with the project. **Copy**, **Paste** and **Clear** are for pads of their own, so they are faint on these pages; **Name page** and **Learn a key** work as on any page.
+
+{{shot: pads-perform-clips | Page C as a clip window over Tracks 1 to 4 and rows 1 to 4: each pad a cell with its clip, C9 (Drums, row 2) picked.}}
+
+{{shot: pads-perform-scenes | Page C as bank A's scenes: row 1 on the top-left pad, C14 (row 2, Verse) picked.}}
 

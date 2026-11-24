@@ -53,7 +53,7 @@ use mpfree_seq::ListStep;
 use mpfree_seq::TimeEdit;
 use mpfree_seq::{
     Clip, ClipId, ClipRegion, Holds, LaunchGrid, Lock, LoopId, ModelError, Project, RecId,
-    TouchPoint, Track, TrackId, TrackKind, LOOPS, MAX_TRACKS, ROWS, SLOTS,
+    TouchPoint, Track, TrackId, TrackKind, LOOPS, MAX_TRACKS, ROWS,
 };
 use mpfree_time_ui::editor::{Done, EditAction, Editor, ScaleOffers};
 use mpfree_time_ui::list::ListRow;
@@ -1955,7 +1955,7 @@ impl TimeControl {
         if clip.audio.is_none() {
             return Err(format!("{} takes audio clips only", t.name));
         }
-        let slot = (0..SLOTS)
+        let slot = (0..ROWS)
             .find(|&s| t.slots.get(s).is_some_and(Option::is_none))
             .ok_or_else(|| format!("{} has no empty cell", t.name))?;
         self.takes
@@ -4114,7 +4114,7 @@ impl TimeControl {
                         // The rows under it go back down.
                         self.rows_followed(|k| {
                             let k = if k >= r { k + 1 } else { k };
-                            (k < SLOTS).then_some(k)
+                            (k < ROWS).then_some(k)
                         });
                     }
                     if row.is_some_and(|r| r.song.is_some()) {
@@ -4821,7 +4821,7 @@ impl TimeControl {
                     .drop_row(&mut self.project, from, to, copy)
                     .map_err(|e| match e {
                         ModelError::NoRoom => format!(
-                            "clips: row {SLOTS} is in use, so a copy has no room: empty it first"
+                            "clips: row {ROWS}, the last, is in use, so a copy has no room: empty it first"
                         ),
                         ModelError::BadPlacement => {
                             "clips: the song's blocks would overlap".to_string()
@@ -5007,8 +5007,8 @@ impl TimeControl {
             }
             TimeAction::Chip(_) => Ok(String::new()),
             TimeAction::MorphRows { a, b } => {
-                self.morph.a = a.min(SLOTS - 1);
-                self.morph.b = b.min(SLOTS - 1);
+                self.morph.a = a.min(ROWS - 1);
+                self.morph.b = b.min(ROWS - 1);
                 self.changed = true;
                 self.song_morph();
                 Ok(format!(
@@ -5207,7 +5207,7 @@ impl TimeControl {
                 Ok("scene card closed".into())
             }
             TimeAction::SceneCard(Some(row)) => {
-                if row >= SLOTS {
+                if row >= ROWS {
                     return Err(format!("no row {}", row + 1));
                 }
                 self.scene_pick = Some(row);
@@ -5216,19 +5216,19 @@ impl TimeControl {
                 Ok(format!("scene card: scene {}", row + 1))
             }
             TimeAction::InsertRow(row) => {
-                if row + 2 >= SLOTS {
+                if row + 2 >= ROWS {
                     return Err(format!(
-                        "clips: row {SLOTS}, the grid's last, is the only row under it"
+                        "clips: row {ROWS}, the grid's last, is the only row under it"
                     ));
                 }
-                if !self.project.row_empty(SLOTS - 1) {
+                if !self.project.row_empty(ROWS - 1) {
                     return Err(format!(
-                        "clips: row {SLOTS} is in use, so there's no room for another row: empty it first"
+                        "clips: row {ROWS}, the last, is in use, so there's no room for another row: empty it first"
                     ));
                 }
                 // The grid's last row, empty, moves in under it.
                 self.act_in(TimeAction::DropRow {
-                    from: SLOTS - 1,
+                    from: ROWS - 1,
                     to: row + 1,
                     copy: false,
                 })?;
@@ -6480,7 +6480,7 @@ impl TimeControl {
                 return Err("list → song: the list is the song's parts already".into());
             }
         }
-        let filled: Vec<usize> = (0..SLOTS).filter(|&r| self.project.row_filled(r)).collect();
+        let filled: Vec<usize> = (0..ROWS).filter(|&r| self.project.row_filled(r)).collect();
         let n = self.project.arrangement.list.steps.len();
         let list = &mut self.project.arrangement.list;
         match a {
@@ -6701,7 +6701,7 @@ impl TimeControl {
             TimeAction::MorphRows { a, b } => {
                 // Morphing: the new rows go on A and B at once, from the
                 // same sound before.
-                let (a, b) = (a.min(SLOTS - 1), b.min(SLOTS - 1));
+                let (a, b) = (a.min(ROWS - 1), b.min(ROWS - 1));
                 let l = modu
                     .morph_load(mixer, &mut self.scene_morph, &mut self.project, a, b)
                     .map_err(|e| format!("morph: {e:?}"))?;
@@ -6985,7 +6985,7 @@ impl TimeControl {
         let track = self.armed.unwrap_or(0);
         let t = self.project.tracks.get(track).ok_or("no such track")?;
         let name = t.name.clone();
-        let slot = (0..SLOTS)
+        let slot = (0..ROWS)
             .find(|&s| t.slots[s].is_none())
             .ok_or_else(|| format!("{name} has no empty slot for the phrase"))?;
         let notes = clip.notes.len();
@@ -7014,7 +7014,7 @@ impl TimeControl {
                 .tracks
                 .get(track)
                 .ok_or_else(|| format!("no track {}", track + 1))?;
-            let slot = (0..SLOTS)
+            let slot = (0..ROWS)
                 .find(|&s| t.slots[s].is_none())
                 .ok_or_else(|| format!("{} has no empty slot", t.name))?;
             notes += clip.notes.len();
@@ -8529,7 +8529,7 @@ impl TimeControl {
     /// a clip that moved follows it; one of the row's stops there. One
     /// take, which UNDO takes back whole. The card closes.
     fn delete_row(&mut self, row: usize) -> Result<String, String> {
-        if row >= SLOTS {
+        if row >= ROWS {
             return Err(format!("clips: no row {}", row + 1));
         }
         let before = self.project.clone();
@@ -8550,7 +8550,7 @@ impl TimeControl {
                     kept += 1;
                 }
             }
-            for s in row..SLOTS - 1 {
+            for s in row..ROWS - 1 {
                 let next = p.tracks[t].slots.get_mut(s + 1).and_then(Option::take);
                 if let Some(slot) = p.tracks[t].slots.get_mut(s) {
                     *slot = next;
@@ -8558,11 +8558,11 @@ impl TimeControl {
             }
         }
         let mut scenes = p.scenes.clone();
-        scenes.resize(SLOTS.max(scenes.len()), mpfree_seq::Scene::default());
-        for s in row..SLOTS - 1 {
+        scenes.resize(ROWS.max(scenes.len()), mpfree_seq::Scene::default());
+        for s in row..ROWS - 1 {
             scenes[s] = scenes[s + 1].clone();
         }
-        scenes[SLOTS - 1] = mpfree_seq::Scene::default();
+        scenes[ROWS - 1] = mpfree_seq::Scene::default();
         while scenes
             .last()
             .is_some_and(|s| *s == mpfree_seq::Scene::default())
@@ -8570,7 +8570,7 @@ impl TimeControl {
             scenes.pop();
         }
         p.scenes = scenes;
-        let up = |r: usize| if r > row && r < SLOTS { r - 1 } else { r };
+        let up = |r: usize| if r > row && r < ROWS { r - 1 } else { r };
         let song = &mut p.arrangement;
         // The list's steps of the row go; the step playing keeps its place.
         let gone: Vec<usize> = (0..song.list.steps.len())
@@ -8630,7 +8630,7 @@ impl TimeControl {
     fn capture_scene(&mut self) -> Result<String, String> {
         let playing = self.perform.playing().map(|p| p.row);
         let from = playing.map_or(0, |r| r + 1);
-        let row = (from..SLOTS)
+        let row = (from..ROWS)
             .find(|&r| self.project.row_empty(r))
             .ok_or_else(|| match playing {
                 Some(r) => format!(

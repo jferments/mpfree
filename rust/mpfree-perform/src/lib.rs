@@ -777,8 +777,8 @@ impl Perform {
         if let (Some(p), None, None) = (self.playing, self.cued, self.list) {
             if let Some(f) = project.scene(p.row).and_then(|s| s.follow) {
                 if now > point(p.start, f, p.stays, bar) - bar {
-                    // The rows of its bank (Arrange 1.2: the grid's 16
-                    // until scene banks come).
+                    // The rows of its bank (Arrange 1.2; banks A to D
+                    // since 5.6).
                     let rows = bank(p.row);
                     let mut filled = [false; SLOTS];
                     for (r, x) in filled.iter_mut().enumerate() {

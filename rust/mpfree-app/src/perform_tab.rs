@@ -20,6 +20,11 @@
 //!   eight macros, Loops 1 to 8, the tracks, the scenes), and the **Pad**
 //!   list with its settings (a throw's effect, Hold, Starts and Let go; a
 //!   macro's value) and what a hit does.
+//! - **The page is** (the Arrange refactor's 5.5): **Pads**, each its
+//!   own as above; **Clips**, a 4 x 4 window of the Clips grid, its
+//!   tracks and rows picked in place of what a pad does; or **Scenes**, a
+//!   bank of 16 scene rows. A window's pads play the grid's cells and
+//!   scene buttons ([`crate::perform_pads::PageKind`]).
 //! - **Copy**, **Paste** and **Clear** work on the pad picked; **Name
 //!   page** types the page's name on the text keyboard. Each edit is one
 //!   UNDO step; SHIFT + UNDO redoes. The history is this view's own, kept
@@ -31,7 +36,9 @@
 
 use crate::gui::FromUi;
 use crate::mixing::{ThrowFx, ThrowKnobs};
-use crate::perform_pads::{Hold, LetGo, PadAction, PerformSet, Starts, Throw, PADS, PAGES};
+use crate::perform_pads::{
+    Hold, LetGo, PadAction, PageKind, PerformSet, Starts, Throw, BANKS, PADS, PAGES, WINDOW,
+};
 use crate::play_page::THROW_LIST;
 use mpfree_fx::StripId;
 use mpfree_sampler_ui::widgets::{
@@ -47,6 +54,9 @@ pub const PREFIX: &str = "prf-";
 pub const BAR: &str = "prf-bar";
 pub const MAP: &str = "prf-map";
 pub const BUTTONS: &str = "prf-buttons";
+/// What the page is: Pads, Clips or Scenes ([`PageKind`]); a tap on chip
+/// `i` is [`EventKind::Tab`]`(i)`.
+pub const KINDS: &str = "prf-page";
 /// What the pad does ([`Kind`]); a tap on chip `i` is [`EventKind::Tab`]`(i)`.
 pub const TYPE: &str = "prf-type";
 /// The eight choices of the pad's kind, four a row.
@@ -65,14 +75,28 @@ pub const KITS: &str = mpfree_sampler_ui::pads_tab::KITS;
 /// rows and what a hit does fit above them.
 pub const LAYOUT: &str = "col(header:60, prf-bar:60, smp-pads-kits:52, \
                           row(col(prf-map:*, prf-buttons:64):440, \
-                          col(prf-type:52, prf-pick-a:52, prf-pick-b:52, prf-list:*, prf-acts:52):*, \
+                          col(prf-page:52, prf-type:52, prf-pick-a:52, prf-pick-b:52, prf-list:*, prf-acts:52):*, \
                           qlinks:128):*, \
                           hint:26)";
 
 /// The hint line under the view: what it is, then what the Q-Links turn
 /// with the pad picked ([`PerformTab::qlink_hint`]), in the place of what
 /// the kind chips and the map say.
-pub fn hint(qlinks: Option<String>) -> String {
+pub fn hint(qlinks: Option<String>, kind: PageKind) -> String {
+    match kind {
+        PageKind::Clips { .. } => {
+            return "Perform pads: a clip window, four tracks by four rows of the Clips grid   ·   \
+                    a hit taps its cell   ·   Tracks and Rows move it (outlined on the grid)   ·   \
+                    PAD BANK: the set's pages"
+                .to_string()
+        }
+        PageKind::Scenes { .. } => {
+            return "Perform pads: a bank of scenes, row 1 top left   ·   a hit launches its row   ·   \
+                    Bank picks A to D   ·   PAD BANK: the set's pages"
+                .to_string()
+        }
+        PageKind::Pads => {}
+    }
     match qlinks {
         Some(q) => format!(
             "Perform pads: one set for the project   ·   A-H: its pages (A is the looper's loop keys)   ·   \
@@ -200,6 +224,25 @@ const MACROS: usize = mpfree_mod::MACROS;
 /// A macro pad's value steps by this much (%) on - / + and the wheel.
 const VALUE_STEP: i32 = 5;
 
+/// The page kinds' chips: a page of its own pads, a clip window or a bank
+/// of scenes, in [`page_kind_index`]'s order.
+const PAGE_KINDS: [&str; 3] = ["Own pads", "Clip window", "Scenes"];
+
+/// Where `k` is among [`PAGE_KINDS`].
+fn page_kind_index(k: PageKind) -> usize {
+    match k {
+        PageKind::Pads => 0,
+        PageKind::Clips { .. } => 1,
+        PageKind::Scenes { .. } => 2,
+    }
+}
+
+/// A clip window's first track, at most: four tracks from it stay
+/// within the project's 128.
+const LAST_WINDOW_TRACK: usize = mpfree_seq::MAX_TRACKS - WINDOW;
+/// A clip window's first row, at most: rows 61 to 64.
+const LAST_WINDOW_ROW: usize = mpfree_seq::ROWS - WINDOW;
+
 /// What a Perform pad can do, in the type chips' order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -255,6 +298,8 @@ impl Kind {
             PadAction::LoopMute(_) => Kind::LoopMute,
             PadAction::Mute(_) => Kind::TrackMute,
             PadAction::Scene(_) => Kind::Scene,
+            // A clip window's: no pad of its own is one.
+            PadAction::Clip { .. } => return None,
         })
     }
 
@@ -291,6 +336,9 @@ pub struct Names {
     /// The strips a throw can play on, as the Mix tab names them: the
     /// master first ([`crate::mixing::throw_strips`]).
     pub strips: Vec<(String, StripId)>,
+    /// The clips of the page shown, when it is a clip window: each cell's
+    /// track, row and clip name.
+    pub cells: Vec<(usize, usize, String)>,
 }
 
 impl Names {
@@ -327,6 +375,15 @@ impl Names {
         self.tracks
             .get(t)
             .map_or_else(|| format!("Track {}", t + 1), |(n, _)| n.clone())
+    }
+
+    /// The clip in track `t`'s cell in row `r`, by name; None when the
+    /// cell is empty (or not on the window shown).
+    fn clip(&self, t: usize, r: usize) -> Option<&str> {
+        self.cells
+            .iter()
+            .find(|(ct, cr, _)| (*ct, *cr) == (t, r))
+            .map(|(_, _, n)| n.as_str())
     }
 
     fn scene(&self, n: usize) -> String {
@@ -391,6 +448,13 @@ enum Edit {
         page: usize,
         before: String,
         after: String,
+    },
+    /// Page `page` made a clip window, a scenes page or pads again, or
+    /// its window moved.
+    Kind {
+        page: usize,
+        before: PageKind,
+        after: PageKind,
     },
     /// A run of turns of Q-Link `q` (0: the Length, 1: the Amount) on
     /// throw `fx`'s pad of strip `on`'s Perform FX, playing `effect`.
@@ -465,6 +529,10 @@ pub fn action_name(a: PadAction, names: &Names) -> String {
         PadAction::LoopKey(n) | PadAction::LoopMute(n) => format!("Loop {}", n + 1),
         PadAction::Mute(t) => names.track(usize::from(t)),
         PadAction::Scene(n) => names.scene(usize::from(n)),
+        PadAction::Clip { track, row } => names
+            .clip(usize::from(track), usize::from(row))
+            .unwrap_or_default()
+            .to_string(),
     }
 }
 
@@ -532,6 +600,11 @@ pub fn action_summary(a: PadAction, names: &Names) -> String {
         PadAction::LoopMute(n) => format!("Loop mute · the looper's Loop {}", n + 1),
         PadAction::Mute(t) => format!("Track mute · {}", names.track(usize::from(t))),
         PadAction::Scene(n) => format!("Scene · launches row {}", u16::from(n) + 1),
+        PadAction::Clip { track, row } => format!(
+            "Clip · {} · row {}",
+            names.track(usize::from(track)),
+            u16::from(row) + 1
+        ),
     }
 }
 
@@ -605,6 +678,26 @@ pub fn hit_text(label: &str, a: PadAction, names: &Names) -> String {
             "A hit launches {}'s row, as its scene button on the grid does.",
             names.scene(usize::from(n))
         ),
+        PadAction::Clip { track, row } => {
+            let (t, r) = (usize::from(track), usize::from(row));
+            if t >= names.tracks.len() {
+                return format!("The project has no Track {}, so {label} is dark.", t + 1);
+            }
+            match names.clip(t, r) {
+                Some(clip) => format!(
+                    "A hit launches {clip} ({}, row {}) on its line, as a tap on its cell; \
+                     a hit while it plays stops it, and while it waits calls it off.",
+                    names.track(t),
+                    r + 1
+                ),
+                None => format!(
+                    "{}'s cell in row {} is empty: a hit does nothing (pads never make a clip). \
+                     Make one on the grid.",
+                    names.track(t),
+                    r + 1
+                ),
+            }
+        }
     }
 }
 
@@ -620,7 +713,7 @@ fn action_color(a: PadAction) -> Color {
             c[usize::from(n) % c.len()]
         }
         PadAction::Mute(_) => mpfree_ui::draw::FX,
-        PadAction::Scene(_) => mpfree_ui::draw::GREEN,
+        PadAction::Scene(_) | PadAction::Clip { .. } => mpfree_ui::draw::GREEN,
         PadAction::Macro { .. } => MACRO_COLOR,
     }
 }
@@ -652,6 +745,14 @@ fn cell(page: usize, pad: usize, a: PadAction, names: &Names) -> PadCell {
         PadAction::LoopMute(_) => ("its mute".to_string(), Some("LOOP MUTE")),
         PadAction::Mute(_) => ("track mute".to_string(), Some("MUTE")),
         PadAction::Scene(_) => ("launches it".to_string(), Some("SCENE")),
+        PadAction::Clip { track, row } => (
+            format!(
+                "{} · row {}",
+                names.track(usize::from(track)),
+                u16::from(row) + 1
+            ),
+            Some("CLIP"),
+        ),
     };
     PadCell {
         label: pad_label(page, pad),
@@ -665,12 +766,10 @@ fn cell(page: usize, pad: usize, a: PadAction, names: &Names) -> PadCell {
 
 /// The page's pads with an action, pad 1 the lowest bit.
 fn used(set: &PerformSet, page: usize) -> u16 {
-    set.page(page)
-        .pads
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| **a != PadAction::None)
-        .fold(0, |m, (i, _)| m | 1 << i)
+    let p = set.page(page);
+    (0..PADS)
+        .filter(|&i| p.action(i) != PadAction::None)
+        .fold(0, |m, i| m | 1 << i)
 }
 
 /// The first of the eight choices shown for `n` of `len` (a window of
@@ -680,7 +779,93 @@ fn window(n: usize, len: usize) -> usize {
     first.min(len.saturating_sub(1) / 8 * 8)
 }
 
+/// A clip window's tracks as the type row's six chips ("Tracks 1–4",
+/// the first track's name under it), four tracks a chip: the chips, the
+/// first's place (in fours), and the one the window starts on when it
+/// starts on a four.
+fn window_tracks(track: usize, names: &Names) -> (Vec<SectionChip>, usize, Option<usize>) {
+    let len = names.tracks.len().max(track + 1).div_ceil(WINDOW);
+    let at = track / WINDOW;
+    let first = (at / 6 * 6).min(len.saturating_sub(1) / 6 * 6);
+    let chips = (first..len.min(first + 6))
+        .map(|k| SectionChip {
+            name: format!("Tracks {}–{}", k * WINDOW + 1, k * WINDOW + WINDOW),
+            sub: names
+                .tracks
+                .get(k * WINDOW)
+                .map(|(n, _)| n.clone())
+                .unwrap_or_default(),
+        })
+        .collect();
+    (chips, first, track.is_multiple_of(WINDOW).then_some(at))
+}
+
+/// A clip window's rows as the eight choices (four a row), four rows a
+/// chip ("Rows 5–8", the first row's scene under it), as
+/// [`window_tracks`].
+fn window_rows(row: usize, names: &Names) -> (Vec<SectionChip>, usize, Option<usize>) {
+    let len = mpfree_seq::ROWS / WINDOW;
+    let at = row / WINDOW;
+    let first = window(at, len);
+    let chips = (first..len.min(first + 8))
+        .map(|k| SectionChip {
+            name: format!("Rows {}–{}", k * WINDOW + 1, k * WINDOW + WINDOW),
+            sub: names.scenes.get(k * WINDOW).cloned().unwrap_or_default(),
+        })
+        .collect();
+    (chips, first, row.is_multiple_of(WINDOW).then_some(at))
+}
+
+/// The scene banks as the type row's chips: A to D with their rows.
+fn bank_chips() -> Vec<SectionChip> {
+    (0..BANKS)
+        .map(|b| SectionChip {
+            name: format!("Bank {}", (b'A' + b as u8) as char),
+            sub: format!(
+                "rows {}–{}",
+                b * mpfree_seq::SLOTS + 1,
+                (b + 1) * mpfree_seq::SLOTS
+            ),
+        })
+        .collect()
+}
+
+/// A window page's rows in the Pad list: where its window is.
+fn window_rows_list(kind: PageKind) -> Vec<Setting> {
+    let row = |name: &str, value: String| Setting {
+        name: name.to_string(),
+        value,
+    };
+    match kind {
+        PageKind::Pads => Vec::new(),
+        PageKind::Clips { track, row: r } => {
+            let (t, r) = (usize::from(track), usize::from(r));
+            vec![
+                row("Tracks", format!("{}–{}", t + 1, t + WINDOW)),
+                row("Rows", format!("{}–{}", r + 1, r + WINDOW)),
+            ]
+        }
+        PageKind::Scenes { bank } => {
+            let b = usize::from(bank);
+            vec![row(
+                "Bank",
+                format!(
+                    "{} · rows {}–{}",
+                    (b'A' + bank) as char,
+                    b * mpfree_seq::SLOTS + 1,
+                    (b + 1) * mpfree_seq::SLOTS
+                ),
+            )]
+        }
+    }
+}
+
 impl PerformTab {
+    /// The page shown's kind.
+    fn kind(&self) -> PageKind {
+        self.set.page(self.page.min(PAGES - 1)).kind
+    }
+
     /// The page's action pads and their settings in `ui`, once.
     pub fn build(&mut self, ui: &mut Ui) -> Result<(), String> {
         if self.built {
@@ -699,6 +884,7 @@ impl PerformTab {
             BUTTONS,
             ButtonRow::new(&["Copy", "Paste", "Clear", "Name page"]),
         );
+        ui.add(KINDS, SectionChips::new(&PAGE_KINDS));
         ui.add(TYPE, SectionChips::new(&Kind::ALL.map(Kind::label)));
         ui.add(PICK_A, SectionChips::new(&[]));
         ui.add(PICK_B, SectionChips::new(&[]));
@@ -762,6 +948,8 @@ impl PerformTab {
             PadAction::Scene(n) => {
                 rows.push(row("Scene", names.scene(usize::from(n))));
             }
+            // A window's: the list shows the window instead.
+            PadAction::Clip { .. } => {}
         }
         rows
     }
@@ -824,6 +1012,7 @@ impl PerformTab {
                     .collect();
                 (chips, first, Some(n))
             }
+            PadAction::Clip { .. } => (Vec::new(), 0, None),
         }
     }
 
@@ -955,6 +1144,86 @@ impl PerformTab {
                 },
                 silent,
             ));
+        }
+        self.show_kind(ui, names);
+    }
+
+    /// What the page is (the Arrange refactor's 5.5): the kind chips, and
+    /// on a clip window or a scenes page its place in the type and choice
+    /// rows and the Pad list, in the place of what a pad does.
+    fn show_kind(&self, ui: &mut Ui, names: &Names) {
+        let page = self.page.min(PAGES - 1);
+        let kind = self.kind();
+        let letter = (b'A' + page as u8) as char;
+        if let Some(c) = ui.get_mut::<SectionChips>(KINDS) {
+            c.chips = PAGE_KINDS
+                .iter()
+                .map(|n| SectionChip {
+                    name: n.to_string(),
+                    sub: String::new(),
+                })
+                .collect();
+            c.selected = page_kind_index(kind);
+        }
+        if kind == PageKind::Pads {
+            return;
+        }
+        let (types, picks) = match kind {
+            PageKind::Clips { track, row } => (
+                window_tracks(usize::from(track), names),
+                window_rows(usize::from(row), names),
+            ),
+            _ => ((bank_chips(), 0, self.bank_shown()), (Vec::new(), 0, None)),
+        };
+        if let Some(c) = ui.get_mut::<SectionChips>(TYPE) {
+            let (chips, first, now) = types;
+            c.chips = chips;
+            c.selected = now.and_then(|n| n.checked_sub(first)).unwrap_or(usize::MAX);
+        }
+        let (chips, first, now) = picks;
+        let at = now.and_then(|n| n.checked_sub(first));
+        let (top, bottom) = chips.split_at(chips.len().min(4));
+        for (id, part, offset) in [(PICK_A, top, 0), (PICK_B, bottom, 4)] {
+            if let Some(c) = ui.get_mut::<SectionChips>(id) {
+                c.chips = part.to_vec();
+                c.selected = at
+                    .and_then(|i| i.checked_sub(offset))
+                    .filter(|&i| i < part.len())
+                    .unwrap_or(usize::MAX);
+            }
+        }
+        let why = match kind {
+            PageKind::Clips { .. } => {
+                format!("Page {letter} is a clip window: its pads are the grid's cells")
+            }
+            _ => format!("Page {letter} is a scenes page: its pads are the bank's scenes"),
+        };
+        if let Some(b) = ui.get_mut::<ButtonRow>(BUTTONS) {
+            b.enabled = vec![false, false, false, true];
+            b.why = vec![why.clone(), why.clone(), why.clone(), String::new()];
+        }
+        if let Some(b) = ui.get_mut::<ButtonRow>(ACTS) {
+            b.enabled = vec![false, false, true];
+            b.why = vec![why.clone(), why, String::new()];
+        }
+        if let Some(l) = ui.get_mut::<SettingList>(LIST) {
+            let label = pad_label(page, self.pad);
+            l.title = match kind {
+                PageKind::Clips { .. } => "Clip window".to_string(),
+                _ => "Scenes".to_string(),
+            };
+            l.rows = window_rows_list(kind);
+            l.selected = l.selected.min(l.rows.len().saturating_sub(1));
+            let hit = hit_text(&label, self.picked(), names);
+            l.footer = Some((format!("{label}: {hit}"), false));
+        }
+    }
+
+    /// A scenes page's bank, as the type row lights it.
+    fn bank_shown(&self) -> Option<usize> {
+        match self.kind() {
+            PageKind::Scenes { bank } => Some(usize::from(bank)),
+            _ => None,
         }
     }
 
@@ -1254,6 +1523,33 @@ impl PerformTab {
         ]
     }
 
+    /// The page shown is `after` now (a clip window, a scenes page or
+    /// pads, or its window moved): an UNDO step, the app told, and a
+    /// line for the log.
+    fn set_kind(&mut self, after: PageKind) -> Vec<Act> {
+        let page = self.page.min(PAGES - 1);
+        let before = self.set.page(page).kind;
+        if before == after {
+            return Vec::new();
+        }
+        self.done.push(Edit::Kind {
+            page,
+            before,
+            after,
+        });
+        self.undone.clear();
+        self.run = None;
+        self.set.pages[page].kind = after;
+        let letter = (b'A' + page as u8) as char;
+        vec![
+            Act::Send(FromUi::PerformKind { page, kind: after }),
+            Act::Tell(format!(
+                "Perform pads: page {letter} is {}",
+                kind_text(after)
+            )),
+        ]
+    }
+
     /// Puts `a` on the copy kept here, as the app will.
     fn apply(&mut self, page: usize, pad: usize, a: PadAction) {
         if let Some(slot) = self
@@ -1286,7 +1582,9 @@ impl PerformTab {
         let how = if redo { "Redo" } else { "Undo" };
         let mut out = Vec::new();
         let page = match &e {
-            Edit::Pad { page, .. } | Edit::Name { page, .. } => Some(*page),
+            Edit::Pad { page, .. } | Edit::Name { page, .. } | Edit::Kind { page, .. } => {
+                Some(*page)
+            }
             Edit::Knob { .. } => None,
         };
         if let Some(page) = page.filter(|&p| p != self.page) {
@@ -1346,6 +1644,22 @@ impl PerformTab {
                     "{how}: Perform pads {label} back to {what}"
                 )));
             }
+            Edit::Kind {
+                page,
+                before,
+                after,
+            } => {
+                let kind = if redo { after } else { before };
+                if let Some(p) = self.set.pages.get_mut(page) {
+                    p.kind = kind;
+                }
+                out.push(Act::Send(FromUi::PerformKind { page, kind }));
+                let letter = (b'A' + page as u8) as char;
+                out.push(Act::Tell(format!(
+                    "{how}: Perform pads page {letter} back to {}",
+                    kind_text(kind)
+                )));
+            }
             Edit::Name {
                 page,
                 before,
@@ -1387,6 +1701,13 @@ impl PerformTab {
             Edit::Name { page, after, .. } => {
                 format!("Page {} named {after}", (b'A' + *page as u8) as char)
             }
+            Edit::Kind { page, after, .. } => {
+                format!(
+                    "Page {} is {}",
+                    (b'A' + *page as u8) as char,
+                    kind_text(*after)
+                )
+            }
             e @ Edit::Knob { .. } => knob_row(e, names),
         };
         let mut rows = vec!["Start: the set as it was".to_string()];
@@ -1417,6 +1738,25 @@ impl PerformTab {
         let d = d.signum();
         if d == 0 {
             return Vec::new();
+        }
+        // A window page's list says where its window is: a track, a row
+        // or a bank a step.
+        match (self.kind(), row) {
+            (PageKind::Pads, _) => {}
+            (PageKind::Clips { track, row: r }, 0) => {
+                let last = names.tracks.len().clamp(1, LAST_WINDOW_TRACK + 1);
+                let track = stepped(usize::from(track), d, last) as u8;
+                return self.set_kind(PageKind::Clips { track, row: r });
+            }
+            (PageKind::Clips { track, row: r }, 1) => {
+                let row = stepped(usize::from(r), d, LAST_WINDOW_ROW + 1) as u8;
+                return self.set_kind(PageKind::Clips { track, row });
+            }
+            (PageKind::Scenes { bank }, 0) => {
+                let bank = stepped(usize::from(bank), d, BANKS) as u8;
+                return self.set_kind(PageKind::Scenes { bank });
+            }
+            _ => return Vec::new(),
         }
         let after = match (row, a) {
             (0, PadAction::Throw(t)) => {
@@ -1495,6 +1835,7 @@ impl PerformTab {
             PadAction::LoopMute(_) => PadAction::LoopMute(n as u8),
             PadAction::Mute(_) => PadAction::Mute(n.min(255) as u8),
             PadAction::Scene(_) => PadAction::Scene(n.min(255) as u8),
+            PadAction::Clip { .. } => return Vec::new(),
         };
         self.edit(self.pad, after, names)
     }
@@ -1537,6 +1878,11 @@ impl PerformTab {
                         vec![Act::Hear(a, true)]
                     }
                     PadAction::None => Vec::new(),
+                    a @ PadAction::Clip { .. } => vec![Act::Tell(format!(
+                        "{} is {}: it plays with the set on the pads",
+                        pad_label(self.page, *index),
+                        action_summary(a, names)
+                    ))],
                     a => vec![Act::Tell(format!(
                         "{} is a {}: it plays on Play and the Looper tab with the set on the pads",
                         pad_label(self.page, *index),
@@ -1548,6 +1894,11 @@ impl PerformTab {
                 Some(a) => vec![Act::Hear(a, false)],
                 None => Vec::new(),
             },
+            (BUTTONS, EventKind::Tab(COPY | PASTE | CLEAR)) if self.kind() != PageKind::Pads => ui
+                .get::<ButtonRow>(BUTTONS)
+                .and_then(|b| b.why.first().cloned())
+                .map(|w| vec![Act::Tell(w)])
+                .unwrap_or_default(),
             (BUTTONS, EventKind::Tab(COPY)) => {
                 let a = self.picked();
                 self.copied = (a != PadAction::None).then_some(a);
@@ -1603,6 +1954,41 @@ impl PerformTab {
                 .and_then(|b| b.why_faint(*i))
                 .map(|w| vec![Act::Tell(w.to_string())])
                 .unwrap_or_default(),
+            (KINDS, EventKind::Tab(i)) => {
+                let now = self.kind();
+                let after = match *i {
+                    _ if page_kind_index(now) == *i => return Vec::new(),
+                    0 => PageKind::Pads,
+                    1 => PageKind::Clips { track: 0, row: 0 },
+                    2 => PageKind::Scenes { bank: 0 },
+                    _ => return Vec::new(),
+                };
+                self.set_kind(after)
+            }
+            (TYPE, EventKind::Tab(i)) if self.kind() != PageKind::Pads => match self.kind() {
+                PageKind::Clips { track, row } => {
+                    let (chips, first, _) = window_tracks(usize::from(track), names);
+                    if *i >= chips.len() {
+                        return Vec::new();
+                    }
+                    let track = ((first + i) * WINDOW).min(LAST_WINDOW_TRACK) as u8;
+                    self.set_kind(PageKind::Clips { track, row })
+                }
+                _ if *i < BANKS => self.set_kind(PageKind::Scenes { bank: *i as u8 }),
+                _ => Vec::new(),
+            },
+            (PICK_A | PICK_B, EventKind::Tab(i)) if self.kind() != PageKind::Pads => {
+                let PageKind::Clips { track, row } = self.kind() else {
+                    return Vec::new();
+                };
+                let i = if ev.widget == PICK_B { 4 + *i } else { *i };
+                let (chips, first, _) = window_rows(usize::from(row), names);
+                if i >= chips.len() {
+                    return Vec::new();
+                }
+                let row = ((first + i) * WINDOW).min(LAST_WINDOW_ROW) as u8;
+                self.set_kind(PageKind::Clips { track, row })
+            }
             (TYPE, EventKind::Tab(i)) => match Kind::ALL.get(*i) {
                 Some(k) => {
                     let after = k.action(self.picked());
@@ -1656,7 +2042,18 @@ fn edit_text(a: PadAction, names: &Names) -> String {
         PadAction::LoopMute(n) => format!("Loop {}'s mute", n + 1),
         PadAction::Mute(t) => format!("{}'s mute", names.track(usize::from(t))),
         PadAction::Scene(n) => format!("launches {}", names.scene(usize::from(n))),
+        PadAction::Clip { track, row } => format!(
+            "{}'s cell in row {}",
+            names.track(usize::from(track)),
+            u16::from(row) + 1
+        ),
     }
+}
+
+/// Page kind `k` for the log: "pads", "Clips · Tracks 1–4 · rows 5–8",
+/// "Scenes · bank B".
+fn kind_text(k: PageKind) -> String {
+    k.words().unwrap_or_else(|| "pads of its own".to_string())
 }
 
 /// `n` stepped `d` within `0..len`, stopping at the ends.
@@ -1689,6 +2086,7 @@ mod tests {
                 ("Bass".into(), StripId::Track(5)),
                 ("Sub 1".into(), StripId::Bus(0)),
             ],
+            cells: vec![(1, 4, "Walk".into())],
         }
     }
 
@@ -2355,5 +2753,100 @@ mod tests {
             None
         );
         assert_eq!(tab.learn_touch(&touch(EventKind::Tab(2))), None, "a page");
+    }
+
+    /// The Arrange refactor's 5.5: the page chips make the page shown a
+    /// clip window or a scenes page; its window moves by the type and
+    /// choice rows (four at a time) or the Pad list (one at a time); each
+    /// change is one UNDO step, and Copy, Paste and Clear say why not.
+    #[test]
+    fn a_page_becomes_a_clip_window_or_scenes_and_undo_takes_it_back() {
+        let mut n = names();
+        n.tracks
+            .extend((4..=10).map(|k| (format!("Track {k}"), String::new())));
+        let mut tab = PerformTab {
+            page: 2,
+            ..PerformTab::default()
+        };
+        let mut ui = Ui::new(
+            mpfree_ui::Theme::dark(),
+            mpfree_ui::Fonts::embedded(),
+            1280,
+            800,
+        );
+        // The view's own widgets (the page's frame is the app's).
+        ui.add(KINDS, SectionChips::new(&[]));
+        ui.add(TYPE, SectionChips::new(&[]));
+        ui.add(LIST, SettingList::new("Pad"));
+        ui.add(
+            BUTTONS,
+            ButtonRow::new(&["Copy", "Paste", "Clear", "Name page"]),
+        );
+        let tap = |w: &str, i| UiEvent {
+            widget: w.into(),
+            kind: EventKind::Tab(i),
+        };
+        let acts = tab.event(&mut ui, &tap(KINDS, 1), &n);
+        let clips = |track, row| PageKind::Clips { track, row };
+        assert_eq!(
+            sends(&acts),
+            [&FromUi::PerformKind {
+                page: 2,
+                kind: clips(0, 0)
+            }]
+        );
+        assert!(acts.contains(&Act::Tell(
+            "Perform pads: page C is Clips · Tracks 1–4 · rows 1–4".into()
+        )));
+        assert!(tab.event(&mut ui, &tap(KINDS, 1), &n).is_empty(), "already");
+        // The type row's second chip: Tracks 5–8. The second row of
+        // choices' first: rows 17–20.
+        tab.event(&mut ui, &tap(TYPE, 1), &n);
+        assert_eq!(tab.kind(), clips(4, 0));
+        tab.event(&mut ui, &tap(PICK_B, 0), &n);
+        assert_eq!(tab.kind(), clips(4, 16));
+        // The Pad list: a track and a row a step.
+        tab.step(0, -1, &n);
+        tab.step(1, 1, &n);
+        assert_eq!(tab.kind(), clips(3, 17));
+        tab.pad = 4;
+        tab.show(&mut ui, &n);
+        let l = ui.get::<SettingList>(LIST).unwrap();
+        assert_eq!(l.title, "Clip window");
+        assert_eq!(l.rows[0].value, "4–7");
+        assert_eq!(l.rows[1].value, "18–21");
+        let footer = &l.footer.as_ref().unwrap().0;
+        assert!(
+            footer.starts_with("C5: Track 4's cell in row 20 is empty"),
+            "{footer}"
+        );
+        let t = ui.get::<SectionChips>(TYPE).unwrap();
+        assert_eq!(t.chips[0].name, "Tracks 1–4");
+        assert_eq!(t.selected, usize::MAX, "the window starts off a four");
+        assert_eq!(tab.picked(), PadAction::Clip { track: 3, row: 19 });
+        // Copy says why not.
+        let acts = tab.event(&mut ui, &tap(BUTTONS, COPY), &n);
+        assert_eq!(
+            acts,
+            [Act::Tell(
+                "Page C is a clip window: its pads are the grid's cells".into()
+            )]
+        );
+        // Scenes: bank A, then D.
+        tab.event(&mut ui, &tap(KINDS, 2), &n);
+        tab.event(&mut ui, &tap(TYPE, 3), &n);
+        assert_eq!(tab.kind(), PageKind::Scenes { bank: 3 });
+        assert_eq!(tab.set.page_name(2), "Page C · Scenes · bank D");
+        assert_eq!(tab.picked(), PadAction::Scene(48 + 8), "C5: row 57");
+        // UNDO: bank A, then the window where it was.
+        tab.undo(false, &n);
+        tab.undo(false, &n);
+        assert_eq!(tab.kind(), clips(3, 17));
+        let (rows, _) = tab.history_rows(&n);
+        assert_eq!(rows[1], "Page C is Clips · Tracks 1–4 · rows 1–4");
+        // Pads again: the page's own pads come back.
+        tab.event(&mut ui, &tap(KINDS, 0), &n);
+        assert_eq!(tab.kind(), PageKind::Pads);
+        assert_eq!(tab.picked(), PadAction::None);
     }
 }
