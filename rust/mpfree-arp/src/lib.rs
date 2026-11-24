@@ -6,6 +6,7 @@
 //! `docs/dev/design/arpeggiator.md`.
 #![forbid(unsafe_code)]
 
+pub mod ears;
 pub mod engine;
 pub mod groups;
 pub mod hand;
@@ -19,6 +20,7 @@ pub mod record;
 /// Scales come from the shared `mpfree-scale` crate (the synth pads use it too).
 pub use mpfree_scale as scale;
 
+pub use ears::{CallNote, Ears, Heard, Light, Turns as AnswerTurns, MAX_CALL_NOTES};
 pub use engine::{
     phrase_speed, step_notes, turn_of, turn_steps, Chord, Clock, Engine, Event, EventKind, Events,
     Mode, Order, Ramp, Rate, Settings, SyncStart, Turns, Velocity, PPQ,
