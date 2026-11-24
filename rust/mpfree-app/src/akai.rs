@@ -6,6 +6,8 @@
 //! What each setup message does is not known. They are replayed exactly, in the
 //! app's order, so the controller ends where it does after every factory boot.
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
 /// Universal SysEx identity request, on Public. The controller answers on Public
 /// and Private with its model and its serial number (never shown or saved).
 pub const IDENTITY_REQUEST: [u8; 6] = [0xF0, 0x7E, 0x00, 0x06, 0x01, 0xF7];
@@ -265,8 +267,20 @@ pub fn monitor_out(private: bool, msg: &[u8]) -> Option<mpfree_midi::monitor::Mp
     }
 }
 
-/// One pad colour message: F0 47 7F 46 65 00 04 <pad 0-15> R G B F7, for the Public port.
+/// Prefs › Screen and lights' Brightness, in percent, which every pad
+/// colour message is scaled by (`pad_look::scale`). 100 sends the colours
+/// as they are.
+static PAD_BRIGHTNESS: AtomicU8 = AtomicU8::new(100);
+
+/// The pads' brightness from now on (the main loop sets it from Prefs).
+pub fn set_pad_brightness(percent: u8) {
+    PAD_BRIGHTNESS.store(percent, Ordering::Relaxed);
+}
+
+/// One pad colour message: F0 47 7F 46 65 00 04 <pad 0-15> R G B F7, for the Public port,
+/// at the pads' brightness.
 pub fn pad_colour(pad: u8, rgb: [u8; 3]) -> [u8; 12] {
+    let rgb = crate::pad_look::scale(rgb, PAD_BRIGHTNESS.load(Ordering::Relaxed));
     [
         0xF0,
         0x47,

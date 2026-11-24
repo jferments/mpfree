@@ -140,6 +140,7 @@ mod modpanels;
 mod one_undo;
 mod open_clock;
 mod pace;
+mod pad_look;
 mod pad_synths;
 mod parts;
 mod patch_in;
@@ -3595,6 +3596,21 @@ fn pad_cell(pad: usize, page: usize, kit: bool) -> Option<usize> {
 
 /// Resting pad colours for kit number `k` from which pads have a sound
 /// (`sampler::Player::sounds`, which follows the Sample tab's chops).
+/// Kit `k`'s pads at rest on page `page`, as Prefs › Screen and lights
+/// has them light (the kit's colour where they have a sound, dark
+/// elsewhere, by default); `heat` is each pad's last hit, by page.
+fn kit_rest(
+    has: [bool; 16],
+    k: usize,
+    look: &pad_look::PadLook,
+    heat: &[u8; 128],
+    page: usize,
+) -> [[u8; 3]; 16] {
+    let first = (page % 8) * 16;
+    let page_heat: [u8; 16] = std::array::from_fn(|p| heat[first + p]);
+    pad_look::rest(has, akai::kit_colour(k), look, &page_heat)
+}
+
 fn sound_colours(has: [bool; 16], k: usize) -> [[u8; 3]; 16] {
     has.map(|h| if h { akai::kit_colour(k) } else { [0; 3] })
 }
@@ -10327,6 +10343,11 @@ fn player_session(
     let mut picture_names = screen_picture::Names::default();
     let mut report_names = status_report::Names::default();
     let mut recolour = false;
+    // How the pads light (Prefs › Screen and lights), looked at four
+    // times a second, and each kit pad's last hit for Hit heat, by page.
+    let mut look = pad_look::PadLook::default();
+    let mut look_at: Option<Instant> = None;
+    let mut heat = [0u8; 128];
     let (mut shown_heads, mut heads_at) = (sampler::Playheads::default(), Instant::now());
     // The Grain tab's cloud box, while the audio thread holds it: filled and
     // sent back with the playheads (never freed on this thread).
@@ -11194,6 +11215,8 @@ fn player_session(
                         export.running(),
                     ));
                     held[pad] = true;
+                    heat[(app.kit_page() % 8) * 16 + pad] = v.max(1);
+                    recolour |= look.show == pad_look::PadsShow::Heat;
                     screen_hits += 1;
                     // A Loop pad's hit waits for the launch line (R5.3b).
                     let w = time::PadWait {
@@ -13584,7 +13607,7 @@ fn player_session(
                     if mute_shown.is_none() {
                         ports.send(
                             false,
-                            &akai::pad_colour(pad as u8, akai::hit_colour(rest[pad])),
+                            &akai::pad_colour(pad as u8, pad_look::held(rest[pad], &look)),
                         )?;
                     }
                 }
@@ -13712,6 +13735,8 @@ fn player_session(
                         export.running(),
                     ));
                     held[pad] = true;
+                    heat[(app.kit_page() % 8) * 16 + pad] = velocity.max(1);
+                    recolour |= look.show == pad_look::PadsShow::Heat;
                     // A Loop pad's hit waits for the launch line (R5.3b).
                     let w = time::PadWait {
                         from: time::PadFrom::Pad(pad as u8),
@@ -14610,7 +14635,13 @@ fn player_session(
                 // Other tracks may play the synth: it plays on.
                 synth_on = false;
                 player.select(k);
-                rest = sound_colours(player.page_sounds(k, app.kit_page()), k);
+                rest = kit_rest(
+                    player.page_sounds(k, app.kit_page()),
+                    k,
+                    &look,
+                    &heat,
+                    app.kit_page(),
+                );
                 out.note(&format!(
                     "kit {}: {} ({} sounds)",
                     k + 1,
@@ -14716,13 +14747,22 @@ fn player_session(
             let preview_on = pads_preview.is_some();
             if let Some(PadsPreview::Kit(k)) = pads_preview {
                 let k = usize::from(k);
-                rest = sound_colours(player.page_sounds(k, app.kit_page()), k);
+                rest = kit_rest(
+                    player.page_sounds(k, app.kit_page()),
+                    k,
+                    &look,
+                    &heat,
+                    app.kit_page(),
+                );
             } else if preview_on {
                 rest = synth.pad_colours();
             } else if !synth_on {
-                rest = sound_colours(
+                rest = kit_rest(
                     player.page_sounds(player.kit(), app.kit_page()),
                     player.kit(),
+                    &look,
+                    &heat,
+                    app.kit_page(),
                 );
             }
             if mute_shown.is_none() {
@@ -14748,7 +14788,13 @@ fn player_session(
                 _ => None,
             };
             if let Some(k) = kit_on_pads {
-                rest = sound_colours(player.page_sounds(k, app.kit_page()), k);
+                rest = kit_rest(
+                    player.page_sounds(k, app.kit_page()),
+                    k,
+                    &look,
+                    &heat,
+                    app.kit_page(),
+                );
             }
             if mute_shown.is_none() && kit_on_pads.is_some() {
                 ports.send_batch(
@@ -15413,10 +15459,37 @@ fn player_session(
         }
         // A chop (or its undo) changed which pads of the playing kit have a
         // sound: their resting colours follow.
+        if look_at.is_none_or(|at| at.elapsed() >= Duration::from_millis(250)) {
+            look_at = Some(Instant::now());
+            let now = app.pad_look();
+            if now != look {
+                let brighter = now.brightness != look.brightness;
+                look = now;
+                akai::set_pad_brightness(look.brightness);
+                recolour = true;
+                if brighter {
+                    // Every pad again at the new brightness: a mode's
+                    // colours on its next pass (a value never sent makes
+                    // each pad differ), else the pads' own.
+                    match mute_shown.as_mut() {
+                        Some(shown) => *shown = [[0xFF; 3]; 16],
+                        None => {
+                            for pad in 0..16 {
+                                let colour = lit[pad].unwrap_or(rest[pad]);
+                                ports.send(false, &akai::pad_colour(pad as u8, colour))?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if std::mem::take(&mut recolour) && !synth_on {
-            let fresh = sound_colours(
+            let fresh = kit_rest(
                 player.page_sounds(player.kit(), app.kit_page()),
                 player.kit(),
+                &look,
+                &heat,
+                app.kit_page(),
             );
             for pad in 0..16 {
                 if fresh[pad] != rest[pad] {
@@ -15639,7 +15712,7 @@ fn player_session(
                 || (app.generating() && app.active(pad))
                 || latched & (1 << pad) != 0
             {
-                Some(akai::hit_colour(rest[pad]))
+                Some(pad_look::held(rest[pad], &look))
             } else {
                 None
             };

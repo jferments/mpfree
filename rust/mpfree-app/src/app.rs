@@ -846,6 +846,18 @@ pub struct Settings {
     /// Jay, 14 Nov 07:51Z).
     pub export_bits: mpfree_fx::Bits,
     pub export_rate: u32,
+    /// Prefs › Appearance › Screen and lights: how the pads light
+    /// (pad_look.rs): brightness in percent, what a held pad shows, what
+    /// a pad with a sound rests in and what an empty one shows. Kept in
+    /// Prefs.
+    pub pad_brightness: u8,
+    pub held_pad: crate::pad_look::HeldPad,
+    pub pads_show: crate::pad_look::PadsShow,
+    pub empty_pads: crate::pad_look::EmptyPads,
+    /// Prefs "Hint line": the help line along the foot of every page (On,
+    /// the default). Off, it shows only what a held button does and what
+    /// the app tells.
+    pub hint_line: bool,
 }
 
 /// Half Level's velocity until FULL LEVEL held and a pad hit set another.
@@ -926,6 +938,11 @@ impl Default for Settings {
             export_mode: mpfree_export::Mode::Fast,
             export_bits: mpfree_fx::Bits::I24,
             export_rate: EXPORT_RATES[0],
+            pad_brightness: crate::pad_look::BRIGHTNESS_MAX,
+            held_pad: crate::pad_look::HeldPad::Brighter,
+            pads_show: crate::pad_look::PadsShow::Kit,
+            empty_pads: crate::pad_look::EmptyPads::Dark,
+            hint_line: true,
         }
     }
 }
@@ -1019,6 +1036,16 @@ pub enum Item {
     AtStart,
     /// Prefs: how Export plays the song, Fast, quiet or Listen.
     Export,
+    /// Prefs › Screen and lights: the pads' brightness.
+    PadBrightness,
+    /// Prefs › Screen and lights: what a held pad shows.
+    HeldPad,
+    /// Prefs › Screen and lights: what a pad with a sound rests in.
+    PadsShow,
+    /// Prefs › Screen and lights: what a pad with no sound shows.
+    EmptyPads,
+    /// Prefs › Screen and lights: the hint line on or off.
+    HintLine,
     /// Prefs: the export's WAV files: 24-bit, 16-bit or 32-bit float.
     ExportFile,
     /// Prefs: the export's rate: 44.1 or 48 kHz.
@@ -5471,6 +5498,14 @@ impl App {
                 .to_string(),
             ),
             Item::Export => ("Export", s.export_mode.name().to_string()),
+            Item::PadBrightness => ("Brightness", format!("{} %", s.pad_brightness)),
+            Item::HeldPad => ("A held pad", s.held_pad.name().to_string()),
+            Item::PadsShow => ("Pads show", s.pads_show.name().to_string()),
+            Item::EmptyPads => ("Empty pads", s.empty_pads.name().to_string()),
+            Item::HintLine => (
+                "Hint line",
+                if s.hint_line { "On" } else { "Off" }.to_string(),
+            ),
             Item::ExportFile => (
                 "Export file",
                 match s.export_bits {
@@ -5801,7 +5836,13 @@ impl App {
             ],
             Item::Arp(a) => Self::arp_item_help(a),
             Item::Synth(a) => self.synth_item_help(a),
-            Item::Tunings(_) | Item::Theme(_) => Vec::new(),
+            Item::Tunings(_)
+            | Item::Theme(_)
+            | Item::PadBrightness
+            | Item::HeldPad
+            | Item::PadsShow
+            | Item::EmptyPads
+            | Item::HintLine => Vec::new(),
         }
     }
 
@@ -6224,6 +6265,18 @@ impl App {
             }
             Item::ExportFile => s.export_bits = cycle(&mpfree_fx::Bits::ALL, s.export_bits, d),
             Item::ExportRate => s.export_rate = cycle(&EXPORT_RATES, s.export_rate, d),
+            Item::PadBrightness => {
+                use crate::pad_look::{BRIGHTNESS_MAX, BRIGHTNESS_MIN};
+                s.pad_brightness = (i32::from(s.pad_brightness) + 10 * d)
+                    .clamp(i32::from(BRIGHTNESS_MIN), i32::from(BRIGHTNESS_MAX))
+                    as u8
+            }
+            Item::HeldPad => s.held_pad = cycle(&crate::pad_look::HeldPad::ALL, s.held_pad, d),
+            Item::PadsShow => s.pads_show = cycle(&crate::pad_look::PadsShow::ALL, s.pads_show, d),
+            Item::EmptyPads => {
+                s.empty_pads = cycle(&crate::pad_look::EmptyPads::ALL, s.empty_pads, d)
+            }
+            Item::HintLine => s.hint_line = d > 0,
             Item::LoopMemory => {
                 let next = cycle(&LoopMemory::ALL, s.loop_memory, d);
                 if next != s.loop_memory {

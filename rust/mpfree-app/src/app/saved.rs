@@ -128,6 +128,11 @@ impl App {
             },
         );
         out.set_i64("export-rate", i64::from(s.export_rate));
+        out.set_i64("pad-brightness", i64::from(s.pad_brightness));
+        out.set_str("held-pad", s.held_pad.key());
+        out.set_str("pads-show", s.pads_show.key());
+        out.set_str("empty-pads", s.empty_pads.key());
+        out.set_bool("hint-line", s.hint_line);
         // The Looper's level, and the line input's latency once it was set
         // by hand (measured with a cable). The line input itself, and so
         // what the Looper records from, is off at every start.
@@ -291,6 +296,25 @@ impl App {
                     })
                     .map(|r| s.export_rate = r)
                     .is_some(),
+                "pad-brightness" => {
+                    use crate::pad_look::{BRIGHTNESS_MAX, BRIGHTNESS_MIN};
+                    app.get_i64(k)
+                        .filter(|n| {
+                            (i64::from(BRIGHTNESS_MIN)..=i64::from(BRIGHTNESS_MAX)).contains(n)
+                        })
+                        .map(|n| s.pad_brightness = n as u8)
+                        .is_some()
+                }
+                "held-pad" => crate::pad_look::HeldPad::parse(v)
+                    .map(|h| s.held_pad = h)
+                    .is_some(),
+                "pads-show" => crate::pad_look::PadsShow::parse(v)
+                    .map(|p| s.pads_show = p)
+                    .is_some(),
+                "empty-pads" => crate::pad_look::EmptyPads::parse(v)
+                    .map(|e| s.empty_pads = e)
+                    .is_some(),
+                "hint-line" => app.get_bool(k).map(|b| s.hint_line = b).is_some(),
                 "loop-level" => app
                     .get_i64(k)
                     .filter(|n| (-24..=6).contains(n))
@@ -600,6 +624,43 @@ mod tests {
         assert!(b.settings.sends_midi, "MIDI and CV out stay on");
         assert!(b.settings.quick_advance, "Quick advance is kept");
         assert!(b.take_saves().is_empty());
+    }
+
+    /// Screen and lights' settings are kept, and a value out of range or
+    /// unknown leaves the default.
+    #[test]
+    fn pad_lights_and_the_hint_line_are_kept() {
+        use crate::pad_look::{EmptyPads, HeldPad, PadsShow};
+        let mut a = App::new(44_100, false);
+        a.settings.pad_brightness = 40;
+        a.settings.held_pad = HeldPad::White;
+        a.settings.pads_show = PadsShow::Heat;
+        a.settings.empty_pads = EmptyPads::Dim;
+        a.settings.hint_line = false;
+        let text = a.app_settings().to_text();
+        assert!(text.contains("pads-show = heat"), "{text}");
+        let mut b = App::new(44_100, false);
+        b.restore(&Settings::parse(&text), &Settings::default());
+        let s = &b.settings;
+        assert_eq!(
+            (
+                s.pad_brightness,
+                s.held_pad,
+                s.pads_show,
+                s.empty_pads,
+                s.hint_line
+            ),
+            (40, HeldPad::White, PadsShow::Heat, EmptyPads::Dim, false)
+        );
+        let mut c = App::new(44_100, false);
+        c.restore(
+            &Settings::parse("pad-brightness = 0\nheld-pad = purple\n"),
+            &Settings::default(),
+        );
+        assert_eq!(
+            (c.settings.pad_brightness, c.settings.held_pad),
+            (100, HeldPad::Brighter)
+        );
     }
 
     /// REC, OVERDUB, UNDO and PLAY START work on a fresh MPFree with
