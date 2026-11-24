@@ -127,6 +127,10 @@ pub struct Live {
     /// synth first, by the project's instrument id and channel name ("FM ·
     /// Pads").
     pub synths: Vec<(u32, String)>,
+    /// The kits a route can name past the synths (sampler step 15e's
+    /// follow-up): each kit with sounds, by place, by the project's
+    /// instrument id and its name and number ("Big Kit · kit 2").
+    pub kits: Vec<(u32, String)>,
     /// Clock arriving now: the port's name and its tempo.
     pub clock_in: Option<(String, f32)>,
     /// The volts each CV output gives now.
@@ -178,6 +182,7 @@ impl Default for Live {
             }],
             tracks: Vec::new(),
             synths: Vec::new(),
+            kits: Vec::new(),
             clock_in: None,
             cv_volts: [0.0; CV_OUTS],
             learn_names: Vec::new(),
@@ -418,10 +423,18 @@ pub fn sections(model: &Shared) -> Vec<Box<dyn mpfree_mixer_ui::IoSection>> {
     ]
 }
 
-/// Synth `id` of the project (a route that names one, step 11e) by its
-/// channel name, as the app last said ([`Live::synths`]).
+/// What a route can name past the tracks, in its stepper's order: the
+/// synths ([`Live::synths`], step 11e), then the kits ([`Live::kits`],
+/// sampler step 15e's follow-up).
+pub(crate) fn routables(m: &IoModel) -> impl Iterator<Item = &(u32, String)> {
+    m.live.synths.iter().chain(&m.live.kits)
+}
+
+/// Synth or kit `id` of the project (a route that names one, step 11e)
+/// by its channel name or the kit's name, as the app last said
+/// ([`Live::synths`], [`Live::kits`]).
 pub(crate) fn synth_name(m: &IoModel, id: u32) -> String {
-    m.live.synths.iter().find(|s| s.0 == id).map_or_else(
+    routables(m).find(|s| s.0 == id).map_or_else(
         || "a synth that isn't here now".to_string(),
         |s| s.1.clone(),
     )

@@ -3955,6 +3955,12 @@ impl SamplePage {
         self.kit_ids.kit(id, self.projects.len())
     }
 
+    /// Kit `kit`'s id in the project's list, as the audio loop last said:
+    /// what a MIDI route names it by (sampler step 15e's follow-up).
+    pub fn kit_number(&self, kit: usize) -> Option<u32> {
+        self.kit_ids.of(kit).map(InstrumentId::number)
+    }
+
     /// Kit `kit`'s id in the project's list: refused when the place has
     /// none (no kit there).
     fn kit_id(&self, kit: usize) -> Result<InstrumentId, sampler_commands::Refused> {

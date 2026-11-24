@@ -3663,6 +3663,33 @@ impl Player {
         }
     }
 
+    /// The kits a MIDI route can name on the I/O view's Routing card, past
+    /// the synths (sampler step 15e's follow-up): each kit with sounds but
+    /// the synth's entry, by place, by its id and its name and number
+    /// ("Big Kit · kit 2"). Written only when they change.
+    fn name_io_kits(&self) {
+        let Some(m) = &self.io_model else { return };
+        let kits: Vec<(u32, String)> = self
+            .kits
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.synth.is_none())
+            .filter(|&(k, _)| {
+                self.sample
+                    .project(k)
+                    .is_some_and(|p| (0..128).any(|i| p.pad(i).is_some()))
+            })
+            .filter_map(|(k, v)| {
+                let id = self.sample.kit_number(k)?;
+                Some((id, format!("{} · kit {}", chip_kit_name(&v.name, k), k + 1)))
+            })
+            .collect();
+        let mut m = m.lock().unwrap_or_else(|e| e.into_inner());
+        if m.live.kits != kits {
+            m.live.kits = kits;
+        }
+    }
+
     /// The Pads tab's Kit of row: each track that plays a kit, with the
     /// kit (the armed one outlined), and the tracks with clips or the
     /// armed one that play the synth or an instrument of their own, faint.
@@ -12369,6 +12396,7 @@ impl Player {
                     mpfree_midi_ui::DevMonitor::new(model.clone()),
                 );
                 self.io_model = Some(model);
+                self.name_io_kits();
             }
             ToUi::ProjectParts(c) => self.save_project(c),
             ToUi::ExportFacts(f) => self.export_facts(f),
@@ -13032,6 +13060,7 @@ impl Player {
                 st.chips = std::mem::take(&mut self.time.chips);
                 self.time = *st;
                 self.name_io_tracks();
+                self.name_io_kits();
                 self.kit_track_armed();
                 self.sound_track_armed();
                 // Another track armed: the Play on the pads button follows.
@@ -34121,6 +34150,36 @@ mod tests {
             (names[0].as_str(), names[19].as_str()),
             ("Part 1", "Part 20")
         );
+    }
+
+    /// The Routing card's kits (sampler step 15e's follow-up): each kit
+    /// with sounds, by its id in the project's list and its name and
+    /// number; an empty kit isn't listed.
+    #[test]
+    fn the_routing_card_lists_the_kits_with_sounds_by_id_and_name() {
+        use crate::instrument_list::{InstrumentList, KITS};
+        let mut p = sample_sampler(Fonts::embedded());
+        let mut list = InstrumentList::new();
+        list.follow(1);
+        list.follow_kits(KITS);
+        p.apply(ToUi::KitIds(Box::new(list.kit_ids())));
+        let io = crate::midi_in::io_model();
+        p.apply(ToUi::IoModel(io.clone()));
+        let kits = io.lock().unwrap().live.kits.clone();
+        let name = chip_kit_name(&p.kits[0].name, 0);
+        assert_eq!(
+            kits.first(),
+            Some(&(3, format!("{name} · kit 1"))),
+            "{kits:?}"
+        );
+        let filled = (0..p.kits.len())
+            .filter(|&k| {
+                p.sample
+                    .project(k)
+                    .is_some_and(|pr| (0..128).any(|i| pr.pad(i).is_some()))
+            })
+            .count();
+        assert_eq!(kits.len(), filled, "{kits:?}");
     }
 
     /// REC's arm pinned on Drums and Bass selected (refactor C1): the REC
