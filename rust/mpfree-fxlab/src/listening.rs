@@ -101,16 +101,19 @@ pub struct Case {
     /// Where it reads from, across the sound; `None` reads the sound's
     /// own spot ([`Sound::at`]).
     pub position: Option<f32>,
+    /// Steady stretch (step 19) on.
+    pub align: bool,
 }
 
 /// Every case, in order.
-pub const CASES: [Case; 6] = [
+pub const CASES: [Case; 7] = [
     Case {
         name: "cloud",
         about: "Cloud, frozen on one spot",
         mode: GrainMode::Cloud,
         scan: None,
         position: None,
+        align: false,
     },
     Case {
         name: "cloud-moving",
@@ -118,6 +121,7 @@ pub const CASES: [Case; 6] = [
         mode: GrainMode::Cloud,
         scan: Some(1.0),
         position: Some(0.0),
+        align: false,
     },
     Case {
         name: "stretch",
@@ -125,6 +129,7 @@ pub const CASES: [Case; 6] = [
         mode: GrainMode::Stretch,
         scan: None,
         position: Some(0.0),
+        align: false,
     },
     Case {
         name: "stretch-half",
@@ -132,6 +137,15 @@ pub const CASES: [Case; 6] = [
         mode: GrainMode::Stretch,
         scan: Some(0.5),
         position: Some(0.0),
+        align: false,
+    },
+    Case {
+        name: "stretch-half-steady",
+        about: "Stretch at half speed, steady (step 19)",
+        mode: GrainMode::Stretch,
+        scan: Some(0.5),
+        position: Some(0.0),
+        align: true,
     },
     Case {
         name: "repeat",
@@ -139,6 +153,7 @@ pub const CASES: [Case; 6] = [
         mode: GrainMode::Repeat,
         scan: None,
         position: None,
+        align: false,
     },
     Case {
         name: "tone",
@@ -146,6 +161,7 @@ pub const CASES: [Case; 6] = [
         mode: GrainMode::Tone,
         scan: None,
         position: None,
+        align: false,
     },
 ];
 
@@ -417,6 +433,7 @@ fn play(sound: &Sound, case: Option<&Case>, rate: u32) -> Stereo {
         if let Some(s) = case.scan {
             g.scan = s;
         }
+        g.align = case.align;
         r.grain = g;
     }
     let mut pad = Pad::new(sound.name, Layer::new(r));

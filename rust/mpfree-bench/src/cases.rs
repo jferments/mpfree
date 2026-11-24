@@ -1709,6 +1709,8 @@ pub fn all(rate: u32) -> Vec<Case> {
             SamplerPads::Grains,
         )
     }));
+    v.push(measured(|| stretch_pads(rate, false)));
+    v.push(measured(|| stretch_pads(rate, true)));
     v.extend(grain_worst_cases(rate));
     v.push(measured(|| {
         effect(
@@ -2691,6 +2693,72 @@ fn held_grains(rate: u32, grains: usize) -> Case {
         name,
         module: "sampler",
         what: "4 granular pads held, grains alive in all",
+        block: Box::new(move |b, l, r| {
+            if b == 0 {
+                for pad in 0..4 {
+                    e.apply(Event::NoteOn { pad, velocity: 100 });
+                }
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            e.render(l, r);
+        }),
+        mem_bytes: 0,
+    }
+}
+
+/// Four Stretch pads held at half speed on a pitched stereo sound, as the
+/// Grain tool starts Stretch (90 ms grains, 45 a second, regular), with
+/// steady stretch (sampler plan step 19, [`GrainParams::align`]) off or
+/// on: what its search costs.
+fn stretch_pads(rate: u32, align: bool) -> Case {
+    let name = if align {
+        "Sampler, 4 Stretch pads at half speed, steady".to_string()
+    } else {
+        "Sampler, 4 Stretch pads at half speed".to_string()
+    };
+    // A saw-like chord, different on each side, 2 s.
+    let n = rate as usize * 2;
+    let saw = |hz: f64, i: usize| {
+        let t = i as f64 / f64::from(rate);
+        (1..=12)
+            .map(|k| (std::f64::consts::TAU * hz * k as f64 * t).sin() / k as f64)
+            .sum::<f64>()
+    };
+    let data = (0..n)
+        .flat_map(|i| {
+            let l = 0.2 * (saw(110.0, i) + saw(164.8, i));
+            let r = 0.2 * (saw(110.3, i) + saw(220.0, i));
+            [l as f32, r as f32]
+        })
+        .collect();
+    let s = Source::new("chord", rate, 2, data).expect("source");
+    let mut p = Project::new();
+    p.add_source(s.clone());
+    for i in 0..4usize {
+        let mut r = Region::whole(&s);
+        r.mode = PlayMode::Granular;
+        r.grain_mode = GrainMode::Stretch;
+        r.grain = GrainParams {
+            position: i as f32 * 0.2,
+            scan: 0.5,
+            size_ms: 90.0,
+            density: 45.0,
+            timing: 0.0,
+            align,
+            ..GrainParams::default()
+        };
+        let mut pad = Pad::new("s", Layer::new(r));
+        pad.polyphony = 1;
+        p.set_pad(i, Some(pad), None).expect("pad");
+    }
+    let mut e = Engine::new(rate, 4);
+    e.set_view(EngineView::build(&p, rate));
+    let mut e = Watched::new(e, &name, Allow::default());
+    Case {
+        name,
+        module: "sampler",
+        what: "4 Stretch pads held at half speed on a pitched sound",
         block: Box::new(move |b, l, r| {
             if b == 0 {
                 for pad in 0..4 {
