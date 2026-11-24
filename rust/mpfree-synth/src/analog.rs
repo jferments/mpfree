@@ -61,6 +61,7 @@ use crate::character::{
 use crate::dsp::{lfo_value, soft_clip, LfoShape, Rng};
 use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::params::Preset;
+use crate::poly_filter::{matched_svf, HOLD_OCT, MATCH_FROM};
 use crate::voice::Priority;
 
 /// Frames per control step.
@@ -819,6 +820,94 @@ const HELD_KEY: u8 = 1;
 const RELEASED: u8 = 2;
 
 /// One voice card's state.
+/// The 12 dB types' section near the top (DSP quality step 2.2d). Up to
+/// [`MATCH_FROM`] of the rate the voice runs the state-variable filter it
+/// always had (the bilinear design of the drawn curve, its gain gliding a
+/// sample at a time). Above it, the section is matched to the drawn curve
+/// as Poly's is ([`matched_svf`]): impulse-invariant poles, and an output
+/// mix `m0 x + m1 bp + m2 lp` whose magnitude meets the curve at DC and
+/// the cutoff (low-pass) or at the cutoff (band-pass, high-pass). The
+/// loud band-pass still squashes the damping as before. The section's
+/// five numbers glide across each control step; above 2 kHz a step that
+/// moves the cutoff less than [`HOLD_OCT`] from the last design keeps it.
+#[derive(Clone, Copy, Debug, Default)]
+struct Svf12 {
+    /// `[g, k, m0, m1, m2]` now, where this step's glide arrives, and its
+    /// step a sample.
+    c: [f32; 5],
+    to: [f32; 5],
+    dc: [f32; 5],
+    /// This step runs the section with its mix (one end or both matched).
+    on: bool,
+    /// The last design: its cutoff (octaves), its type and damping, and
+    /// whether it was matched.
+    oct: f32,
+    key: [u32; 2],
+    matched: bool,
+}
+
+impl Svf12 {
+    /// The plain outputs as a mix: what the filter has always given.
+    #[inline]
+    fn plain(filter: u8, g: f32, damp: f32, bp_gain: f32) -> [f32; 5] {
+        match filter {
+            1 => [g, damp, 0.0, 0.0, 1.0],
+            2 => [g, damp, 0.0, bp_gain, 0.0],
+            _ => [g, damp, 1.0, -damp, -1.0],
+        }
+    }
+
+    /// One control step of `per` samples toward a cutoff at `oct` octaves
+    /// (`fc` Hz, held within range; `g` its bilinear gain) for type
+    /// `filter` (1 to 3) at `damp` and `bp_gain`, rate `fs`. A `fresh`
+    /// voice starts on its design.
+    #[allow(clippy::too_many_arguments)]
+    fn step(
+        &mut self,
+        filter: u8,
+        oct: f32,
+        fc: f32,
+        g: f32,
+        damp: f32,
+        bp_gain: f32,
+        fs: f32,
+        per: f32,
+        fresh: bool,
+    ) {
+        let was = self.matched;
+        // No design yet (a voice coming from LP 24): start from the plain
+        // filter at this cutoff, as the voice's own state-variable filter.
+        self.c = if self.to[0] == 0.0 {
+            Svf12::plain(filter, g, damp, bp_gain)
+        } else {
+            self.to
+        };
+        let key = [u32::from(filter), damp.to_bits()];
+        if fc > MATCH_FROM * fs {
+            let hold = self.matched && key == self.key && (oct - self.oct).abs() < HOLD_OCT;
+            if !hold {
+                self.to = matched_svf(filter, fc, fs, damp, bp_gain);
+                self.oct = oct;
+                self.key = key;
+            }
+            self.matched = true;
+        } else {
+            self.to = Svf12::plain(filter, g, damp, bp_gain);
+            self.matched = false;
+            self.key = [u32::MAX; 2];
+        }
+        if fresh {
+            self.c = self.to;
+            self.on = self.matched;
+        } else {
+            self.on = self.matched || was;
+        }
+        for j in 0..5 {
+            self.dc[j] = (self.to[j] - self.c[j]) / per;
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct Voice {
     state: u8,
@@ -863,6 +952,8 @@ struct Voice {
     hp: f32,
     g: f32,
     dg: f32,
+    /// The 12 dB types' section near the top.
+    m: Svf12,
     fenv: Env,
     aenv: Env,
     vca: f32,
@@ -886,6 +977,7 @@ impl Voice {
         self.z1 = 0.0;
         self.z2 = 0.0;
         self.hp = 0.0;
+        self.m = Svf12::default();
         self.vca = 0.0;
         self.dvca = 0.0;
         self.vca_to = 0.0;
@@ -959,6 +1051,42 @@ impl Voice {
             self.vca += self.dvca;
             self.g += self.dg;
         }
+    }
+
+    /// The step's `n` samples `xs` through the 12 dB section with its mix
+    /// ([`Svf12`]) and the VCA onto `buf`.
+    #[inline(always)]
+    fn filter_step_mix(&mut self, fr: &Frame, xs: &[f32; STEP], buf: &mut [f32], n: usize) {
+        for (i, y) in buf.iter_mut().enumerate().take(n) {
+            let x = xs[i];
+            let c = self.m.c;
+            let g = if fr.pm_cut > 0.0 {
+                let o2 = if fr.need2 { self.o2.w[i] } else { 0.0 };
+                (c[0] * exp2_fast(fr.pm_cut * o2)).min(fr.g_max)
+            } else {
+                c[0]
+            };
+            *y += self.svf_mix(x, g, &c) * self.vca;
+            self.vca += self.dvca;
+            for j in 0..5 {
+                self.m.c[j] += self.m.dc[j];
+            }
+        }
+    }
+
+    /// The state-variable filter at gain `g` and the section `c`'s damping
+    /// (growing with the band-pass's level last frame, as in
+    /// [`Voice::svf`]), out through its mix.
+    #[inline(always)]
+    fn svf_mix(&mut self, x: f32, g: f32, c: &[f32; 5]) -> f32 {
+        let r = c[1] + SVF_SQUASH * self.hp * self.hp;
+        let hp = (x - (r + g) * self.z1 - self.z2) / (1.0 + r * g + g * g);
+        let bp = g * hp + self.z1;
+        self.z1 = g * hp + bp;
+        let lp = g * bp + self.z2;
+        self.z2 = g * bp + lp;
+        self.hp = bp;
+        c[2] * x + c[3] * bp + c[4] * lp
     }
 
     /// The state-variable filter: low-, band- (`mode` 1) or high-pass (2)
@@ -1250,6 +1378,29 @@ pub struct FilterProbe {
 }
 
 impl FilterProbe {
+    /// The 12 dB section's step toward `cutoff` over `per` samples, as a
+    /// voice takes it.
+    fn step12(&mut self, cutoff: f32, per: f32, fresh: bool) {
+        if self.filter != 0 {
+            let fmax = cutoff_max(self.fs);
+            let g = cutoff_g(cutoff, self.fs, fmax);
+            let fc = cutoff.clamp(16.0, fmax);
+            self.v.m.step(
+                self.filter,
+                cutoff.max(1.0).log2(),
+                fc,
+                g,
+                self.damp,
+                self.bp_gain,
+                self.fs,
+                per,
+                fresh,
+            );
+        }
+    }
+}
+
+impl FilterProbe {
     /// A filter at rest at `rate`, set to LP 24 at 1 kHz.
     pub fn new(rate: u32) -> FilterProbe {
         let mut p = FilterProbe {
@@ -1281,6 +1432,7 @@ impl FilterProbe {
         self.out = makeup(self.filter, self.k) / self.in_gain;
         self.g = cutoff_g(cutoff, self.fs, cutoff_max(self.fs));
         (self.g_to, self.dg, self.out_to, self.dout) = (self.g, 0.0, self.out, 0.0);
+        self.step12(cutoff, 1.0, true);
     }
 
     /// One control step of `frames` samples, moved as a card moves: the
@@ -1298,6 +1450,7 @@ impl FilterProbe {
         self.dg = (self.g_to - self.g) / per;
         self.out_to = makeup(self.filter, self.k) / self.in_gain;
         self.dout = (self.out_to - self.out) / per;
+        self.step12(cutoff, per, false);
     }
 
     /// One sample through the filter.
@@ -1310,6 +1463,13 @@ impl FilterProbe {
             } else {
                 self.v.ota::<false>(x, self.g, self.k)
             }
+        } else if self.v.m.on {
+            let c = self.v.m.c;
+            let y = self.v.svf_mix(x, c[0], &c);
+            for j in 0..5 {
+                self.v.m.c[j] += self.v.m.dc[j];
+            }
+            y
         } else {
             self.v
                 .svf(x, self.g, self.damp, self.filter - 1, self.bp_gain)
@@ -2073,12 +2233,21 @@ impl Analog {
                 + pm_env_cut * fe
                 + press_cut * v.press
                 + TONE_CUT_OCT * v.ex.tone;
-            let g = cutoff_g(exp2_fast(oct), fs, fmax);
+            let fc = exp2_fast(oct);
+            let g = cutoff_g(fc, fs, fmax);
             if fresh {
                 v.g = g;
             }
             v.g_to = g;
             v.dg = (g - v.g) / per;
+            if self.fr.filter != 0 {
+                let fr = &self.fr;
+                let fc = fc.clamp(16.0, fmax);
+                v.m.step(fr.filter, oct, fc, g, fr.damp, fr.bp_gain, fs, per, fresh);
+            } else if v.m.on || v.m.matched {
+                // LP 24: a later switch to a 12 dB type starts afresh.
+                v.m = Svf12::default();
+            }
             let level = exp2_fast(AGE_LEVEL_DB * age * self.cards.level[c] / 6.02);
             let gain = ae * (1.0 - va + va * v.vel) * level * out;
             v.vca_to = gain;
@@ -2166,6 +2335,8 @@ impl Analog {
             }
             if fr.filter == 0 && fr.k > K_STRAIGHT {
                 v.filter_step::<true>(&fr, &xs, &mut buf, n);
+            } else if fr.filter != 0 && v.m.on {
+                v.filter_step_mix(&fr, &xs, &mut buf, n);
             } else {
                 v.filter_step::<false>(&fr, &xs, &mut buf, n);
             }

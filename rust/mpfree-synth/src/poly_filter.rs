@@ -247,6 +247,13 @@ fn phis(w0: f64) -> (f64, f64) {
 /// Vicanek's low-pass, scaled by `gain`: right at DC and at the cutoff
 /// (`Q` there).
 fn matched_lp(w0: f64, z: f64, zc: f64, q: f64, gain: f64) -> Sec {
+    let (b, a1, a2) = matched_lp_biquad(w0, z, zc, q, gain);
+    section(b, a1, a2)
+}
+
+/// [`matched_lp`] as a biquad: `(b, a1, a2)`.
+#[inline]
+fn matched_lp_biquad(w0: f64, z: f64, zc: f64, q: f64, gain: f64) -> ([f64; 3], f64, f64) {
     let (a1, a2) = poles(w0, z, zc);
     let n0 = 1.0 + a1 + a2;
     let den = 1.0 - a1 + a2;
@@ -254,11 +261,18 @@ fn matched_lp(w0: f64, z: f64, zc: f64, q: f64, gain: f64) -> Sec {
     let r1 = (n0 * n0 * p0 + den * den * p1 - 16.0 * a2 * p0 * p1) * q * q;
     let bb1 = ((r1 - n0 * n0 * p0) / p1).max(0.0);
     let b0 = 0.5 * (n0 + bb1.sqrt());
-    section([b0 * gain, (n0 - b0) * gain, 0.0], a1, a2)
+    ([b0 * gain, (n0 - b0) * gain, 0.0], a1, a2)
 }
 
 /// Vicanek's band-pass: unity at the cutoff, its peak.
 fn matched_bp(w0: f64, z: f64, zc: f64) -> Sec {
+    let (b, a1, a2) = matched_bp_biquad(w0, z, zc);
+    section(b, a1, a2)
+}
+
+/// [`matched_bp`] as a biquad: `(b, a1, a2)`.
+#[inline]
+fn matched_bp_biquad(w0: f64, z: f64, zc: f64) -> ([f64; 3], f64, f64) {
     let (a1, a2) = poles(w0, z, zc);
     let (aa0, aa1, aa2) = ((1.0 + a1 + a2).powi(2), (1.0 - a1 + a2).powi(2), -4.0 * a2);
     let (p1, p0) = phis(w0);
@@ -268,16 +282,55 @@ fn matched_bp(w0: f64, z: f64, zc: f64) -> Sec {
     let bb1 = r2 + 4.0 * (p1 - p0) * bb2;
     let b1 = -0.5 * bb1.max(0.0).sqrt();
     let b0 = 0.5 * ((bb2 + b1 * b1).max(0.0).sqrt() - b1);
-    section([b0, b1, -b0 - b1], a1, a2)
+    ([b0, b1, -b0 - b1], a1, a2)
 }
 
 /// Vicanek's high-pass: right at the cutoff (`Q` there).
 fn matched_hp(w0: f64, z: f64, zc: f64, q: f64) -> Sec {
+    let (b, a1, a2) = matched_hp_biquad(w0, z, zc, q);
+    section(b, a1, a2)
+}
+
+/// [`matched_hp`] as a biquad: `(b, a1, a2)`.
+#[inline]
+fn matched_hp_biquad(w0: f64, z: f64, zc: f64, q: f64) -> ([f64; 3], f64, f64) {
     let (a1, a2) = poles(w0, z, zc);
     let (aa0, aa1, aa2) = ((1.0 + a1 + a2).powi(2), (1.0 - a1 + a2).powi(2), -4.0 * a2);
     let (p1, p0) = phis(w0);
     let b0 = (aa0 * p0 + aa1 * p1 + 4.0 * aa2 * p0 * p1).max(0.0).sqrt() * q / (4.0 * p1);
-    section([b0, -2.0 * b0, b0], a1, a2)
+    ([b0, -2.0 * b0, b0], a1, a2)
+}
+
+/// A matched state-variable section for Analog's 12 dB types (DSP quality
+/// step 2.2d), as `[g, k, m0, m1, m2]`: the filter's `g` and damping `k`
+/// (its `hp = (x - (k + g) z1 - z2) / (1 + k g + g²)` form) and the output
+/// mix `m0 x + m1 bp + m2 lp`. `mode` 1 is the low-pass, 2 the band-pass
+/// (scaled by `bp_gain` from unity at the cutoff), 3 the high-pass; `fc`
+/// and `rate` in Hz, `damp` the drawn curve's `1 / Q` (at most 2).
+pub(crate) fn matched_svf(mode: u8, fc: f32, rate: f32, damp: f32, bp_gain: f32) -> [f32; 5] {
+    let w0 = 2.0 * PI64 * f64::from(fc) / f64::from(rate);
+    let d = f64::from(damp).min(2.0);
+    let z = 0.5 * d;
+    let zc = (1.0 - z * z).max(0.0).sqrt();
+    let q = 1.0 / d;
+    let (b, a1, a2) = match mode {
+        1 => matched_lp_biquad(w0, z, zc, q, 1.0),
+        2 => {
+            let (b, a1, a2) = matched_bp_biquad(w0, z, zc);
+            let s = f64::from(bp_gain) / d;
+            (b.map(|v| v * s), a1, a2)
+        }
+        _ => matched_hp_biquad(w0, z, zc, q),
+    };
+    let den = 1.0 - a1 + a2;
+    let inv_den = 1.0 / den;
+    let g2 = (1.0 + a1 + a2) * inv_den;
+    let g = g2.sqrt();
+    let gk = 2.0 * (1.0 - a2) * inv_den;
+    let m0 = (b[0] - b[1] + b[2]) * inv_den;
+    let m2 = (4.0 * b[1] * inv_den - 2.0 * m0 * (g2 - 1.0)) / (2.0 * g2);
+    let m1 = (4.0 * (b[0] - b[2]) * inv_den - 2.0 * m0 * gk) / (2.0 * g);
+    [g as f32, (gk / g) as f32, m0 as f32, m1 as f32, m2 as f32]
 }
 
 /// A low-pass with no peak, right at DC and at `hn` at Nyquist.

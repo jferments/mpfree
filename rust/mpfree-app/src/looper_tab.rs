@@ -3478,12 +3478,23 @@ pub const ASK_BOTTOM: i32 = 43;
 
 /// Snap anyway (or Do it anyway) and Not now at the hint line's end,
 /// floated over the Looper tab ([`ASK`], [`Ui::set_float`]) while a snap
-/// over recorded audio asks; the hint line says what it asks.
-#[derive(Default)]
+/// over recorded audio asks, or Read as and Discard while a first pass
+/// waits on its Length; the hint line says what it asks.
 pub struct AskButtons {
-    /// The yes button's words.
+    /// The yes and the no buttons' words.
     pub yes: String,
+    pub no: String,
     acts: Vec<LoopAct>,
+}
+
+impl Default for AskButtons {
+    fn default() -> AskButtons {
+        AskButtons {
+            yes: String::new(),
+            no: "Not now".to_string(),
+            acts: Vec::new(),
+        }
+    }
 }
 
 impl AskButtons {
@@ -3516,14 +3527,14 @@ impl Widget for AskButtons {
             &self.yes,
         );
         cx.canvas.fill_round_rect(no, 8, t.raised);
-        cx.text(FontId::Bold, 14.0, no, Align::Center, t.text, "Not now");
+        cx.text(FontId::Bold, 14.0, no, Align::Center, t.text, &self.no);
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
         let (yes, no) = AskButtons::parts(r);
         vec![
             Target::tap("ask-yes", 0, self.yes.clone(), yes),
-            Target::tap("ask-no", 0, "Not now", no),
+            Target::tap("ask-no", 0, self.no.clone(), no),
         ]
     }
 
