@@ -91,6 +91,36 @@ impl MakeFrom {
     }
 }
 
+impl MakeFrom {
+    /// A MIDI file's first part with notes (`midi_file::import`'s parts:
+    /// a file track's notes on one channel), from the file's start in its
+    /// first meter, named after the file.
+    pub fn midi(m: &crate::midi_file::MidiImport) -> Result<MakeFrom, String> {
+        let part = m
+            .parts
+            .iter()
+            .find(|p| !p.notes.is_empty())
+            .ok_or("Make a phrase: the file has no notes")?;
+        let name = std::path::Path::new(&m.file)
+            .file_stem()
+            .map_or_else(|| m.file.clone(), |s| s.to_string_lossy().into_owned());
+        Ok(MakeFrom {
+            place: m.file.clone(),
+            name,
+            notes: part
+                .notes
+                .iter()
+                .map(|n| Played::new(n.tick as Tick, n.len as Tick, n.note, n.velocity))
+                .collect(),
+            len: m.length,
+            meter: Meter {
+                beats: m.meter.0,
+                unit: m.meter.1,
+            },
+        })
+    }
+}
+
 /// The sheet while it is open.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sheet {
@@ -206,7 +236,7 @@ impl App {
     }
 
     /// A touch on the sheet, or the wheel or - / + while it is open.
-    pub(super) fn sheet_action(&mut self, a: SheetAction) -> Vec<Effect> {
+    pub(in crate::app) fn sheet_action(&mut self, a: SheetAction) -> Vec<Effect> {
         let Some(s) = self.sheet.as_mut() else {
             return Vec::new();
         };
@@ -481,9 +511,13 @@ mod tests {
         let made = v.phrase.unwrap();
         assert_eq!(app.eng().phrase(), &made, "a held pad plays it");
         assert_ne!(made, pick);
-        // Home up a half step: C#2, said under the rows.
-        act(&mut app, SheetAction::Wheel(1));
-        act(&mut app, SheetAction::Change(1));
+        // Home up a half step with the wheel and +: C#2, said under the
+        // rows.
+        use mpfree_controller::mpc_one::button::PLUS;
+        app.wheel(1);
+        assert_eq!(view(&app).row, 1);
+        app.button(PLUS, true, 0.0);
+        app.button(PLUS, false, 0.0);
         let v = view(&app);
         assert_eq!(v.rows[1].value, "C#2");
         assert_eq!(v.notes[1], "The notes said Bass, C2.");
@@ -562,5 +596,48 @@ mod tests {
         assert!(MakeFrom::clip(&project, FOUR, 0, 2)
             .unwrap_err()
             .contains("pad hits"));
+    }
+
+    /// A MIDI file is read from its first track with notes, named after
+    /// the file, its length and meter the file's; it opens on the browser
+    /// and reads as the clip it was made from. A file of no notes says so.
+    #[test]
+    fn a_midi_file_is_named_and_read() {
+        let bytes = crate::gui::sample_bassline_mid();
+        let m = crate::midi_file::import("Bassline.mid", &bytes).unwrap();
+        let from = MakeFrom::midi(&m).unwrap();
+        assert_eq!(
+            (from.place.as_str(), from.name.as_str()),
+            ("Bassline.mid", "Bassline")
+        );
+        let clip = crate::gui::sample_bass_clip();
+        assert_eq!(from.notes, clip.notes, "as the clip it was made from");
+        assert_eq!((from.len, from.meter), (8 * Q, FOUR));
+        let mut app = App::new(44_100, false);
+        app.start();
+        app.set_pad_layout(Some(layout(&PadSetup {
+            layout: PadLayout::Chromatic,
+            ..PadSetup::default()
+        })));
+        app.show(View::Browser);
+        app.open_sheet(from);
+        let v = view(&app);
+        assert_eq!(v.from, "From Bassline.mid · 2 bars");
+        assert_eq!(v.keep_line, "Keep puts it on Yours as Bassline.");
+        assert!(v.can_keep && v.phrase.is_some());
+        let empty = mpfree_midi::smf::Smf {
+            name: "Empty".into(),
+            tempos: vec![(0, 120.0)],
+            meters: vec![(0, 4, 4)],
+            tracks: vec![mpfree_midi::smf::SmfTrack {
+                name: "Nothing".into(),
+                events: Vec::new(),
+            }],
+            end: 4 * 960,
+        }
+        .bytes();
+        let none = crate::midi_file::import("Empty.mid", &empty);
+        let why = none.and_then(|m| MakeFrom::midi(&m)).unwrap_err();
+        assert!(why.contains("no notes"), "{why}");
     }
 }

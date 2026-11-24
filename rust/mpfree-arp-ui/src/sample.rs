@@ -381,6 +381,10 @@ fn maker_scene(
     if let Some(l) = s.ui.get_mut::<Label>("hint") {
         *l = Label::new(&hint_for(&s.state), Tone::Dim, Align::Center);
     }
+    // The arp chip names the try that plays.
+    if let Some(h) = s.ui.get_mut::<Header>("header") {
+        h.chips = chips(&s.state);
+    }
     Ok(s)
 }
 

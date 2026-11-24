@@ -2351,6 +2351,9 @@ pub enum FromUi {
     /// A MIDI file BROWSE loaded, read: its tracks as clips from the armed
     /// track on ([`crate::midi_file::put`]).
     MidiFile(Box<crate::midi_file::MidiImport>),
+    /// A MIDI file's Make a phrase, read: the Make a phrase sheet opens on
+    /// its first track with notes (the app's, step 3 of the phrases).
+    MakePhrase(Box<crate::app::MakeFrom>),
 }
 
 /// Room for the Grains effect's whole memory at the app's rate, for a
@@ -2781,6 +2784,8 @@ pub struct Player {
     preview_load: Option<std::sync::mpsc::Receiver<sample_page::Loaded>>,
     /// A MIDI file BROWSE loaded, being read ([`crate::midi_file`]).
     midi_load: Option<std::sync::mpsc::Receiver<Result<crate::midi_file::MidiImport, String>>>,
+    /// A MIDI file being read for Make a phrase (the browser's button).
+    midi_phrase: Option<std::sync::mpsc::Receiver<Result<crate::midi_file::MidiImport, String>>>,
     /// The preset picker the Synth tab's title opens (presets.rs).
     preset_picker: crate::presets::Picker,
     /// The XY pad's list's From the browser: the browser opens on your
@@ -3532,6 +3537,7 @@ impl Player {
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
             midi_load: None,
+            midi_phrase: None,
             preset_picker: crate::presets::Picker::default(),
             xy_browse: XyBrowse::default(),
             bundling: None,
@@ -9315,11 +9321,34 @@ impl Player {
     /// The Make a phrase sheet as the app has it, on the page shown: in
     /// the clip card's place on Arrange.
     fn refresh_sheet(&mut self) {
+        use mpfree_arp_ui::make_sheet::{MakeSheet, MAKE_SHEET};
         let on_arrange = self.sheet.clone().filter(|_| self.view == View::Arrange);
         if self.time_page.make != on_arrange {
             self.time_page.make = on_arrange;
             self.time_page.update(&mut self.ui, &self.time);
         }
+        // In the browser: over its Selected panel.
+        let over = self
+            .sheet
+            .as_ref()
+            .filter(|_| self.view == View::Browser)
+            .and_then(|_| {
+                let r = self.ui.rect_of(mpfree_browser_ui::BROWSER)?;
+                let b = self
+                    .ui
+                    .get::<mpfree_browser_ui::BrowserView>(mpfree_browser_ui::BROWSER)?;
+                Some(b.detail_rect(r))
+            });
+        if let (Some(_), Some(v)) = (over, &self.sheet) {
+            if let Some(w) = self.ui.get_mut::<MakeSheet>(MAKE_SHEET) {
+                if w.view != *v {
+                    w.view = v.clone();
+                }
+            }
+        }
+        let _ = self
+            .ui
+            .set_float(mpfree_browser_ui::BROWSER_PAGE, MAKE_SHEET, over);
         self.refresh_hint();
     }
 
@@ -9832,6 +9861,10 @@ impl Player {
                 View::Browser if self.browser.is_none() => NO_LIBRARY_HINT.to_string(),
                 View::Browser if self.preset_picker.open => self.preset_picker.hint(),
                 View::Browser if self.xy_browse.open => XY_BROWSE_HINT.to_string(),
+                // The Make a phrase sheet over the Selected panel.
+                View::Browser if self.sheet.is_some() => {
+                    self.sheet.as_ref().map(|v| v.hint.clone()).unwrap_or_default()
+                }
                 View::Browser
                     if self
                         .browser
@@ -13374,18 +13407,6 @@ impl Player {
             }
             return;
         }
-        // The Make a phrase sheet (step 3 of the phrases): the wheel picks
-        // Kind or Home, and - / + change it.
-        if self.sheet.is_some() && matches!(self.view, View::Arrange | View::Browser) {
-            use mpfree_arp_ui::make_sheet::SheetAction;
-            let a = match k {
-                RowKey::Pick(d) => SheetAction::Wheel(d),
-                RowKey::Step(d) => SheetAction::Change(d),
-                RowKey::Editing(_) | RowKey::Arrow { .. } => return,
-            };
-            self.outbox.push(FromUi::Arp(ArpAction::Sheet(a)));
-            return;
-        }
         // The conversion report card: the wheel scrolls its rows (when
         // there are more than five) and nothing under it.
         if self.view == View::Arrange && self.time_page.report_on(&self.ui).is_some() {
@@ -13950,6 +13971,13 @@ impl Player {
             A::LoadMidi { path, .. } => {
                 self.midi_load = Some(crate::midi_file::read_in_thread(path));
             }
+            // Make a phrase: read in a thread, then the sheet over the
+            // Selected panel. BROWSE's alone: the Pads tab's browser has
+            // no room for it.
+            A::MakePhrase { path, .. } if self.view == View::Browser => {
+                self.midi_phrase = Some(crate::midi_file::read_in_thread(path));
+            }
+            A::MakePhrase { .. } => self.tell("Make a phrase: open the file from BROWSE"),
             // The preset picker the Synth tab's title opened (presets.rs).
             A::TryFactoryPreset { index, .. } => {
                 self.outbox
@@ -14427,6 +14455,32 @@ impl Player {
             Ok(m) => self.outbox.push(FromUi::MidiFile(Box::new(m))),
             Err(e) => {
                 let line = format!("MIDI file: not loaded: {e}");
+                self.tell(&line);
+                self.say(line);
+            }
+        }
+    }
+
+    /// A MIDI file read for Make a phrase: the sheet opens on its first
+    /// track with notes, or why it can't.
+    fn poll_midi_phrase(&mut self) {
+        let Some(rx) = &self.midi_phrase else {
+            return;
+        };
+        let r = match rx.try_recv() {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("its thread stopped".into()),
+        };
+        self.midi_phrase = None;
+        match r.and_then(|m| crate::app::MakeFrom::midi(&m)) {
+            Ok(from) => self.outbox.push(FromUi::MakePhrase(Box::new(from))),
+            Err(e) => {
+                let line = if e.starts_with("Make a phrase") {
+                    e
+                } else {
+                    format!("Make a phrase: the file was not read: {e}")
+                };
                 self.tell(&line);
                 self.say(line);
             }
@@ -19546,6 +19600,7 @@ impl Player {
         self.poll_xy_file();
         self.poll_sound_track();
         self.poll_midi();
+        self.poll_midi_phrase();
         self.poll_loops();
         self.poll_audio();
         self.open_clock_tick();
@@ -23119,6 +23174,93 @@ fn browser_sd_card(fonts: Fonts) -> Result<Player, String> {
     built
 }
 
+/// Bassline.mid: [`sample_bass_clip`]'s notes as a MIDI file of one track,
+/// as the browser's sample screens and the tests read it.
+pub fn sample_bassline_mid() -> Vec<u8> {
+    use mpfree_midi::msg::Msg;
+    use mpfree_midi::smf::{Smf, SmfTrack};
+    let mut events = Vec::new();
+    for n in &sample_bass_clip().notes {
+        let at = n.at as u64;
+        events.push((
+            at,
+            Msg::NoteOn {
+                ch: 0,
+                note: n.pitch,
+                vel: n.velocity,
+            },
+        ));
+        events.push((
+            at + n.len as u64,
+            Msg::NoteOff {
+                ch: 0,
+                note: n.pitch,
+                vel: 64,
+            },
+        ));
+    }
+    Smf {
+        name: "Bassline".to_string(),
+        tempos: vec![(0, 120.0)],
+        meters: vec![(0, 4, 4)],
+        tracks: vec![SmfTrack {
+            name: "Bass".to_string(),
+            events,
+        }],
+        end: 2 * 4 * 960,
+    }
+    .bytes()
+}
+
+/// The whole browser (BROWSE) on the stand-in SD card with Bassline.mid
+/// picked (board F); with `sheet`, its Make a phrase open over the
+/// Selected panel, read from the file as the button reads it.
+fn browser_midi(fonts: Fonts, sheet: bool) -> Result<Player, String> {
+    use mpfree_browser_ui::sample::{fill, fill_card, select, source};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("mpfree-midi-{}-{nanos}", std::process::id()));
+    let built = (|| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let lib = fill(&dir)?;
+        let card = fill_card(&lib, &dir.join("card"))?;
+        let bytes = sample_bassline_mid();
+        std::fs::write(card.join("Bassline.mid"), &bytes).map_err(|e| e.to_string())?;
+        let mut p = sample_sampler(fonts);
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        p.take_actions();
+        p.apply(ToUi::Show(View::Browser));
+        let b = p.browser.as_mut().ok_or("no browser")?;
+        b.go_source(source("SD card"));
+        b.take_actions();
+        b.library().set_card(Some(card));
+        b.set_card(mpfree_browser_ui::CardState::Open {
+            about: "exFAT, 63.9 GB".into(),
+            dirty: false,
+        });
+        select(b, "Bassline.mid");
+        p.step_browser();
+        p.take_actions();
+        if sheet {
+            let m = crate::midi_file::import("Bassline.mid", &bytes)?;
+            let mut app = sample_app();
+            app.set_pad_layout(Some(mpfree_arp::scale::pads::layout(
+                &mpfree_arp::scale::pads::PadSetup {
+                    layout: mpfree_arp::scale::pads::PadLayout::Chromatic,
+                    ..mpfree_arp::scale::pads::PadSetup::default()
+                },
+            )));
+            let fx = app.open_sheet(crate::app::MakeFrom::midi(&m)?);
+            apply_effects(&mut p, fx);
+        }
+        Ok(p)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    built
+}
+
 /// The whole browser (BROWSE) in its Plugins place: a made-up catalog
 /// with two plugins installed and a zip on the stick, Mono Bass picked
 /// (installed, an update out), its own screen drawn from the test skin. Nothing is fetched or written. For
@@ -26525,6 +26667,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     match browser_sd_card(fonts()) {
         Ok(card) => out.push(("browser-sd-card", card)),
         Err(e) => eprintln!("browser-sd-card: not drawn ({e})"),
+    }
+    // A MIDI file on the SD card picked (step 3 of the phrases, board F):
+    // Make a phrase beside Load and Copy; then its sheet over the Selected
+    // panel.
+    match browser_midi(fonts(), false) {
+        Ok(p) => out.push(("browser-midi", p)),
+        Err(e) => eprintln!("browser-midi: not drawn ({e})"),
+    }
+    match browser_midi(fonts(), true) {
+        Ok(p) => out.push(("browser-make-phrase", p)),
+        Err(e) => eprintln!("browser-make-phrase: not drawn ({e})"),
     }
     // The browser's Plugins place over a made-up catalog.
     match browser_plugins(fonts()) {

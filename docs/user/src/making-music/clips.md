@@ -232,6 +232,8 @@ Each track of the file becomes a clip in the first empty slot of a track: the fi
 
 **Left out** for now: controllers, pitch bend, pressure and program changes (they come with lanes), and SysEx. The file's tempo is said but not set, so set the project's tempo to match if you want it. A file in clock time (made for video) is read at 120 BPM.
 
+**A phrase for the arp** from the file, rather than clips: tap **Make a phrase** beside **Load** (see [Make a phrase](note-repeat-and-arp.md#make-a-phrase)).
+
 > [!MPC]
 > To bring a sequence over from your MPC, export it there with *Track as MIDI/Pattern* (one track, with **Export MIDI As** set to MIDI files) or *All Tracks*, copy what it saves to MPFree's stick, arm the track the first part should go on, and load the file. Drum tracks land on the pads they were played on. Load the kit too ([Sampling](sampling.md)), and the beat plays as it did.
 

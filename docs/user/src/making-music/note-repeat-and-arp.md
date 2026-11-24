@@ -186,18 +186,23 @@ Going to another tab, page or track closes the panel as Back does. A phrase you 
 
 #### Make a phrase
 
-A clip of notes you played or drew can become a phrase of your own, which the arp then plays from any note you hold, as it plays MPFree's. On **Arrange**, open the clip's card (the Record panel's **Clip** tab) and step its **Phrase** row (**Make ›**) with either arrow: the **Make a phrase** sheet opens in the card's place.
+A clip of notes you played or drew, or a MIDI file, can become a phrase of your own, which the arp then plays from any note you hold, as it plays MPFree's.
+
+- **From a clip:** on **Arrange**, open the clip's card (the Record panel's **Clip** tab) and step its **Phrase** row (**Make ›**) with either arrow: the **Make a phrase** sheet opens in the card's place.
+- **From a MIDI file:** press **BROWSE**, pick the file and tap **Make a phrase** beside **Load**: the sheet opens over the **Selected** panel, made from the file's first track with notes, from its start. Nothing is loaded into the song.
 
 {{shot: clips-card-phrase | The clip card scrolled to its last row, Phrase, which reads Make › on a clip of notes.}}
 
 {{shot: clips-make-phrase | Make a phrase open from Clip 1: a picture of the phrase, heard in C minor on 1/16s, Kind Bass and Home C2, and Keep puts it on Yours as Clip 1.}}
 
+{{shot: browser-make-phrase | Make a phrase open over the browser's Selected panel, made from Bassline.mid on the SD card: Keep puts it on Yours as Bassline.}}
+
 The sheet reads everything from the notes: the key they were heard in, the grid they sit on, how long the phrase is (the clip's bars, up to eight), what **Kind** of phrase it is, and its **Home**, the note it is written from. Hold a pad and the phrase plays from that note at once: holding C2 plays it as you played it, holding G2 plays it from G.
 
 1. If the sheet read something differently from how you mean it, change **Kind** (Bass, Riff, Chords, Arp lines) or **Home** with their **‹** and **›**, or turn the data wheel to a row and press **–** or **+**. The phrase is made again at once, and the line under the rows says what the notes said.
-2. **Keep** puts it on the Phrase tab's **Yours** under the clip's name ("Clip 1"; if you already have one called that, "Clip 1 2"), and the track plays it. **Back** or **×** closes the sheet and nothing changes.
+2. **Keep** puts it on the Phrase tab's **Yours** under the clip's name ("Clip 1"; if you already have one called that, "Clip 1 2") or the file's ("Bassline"), and the armed track plays it. **Back** or **×** closes the sheet and nothing changes.
 
-A clip of pad hits has no notes of its own (a pad's note is whatever its kit plays), so its Phrase row says **no tune**; a phrase counts its bars in quarter notes, so notes in 6/8 make none, and the sheet says so. Going to another page or track closes the sheet as Back does.
+A clip of pad hits has no notes of its own (a pad's note is whatever its kit plays), so its Phrase row says **no tune**; a MIDI file with no notes says so on the line under the screen; a phrase counts its bars in quarter notes, so notes in 6/8 make none, and the sheet says so. Going to another page or track closes the sheet as Back does. **Make a phrase** is in the full browser (**BROWSE**) only: the Pads tab's browser has no room for the sheet.
 
 #### Changing phrase while one plays
 

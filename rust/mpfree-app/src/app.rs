@@ -3976,6 +3976,12 @@ impl App {
             // SHIFT + the wheel's push: the outlined value back to its
             // default (the button combos of 19 Nov).
             fx.push(Effect::Reset);
+        } else if Some(note) == self.map.data_push
+            && self.sheet.is_some()
+            && matches!(self.view, View::Arrange | View::Browser)
+        {
+            // The Make a phrase sheet: the push does nothing (Keep is a
+            // tap), so it never loads or picks what is under the sheet.
         } else if Some(note) == self.map.data_push && self.browsing() {
             fx.push(Effect::Browse(BrowseKey::Push));
         } else if Some(note) == self.map.data_push && self.view == View::SystemStatus {
@@ -4016,6 +4022,9 @@ impl App {
                 fx.extend(self.arp_mode_step(d));
             } else if self.view == View::Synth && shift {
                 fx.push(Effect::SynthPage(d));
+            } else if self.sheet.is_some() && matches!(self.view, View::Arrange | View::Browser) {
+                // The Make a phrase sheet: the wheel's row.
+                fx.extend(self.sheet_action(mpfree_arp_ui::make_sheet::SheetAction::Change(d)));
             } else if self.browsing() {
                 fx.push(Effect::Browse(if d > 0 {
                     BrowseKey::Enter
@@ -4493,6 +4502,10 @@ impl App {
             View::Touch => vec![Effect::TouchWheel(delta)],
             // NOTE REPEAT held or the Arp panel: the rate, order or pattern.
             _ if self.repeat_held || self.view == View::Arp => self.arp_wheel(delta),
+            // The Make a phrase sheet, on Arrange or in the browser: its row.
+            View::Arrange | View::Browser if self.sheet.is_some() && !self.shift => {
+                self.sheet_action(mpfree_arp_ui::make_sheet::SheetAction::Wheel(delta))
+            }
             // The 16 Levels panel: what the levels change.
             View::Play if self.levels_open => vec![Effect::LevelsWheel(delta)],
             // SHIFT + wheel keeps each page's second job: scroll Arrange,

@@ -1047,12 +1047,11 @@ pub fn follow_lines(st: &ArpState) -> [String; 2] {
 
 /// What the owner's shelf says under its rows. (The boards' line names
 /// the three ways to make a phrase: a clip's card, a MIDI file in the
-/// browser, a pattern that plays one note. It says only what is built,
-/// and takes the boards' words as each way lands.)
+/// browser, a pattern that plays one note; all three are built.)
 pub const OWN_NOTE: &str = "Phrases of your own are kept here. They play from any note, \
                             like MPFree's own. New idea, More like this, a clip card's \
-                            Phrase row and the Pattern tab's Keep as a phrase keep theirs \
-                            here; making one from a MIDI file comes next.";
+                            Phrase row, a MIDI file's Make a phrase in BROWSE and the \
+                            Pattern tab's Keep as a phrase keep theirs here.";
 
 // ---------------------------------------------------------------- models
 

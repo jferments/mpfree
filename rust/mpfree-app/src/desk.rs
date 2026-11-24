@@ -430,6 +430,7 @@ impl Desk<'_> {
                 transpose,
             } => fx.extend(app.levels_shown(on, open, transpose)),
             gui::FromUi::AddPartSound(s) => fx.extend(app.add_part_sound(s)),
+            gui::FromUi::MakePhrase(from) => fx.extend(app.open_sheet(*from)),
             gui::FromUi::Time(a) => {
                 use crate::rec_arm::Press;
                 use mpfree_time_ui::TimeAction::Transport;
