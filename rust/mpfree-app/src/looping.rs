@@ -1689,16 +1689,24 @@ enum Saving {
     Sizing {
         /// Each loop's (version, layers, frames) when the save began.
         at: [(u64, usize, usize); MAX_LOOPS],
+        /// A snapshot (phase 4c.4, recordings on): each layer's number,
+        /// by loop and play order, read by it whatever the loop does.
+        snap: Option<Borns>,
     },
     /// Reading layer `k` of `saved.loops[i]` from `frame`.
     Reading {
         saved: Saved,
         at: [(u64, usize, usize); MAX_LOOPS],
+        snap: Option<Borns>,
         i: usize,
         k: usize,
         frame: usize,
     },
 }
+
+/// Each loop's layers' numbers ([`LayerInfo::born`]), by loop and play
+/// order, as a snapshot save took them (phase 4c.4).
+type Borns = [[u64; MAX_LAYERS]; MAX_LOOPS];
 
 /// Frames of the loops' layers a save reads for each frame that plays.
 pub const SAVE_SPEED: usize = 64;
@@ -1706,7 +1714,18 @@ pub const SAVE_SPEED: usize = 64;
 /// Frames a save reads of layer `k` of `f`: the loop's length as it
 /// plays, or as the looper holds it, its audio's size (phase 4c.2).
 fn layer_frames(f: &LoopFile, k: usize) -> usize {
-    f.layers[k].raw.as_ref().map_or(f.frames, |r| r.size)
+    match copied(f, k) {
+        true => 0,
+        false => f.layers[k].raw.as_ref().map_or(f.frames, |r| r.size),
+    }
+}
+
+/// Layer `k` of `f` is in its recording's synced file, which a snapshot
+/// save named (phase 4c.4): the project copies the file, and nothing of
+/// it is read or held for the save.
+pub fn copied(f: &LoopFile, k: usize) -> bool {
+    let y = &f.layers[k];
+    !y.file.is_empty() && y.raw.as_ref().is_some_and(|r| r.rec != 0)
 }
 
 /// What the worker is asked: a buffer for a bounce, a print, room for a
@@ -1895,8 +1914,11 @@ impl Printer {
                         ToPrinter::Size(mut saved) => {
                             for (_, f) in &mut saved.loops {
                                 for k in 0..f.layers.len() {
+                                    // A copied layer's file holds it (4c.4).
                                     let size = layer_frames(f, k);
-                                    f.layers[k].audio = vec![0.0; 2 * size];
+                                    if size > 0 {
+                                        f.layers[k].audio = vec![0.0; 2 * size];
+                                    }
                                 }
                             }
                             FromPrinter::Sized(saved)
@@ -2412,11 +2434,18 @@ impl LoopHost {
         };
         self.saving = match state {
             Saving::Waiting => {
-                // Every loop empty (or armed) or still enough to read.
+                // Every loop empty (or armed) or still enough to read; with
+                // recordings on, every layer closed too (a first pass's
+                // tail in), so a snapshot can read each by its number.
+                let snap = self.recordings;
                 let ready = (0..MAX_LOOPS).all(|n| {
                     let s = self.looper.loop_status(n).expect("a loop");
                     matches!(s.phase, Phase::Empty | Phase::Armed) && s.loading.is_none()
                         || self.looper.read_layer(n, 0, 0, &mut []).is_some()
+                            && (!snap
+                                || (0..MAX_LAYERS)
+                                    .map_while(|k| self.looper.loop_layer_info(n, k))
+                                    .all(|y| y.closed))
                 });
                 if ready {
                     let saved = Saved {
@@ -2430,12 +2459,20 @@ impl LoopHost {
                                 };
                                 // Its lasting id, if it has one (phase 4b).
                                 f.id = self.on_tracks.id(n).map_or(0, |i| i.0);
-                                // Each layer's recording (4c.2).
+                                // Each layer's recording (4c.2); one whose
+                                // file is synced is copied from it (4c.4).
                                 for (k, y) in f.layers.iter_mut().enumerate() {
                                     if let (Some(r), Some(info)) =
                                         (y.raw.as_mut(), self.looper.loop_layer_info(n, k))
                                     {
                                         r.rec = self.layer_recs.of(n, &info);
+                                        if snap
+                                            && r.rec != 0
+                                            && self.layer_recs.file(n, &info)
+                                                == crate::loops_on_tracks::FileState::Synced
+                                        {
+                                            y.file = format!("loop_{:032x}.wav", r.rec);
+                                        }
                                     }
                                 }
                                 Some((n, f))
@@ -2446,30 +2483,51 @@ impl LoopHost {
                             .free_clock()
                             .map(|c| mpfree_looper::save::ClockFile::of(&c)),
                     };
+                    // The snapshot: each layer by its number.
+                    let borns = snap.then(|| {
+                        let mut b = [[0; MAX_LAYERS]; MAX_LOOPS];
+                        for (n, row) in b.iter_mut().enumerate() {
+                            for (k, x) in row.iter_mut().enumerate() {
+                                match self.looper.loop_layer_info(n, k) {
+                                    Some(y) => *x = y.born,
+                                    None => break,
+                                }
+                            }
+                        }
+                        b
+                    });
                     self.printer.send(ToPrinter::Size(saved));
-                    Some(Saving::Sizing { at: self.shapes() })
+                    Some(Saving::Sizing {
+                        at: self.shapes(),
+                        snap: borns,
+                    })
                 } else {
                     Some(Saving::Waiting)
                 }
             }
-            Saving::Sizing { at } => match self.printer.sized.take() {
+            Saving::Sizing { at, snap } => match self.printer.sized.take() {
                 Some(saved) => Some(Saving::Reading {
                     saved,
                     at,
+                    snap,
                     i: 0,
                     k: 0,
                     frame: 0,
                 }),
-                None => Some(Saving::Sizing { at }),
+                None => Some(Saving::Sizing { at, snap }),
             },
             Saving::Reading {
                 mut saved,
                 at,
+                snap,
                 mut i,
                 mut k,
                 mut frame,
             } => {
-                if self.shapes() != at {
+                // A snapshot reads closed layers by their numbers, which
+                // never change, so the loops may go on; without one, a
+                // loop that changes starts the save again.
+                if snap.is_none() && self.shapes() != at {
                     // A loop changed: start again.
                     self.save_restarts += 1;
                     self.printer.send(ToPrinter::DropSaved(saved));
@@ -2483,11 +2541,22 @@ impl LoopHost {
                     let take = budget.min(size - frame);
                     let raw = f.layers[k].raw.is_some();
                     let out = &mut f.layers[k].audio[2 * frame..2 * (frame + take)];
-                    // As written (4c.2) or as it plays.
-                    let read = match raw {
-                        true => self.looper.raw_layer(*n, k, frame, out),
-                        false => self.looper.read_layer(*n, k, frame, out),
+                    // By its number (a snapshot, 4c.4), as written (4c.2)
+                    // or as it plays.
+                    let read = match (snap.as_ref(), raw) {
+                        _ if take == 0 => Some(0),
+                        (Some(b), _) => self.looper.raw_of(*n, b[*n][k], frame, out).map(|_| 0),
+                        (None, true) => self.looper.raw_layer(*n, k, frame, out),
+                        (None, false) => self.looper.read_layer(*n, k, frame, out),
                     };
+                    if read.is_none() && snap.is_some() {
+                        // The layer went from memory before it was read
+                        // (cleared, undone): start again.
+                        self.save_restarts += 1;
+                        self.printer.send(ToPrinter::DropSaved(saved));
+                        self.saving = Some(Saving::Waiting);
+                        return;
+                    }
                     if read.is_none() {
                         // Busy for now (a merge or a fit starting): wait.
                         break;
@@ -2510,6 +2579,7 @@ impl LoopHost {
                     Some(Saving::Reading {
                         saved,
                         at,
+                        snap,
                         i,
                         k,
                         frame,
@@ -7494,7 +7564,8 @@ mod tests {
         assert_eq!(next, 2, "a recording a layer, once");
         h.save();
         let saved = saved_from(&mut h, &mut t, &mut b);
-        let (text, files) = crate::project::loops_part(saved);
+        let (text, files, copies) = crate::project::loops_part(saved);
+        assert!(copies.is_empty(), "no file is written here");
         assert!(text.starts_with("mpfree-looper 2\n"), "{text}");
         let names: Vec<String> = files.iter().map(|(n, _)| n.clone()).collect();
         assert_eq!(
@@ -7543,12 +7614,11 @@ mod tests {
         h2.give_layer_recs(|| panic!("a layer opened with its recording got another"));
         h2.save();
         let again = saved_from(&mut h2, &mut t2, &mut b2);
-        let (text2, files2) = crate::project::loops_part(again);
-        let names2: Vec<String> = files2.iter().map(|(n, _)| n.clone()).collect();
-        assert_eq!(names2, names);
-        for ((_, x), (_, y)) in files.iter().zip(&files2) {
-            assert!(x == y, "the same audio");
-        }
+        // Opened from the project, their files are there: a save copies
+        // them (4c.4), reading none of their audio.
+        let (text2, files2, copies2) = crate::project::loops_part(again);
+        assert!(files2.is_empty());
+        assert_eq!(copies2, names);
         assert_eq!(
             from_text(&text2).unwrap().loops,
             from_text(&text).unwrap().loops
@@ -7556,8 +7626,46 @@ mod tests {
         // With recordings off, a save is as before: each layer as it plays.
         h2.set_recordings(false);
         h2.save();
-        let (text3, _) = crate::project::loops_part(saved_from(&mut h2, &mut t2, &mut b2));
+        let (text3, _, _) = crate::project::loops_part(saved_from(&mut h2, &mut t2, &mut b2));
         assert!(text3.starts_with("mpfree-looper 1\n"), "{text3}");
+    }
+
+    /// Phase 4c.4: with recordings on, a save is a snapshot. The loops
+    /// are kept as they were when it began, each layer read by its
+    /// number, while the loop goes on: a level turned and an overdub
+    /// started during the save start nothing again, and it gives the same
+    /// text and audio as a save with nothing changing.
+    #[test]
+    fn a_snapshot_save_keeps_the_loops_as_they_were_while_they_change() {
+        let (mut h, mut t, mut b) = saving_host();
+        h.set_recordings(true);
+        let mut next = 0u128;
+        h.give_layer_recs(|| {
+            next += 1;
+            0xfeed_0000 + next
+        });
+        h.save();
+        let (text, files, copies) = crate::project::loops_part(saved_from(&mut h, &mut t, &mut b));
+        assert!(copies.is_empty(), "no file is written here");
+        let restarts = h.save_restarts;
+        h.save();
+        // Into the reading, then the loop changes.
+        let start = std::time::Instant::now();
+        while !h.saving().is_some_and(|p| p > 0.0) {
+            run_host(&mut h, &mut t, &mut b, 1);
+            std::thread::sleep(std::time::Duration::from_micros(100));
+            assert!(start.elapsed().as_secs() < 60, "the save never read");
+        }
+        let before = h.looper.loop_status(0).unwrap().version;
+        let id = h.looper.layer_info(1).unwrap().id;
+        h.looper.layer_command(id, LayerCommand::Level(0.75));
+        h.command(Command::Overdub);
+        let moved = saved_from(&mut h, &mut t, &mut b);
+        assert_ne!(h.looper.loop_status(0).unwrap().version, before);
+        assert_eq!(h.save_restarts, restarts, "nothing started again");
+        let (text2, files2, _) = crate::project::loops_part(moved);
+        assert_eq!(text2, text);
+        assert!(files2 == files, "the same audio");
     }
 
     /// Where a test's layers' files go (phase 4c.3): written at once, a
@@ -7661,13 +7769,19 @@ mod tests {
         let periods = write(&mut h, &mut files, &mut t, &mut b);
         assert!(periods > 10, "{periods}");
         assert_eq!(files.done.len(), 2);
-        // The same audio a save keeps of each.
+        // A save copies both files (4c.4): none of their audio is read.
         h.save();
-        let (_, kept) = crate::project::loops_part(saved_from(&mut h, &mut t, &mut b));
-        for (name, audio) in &kept {
-            let rec = u128::from_str_radix(&name[5..37], 16).unwrap();
-            assert!(files.done[&rec] == *audio, "{name}");
-        }
+        let (_, kept, copies) = crate::project::loops_part(saved_from(&mut h, &mut t, &mut b));
+        assert!(kept.is_empty());
+        let mut written: Vec<String> = files
+            .done
+            .keys()
+            .map(|rec| format!("loop_{rec:032x}.wav"))
+            .collect();
+        written.sort();
+        let mut copies = copies;
+        copies.sort();
+        assert_eq!(copies, written);
         // Periods with a tone on the pads, for an overdub to keep.
         let play = |h: &mut LoopHost, t: &mut Transport, b: &mut Block, periods: usize| {
             for k in 0..periods {
