@@ -481,6 +481,8 @@ spaceship arp-pattern 8 # the master bar's scale (as arp-panel), the faded Origi
 spaceship arp-pattern-mine 7 # the master bar's scale (as arp-panel), the faded Original and Keep as a phrase (its pattern plays more than one note) and a rest in the step strip; none of the pattern list's
 spaceship arp-pattern-rolls 6 # the master bar's scale (as arp-panel), the faded Original and a rest in the step strip; none of the pattern list's
 spaceship arp-phrase 5 # the same runs as arp-panel (the master bar's scale), none of the Phrase tab's
+spaceship arp-phrase-answer 7 # new screen (composing tools, S5 board B): the same runs as arp-panel (the master bar's scale) and the free Q4 card's faint Q4 and free, as sequencer-notes-tool; none of the Answer panel's
+spaceship arp-phrase-evolve 5 # new screen (composing tools, S5 While I hold): the same runs as arp-panel (the master bar's scale), none of the Plays row's
 spaceship arp-phrase-kit 5 # the same runs as arp-panel (the master bar's scale), none of the Phrase tab's
 spaceship arp-phrase-more-like 5 # the same runs as arp-panel (the master bar's scale), none of the More like this panel's
 spaceship arp-phrase-new-idea 5 # the same runs as arp-panel (the master bar's scale), none of the New idea panel's
