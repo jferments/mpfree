@@ -31,8 +31,10 @@ use mpfree_capture::{keep, moves_for_clip, Capture, KeepError, Kept, Now, Pendin
 use mpfree_notefx::{Chain, TrackFx, MAX_FX};
 use mpfree_perform::{Perform, SceneMorph, SongRecorder, When};
 use mpfree_play::Replaced;
-use mpfree_time_ui::continuing::{ContinueAction, ContinueAsk};
+use mpfree_time_ui::adding::{AddAction, ChordsAction};
+use mpfree_time_ui::continuing::{ContinueAction, ContinueAsk, Parts};
 
+use super::adding::{fitted_clips, unfit, Adding, Hearing};
 use super::compose::{more_bars, Composing, LineWait};
 use mpfree_play::{
     ClipDrop, Cue, Decisions, Includes, Launch, MuteCue, MuteLanded, PlayView, SceneTempo,
@@ -55,7 +57,8 @@ use mpfree_seq::{
     Clip, ClipId, ClipRegion, Holds, LaunchGrid, Lock, LoopId, ModelError, Project, RecId,
     TouchPoint, Track, TrackId, TrackKind, LOOPS, MAX_TRACKS, ROWS,
 };
-use mpfree_time_ui::editor::{Done, EditAction, Editor, ScaleOffers};
+use mpfree_time_ui::editor::compose::Compose;
+use mpfree_time_ui::editor::{Done, EditAction, Editor, ScaleOffers, ToolKind, CONTINUE_ROW};
 use mpfree_time_ui::list::ListRow;
 use mpfree_time_ui::view::pad_name;
 use mpfree_time_ui::view::{
@@ -655,6 +658,22 @@ pub struct TimeControl {
     /// Continue (composing tools): a clip carried on, heard in place of
     /// the clip until Keep or Back ([`super::compose`]).
     compose: Box<Composing>,
+    /// What each track plays, as the screen last said, for the note
+    /// editor's Continue (`ContinueAction::Parts`).
+    compose_parts: Arc<Parts>,
+    /// The note editor's Continue tool asked for what is under way: Back
+    /// goes once the tool no longer shows that clip.
+    compose_from_editor: bool,
+    /// Add a part (composing tools S2.6): a part for a row's empty cell,
+    /// heard there until Keep or Back ([`super::adding`]).
+    add: Box<Adding>,
+    /// The rows whose chords changed since their kept clips fitted them,
+    /// each with its chords as they were: what marks a clip off the new
+    /// chords and what Fit moves it from. Kept while the project is open,
+    /// not saved with it.
+    fitted: Vec<(usize, mpfree_context::chord::ChordTimeline)>,
+    /// The kept clips off their row's chords, as of the last compile.
+    unfit: Arc<[mpfree_time_ui::adding::Unfit]>,
     /// The audio's sample rate, for a period's length in ticks.
     rate: u32,
     /// The bar line a cue started on in the last poll, on each loop's
@@ -869,6 +888,11 @@ impl TimeControl {
             saved: Vec::new(),
             reloads: Vec::new(),
             compose: Box::new(Composing::new()),
+            compose_parts: Arc::default(),
+            compose_from_editor: false,
+            add: Box::new(Adding::new()),
+            fitted: Vec::new(),
+            unfit: Arc::from(Vec::new()),
             rate,
             loop_at: [None; LOOPS],
             loops_seen: [LoopNow::default(); LOOPS],
@@ -1577,6 +1601,8 @@ impl TimeControl {
         // Continue: the composer's answers, a recording that changed what
         // it listened to, and a result coming in or going on its line.
         compile |= self.continue_period(end.frames);
+        // Add a part: the same, for a try in its empty cell.
+        compile |= self.add_period(end.frames);
         // Song mode: the Loop tracks' blocks turn their loops on and off
         // on their own ticks, on the tracks with no clip launched.
         self.song_loops = [false; LOOPS];
@@ -1862,8 +1888,15 @@ impl TimeControl {
             self.compose.in_view = None;
             self.compose.line = None;
         }
+        // Add a part: a try whose row's clips, or cell, changed goes.
+        if self.add.active() && self.add.follow(&self.project) {
+            self.add.in_view = None;
+            self.add.line = None;
+        }
+        self.refresh_unfit();
+        self.hear_row();
         self.continue_anchor();
-        let mut v = self.view_with_continue()?;
+        let mut v = self.view_with_add()?;
         // Each new decision in it gets its revision and the frame the
         // music had reached when it was made: a cue whose line played
         // before the view came lands late, in phase (Arrange 2.5).
@@ -2215,6 +2248,7 @@ impl TimeControl {
         if silent
             || !InPlace::fits(edit, notes, locks)
             || self.compose.active()
+            || self.add.active()
             || self.unsent.is_some()
             || (self.armed != Some(track) && self.track_pick != Some(track))
             || matches!(self.info.state, State::Recording | State::CountIn)
@@ -3279,6 +3313,10 @@ impl TimeControl {
         let from = self.edit_rev;
         let open = matches!(a, EditAction::Open | EditAction::Switch { .. });
         let r = self.edit_touch(a);
+        // The editor opened on another clip: Continue goes back.
+        if self.continue_follows_editor() {
+            let _ = self.compile();
+        }
         // The revision moves on Open, and on an edit that went in.
         let took = r.is_ok() && !open && self.edit_rev != from;
         let outcome = match &r {
@@ -3388,6 +3426,13 @@ impl TimeControl {
                 said,
             });
             return Ok(line);
+        }
+        // Continue's tool (composing tools, phase 1 step 2): its asks go
+        // to the composer.
+        if let Some(c) = done.compose {
+            let (track, slot) = (ed.track, ed.slot);
+            self.editor = Some(ed);
+            return self.continue_from_editor(c, track, slot, &done.line);
         }
         if done.close {
             self.edit_seen = None;
@@ -4046,6 +4091,10 @@ impl TimeControl {
                     self.note_later(
                         "continue: REC brought the clip back; the new bars stay ready".into(),
                     );
+                }
+                if self.add.stop_for_rec() {
+                    self.compile()?;
+                    self.note_later("add a part: REC quietened the try; it stays ready".into());
                 }
                 let made = self.ready_to_record()?;
                 if !self.command(Command::Record) {
@@ -4718,6 +4767,8 @@ impl TimeControl {
                 Ok("convert to notes: cancelled, nothing changed".to_string())
             }
             TimeAction::Continue(c) => self.continue_action(c),
+            TimeAction::Add(a) => self.add_action(a),
+            TimeAction::Chords(c) => self.chords_action(c),
             TimeAction::DeleteClip { track, slot } => {
                 // A clip the song plays goes to the song's own clips, so
                 // the song plays on (Arrange 1.3), but for the parts that
@@ -7455,6 +7506,7 @@ impl TimeControl {
             Replaced::Settings => "settings",
             Replaced::Convert => "convert to notes",
             Replaced::Continue { .. } => "continue",
+            Replaced::FitChords => "fit to the new chords",
         };
         self.takes
             .replace_clip(&mut self.project, track, slot, clip, why)
@@ -7478,6 +7530,8 @@ impl TimeControl {
                     settings,
                     kind,
                     lanes,
+                    scope,
+                    locked,
                 } = *ask;
                 use mpfree_compose::{InstrumentKind, Refused};
                 use mpfree_context::{PartRole, ReadBudget};
@@ -7525,9 +7579,15 @@ impl TimeControl {
                     self.compile()?;
                 }
                 let playing = self.compose.in_view.is_some();
-                self.compose.ask(&self.project, ask)?;
+                self.compose.ask(&self.project, ask, &scope, &locked)?;
                 self.changed = true;
                 let more = more_bars(settings.bars.max(1), &name);
+                if let Some(again) = scope.again() {
+                    return Ok(format!(
+                        "continue: trying {} (the rest stays as it is)",
+                        again.words()
+                    ));
+                }
                 Ok(if playing {
                     format!(
                         "continue: trying {more} again, {} (the last plays on until it's ready)",
@@ -7551,6 +7611,11 @@ impl TimeControl {
                 Ok(self.continue_when("continue: the result shown"))
             }
             ContinueAction::Keep => self.continue_keep(recording),
+            ContinueAction::Parts(p) => {
+                self.compose_parts = p;
+                Ok(String::new())
+            }
+            ContinueAction::Open { track, slot } => self.continue_open(track, slot),
             ContinueAction::Back => {
                 if !self.compose.back() {
                     return Err("continue: Keep is under way".into());
@@ -7562,6 +7627,159 @@ impl TimeControl {
                 Ok(self.continue_when("continue: back to the clip as it was"))
             }
         }
+    }
+
+    /// The clip card's Continue (composing tools, phase 1 step 4): the
+    /// note editor on clip `slot` of `track` (its track selected and the
+    /// clip the Sequencer edits), then Continue opened there, which asks
+    /// at once. Refused while another tool is open; the editor already on
+    /// the clip stays as it is, Continue opening in it.
+    fn continue_open(&mut self, track: usize, slot: usize) -> Result<String, String> {
+        let c = self.project.clip(track, slot).ok_or_else(|| {
+            format!(
+                "continue: slot {} of track {} is empty",
+                slot + 1,
+                track + 1
+            )
+        })?;
+        if c.looped.is_some() {
+            return Err("continue: a loop's cell has no notes to carry on".into());
+        }
+        if c.holds != Holds::Notes {
+            return Err(format!(
+                "continue: {}",
+                mpfree_compose::Refused::PadHits.words()
+            ));
+        }
+        if c.notes.iter().all(|n| !n.on) {
+            return Err("continue: play or draw some notes to carry on first".into());
+        }
+        if let Some(ed) = &self.editor {
+            if let Some(tool) = ed.open_tool {
+                if tool.kind == ToolKind::Continue && (ed.track, ed.slot) == (track, slot) {
+                    return Ok("continue: open already, in the note editor".into());
+                }
+                return Err(format!(
+                    "continue: Done or Cancel {} in the note editor first",
+                    tool.kind.name()
+                ));
+            }
+        }
+        let on_it = self
+            .editor
+            .as_ref()
+            .is_some_and(|e| (e.track, e.slot) == (track, slot));
+        if !on_it {
+            if self.selected() != Some(track) {
+                let was = self.track_pick;
+                self.set_pick(track);
+                if self.track_pick != was {
+                    self.compile()?;
+                }
+                self.steps_changed = true;
+            }
+            self.edit_clip(Some(slot))
+                .map_err(|e| e.replacen("edit:", "continue:", 1))?;
+            self.edit(EditAction::Open)
+                .map_err(|e| e.replacen("edit:", "continue:", 1))?;
+        }
+        self.edit(EditAction::Row {
+            row: CONTINUE_ROW,
+            delta: 1,
+        })
+    }
+
+    /// A touch on the note editor's Continue tool (composing tools, phase
+    /// 1 step 2) on clip `slot` of `track`: an ask, completed with what
+    /// the track plays (the screen's [`Parts`], else read from the clip),
+    /// Keep or Back. The tool closes once Keep or Back is done, or when an
+    /// ask is refused with nothing under way; `said` is the editor's own
+    /// line (a setting changed), put first.
+    fn continue_from_editor(
+        &mut self,
+        c: Compose,
+        track: usize,
+        slot: usize,
+        said: &str,
+    ) -> Result<String, String> {
+        let r = match &c {
+            Compose::Ask(asking) => {
+                let ask = ContinueAsk {
+                    track,
+                    slot,
+                    settings: asking.settings,
+                    kind: self.part_kind(track, slot),
+                    lanes: self.compose_parts.lanes.clone(),
+                    scope: asking.scope.clone(),
+                    locked: asking.locked.clone(),
+                };
+                self.compose_from_editor = true;
+                self.continue_action(ContinueAction::Ask(Box::new(ask)))
+            }
+            Compose::Keep => self.continue_action(ContinueAction::Keep),
+            Compose::Back if !self.compose.active() => Ok("continue: closed".into()),
+            Compose::Back => self.continue_action(ContinueAction::Back),
+        };
+        let close = match &c {
+            Compose::Ask(_) => r.is_err() && !self.compose.active(),
+            Compose::Keep | Compose::Back => r.is_ok(),
+        };
+        if close {
+            self.compose_from_editor = false;
+            if let Some(ed) = self.editor.as_mut() {
+                ed.open_tool = None;
+            }
+        }
+        if matches!(c, Compose::Keep) && r.is_ok() {
+            self.edit_follow();
+        }
+        self.changed = true;
+        match said {
+            "" => r,
+            said => r.map(|_| format!("{said}: the next try is on its way")),
+        }
+    }
+
+    /// The kind of instrument clip `slot` of `track` is carried on for:
+    /// the screen's word for the track, else read from the clip's notes.
+    pub(super) fn part_kind(&self, track: usize, slot: usize) -> mpfree_compose::InstrumentKind {
+        match self.compose_parts.kinds.get(track) {
+            Some(Some(k)) => *k,
+            _ => self
+                .project
+                .clip(track, slot)
+                .map_or(mpfree_compose::InstrumentKind::OneNote, |c| {
+                    mpfree_compose::profile::kind_of_notes(&c.notes)
+                }),
+        }
+    }
+
+    /// While the note editor's Continue asked for what is under way: Back
+    /// once the editor no longer has Continue open on its clip (it closed,
+    /// or opened another clip). True if the view is to be compiled.
+    fn continue_follows_editor(&mut self) -> bool {
+        if !self.compose_from_editor {
+            return false;
+        }
+        if !self.compose.active() {
+            self.compose_from_editor = false;
+            return false;
+        }
+        let on = self
+            .editor
+            .as_ref()
+            .filter(|e| e.continuing_open())
+            .map(|e| (e.track, e.slot));
+        if on.is_some() && on == self.compose.changing() {
+            return false;
+        }
+        self.compose_from_editor = false;
+        if !self.compose.back() {
+            return false;
+        }
+        self.changed = true;
+        self.note_later("continue: the editor moved on, so the clip is back as it was".into());
+        self.continue_due(self.block.frames)
     }
 
     /// `what`, and when the music changes for it: on a bar line, or at
@@ -7622,12 +7840,18 @@ impl TimeControl {
     /// The rest of clip `slot`'s row, for the reading: the clip in the
     /// same row on every other heard track of notes, drums read as drums.
     fn row_others(&self, track: usize, slot: usize) -> Vec<mpfree_compose::ToRead> {
+        self.row_parts(slot, Some(track))
+    }
+
+    /// Row `slot`'s clips for the reading, but `but`'s: the clip in the
+    /// row on every heard track of notes, drums read as drums.
+    fn row_parts(&self, slot: usize, but: Option<usize>) -> Vec<mpfree_compose::ToRead> {
         use mpfree_context::PartRole;
         let p = &self.project;
         p.tracks
             .iter()
             .enumerate()
-            .filter(|&(t, tr)| t != track && tr.kind == TrackKind::Notes && !p.silent(t))
+            .filter(|&(t, tr)| Some(t) != but && tr.kind == TrackKind::Notes && !p.silent(t))
             .filter_map(|(t, tr)| {
                 let c = tr.slots.get(slot)?.as_ref()?;
                 if c.looped.is_some() || c.notes.is_empty() {
@@ -7665,9 +7889,10 @@ impl TimeControl {
     /// its line. True if the view is to be compiled.
     fn continue_period(&mut self, frames: u32) -> bool {
         if !self.compose.active() {
+            self.compose_from_editor = false;
             return false;
         }
-        let mut compile = false;
+        let mut compile = self.continue_follows_editor();
         if self.recorded_now && self.compose.follow(&self.project) {
             self.changed = true;
             if self.compose.in_view.take().is_some() {
@@ -7788,6 +8013,516 @@ impl TimeControl {
             *slot = real;
         }
         v
+    }
+
+    /// Add a part (composing tools S2.6): a touch on its panel.
+    fn add_action(&mut self, a: AddAction) -> Result<String, String> {
+        let recording = matches!(self.info.state, State::Recording | State::CountIn);
+        match a {
+            AddAction::Ask(ask) => {
+                if recording {
+                    return Err("add a part: not while recording".into());
+                }
+                if self.song_rec.armed() {
+                    return Err(
+                        "add a part: Rec song is on, and a try would be recorded into the song: turn it off first"
+                            .into(),
+                    );
+                }
+                let (track, row) = (ask.track, ask.row);
+                // New track (S2.6b): the part is for the track Keep adds,
+                // at the end; it swings as the transport does.
+                let swing = if ask.new_track.is_some() {
+                    if track != self.project.tracks.len() {
+                        return Err("add a part: a track was added: ask again".into());
+                    }
+                    if self.project.tracks.len() >= MAX_TRACKS {
+                        return Err(format!(
+                            "add a part: {MAX_TRACKS} tracks is the most a project holds"
+                        ));
+                    }
+                    self.info.swing
+                } else {
+                    let tr =
+                        self.project.tracks.get(track).ok_or_else(|| {
+                            format!("add a part: there is no track {}", track + 1)
+                        })?;
+                    if tr.kind != TrackKind::Notes {
+                        return Err("add a part: only a track of notes takes a part".into());
+                    }
+                    tr.swing.unwrap_or(self.info.swing)
+                };
+                let hearing = Hearing {
+                    parts: self.row_others(track, row),
+                    swing,
+                    transport_swing: self.info.swing,
+                    meter: self.info.meter,
+                    bpm: self.info.bpm,
+                };
+                let what = format!(
+                    "{} on {}",
+                    format!("{:?}", ask.part).to_lowercase(),
+                    ask.relation.words()
+                );
+                let playing = self.add.in_view.is_some();
+                self.add.ask(&self.project, *ask, hearing)?;
+                self.changed = true;
+                Ok(if playing {
+                    format!(
+                        "add a part: trying {what} for row {} (the last try plays on until it's ready)",
+                        row + 1
+                    )
+                } else {
+                    format!("add a part: {what} for row {}", row + 1)
+                })
+            }
+            AddAction::Step { back } => {
+                if !self.add.step(back) {
+                    return Err(format!(
+                        "add a part: no {} try",
+                        if back { "earlier" } else { "later" }
+                    ));
+                }
+                self.changed = true;
+                if self.add_due(self.block.frames) {
+                    self.compile()?;
+                }
+                Ok(self.add_when("add a part: the try shown"))
+            }
+            AddAction::Line(line) => {
+                if self.add.target().is_none() {
+                    return Err("add a part: nothing is open".into());
+                }
+                self.add.pick_line(line);
+                self.changed = true;
+                if self.add.in_view.is_some() {
+                    self.compile()?;
+                }
+                Ok("add a part: the try plays the picked chords (Keep keeps them)".into())
+            }
+            AddAction::Keep => self.add_keep(recording),
+            AddAction::Back => {
+                self.add.back();
+                self.changed = true;
+                if self.add_due(self.block.frames) {
+                    self.compile()?;
+                }
+                Ok(self.add_when("add a part: back to the row as it was"))
+            }
+        }
+    }
+
+    /// When an Add a part change is heard, for its words.
+    fn add_when(&self, what: &str) -> String {
+        match self.add.line {
+            Some(l) => format!("{what}, heard from {}", bar_beat(l.line, self.info.meter)),
+            None => what.to_string(),
+        }
+    }
+
+    /// Keep: the shown try written in its cell, with the panel's chords
+    /// on the row, as one take; the track's launch moves to it where the
+    /// try played, so nothing is heard to change. A refusal writes nothing.
+    fn add_keep(&mut self, recording: bool) -> Result<String, String> {
+        if recording {
+            return Err("add a part: not while recording".into());
+        }
+        let super::adding::Keeping {
+            track,
+            row,
+            clip,
+            new_track,
+            line,
+            heard,
+        } = self.add.keep(&self.project)?;
+        let name = clip.name.clone();
+        // What the row's other clips are measured against from now on:
+        // its chords, or as it was heard when it had none of its own.
+        let before = self
+            .project
+            .scene(row)
+            .map(|s| s.chords.clone())
+            .filter(|l| !l.is_empty())
+            .unwrap_or(heard);
+        let launch = self
+            .launches
+            .iter()
+            .find(|l| l.slot == row && l.track != track)
+            .copied();
+        let changes_chords = line.is_some();
+        let r = match &new_track {
+            // New track: the track and the part, one take. Keep's check
+            // made sure it gets the index the try played on.
+            Some(name) => self
+                .takes
+                .add_part_on_new_track(
+                    &mut self.project,
+                    mpfree_seq::Track::new(name, 0),
+                    row,
+                    clip,
+                    line,
+                )
+                .map(|(n, index)| {
+                    debug_assert_eq!(index, track, "New track's index");
+                    n
+                }),
+            None => self
+                .takes
+                .add_part(&mut self.project, track, row, clip, line),
+        };
+        self.add.kept(&r);
+        self.changed = true;
+        if let Err(e) = r {
+            return Err(format!("add a part: {name}: {e:?}, nothing written"));
+        }
+        if changes_chords {
+            self.note_fitted(row, before);
+        }
+        // The kept clip plays on where the try played.
+        if let (Some(l), Some(c)) = (launch, self.project.clip(track, row)) {
+            if self
+                .add
+                .in_view
+                .as_ref()
+                .is_some_and(|v| (v.track, v.row) == (track, row))
+            {
+                let origin = mpfree_play::anchored(l.start, c.length, c.speed);
+                self.launches.retain(|x| x.track != track);
+                self.launches.push(mpfree_play::Launch {
+                    track,
+                    slot: row,
+                    origin,
+                    start: l.start,
+                });
+            }
+        }
+        self.add.in_view = None;
+        self.add.line = None;
+        if let Err(e) = self.compile() {
+            self.takes.undo(&mut self.project);
+            self.takes.forget_undone();
+            let _ = self.compile();
+            return Err(e);
+        }
+        Ok(match new_track {
+            Some(t) => format!(
+                "add a part: {name} kept in row {} on a new track, {t} (UNDO takes both back)",
+                row + 1
+            ),
+            None => format!(
+                "add a part: {name} kept in row {} (UNDO takes it back)",
+                row + 1
+            ),
+        })
+    }
+
+    /// Whether row `row` plays now: a clip of it launched (on a track
+    /// other than `but`).
+    fn row_playing(&self, row: usize, but: usize) -> Option<mpfree_play::Launch> {
+        self.launches
+            .iter()
+            .find(|l| l.slot == row && l.track != but)
+            .copied()
+    }
+
+    /// Add a part, each period: the composer's answers, a recording that
+    /// changed what a try heard, and a change coming due on its line.
+    /// True if the view is to be compiled.
+    fn add_period(&mut self, frames: u32) -> bool {
+        if self.add.heard_answers() {
+            self.changed = true;
+        }
+        if !self.add.active() {
+            return false;
+        }
+        let mut compile = false;
+        if self.recorded_now && self.add.follow(&self.project) {
+            self.changed = true;
+            if self.add.in_view.take().is_some() {
+                compile = true;
+            }
+            self.add.line = None;
+        }
+        let mut log = Vec::new();
+        if self.add.answers(&self.project, &mut log) {
+            self.changed = true;
+        }
+        for line in log {
+            self.note_later(line);
+        }
+        compile | self.add_due(frames)
+    }
+
+    /// Bring the play view to what Add a part wants: a try in its cell,
+    /// another try, or the cell quiet. While the row plays and the
+    /// transport rolls, the change waits for the next bar line; a try
+    /// waits for the row to play; the cell goes quiet at once when the row
+    /// doesn't play. REC stops a try at once. True if the view is to be
+    /// compiled.
+    fn add_due(&mut self, frames: u32) -> bool {
+        let recording = matches!(self.info.state, State::Recording | State::CountIn);
+        if recording && self.add.stop_for_rec() {
+            self.changed = true;
+            return true;
+        }
+        let want = self.add.wanted(recording);
+        if want == self.add.in_view_id() {
+            if self.add.line.take().is_some() {
+                self.changed = true;
+            }
+            return false;
+        }
+        let Some((track, row)) = self.add.changing() else {
+            self.add.landed(None);
+            self.changed = true;
+            return true;
+        };
+        let playing = self.row_playing(row, track).is_some();
+        if want.is_some() && !playing {
+            // Heard once the row plays.
+            if self.add.in_view.is_none() {
+                return false;
+            }
+        } else if playing && self.info.state.rolling() {
+            let pos = self.info.position;
+            let bar = self.info.meter.bar_ticks().max(1);
+            let w = *self.add.line.get_or_insert(LineWait {
+                line: LaunchGrid::Bars(1).next(pos, bar),
+                asked: pos,
+            });
+            self.changed = true;
+            if !(w.line <= pos + self.period_ticks(frames) || pos < w.asked) {
+                return false;
+            }
+        }
+        self.add.landed(want);
+        self.changed = true;
+        true
+    }
+
+    /// The view of the project as it plays: [`Self::view_with_continue`],
+    /// with Add a part's try in its empty cell (or in a blank clip's
+    /// place) while one is in the view, launched where the row's clips
+    /// started so it lines up with them (in place of what its track
+    /// played). Without a clip of the row playing, the try isn't heard.
+    fn view_with_add(&mut self) -> Result<PlayView, String> {
+        let Some(v) = self.add.in_view.clone() else {
+            return self.view_with_continue();
+        };
+        let Some(l) = self.row_playing(v.row, v.track) else {
+            return self.view_with_continue();
+        };
+        if let Some(name) = &v.new_track {
+            return self.view_with_new_track(&v, name, l);
+        }
+        let empty = self
+            .project
+            .tracks
+            .get(v.track)
+            .and_then(|t| t.slots.get(v.row))
+            .is_some_and(|s| s.as_ref().is_none_or(Clip::is_blank));
+        if !empty {
+            return self.view_with_continue();
+        }
+        let launch = mpfree_play::Launch {
+            track: v.track,
+            slot: v.row,
+            origin: mpfree_play::anchored(l.start, v.clip.length, v.clip.speed),
+            start: l.start,
+        };
+        let was = self.project.tracks[v.track].slots[v.row].replace((*v.clip).clone());
+        let saved = self.launches.clone();
+        self.launches.retain(|x| x.track != v.track);
+        self.launches.push(launch);
+        let out = self.view_with_continue();
+        self.launches = saved;
+        self.project.tracks[v.track].slots[v.row] = was;
+        out
+    }
+
+    /// [`Self::view_with_add`] for a try on New track (S2.6b): the view
+    /// has the track Keep will add, at the end, with the try in its cell
+    /// and launched where the row's clip `row_launch` started; the project
+    /// gets it only at Keep. The track's notes go by its index to the
+    /// instruments, where the synth made for the part plays them (its
+    /// send set by the app). Nothing else of the track is set: the view
+    /// is the only place it is, and only while the try plays.
+    fn view_with_new_track(
+        &mut self,
+        v: &super::adding::AddInView,
+        name: &str,
+        row_launch: mpfree_play::Launch,
+    ) -> Result<PlayView, String> {
+        let n = self.project.tracks.len();
+        if v.track != n || n >= MAX_TRACKS || v.row >= mpfree_seq::ROWS {
+            return self.view_with_continue();
+        }
+        let mut t = mpfree_seq::Track::new(name, mpfree_play::lowest_free_dest(&self.project));
+        t.slots[v.row] = Some((*v.clip).clone());
+        self.project.tracks.push(t);
+        let saved = self.launches.clone();
+        self.launches.push(mpfree_play::Launch {
+            track: v.track,
+            slot: v.row,
+            origin: mpfree_play::anchored(row_launch.start, v.clip.length, v.clip.speed),
+            start: row_launch.start,
+        });
+        let out = self.view_with_continue();
+        self.launches = saved;
+        self.project.tracks.pop();
+        out
+    }
+
+    /// Row `row`'s chords changed from `before`: unless it has a change
+    /// its clips haven't fitted yet, its clips are measured against
+    /// `before` from now on.
+    fn note_fitted(&mut self, row: usize, before: mpfree_context::chord::ChordTimeline) {
+        if !self.fitted.iter().any(|(r, _)| *r == row) {
+            self.fitted.push((row, before));
+        }
+    }
+
+    /// The kept clips off their row's chords, measured again: a row whose
+    /// clips all fit again (Fit, UNDO, the chords put back) is let go.
+    fn refresh_unfit(&mut self) {
+        if self.fitted.is_empty() {
+            if !self.unfit.is_empty() {
+                self.unfit = Arc::from(Vec::new());
+            }
+            return;
+        }
+        let bar = self.info.meter.bar_ticks().max(1);
+        let scenes = self.project.scenes.len();
+        self.fitted.retain(|(r, _)| *r < scenes);
+        // (a row with no scene has no chords of its own: nothing to fit)
+        let found = unfit(&self.project, &self.fitted, bar, |t, s| {
+            self.part_kind(t, s)
+        });
+        self.fitted
+            .retain(|(r, _)| found.iter().any(|u| u.row == *r));
+        self.unfit = Arc::from(found);
+    }
+
+    /// The row's chords outside Add a part: Use (one take) or Fit to the
+    /// new chords (one take).
+    fn chords_action(&mut self, c: ChordsAction) -> Result<String, String> {
+        if let ChordsAction::Hear { row } = c {
+            match row {
+                Some(r) if r < mpfree_seq::SCENES => {
+                    if self.add.hearing != Some(r) {
+                        self.add.stop_hearing();
+                        self.add.hearing = Some(r);
+                    }
+                    self.hear_row();
+                }
+                Some(r) => return Err(format!("chords: there is no row {}", r + 1)),
+                None => self.add.stop_hearing(),
+            }
+            self.changed = true;
+            return Ok(String::new());
+        }
+        if matches!(self.info.state, State::Recording | State::CountIn) {
+            return Err("chords: not while recording".into());
+        }
+        match c {
+            ChordsAction::Set { row, line, shown } => {
+                if row >= mpfree_seq::SCENES {
+                    return Err(format!("chords: there is no row {}", row + 1));
+                }
+                let before = self
+                    .project
+                    .scene(row)
+                    .map(|s| s.chords.clone())
+                    .filter(|l| !l.is_empty())
+                    .unwrap_or(shown);
+                self.takes
+                    .set_row_chords(&mut self.project, row, line)
+                    .map_err(|e| format!("chords: {e:?}, nothing written"))?;
+                self.note_fitted(row, before);
+                self.changed = true;
+                self.compile()?;
+                let n = self
+                    .unfit
+                    .iter()
+                    .find(|u| u.row == row)
+                    .map_or(0, |u| u.clips.len());
+                Ok(match n {
+                    0 => format!(
+                        "chords: row {}'s chords set (UNDO takes them back)",
+                        row + 1
+                    ),
+                    1 => format!(
+                        "chords: row {}'s chords set; a clip doesn't fit them: Fit moves it",
+                        row + 1
+                    ),
+                    n => format!(
+                        "chords: row {}'s chords set; {n} clips don't fit them: Fit moves them",
+                        row + 1
+                    ),
+                })
+            }
+            ChordsAction::Fit { row, tracks } => {
+                let before = self
+                    .fitted
+                    .iter()
+                    .find(|(r, _)| *r == row)
+                    .map(|(_, b)| b.clone())
+                    .ok_or_else(|| format!("chords: row {}'s clips fit its chords", row + 1))?;
+                let bar = self.info.meter.bar_ticks().max(1);
+                let (clips, why) =
+                    fitted_clips(&self.project, row, &before, &tracks, bar, |t, s| {
+                        self.part_kind(t, s)
+                    });
+                if clips.is_empty() {
+                    return Err(match why.first() {
+                        Some(w) => format!("chords: nothing to fit: {w}"),
+                        None => "chords: nothing to fit".into(),
+                    });
+                }
+                let n = clips.len();
+                self.takes
+                    .replace_clips(&mut self.project, clips, Replaced::FitChords)
+                    .map_err(|e| format!("chords: {e:?}, nothing written"))?;
+                self.add.counts.fitted += n as u64;
+                self.changed = true;
+                self.compile()?;
+                let mut said = format!(
+                    "chords: {} fitted to row {}'s chords (UNDO takes it back)",
+                    if n == 1 {
+                        "a clip".to_string()
+                    } else {
+                        format!("{n} clips")
+                    },
+                    row + 1
+                );
+                for w in why {
+                    said.push_str(&format!("; {w}"));
+                }
+                Ok(said)
+            }
+            ChordsAction::Hear { .. } => unreachable!("answered above"),
+        }
+    }
+
+    /// Hear the row the screens show the chords of again, if its clips or
+    /// chords changed since it was last heard. A composer that can't start
+    /// or stopped is said on the status line and the hearing stops: the
+    /// screens show no heard chords until they ask again.
+    fn hear_row(&mut self) {
+        let Some(row) = self.add.hearing else {
+            return;
+        };
+        let hearing = Hearing {
+            parts: self.row_parts(row, None),
+            swing: self.info.swing,
+            transport_swing: self.info.swing,
+            meter: self.info.meter,
+            bpm: self.info.bpm,
+        };
+        if let Err(e) = self.add.hear(&self.project, row, hearing) {
+            self.add.stop_hearing();
+            self.note_later(e);
+        }
     }
 
     /// The reloads due: each whose line falls in the next period (of
@@ -8758,6 +9493,9 @@ impl TimeControl {
         st.track_pick = self.track_pick;
         st.clip_pick = self.clip_picked();
         st.continuing = self.compose.screen();
+        st.adding = self.add.screen();
+        st.unfit = self.unfit.clone();
+        st.row_chords = self.add.heard.clone();
         st.also = self.also();
         st.capture = self.pending.map(|p| bars_label(p.bars));
         st.clipboard = self.clipboard.as_ref().map(|c| c.name.clone());
@@ -8947,6 +9685,10 @@ impl TimeControl {
             c.touch_dropped + self.touch_lost
         );
         if let Some(c) = self.compose.counts.describe() {
+            line.push_str("; ");
+            line.push_str(&c);
+        }
+        if let Some(c) = self.add.counts.describe() {
             line.push_str("; ");
             line.push_str(&c);
         }

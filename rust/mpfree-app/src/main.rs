@@ -214,6 +214,7 @@ use mpfree_midi::monitor::{Dir, Event, Mpc, To};
 use mpfree_midi::profile::{self, KIT_PADS};
 use mpfree_screen_log::Rotation;
 use mpfree_synth_ui::{SynthAction, SynthState};
+use mpfree_time_ui::continuing::ContinueAction;
 use mpfree_time_ui::view::AudioAction;
 use mpfree_time_ui::{TempoEdit, TimeAction, TransportInfo};
 use mpfree_transport::Command;
@@ -9121,7 +9122,15 @@ fn time_action(
             | TimeAction::ConvertPreview { .. }
             | TimeAction::Convert { .. }
             | TimeAction::ConvertCancel
-            | TimeAction::Continue(_)
+            | TimeAction::Continue(
+                ContinueAction::Ask(_)
+                    | ContinueAction::Step { .. }
+                    | ContinueAction::Keep
+                    | ContinueAction::Back
+                    | ContinueAction::Open { .. }
+            )
+            | TimeAction::Add(_)
+            | TimeAction::Chords(_)
             | TimeAction::CopyClip { .. }
             | TimeAction::PasteClip { .. }
             | TimeAction::DropClip { .. }
@@ -14360,6 +14369,9 @@ fn player_session(
         if let Some(ids) = music.take_route_synths() {
             app.set_route_synths(ids);
         }
+        // Add a part's New track synth, once in its place, plays on the
+        // track Keep would add (composing tools S2.6b).
+        fx.extend(app.add_sound_follow(time.project().tracks.len()));
         fx.extend(app.put_away_free());
         let pads_at = app.pads_holder().filter(|&h| mix.instruments.holds(h));
         // The pads' layers (step 11a) follow the app's, as the pads do.
@@ -15899,7 +15911,12 @@ fn player_session(
                 perform: app.perform_set().text(),
                 xy: xy_yours.text(),
                 instruments: project::instruments_text(&mix.instruments),
-                track_kits: project::track_kits_text(&track_kits, &mix.instruments, &listed),
+                track_kits: project::track_kits_text(
+                    &track_kits,
+                    &mix.instruments,
+                    &listed,
+                    time.project().tracks.len(),
+                ),
                 instrument_list: listed.text(),
                 pads: app.pads_part(),
                 tunings: app.tunings_part(),

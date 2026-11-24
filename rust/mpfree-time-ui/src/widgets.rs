@@ -4,6 +4,10 @@
 //! what the app put in its fields and reports touches; none of them knows
 //! about the transport, the clips or the audio thread.
 
+use crate::chord_strip::{
+    chip_rects, paint_picker, paint_strip, picker_geo, picker_hit, strip_hit, ChordStrip,
+    PickerGeo, PickerView, StripHit, PICKS, PICK_DISMISS,
+};
 use mpfree_ui::widgets::Chip;
 use mpfree_ui::{
     Align, Canvas, Color, EventKind, FontId, PaintCx, Rect, Target, Tone, Touch, Widget,
@@ -513,6 +517,9 @@ pub struct GridCell {
     /// Perform: how near its line is, an amber bar along its foot as a
     /// queued cell's (0 draws none).
     pub countdown: f32,
+    /// A part being tried here, or a kept clip off its row's chords
+    /// (composing tools S2.6).
+    pub mark: CellMark,
     /// A loop cell on an audio track (phase 4, layout spec 4f): the loop
     /// mark before its name, and the deck's ring at its right in the
     /// track's colour, stopped or not (`progress`), never a wave.
@@ -531,6 +538,32 @@ pub enum CellAlert {
     Warn,
     /// Red: it can't play ("not ready", "missing").
     Bad,
+}
+
+/// A mark on a cell (composing tools S2.6, layout spec 4r).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CellMark {
+    #[default]
+    None,
+    /// A part being tried in this empty cell: dashed in the track's
+    /// colour, its name in it.
+    Try,
+    /// A kept clip with notes off its row's chords: a dashed outline in
+    /// the warning colour, and its detail ("doesn't fit") in it.
+    Unfit,
+}
+
+/// Add a part on the Clips title line (composing tools S2.6).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PartButton {
+    /// Ready to open the panel.
+    #[default]
+    Ready,
+    /// The panel is open: outlined in the accent colour.
+    Open,
+    /// Rec song is on (a try would be recorded into the song): faint, and
+    /// a tap says why.
+    Faint,
 }
 
 /// Columns of a loop cell's small wave ([`GridCell::wave`]).
@@ -594,6 +627,16 @@ pub struct GridTrack {
 /// `Toggle(slots + `[`PAGE_BACK`]`)` and `Toggle(slots + `[`PAGE_ON`]`)`.
 /// "+ Track", left of Edit, gives `Toggle(slots + `[`ADD_TRACK`]`)` while
 /// [`ClipGrid::can_add`] holds.
+///
+/// Add a part (composing tools S2.6, layout spec 4r) sits left of "+ Track"
+/// and gives `Toggle(slots + `[`ADD_PART`]`)`; with the pager and "Back to
+/// song" both showing there is no room and it steps aside. The row's
+/// chords ([`ClipGrid::strip`]) take one row's place under their row: a
+/// tap on a chip gives `Toggle(slots + `[`STRIP_CHIP`]` + k)`, on a bar of
+/// a strip with no chords `Toggle(slots + `[`STRIP_BAR`]` + bar)`. The chord
+/// picker ([`ClipGrid::picker`]) opens under a chip; while it is open
+/// every touch is its own, `Toggle(slots + `[`PICKER`]` + answer)` with
+/// the answers of [`crate::chord_strip`].
 pub struct ClipGrid {
     pub title: String,
     /// On the right of the title line.
@@ -631,6 +674,18 @@ pub struct ClipGrid {
     /// The scene card, open over the grid (the Arrange refactor's 5.2):
     /// it takes the grid's touches while it is.
     pub scene_card: Option<crate::scene_card::SceneCard>,
+    /// Add a part on the title line.
+    pub add_part: PartButton,
+    /// The row outlined in the accent colour (the scene pick while Add a
+    /// part or the Chords tab is open), with its chords under it.
+    pub outlined: Option<usize>,
+    /// The row's chords, one row high under their row (Make's height in
+    /// Perform): the rows under it move down one. Taps, drops and the gaps
+    /// between rows skip it, and it isn't drawn while a clip or a row is
+    /// dragged.
+    pub strip: Option<ChordStrip>,
+    /// The chord picker, open under one of the strip's chips.
+    pub picker: Option<PickerView>,
     /// Scene banks (the Arrange refactor's 5.6): a bank of
     /// [`mpfree_seq::SLOTS`] rows each, true where one of its rows has a
     /// clip or a named scene. With more than one, the bank chip shows
@@ -713,6 +768,10 @@ struct Drawn {
     big: bool,
     back_to_song: bool,
     show_button: bool,
+    add_part: PartButton,
+    outlined: Option<usize>,
+    strip: Option<ChordStrip>,
+    picker: Option<PickerView>,
     veil: Option<usize>,
     /// Where a dragged clip or row was drawn.
     dragged: Option<(Held, (i32, i32))>,
@@ -752,6 +811,18 @@ pub const VEIL_TAP: usize = 16;
 /// The Show button's width, on the grid, the Song view and the song list
 /// (layout spec 4p).
 pub const SHOW_W: i32 = 72;
+/// `Toggle(slots + ADD_PART)`: Add a part. Past the grid's other toggles
+/// (Arrange's take 16 to 31), under the strip's.
+pub const ADD_PART: usize = 32;
+/// `Toggle(slots + STRIP_CHIP + k)`: chip `k` of the row's chords.
+pub const STRIP_CHIP: usize = 64;
+/// `Toggle(slots + STRIP_BAR + bar)`: a bar of a strip with no chords yet.
+pub const STRIP_BAR: usize = 128;
+/// `Toggle(slots + PICKER + answer)`: the open chord picker
+/// (`chord_strip::PICK_*`).
+pub const PICKER: usize = 256;
+/// Add a part's width.
+const PART_W: i32 = 116;
 /// "Back to song"'s width.
 const BACK_W: i32 = 124;
 /// "Back to song"'s and the pager's label's widths where Show shares the
@@ -927,6 +998,48 @@ struct Geo {
     cells_y: i32,
     row_h: i32,
     rows: usize,
+    /// The row's chords in view: under row `k` in view (0 is the first
+    /// shown), and how tall.
+    strip: Option<(usize, i32)>,
+}
+
+impl Geo {
+    /// The top of row `k` in view: rows under the strip move down one.
+    fn row_top(&self, k: usize) -> i32 {
+        let mut y = self.cells_y + k as i32 * (self.row_h + CELL_GAP);
+        if let Some((under, h)) = self.strip {
+            if k > under {
+                y += h + CELL_GAP;
+            }
+        }
+        y
+    }
+
+    /// Where the strip is, across the whole body (its "chords" label in
+    /// the row numbers' column), if it is in view.
+    fn strip_rect(&self) -> Option<Rect> {
+        let (under, h) = self.strip?;
+        let y = self.row_top(under) + self.row_h + CELL_GAP;
+        Some(Rect::new(self.body.x, y, self.body.w, h))
+    }
+
+    /// The row in view at height `y` (with the gap under it), if any: none
+    /// over the strip.
+    fn row_at(&self, y: i32) -> Option<usize> {
+        (0..self.rows).find(|&k| {
+            let top = self.row_top(k);
+            y >= top && y < top + self.row_h + CELL_GAP
+        })
+    }
+
+    /// The middle of the gap before row `k` in view (`k` up to `rows`):
+    /// the gap under a row with chords is the one above them.
+    fn boundary(&self, k: usize) -> i32 {
+        match self.strip {
+            Some((under, _)) if k == under + 1 => self.row_top(under) + self.row_h + CELL_GAP / 2,
+            _ => self.row_top(k) - CELL_GAP / 2,
+        }
+    }
 }
 
 impl ClipGrid {
@@ -968,6 +1081,10 @@ impl ClipGrid {
             back_to_song: false,
             show_button: false,
             scene_card: None,
+            add_part: PartButton::Ready,
+            outlined: None,
+            strip: None,
+            picker: None,
             banks: Vec::new(),
             pad_window: None,
             can_capture: false,
@@ -987,7 +1104,7 @@ impl ClipGrid {
             return None;
         }
         let c = ((x - g.x0) / (g.col_w + CELL_GAP)) as usize;
-        let row = ((y - g.cells_y) / (g.row_h + CELL_GAP)) as usize;
+        let row = g.row_at(y)?;
         let (track, slot) = (self.first_track + c, self.first_row + row);
         (c < GRID_COLS && track < self.tracks.len() && row < g.rows && slot < self.slots)
             .then_some((track, slot))
@@ -997,10 +1114,11 @@ impl ClipGrid {
     /// row `gap`, from the first row in view to just after the last.
     fn gap_at(&self, r: Rect, y: i32) -> usize {
         let g = self.geo(r);
-        let pitch = g.row_h + CELL_GAP;
-        let k = ((y - g.cells_y + pitch / 2).max(0) / pitch) as usize;
         let last = (self.first_row + g.rows).min(self.slots);
-        (self.first_row + k).min(last)
+        let k = (0..=last - self.first_row)
+            .min_by_key(|&k| (g.boundary(k) - y).abs())
+            .unwrap_or(0);
+        self.first_row + k
     }
 
     /// Where a dragged clip lands now, if it would change anything.
@@ -1107,8 +1225,7 @@ impl ClipGrid {
                 // down.
                 let (mut lo, mut hi) = (g.cells_y - g.row_h / 2, g.body.bottom() - g.row_h / 2);
                 if let Some(gap) = self.row_target(r, gr) {
-                    let pitch = g.row_h + CELL_GAP;
-                    let y = g.cells_y + (gap - self.first_row) as i32 * pitch - CELL_GAP / 2 - 2;
+                    let y = g.boundary(gap - self.first_row) - 2;
                     let w = g.body.right() - g.body.x;
                     cx.canvas
                         .fill_round_rect(Rect::new(g.body.x, y, w, 4), 2, t.accent);
@@ -1165,10 +1282,9 @@ impl ClipGrid {
         if slot < self.first_row || slot >= self.first_row + g.rows || slot >= self.slots {
             return None;
         }
-        let row = (slot - self.first_row) as i32;
         Some(Rect::new(
             g.body.x,
-            g.cells_y + row * (g.row_h + CELL_GAP),
+            g.row_top(slot - self.first_row),
             LABEL_W,
             g.row_h,
         ))
@@ -1186,18 +1302,18 @@ impl ClipGrid {
     }
 
     /// Where the title line's left side ends: before Capture scene,
-    /// "Back to song", the pager or "+ Track".
+    /// "Back to song", the pager, Add a part or "+ Track".
     fn left_end(&self, r: Rect) -> i32 {
         self.show_rect(r)
             .or(self.capture_rect(r))
             .or(self.back_rect(r))
             .or(self.pager_rects(r).map(|(b, _)| b))
-            .map_or(self.add_rect(r).x, |b| b.x)
+            .map_or(self.adds_left(r).x, |b| b.x)
             - 12
     }
 
     /// Where Capture scene is (the Arrange refactor's 5.3): in Perform,
-    /// left of "Back to song", the pager or "+ Track", with Show (while a
+    /// left of "Back to song", the pager, Add a part or "+ Track", with Show (while a
     /// set is open) left of it. Where that leaves it no room right of the
     /// view chip ("Back to song" beside the pager, or Show beside the
     /// pager) it isn't there, and the scene card's Capture is the way.
@@ -1208,7 +1324,7 @@ impl ClipGrid {
         let right = self
             .back_rect(r)
             .or(self.pager_rects(r).map(|(b, _)| b))
-            .unwrap_or(self.add_rect(r));
+            .unwrap_or(self.adds_left(r));
         let x = right.x - 8 - CAPTURE_W;
         let show = if self.show_button { SHOW_W + 8 } else { 0 };
         (x >= self.view_rect(r).right() + 10 + show)
@@ -1274,13 +1390,51 @@ impl ClipGrid {
         Some(crate::song::chooser_rows(x, add.bottom() + 6))
     }
 
-    /// Where the pager's ‹ and › are, left of "+ Track" with its label
-    /// between them, while it shows.
+    /// Where Add a part is: left of "+ Track", unless two of the pager,
+    /// "Back to song" and Show (live shows) show, which leave it no room.
+    /// Arrange's buttons keep their places: where Perform's Capture scene
+    /// or the bank chip would have to give way to it, it steps aside too.
+    pub fn add_part_rect(&self, r: Rect) -> Option<Rect> {
+        let others = [self.paged(), self.back_to_song, self.show_button];
+        if others.iter().filter(|&&on| on).count() >= 2 {
+            return None;
+        }
+        let add = self.add_rect(r);
+        let part = Rect::new(add.x - 8 - PART_W, add.y, PART_W, add.h);
+        // The title line's buttons left of it, at their usual widths (the
+        // narrow ones are only for all three of the above).
+        let mut left = part.x;
+        if self.paged() {
+            left -= 8 + 2 * ARROW_W + PAGER_LABEL_W;
+        }
+        if self.back_to_song {
+            left -= 8 + BACK_W;
+        }
+        if self.big {
+            left -= 8 + CAPTURE_W;
+        }
+        if self.show_button {
+            left -= 8 + SHOW_W;
+        }
+        let mut need = self.view_rect(r).right() + 10;
+        if self.banks.len() >= 2 {
+            need += self.banks.len() as i32 * BANK_PART_W + 12;
+        }
+        (left >= need).then_some(part)
+    }
+
+    /// The leftmost of Add a part and "+ Track".
+    fn adds_left(&self, r: Rect) -> Rect {
+        self.add_part_rect(r).unwrap_or(self.add_rect(r))
+    }
+
+    /// Where the pager's ‹ and › are, left of Add a part (or "+ Track")
+    /// with its label between them, while it shows.
     pub fn pager_rects(&self, r: Rect) -> Option<(Rect, Rect)> {
         if !self.paged() {
             return None;
         }
-        let add = self.add_rect(r);
+        let add = self.adds_left(r);
         let label = if self.tight(r) {
             PAGER_LABEL_TIGHT_W
         } else {
@@ -1303,19 +1457,19 @@ impl ClipGrid {
     }
 
     /// Where "Back to song" is, while it shows: left of the pager, or of
-    /// "+ Track".
+    /// Add a part.
     pub fn back_rect(&self, r: Rect) -> Option<Rect> {
         if !self.back_to_song {
             return None;
         }
-        let right = self.pager_rects(r).map_or(self.add_rect(r), |(b, _)| b);
+        let right = self.pager_rects(r).map_or(self.adds_left(r), |(b, _)| b);
         let w = if self.tight(r) { BACK_TIGHT_W } else { BACK_W };
         Some(Rect::new(right.x - 8 - w, right.y, w, right.h))
     }
 
     /// Where Show is, while a set is open: left of the title line's other
-    /// buttons (Perform's Capture scene, "Back to song", the pager or "+
-    /// Track").
+    /// buttons (Perform's Capture scene, "Back to song", the pager, Add a
+    /// part or "+ Track").
     pub fn show_rect(&self, r: Rect) -> Option<Rect> {
         if !self.show_button {
             return None;
@@ -1324,7 +1478,7 @@ impl ClipGrid {
             .capture_rect(r)
             .or(self.back_rect(r))
             .or(self.pager_rects(r).map(|(b, _)| b))
-            .unwrap_or(self.add_rect(r));
+            .unwrap_or(self.adds_left(r));
         Some(Rect::new(right.x - 8 - SHOW_W, right.y, SHOW_W, right.h))
     }
 
@@ -1352,17 +1506,85 @@ impl ClipGrid {
         let cells_y = body.y + self.head_h() + CELL_GAP;
         let avail = body.bottom() - cells_y;
         let min_h = if self.big { ROW_MIN_H } else { ROW_MIN_H_MAKE };
-        let rows =
-            (((avail + CELL_GAP) / (min_h + CELL_GAP)).max(1) as usize).min(self.slots.max(1));
-        let row_h = ((avail - CELL_GAP * (rows as i32 - 1)) / rows as i32).max(1);
-        Geo {
+        let fit = |avail: i32| ((avail + CELL_GAP) / (min_h + CELL_GAP)).max(1) as usize;
+        let height = |avail: i32, n: usize| ((avail - CELL_GAP * (n as i32 - 1)) / n as i32).max(1);
+        let slots = self.slots.max(1);
+        let rows = fit(avail).min(slots);
+        let mut g = Geo {
             body,
             x0,
             col_w,
             cells_y,
-            row_h,
+            row_h: height(avail, rows),
             rows,
+            strip: None,
+        };
+        // The row's chords take one row's place under their row, Make's
+        // height in Perform, while their row stays in view.
+        let Some(s) = &self.strip else {
+            return g;
+        };
+        let (rows, row_h, h) = if self.big {
+            let left = avail - ROW_MIN_H_MAKE - CELL_GAP;
+            let rows = fit(left).min(slots);
+            (rows, height(left, rows), ROW_MIN_H_MAKE)
+        } else {
+            let n = fit(avail).min(slots + 1);
+            let row_h = height(avail, n);
+            (n.saturating_sub(1), row_h, row_h)
+        };
+        if rows > 0 && s.row >= self.first_row && s.row < self.first_row + rows {
+            g.rows = rows;
+            g.row_h = row_h;
+            g.strip = Some((s.row - self.first_row, h));
         }
+        g
+    }
+
+    /// Where the row's chords are: the "chords" label in the row numbers'
+    /// column and the bars across the cells, if they are in view.
+    pub fn strip_rects(&self, r: Rect) -> Option<(Rect, Rect)> {
+        let g = self.geo(r);
+        let s = g.strip_rect()?;
+        let label = Rect::new(s.x, s.y, LABEL_W, s.h);
+        let bars = Rect::new(g.x0, s.y, g.body.right() - g.x0, s.h);
+        Some((label, bars))
+    }
+
+    /// Where each chip of the row's chords is, while they are in view.
+    pub fn chip_rects(&self, r: Rect) -> Vec<Rect> {
+        match (&self.strip, self.strip_rects(r)) {
+            (Some(s), Some((_, bars))) => chip_rects(bars, s),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Where the open chord picker's parts are: under its chip, inside
+    /// the grid.
+    pub fn picker_geo(&self, r: Rect) -> Option<PickerGeo> {
+        let p = self.picker.as_ref()?;
+        let chip = *self.chip_rects(r).get(p.chip)?;
+        Some(picker_geo(chip, r))
+    }
+
+    /// The outline round the outlined row (and its chords under it), if
+    /// in view.
+    fn outline_rect(&self, r: Rect) -> Option<Rect> {
+        let row = self.outlined?;
+        let g = self.geo(r);
+        let first = self.cell_rect(r, self.first_track, row)?;
+        let mut bottom = first.bottom();
+        if let (Some(s), Some(band)) = (&self.strip, g.strip_rect()) {
+            if s.row == row {
+                bottom = band.bottom();
+            }
+        }
+        Some(Rect::new(
+            g.x0 - 4,
+            first.y - 4,
+            g.body.right() - g.x0 + 8,
+            bottom - first.y + 8,
+        ))
     }
 
     /// Rows (slots) shown at once in `r`.
@@ -1434,10 +1656,9 @@ impl ClipGrid {
         if slot < self.first_row || slot >= self.first_row + g.rows || slot >= self.slots {
             return None;
         }
-        let row = (slot - self.first_row) as i32;
         Some(Rect::new(
             g.x0 + c * (g.col_w + CELL_GAP),
-            g.cells_y + row * (g.row_h + CELL_GAP),
+            g.row_top(slot - self.first_row),
             g.col_w,
             g.row_h,
         ))
@@ -1460,6 +1681,10 @@ impl Widget for ClipGrid {
             || d.big != self.big
             || d.back_to_song != self.back_to_song
             || d.show_button != self.show_button
+            || d.add_part != self.add_part
+            || d.outlined != self.outlined
+            || d.strip != self.strip
+            || d.picker != self.picker
             || d.veil != self.veil
             || self.veil.is_some()
             || d.dragged.is_some()
@@ -1508,6 +1733,10 @@ impl Widget for ClipGrid {
             big: self.big,
             back_to_song: self.back_to_song,
             show_button: self.show_button,
+            add_part: self.add_part,
+            outlined: self.outlined,
+            strip: self.strip.clone(),
+            picker: self.picker.clone(),
             veil: self.veil,
             dragged: self.dragged_now(),
             card: self.scene_card.is_some(),
@@ -1516,7 +1745,7 @@ impl Widget for ClipGrid {
             can_capture: self.can_capture,
         });
         // The view chip, then the title, shortened to what comes before
-        // " · " where "Back to song" or Show leaves it no room.
+        // " · " where the buttons on its line leave it no room.
         let head = r.inset(14).take_top(26).0;
         let title_x = self.title_x(r);
         let back = self.back_rect(r);
@@ -1524,8 +1753,13 @@ impl Widget for ClipGrid {
         let capture = self.capture_rect(r);
         let mut title = self.title.as_str();
         // What the title has before it: Show, Capture scene, "Back to
-        // song", or the pager.
-        if show.is_some() || capture.is_some() || back.is_some() || self.paged() {
+        // song", the pager or Add a part.
+        if show.is_some()
+            || capture.is_some()
+            || back.is_some()
+            || self.paged()
+            || self.add_part_rect(r).is_some()
+        {
             let x = self.left_end(r);
             let mut wide = |s: &str| cx.measure(FontId::Bold, t.size_small, &s.to_uppercase());
             if title_x + wide(title) > x {
@@ -1539,7 +1773,7 @@ impl Widget for ClipGrid {
         let end = show
             .or(capture)
             .or(back)
-            .map_or(self.add_rect(r).x, |b| b.x)
+            .map_or(self.adds_left(r).x, |b| b.x)
             - 12;
         view_title_at(cx, r, ArrangeView::Clips, title, title_x, end);
         if let Some(chip) = self.bank_chip_rect(r) {
@@ -1627,7 +1861,10 @@ impl Widget for ClipGrid {
             // The legend's parts that fit between the title and the
             // buttons, dropping the first ones when it is too wide.
             let title_w = cx.measure(FontId::Bold, t.size_small, &title.to_uppercase());
-            let end = show.or(capture).or(back).map_or(add.x, |b| b.x);
+            let end = show
+                .or(capture)
+                .or(back)
+                .map_or(self.adds_left(r).x, |b| b.x);
             let room = end - 12 - (title_x + title_w + 16);
             let mut legend = self.legend.as_str();
             while !legend.is_empty() && cx.measure(FontId::Sans, t.size_small, legend) > room {
@@ -1651,6 +1888,25 @@ impl Widget for ClipGrid {
             if self.can_add { t.text } else { t.text_faint },
             "+ Track",
         );
+        if let Some(part) = self.add_part_rect(r) {
+            cx.canvas.fill_round_rect(part, t.round(10), t.raised);
+            let ink = match self.add_part {
+                PartButton::Ready => t.text,
+                PartButton::Open => {
+                    cx.canvas.stroke_round_rect(part, t.round(10), 2, t.accent);
+                    t.readable(t.accent, t.raised)
+                }
+                PartButton::Faint => t.text_faint,
+            };
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                part,
+                Align::Center,
+                ink,
+                "Add a part",
+            );
+        }
         rec_song_pill(cx, rec, self.song_rec);
         cx.canvas.fill_round_rect(edit, t.round(10), t.raised);
         cx.text(
@@ -1857,6 +2113,16 @@ impl Widget for ClipGrid {
                 paint_cell(cx, cr, cell, base);
             }
         }
+        // The row's chords and the picked row's outline, but not while a
+        // clip or a row is dragged.
+        if !self.dragging() {
+            if let (Some(s), Some((label, bars))) = (&self.strip, self.strip_rects(r)) {
+                paint_strip(cx, label, bars, s);
+            }
+            if let Some(o) = self.outline_rect(r) {
+                cx.canvas.stroke_round_rect(o, t.round(12), 2, t.accent);
+            }
+        }
         if let Some(w) = self.pad_window_rect(r) {
             cx.canvas.stroke_round_rect(w, t.round(8), 2, t.accent);
         }
@@ -1865,6 +2131,9 @@ impl Widget for ClipGrid {
         }
         if let Some(rows) = self.chooser_rects(r) {
             crate::song::paint_chooser(cx, &rows);
+        }
+        if let (Some(p), Some(pg)) = (&self.picker, self.picker_geo(r)) {
+            paint_picker(cx, &pg, p);
         }
         // An input list open over the grid: all but the track's column
         // head behind a veil, the head outlined as the list is.
@@ -1886,6 +2155,25 @@ impl Widget for ClipGrid {
     fn targets(&self, r: Rect) -> Vec<Target> {
         if let Some(card) = &self.scene_card {
             return card.targets(r);
+        }
+        // The chord picker open: its parts, and anywhere else closes it.
+        if let (Some(p), Some(g)) = (&self.picker, self.picker_geo(r)) {
+            use crate::chord_strip::{
+                picker_buttons, KINDS, PICK_CLOSE, PICK_KIND, PICK_SPLIT, ROOTS,
+            };
+            let mut out = Vec::new();
+            for (i, b) in g.roots.iter().enumerate() {
+                out.push(Target::tap("chord-root", i, ROOTS[i], *b));
+            }
+            for (i, b) in g.kinds.iter().enumerate() {
+                out.push(Target::tap("chord-kind", PICK_KIND + i, KINDS[i], *b));
+            }
+            for (i, ((name, live), b)) in picker_buttons(p).into_iter().zip(g.buttons).enumerate() {
+                out.push(Target::tap("chord-button", PICK_SPLIT + i, name, b).disabled_if(!live));
+            }
+            out.push(Target::tap("chord-close", PICK_CLOSE, "Close", g.close));
+            out.push(Target::tap("chord-dismiss", PICK_DISMISS, "Close", r));
+            return out;
         }
         // An input list open over the grid: a touch anywhere closes it.
         if self.veil.is_some() {
@@ -1914,6 +2202,12 @@ impl Widget for ClipGrid {
         }
         if let Some(b) = self.show_rect(r) {
             out.push(Target::tap("show-view", 0, "Show", b));
+        }
+        if let Some(b) = self.add_part_rect(r) {
+            out.push(
+                Target::tap("add-part", 0, "Add a part", b)
+                    .disabled_if(self.add_part == PartButton::Faint),
+            );
         }
         if let Some(b) = self.capture_rect(r) {
             out.push(
@@ -1947,6 +2241,17 @@ impl Widget for ClipGrid {
             "Stop all",
             self.stop_all_rect(r),
         ));
+        if let Some(s) = self.strip.as_ref().filter(|_| !self.dragging()) {
+            for (k, c) in self.chip_rects(r).into_iter().enumerate() {
+                let name = format!("Chord {}", s.chips[k].name);
+                out.push(Target::tap("chord", k, name, c));
+            }
+            if s.chips.is_empty() {
+                if let Some((_, bars)) = self.strip_rects(r) {
+                    out.push(Target::tap("chord-bar", 0, "Set a chord", bars));
+                }
+            }
+        }
         for slot in self.first_row..self.slots {
             if let Some(b) = self.scene_rect(r, slot) {
                 out.push(Target::tap("scene", slot, format!("Scene {}", slot + 1), b));
@@ -1975,6 +2280,17 @@ impl Widget for ClipGrid {
             self.empty = None;
             self.press = None;
             return card.touch(phase, x, y, r);
+        }
+        // The chord picker open: its parts, and a touch off it closes it
+        // with nothing changed.
+        if self.picker.is_some() {
+            if phase != Touch::Down {
+                return None;
+            }
+            let hit = self
+                .picker_geo(r)
+                .map_or(PICK_DISMISS, |g| picker_hit(&g, x, y));
+            return (hit < PICKS).then_some(EventKind::Toggle(self.slots + PICKER + hit));
         }
         // An input list open over the grid: a touch only closes it.
         if self.veil.is_some() {
@@ -2120,6 +2436,10 @@ impl Widget for ClipGrid {
         if self.show_rect(r).is_some_and(|b| b.contains(x, y)) {
             return Some(EventKind::Toggle(self.slots + SHOW_VIEW));
         }
+        if self.add_part_rect(r).is_some_and(|b| b.contains(x, y)) {
+            // Faint too: the page says why.
+            return Some(EventKind::Toggle(self.slots + ADD_PART));
+        }
         // Faint, it still gives its toggle, for SHIFT + tap's Learn; the
         // page acts on it only while it is lit.
         if self.capture_rect(r).is_some_and(|b| b.contains(x, y)) {
@@ -2143,6 +2463,19 @@ impl Widget for ClipGrid {
         }
         if self.stop_all_rect(r).contains(x, y) {
             return Some(EventKind::Toggle(self.slots));
+        }
+        // The row's chords: a chip, or a bar while there are none; the
+        // rest of the strip takes the touch and does nothing.
+        if let (Some(s), Some((label, bars))) = (&self.strip, self.strip_rects(r)) {
+            if bars.contains(x, y) || label.contains(x, y) {
+                return match strip_hit(bars, s, x, y) {
+                    Some(StripHit::Chip(k)) => Some(EventKind::Toggle(self.slots + STRIP_CHIP + k)),
+                    Some(StripHit::Bar(b)) => {
+                        Some(EventKind::Toggle(self.slots + STRIP_BAR + b as usize))
+                    }
+                    None => None,
+                };
+            }
         }
         for slot in self.first_row..self.slots {
             if self.scene_rect(r, slot).is_some_and(|b| b.contains(x, y)) {
@@ -2432,9 +2765,34 @@ fn dashed_rect(cx: &mut PaintCx, r: Rect, color: Color) {
     }
 }
 
+/// A cell, with its mark (composing tools S2.6): a part being tried is
+/// dashed in the track's colour, a clip off its row's chords in the
+/// warning colour.
 fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
+    paint_cell_body(cx, cr, cell, base);
     let t = cx.theme.clone();
-    if cell.state == CellState::Empty {
+    match cell.mark {
+        CellMark::None => {}
+        CellMark::Try => crate::chord_strip::dashed(cx, cr, base),
+        CellMark::Unfit => crate::chord_strip::dashed(cx, cr, t.warn),
+    }
+}
+
+/// What a mark makes of a cell's fill, its name's ink and its detail's.
+fn mark_inks(t: &mpfree_ui::Theme, cell: &GridCell, base: Color, fill: Color) -> (Color, Color) {
+    match cell.mark {
+        CellMark::None => (t.text, t.readable(t.text_dim, fill)),
+        CellMark::Try => (
+            t.readable(base.mix(t.text, 0.25), fill),
+            t.readable(t.text_dim, fill),
+        ),
+        CellMark::Unfit => (t.text, t.readable(t.warn, fill)),
+    }
+}
+
+fn paint_cell_body(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
+    let t = cx.theme.clone();
+    if cell.state == CellState::Empty && cell.mark != CellMark::Try {
         cx.canvas.stroke_round_rect(cr, t.round(10), 1, t.outline);
         cx.text(
             FontId::Sans,
@@ -2448,6 +2806,7 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
     }
     let fill = match cell.state {
         _ if cell.missing => t.surface.mix(t.raised, 0.5),
+        _ if cell.mark == CellMark::Try => t.surface.mix(base, 0.14),
         CellState::Playing => t.raised.mix(base, 0.36),
         CellState::Recording => t.raised.mix(t.bad, 0.24),
         CellState::Armed => t.raised.mix(t.bad, 0.12),
@@ -2493,10 +2852,12 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
         return;
     }
     match cell.state {
+        _ if cell.mark == CellMark::Try => {}
         CellState::Queued => cx.canvas.stroke_round_rect(cr, t.round(10), 2, t.warn),
         CellState::Recording => cx.canvas.stroke_round_rect(cr, t.round(10), 2, t.bad),
         _ => {}
     }
+    let (name_ink, marked_ink) = mark_inks(&t, cell, base, fill);
     let inner = cr.inset_xy(10, 8);
     let (name, rest) = inner.take_top(20);
     let name = loop_marks(cx, name, cell, base);
@@ -2505,11 +2866,12 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
         t.size_small + 1.0,
         name,
         Align::Left,
-        t.text,
+        name_ink,
         &cell.name,
     );
     let (detail, _) = rest.take_top(20);
     let detail_ink = match cell.state {
+        _ if cell.mark != CellMark::None => marked_ink,
         CellState::Recording => t.readable(t.bad.mix(t.text, 0.2), fill),
         _ if cell.cued => t.readable(t.warn, fill),
         _ => t.readable(t.text_dim, fill),
@@ -2711,6 +3073,7 @@ fn dashed_line(cx: &mut PaintCx, band: Rect, color: Color) {
 fn paint_compact(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color, fill: Color) {
     let t = cx.theme.clone();
     match cell.state {
+        _ if cell.mark == CellMark::Try => {}
         CellState::Queued => cx.canvas.stroke_round_rect(cr, t.round(10), 2, t.warn),
         CellState::Recording => cx.canvas.stroke_round_rect(cr, t.round(10), 2, t.bad),
         CellState::Armed => {
@@ -2728,7 +3091,7 @@ fn paint_compact(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color, fill:
         inner
     };
     let (mut name, line) = inner.take_top(inner.h / 2);
-    let mut name_ink = t.text;
+    let (mut name_ink, marked_ink) = mark_inks(&t, cell, base, fill);
     if cell.state == CellState::Armed {
         cx.canvas
             .fill_round_rect(Rect::new(name.x, name.y + name.h / 2 - 4, 8, 8), 4, t.bad);
@@ -2756,6 +3119,7 @@ fn paint_compact(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color, fill:
             let (words, ink) = match cell.state {
                 _ if said && cell.alert == CellAlert::Bad => (&cell.foot, t.bad),
                 _ if said => (&cell.foot, t.warn),
+                _ if cell.mark != CellMark::None => (&cell.detail, marked_ink),
                 CellState::Queued => (&cell.foot, t.warn),
                 CellState::Recording => (&cell.detail, t.bad.mix(t.text, 0.2)),
                 CellState::Armed => (&cell.detail, t.text),
@@ -2803,7 +3167,8 @@ pub struct TakeItem {
 /// The row `current` (the take Undo would take back) is highlighted;
 /// undone takes are dimmed. A tap on Undo gives `Tab(0)`, on Redo `Tab(1)`,
 /// on Capture `Tab(2)`, faint or not: the page says why a faint one does
-/// nothing.
+/// nothing. The note editor's Continue shows its tries in it the same way
+/// ([`TakeList::words`], [`TakeList::empty`]).
 pub struct TakeList {
     pub title: String,
     pub right: String,
@@ -2814,8 +3179,16 @@ pub struct TakeList {
     pub redo: Option<String>,
     /// What Capture would keep, such as "2 bars"; None when nothing.
     pub capture: Option<String>,
+    /// The three buttons' words, Undo's, Redo's and Capture's places: a
+    /// button with no words isn't there.
+    pub words: [&'static str; 3],
+    /// What it says with no rows: a line, and help under it (None: the
+    /// takes' own).
+    pub empty: Option<(&'static str, &'static str)>,
 }
 
+/// The takes' buttons' words ([`TakeList::words`]).
+pub const TAKE_WORDS: [&str; 3] = ["Undo", "Redo", "Capture"];
 const TAKE_ROW_H: i32 = 38;
 const TAKE_BUTTON_H: i32 = 48;
 
@@ -2829,6 +3202,8 @@ impl TakeList {
             undo: None,
             redo: None,
             capture: None,
+            words: TAKE_WORDS,
+            empty: None,
         }
     }
 
@@ -2859,21 +3234,24 @@ impl Widget for TakeList {
         let limit = TakeList::button_rect(r, 0).y - 8;
         if self.items.is_empty() {
             let (a, rest) = body.take_top(26);
+            const HELP: &str = "REC records one; Capture keeps what you just played";
+            let (line, help) = self.empty.unwrap_or(("No takes yet", HELP));
             cx.text(
                 FontId::Sans,
                 t.size_body,
                 a,
                 Align::Left,
                 t.text_faint,
-                "No takes yet",
+                line,
             );
             // One line, or two in a narrow panel (Arrange beside the
             // Q-Link column).
-            const HELP: &str = "REC records one; Capture keeps what you just played";
-            let lines: Vec<&str> = if cx.measure(FontId::Sans, t.size_small, HELP) <= body.w {
-                vec![HELP]
-            } else {
+            let lines: Vec<&str> = if cx.measure(FontId::Sans, t.size_small, help) <= body.w {
+                vec![help]
+            } else if help == HELP {
                 vec!["REC records one;", "Capture keeps what you played"]
+            } else {
+                help.split_inclusive("; ").map(str::trim).collect()
             };
             let mut rest = rest;
             for line in lines {
@@ -2937,13 +3315,16 @@ impl Widget for TakeList {
             y += TAKE_ROW_H;
         }
         for (i, (word, what)) in [
-            ("Undo", &self.undo),
-            ("Redo", &self.redo),
-            ("Capture", &self.capture),
+            (self.words[0], &self.undo),
+            (self.words[1], &self.redo),
+            (self.words[2], &self.capture),
         ]
         .into_iter()
         .enumerate()
         {
+            if word.is_empty() {
+                continue;
+            }
             let b = TakeList::button_rect(r, i);
             match what {
                 Some(w) => {
@@ -2985,14 +3366,10 @@ impl Widget for TakeList {
     fn targets(&self, r: Rect) -> Vec<Target> {
         let live = [&self.undo, &self.redo, &self.capture];
         (0..3)
+            .filter(|&i| !self.words[i].is_empty())
             .map(|i| {
-                Target::tap(
-                    "button",
-                    i,
-                    ["Undo", "Redo", "Capture"][i],
-                    TakeList::button_rect(r, i),
-                )
-                .disabled_if(live[i].is_none())
+                Target::tap("button", i, self.words[i], TakeList::button_rect(r, i))
+                    .disabled_if(live[i].is_none())
             })
             .collect()
     }
@@ -3002,6 +3379,7 @@ impl Widget for TakeList {
             return None;
         }
         (0..3)
+            .filter(|&i| !self.words[i].is_empty())
             .find(|&i| TakeList::button_rect(r, i).contains(x, y))
             .map(EventKind::Tab)
     }
@@ -3154,6 +3532,207 @@ mod tests {
         g
     }
 
+    fn chords_under(row: usize, chips: usize) -> ChordStrip {
+        use crate::chord_strip::{ChipLook, StripChip};
+        ChordStrip {
+            row,
+            bars: 8,
+            chips: (0..chips)
+                .map(|k| StripChip {
+                    from: k as f32 / chips as f32,
+                    to: (k + 1) as f32 / chips as f32,
+                    name: "Cm7".into(),
+                    look: ChipLook::Heard,
+                    word: String::new(),
+                })
+                .collect(),
+            play: Some(0.4),
+            open: None,
+        }
+    }
+
+    /// Composing tools S2.6 (layout spec 4r): Add a part on the title
+    /// line, left of "+ Track"; with the pager and "Back to song" both
+    /// showing it steps aside, and where Capture scene or the bank chip
+    /// would lose their room. Faint, it still answers, so the page can
+    /// say why.
+    #[test]
+    fn add_a_part_sits_left_of_plus_track_and_steps_aside() {
+        let r = Rect::new(12, 128, 854, 610);
+        let mut g = grid(8);
+        let part = g.add_part_rect(r).unwrap();
+        assert!(part.right() < g.add_rect(r).x);
+        g.back_to_song = true;
+        let back = g.back_rect(r).unwrap();
+        assert!(back.right() < part.x, "{back:?} {part:?}");
+        assert_eq!(
+            g.touch(1, Touch::Down, part.x + 4, part.y + 4, r),
+            Some(EventKind::Toggle(16 + ADD_PART))
+        );
+        g.add_part = PartButton::Faint;
+        assert_eq!(
+            g.touch(1, Touch::Down, part.x + 4, part.y + 4, r),
+            Some(EventKind::Toggle(16 + ADD_PART))
+        );
+        assert!(g
+            .targets(r)
+            .iter()
+            .any(|t| t.id == "add-part" && !t.enabled));
+        // Pager and Back to song: no room.
+        let mut g = grid(24);
+        assert!(g.add_part_rect(r).is_some());
+        g.back_to_song = true;
+        assert!(g.add_part_rect(r).is_none());
+        assert!(g.targets(r).iter().all(|t| t.id != "add-part"));
+        let (_, on) = g.pager_rects(r).unwrap();
+        assert!(on.right() < g.add_rect(r).x);
+        // Arrange's buttons keep their places: Perform's Capture scene
+        // with 8 tracks fits beside it; with the bank chip too, or with
+        // the pager, Add a part steps aside.
+        let r = Rect::new(12, 128, 814, 610);
+        let mut g = ClipGrid {
+            big: true,
+            ..grid(8)
+        };
+        let part = g.add_part_rect(r).unwrap();
+        assert!(g.capture_rect(r).unwrap().right() + 8 <= part.x);
+        g.banks = vec![true, true, false, false];
+        assert!(g.add_part_rect(r).is_none());
+        assert!(g.capture_rect(r).is_some() && g.bank_chip_rect(r).is_some());
+        let g = ClipGrid {
+            big: true,
+            ..grid(24)
+        };
+        assert!(g.add_part_rect(r).is_none());
+        // Make with the pager and four banks: the bank chip keeps its room.
+        let g = ClipGrid {
+            slots: 64,
+            banks: vec![true, true, false, false],
+            ..grid(24)
+        };
+        assert!(g.add_part_rect(r).is_none());
+        assert!(g.bank_chip_rect(r).is_some());
+    }
+
+    /// The row's chords take one row's place under their row: the rows
+    /// under it move down one, a chip's tap is its own, a drop over the
+    /// strip lands nowhere and a dragged row's gap skips it. Perform's big
+    /// rows give it Make's height.
+    #[test]
+    fn the_chords_strip_takes_a_rows_place_under_its_row() {
+        let r = Rect::new(12, 128, 814, 610);
+        let mut g = grid(10);
+        let rows = g.visible_rows(r);
+        let three = g.cell_rect(r, 0, 3).unwrap();
+        g.strip = Some(chords_under(2, 4));
+        g.outlined = Some(2);
+        assert_eq!(g.visible_rows(r), rows - 1);
+        let (label, bars) = g.strip_rects(r).unwrap();
+        let two = g.cell_rect(r, 0, 2).unwrap();
+        assert_eq!(two.y, g.cell_rect(r, 0, 2).unwrap().y);
+        assert!(
+            label.y > two.bottom() && label.h == two.h,
+            "{label:?} {two:?}"
+        );
+        assert_eq!(bars.x, two.x);
+        let moved = g.cell_rect(r, 0, 3).unwrap();
+        assert_eq!(moved.y, three.y + two.h + CELL_GAP, "down one");
+        assert!(moved.y > bars.bottom());
+        // A chip's tap; the label's does nothing; a bar with no chords
+        // sets one.
+        let chips = g.chip_rects(r);
+        assert_eq!(chips.len(), 4);
+        let c = chips[2];
+        assert_eq!(
+            g.touch(1, Touch::Down, c.x + c.w / 2, c.y + c.h / 2, r),
+            Some(EventKind::Toggle(16 + STRIP_CHIP + 2))
+        );
+        assert_eq!(g.touch(1, Touch::Down, label.x + 4, label.y + 4, r), None);
+        g.strip = Some(chords_under(2, 0));
+        assert_eq!(
+            g.touch(1, Touch::Down, bars.x + bars.w - 4, bars.y + 20, r),
+            Some(EventKind::Toggle(16 + STRIP_BAR + 7))
+        );
+        g.strip = Some(chords_under(2, 4));
+        // A clip dragged over the strip lands nowhere; a row dragged
+        // there goes in the gap above it (under row 3).
+        let beat = g.cell_rect(r, 1, 0).unwrap();
+        g.touch(1, Touch::Down, beat.x + 4, beat.y + 4, r);
+        g.touch(1, Touch::Move, bars.x + 40, bars.y + bars.h / 2, r);
+        assert!(g.dragging());
+        let (theme, mut fonts) = (Theme::dark(), Fonts::embedded());
+        let mut canvas = SoftCanvas::new(1280, 800);
+        g.paint(
+            &mut PaintCx {
+                canvas: &mut canvas,
+                theme: &theme,
+                fonts: &mut fonts,
+            },
+            r,
+        );
+        assert_eq!(
+            g.touch(1, Touch::Up, bars.x + 40, bars.y + bars.h / 2, r),
+            None
+        );
+        let five = g.scene_rect(r, 5).unwrap();
+        g.touch(1, Touch::Down, five.x + 4, five.y + 4, r);
+        g.touch(1, Touch::Move, five.x + 4, bars.y + bars.h / 2, r);
+        assert_eq!(
+            g.touch(1, Touch::Up, five.x + 4, bars.y + bars.h / 2, r),
+            Some(EventKind::Drop {
+                from: ROW_DROP + 5,
+                to: 3
+            })
+        );
+        // Scrolled past its row: no strip, all the rows.
+        g.first_row = 3;
+        assert!(g.strip_rects(r).is_none());
+        assert_eq!(g.visible_rows(r), rows);
+        // Perform: Make's height.
+        g.first_row = 0;
+        g.big = true;
+        let (label, _) = g.strip_rects(r).unwrap();
+        assert_eq!(label.h, ROW_MIN_H_MAKE);
+        assert!(g.cell_rect(r, 0, 2).unwrap().h >= ROW_MIN_H);
+    }
+
+    /// The chord picker under a chip: every touch is its own while it is
+    /// open, and a touch off it closes it.
+    #[test]
+    fn the_chord_picker_takes_every_touch_while_open() {
+        use crate::chord_strip::{PICK_KIND, PICK_ROOT};
+        let r = Rect::new(12, 128, 814, 610);
+        let mut g = grid(10);
+        g.strip = Some(chords_under(1, 4));
+        g.picker = Some(PickerView {
+            chip: 1,
+            bar: 3,
+            heard: "G7".into(),
+            ..PickerView::default()
+        });
+        let pg = g.picker_geo(r).unwrap();
+        let chip = g.chip_rects(r)[1];
+        assert!(pg.panel.y > chip.bottom() && r.intersect(pg.panel) == pg.panel);
+        let mid = |b: Rect| (b.x + b.w / 2, b.y + b.h / 2);
+        let (x, y) = mid(pg.roots[8]);
+        assert_eq!(
+            g.touch(1, Touch::Down, x, y, r),
+            Some(EventKind::Toggle(16 + PICKER + PICK_ROOT + 8))
+        );
+        let (x, y) = mid(pg.kinds[4]);
+        assert_eq!(
+            g.touch(1, Touch::Down, x, y, r),
+            Some(EventKind::Toggle(16 + PICKER + PICK_KIND + 4))
+        );
+        assert_eq!(g.touch(1, Touch::Up, x, y, r), None);
+        let corner = g.scene_rect(r, 0).unwrap();
+        assert_eq!(
+            g.touch(1, Touch::Down, corner.x + 2, corner.y + 2, r),
+            Some(EventKind::Toggle(16 + PICKER + PICK_DISMISS))
+        );
+        assert!(g.targets(r).iter().any(|t| t.id == "chord-root"));
+    }
+
     #[test]
     fn grid_cells_and_names_report_where_they_are() {
         let mut g = grid(10);
@@ -3242,8 +3821,12 @@ mod tests {
         let edit = g.edit_rect(r);
         assert!(add.right() < edit.x, "{add:?} {edit:?}");
         let (back, on) = g.pager_rects(r).unwrap();
-        assert!(back.right() < on.x && on.right() < add.x);
-        assert!(back.x > r.x + 240, "clear of the title: {back:?}");
+        let part = g.add_part_rect(r).unwrap();
+        assert!(back.right() < on.x && on.right() < part.x && part.right() < add.x);
+        assert!(
+            back.x > r.x + 100,
+            "clear of the title's first word: {back:?}"
+        );
         let tap = |g: &mut ClipGrid, b: Rect| g.touch(1, Touch::Down, b.x + 3, b.y + 3, r);
         assert_eq!(tap(&mut g, add), None, "no room: dim");
         g.can_add = true;
@@ -3516,8 +4099,13 @@ mod tests {
             SHOW_VIEW,
             VEIL_TAP,
             CAPTURE,
+            ADD_PART,
         ]);
         ids.extend((0..BANK_LETTERS.len()).map(|k| BANK + k));
+        // The row's chords (a chip or a bar each) and the chord picker.
+        ids.extend((0..STRIP_BAR - STRIP_CHIP).map(|k| STRIP_CHIP + k));
+        ids.extend((0..PICKER - STRIP_BAR).map(|b| STRIP_BAR + b));
+        ids.extend((0..PICKS).map(|k| PICKER + k));
         ids.extend((0..crate::song::ADD_KINDS.len()).map(|k| ADD_KIND + k));
         let mut seen = ids.clone();
         seen.sort();

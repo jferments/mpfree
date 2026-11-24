@@ -69,6 +69,7 @@ pub mod scenes;
 pub mod steps;
 pub mod time_edit;
 
+pub use arrange::{row_harmony, scene_length};
 pub use arrange::{
     Arrangement, FromScene, Marker, MorphRows, Placement, SongClips, SongSection, TempoPoint,
 };
@@ -80,6 +81,7 @@ pub use scenes::{
 };
 pub use time_edit::TimeEdit;
 
+pub use mpfree_context;
 pub use mpfree_moves;
 use mpfree_moves::Moves;
 pub use mpfree_param;
@@ -1130,6 +1132,16 @@ impl Clip {
     /// and a scale step would move a hit onto another pad.
     pub fn takes_scale(&self) -> bool {
         self.holds == Holds::Notes
+    }
+
+    /// Nothing in it to play: no notes, locks or recorded moves, and not
+    /// a loop's. Add a part may put a part in its place (composing tools
+    /// S2.6: the Sequencer's empty clip offers it).
+    pub fn is_blank(&self) -> bool {
+        self.notes.is_empty()
+            && self.locks.is_empty()
+            && self.moves.is_empty()
+            && self.looped.is_none()
     }
 
     /// Its speed, swing, quantise, follow action, launch quantise and

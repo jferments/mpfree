@@ -61,6 +61,20 @@ impl Quality {
         }
     }
 
+    /// The word a saved project writes for it: its suffix, with "maj"
+    /// for a major triad (whose suffix is empty).
+    pub const fn token(self) -> &'static str {
+        match self {
+            Quality::Major => "maj",
+            q => q.suffix(),
+        }
+    }
+
+    /// The quality a saved word names.
+    pub fn from_token(word: &str) -> Option<Quality> {
+        Quality::ALL.into_iter().find(|q| q.token() == word)
+    }
+
     pub const fn suffix(self) -> &'static str {
         match self {
             Quality::Major => "",
@@ -187,6 +201,23 @@ pub enum Heard {
     Set,
 }
 
+impl Heard {
+    /// The word a saved project writes for it.
+    pub const fn token(self) -> &'static str {
+        match self {
+            Heard::Heard => "heard",
+            Heard::Suggested => "suggested",
+            Heard::Set => "set",
+        }
+    }
+
+    pub fn from_token(word: &str) -> Option<Heard> {
+        [Heard::Heard, Heard::Suggested, Heard::Set]
+            .into_iter()
+            .find(|h| h.token() == word)
+    }
+}
+
 /// One chord on the timeline: its own start and length.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ChordSpan {
@@ -303,6 +334,127 @@ impl ChordTimeline {
         }
     }
 
+    /// Only what the line says (each span's chord, length and where it
+    /// came from), without a reading's sureness and runner-up: the line
+    /// as a row keeps it.
+    pub fn plain(&self) -> ChordTimeline {
+        ChordTimeline {
+            spans: self
+                .spans
+                .iter()
+                .map(|s| ChordSpan::new(s.start, s.len, s.answer, s.heard))
+                .collect(),
+        }
+    }
+
+    /// Cut to `to` ticks (the spans past it go, the last one is cut).
+    pub fn cut(&self, to: Tick) -> ChordTimeline {
+        ChordTimeline {
+            spans: self
+                .spans
+                .iter()
+                .filter(|s| s.start < to)
+                .map(|s| ChordSpan {
+                    len: s.len.min(to - s.start),
+                    ..*s
+                })
+                .collect(),
+        }
+    }
+
+    /// Round and round from tick 0 to `to` (a line shorter than its row
+    /// loops over it), the last span cut. Empty stays empty.
+    pub fn looped(&self, to: Tick) -> ChordTimeline {
+        let len = self.len();
+        if len <= 0 {
+            return ChordTimeline::default();
+        }
+        let mut spans = Vec::new();
+        let mut off = 0;
+        while off < to {
+            for s in &self.spans {
+                if off + s.start >= to {
+                    break;
+                }
+                spans.push(ChordSpan {
+                    start: off + s.start,
+                    len: s.len.min(to - off - s.start),
+                    ..*s
+                });
+            }
+            off += len;
+        }
+        ChordTimeline { spans }
+    }
+
+    /// Heard again (contract 4's Harmony line): `heard` is a new reading
+    /// of the row. Chords the musician set stay where they are; elsewhere
+    /// a chord heard now wins where it says something new, but where it
+    /// only says less (every note of it is in the chord the line had, as
+    /// a bass made over Cm7 is heard as Cm) the line keeps its chord;
+    /// where nothing clear is heard a suggested chord stays, and a chord
+    /// heard before goes (its notes are gone).
+    /// The line is as long as the new reading, or as before when nothing
+    /// was read; a line set shorter than the reading isn't stretched:
+    /// past its end the reading speaks.
+    pub fn rehear(&self, heard: &ChordTimeline) -> ChordTimeline {
+        let len = if heard.is_empty() {
+            self.len()
+        } else {
+            heard.len()
+        };
+        let mut cuts: Vec<Tick> = self
+            .spans
+            .iter()
+            .chain(&heard.spans)
+            .flat_map(|s| [s.start, s.end()])
+            .filter(|&t| t < len)
+            .chain([0, len])
+            .collect();
+        cuts.sort_unstable();
+        cuts.dedup();
+        let mut spans: Vec<ChordSpan> = Vec::new();
+        // Which span each piece came from (line 0 the old, 1 the heard,
+        // 2 none, and its start), so only pieces of one span join again.
+        let mut last_from: Option<(u8, Tick)> = None;
+        for w in cuts.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let old = self.span_at(a);
+            let new = heard.span_at(a);
+            let says_less = |o: &ChordSpan, n: &ChordSpan| match (o.answer, n.answer) {
+                (ChordAnswer::Chord(o), ChordAnswer::Chord(n)) => n.pcs() & !o.pcs() == 0,
+                _ => false,
+            };
+            let (pick, from) = match (old, new) {
+                (Some(o), _) if o.heard == Heard::Set => (*o, (0, o.start)),
+                (Some(o), Some(n)) if says_less(o, n) => (*o, (0, o.start)),
+                (_, Some(n)) if n.answer.chord().is_some() => (
+                    ChordSpan {
+                        heard: Heard::Heard,
+                        ..*n
+                    },
+                    (1, n.start),
+                ),
+                (Some(o), _) if o.heard == Heard::Suggested => (*o, (0, o.start)),
+                _ => (
+                    ChordSpan::new(a, b - a, ChordAnswer::NoClearChord, Heard::Heard),
+                    (2, 0),
+                ),
+            };
+            let piece = ChordSpan {
+                start: a,
+                len: b - a,
+                ..pick
+            };
+            match spans.last_mut() {
+                Some(l) if last_from == Some(from) && l.end() == a => l.len += piece.len,
+                _ => spans.push(piece),
+            }
+            last_from = Some(from);
+        }
+        ChordTimeline { spans }.plain()
+    }
+
     /// Names, one per span, "Cm7 Fm7 Ebmaj7 Gm7".
     pub fn names(&self) -> String {
         self.spans
@@ -354,6 +506,104 @@ mod tests {
         let t = ChordTimeline::whole(BAR, ChordAnswer::NoClearChord, Heard::Heard);
         assert_eq!(t.span_at(0).unwrap().answer.chord(), None);
         assert_eq!(t.names(), "no clear chord");
+    }
+
+    fn cm7() -> Chord {
+        Chord::new(0, Quality::Minor7)
+    }
+    fn fm7() -> Chord {
+        Chord::new(5, Quality::Minor7)
+    }
+    fn ab() -> Chord {
+        Chord::new(8, Quality::Major7)
+    }
+
+    #[test]
+    fn saved_words_name_every_quality_and_source_once() {
+        for q in Quality::ALL {
+            assert_eq!(Quality::from_token(q.token()), Some(q));
+            assert!(!q.token().is_empty() && !q.token().contains(' '));
+        }
+        for h in [Heard::Heard, Heard::Suggested, Heard::Set] {
+            assert_eq!(Heard::from_token(h.token()), Some(h));
+        }
+        assert_eq!(Quality::from_token(""), None);
+        assert_eq!(Heard::from_token("yours"), None);
+    }
+
+    /// Contract 4's line heard again: yours stays, a chord heard now wins
+    /// elsewhere, a suggested chord stays only where nothing is heard,
+    /// and a chord heard before goes once nothing plays it.
+    #[test]
+    fn hearing_again_keeps_your_chords_and_follows_the_rest() {
+        let mut line = ChordTimeline::of(&[(cm7(), BAR), (fm7(), BAR)], Heard::Heard);
+        assert!(line.set_at(BAR, ChordAnswer::Chord(ab())));
+        // The row now plays Cm7 Cm7 Fm7 Fm7 over four bars.
+        let heard = ChordTimeline::of(&[(cm7(), 2 * BAR), (fm7(), 2 * BAR)], Heard::Heard);
+        let again = line.rehear(&heard);
+        assert_eq!(again.len(), 4 * BAR);
+        assert_eq!(again.names(), "Cm7 Abmaj7 Fm7");
+        let s = again.spans();
+        assert_eq!((s[0].start, s[0].len, s[0].heard), (0, BAR, Heard::Heard));
+        assert_eq!((s[1].start, s[1].len, s[1].heard), (BAR, BAR, Heard::Set));
+        assert_eq!((s[2].start, s[2].len), (2 * BAR, 2 * BAR));
+
+        // A suggested line under a beat: nothing heard keeps it whole.
+        let suggested = ChordTimeline::of(&[(cm7(), BAR), (fm7(), BAR)], Heard::Suggested);
+        let nothing = ChordTimeline::whole(2 * BAR, ChordAnswer::NoClearChord, Heard::Heard);
+        assert_eq!(suggested.rehear(&nothing), suggested);
+        assert_eq!(suggested.rehear(&ChordTimeline::default()), suggested);
+        // A tune joins: its chords win where they are clear.
+        let tune = ChordTimeline::new(vec![
+            ChordSpan::new(0, BAR, ChordAnswer::Chord(ab()), Heard::Heard),
+            ChordSpan::new(BAR, BAR, ChordAnswer::NoClearChord, Heard::Heard),
+        ])
+        .unwrap();
+        let joined = suggested.rehear(&tune);
+        assert_eq!(joined.names(), "Abmaj7 Fm7");
+        assert_eq!(joined.spans()[1].heard, Heard::Suggested);
+
+        // Heard chords whose notes went: no clear chord, nothing invented.
+        let heard_only = ChordTimeline::of(&[(cm7(), BAR)], Heard::Heard);
+        let gone = heard_only.rehear(&ChordTimeline::whole(
+            BAR,
+            ChordAnswer::NoClearChord,
+            Heard::Heard,
+        ));
+        assert_eq!(gone.names(), "no clear chord");
+
+        // A bass made over suggested Cm7 Fm7 is heard as Cm Fm: the
+        // line keeps its sevenths; a chord that says something new wins.
+        let bass = ChordTimeline::of(
+            &[
+                (Chord::new(0, Quality::Minor), BAR),
+                (Chord::new(5, Quality::Minor), BAR),
+            ],
+            Heard::Heard,
+        );
+        assert_eq!(suggested.rehear(&bass), suggested);
+        let other = ChordTimeline::of(
+            &[(Chord::new(0, Quality::Minor), BAR), (ab(), BAR)],
+            Heard::Heard,
+        );
+        assert_eq!(suggested.rehear(&other).names(), "Cm7 Abmaj7");
+
+        // Two spans of one chord heard apart stay apart.
+        let twice = ChordTimeline::of(&[(cm7(), BAR), (cm7(), BAR)], Heard::Heard);
+        assert_eq!(ChordTimeline::default().rehear(&twice).spans().len(), 2);
+        // A reading's sureness isn't kept with the row.
+        let mut sure = twice.clone();
+        sure.spans[0].sureness = 0.4;
+        sure.spans[0].runner_up = Some(fm7());
+        assert_eq!(ChordTimeline::default().rehear(&sure), twice);
+        assert_eq!(sure.plain(), twice);
+        assert_eq!(twice.cut(BAR + 10).len(), BAR + 10);
+        let looped =
+            ChordTimeline::of(&[(cm7(), BAR), (fm7(), BAR)], Heard::Heard).looped(5 * BAR / 2);
+        assert_eq!(looped.names(), "Cm7 Fm7 Cm7");
+        assert_eq!(looped.len(), 5 * BAR / 2);
+        assert!(ChordTimeline::default().looped(BAR).is_empty());
+        assert_eq!(twice.cut(BAR).spans().len(), 1);
     }
 
     #[test]

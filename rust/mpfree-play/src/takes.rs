@@ -79,6 +79,7 @@
 //! [`Recorder::taken_moves`]: crate::Recorder::taken_moves
 
 use mpfree_seq::arrange::Arrangement;
+use mpfree_seq::mpfree_context::chord::ChordTimeline;
 use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
 use mpfree_seq::steps::{Edit, MovesEdit};
 use mpfree_seq::{
@@ -365,6 +366,13 @@ pub struct Take {
     /// their scenes, before and after. The clips are in `made` and
     /// `removed`.
     pub rows: Option<Box<RowsEdit>>,
+    /// A row's Harmony line changed (composing tools S2.5:
+    /// [`Takes::set_row_chords`], or [`Takes::add_part`] with the chords
+    /// the part was made over).
+    pub chords: Option<Box<ChordsEdit>>,
+    /// A part added by Add a part ([`Takes::add_part`]): its clip is in
+    /// `made`.
+    pub part: bool,
 }
 
 impl Take {
@@ -407,6 +415,9 @@ pub enum Replaced {
     /// Continue (composing tools): the clip carried on by `bars` bars,
     /// kept from its preview.
     Continue { bars: u8 },
+    /// Fit to the new chords (composing tools S2.5): a row's clips moved
+    /// to the chords it plays over now, every one in the same edit.
+    FitChords,
 }
 
 /// A scene editor change: row `row`'s settings before and after.
@@ -427,6 +438,14 @@ pub enum RowsWhat {
     Captured { row: usize },
     /// The scene card's Delete row took row `row` out (5.2).
     Deleted { row: usize },
+}
+
+/// Row `row`'s Harmony line before and after (composing tools S2.5).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChordsEdit {
+    pub row: usize,
+    pub before: ChordTimeline,
+    pub after: ChordTimeline,
 }
 
 /// Rows changed as one edit ([`Takes::rows_edit`]).
@@ -451,6 +470,59 @@ fn whole_scene(project: &Project, row: usize) -> Scene {
 fn put_whole_scene(project: &mut Project, row: usize, s: &Scene) {
     if let Some(at) = project.scene_mut(row) {
         at.clone_from(s);
+    }
+    drop_plain_scenes(project);
+}
+
+/// Row `row`'s Harmony line changed to `line` (kept plain: no reading's
+/// sureness), or `None` when it has that line already. `BadScene` past
+/// the last row or for a line the scene refuses.
+fn chords_edit(
+    project: &Project,
+    row: usize,
+    line: ChordTimeline,
+) -> Result<Option<ChordsEdit>, ModelError> {
+    if row >= mpfree_seq::SCENES {
+        return Err(ModelError::BadScene);
+    }
+    let after = Scene {
+        chords: line.plain(),
+        ..Scene::default()
+    };
+    after.check()?;
+    let before = whole_scene(project, row).chords;
+    if before == after.chords {
+        return Ok(None);
+    }
+    Ok(Some(ChordsEdit {
+        row,
+        before,
+        after: after.chords,
+    }))
+}
+
+/// Row `row`'s chords, as they are now (none for a plain row).
+fn row_chords(project: &Project, row: usize) -> ChordTimeline {
+    project
+        .scene(row)
+        .map(|s| s.chords.clone())
+        .unwrap_or_default()
+}
+
+/// The lowest destination no track of `project` uses: a new track's
+/// ([`Takes::add_track_as`], [`Takes::add_part_on_new_track`]; a new
+/// project's tracks use their own numbers).
+pub fn lowest_free_dest(project: &Project) -> DestId {
+    (0..=MAX_TRACKS as DestId)
+        .find(|d| project.tracks.iter().all(|t| t.dest != *d))
+        .unwrap_or(project.tracks.len() as DestId)
+}
+
+/// Give row `row` the Harmony line `line`, leaving no plain rows at the
+/// end of the project's scenes.
+fn put_row_chords(project: &mut Project, row: usize, line: &ChordTimeline) {
+    if let Some(sc) = project.scene_mut(row) {
+        sc.chords.clone_from(line);
     }
     drop_plain_scenes(project);
 }
@@ -906,6 +978,200 @@ impl Takes {
         Ok(number)
     }
 
+    /// Put each `(track, slot, clip)` in place of the clip there, all as
+    /// one edit for `why` (Fit to the new chords moves a row's clips at
+    /// once, and one UNDO takes them all back). Each keeps its slot's
+    /// clip id. The edit's number. `BadSlot` if a slot is empty or named
+    /// twice; a clip's own refusals as they are. Nothing changes on an
+    /// error.
+    pub fn replace_clips(
+        &mut self,
+        project: &mut Project,
+        clips: Vec<(usize, usize, Clip)>,
+        why: Replaced,
+    ) -> Result<u32, ModelError> {
+        for (i, (track, slot, clip)) in clips.iter().enumerate() {
+            clip.check()?;
+            let filled = project
+                .tracks
+                .get(*track)
+                .and_then(|t| t.slots.get(*slot))
+                .is_some_and(Option::is_some);
+            let twice = clips[..i].iter().any(|(t, s, _)| (t, s) == (track, slot));
+            if !filled || twice {
+                return Err(ModelError::BadSlot);
+            }
+        }
+        let mut removed = Vec::with_capacity(clips.len());
+        let mut made = Vec::with_capacity(clips.len());
+        for (track, slot, clip) in clips {
+            let s = slot_mut(project, track, slot).expect("checked");
+            let clip = Clip {
+                id: s.as_ref().map_or(clip.id, |c| c.id),
+                ..clip
+            };
+            let now = s.replace(clip.clone()).expect("checked");
+            removed.push((track, slot, now));
+            made.push((track, slot, clip));
+        }
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            replaced: Some(why),
+            removed,
+            made,
+            ..Take::default()
+        });
+        Ok(number)
+    }
+
+    /// Give row `row` the Harmony line `line` (composing tools S2.5: a
+    /// chord set on the row, or the suggested ones kept), as an edit of
+    /// its own. Undo gives the row its line back while it has the one the
+    /// edit gave it; redo the same way. The edit's number, or the latest
+    /// edit's when the row has that line already (no take then).
+    /// `BadScene` past the last row or for a line too long; nothing
+    /// changes then.
+    pub fn set_row_chords(
+        &mut self,
+        project: &mut Project,
+        row: usize,
+        line: ChordTimeline,
+    ) -> Result<u32, ModelError> {
+        let Some(edit) = chords_edit(project, row, line)? else {
+            return Ok(self.edits);
+        };
+        put_row_chords(project, row, &edit.after);
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            chords: Some(Box::new(edit)),
+            ..Take::default()
+        });
+        Ok(number)
+    }
+
+    /// Add a part (composing tools S2.5): put `clip` in the empty clip
+    /// `slot` of `track` and, when `line` is given, give row `slot` that
+    /// Harmony line (the chords the part was made over, suggested for a
+    /// row with nothing to hear), as one edit that one UNDO takes back.
+    /// A blank clip there ([`Clip::is_blank`], the Sequencer's empty clip,
+    /// S2.6) makes way for it, and UNDO puts it back; a song that plays
+    /// it keeps its own copy, as ERASE leaves it. The clip gets a new id.
+    /// The edit's number. `BadSlot` if there is no such slot or it holds
+    /// a clip with something in it; `BadScene` for a line too long; the
+    /// clip's own refusals as they are. Nothing changes on an error.
+    pub fn add_part(
+        &mut self,
+        project: &mut Project,
+        track: usize,
+        slot: usize,
+        clip: Clip,
+        line: Option<ChordTimeline>,
+    ) -> Result<u32, ModelError> {
+        clip.check()?;
+        let edit = match line {
+            Some(l) => chords_edit(project, slot, l)?,
+            None => None,
+        };
+        // A blank clip makes way, and comes back if the part can't go in.
+        let blank = slot_mut(project, track, slot)
+            .filter(|s| s.as_ref().is_some_and(Clip::is_blank))
+            .and_then(Option::take);
+        if let Err(e) = project.put_new_clip(track, slot, clip) {
+            if let (Some(b), Some(s)) = (blank, slot_mut(project, track, slot)) {
+                *s = Some(b);
+            }
+            return Err(e);
+        }
+        let mut kept_by_song = Vec::new();
+        if let Some(b) = blank.as_ref().filter(|b| project.arrangement.plays(b.id)) {
+            project
+                .arrangement
+                .clips
+                .keep(b.clone())
+                .expect("a cell's clip has an id no song clip has");
+            kept_by_song.push(b.id);
+        }
+        let clip = project.clip(track, slot).expect("put").clone();
+        if let Some(e) = &edit {
+            put_row_chords(project, slot, &e.after);
+        }
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            part: true,
+            made: vec![(track, slot, clip)],
+            removed: blank.map(|b| vec![(track, slot, b)]).unwrap_or_default(),
+            kept_by_song,
+            chords: edit.map(Box::new),
+            ..Take::default()
+        });
+        Ok(number)
+    }
+
+    /// Add a part on a new track (composing tools S2.6, New track): `track`
+    /// goes in at the end of the project, as [`Takes::add_track_as`] adds
+    /// one (the lowest destination no track uses, its lasting id), with
+    /// `clip` in its slot `slot` and, when `line` is given, row `slot`'s
+    /// Harmony line, as one edit that one UNDO takes back (the clip, the
+    /// chords and the track). The edit's number and the new track's index.
+    /// `TooManyTracks` at [`MAX_TRACKS`], `BadScene` for a line too long,
+    /// the clip's own refusals as they are; nothing changes on an error.
+    pub fn add_part_on_new_track(
+        &mut self,
+        project: &mut Project,
+        mut track: Track,
+        slot: usize,
+        clip: Clip,
+        line: Option<ChordTimeline>,
+    ) -> Result<(u32, usize), ModelError> {
+        if project.tracks.len() >= MAX_TRACKS {
+            return Err(ModelError::TooManyTracks);
+        }
+        clip.check()?;
+        let edit = match line {
+            Some(l) => chords_edit(project, slot, l)?,
+            None => None,
+        };
+        track.dest = lowest_free_dest(project);
+        project.give_track_id(&mut track);
+        let index = project.tracks.len();
+        project.tracks.push(track);
+        if let Err(e) = project.put_new_clip(index, slot, clip) {
+            project.tracks.pop();
+            return Err(e);
+        }
+        let clip = project.clip(index, slot).expect("put").clone();
+        if let Some(e) = &edit {
+            put_row_chords(project, slot, &e.after);
+        }
+        // The track as it went in, empty: the take puts the clip back in
+        // it on REDO.
+        let mut empty = project.tracks[index].clone();
+        if let Some(s) = empty.slots.get_mut(slot) {
+            *s = None;
+        }
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            part: true,
+            made: vec![(index, slot, clip)],
+            track_added: Some((index, empty)),
+            chords: edit.map(Box::new),
+            ..Take::default()
+        });
+        Ok((number, index))
+    }
+
     /// ERASE + a clip (Jay after live test 3): take clip `slot` of
     /// `track` out of its slot, as an edit of its own that undo puts back.
     /// A clip the song plays moves to the song's own clips, with its id,
@@ -963,9 +1229,7 @@ impl Takes {
         if project.tracks.len() >= MAX_TRACKS {
             return Err(ModelError::TooManyTracks);
         }
-        track.dest = (0..=MAX_TRACKS as DestId)
-            .find(|d| project.tracks.iter().all(|t| t.dest != *d))
-            .unwrap_or(project.tracks.len() as DestId);
+        track.dest = lowest_free_dest(project);
         // Its lasting id, kept by the take, so REDO brings back the same
         // track.
         project.give_track_id(&mut track);
@@ -1589,6 +1853,11 @@ impl Takes {
                 }
             }
         }
+        if let Some(e) = take.chords.as_deref() {
+            if row_chords(project, e.row) == e.after {
+                put_row_chords(project, e.row, &e.before);
+            }
+        }
         if let Some((index, kept)) = &mut take.track_added {
             // Kept as it is now (its name, its clips), for redo.
             if project.tracks.len() == *index + 1 {
@@ -1649,6 +1918,11 @@ impl Takes {
                 if whole_scene(project, *row) == *was {
                     put_whole_scene(project, *row, now);
                 }
+            }
+        }
+        if let Some(e) = take.chords.as_deref() {
+            if row_chords(project, e.row) == e.before {
+                put_row_chords(project, e.row, &e.after);
             }
         }
         remove_each(project, &take.erased);
@@ -2033,6 +2307,207 @@ mod tests {
         assert_eq!(names(&p, &k), [RecId(9)], "the history let go of it");
         k.clear();
         assert_eq!(k.recordings().count(), 0);
+    }
+
+    /// Composing tools S2.5: a chord set on a row is one edit that UNDO
+    /// takes back and REDO puts back; the same line again is no edit.
+    #[test]
+    fn a_rows_chords_are_one_edit_undo_takes_back() {
+        use mpfree_seq::mpfree_context::chord::{Chord, ChordTimeline, Heard, Quality};
+        let mut p = project();
+        let mut t = Takes::new(8);
+        let cm = Chord::new(0, Quality::Minor7);
+        let mut line = ChordTimeline::of(&[(cm, 1920), (cm, 1920)], Heard::Heard);
+        let n = t.set_row_chords(&mut p, 0, line.clone()).unwrap();
+        assert_eq!(p.scene(0).unwrap().chords, line);
+        assert_eq!(
+            t.set_row_chords(&mut p, 0, line.clone()),
+            Ok(n),
+            "nothing new"
+        );
+        line.set_at(
+            1920,
+            mpfree_seq::mpfree_context::chord::ChordAnswer::Chord(Chord::new(8, Quality::Major7)),
+        );
+        t.set_row_chords(&mut p, 0, line.clone()).unwrap();
+        assert_eq!(p.scene(0).unwrap().chords.names(), "Cm7 Abmaj7");
+        t.undo(&mut p);
+        assert_eq!(p.scene(0).unwrap().chords.names(), "Cm7 Cm7");
+        t.undo(&mut p);
+        assert!(p.scenes.is_empty(), "a plain row leaves no scene behind");
+        t.redo(&mut p);
+        t.redo(&mut p);
+        assert_eq!(p.scene(0).unwrap().chords, line);
+        let long = ChordTimeline::of(&[(cm, mpfree_seq::MAX_CLIP_TICKS + 1)], Heard::Set);
+        assert_eq!(t.set_row_chords(&mut p, 0, long), Err(ModelError::BadScene));
+        assert_eq!(
+            t.set_row_chords(&mut p, mpfree_seq::SCENES, line.clone()),
+            Err(ModelError::BadScene)
+        );
+        assert_eq!(p.scene(0).unwrap().chords, line);
+    }
+
+    /// Fit to the new chords: every clip of the row in one edit, one UNDO
+    /// for all; a slot named twice or an empty one refuses, changing
+    /// nothing.
+    #[test]
+    fn clips_replaced_together_are_one_undo() {
+        let mut p = project();
+        let mut b = Track::new("b", 1);
+        b.slots[0] = Some(Clip::new("bass", 1920));
+        p.tracks.push(b);
+        p.give_clip_ids();
+        let ids = (p.clip(0, 0).unwrap().id, p.clip(1, 0).unwrap().id);
+        let before = p.clone();
+        let mut t = Takes::new(8);
+        let fitted = |name: &str, len| Clip::new(name, len);
+        assert_eq!(
+            t.replace_clips(
+                &mut p,
+                vec![(0, 0, fitted("c2", 3840)), (0, 0, fitted("c3", 3840))],
+                Replaced::FitChords
+            ),
+            Err(ModelError::BadSlot)
+        );
+        assert_eq!(
+            t.replace_clips(
+                &mut p,
+                vec![(0, 0, fitted("c2", 3840)), (0, 5, fitted("x", 960))],
+                Replaced::FitChords
+            ),
+            Err(ModelError::BadSlot)
+        );
+        assert_eq!(p, before);
+        t.replace_clips(
+            &mut p,
+            vec![(0, 0, fitted("c2", 3840)), (1, 0, fitted("bass2", 1920))],
+            Replaced::FitChords,
+        )
+        .unwrap();
+        assert_eq!(p.clip(0, 0).unwrap().name, "c2");
+        assert_eq!((p.clip(0, 0).unwrap().id, p.clip(1, 0).unwrap().id), ids);
+        assert_eq!(t.done().last().unwrap().replaced, Some(Replaced::FitChords));
+        t.undo(&mut p);
+        assert_eq!(p, before);
+        t.redo(&mut p);
+        assert_eq!(p.clip(1, 0).unwrap().name, "bass2");
+    }
+
+    /// Add a part kept: the clip and the row's chords it was made over,
+    /// one UNDO for both.
+    #[test]
+    fn a_part_and_its_chords_are_one_edit() {
+        use mpfree_seq::mpfree_context::chord::{Chord, ChordTimeline, Heard, Quality};
+        let mut p = project();
+        p.tracks.push(Track::new("bass", 1));
+        // Track 1's clip has a note: it is no place for a part.
+        p.tracks[0].slots[0]
+            .as_mut()
+            .unwrap()
+            .add_note(taken(0, 1).note)
+            .unwrap();
+        let before = p.clone();
+        let mut t = Takes::new(8);
+        let line = ChordTimeline::of(&[(Chord::new(0, Quality::Minor7), 3840)], Heard::Suggested);
+        assert_eq!(
+            t.add_part(&mut p, 0, 0, Clip::new("full", 3840), Some(line.clone())),
+            Err(ModelError::BadSlot)
+        );
+        assert_eq!(p, before);
+        t.add_part(&mut p, 1, 0, Clip::new("bass", 3840), Some(line.clone()))
+            .unwrap();
+        assert_eq!(p.clip(1, 0).unwrap().name, "bass");
+        assert_eq!(p.scene(0).unwrap().chords, line);
+        t.undo(&mut p);
+        // Ids aren't given back.
+        assert_eq!((&p.tracks, &p.scenes), (&before.tracks, &before.scenes));
+        t.redo(&mut p);
+        assert_eq!(p.scene(0).unwrap().chords, line);
+        // No line: only the clip.
+        t.add_part(&mut p, 1, 1, Clip::new("again", 3840), None)
+            .unwrap();
+        let last = t.done().last().unwrap();
+        assert!(last.part && last.chords.is_none());
+    }
+
+    /// A blank clip (the Sequencer's empty clip, S2.6) makes way for the
+    /// part, and UNDO puts it back; a clip with notes never does.
+    #[test]
+    fn a_part_takes_a_blank_clips_place() {
+        let mut p = project();
+        let mut bass = Track::new("bass", 1);
+        bass.slots[0] = Some(Clip::new("empty", 7680));
+        p.tracks.push(bass);
+        p.give_clip_ids();
+        let before = p.clone();
+        let mut t = Takes::new(8);
+        t.add_part(&mut p, 1, 0, Clip::new("bass", 3840), None)
+            .unwrap();
+        assert_eq!(p.clip(1, 0).unwrap().name, "bass");
+        t.undo(&mut p);
+        assert_eq!(p.tracks, before.tracks);
+        t.redo(&mut p);
+        assert_eq!(p.clip(1, 0).unwrap().name, "bass");
+        // Something in it (a loop's cell): it stays, and nothing changes.
+        let mut c = Clip::new("loop", 3840);
+        c.looped = Some(0);
+        p.tracks[1].slots[1] = Some(c);
+        let now = p.clone();
+        assert_eq!(
+            t.add_part(&mut p, 1, 1, Clip::new("bass", 3840), None),
+            Err(ModelError::BadSlot)
+        );
+        assert_eq!(p, now);
+    }
+
+    /// A part on a new track (S2.6, New track) is one edit: UNDO takes
+    /// the clip and the track away, REDO brings both back; with no room
+    /// for a track nothing changes.
+    #[test]
+    fn a_part_on_a_new_track_is_one_edit() {
+        let mut p = project();
+        p.give_clip_ids();
+        let before = p.clone();
+        let mut t = Takes::new(8);
+        let (_, index) = t
+            .add_part_on_new_track(
+                &mut p,
+                Track::new("Bass", 0),
+                2,
+                Clip::new("bass", 3840),
+                None,
+            )
+            .unwrap();
+        assert_eq!(index, before.tracks.len());
+        assert_eq!(p.tracks[index].name, "Bass");
+        assert_eq!(p.clip(index, 2).unwrap().name, "bass");
+        assert_ne!(p.tracks[index].id, mpfree_seq::TrackId::NONE);
+        assert!(p.tracks[..index]
+            .iter()
+            .all(|o| o.dest != p.tracks[index].dest));
+        t.undo(&mut p);
+        assert_eq!(p.tracks, before.tracks);
+        t.redo(&mut p);
+        assert_eq!(p.tracks.len(), index + 1);
+        assert_eq!(p.clip(index, 2).unwrap().name, "bass");
+        t.undo(&mut p);
+        assert_eq!(p.tracks, before.tracks);
+        // No room: nothing changes.
+        while p.tracks.len() < MAX_TRACKS {
+            p.tracks.push(Track::new("t", 0));
+        }
+        let full = p.clone();
+        assert_eq!(
+            t.add_part_on_new_track(
+                &mut p,
+                Track::new("Bass", 0),
+                0,
+                Clip::new("bass", 3840),
+                None
+            ),
+            Err(ModelError::TooManyTracks)
+        );
+        assert_eq!(p, full);
     }
 
     fn taken(tick: i64, take: u32) -> Taken {

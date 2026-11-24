@@ -127,6 +127,38 @@ pub fn learn_addr_named(
     }
 }
 
+/// A Drums try on Add a part's New track (composing tools S2.6b) plays
+/// the Drums synth made for it (app/add_sound.rs), whose pads the screen
+/// doesn't know: the first pad for each drum (kick, snare, hats, the
+/// rest), read from the pads' models there. Any other action as it was.
+fn new_track_drums(
+    app: &app::App,
+    mix: &mixing::MixHost,
+    a: mpfree_time_ui::TimeAction,
+) -> mpfree_time_ui::TimeAction {
+    use mpfree_context::groove::Lane;
+    use mpfree_synth::drum_params::{field, model_of, pad_id, MODELS, PADS};
+    use mpfree_time_ui::adding::AddAction;
+    use mpfree_time_ui::TimeAction;
+    let TimeAction::Add(AddAction::Ask(mut ask)) = a else {
+        return a;
+    };
+    if ask.new_track.is_some() && ask.part == mpfree_context::PartRole::Drums {
+        let node = app.add_sound_holder().and_then(|h| mix.instruments.node(h));
+        ask.pads = match node {
+            Some(node) => {
+                let lanes: [Option<Lane>; PADS] = std::array::from_fn(|p| {
+                    let m = model_of(node.param(pad_id(p, field::MODEL)));
+                    mpfree_compose::lane_named(MODELS[usize::from(m)])
+                });
+                Lane::ALL.map(|lane| lanes.iter().position(|l| *l == Some(lane)).map(|p| p as u8))
+            }
+            None => [None; 4],
+        };
+    }
+    TimeAction::Add(AddAction::Ask(ask))
+}
+
 /// The engines the control side reaches, borrowed for one action or effect.
 pub struct Desk<'a> {
     pub app: &'a mut app::App,
@@ -397,6 +429,7 @@ impl Desk<'_> {
                 open,
                 transpose,
             } => fx.extend(app.levels_shown(on, open, transpose)),
+            gui::FromUi::AddPartSound(s) => fx.extend(app.add_part_sound(s)),
             gui::FromUi::Time(a) => {
                 use crate::rec_arm::Press;
                 use mpfree_time_ui::TimeAction::Transport;
@@ -451,11 +484,23 @@ impl Desk<'_> {
                         return None;
                     }
                 }
+                let a = new_track_drums(app, mix, a);
                 let picked = matches!(
                     a,
                     mpfree_time_ui::TimeAction::Arm(Some(_)) | mpfree_time_ui::TimeAction::Pick(_)
                 );
+                let keep = matches!(
+                    a,
+                    mpfree_time_ui::TimeAction::Add(mpfree_time_ui::adding::AddAction::Keep)
+                );
+                let tracks_before = time.project().tracks.len();
                 fx.extend(crate::time_action(out, time, tracks, looper, app, mix, a));
+                // Keep added New track's track (composing tools S2.6b): it
+                // plays its synth on, before the period's follow could
+                // take it for a + Track.
+                if keep && time.project().tracks.len() > tracks_before {
+                    fx.extend(app.add_part_sound(app::AddSound::Kept));
+                }
                 // Picking a track arms its notes, as Bitwig's auto-arm
                 // (not while the arm is pinned: `arm` leaves it).
                 if picked {
@@ -862,6 +907,26 @@ impl Desk<'_> {
             app::Effect::QLinkBankBack => out.show(gui::ToUi::QLinkBankBack),
             app::Effect::PadCopy { from, to } => out.show(gui::ToUi::PadCopy { from, to }),
             app::Effect::PadClear { pad } => out.show(gui::ToUi::PadClear(pad)),
+            // Add a part's New track (composing tools S2.6b): the track Keep
+            // would add plays the synth made for it, or no longer; quietly,
+            // as the Synth tab shows the selected track's.
+            app::Effect::AddPartSend { track, to } => {
+                match mix.instruments.set_send(track, to) {
+                    Ok(()) => out.note(&match to {
+                        Some(h) => format!(
+                            "add a part: the new track {} plays {}",
+                            track + 1,
+                            mix.instruments.held(h).map_or("its synth", |h| h.name)
+                        ),
+                        None => format!("add a part: the new track {} plays nothing", track + 1),
+                    }),
+                    Err(why) => out.note(&format!(
+                        "add a part: the new track {} can't play its synth ({why:?})",
+                        track + 1
+                    )),
+                }
+                app.set_track_sends(&crate::sends_now(&mix.instruments));
+            }
             // SHIFT + TC: the armed track's Quantise while recording.
             app::Effect::RecordQuantiseToggle => {
                 let line = time
