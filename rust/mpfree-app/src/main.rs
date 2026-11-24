@@ -20562,8 +20562,11 @@ mod tests {
             assert_eq!(r.looper.looper.status().layers, 2);
             said
         };
-        // Gone.
-        std::fs::remove_file(&file).unwrap();
+        // Gone: the folder emptied and made again (main.rs never removes a
+        // file by name; the MPC inventory check holds it to that).
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!file.exists());
         let said = refused(&mut *r, &mut one);
         assert!(said.contains("loop_"), "it names the file: {said}");
         // Short: half of its audio.
