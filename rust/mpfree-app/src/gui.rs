@@ -8104,15 +8104,21 @@ impl Player {
         self.looper_page
             .update(&mut self.ui, &self.looper, &self.settings);
         // Snap anyway and Not now at the hint line's end while a snap
-        // asks (the hint line says what).
-        let asking = self.looper.smart.asking;
+        // asks, or Read as and Discard while the picked loop's first pass
+        // waits on its Length (the hint line says what).
+        let asking = match (self.looper.smart.length, self.looper.smart.asking) {
+            (Some(r), _) => Some((crate::looping::length_ask_button(&r), "Discard")),
+            (None, Some((snap, _))) => {
+                Some((crate::looping::ask_button(snap).to_string(), "Not now"))
+            }
+            (None, None) => None,
+        };
         // (Reached only when its words change: a reach redraws it.)
-        if let Some((snap, _)) = asking {
-            let yes = crate::looping::ask_button(snap);
+        if let Some((yes, no)) = &asking {
             let differs = self
                 .ui
                 .get::<crate::looper_tab::AskButtons>(crate::looper_tab::ASK)
-                .is_some_and(|b| b.yes != yes);
+                .is_some_and(|b| b.yes != *yes || b.no != *no);
             if let Some(b) = differs
                 .then(|| {
                     self.ui
@@ -8120,7 +8126,8 @@ impl Player {
                 })
                 .flatten()
             {
-                b.yes = yes.to_string();
+                b.yes = yes.clone();
+                b.no = no.to_string();
             }
         }
         let (w, h) = self.ui.size();
@@ -9162,6 +9169,14 @@ impl Player {
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.clip_card => time_view::clip_card_hint(&self.time),
                 View::Arrange => CLIPS_HINT.to_string(),
+                // A first pass waits on its Length: Read as and Discard
+                // float at this line's end.
+                View::Looper if self.looper.smart.length.is_some() => self
+                    .looper
+                    .smart
+                    .length
+                    .map(|r| crate::looping::length_ask_words(self.looper.selected, &r))
+                    .unwrap_or_default(),
                 // A snap over recorded audio asks: Snap anyway and Not
                 // now float at this line's end.
                 View::Looper if self.looper.smart.asking.is_some() => self

@@ -592,6 +592,40 @@ pub fn decide<E: Event>(
     }
 }
 
+/// [`decide`] for a reading of `bars` whose runner-up, when the bar
+/// count is in doubt, is `other` (the reading's [`Reading::other`]): a
+/// move stands only when the runner-up's bars move to the same end.
+/// Each bar count scores the rhythm on a different grid, so a winner
+/// only one of them backs is a guess about the tempo, not your downbeat:
+/// the tap stands, [`Verdict::NotClear`]. On the held-out corpus this
+/// takes a fifth of the wrong moves away for 1.5 % of the moves (the
+/// looper refactor's Finding B). Real-time safe.
+///
+/// [`Reading::other`]: crate::reading::Reading::other
+pub fn decide_agreed<E: Event>(
+    log: &EventLog<E>,
+    ask: &Ask,
+    bars: u32,
+    other: Option<u32>,
+) -> Decision {
+    let d = decide(log, ask, &|_| Some(bars));
+    match other {
+        Some(b) if b != bars && d.verdict == Verdict::Moved => {
+            let o = decide(log, ask, &|_| Some(b));
+            if o.verdict == Verdict::Moved && o.end == d.end {
+                d
+            } else {
+                Decision {
+                    verdict: Verdict::NotClear,
+                    end: ask.tap,
+                    ..d
+                }
+            }
+        }
+        _ => d,
+    }
+}
+
 /// The hit (notes played together) that starts at note `i`: its first
 /// note and one past its last.
 fn hit_at<E: Event>(notes: &[E], i: usize, together: u64) -> (usize, usize) {
@@ -1221,5 +1255,47 @@ mod tests {
         assert_eq!(reach(RATE, 150.0), ms(100.0));
         assert_eq!(reach(RATE, 200.0), ms(75.0));
         assert_eq!(reach(RATE, f64::NAN), ms(100.0));
+    }
+
+    #[test]
+    fn a_bar_count_in_doubt_moves_only_when_both_readings_agree() {
+        // Two bars at 120 BPM, a tap 60 ms late: read as 2 bars or as 4,
+        // the end is the downbeat you played, so it moves.
+        let notes = beat(120.0, 2, 300.0, &|_| 0.0);
+        let a = ask(4060.0, 4160.0, 120.0);
+        let log = log_of(&notes);
+        let d = decide_agreed(&log, &a, 2, Some(4));
+        assert_eq!(d, decide(&log, &a, &|_| Some(2)));
+        assert_eq!((d.verdict, d.end), (Verdict::Moved, 10_000 + ms(4000.0)));
+        // No runner-up, or the same bar count: just [`decide`].
+        assert_eq!(decide_agreed(&log, &a, 2, None), d);
+        assert_eq!(decide_agreed(&log, &a, 2, Some(2)), d);
+    }
+
+    #[test]
+    fn a_move_only_one_bar_count_backs_keeps_the_tap() {
+        // You stopped before the downbeat, a fill's last kick a 16th
+        // before it, and tapped 70 ms early. Read as 8 bars, the kick's
+        // grid backs it and the end would move there; read as 2 (the
+        // runner-up), nothing is clear. The bars are a guess, so the tap
+        // stands, with what was found kept for the log.
+        let mut notes = beat(120.0, 2, 0.0, &|_| 0.0);
+        notes.retain(|n| n.frame < 10_000 + ms(3990.0));
+        notes.push(note(3875.0, 36, 120));
+        notes.sort_by_key(|n| n.frame);
+        let a = ask(3930.0, 4030.0, 120.0);
+        let log = log_of(&notes);
+        let alone = decide_agreed(&log, &a, 8, None);
+        assert_eq!(
+            (alone.verdict, alone.end),
+            (Verdict::Moved, 10_000 + ms(3875.0))
+        );
+        assert_eq!(decide(&log, &a, &|_| Some(2)).verdict, Verdict::NotClear);
+        let d = decide_agreed(&log, &a, 8, Some(2));
+        assert_eq!((d.verdict, d.end), (Verdict::NotClear, a.tap), "{d:?}");
+        assert_eq!(
+            (d.best, d.second, d.lead),
+            (alone.best, alone.second, alone.lead)
+        );
     }
 }

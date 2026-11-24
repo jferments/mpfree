@@ -62,7 +62,7 @@
 //! `MPFREE_CORPUS_SEEDS` (seeds, commas between) to play the corpus on
 //! other seeds.
 
-use mpfree_looper::ends::{decide, reach, Ask, NoteLog, Verdict};
+use mpfree_looper::ends::{decide, decide_agreed, reach, Ask, NoteLog, Verdict};
 use mpfree_looper::find::{find, FindJob};
 use mpfree_looper::hits::kit::{Kit, Sound};
 use mpfree_looper::hits::{HitLog, HitTrack};
@@ -494,9 +494,8 @@ fn taps(take: &Take, g: &Groove, wrongs: &mut Vec<String>, what: &str) -> Tally 
             log.push(*n);
         }
         let inner = InnerBeat::new(&log, RATE, take.start, tap_len, bar, beat);
-        let bars = read_bars_with(tap_len, RATE, bar, None, Some(SONG), &|b| inner.fit(b))
-            .unwrap_or(tap_reading)
-            .bars;
+        let heard = read_bars_with(tap_len, RATE, bar, None, Some(SONG), &|b| inner.fit(b))
+            .unwrap_or(tap_reading);
         let ask = Ask {
             rate: RATE,
             start: take.start,
@@ -506,7 +505,8 @@ fn taps(take: &Take, g: &Groove, wrongs: &mut Vec<String>, what: &str) -> Tally 
             bar,
             beat,
         };
-        let d = decide(&log, &ask, &|_| Some(bars));
+        // As the looper decides: a bar count in doubt must agree.
+        let d = decide_agreed(&log, &ask, heard.bars, heard.other.map(|(b, _)| b));
         let played = !take.on_it.is_empty();
         let on_it = |end: u64| {
             end.abs_diff(take.downbeat) <= right || take.on_it.iter().any(|&f| f.abs_diff(end) <= 1)
@@ -1089,15 +1089,16 @@ const HELD_SEED: u64 = 4_040_404;
 /// What the held-out set found (23 Nov 2026), which no rule answers yet:
 /// a fill whose last 16th is a kick, a hit like the opening one, wins
 /// over your tap when nothing is played on the downbeat (from the pads:
-/// 2,392 of 277,992 taps, at 96 to 165 BPM, from taps up to 80 ms
-/// early) and, by ear, sometimes even when it is (the downbeat's kick
-/// alone isn't alike enough in tone). The beat backs it 0.1 to 0.3, and
-/// it is nearer the tap than [`ends::FAR`] of the reach. And 3 like the
+/// 1,898 of 277,992 taps, at 96 to 165 BPM, from taps up to 80 ms
+/// early; 2,392 before a bar count in doubt had to agree, 24 Nov) and,
+/// by ear, sometimes even when it is (the downbeat's kick alone isn't
+/// alike enough in tone). The beat backs it 0.1 to 0.3, and it is
+/// nearer the tap than [`ends::FAR`] of the reach. And 2 like the
 /// corpus's own last one: a tap 75 or 80 ms early, with swing at 132
-/// and 150 BPM, to a hit the beat backs 0.11 to 0.14. The tests allow
-/// these, no more, and no other kind.
-const HELD_KNOWN_WRONG: usize = 2_395;
-const HELD_KNOWN_OTHER: usize = 3;
+/// BPM, to a hit the beat backs 0.14 (a third, at 150 BPM, went with
+/// the agreement). The tests allow these, no more, and no other kind.
+const HELD_KNOWN_WRONG: usize = 1_900;
+const HELD_KNOWN_OTHER: usize = 2;
 const HELD_KNOWN_BY_EAR: usize = 29;
 
 /// How a wrong move to a fill's kick reads (see [`Fill::words`]).
