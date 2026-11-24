@@ -102,12 +102,22 @@ pub fn drafts_keeping(
     req: &Continue,
     keeping: Option<(&Continued, &[usize])>,
 ) -> Result<Vec<Draft>, Refused> {
+    drafts_with(req, keeping, None)
+}
+
+/// [`drafts_keeping`], leading into another clip's opening when `into`
+/// says (a Bridge, [`crate::bridge`]; not repaired).
+pub(crate) fn drafts_with(
+    req: &Continue,
+    keeping: Option<(&Continued, &[usize])>,
+    into: Option<&Into>,
+) -> Result<Vec<Draft>, Refused> {
     let n = usize::from(req.settings.bars.max(1));
     let count = if n > 8 { DRAFTS_LONG } else { DRAFTS };
     let mut out: Vec<Draft> = Vec::new();
     let mut first_err: Option<Refused> = None;
     for d in 0..count {
-        match draft_keeping(req, d, keeping) {
+        match draft_with(req, d, keeping, into) {
             Ok(x) => out.push(x),
             Err(e) => {
                 first_err.get_or_insert(e);
@@ -128,10 +138,21 @@ pub fn drafts_keeping(
     let from = yours as i32 * phrasing(req, &ChordTimeline::default()).grid.bar;
     finalists(&mut out, from);
     let kept = kept_bars(keeping, yours, yours + n);
-    if let Some(best) = out.first_mut() {
+    if let (Some(best), None) = (out.first_mut(), into) {
         repair(req, best, &kept);
     }
     Ok(out)
+}
+
+/// Where a Bridge leads ([`crate::bridge`]): the next clip's first note,
+/// as a scale place in this clip's key, the chord degrees that lead into
+/// its first chord, and its bars (from each bar's start), which the
+/// second half of the new bars grow from.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Into {
+    pub pos: i32,
+    pub chords: Vec<u8>,
+    pub bars: Vec<Vec<GridNote>>,
 }
 
 /// How far two results' new notes (from step `from`) differ: the share of
@@ -201,6 +222,7 @@ pub(crate) fn verdict_for(req: &Continue, made: &Continued, sk: &Sketch) -> Verd
         copy_bars: copy_bars(&s.style),
         landings: &landings,
         rests: if s.keeps.rhythm { &[] } else { &sk.rests },
+        lead_to: None,
     })
 }
 
@@ -668,9 +690,20 @@ struct Frame<'a, 'b> {
     under: Option<u8>,
     your_bars: &'b [Vec<GridNote>],
     head: &'b [GridNote],
+    /// From this bar on, the bars grow from these instead of yours (a
+    /// Bridge's second half, from the next clip's bars).
+    late: Option<(usize, &'b [Vec<GridNote>])>,
 }
 
 impl Frame<'_, '_> {
+    /// The bar new bar `b` grows from.
+    fn src(&self, b: usize) -> &[GridNote] {
+        match self.late {
+            Some((from, bars)) if b >= from && !bars.is_empty() => &bars[(b - from) % bars.len()],
+            _ => &self.your_bars[b % self.your_bars.len()],
+        }
+    }
+
     /// The next bar's anchor, when it falls on that bar's downbeat.
     fn anchor_after(&self, b: usize) -> Option<i32> {
         let at = (b as i32 + 1) * self.ph.grid.bar;
@@ -700,7 +733,7 @@ impl Frame<'_, '_> {
         let bp = self.sketch.plan[b];
         let mut rd = ph.dice(s, Job::Rhythm, b, attempt);
         let mut pd = ph.dice(s, Job::Pitch, b, attempt);
-        let src = &self.your_bars[b % self.your_bars.len()];
+        let src = self.src(b);
         let anchor = self.fixed.iter().find(|f| f.bar == b).map(|f| Fixed {
             on: f.on - off,
             ..*f
@@ -772,6 +805,16 @@ pub fn draft_keeping(
     d: u16,
     keeping: Option<(&Continued, &[usize])>,
 ) -> Result<Draft, Refused> {
+    draft_with(req, d, keeping, None)
+}
+
+/// [`draft_keeping`], leading into `into` when given.
+pub(crate) fn draft_with(
+    req: &Continue,
+    d: u16,
+    keeping: Option<(&Continued, &[usize])>,
+    into: Option<&Into>,
+) -> Result<Draft, Refused> {
     let s = req.settings;
     let yours = your_bars(req);
     let total = yours + usize::from(s.bars.max(1));
@@ -785,7 +828,16 @@ pub fn draft_keeping(
     let ph0 = phrasing(req, &empty);
     let grid: Grid = ph0.grid;
     let gb = grid.bar;
-    let sk = sketch(&ph0, s, total, d);
+    let mut sk = sketch(&ph0, s, total, d);
+    if let Some(i) = into {
+        // The last note leads into the next clip's first, over a chord
+        // leading into its first chord.
+        if let Some(c) = sk.anchors.iter_mut().find(|a| a.kind == AnchorKind::Close) {
+            c.aim = i.pos;
+            c.notes = vec![i.pos.rem_euclid(7), 4];
+            c.chords = i.chords.clone();
+        }
+    }
     let kept = kept_bars(keeping, yours, total);
     let is_kept = |b: usize| kept.contains(&b);
     let old = keeping.map(|(before, _)| before);
@@ -955,6 +1007,7 @@ pub fn draft_keeping(
         under,
         your_bars: &your_bars,
         head: &head,
+        late: into.map(|x| (yours + (total - yours) / 2, x.bars.as_slice())),
     };
     let mut notes: Vec<GridNote> = ph
         .yours
@@ -984,6 +1037,7 @@ pub fn draft_keeping(
                     })
                     .flatten()
             })
+            .or_else(|| (b + 1 == total).then(|| into.map(|x| x.pos)).flatten())
             .or_else(|| {
                 (b + 1 == total && req.loops)
                     .then(|| ph.yours.first().map(|m| m.pos))
@@ -1035,6 +1089,7 @@ pub fn draft_keeping(
         copy_bars: copy_bars(&s.style),
         landings: &landings,
         rests: if s.keeps.rhythm { &[] } else { &sk.rests },
+        lead_to: into.map(|i| i.pos),
     });
     Ok(Draft {
         number: d,
@@ -1160,6 +1215,7 @@ fn refill(
         under,
         your_bars: &your_bars,
         head: &head,
+        late: None,
     };
     let mut notes = before.line.notes.clone();
     let mut sims = before.line.similarity.clone();

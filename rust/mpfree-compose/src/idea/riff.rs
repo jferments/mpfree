@@ -830,6 +830,7 @@ pub(super) fn judge_riff(
         copy_bars: copy_bars(style),
         landings: &[],
         rests: &[],
+        lead_to: None,
     });
 
     IdeaVerdict {

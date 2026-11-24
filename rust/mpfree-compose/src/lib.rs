@@ -113,6 +113,7 @@
 pub mod baseline;
 pub mod beat;
 pub mod bind;
+pub mod bridge;
 pub mod cells;
 pub mod clip_style;
 pub mod critic;

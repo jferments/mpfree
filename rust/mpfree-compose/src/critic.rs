@@ -63,6 +63,9 @@ pub struct Heard<'a> {
     pub landings: &'a [Landing],
     /// The plan's rests, as `(from, to)` in steps; empty with no plan.
     pub rests: &'a [(i32, i32)],
+    /// Leading back leads to this scale place instead of your first note
+    /// (a Bridge leads into the next clip's first note).
+    pub lead_to: Option<i32>,
 }
 
 /// One check's answer.
@@ -175,6 +178,7 @@ pub fn judge_continue(req: &Continue, new: &[Note], chords: &ChordTimeline) -> V
         copy_bars: copy_bars(&req.settings.style),
         landings: &[],
         rests: &[],
+        lead_to: None,
     })
 }
 
@@ -290,7 +294,10 @@ fn lands(h: &Heard, new: &[GridNote]) -> Check {
         Ending::Home => last.alt == 0 && matches!(degree, 0 | 2 | 4),
         Ending::Open => degree != 0 || last.alt != 0,
         Ending::LoopsBack => {
-            let first = h.notes.first().map_or(last.pos, |m| m.pos);
+            let first = h
+                .lead_to
+                .or_else(|| h.notes.first().map(|m| m.pos))
+                .unwrap_or(last.pos);
             (last.pos - first).abs() <= 2 || degree == 4
         }
     };
@@ -642,6 +649,7 @@ mod tests {
             copy_bars: 2,
             landings: &[],
             rests: &[],
+            lead_to: None,
         }
     }
 
