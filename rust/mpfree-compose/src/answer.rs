@@ -83,6 +83,9 @@ pub struct Call<'a> {
     /// them. Bars, Ending, Similarity and what is kept are the reply's.
     pub settings: &'a Settings,
     pub reply: Reply,
+    /// Answers for: None is Like mine (as long as the call, in whole bars:
+    /// 1, 2 or 4); Some(1, 2 or 4) is that many bars.
+    pub bars: Option<u8>,
 }
 
 /// An answer, ready to play.
@@ -92,6 +95,8 @@ pub struct Answered {
     pub notes: Vec<Note>,
     /// How long it plays: whole bars.
     pub length: Tick,
+    /// How long the call was taken to be: whole bars, from its first bar line.
+    pub call_length: Tick,
     /// The call as it was answered: from its first bar line, a long one's
     /// last 4 bars only.
     pub call: Vec<(PlainNote, Source)>,
@@ -127,12 +132,18 @@ pub fn answer(call: &Call) -> Result<Answered, Refused> {
     for (n, _) in &mut notes {
         n.at -= shift;
     }
-    let bars = match last_bar - from_bar {
+    let call_bars = match last_bar - from_bar {
         1 => 1,
         2 => 2,
         _ => 4,
     };
-    let length = bars * bar;
+    let length = call_bars * bar;
+    // Answers for: Like mine, or 1, 2 or 4 bars.
+    let bars = match call.bars {
+        Some(b @ (1 | 2 | 4)) => i64::from(b),
+        Some(_) => 4,
+        None => call_bars,
+    };
     for (n, _) in &mut notes {
         n.len = n.len.min(length - n.at).max(1);
     }
@@ -204,19 +215,21 @@ pub fn answer(call: &Call) -> Result<Answered, Refused> {
     };
     req.settings = &settings;
     let made = continue_notes(&req)?;
+    let answer_length = bars * bar;
     let answer = made
         .notes
         .iter()
-        .filter(|n| n.tick >= length)
+        .filter(|n| n.tick >= length && n.tick < length + answer_length)
         .map(|n| Note {
             tick: n.tick - length,
-            len: n.len.min(2 * length - n.tick).max(1),
+            len: n.len.min(length + answer_length - n.tick).max(1),
             ..*n
         })
         .collect();
     Ok(Answered {
         notes: answer,
-        length,
+        length: answer_length,
+        call_length: length,
         call: notes,
         key,
         call_ends,
@@ -287,6 +300,7 @@ mod tests {
             role: PartRole::Melody,
             settings: s,
             reply,
+            bars: None,
         }
     }
 
@@ -410,5 +424,29 @@ mod tests {
             answer(&call(&[], &s, Reply::Answer)),
             Err(Refused::NoClip)
         ));
+    }
+
+    #[test]
+    fn answers_for_sets_the_answer_s_length_and_like_mine_follows_the_call() {
+        let s = Settings::default();
+        let notes = settles();
+        for (bars, want) in [(None, 1), (Some(1), 1), (Some(2), 2), (Some(4), 4)] {
+            let c = Call {
+                bars,
+                ..call(&notes, &s, Reply::Answer)
+            };
+            let a = answer(&c).unwrap();
+            assert_eq!(a.call_length, BAR, "{bars:?}");
+            assert_eq!(a.length, want * BAR, "{bars:?}");
+            assert!(
+                a.notes.iter().all(|n| n.tick + n.len <= a.length),
+                "{bars:?}"
+            );
+            // Something to hear in its last bar.
+            assert!(
+                a.notes.iter().any(|n| n.tick >= a.length - BAR),
+                "{bars:?}: the answer's last bar is empty"
+            );
+        }
     }
 }
