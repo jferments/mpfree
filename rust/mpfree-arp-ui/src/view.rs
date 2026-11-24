@@ -335,7 +335,7 @@ pub enum MakerAction {
     Step { row: usize, delta: i32 },
     /// Another try with the same choices.
     TryAgain,
-    /// ‹ Try N: the try before.
+    /// ‹ Try N: the try before (from the first, Try N ›: the one after).
     Previous,
     /// Back, or ×: the panel closes and the track's phrase plays again.
     Back,

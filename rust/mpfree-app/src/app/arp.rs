@@ -15,6 +15,10 @@
 //!   phrase's speed. On the panel's tab the - and + buttons step the kinds
 //!   of phrase, and past the first kind go to the Pattern tab; with NOTE
 //!   REPEAT held they step the modes, as above (`arp/phrases.rs`).
+//! - **New idea and More like this** (the Phrase tab's list heading and
+//!   detail heading) open a panel in the list's place that makes phrases
+//!   to try on the track: the wheel picks its row, - and + change it, and
+//!   Keep puts the try on Yours (`arp/maker.rs`).
 //! - **The pattern workspace** (Edit pattern or Record on pads, on the
 //!   panel) edits the pattern by touch; the wheel turns the selected cell.
 //!   Recording writes one step per pad press (Step mode, no clock), at
@@ -57,6 +61,9 @@ pub struct ArpView {
     pub pads_key: Option<Scale>,
     /// What the Phrase tab shows of the phrase as it plays.
     pub phrase: PhraseView,
+    /// New idea or More like this, while open (`arp/maker.rs`). Boxed: it
+    /// holds two phrases, and the view travels in every [`Effect::Arp`].
+    pub maker: Option<Box<mpfree_arp_ui::maker::MakerView>>,
     /// Held and latched pads (slots), in the order they were pressed.
     pub notes: Vec<Held>,
     /// Steps played since the notes started.
@@ -146,8 +153,11 @@ impl LibraryFile {
 /// and octaves: the first and the last have few values, so they need a
 /// longer turn.
 const QLINK_UNITS: [i32; 4] = [3, 1, 1, 4];
+mod maker;
 mod part;
 mod phrases;
+
+pub(super) use maker::{Maker, MakerSet};
 /// The arp part's first line, for the project opener's check.
 pub use part::HEADER as ARP_HEADER;
 pub use phrases::built_in_phrases;
@@ -454,6 +464,7 @@ impl App {
             phrase_index: self.phrase_index,
             pads_key: self.arps.engine_at(self.track).key(),
             phrase: self.phrase_view(),
+            maker: self.maker_view().map(Box::new),
             notes: self.arps.engine_at(self.track).active().as_slice().to_vec(),
             step: self.arps.engine_at(self.track).step(),
             latched: self.latched,
@@ -561,9 +572,11 @@ impl App {
 
     fn set_mode(&mut self, m: Mode) -> Vec<Effect> {
         self.arp_mode = m;
-        // The Phrase tab opens on the kind the track's phrase is.
+        // The Phrase tab opens on the kind the track's phrase is, and
+        // New idea or More like this closes with it.
         self.phrase_shelf = None;
-        let mut fx = vec![Effect::Note(format!("arp: {}", mode_label(m)))];
+        let mut fx = self.close_maker();
+        fx.push(Effect::Note(format!("arp: {}", mode_label(m))));
         fx.extend(self.arp_changed());
         fx
     }
@@ -642,7 +655,16 @@ impl App {
                 fx
             }
             ArpAction::Phrase(i) => self.pick_phrase(i),
-            ArpAction::Shelf(shelf) => self.show_shelf(shelf),
+            // A kind tapped while New idea or More like this is open: it
+            // closes, as Back, and the kind shows.
+            ArpAction::Shelf(shelf) => {
+                let mut fx = self.close_maker();
+                fx.extend(self.show_shelf(shelf));
+                fx
+            }
+            ArpAction::NewIdea => self.open_new_idea(),
+            ArpAction::MoreLike => self.open_more_like(),
+            ArpAction::Maker(a) => self.maker_action(a),
         }
     }
 
@@ -709,6 +731,7 @@ impl App {
                     self.load_pattern(i)
                 }
             }
+            Mode::Phrase if self.maker.is_some() => self.maker_wheel(delta),
             Mode::Phrase => self.phrase_wheel(delta),
             Mode::Direct | Mode::Repeat => {
                 self.set_rate(step_in(&Rate::ALL, self.settings.rate, delta))
@@ -724,6 +747,9 @@ impl App {
     /// panel no kinds show, so there they step the modes alone.
     pub(super) fn arp_mode_step(&mut self, d: i32) -> Vec<Effect> {
         let m = if self.view == View::Arp {
+            if self.arp_tab() == Mode::Phrase && self.maker.is_some() {
+                return self.maker_step(d);
+            }
             if self.arp_tab() == Mode::Phrase {
                 if let Some(fx) = self.phrase_kind_step(d) {
                     return fx;
@@ -1986,10 +2012,13 @@ impl App {
         self.mutations = u.mutations;
         let _ = self.set_pattern(u.pattern);
         self.phrase_index = u.phrase_index;
-        // The Phrase tab shows this track's phrase among its kind.
+        // The Phrase tab shows this track's phrase among its kind, and New
+        // idea or More like this, open on the track before, closes.
         self.phrase_shelf = None;
+        let mut fx = self.close_maker();
         self.send_phrase();
-        self.arp_changed()
+        fx.extend(self.arp_changed());
+        fx
     }
 
     /// The armed track, whose arp the pads play and the arp screens show.

@@ -25,7 +25,7 @@ pub const MAKER: &str = "arp-phrase-maker";
 /// × in the corner: the same as Back.
 pub const MAKER_CLOSE: usize = 0;
 pub const MAKER_TRY: usize = 1;
-/// ‹ Try N: the try before.
+/// ‹ Try N: the try before (from the first, Try N ›: the one after).
 pub const MAKER_STEP: usize = 2;
 pub const MAKER_BACK: usize = 3;
 pub const MAKER_KEEP: usize = 4;
@@ -61,7 +61,8 @@ pub struct MakerView {
     pub status_warn: bool,
     /// Try again answers: faint for a change that comes out one way.
     pub can_try: bool,
-    /// "‹ Try 2", and whether it answers (faint with one try so far).
+    /// "‹ Try 2" (or from the first try "Try 2 ›"), and whether it
+    /// answers (faint with one try so far).
     pub step: (String, bool),
     pub can_keep: bool,
     /// The try shown, under the name Keep gives it: what the detail panel

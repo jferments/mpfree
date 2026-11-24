@@ -9798,6 +9798,10 @@ impl Player {
                 View::Arp if tab == Mode::Phrase => match &self.arp.phrase.kit_track {
                     Some(track) => format!("{track}'s instrument is a kit   ·   phrases play on a synth   ·   - / +: kind   ·   \
                                             MENU: options   ·   NOTE REPEAT + MENU: close"),
+                    // New idea or More like this open in the list's place.
+                    None if self.arp.maker.is_some() => "Wheel: a row   ·   - / +: change it   ·   \
+                             Q-Links: speed, gate, swing, octaves   ·   Keep: on Yours   ·   Back: nothing changes"
+                        .to_string(),
                     None => "Wheel: phrase   ·   - / +: kind   ·   Q-Links: speed, gate, swing, octaves   ·   \
                              MENU: options   ·   NOTE REPEAT + MENU: close".to_string(),
                 },
@@ -12921,6 +12925,7 @@ impl Player {
                 a.pattern_changed = v.pattern_changed;
                 a.phrase_index = v.phrase_index;
                 a.pads_key = v.pads_key;
+                a.maker = v.maker.map(|m| *m);
                 a.phrase = arp_view::PhraseNow {
                     shelf: v.phrase.shelf,
                     at: v.phrase.at,
@@ -27626,11 +27631,13 @@ pub fn sample_sets(name: &str, fonts: Fonts) -> Result<Player, String> {
     }
 }
 
-pub const PHRASE_SAMPLES: [&str; 4] = [
+pub const PHRASE_SAMPLES: [&str; 6] = [
     "arp-phrase",
     "arp-phrase-next-bar",
     "arp-phrase-kit",
     "arp-quick-band-phrase",
+    "arp-phrase-new-idea",
+    "arp-phrase-more-like",
 ];
 
 /// Sample screen `name` of the Arp panel's Phrase tab, as the owner's
@@ -27679,6 +27686,32 @@ pub fn sample_phrase(name: &str, fonts: Fonts) -> Player {
             fx.extend(app.arp_action(ArpAction::Mode(Mode::Phrase)));
             apply_effects(&mut p, fx);
             run_arp(&mut p, &mut app, 128);
+            p
+        }
+        // New idea (board B): a Groove bass's third try plays from the
+        // latched pad, Night drive left to go back to.
+        "arp-phrase-new-idea" => {
+            use mpfree_arp_ui::view::MakerAction;
+            let (mut p, mut app) = phrase_player(fonts);
+            night_drive(&mut p, &mut app);
+            let mut fx = app.arp_action(ArpAction::NewIdea);
+            for _ in 0..2 {
+                fx.extend(app.arp_action(ArpAction::Maker(MakerAction::TryAgain)));
+            }
+            apply_effects(&mut p, fx);
+            run_arp(&mut p, &mut app, 3 * 22_050);
+            p
+        }
+        // More like this (board C): Night drive's rhythm with new notes,
+        // the second try.
+        "arp-phrase-more-like" => {
+            use mpfree_arp_ui::view::MakerAction;
+            let (mut p, mut app) = phrase_player(fonts);
+            night_drive(&mut p, &mut app);
+            let mut fx = app.arp_action(ArpAction::MoreLike);
+            fx.extend(app.arp_action(ArpAction::Maker(MakerAction::TryAgain)));
+            apply_effects(&mut p, fx);
+            run_arp(&mut p, &mut app, 3 * 22_050);
             p
         }
         // NOTE REPEAT held on the synth with + pressed to Phrase: the band

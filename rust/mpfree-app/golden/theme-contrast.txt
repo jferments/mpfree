@@ -467,6 +467,8 @@ spaceship arp-pattern-mine 6 # the master bar's scale (as arp-panel), the faded 
 spaceship arp-pattern-rolls 6 # the master bar's scale (as arp-panel), the faded Original and a rest in the step strip; none of the pattern list's
 spaceship arp-phrase 5 # the same runs as arp-panel (the master bar's scale), none of the Phrase tab's
 spaceship arp-phrase-kit 5 # the same runs as arp-panel (the master bar's scale), none of the Phrase tab's
+spaceship arp-phrase-more-like 5 # the same runs as arp-panel (the master bar's scale), none of the More like this panel's
+spaceship arp-phrase-new-idea 5 # the same runs as arp-panel (the master bar's scale), none of the New idea panel's
 spaceship arp-phrase-next-bar 5 # the same runs as arp-panel (the master bar's scale), none of the Phrase tab's
 spaceship arp-quick-band 18 # before the theme refactor (phase 0 baseline)
 spaceship arp-quick-band-phrase 19 # the same runs as play-synth (the Play page on a synth under the band: the root's tag on its key), none of the band's

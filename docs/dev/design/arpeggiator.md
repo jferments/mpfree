@@ -229,6 +229,40 @@ While the transport plays, a new pick waits for the bar line: its row is outline
 
 - **A chip may carry a short form** (`mpfree_ui::Chip::short`). The header laid chips out from the right and left out any that had no room, with every chip after it: a latched phrase's chip ("Phrase: Night drive, latched · 120 BPM") vanished, as a long order's or a pattern's could before phrases, and a long arp chip that did fit pushed out MAKE or PERFORM, the last chip. Now, where the bar has no room for every chip in full, a chip with a short form says that, and where even that is too long its end is cut with "…", so the chip keeps its place and a tap still finds it. The arp chip's short form is its text without the tempo, which the transport bar shows. Weighed: a budget of characters in the arp's own text (a guess that breaks with the font and the number of tabs) and fitting in the app (a copy of the header's layout sums); the header is the one place that knows the room, and only chips that give a short form are changed. The layout spec has the rule as proposed, for the owner's approval with the pull request.
 
+#### New idea and More like this
+
+Two ways to make a phrase on the tab (composing tools P2), built as the owner's boards A to C draw them (sent with a card on 24 Nov 2026, "Build these eight screens as the boards draw them?"; the boards and their notes are in the notes repository, `composing-tools/project-files/p2-boards/`). **New idea**, at the right of the list's heading, makes one to order with the composer ([compose.md](compose.md), "New ideas: phrases made to order (P2)"); **More like this**, at the right of Plays' heading, makes another from the track's phrase (compose.md, "More like this"). Either opens one panel in the list's place (`arp-phrase-maker`, `mpfree-arp-ui/src/maker.rs`), and Plays shows the try under "Try 3 · Back keeps Night drive", its heading in green. The crate's sample screens are `phrase-new-idea` and `phrase-more-like`, the app's `arp-phrase-new-idea` and `arp-phrase-more-like`.
+
+**What the panel shows.** A title and × ("New idea · Bass", "More like this"), More like this's From line (the phrase's name and its notes small), the rows as ‹ value › steppers with an accent bar on the wheel's row, a few lines under them (the key the try is written for, that the last eight are kept, the name Keep gives it), the status ("Try 3 · hold a pad: it plays from that note", or in amber why nothing new came), and Try again, ‹ Try N, Back and Keep. New idea's rows are Kind, Style (Minimal, Groove, Jazz-ish), Bars (1, 2, 4) and Activity (Sparse, Light, Middle, Busy, Very busy: the composer's 0 to 1 in quarters). More like this's are Change (New notes, New rhythm, Up a step, Upside down, First half twice, each with a line under it) and, for the two reworks, Style.
+
+| Control | While the panel is open |
+|---|---|
+| Wheel | The row |
+| − / + | The wheel's row's value; a change makes a try |
+| A row's ‹ or › | The same, on that row |
+| Try again | Another try with the same choices (faint for the three developed changes, which come out one way) |
+| ‹ Try N | The try before; from the first, Try N › the one after (the last eight are kept) |
+| Keep | The try joins Yours, and the track picks it |
+| Back, × | Closes; the track's phrase plays again |
+| A tap on a kind | Closes, as Back, and shows the kind |
+| Q-Links 1 to 4 | Speed, gate, swing and octaves, on the try |
+
+**The choices, and why.** The pad player's side is [`app/arp/maker.rs`](../../../rust/mpfree-app/src/app/arp/maker.rs).
+
+- **The try is the track's engine's phrase** (`App::send_phrase` sends the try shown in place of the pick), so a held or latched pad plays it, with the tab's speed, gate, swing and octaves, and the pads' arp follows it as it follows the pick. The track's pick does not move until Keep, so the project, the arp chip's pick and every other track are untouched, and Back is the pick sent again. Weighed: playing tries on a preview engine of their own, which would need a second engine in the audio loop and leave a latched phrase sounding under the try.
+- **One panel for both,** in the list's place (`PHRASE_MAKER_LAYOUT`), with the kinds still showing: the two differ in their rows and their From line alone. A tap on a kind closes it, as Back, rather than becoming New idea's Kind row, so the kinds always do what they do with the panel shut.
+- **Every change makes a try at once,** as Add a part and Continue ask again on each step. A try takes the composer well under a millisecond on a desktop build (ten in 4 ms), so it is made on the control thread where it is asked, with no job or progress state.
+- **Try again asks for something new.** New idea and the reworks take the composer's next attempt that is none of the eight tries kept (`next_idea`, `next_rework`), and after eight attempts in a row that made nothing new the status says so in amber ("Nothing new after 8 tries: change a row") rather than offering one again. A developed change comes out one way, so its Try again is faint, and stepping back to it shows the try already made.
+- **The tries are numbered by their place among the eight kept,** and the stepper goes back, or from the first forward, as Add a part's does.
+- **Written for the key the phrase follows.** A phrase is written in C and moved onto the key by In key, so the composer is asked for minor or major only: major when the key the phrase follows (the arp's own scale, else the pads') has a major third and no minor one, else minor, as most of MPFree's phrases are. More like this keeps the phrase's own scale.
+- **Names that are free.** Keep names a new idea "Groove bass 1" (the style and the kind's word, then the first number from 1 no phrase in the list has) and more like a phrase "Night drive 2" (its name without a number at its end, then the first free number from 2), within the library's 32 characters, so Keep never replaces a phrase (`own_phrase` replaces one of the same name).
+- **A phrase the composer cannot read** (not 4/4, a triplet grid, past four bars, notes off the 1/16 grid: `mpfree_compose::reworkable`) is offered the three developed changes alone, and the panel says why.
+- **The choices are kept between openings** (Style, Bars and Activity: `MakerSet`), and each opening asks with a new seed (`maker_seed`), so New idea twice is two different first tries, while the same choices within one opening are repeatable.
+- **Anything that takes the tab away closes it, as Back:** another tab (`set_mode`), another page (`after_view_change`), another track or a project opened (`take_ui`). A panel left open over another track's pick would play a try on a track that never asked for one.
+- **Keep saves with a store** (`Effect::SavePhrases`, the owner's phrases file, as the pattern workspace's Save does) and says the phrase as a library line in the log (`arp-phrase-kept: Name = text`), so a report carries it home.
+
+Tests: in the app (`app/arp/maker.rs`) `new_idea_tries_play_and_keep_joins_yours`, `back_and_leaving_change_nothing`, `more_like_this_offers_what_the_phrase_can_take`, `names_are_free_and_fit` and `the_key_says_minor_or_major`; in the screens (`phrase_tab.rs`) `new_idea_and_more_like_this_open_from_the_tab` and `the_makers_panel_takes_the_lists_place_and_shows_its_try`, and `maker.rs`'s own; in the composer `a_phrase_in_three_is_developed_but_not_reworked`; and the audit sweep over the two new sample screens.
+
 #### Open, for later
 
 - **Browsing over a playing song.** With the transport stopped a pick comes in on the next step, so the list is quick to hear through. With it playing, each pick waits for the bar line, which suits a change while performing and keeps every phrase's first note on the one, but makes the list slow to hear through over a beat (16 phrases take 16 bars). The owner approved the rule as built with the boards. Coming in at once at the same place in the bar would be quicker and still in time, without the phrase's start being heard first, if hearing through a list over a beat turns out to matter.

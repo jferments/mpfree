@@ -138,7 +138,7 @@ A **phrase** is a short piece of music, a bar or two long, that plays from the n
 
 {{shot: arp-phrase | The Phrase tab: the kinds of phrase on the left, the basses in the middle with Night drive picked, and on the right its notes over two bars with a line where it is playing, what it follows, and the four Q-Link settings.}}
 
-MPFree comes with 64 phrases of its own, 16 of each kind: **Bass**, **Riff**, **Chords** and **Arp lines**. **Yours** is for phrases of your own. It is empty until you have one, and making them on the screen comes next.
+MPFree comes with 64 phrases of its own, 16 of each kind: **Bass**, **Riff**, **Chords** and **Arp lines**. **Yours** is for phrases of your own: the ones you make with **New idea** and **More like this** (below) go there.
 
 1. Open the Arp panel on a synth track and tap **Phrase**.
 2. Tap a kind on the left, then a phrase in the list, or turn the data wheel.
@@ -163,6 +163,25 @@ In the list, each phrase shows its length and its notes drawn small. The phrases
 - **Exact** plays the phrase's notes as written, counted in semitones from the note you hold, whatever the key.
 
 A phrase written in triplets is never swung: its Swing slider goes faint and reads "straight". **Speed**, Gate, Swing and Octaves each learn a knob: hold **SHIFT**, touch the slider, then move the knob, and the knob steps Speed through half, as written and double. The same goes for the [XY pad](xy-layouts.md#the-arp-on-the-pad): a layout of yours can hold a phrase's Speed, Gate, Swing and Octaves, and Let go: Stay keeps the speed your finger left. A layout that holds the arp's Rate also plays a phrase faster or slower while your finger is down, and the phrase goes back to its own speed when you lift, even with Let go: Stay.
+
+#### New ideas, and more like this
+
+MPFree can write a phrase for you. **New idea**, at the right of the list's heading, makes a new one to order; **More like this**, at the right of the phrase's heading, makes another from the phrase you have. Either opens a panel where the list was, makes a first try at once, and the try plays from the pad you hold (or the one latched), so you hear each one as it comes. Nothing changes until you keep one.
+
+{{shot: arp-phrase-new-idea | New idea open on the Phrase tab: Kind Bass, Style Groove, 2 bars, Activity Middle; the third try shows on the right under "Try 3 · Back keeps Night drive", and plays from the latched pad.}}
+
+1. On the Phrase tab, tap **New idea**. It opens on the kind the list shows.
+2. Change the rows with their **‹** and **›**, or turn the data wheel to a row and press **–** or **+**: **Kind** (Bass, Riff, Chords, Arp lines), **Style** (Minimal, Groove, Jazz-ish), **Bars** (1, 2 or 4) and **Activity** (Sparse to Very busy). Each change makes a new try.
+3. **Try again** makes another with the same choices. **‹ Try 2** goes back to an earlier one: the last eight are kept while the panel is open.
+4. **Keep** puts the try on **Yours** under the name the panel says ("Groove bass 1"), and the track plays it. **Back** or **×** closes the panel and the track's phrase plays again, as it was.
+
+The phrase is written for the key it follows (minor or major, as the line under the rows says), and In key moves it onto that key as it does every phrase. The Q-Links still set its speed, gate, swing and octaves while you try.
+
+{{shot: arp-phrase-more-like | More like this from Night drive: Change New notes (its rhythm, with new notes), Style Groove; the second try plays, and Keep would put it on Yours as Night drive 2.}}
+
+**More like this** has two rows. **Change** says what changes: **New notes** keeps the phrase's rhythm and gives it new notes, **New rhythm** keeps its notes and plays them on a new rhythm, **Up a step** moves every note a step up its scale, **Upside down** turns it over (a step up becomes a step down), and **First half twice** plays its first half again in place of its second. **Style** is for New notes and New rhythm. The last three changes come out one way, so Try again has nothing more to give there. A phrase that isn't in 4/4 on a plain grid, or is longer than four bars, can be changed the last three ways only, and the panel says so. Keep names it after the phrase ("Night drive 2").
+
+Going to another tab, page or track closes the panel as Back does. A phrase you keep is saved with your other phrases (with a data folder on the stick), so it is there at the next start.
 
 #### Changing phrase while one plays
 
