@@ -145,6 +145,9 @@ pub struct LoopPlayer {
     moving: [u128; MOVING],
     /// The track Listen is heard through this period ([`LoopPlayer::listen`]).
     listen: Option<usize>,
+    /// Each track's free loop this period, by id (0: none;
+    /// [`LoopPlayer::free`]).
+    free: [u128; MAX_TRACKS],
 }
 
 impl Default for LoopPlayer {
@@ -165,6 +168,7 @@ impl LoopPlayer {
             dropped: 0,
             moving: [0; MOVING],
             listen: None,
+            free: [0; MAX_TRACKS],
         }
     }
 
@@ -174,6 +178,17 @@ impl LoopPlayer {
     /// plan forgets it.
     pub fn listen(&mut self, t: Option<usize>) {
         self.listen = t.filter(|&t| t < MAX_TRACKS);
+    }
+
+    /// After [`LoopPlayer::plan`]: loop `id` is a free cell's on track `t`
+    /// this period (the audio tracks rethink's phase 4e.4): it keeps time
+    /// with the looper's free clock, which launches and fades it, so the
+    /// track's mix adds what `src` gives for it on every frame at full
+    /// gain, rolling or not, as for Listen. The next plan forgets it.
+    pub fn free(&mut self, t: usize, id: u128) {
+        if let Some(f) = self.free.get_mut(t) {
+            *f = id;
+        }
     }
 
     /// Before [`LoopPlayer::plan`]: the loops heard off any track now, by
@@ -194,6 +209,7 @@ impl LoopPlayer {
         let n = (block.frames as usize).min(PERIOD);
         self.frames = n;
         self.listen = None;
+        self.free = [0; MAX_TRACKS];
         // Only the period's frames of each voice: the rest is never read
         // (the whole buffer would be 256 KiB to clear each period).
         for g in self.gains.chunks_exact_mut(PERIOD) {
@@ -270,6 +286,13 @@ impl LoopPlayer {
                 for (d, v) in dst[..b].iter_mut().zip(&s[..b]) {
                     *d += v;
                 }
+            }
+        }
+        // A free cell's loop: as it is, on every frame (4e.4).
+        if let Some(s) = Some(self.free[t]).filter(|&id| id != 0).and_then(&src) {
+            let b = (2 * self.frames).min(s.len()).min(dst.len());
+            for (d, v) in dst[..b].iter_mut().zip(&s[..b]) {
+                *d += v;
             }
         }
         for r in &lane.runs[..lane.n] {

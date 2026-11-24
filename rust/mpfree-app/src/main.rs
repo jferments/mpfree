@@ -15794,6 +15794,11 @@ fn player_session(
                 out.note(&line);
             }
             looper.tell_tracks(time.project(), tracks.loop_player());
+            // Free cells (4e.4): each free loop a cell names goes on or off
+            // on the free clock as its cells say.
+            for line in looper.follow_free(&time.free_plan()) {
+                out.note(&line);
+            }
         }
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
         // A loop that heard the line input with the song stopped starts it.
@@ -15832,6 +15837,9 @@ fn player_session(
         if loops_on {
             // Listen playing a loop on a track, through that track (4e.2).
             tracks.loop_listen(looper.listen_track());
+            // A free cell's loop, through its track as the looper plays it
+            // on the free clock (4e.4).
+            tracks.loop_free(&looper.free_cells());
             // The Loop group (4e.1) on each loop's sound before its track:
             // every loop, or the armed audio track's (by its own arm).
             let (set, armed) = (loop_group.set(), time.audio_armed());
@@ -20895,6 +20903,7 @@ mod tests {
             tracks.plan_loops(time.block(), &|p| time.audio(p));
             looper.give_loop_id(|| tracks.fresh_loop_id());
             looper.tell_tracks(time.project(), tracks.loop_player());
+            let _ = looper.follow_free(&time.free_plan());
             looper.take_pads(&z, &z);
             let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
             looper.run(time.block(), &mut l, &mut r);
@@ -20906,6 +20915,7 @@ mod tests {
             }
             tracks.sync(time.project(), time.silenced(), false);
             tracks.loop_listen(looper.listen_track());
+            tracks.loop_free(&looper.free_cells());
             let t: &time::TimeHost = time;
             let lp: &looping::LoopHost = looper;
             tracks.period_with_loops(

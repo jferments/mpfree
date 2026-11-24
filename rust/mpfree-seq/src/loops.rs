@@ -36,6 +36,10 @@ pub struct LoopNow {
     pub ticks: Tick,
     /// The song tick it started on.
     pub origin: Tick,
+    /// It keeps time with the looper's free clock (Sync: Free): its cell
+    /// on an audio track is a free cell (the audio tracks rethink's phase
+    /// 4e.4), and with loops on Loop tracks it is in no cell.
+    pub free: bool,
 }
 
 /// What the grid wants of the loops: which play, and the bar line each

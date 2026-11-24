@@ -117,6 +117,7 @@ enum ToThread {
 pub struct Light {
     pub armed: Option<usize>,
     pub audio_armed: Option<usize>,
+    pub free_plan: [Option<bool>; LOOPS],
     pub selected: Option<usize>,
     pub also: u128,
     pub loop_cell: Option<(usize, usize)>,
@@ -145,6 +146,7 @@ impl Light {
         Light {
             armed: c.armed(),
             audio_armed: c.audio_armed(),
+            free_plan: c.free_plan(),
             selected: c.selected(),
             also: c.also(),
             loop_cell: c.loop_cell(),

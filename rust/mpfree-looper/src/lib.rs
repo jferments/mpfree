@@ -3045,6 +3045,10 @@ pub struct Looper {
     /// The loops on audio tracks ([`Looper::play`]): where the track
     /// player says each sounds next. None: the loop launches itself.
     on_track: [Option<OnTrack>; MAX_LOOPS],
+    /// The free loops whose cells are on audio tracks, a bit a loop
+    /// ([`Looper::free_on_track`]): each launches itself on the free clock
+    /// as ever, but its buffer is for its track.
+    free_tracked: u32,
 }
 
 /// The looper's side of the free loops ([`Clock::Free`]).
@@ -3431,6 +3435,7 @@ impl Looper {
             free_ticks: [0.0; RUN],
             outs: LoopOuts::new(MAX_PERIOD as usize),
             on_track: [None; MAX_LOOPS],
+            free_tracked: 0,
         }
     }
 
@@ -3614,6 +3619,9 @@ impl Looper {
             l.solo = false;
             OnTrack::default()
         });
+        // A free loop on a track made a song loop (Make song) played itself
+        // until now: the track takes it over here, with no gap.
+        self.free_tracked &= !(1 << n);
         if !t.tell(runs) {
             self.stats.refused += 1;
             return false;
@@ -3622,11 +3630,58 @@ impl Looper {
     }
 
     /// Loop `n` launches itself again, as it did before it went on a
-    /// track ([`Looper::play`]): on, from the next period.
+    /// track ([`Looper::play`]) or while its cell was on one
+    /// ([`Looper::free_on_track`]): from the next period, in the looper's
+    /// mix again.
     pub fn leave_track(&mut self, n: usize) {
         if let Some(t) = self.on_track.get_mut(n) {
             *t = None;
         }
+        if n < MAX_LOOPS {
+            self.free_tracked &= !(1 << n);
+        }
+    }
+
+    /// Free loop `n`'s cell is on an audio track (`on`), or no longer is
+    /// (audio tracks phase 4e.4, free cells). On one, it launches itself on
+    /// the free clock as ever ([`Looper::launch`]; `Some(Tick::MIN)` lands
+    /// on the free clock's next bar line) and fades in and out with its
+    /// launches, but its buffer ([`LoopOuts::loop_out`]) is for its track:
+    /// the looper's mix leaves it out, it doesn't resample, it is out of
+    /// the loops' solo, and its own Mute, Solo and Sync are refused (its
+    /// track mutes and solos it). Putting it on unmutes and unsolos it.
+    /// It stays on through a Clear until it is taken off here, with
+    /// [`Looper::leave_track`], or by the track player's first runs for it
+    /// ([`Looper::play`]): when Make song makes it a song loop it plays
+    /// itself on, still out of the mix, until its track places it, with no
+    /// gap. Make song undone, the loop is free again and is put back on
+    /// here. False, and counted as refused, for a song loop (`on`) or a
+    /// loop past the loops.
+    pub fn free_on_track(&mut self, n: usize, on: bool) -> bool {
+        let Some(l) = self.loops.get_mut(n) else {
+            self.stats.refused += 1;
+            return false;
+        };
+        if !on {
+            self.free_tracked &= !(1 << n);
+            return true;
+        }
+        if l.clock != Clock::Free {
+            self.stats.refused += 1;
+            return false;
+        }
+        if self.free_tracked & (1 << n) == 0 {
+            l.muted = false;
+            l.solo = false;
+        }
+        self.on_track[n] = None;
+        self.free_tracked |= 1 << n;
+        true
+    }
+
+    /// Free loop `n`'s cell is on an audio track ([`Looper::free_on_track`]).
+    pub fn free_tracked(&self, n: usize) -> bool {
+        n < MAX_LOOPS && self.free_tracked & (1 << n) != 0
     }
 
     /// Loop `n` is on an audio track ([`Looper::play`]).
@@ -4699,12 +4754,14 @@ impl Looper {
         // ended, its own fade in under way) rises on to full gain as it
         // would have off the track, so the track takes it on unfaded with
         // no step (`LoopPlayer::moving`).
-        let tracked = |k: usize| self.on_track[k].is_some();
+        // A free loop whose cell is on a track is its track's to solo too.
+        let free_tracked = self.free_tracked;
+        let tracked = |k: usize| self.on_track[k].is_some() || free_tracked & (1 << k) != 0;
         let any_solo = (self.loops.iter().enumerate())
             .any(|(k, l)| l.solo && l.phase != Phase::Empty && !tracked(k));
         let mut told = [None; MAX_LOOPS];
         for (k, l) in self.loops.iter_mut().enumerate() {
-            l.solo_out = any_solo && !l.solo;
+            l.solo_out = any_solo && !l.solo && free_tracked & (1 << k) == 0;
             if let Some(t) = self.on_track[k].as_mut() {
                 told[k] = Some(t.take());
                 l.solo_out = false;
@@ -4794,12 +4851,14 @@ impl Looper {
         // Loops resampling run last in each run, on what the others played
         // in it.
         // (Not a loop on a track: it hears its track's input.)
+        // (Nor a free loop whose cell is on a track.)
         let rs = loops.iter().enumerate().fold(0u32, |m, (k, l)| {
             m | (u32::from(l.resample && on_track[k].is_none()) << k)
-        });
+        }) & !free_tracked;
         outs.set_resampling(rs);
         outs.set_on_track(
-            (on_track.iter().enumerate()).fold(0u32, |m, (k, t)| m | (u32::from(t.is_some()) << k)),
+            (on_track.iter().enumerate()).fold(0u32, |m, (k, t)| m | (u32::from(t.is_some()) << k))
+                | free_tracked,
         );
         // Free loops keep time with the free clock: each run gets its ticks
         // too, its bar lines cut the runs, and of the song's marks they
@@ -6385,6 +6444,13 @@ impl Looper {
             // Its track mutes and solos it, on the song's clock.
             Queued::Loop(Command::Mute(_) | Command::Solo(_) | Command::SetClock(Clock::Free))
                 if self.on_track(s) =>
+            {
+                self.stats.refused += 1
+            }
+            // A free loop whose cell is on a track: its track mutes and
+            // solos it, and it keeps its clock.
+            Queued::Loop(Command::Mute(_) | Command::Solo(_) | Command::SetClock(_))
+                if self.free_tracked(s) =>
             {
                 self.stats.refused += 1
             }
