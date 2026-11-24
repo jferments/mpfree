@@ -230,6 +230,91 @@ impl Speed {
     }
 }
 
+/// A chord held under a phrase (P3): its root and what sits over it, in
+/// semitones. Read from the notes held by [`HeldChord::of`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeldChord {
+    /// The root's pitch, at or below the lowest note held.
+    pub root: u8,
+    /// A third over the root (3 or 4), else a 2nd or 4th held in its place
+    /// (a sus chord), else none.
+    pub third: Option<u8>,
+    /// A fifth (7, or 6 over a minor third, or 8 over a major one).
+    pub fifth: Option<u8>,
+    /// A seventh (10 or 11, or 9 in a diminished chord).
+    pub seventh: Option<u8>,
+}
+
+impl HeldChord {
+    /// The chord `held` makes, or None with fewer than three pitch classes:
+    /// one note, a note in octaves, or two notes (a hand moving from one
+    /// note to the next overlaps them) lead from the newest, as before P3.
+    /// The root is the pitch class with the most of a fifth, a third and
+    /// a seventh over it among the others, the lowest note's on a tie, so
+    /// E G C held is C major and A C E G is A minor seventh.
+    pub fn of(held: &[u8]) -> Option<HeldChord> {
+        let mut mask = 0u16;
+        for &n in held {
+            mask |= 1 << (n % 12);
+        }
+        if mask.count_ones() < 3 {
+            return None;
+        }
+        let lowest = *held.iter().min()?;
+        let has = |r: u8, i: u8| mask & (1 << ((r + i) % 12)) != 0;
+        let score = |r: u8| {
+            let mut s = 0;
+            if has(r, 7) {
+                s += 6;
+            }
+            if has(r, 3) || has(r, 4) {
+                s += 4;
+            }
+            if has(r, 10) || has(r, 11) {
+                s += 2;
+            }
+            if (has(r, 6) && has(r, 3)) || (has(r, 8) && has(r, 4)) {
+                s += 3;
+            }
+            if r == lowest % 12 {
+                s += 1;
+            }
+            s
+        };
+        let r = (0..12u8)
+            .filter(|&r| mask & (1 << r) != 0)
+            .max_by_key(|&r| (score(r), u8::from(r == lowest % 12)))?;
+        // At or below the lowest note; above it only at the very bottom.
+        let below = i16::from(lowest) - i16::from((lowest % 12 + 12 - r) % 12);
+        let root = if below < 0 { below + 12 } else { below } as u8;
+        let third = [4, 3, 2, 5].into_iter().find(|&i| has(r, i));
+        let fifth = if has(r, 7) {
+            Some(7)
+        } else if third == Some(3) && has(r, 6) {
+            Some(6)
+        } else if third == Some(4) && has(r, 8) {
+            Some(8)
+        } else {
+            None
+        };
+        let seventh = if has(r, 10) {
+            Some(10)
+        } else if has(r, 11) {
+            Some(11)
+        } else if fifth == Some(6) && has(r, 9) {
+            Some(9)
+        } else {
+            None
+        };
+        Some(HeldChord {
+            root,
+            third,
+            fifth,
+            seventh,
+        })
+    }
+}
+
 /// One note of a phrase, from its home note.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PhraseNote {
@@ -386,6 +471,52 @@ impl Phrase {
         self.notes[at] = n;
         self.len += 1;
         true
+    }
+
+    /// The note `n` plays over a chord held (P3): its notes kept as parts
+    /// of the chord. The phrase was written over its home chord, so a step
+    /// on that chord's root, third or fifth plays the held chord's root,
+    /// third or fifth, and the 7th the held chord's seventh when it has
+    /// one; the other steps (2nd, 4th, 6th, 7th) are colour and passing
+    /// notes, placed by the held chord's own scale (major with a major
+    /// third, natural minor with a minor one, the written scale over a
+    /// chord with neither), and In key brought into the arp's scale by
+    /// `snap` (a chord note is never moved: the chord you hold wins). A
+    /// note written outside its scale keeps its half step. Octaves count
+    /// from the chord's root, at or below the lowest note held. A riff
+    /// written over C minor takes F major's shape held on F major.
+    pub fn pitch_over(
+        &self,
+        n: &PhraseNote,
+        chord: &HeldChord,
+        follow: Follow,
+        scale: Option<Scale>,
+        snap: Snap,
+    ) -> Option<u8> {
+        let steps = i16::from(n.steps);
+        let (octave, d) = (steps.div_euclid(7), steps.rem_euclid(7) as usize);
+        let mut table = match chord.third {
+            Some(4) => [0, 2, 4, 5, 7, 9, 11],
+            Some(3) if chord.fifth == Some(6) => [0, 2, 3, 5, 6, 8, 9],
+            Some(3) => [0, 2, 3, 5, 7, 8, 10],
+            _ => self.written.steps(),
+        };
+        if let Some(t) = chord.third {
+            table[2] = t as i8;
+        }
+        if let Some(f) = chord.fifth {
+            table[4] = f as i8;
+        }
+        if let Some(sv) = chord.seventh {
+            table[6] = sv as i8;
+        }
+        let tone = matches!(d, 0 | 2 | 4) || (d == 6 && chord.seventh.is_some());
+        let note = i16::from(chord.root) + 12 * octave + i16::from(table[d]) + i16::from(n.alt);
+        let note = match (follow, scale) {
+            (Follow::InKey, Some(scale)) if !tone && n.alt == 0 => scale.snapped(note, snap)?,
+            _ => note,
+        };
+        (0..=127).contains(&note).then_some(note as u8)
     }
 
     /// The note `n` plays from `held`, or None when it falls outside
@@ -1221,6 +1352,84 @@ fn gcd(a: u32, b: u32) -> u32 {
 mod tests {
     use super::*;
     use crate::scale::{MAJOR, MINOR, PENTATONIC_MINOR};
+
+    /// A chord held is read from its notes, in any voicing: the root has
+    /// the most of a fifth, a third and a seventh over it.
+    #[test]
+    fn a_chord_held_is_read_from_its_notes() {
+        let c = |held: &[u8]| HeldChord::of(held);
+        let chord = |root, third, fifth, seventh| {
+            Some(HeldChord {
+                root,
+                third: Some(third),
+                fifth: Some(fifth),
+                seventh,
+            })
+        };
+        assert_eq!(c(&[60, 64, 67]), chord(60, 4, 7, None), "C major");
+        assert_eq!(c(&[64, 67, 72]), chord(60, 4, 7, None), "C major from E");
+        assert_eq!(c(&[65, 69, 72]), chord(65, 4, 7, None), "F major");
+        assert_eq!(c(&[57, 60, 64, 67]), chord(57, 3, 7, Some(10)), "Am7");
+        assert_eq!(c(&[55, 59, 62, 65]), chord(55, 4, 7, Some(10)), "G7");
+        assert_eq!(c(&[59, 62, 65]), chord(59, 3, 6, None), "B diminished");
+        assert_eq!(
+            c(&[48, 64, 67, 71]),
+            chord(48, 4, 7, Some(11)),
+            "Cmaj7, spread"
+        );
+        // At the very bottom the root sits above the lowest note.
+        assert_eq!(c(&[4, 7, 12]).map(|h| h.root), Some(0));
+        assert_eq!(c(&[1, 5, 8]).map(|h| h.root), Some(1));
+        // One note, octaves of it, or two notes: no chord.
+        assert_eq!(c(&[60]), None);
+        assert_eq!(c(&[48, 60, 72]), None);
+        assert_eq!(c(&[60, 67]), None);
+        assert_eq!(c(&[]), None);
+    }
+
+    /// Over a chord a phrase keeps its notes as parts of it: written over
+    /// C minor's home chord, held on F major it plays F major's root, third
+    /// and fifth, and its colour notes from F major's scale, In key brought
+    /// into the arp's scale (never a chord note).
+    #[test]
+    fn over_a_chord_a_phrase_keeps_its_notes_as_parts_of_the_chord() {
+        let p = Phrase::parse("line minor : 1 2 b3 4 5 b6 b7 1+ 5- #4").unwrap();
+        let f_major = HeldChord::of(&[65, 69, 72]).unwrap();
+        let play = |chord: &HeldChord, follow, scale| -> Vec<Option<u8>> {
+            p.notes()
+                .iter()
+                .map(|n| p.pitch_over(n, chord, follow, scale, Snap::Down))
+                .collect()
+        };
+        let some = |v: &[u8]| v.iter().map(|&n| Some(n)).collect::<Vec<_>>();
+        // Exact, or In key with no scale: F major's own.
+        assert_eq!(
+            play(&f_major, Follow::Exact, None),
+            some(&[65, 67, 69, 70, 72, 74, 76, 77, 60, 71])
+        );
+        assert_eq!(
+            play(&f_major, Follow::InKey, None),
+            play(&f_major, Follow::Exact, None)
+        );
+        // In key in C minor: E is brought down to Eb; A, the chord's
+        // third, stays; the raised 4th keeps its half step.
+        let c_minor = Some(Scale::new(0, MINOR));
+        assert_eq!(
+            play(&f_major, Follow::InKey, c_minor),
+            some(&[65, 67, 69, 70, 72, 74, 75, 77, 60, 71])
+        );
+        // Over C minor it plays as written from C.
+        let c_minor_chord = HeldChord::of(&[60, 63, 67]).unwrap();
+        assert_eq!(
+            play(&c_minor_chord, Follow::Exact, None),
+            some(&[60, 62, 63, 65, 67, 68, 70, 72, 55, 66])
+        );
+        // A seventh held is the 7th's note; a diminished fifth the 5th's.
+        let g7 = HeldChord::of(&[55, 59, 62, 65]).unwrap();
+        assert_eq!(play(&g7, Follow::Exact, None)[6], Some(65));
+        let b_dim = HeldChord::of(&[59, 62, 65]).unwrap();
+        assert_eq!(play(&b_dim, Follow::Exact, None)[4], Some(65));
+    }
 
     /// A pattern played on one note becomes a phrase that plays the same:
     /// its steps repeated to a whole bar, each note on its step for its
