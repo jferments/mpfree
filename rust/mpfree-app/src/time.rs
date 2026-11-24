@@ -2107,6 +2107,32 @@ impl TimeHost {
         }
     }
 
+    /// Loops on audio tracks (Dev's switch, phase 4b), for this start
+    /// (see `TimeControl::set_loops_on`).
+    pub fn set_loops_on(&mut self, on: bool) {
+        self.with(|c| c.set_loops_on(on));
+        self.sent(());
+    }
+
+    /// [`TimeHost::loops_are`] with each loop's lasting id (0: none yet),
+    /// for loops on audio tracks (see `TimeControl::loops_are_on`).
+    pub fn loops_are_on(
+        &mut self,
+        now: &[mpfree_seq::loops::LoopNow; mpfree_seq::LOOPS],
+        ids: &[u128; mpfree_seq::LOOPS],
+    ) -> Vec<String> {
+        let r = match &mut self.control {
+            Half::Here(c) => c.loops_are_on(now, ids),
+            // Apart, sent; the lines come back for the log
+            // ([`TimeHost::take_later_note`]).
+            Half::Apart(a) => {
+                a.loops_are_on(*now, *ids);
+                Vec::new()
+            }
+        };
+        self.sent(r)
+    }
+
     /// What the looper says of its loops ([`TimeControl::loops_are`]):
     /// recorded loops land on Loop tracks, cells follow their loops.
     pub fn loops_are(
@@ -7928,9 +7954,15 @@ mod tests {
             from: (8, 0),
             to: (9, 2),
             into,
+            id: 0,
         };
         assert!(h.act(copy(0)).is_err(), "loop 1 is in cells");
-        let bad = |from, to| TimeAction::LoopCopy { from, to, into: 3 };
+        let bad = |from, to| TimeAction::LoopCopy {
+            from,
+            to,
+            into: 3,
+            id: 0,
+        };
         assert!(h.act(bad((9, 0), (9, 2))).is_err(), "an empty cell");
         assert!(h.act(bad((8, 0), (8, 2))).is_err(), "its own Loop track");
         assert!(h.act(bad((8, 0), (0, 5))).is_err(), "a note track");
@@ -8035,6 +8067,151 @@ mod tests {
         .unwrap();
         assert_eq!(h.loop_cell(), None);
         assert_eq!(h.control.project.check(), Ok(()));
+    }
+
+    /// Loops on audio tracks (Dev's switch, audio tracks phase 4b): an
+    /// audio track's empty cell arms for the next loop recorded, which
+    /// lands there as a loop cell naming its lasting id, launched from the
+    /// loop's own start; the cell follows the loop's length, empties when
+    /// it is cleared and comes back with a redo of its first pass. With no
+    /// id yet, or one named already, the loop lands as before and the arm
+    /// stays. With the switch off an audio track's cell doesn't arm.
+    #[test]
+    fn with_loops_on_an_armed_audio_cell_takes_the_next_loop_recorded() {
+        use mpfree_seq::loops::LoopNow;
+        use mpfree_seq::{LoopId, LOOPS};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.act(TimeAction::AddAudioTrack).unwrap();
+        let audio = h.project().tracks.len() - 1;
+        assert!(h.project().tracks[audio].is_audio());
+        let off = h.act(TimeAction::LoopCell(Some((audio, 1)))).unwrap_err();
+        assert_eq!(off, format!("track {} is not a Loop track", audio + 1));
+        h.set_loops_on(true);
+        assert!(
+            h.act(TimeAction::LoopCell(Some((0, 1)))).is_err(),
+            "a note track"
+        );
+        let said = h.act(TimeAction::LoopCell(Some((audio, 1)))).unwrap();
+        assert_eq!(
+            said,
+            "loop cell: Audio 1 row 2 armed, the next loop recorded lands there"
+        );
+        assert_eq!(h.loop_cell(), Some((audio, 1)));
+        let pass = |ticks, origin| LoopNow {
+            pass: true,
+            ticks,
+            origin,
+        };
+        let mut now = [LoopNow::default(); LOOPS];
+        let mut ids = [0u128; LOOPS];
+        // No id yet: it lands as before, on a new Loop track, and the arm
+        // stays for the next.
+        now[0] = pass(3840, 0);
+        assert_eq!(
+            h.loops_are_on(&now, &ids),
+            ["Loop 1 on Loops A, row 1, playing"]
+        );
+        assert_eq!(h.loop_cell(), Some((audio, 1)));
+        // Loop 2 with its id: in the audio cell, launched from its start.
+        ids[1] = 0xbeef;
+        now[1] = pass(7680, 1920);
+        assert_eq!(
+            h.loops_are_on(&now, &ids),
+            ["Loop 2 on Audio 1, row 2, playing"]
+        );
+        assert_eq!(h.loop_cell(), None, "the arm goes");
+        let cell = h.project().tracks[audio].slots[1].as_ref().unwrap();
+        assert_eq!(cell.loop_id(), Some(LoopId(0xbeef)));
+        assert_eq!((cell.name.as_str(), cell.length), ("Loop 2", 7680));
+        assert_eq!(cell.looped, None, "not a Loop track's cell");
+        assert!(h.launched(audio));
+        assert_eq!(h.project().loop_track(LoopId(0xbeef)), Some(audio));
+        assert_eq!(h.control.project.check(), Ok(()));
+        // Its length follows the loop.
+        now[1] = pass(11_520, 1920);
+        assert!(h.loops_are_on(&now, &ids).is_empty());
+        let cell = h.project().tracks[audio].slots[1].as_ref().unwrap();
+        assert_eq!(cell.length, 11_520);
+        // Cleared: the cell empties. Its first pass back (a redo): back in
+        // the cell.
+        now[1] = LoopNow::default();
+        assert_eq!(
+            h.loops_are_on(&now, &ids),
+            ["Loop 2 cleared: its cells are empty"]
+        );
+        assert!(h.project().tracks[audio].slots[1].is_none());
+        now[1] = pass(11_520, 1920);
+        assert_eq!(
+            h.loops_are_on(&now, &ids),
+            ["Loop 2 on Audio 1, row 2, playing"]
+        );
+        assert_eq!(h.project().loop_track(LoopId(0xbeef)), Some(audio));
+        // A loop whose id a cell names already doesn't land there again.
+        h.act(TimeAction::LoopCell(Some((audio, 2)))).unwrap();
+        ids[2] = 0xbeef;
+        now[2] = pass(3840, 0);
+        let said = h.loops_are_on(&now, &ids);
+        // (Loops A plays loop 1, so a new Loop track.)
+        assert_eq!(said, ["Loop 3 on Loops B, row 1, playing"]);
+        assert_eq!(h.loop_cell(), Some((audio, 2)), "the arm stays");
+        assert_eq!(h.control.project.check(), Ok(()));
+    }
+
+    /// Loops on audio tracks (phase 4b): an audio track's loop cell copied
+    /// onto another audio track's empty cell is a new loop, its cell naming
+    /// the id the app gave it; refused with no id, one named already, a
+    /// loop not free or the same track, and its cell goes again when the
+    /// copy stops before anything went in.
+    #[test]
+    fn with_loops_on_a_loop_cell_copied_to_another_audio_track_is_a_new_loop() {
+        use mpfree_seq::loops::LoopNow;
+        use mpfree_seq::{LoopId, LOOPS};
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        h.act(TimeAction::AddAudioTrack).unwrap();
+        h.act(TimeAction::AddAudioTrack).unwrap();
+        let b = h.project().tracks.len() - 1;
+        let a = b - 1;
+        h.set_loops_on(true);
+        h.act(TimeAction::LoopCell(Some((a, 0)))).unwrap();
+        let mut now = [LoopNow::default(); LOOPS];
+        let mut ids = [0u128; LOOPS];
+        (now[0], ids[0]) = (
+            LoopNow {
+                pass: true,
+                ticks: 7680,
+                origin: 0,
+            },
+            0xa1,
+        );
+        assert_eq!(
+            h.loops_are_on(&now, &ids),
+            ["Loop 1 on Audio 1, row 1, playing"]
+        );
+        let copy = |to, into, id| TimeAction::LoopCopy {
+            from: (a, 0),
+            to,
+            into,
+            id,
+        };
+        assert!(h.act(copy((b, 2), 3, 0)).is_err(), "no id");
+        assert!(h.act(copy((b, 2), 3, 0xa1)).is_err(), "named already");
+        assert!(h.act(copy((b, 2), 0, 0xb2)).is_err(), "loop 1 isn't free");
+        assert!(h.act(copy((a, 2), 3, 0xb2)).is_err(), "the same track");
+        assert!(h.act(copy((0, 2), 3, 0xb2)).is_err(), "a note track");
+        let said = h.act(copy((b, 2), 3, 0xb2)).unwrap();
+        assert!(said.contains("copies into Loop 4 on Audio 2 / 3"), "{said}");
+        let cell = h.project().tracks[b].slots[2].as_ref().unwrap();
+        assert_eq!(cell.loop_id(), Some(LoopId(0xb2)));
+        assert_eq!(cell.length, 7680);
+        assert!(!h.launched(b), "silent until launched");
+        assert_eq!(h.project().loop_track(LoopId(0xb2)), Some(b));
+        assert_eq!(h.project().loop_track(LoopId(0xa1)), Some(a));
+        assert_eq!(h.control.project.check(), Ok(()));
+        // The copy stopped before anything went in: its cell goes.
+        let off = h.act(TimeAction::LoopCopyOff(3)).unwrap();
+        assert!(off.contains("Loop 4's copy stopped"), "{off}");
+        assert!(h.project().tracks[b].slots[2].is_none());
+        assert_eq!(h.act(TimeAction::LoopCopyOff(3)).unwrap(), "");
     }
 
     /// A project saved before Loop tracks: its loops come in with it, each

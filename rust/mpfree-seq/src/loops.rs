@@ -17,7 +17,9 @@
 
 use mpfree_transport::time::Tick;
 
-use crate::{Clip, DestId, Project, Track, LOOPS, MAX_CLIP_TICKS, MAX_TRACKS, MIN_CLIP_TICKS};
+use crate::{
+    Clip, DestId, LoopId, Project, Track, LOOPS, MAX_CLIP_TICKS, MAX_TRACKS, MIN_CLIP_TICKS,
+};
 
 /// A loop's cell length for a loop of `ticks`: within a clip's range.
 pub fn length(ticks: Tick) -> Tick {
@@ -176,6 +178,41 @@ pub fn remove(p: &mut Project, n: u8) -> usize {
     p.tracks
         .iter_mut()
         .map(|t| t.slots.empty_where(|c| c.looped == Some(n)))
+        .sum()
+}
+
+/// Loop `id`'s cells on audio tracks (phase 4: [`Clip::loop_clip`]), as
+/// (track, slot).
+pub fn audio_cells(p: &Project, id: LoopId) -> impl Iterator<Item = (usize, usize)> + '_ {
+    p.tracks.iter().enumerate().flat_map(move |(t, track)| {
+        track
+            .slots
+            .iter()
+            .filter(move |(_, c)| c.loop_id() == Some(id))
+            .map(move |(s, _)| (t, s))
+    })
+}
+
+/// Loop `id`'s cells on audio tracks take its new length, as a Loop
+/// track's cells do ([`set_length`]). How many changed.
+pub fn set_audio_length(p: &mut Project, id: LoopId, ticks: Tick) -> usize {
+    let len = length(ticks);
+    let mut changed = 0;
+    for c in p.tracks.iter_mut().flat_map(|t| t.slots.clips_mut()) {
+        if c.loop_id() == Some(id) && c.length != len {
+            c.length = len;
+            changed += 1;
+        }
+    }
+    changed
+}
+
+/// Loop `id`'s cells on audio tracks empty (it was cleared), as a Loop
+/// track's do ([`remove`]). How many went.
+pub fn remove_audio(p: &mut Project, id: LoopId) -> usize {
+    p.tracks
+        .iter_mut()
+        .map(|t| t.slots.empty_where(|c| c.loop_id() == Some(id)))
         .sum()
 }
 

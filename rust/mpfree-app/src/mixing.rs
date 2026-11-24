@@ -305,9 +305,29 @@ const LOOP_IN_SUBMIX: &str =
     "the Loop track goes to a submix, so the master would record the loop: send it to the master";
 const LOOP_SUBMIX_RINGS: &str =
     "the submix the Loop track went to still rings with the loop: the master records once it dies away";
+/// Why a loop recorded into an audio track's cell can't take the master
+/// yet: a return the track sent to, or the submix it went to, still rings
+/// with it ([`MixHost::track_loop_take`]).
+const TRACK_ECHOES_RING: [&str; mpfree_fx::RETURNS] = [
+    "Return A still rings with the track's echoes: the master records once they die away",
+    "Return B still rings with the track's echoes: the master records once they die away",
+    "Return C still rings with the track's echoes: the master records once they die away",
+    "Return D still rings with the track's echoes: the master records once they die away",
+];
+const TRACK_SUBMIX_RINGS: &str =
+    "the submix the track went to still rings with it: the master records once it dies away";
 /// Frames a tail that never ends is counted as (a frozen delay): held
 /// until it ends.
 const RINGS_ON: u64 = u64::MAX;
+
+/// Where a strip's sound still rings, besides the master
+/// ([`MixHost::echoes_of`]): frames left on each return it sent to, and
+/// the submix it goes or went to with the frames left on it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Echoes {
+    returns: [u64; mpfree_fx::RETURNS],
+    bus: Option<(StripId, u64)>,
+}
 /// The capture point the sampler resamples from (the recorder's Source):
 /// the last of the mixer's [`CAPTURES`], so the others stay free for
 /// print, stems and the looper.
@@ -692,6 +712,13 @@ pub struct MixHost {
     /// master's input for the pads and the master, a strip after its
     /// fader for a mix.
     loop_point: (StripId, mpfree_fx::CapturePoint),
+    /// The track [`LOOP_CAPTURE`] leaves out now, summing its strip again
+    /// without it ([`MixHost::track_loop_take`]); None for every other take.
+    loop_without: Option<StripId>,
+    /// Where the audio track a loop records into still rings, watched
+    /// each period it is asked ([`MixHost::track_loop_take`]): its
+    /// channel, then as [`MixHost::echoes_of`] gives them.
+    track_echoes: Option<(StripId, Echoes)>,
     /// Where each audio track's capture point listens now
     /// ([`MixHost::audio_take`]), None while it is free.
     audio_points: [Option<(StripId, mpfree_fx::CapturePoint)>; mpfree_audiotracks::MAX_TRACKS],
@@ -960,6 +987,8 @@ impl MixHost {
             old_pads: None,
             mutes_sent: 0,
             loop_point: master_in,
+            loop_without: None,
+            track_echoes: None,
             audio_points: [None; mpfree_audiotracks::MAX_TRACKS],
             audio_outs: [None; mpfree_audiotracks::MAX_TRACKS],
             loop_echoes: [0; mpfree_fx::RETURNS],
@@ -2587,14 +2616,24 @@ impl MixHost {
 
     /// Where the Loop track's sound still is, besides the master, each
     /// period (the design review of 20 Nov: an echo rings on after its
-    /// send comes down, and so do a submix's effects): a return it sends
-    /// to, directly or through the submix it goes to, rings with it for as
-    /// long as that return's effects ring after the send comes down
-    /// ([`MixHost::rings`]); the submix for as long as its own do, after
-    /// the Loop track is back on the master. Records from: Master is
-    /// refused until then ([`MixHost::loop_take`]).
+    /// send comes down, and so do a submix's effects), as
+    /// [`MixHost::echoes_of`] watches it. Records from: Master is refused
+    /// until then ([`MixHost::loop_take`]).
     fn watch_loop_echoes(&mut self) {
-        let lp = StripId::Track(LOOP);
+        let was = Echoes {
+            returns: self.loop_echoes,
+            bus: self.loop_bus_echo,
+        };
+        let now = self.echoes_of(StripId::Track(LOOP), was);
+        (self.loop_echoes, self.loop_bus_echo) = (now.returns, now.bus);
+    }
+
+    /// Where strip `s`'s sound still is, besides the master, a period
+    /// after `was`: a return it sends to, directly or through the submix
+    /// it goes to, rings with it for as long as that return's effects
+    /// ring after the send comes down ([`MixHost::rings`]); the submix for
+    /// as long as its own do, after `s` is back on the master.
+    fn echoes_of(&self, s: StripId, was: Echoes) -> Echoes {
         let n = PERIOD as u64;
         let down = |left: u64| {
             if left == RINGS_ON {
@@ -2603,20 +2642,23 @@ impl MixHost {
                 left.saturating_sub(n)
             }
         };
-        let bus = match self.mixer.destination(lp) {
+        let bus = match self.mixer.destination(s) {
             Some(b @ StripId::Bus(_)) => Some(b),
             _ => None,
         };
         let bus_rings = bus.map_or(0, |b| self.rings(b));
-        self.loop_bus_echo = match (bus, self.loop_bus_echo) {
-            (Some(b), _) => Some((b, bus_rings)),
-            (None, Some((b, left))) => Some((b, down(left))).filter(|e| e.1 > 0),
-            (None, None) => None,
+        let mut now = Echoes {
+            returns: [0; mpfree_fx::RETURNS],
+            bus: match (bus, was.bus) {
+                (Some(b), _) => Some((b, bus_rings)),
+                (None, Some((b, left))) => Some((b, down(left))).filter(|e| e.1 > 0),
+                (None, None) => None,
+            },
         };
         for r in 0..mpfree_fx::RETURNS {
-            let send = |s: StripId| self.mixer.param(s, mx::send(r)) > SEND_OFF_DB;
+            let send = |x: StripId| self.mixer.param(x, mx::send(r)) > SEND_OFF_DB;
             let through = bus.filter(|&b| send(b));
-            self.loop_echoes[r] = if send(lp) || through.is_some() {
+            now.returns[r] = if send(s) || through.is_some() {
                 let ring = self.rings(StripId::Return(r));
                 let extra = if through.is_some() { bus_rings } else { 0 };
                 if ring == RINGS_ON || extra == RINGS_ON {
@@ -2625,9 +2667,10 @@ impl MixHost {
                     ring + extra
                 }
             } else {
-                down(self.loop_echoes[r])
+                down(was.returns[r])
             };
         }
+        now
     }
 
     /// Why the master can't be recorded now without the loop in it: the
@@ -2704,10 +2747,12 @@ impl MixHost {
                 return Err(why);
             }
         }
-        let moved = point != self.loop_point;
+        // A take into an audio track's cell left a track out: that moves.
+        let moved = point != self.loop_point || self.loop_without.is_some();
         // A strip is found again each period (cheap, and it allocates
         // nothing), so one that moves in the mixer stays the one taken.
         if moved || point.0 != StripId::Master {
+            self.loop_without = None;
             if !self.mixer.set_capture(LOOP_CAPTURE, Some(point)) {
                 let master_in = (StripId::Master, CapturePoint::BeforeInserts);
                 let _ = self.mixer.set_capture(LOOP_CAPTURE, Some(master_in));
@@ -2730,10 +2775,80 @@ impl MixHost {
         }
     }
 
+    /// What a loop recorded into an audio track's cell records this period
+    /// (audio tracks phase 4b, behind Dev's switch), and its latency:
+    /// `from`, the track's input inside the mix, where the mixer says a
+    /// recording into `channel` (the track's own) takes it
+    /// ([`mpfree_fx::Mixer::capture_for`]): the strip itself, or a submix
+    /// or the master on its way in without the track, which the mixer sums
+    /// again without it (to the sample, not a subtraction afterwards). Or
+    /// silence, with the mixer's reason: the track itself, a submix it
+    /// goes to on the way, a return it sends to. The master also waits
+    /// while a return the track sent to, or the submix it went to, still
+    /// rings with it ([`MixHost::echoes_of`], watched each period this is
+    /// asked). Asked each period, so a route changed mid-take is caught
+    /// on the period it changes; the period the point moves is silence, as
+    /// [`MixHost::loop_take`]'s. Real-time safe: a copy.
+    pub fn track_loop_take(
+        &mut self,
+        from: (StripId, mpfree_fx::CapturePoint),
+        channel: StripId,
+        left: &mut [f32; PERIOD],
+        right: &mut [f32; PERIOD],
+    ) -> Result<u32, &'static str> {
+        use mpfree_fx::CapturePoint;
+        let master_in = (StripId::Master, CapturePoint::BeforeInserts);
+        let was = match self.track_echoes {
+            Some((c, e)) if c == channel => e,
+            _ => Echoes::default(),
+        };
+        let echoes = self.echoes_of(channel, was);
+        self.track_echoes = Some((channel, echoes));
+        let silence = |left: &mut [f32; PERIOD], right: &mut [f32; PERIOD]| {
+            left.fill(0.0);
+            right.fill(0.0);
+        };
+        let answer = self.mixer.capture_for(from, channel);
+        let rings = match answer {
+            Ok(f) if f.strip == StripId::Master => {
+                let r = (0..mpfree_fx::RETURNS).find(|&r| echoes.returns[r] > 0);
+                r.map(|r| TRACK_ECHOES_RING[r])
+                    .or(echoes.bus.filter(|e| e.1 > 0).map(|_| TRACK_SUBMIX_RINGS))
+            }
+            _ => None,
+        };
+        let f = match (answer, rings) {
+            (Ok(f), None) => f,
+            (answer, rings) => {
+                if self.loop_point != master_in || self.loop_without.is_some() {
+                    let _ = self.mixer.set_capture(LOOP_CAPTURE, Some(master_in));
+                    (self.loop_point, self.loop_without) = (master_in, None);
+                }
+                silence(left, right);
+                return Err(rings.unwrap_or_else(|| answer.err().map_or("", |e| e.text())));
+            }
+        };
+        let point = (f.strip, f.point);
+        let moved = point != self.loop_point || f.without != self.loop_without;
+        if !self.mixer.set_capture_from(LOOP_CAPTURE, Some(f)) {
+            let _ = self.mixer.set_capture(LOOP_CAPTURE, Some(master_in));
+            (self.loop_point, self.loop_without) = (master_in, None);
+            silence(left, right);
+            return Err("that strip isn't in the mix");
+        }
+        (self.loop_point, self.loop_without) = (point, f.without);
+        if moved {
+            silence(left, right);
+            return Ok(self.mixer.capture_latency(LOOP_CAPTURE).unwrap_or(0));
+        }
+        self.mix_less(0, left, right)
+    }
+
     /// What audio track `t` records from inside the mix (the instrument
     /// redesign's step 9): `from`'s strip as the last period left it,
-    /// before or after its effects (before its fader either way, so its
-    /// level never changes the take), into `into` interleaved stereo, and
+    /// before or after its effects, before its fader (the panel's Mix, so
+    /// its level never changes the take) or after it (the input list's
+    /// strips and Pads, phase 4), into `into` interleaved stereo, and
     /// the capture's latency (frames between the block's track inputs and
     /// the point). `from` None frees the track's capture point. The period
     /// the point moves is silence, as the looper's. Silence and None while
@@ -2746,17 +2861,9 @@ impl MixHost {
         from: Option<crate::audiotracks::Inside>,
         into: &mut [f32],
     ) -> Option<u32> {
-        use mpfree_fx::CapturePoint;
         let slot = AUDIO_CAPTURE + t;
         let was = *self.audio_points.get(t)?;
-        let point = from.map(|f| {
-            let p = if f.after_effects {
-                CapturePoint::BeforeFader
-            } else {
-                CapturePoint::BeforeInserts
-            };
-            (f.strip, p)
-        });
+        let point = from.map(|f| (f.strip, f.point()));
         let Some(point) = point else {
             if was.is_some() {
                 self.mixer.set_capture(slot, None);
@@ -2784,6 +2891,18 @@ impl MixHost {
             _ => into.fill(0.0),
         }
         latency
+    }
+
+    /// Why the mixer refuses a recording into `channel` (an audio track's
+    /// own) from `from`, as [`mpfree_fx::Mixer::capture_for`] says; None
+    /// when it can take it. For the input list (phase 4, board 4), which
+    /// shows the refused inputs dim. Cheap.
+    pub fn capture_refusal(
+        &self,
+        from: (StripId, mpfree_fx::CapturePoint),
+        channel: StripId,
+    ) -> Option<mpfree_fx::CaptureRefusal> {
+        self.mixer.capture_for(from, channel).err()
     }
 
     /// What an audio track can record from inside the mix (step 9), by
@@ -4437,6 +4556,124 @@ mod tests {
         assert_eq!(why, Some("that strip isn't in the mix"));
     }
 
+    /// A loop recorded into an audio track's cell (phase 4b): the track's
+    /// input where the mixer says. The master is everything but the
+    /// track, to the sample as if it weren't playing; the track itself is
+    /// refused, and so is the master while the track sends to a return
+    /// and until that return's echoes die away. The Loop track's own take
+    /// of the master after it holds the track again (nothing is left out).
+    #[test]
+    fn a_loop_into_an_audio_track_takes_the_master_without_the_track() {
+        use mpfree_fx::CapturePoint;
+        let master = (StripId::Master, CapturePoint::BeforeInserts);
+        // One period: the synth on its channel, and audio track 3's sound
+        // on its own (as `TrackHost::play_into` adds it) when `playing`.
+        let period = |h: &mut MixHost, at: usize, playing: bool| {
+            let z = [0f32; PERIOD];
+            let ch = h.track_channel(2);
+            if playing {
+                let a = tone(220.0, 0.4, at);
+                let (l, r) = h.mixer.track_input(ch).unwrap();
+                for f in 0..PERIOD {
+                    l[f] += a[f];
+                    r[f] += a[f];
+                }
+            }
+            let s = tone(330.0, 0.3, at);
+            let ctx = Ctx::new(RATE, at as u64);
+            let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+            h.period(&ctx, (&s, &s), (&z, &z), (&z, &z), &mut l, &mut r);
+        };
+        let new = || {
+            let mut h = MixHost::new(RATE, -6.0, -6.0);
+            // Truly off, as in the looper's own test, so the track's
+            // -60 dB send to Return A doesn't count as heard.
+            let ch = StripId::Track(h.track_channel(2));
+            for x in [ch, StripId::Track(LOOP)] {
+                h.mixer
+                    .set_now(x, mx::send(DELAY_RETURN), mpfree_fx::SILENT_DB);
+            }
+            h
+        };
+        let go = |from: (StripId, CapturePoint), playing: bool| {
+            let mut h = new();
+            let ch = StripId::Track(h.track_channel(2));
+            let (mut took, mut why) = (Vec::new(), None);
+            for p in 0..60 {
+                let (mut wl, mut wr) = ([1f32; PERIOD], [1f32; PERIOD]);
+                if let Err(e) = h.track_loop_take(from, ch, &mut wl, &mut wr) {
+                    assert!(wl.iter().chain(&wr).all(|&x| x == 0.0), "silence");
+                    why = Some(e);
+                }
+                took.extend(wl.iter().zip(&wr).flat_map(|(a, b)| [*a, *b]));
+                period(&mut h, p * PERIOD, playing);
+            }
+            (took, why)
+        };
+        let loud = |x: &[f32]| x.iter().fold(0f32, |m, v| m.max(v.abs()));
+        let (with, why) = go(master, true);
+        assert_eq!(why, None);
+        assert!(with[..2 * PERIOD].iter().all(|&v| v == 0.0), "it moved");
+        let (without, _) = go(master, false);
+        assert_eq!(with, without, "the master as if the track were silent");
+        assert!(loud(&with) > 0.05, "the synth is in it");
+        // The track's own channel: refused, silence.
+        let mut h = new();
+        let ch = StripId::Track(h.track_channel(2));
+        let (_, why) = go((ch, CapturePoint::BeforeInserts), true);
+        assert_eq!(why, Some("a track can't record itself"));
+        // A send up: refused; down, refused while Return A rings.
+        let take = |h: &mut MixHost| {
+            let (mut l, mut r) = ([1f32; PERIOD], [1f32; PERIOD]);
+            h.track_loop_take(master, ch, &mut l, &mut r).err()
+        };
+        for p in 0..100 {
+            if h.mixer.edits_pending() == 0 {
+                break;
+            }
+            period(&mut h, p * PERIOD, false);
+        }
+        assert_eq!(take(&mut h), None);
+        h.mixer.set_now(ch, mx::send(DELAY_RETURN), -12.0);
+        period(&mut h, 0, false);
+        assert_eq!(
+            take(&mut h),
+            Some(mpfree_fx::CaptureRefusal::Sends(DELAY_RETURN).text())
+        );
+        h.mixer
+            .set_now(ch, mx::send(DELAY_RETURN), mpfree_fx::SILENT_DB);
+        let periods = h
+            .rings(StripId::Return(DELAY_RETURN))
+            .div_ceil(PERIOD as u64);
+        assert!(periods > 2);
+        for _ in 0..periods - 1 {
+            period(&mut h, 0, false);
+            assert_eq!(take(&mut h), Some(TRACK_ECHOES_RING[DELAY_RETURN]));
+        }
+        period(&mut h, 0, false);
+        assert_eq!(take(&mut h), None, "its echoes died away");
+        // The Loop track's take of the master: the track is in it again.
+        let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+        assert!(h.loop_take(Some(StripId::Master), &mut l, &mut r).is_ok());
+        assert_eq!(h.loop_without, None);
+        let mut heard = 0f32;
+        for p in 0..20 {
+            period(&mut h, p * PERIOD, true);
+            let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+            let _ = h.loop_take(Some(StripId::Master), &mut l, &mut r);
+            heard = heard.max(loud(&l));
+        }
+        let mut bare = new();
+        let mut alone = 0f32;
+        for p in 0..20 {
+            period(&mut bare, p * PERIOD, false);
+            let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+            let _ = bare.loop_take(Some(StripId::Master), &mut l, &mut r);
+            alone = alone.max(loud(&l));
+        }
+        assert!(heard > alone + 0.05, "the track again: {heard} vs {alone}");
+    }
+
     #[test]
     fn the_samplers_capture_point_hears_the_strip_picked() {
         use crate::sampler::RecSource;
@@ -4528,6 +4765,7 @@ mod tests {
         let after = Inside {
             strip: StripId::Pad(0),
             after_effects: true,
+            after_fader: false,
         };
         assert!(h.audio_take(2, Some(after), &mut buf).is_some());
         assert_eq!(peak(&buf), 0.0, "silent the period it moves");
@@ -4554,6 +4792,7 @@ mod tests {
         let gone = Inside {
             strip: StripId::Pad(PAD_STRIPS),
             after_effects: true,
+            after_fader: false,
         };
         assert_eq!(h.audio_take(2, Some(gone), &mut buf), None);
         assert_eq!(peak(&buf), 0.0);

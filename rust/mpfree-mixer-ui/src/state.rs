@@ -145,6 +145,11 @@ pub struct StripView {
     /// The stripe's colour, when the app gives one (an audio track's, its
     /// track's colour); else the strip's own.
     pub color: Option<mpfree_ui::Color>,
+    /// What an audio track's channel plays now, with loops in audio cells
+    /// (phase 4, board 6): a tag under its name, a play mark before "loop
+    /// · row 2" (or "take · row 3") and the loop's (or clip's) name under
+    /// it, in the track's colour. The app fills it in.
+    pub tag: Option<(String, String)>,
 }
 
 /// The parametric EQ's engine id.
@@ -188,6 +193,7 @@ impl StripView {
             take: None,
             audio: None,
             color: None,
+            tag: None,
         }
     }
 
