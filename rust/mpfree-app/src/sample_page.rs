@@ -1162,6 +1162,15 @@ pub struct SamplePage {
     /// The bank pressed while the kit shown plays from another of its
     /// banks (bank B playing Big Kit's bank C): "from pad B1".
     from_bank: Option<usize>,
+    /// What the last hit played when it played kit layers too (sampler
+    /// step 15e's follow-up): the pads' own kit and pad first, then each
+    /// kit layer's, by kit place and pad; the bar's chips pick among them.
+    /// Empty: the hit played no kit layer.
+    hit_sounds: Vec<(usize, usize)>,
+    /// The kit layer picked on the bar's chips, by kit place: later hits
+    /// show its pad while the pads play it as a layer (the canvas "Kit
+    /// layers and routes", question 2). None: the first chip.
+    layer_pick: Option<usize>,
     /// The take kept on the page that the Wave page shows (one-page step
     /// 2b), by its place in the kit's [`Project::takes`]; None: the pad.
     open: Option<usize>,
@@ -1369,6 +1378,8 @@ impl SamplePage {
             track: 0,
             track_pad: 0,
             from_bank: None,
+            hit_sounds: Vec::new(),
+            layer_pick: None,
             open: None,
             sending_take: None,
             take_held: None,
@@ -1582,6 +1593,134 @@ impl SamplePage {
         }
     }
 
+    /// A hit on pad `pad` of the kit the page follows also played the kit
+    /// layers `layers` (kit place, pad; sampler step 15e's follow-up): the
+    /// bar gets a chip for each sound, the page's own first. A layer
+    /// picked before stays picked while the hit plays it, so later hits
+    /// show its pad (the canvas "Kit layers and routes", question 2).
+    /// Gives the pad the page shows now, on the kit it moved to. `base` is
+    /// the kit and pad the hit played on the pads' own.
+    pub fn follow_layers(&mut self, base: (usize, usize), layers: &[(usize, usize)]) -> usize {
+        let pad = base.1;
+        let layers: Vec<(usize, usize)> = layers
+            .iter()
+            .copied()
+            .filter(|&(k, _)| k < self.projects.len() && k != base.0)
+            .collect();
+        if self.synth || layers.is_empty() {
+            if !self.hit_sounds.is_empty() {
+                self.hit_sounds.clear();
+                self.stale = true;
+            }
+            self.layer_pick = None;
+            return pad;
+        }
+        let mut sounds = vec![base];
+        sounds.extend(layers);
+        if sounds != self.hit_sounds {
+            self.hit_sounds = sounds;
+            self.stale = true;
+        }
+        let picked = self
+            .layer_pick
+            .and_then(|k| self.hit_sounds[1..].iter().find(|s| s.0 == k).copied());
+        match picked {
+            Some((k, p)) => {
+                self.set_kit(k, false);
+                p
+            }
+            None => {
+                self.layer_pick = None;
+                pad
+            }
+        }
+    }
+
+    /// Whether a hit that plays the kit layers `layers` keeps the layer
+    /// picked on the bar's chips, so the page stays on its kit.
+    pub fn keeps_layer(&self, layers: &[(usize, usize)]) -> bool {
+        !self.synth
+            && self
+                .layer_pick
+                .is_some_and(|k| layers.iter().any(|l| l.0 == k))
+    }
+
+    /// The pads' layers changed, or the page went to the track's kit: the
+    /// bar's layer chips go until a hit plays kit layers again.
+    pub fn clear_layers(&mut self) {
+        self.layer_pick = None;
+        if !self.hit_sounds.is_empty() {
+            self.hit_sounds.clear();
+            self.stale = true;
+        }
+    }
+
+    /// A tap on the bar's layer chip `i` (sampler step 15e's follow-up):
+    /// the page shows that sound's kit and pad, and a layer's stays
+    /// picked for later hits while the pads play it.
+    fn pick_layer_chip(&mut self, i: usize) {
+        let Some(&(k, pad)) = self.hit_sounds.get(i) else {
+            return;
+        };
+        self.layer_pick = (i > 0).then_some(k);
+        self.set_kit(k, false);
+        self.pick(pad);
+        self.stale = true;
+        let line = if i == 0 {
+            format!(
+                "Pad {} of {}, the pads' own",
+                self.pad_text(k, pad),
+                self.kit_text_of(k)
+            )
+        } else {
+            format!(
+                "Pad {} of {}, a layer of the pads: later hits show it while the pads play it",
+                self.pad_text(k, pad),
+                self.kit_text_of(k)
+            )
+        };
+        self.told.push(line);
+    }
+
+    /// The bar's layer chips: each sound the last hit played, by its kit's
+    /// name and pad ("Big Kit C1", "Lo-Fi A1 · layer"), and the one the
+    /// page shows (past the last: none).
+    fn layer_chips(&self) -> (Vec<String>, usize) {
+        let name = |k: usize| {
+            let n = self
+                .names
+                .get(k)
+                .map(|n| n.trim())
+                .filter(|n| !n.is_empty())
+                .map_or_else(|| format!("Kit {}", k + 1), str::to_string);
+            if n.chars().count() > 16 {
+                let cut: String = n.chars().take(15).collect();
+                format!("{}…", cut.trim_end())
+            } else {
+                n
+            }
+        };
+        let chips = self
+            .hit_sounds
+            .iter()
+            .enumerate()
+            .map(|(i, &(k, p))| {
+                let pad = crate::app::kit_pad_name(p);
+                if i == 0 {
+                    format!("{} {pad}", name(k))
+                } else {
+                    format!("{} {pad} · layer", name(k))
+                }
+            })
+            .collect();
+        let on = self
+            .hit_sounds
+            .iter()
+            .position(|&(k, _)| k == self.kit)
+            .unwrap_or(usize::MAX);
+        (chips, on)
+    }
+
     /// The bar's "Track 1's kit" chip (sampler step 15e, board 4): the
     /// page shows the selected track's own kit again, at its pad hit
     /// last. Nothing while it shows it, or the pads play the synth.
@@ -1590,6 +1729,7 @@ impl SamplePage {
             return;
         }
         let pad = self.track_pad;
+        self.clear_layers();
         self.set_kit(self.track_kit, false);
         self.pick(pad);
         self.stale = true;
@@ -1603,10 +1743,12 @@ impl SamplePage {
     /// What the bar says of the kit shown while it isn't the selected
     /// track's (sampler step 15e, board 4): its name, and the pad pressed
     /// when it plays from another of its banks ("Big Kit, from pad B1");
-    /// and the chip that shows the track's kit again. None for the track's
-    /// own kit and while the pads play the synth.
-    fn kit_shown_note(&self) -> Option<(String, String)> {
-        if self.synth || self.kit == self.track_kit || self.kit >= self.projects.len() {
+    /// and the chip that shows the track's kit again. A kit layer picked
+    /// on the bar's chips says so ("Lo-Fi, a layer of the pads"; step
+    /// 15e's follow-up). None for the track's own kit and while the pads
+    /// play the synth.
+    fn kit_shown_note(&self) -> Option<(String, Option<String>)> {
+        if self.synth || self.kit >= self.projects.len() {
             return None;
         }
         let name = self
@@ -1615,6 +1757,15 @@ impl SamplePage {
             .filter(|n| !n.is_empty())
             .cloned()
             .unwrap_or_else(|| format!("Kit {}", self.kit + 1));
+        if self.layer_pick == Some(self.kit) {
+            // A kit layer's chip picked (step 15e's follow-up).
+            let chip =
+                (self.kit != self.track_kit).then(|| format!("Track {}'s kit", self.track + 1));
+            return Some((format!("{name}, a layer of the pads"), chip));
+        }
+        if self.kit == self.track_kit {
+            return None;
+        }
         let from = self
             .from_bank
             .filter(|&b| b != self.pad / 16)
@@ -1627,7 +1778,7 @@ impl SamplePage {
             .unwrap_or_default();
         Some((
             format!("{name}{from}"),
-            format!("Track {}'s kit", self.track + 1),
+            Some(format!("Track {}'s kit", self.track + 1)),
         ))
     }
 
@@ -2241,6 +2392,10 @@ impl SamplePage {
         // of a pad with a sound; on another kit than the track's, the bar
         // names it and offers the track's kit back (sampler step 15e).
         let (note, chip) = self.kit_shown_note().unzip();
+        let chip = chip.flatten();
+        // And, after a hit that played kit layers too, a chip for each
+        // sound it played (step 15e's follow-up).
+        let (layers, layer_on) = self.layer_chips();
         for bar in NAMED_BARS {
             if let Some(b) = ui.get_mut::<mpfree_sampler_ui::widgets::PadBar>(bar) {
                 if b.nameable != has_sound {
@@ -2249,6 +2404,10 @@ impl SamplePage {
                 if b.kit_note != note || b.track_kit != chip {
                     b.kit_note.clone_from(&note);
                     b.track_kit.clone_from(&chip);
+                }
+                if b.layers != layers || b.layer_on != layer_on {
+                    b.layers.clone_from(&layers);
+                    b.layer_on = layer_on;
                 }
             }
         }
@@ -2719,6 +2878,18 @@ impl SamplePage {
             self.show_track_kit();
             self.refresh_if_stale(ui);
             return;
+        }
+        // A layer chip on the bar (step 15e's follow-up).
+        if let EventKind::Tab(t) = ev.kind {
+            if t >= mpfree_sampler_ui::widgets::LAYER_CHIP
+                && ui
+                    .get::<mpfree_sampler_ui::widgets::PadBar>(&ev.widget)
+                    .is_some()
+            {
+                self.pick_layer_chip(t - mpfree_sampler_ui::widgets::LAYER_CHIP);
+                self.refresh_if_stale(ui);
+                return;
+            }
         }
         // A finger dragged on a Q-Link card turns that knob, as the knob
         // would (the drag is one undo step: the finger's lift ends it).
