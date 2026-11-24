@@ -63,6 +63,9 @@ pub struct PartAsk {
     /// a synth made for it. `track` is then the index that track will
     /// get: the project's track count when asked.
     pub new_track: Option<NewTrack>,
+    /// A phrase played as the part, with its name, in place of one the
+    /// composer writes (the Style row run on into phrases, P2).
+    pub phrase: Option<(String, mpfree_arp::Phrase)>,
 }
 
 /// A track Add a part adds at Keep (composing tools S2.6b): its name, and

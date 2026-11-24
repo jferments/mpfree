@@ -17070,6 +17070,7 @@ mod tests {
             pads: [None; 4],
             bars: None,
             new_track: None,
+            phrase: None,
         })))
     }
 
@@ -17148,6 +17149,53 @@ mod tests {
             "{}",
             h.describe()
         );
+    }
+
+    /// A phrase as the part (P2, board H): the try is the phrase over the
+    /// row's chords, and the same phrase asked again gives the same part
+    /// (it plays one way).
+    #[test]
+    fn add_a_part_on_a_phrase_plays_the_phrase_the_same_each_time() {
+        use mpfree_time_ui::adding::AddState;
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        run(&mut h, &mut pads, BAR / 4, &[]);
+        let list = mpfree_arp_ui::PhraseList::built_in().phrases;
+        let (name, phrase) = list
+            .iter()
+            .find(|(_, p)| p.kind == mpfree_arp::PhraseKind::Bass)
+            .cloned()
+            .unwrap();
+        let on_phrase = || {
+            let mut ask = add_bass();
+            if let TimeAction::Add(AddAction::Ask(a)) = &mut ask {
+                a.phrase = Some((name.clone(), phrase));
+            }
+            ask
+        };
+        let made = |h: &mut TimeHost, pads: &mut Fake, n: usize| {
+            until(h, pads, |h| {
+                adding(h).is_some_and(|a| {
+                    a.state != AddState::Making && a.position.is_some_and(|p| p.1 == n)
+                })
+            });
+            adding(h).unwrap().made.as_ref().unwrap().clip.clone()
+        };
+        assert_eq!(
+            h.act(on_phrase()).unwrap(),
+            format!("add a part: {name} as the bass for row 1")
+        );
+        let first = made(&mut h, &mut pads, 1);
+        assert!(!first.notes.is_empty());
+        assert!(first.notes.iter().all(|n| n.note < 60), "a bass line");
+        h.act(on_phrase()).unwrap();
+        let again = made(&mut h, &mut pads, 2);
+        assert_eq!(again.notes, first.notes, "a phrase plays one way");
+        h.act(add_bass()).unwrap();
+        let written = made(&mut h, &mut pads, 3);
+        assert_ne!(written.notes, first.notes, "the composer's is its own");
     }
 
     /// Back while a try plays: the cell goes quiet on the next bar line

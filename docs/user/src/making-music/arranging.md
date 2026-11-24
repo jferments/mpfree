@@ -63,12 +63,15 @@ Every change plays at once, and **UNDO** takes it back. Turning one setting many
 3. The try plays in its cell with the row, dashed in the track's colour, from the next bar line while the row plays (press **PLAY** and launch the row to hear it).
 4. Change it until you like it:
    - **Role** says how it plays with the others: **Support** (with the beat, under the tune), **Answer** (where the tune rests), **Interlock** (in the beat's gaps) or **Stay out** (sparse, out of the way). The words under it say what the role does.
-   - **Style**, and **Bars**: the row's length, or 1, 2, 4, 8 or 16 bars.
+   - **Style** (Minimal, Groove, Jazz-ish), and **Bars**: the row's length, or 1, 2, 4, 8 or 16 bars.
+   - **A phrase as the part:** step **Style** on past Jazz-ish and it runs on into the arp's phrases of the part's kind, MPFree's and then yours (for Bass the bass lines, for Chords the chords, for a melody the riffs and arp lines; drums take none). The row then reads **Phrase**, and the part is the phrase played over the row's chords, moved to each chord's root in the row's key, as the arp moves it from a note you hold. A phrase plays one way, so **Try again** is faint and the Q-Links read "–"; step back to a style for a part the composer writes. See [Phrases](note-repeat-and-arp.md#phrases).
    - **Track**: the track whose empty cell gets the part. It starts on a track whose name says the part (a "Bass" track for Bass), else the first with room. **Sound** says what plays it.
    - **New track**, the Track row's last choice: the part goes on a track **Keep** adds, named for the part ("Bass", or "Bass 2" when you have one). **Sound** then picks the synth it plays: for Bass the Bass synth first, then Squelch, Analog, Poly, FM and Pluck; for Chords Poly, Keys, Strings, Drawbar, Choir, Analog and FM; for a melody FM, Pluck, Analog, Wind, Poly, Keys, Strings and Squelch; drums play the Drums synth. The status says "Making the Bass synth…" for a moment before the first try. When every track has a clip in the row, the panel opens on New track.
    - The Q-Links: **Similarity**, **Variation**, **Activity** and **Range**, as on Continue.
    - **Try again** makes another. **‹ Try 1** goes back to an earlier one (the last eight are kept).
 5. **Keep** puts the part in its cell: one take, "a new part", and one **UNDO** takes it back. If the song plays the row, its parts get it too, on the same take. On New track, Keep adds the track with the part and its synth, and one **UNDO** takes both away. **Back** or **×** closes the panel and changes nothing (New track's synth goes too).
+
+{{shot: clips-add-part-phrase | Add a part on row 5 with Style stepped past Jazz-ish to the phrase Night drive: the Bass try plays Night drive over the row's chords, Try again is faint and the Q-Links read "–".}}
 
 Adding a track with **+ Track** while New track is trying moves the new track one along: the tries go ("A track was added: Try again"), and **Try again** makes one for the track after it.
 

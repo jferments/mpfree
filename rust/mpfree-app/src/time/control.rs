@@ -8079,11 +8079,12 @@ impl TimeControl {
                     meter: self.info.meter,
                     bpm: self.info.bpm,
                 };
-                let what = format!(
-                    "{} on {}",
-                    format!("{:?}", ask.part).to_lowercase(),
-                    ask.relation.words()
-                );
+                let part = format!("{:?}", ask.part).to_lowercase();
+                let what = match &ask.phrase {
+                    // A phrase as the part (P2, board H).
+                    Some((name, _)) => format!("{name} as the {part}"),
+                    None => format!("{part} on {}", ask.relation.words()),
+                };
                 let playing = self.add.in_view.is_some();
                 self.add.ask(&self.project, *ask, hearing)?;
                 self.changed = true;

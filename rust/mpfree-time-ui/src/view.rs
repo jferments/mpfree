@@ -175,6 +175,8 @@ pub const SONG_CHORDS_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, col(chords-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
 pub const LIST_CHORDS_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(song-list:*, col(chords-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
+/// The hint line with Add a part's Style row on a phrase (P2, board H).
+pub const ADD_PHRASE_HINT: &str = "Style, after Jazz-ish: the phrases of the part's kind, MPFree's and yours   ·   it follows the row's chords   ·   Try again: a phrase plays one way";
 /// The hint line with the Record panel's Chords tab.
 pub const CHORDS_HINT: &str =
     "A clip that doesn't fit is marked, never rewritten   ·   untick one to leave it   ·   Fit: the ticked clips, one UNDO   ·   a chord on the row: change it   ·   Row: the scene pick";
@@ -7075,6 +7077,10 @@ pub struct TimePage {
     /// Add a part's panel is open (composing tools S2.6, layout spec 4r):
     /// its choices, the screen's own until Back, Keep or ×.
     pub add: Option<AddPick>,
+    /// The app's list of phrases, which Add a part's Style row runs on
+    /// into after its styles (P2). The app sets it
+    /// ([`TimePage::set_phrases`]).
+    pub phrases: Arc<[(String, mpfree_arp::Phrase)]>,
     /// The Make a phrase sheet is open from the clip card (step 3 of the
     /// phrases): what it shows. The app sets it; the sheet is the arp's,
     /// and its touches go to the app.
@@ -7555,13 +7561,33 @@ impl TimePage {
         }
     }
 
+    /// The app's list of phrases (MPFree's, the owner's, the project's):
+    /// Add a part's Style row runs on into them. An open panel's phrase
+    /// follows by name. True if the panel changed.
+    pub fn set_phrases(&mut self, phrases: Arc<[(String, mpfree_arp::Phrase)]>) -> bool {
+        self.phrases = phrases.clone();
+        self.add.as_mut().is_some_and(|p| p.set_phrases(phrases))
+    }
+
+    /// Why the Q-Links do nothing on Add a part's panel now: a phrase is
+    /// picked, and it plays as written.
+    pub fn add_knob_why(&self) -> Option<&'static str> {
+        self.add.as_ref().filter(|p| p.phrase.is_some()).map(|_| {
+            "A phrase plays as written: the Q-Links shape a part the composer writes, on a style"
+        })
+    }
+
     /// Q-Link `k` turned `ticks` detents while Add a part's panel is open
     /// (Similarity, Variation, Activity, Range): a new try when it moved.
-    /// False with the panel closed.
+    /// False with the panel closed. On a phrase nothing moves
+    /// ([`TimePage::add_knob_why`]).
     pub fn add_knob(&mut self, k: usize, ticks: i32) -> bool {
         let Some(p) = self.add.as_mut() else {
             return false;
         };
+        if p.phrase.is_some() {
+            return true;
+        }
         if p.turn(k, ticks) {
             self.ask_part();
         }
@@ -7619,6 +7645,11 @@ impl TimePage {
             (ADD_PANEL, EventKind::Toggle(k)) => {
                 match *k {
                     add_view::PANEL_CLOSE | add_view::PANEL_BACK => self.close_add(),
+                    add_view::PANEL_TRY_AGAIN
+                        if self.add.as_ref().is_some_and(|p| p.phrase.is_some()) =>
+                    {
+                        return Err("A phrase plays one way, so Try again has nothing new: step back to a style for a part the composer writes".to_string());
+                    }
                     add_view::PANEL_TRY_AGAIN => self.ask_part(),
                     add_view::PANEL_STEP => {
                         let pos = st.adding.as_ref().and_then(|a| a.position);
@@ -7656,10 +7687,11 @@ impl TimePage {
                     return Ok(());
                 }
                 let end = if *delta < 0 { "first" } else { "last" };
-                Err(format!(
-                    "{} is at its {end} choice",
-                    PANEL_ROWS.get(*index).copied().unwrap_or("That")
-                ))
+                let name = match *index {
+                    add_view::ROW_STYLE if p.phrase.is_some() => "Phrase",
+                    k => PANEL_ROWS.get(k).copied().unwrap_or("That"),
+                };
+                Err(format!("{name} is at its {end} choice"))
             }
             (CHORDS_CARD, EventKind::Step { delta, .. }) => {
                 let row = (st.scene_focus as i64 + i64::from((*delta).signum()))
@@ -7726,7 +7758,8 @@ impl TimePage {
                     .to_string(),
             );
         }
-        let pick = AddPick::open(st, row, track)?;
+        let mut pick = AddPick::open(st, row, track)?;
+        pick.phrases = self.phrases.clone();
         self.chord_pick = None;
         self.keeping = false;
         self.kept = false;
@@ -7804,6 +7837,10 @@ impl TimePage {
             });
         }
         if let Some(p) = self.add.as_ref().filter(|_| grid) {
+            // On a phrase (P2, board H).
+            if p.phrase.is_some() {
+                return Some(ADD_PHRASE_HINT.to_string());
+            }
             // New track (S2.6b): Keep adds the track, and Sound picks its
             // synth.
             if p.new_track {
@@ -12686,6 +12723,148 @@ mod tests {
         assert!(page.add.is_none());
         assert!(!page.take_asks().contains(&TimeAction::Add(AddAction::Back)));
         assert_eq!(ui.layout_of(CLIPS_PAGE), Some(CLIPS_LAYOUT));
+    }
+
+    /// The Style row runs on into phrases (P2, board H): after Jazz-ish,
+    /// MPFree's phrases of the part's kind and then the owner's; the row
+    /// reads Phrase, the ask carries the phrase, Try again is faint and
+    /// says why, the Q-Links read "–" and shape nothing, and the hint says
+    /// what the row does. Another part goes back to the style unless the
+    /// phrase suits it; drums take none.
+    #[test]
+    fn the_style_row_runs_on_into_the_phrases_of_the_parts_kind() {
+        use crate::add_view::{AddPanel, PANEL_TRY_AGAIN, PARTS, ROW_STYLE};
+        use mpfree_arp::PhraseKind;
+        use mpfree_context::PartRole;
+        use mpfree_ui::Widget;
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Arrange"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut list = mpfree_arp_ui::PhraseList::built_in().phrases;
+        let mut mine = list
+            .iter()
+            .find(|(_, p)| p.kind == PhraseKind::Bass)
+            .unwrap()
+            .1;
+        mine.kind = PhraseKind::Bass;
+        list.push(("Verse bass".to_string(), mine));
+        page.set_phrases(list.clone().into());
+        let mut st = state();
+        st.scene_focus = 2;
+        page.update(&mut ui, &st);
+        page.compose(&ev(CLIPS, EventKind::Toggle(ROWS + ADD_PART)), &st)
+            .unwrap();
+        page.take_asks();
+        let p = page.add.as_ref().unwrap();
+        let basses = p.part_phrases();
+        assert_eq!(basses.len(), 17, "MPFree's 16 bass lines and the owner's");
+        assert!(basses.iter().all(|&i| list[i].1.kind == PhraseKind::Bass));
+        assert_eq!(list[*basses.last().unwrap()].0, "Verse bass");
+        // From Minimal, + three times: past Jazz-ish, the first bass line,
+        // asked for at once.
+        let step = |page: &mut TimePage, st: &TimeState, delta| {
+            page.compose(
+                &ev(
+                    ADD_PANEL,
+                    EventKind::Step {
+                        index: ROW_STYLE,
+                        delta,
+                    },
+                ),
+                st,
+            )
+        };
+        assert_eq!(page.add.as_ref().unwrap().value(&st, ROW_STYLE), "Minimal");
+        step(&mut page, &st, 3).unwrap();
+        let first = list[basses[0]].clone();
+        let p = page.add.as_ref().unwrap();
+        assert_eq!(p.value(&st, ROW_STYLE), first.0);
+        assert!(
+            matches!(&page.take_asks()[..], [TimeAction::Add(AddAction::Ask(a))]
+                if a.phrase == Some(first.clone()))
+        );
+        page.update(&mut ui, &st);
+        let panel = ui.get::<AddPanel>(ADD_PANEL).unwrap();
+        assert!(panel.view.phrase);
+        assert_eq!(panel.view.values[ROW_STYLE], first.0);
+        let r = ui.rect_of(ADD_PANEL).unwrap();
+        let targets = panel.targets(r);
+        let again = targets.iter().find(|t| t.id == "add-try-again").unwrap();
+        assert!(!again.enabled, "Try again is faint on a phrase");
+        assert!(targets.iter().any(|t| t.label == "Phrase ›"));
+        let why = page
+            .compose(&ev(ADD_PANEL, EventKind::Toggle(PANEL_TRY_AGAIN)), &st)
+            .unwrap_err();
+        assert!(why.contains("plays one way"), "{why}");
+        let no_ask = |page: &mut TimePage| {
+            !page
+                .take_asks()
+                .iter()
+                .any(|a| matches!(a, TimeAction::Add(AddAction::Ask(_))))
+        };
+        assert!(no_ask(&mut page));
+        assert!(page
+            .add
+            .as_ref()
+            .unwrap()
+            .cards()
+            .iter()
+            .all(|(_, v)| v == "–"));
+        assert!(page.add_knob(0, 3));
+        assert!(page.add_knob_why().is_some() && no_ask(&mut page));
+        assert_eq!(page.compose_hint(&st).as_deref(), Some(ADD_PHRASE_HINT));
+        // To the owner's, the last: + says so.
+        step(&mut page, &st, 40).unwrap();
+        assert_eq!(
+            page.add.as_ref().unwrap().value(&st, ROW_STYLE),
+            "Verse bass"
+        );
+        page.take_asks();
+        assert_eq!(
+            step(&mut page, &st, 1).unwrap_err(),
+            "Phrase is at its last choice"
+        );
+        // Chords: no bass line suits it, so the style again.
+        let chords = PARTS.iter().position(|&r| r == PartRole::Chords).unwrap();
+        page.compose(&ev(ADD_PANEL, EventKind::Select(chords)), &st)
+            .unwrap();
+        let p = page.add.as_ref().unwrap();
+        assert!(p.phrase.is_none());
+        assert_eq!(p.value(&st, ROW_STYLE), "Minimal");
+        assert!(p
+            .part_phrases()
+            .iter()
+            .all(|&i| list[i].1.kind == PhraseKind::Chords));
+        // Drums: past the last style, why.
+        let drums = PARTS.iter().position(|&r| r == PartRole::Drums).unwrap();
+        page.compose(&ev(ADD_PANEL, EventKind::Select(drums)), &st)
+            .unwrap();
+        step(&mut page, &st, 9).unwrap();
+        assert_eq!(page.add.as_ref().unwrap().value(&st, ROW_STYLE), "Jazz-ish");
+        let why = step(&mut page, &st, 1).unwrap_err();
+        assert!(why.contains("Drums take no phrase"), "{why}");
+        // A melody's are the riffs and the arp lines.
+        let line = PARTS.iter().position(|&r| r == PartRole::Melody).unwrap();
+        page.compose(&ev(ADD_PANEL, EventKind::Select(line)), &st)
+            .unwrap();
+        let kinds: std::collections::BTreeSet<&str> = page
+            .add
+            .as_ref()
+            .unwrap()
+            .part_phrases()
+            .iter()
+            .map(|&i| list[i].1.kind.label())
+            .collect();
+        assert_eq!(kinds, ["Arp lines", "Riff"].into_iter().collect());
+        // The list changed (another kept): the pick follows its name.
+        step(&mut page, &st, 4).unwrap();
+        let picked = page.add.as_ref().unwrap().phrase_of().unwrap();
+        let mut more = list.clone();
+        more.insert(0, ("New one".to_string(), mine));
+        assert!(page.set_phrases(more.into()));
+        assert_eq!(page.add.as_ref().unwrap().phrase_of(), Some(picked));
     }
 
     /// New track (composing tools S2.6b): the Track row steps past the

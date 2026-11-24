@@ -3235,7 +3235,10 @@ impl Player {
             mpfree_ui::status_page::StatusPage::default(),
         );
         ui.add("syshw", StatList::new("Hardware"));
-        let time_page = TimePage::add_to(&mut ui).expect("clips layout");
+        let mut time_page = TimePage::add_to(&mut ui).expect("clips layout");
+        // MPFree's phrases, which Add a part's Style row runs on into,
+        // until the app sends its list with the owner's.
+        time_page.phrases = mpfree_arp_ui::PhraseList::built_in().phrases.into();
         ui.add_full_page("Loading", "loading")
             .expect("loading layout");
         // The Looper tab's widgets first: the Play views show some of them.
@@ -12097,7 +12100,11 @@ impl Player {
                     // An audio region's knobs.
                 } else if self.view == View::Arrange && self.time_page.add_knob(k, ticks) {
                     // Add a part's panel: Similarity, Variation, Activity
-                    // and Range, a new try with each change.
+                    // and Range, a new try with each change; on a phrase
+                    // they shape nothing, and say so.
+                    if let Some(why) = self.time_page.add_knob_why() {
+                        self.tell(why);
+                    }
                     self.send_page_asks();
                     self.refresh_qlinks();
                 } else if self.note_inspector().is_some() {
@@ -13019,6 +13026,10 @@ impl Player {
                 self.refresh_arp();
             }
             ToUi::Phrases(list) => {
+                // Add a part's Style row runs on into them (P2, board H).
+                if self.time_page.set_phrases(list.phrases.clone().into()) {
+                    self.time_page.update(&mut self.ui, &self.time);
+                }
                 self.arp.phrases = list;
                 self.refresh_arp();
             }
@@ -24948,6 +24959,21 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("clips-add-part-new-track sample: {e}"),
     }
+    // Add a part on a phrase (P2, board H): the Style row run on past
+    // Jazz-ish to Night drive, a try of it playing over the row's chords.
+    match mpfree_time_ui::sample::add_part_phrase_state() {
+        Ok((st, pick)) => {
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.time_page.add = Some(pick);
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.refresh_qlinks();
+            p.refresh_hint();
+            out.push(("clips-add-part-phrase", p));
+        }
+        Err(e) => eprintln!("clips-add-part-phrase sample: {e}"),
+    }
     // The Chords tab (S2.6, board C): bar 4's chord set to A♭7 after
     // the Bass was kept, so the Bass and the Solo don't fit: both marked
     // in their cells and ticked on the tab.
@@ -28201,6 +28227,7 @@ mod tests {
                     name: "Bass".into(),
                     sound,
                 }),
+                phrase: None,
             })
         };
         let asks = |p: &mut Player| {
