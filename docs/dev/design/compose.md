@@ -237,7 +237,15 @@ More like this ([`idea/like.rs`](../../../rust/mpfree-compose/src/idea/like.rs))
 
 How often a rework passes every check of its kind (`print_how_often_reworks_pass`: 90 ideas of each kind, every style and length, 10 seeds, each reworked with another seed; a few phrases had nothing new in eight tries): its rhythm with new notes, a bass 89 of 90, a riff 87 of 87, chords 81 of 82, a line 90 of 90; its notes on a new rhythm, a bass 86 of 90, a riff 87 of 90, chords 90 of 90, a line 70 of 80 (9 missed *plays the chords* where a figure's passing note falls on the new rhythm's strong steps).
 
-Next in P2: the owner's blind listen on the twelve pairs (the gate), a phrase as Add a part's part, Busy's reach, then New idea's screen, drawn and approved before it is built.
+#### A phrase as Add a part's part
+
+`phrase_part(add_part, phrase)` ([`phrase_part.rs`](../../../rust/mpfree-compose/src/phrase_part.rs)) plays any phrase as Add a part's part: the phrase loops over the row as the player loops it, and each note moves from its home note to the root of the chord it sounds over by steps of the row's key, as the player moves a phrase In key from the held note. A bass line plays from each chord's root; stabs written 1, b3, 5 in minor become each chord of the key; a note written outside its scale keeps its half step. The root sits in the part's register (a bass around G2, chords around middle C, a second line around G4), the octave nearest the last root within a fifth of the middle, so the part moves the short way round and never drifts. It is refused for drums ("A phrase plays notes: pick Bass, Chords or Melody for it") and, as Add a part is, for a row with no chords. What it makes is judged by Add a part's checks and kept as one take, as a part the composer makes is. No screen offers it yet: it joins Add a part's panel with New idea's boards.
+
+Weighed: placing each note at the chord's own shape (a phrase's 3 as the chord's third whatever the chord). Left, because the player itself moves by steps of the key, and a phrase heard on the Phrase tab should sound the same in a row.
+
+MPFree's 64 phrases as parts over four bars of C minor's i, iv, VI and v with no drums (`print_the_64_as_parts`): most pass four or five of the six checks. *Plays together* is the one most missed (11 to 16 of 16 for each kind), since it asks a part on Support for the kick and the row's changes and these phrases were written to be held, not for a row; it is what the listen is for.
+
+Next in P2: the owner's blind listen on the twelve pairs (the gate), Busy's reach, then New idea's screen (with More like this and a phrase as a part), drawn and approved before it is built.
 
 ## Continue in the time engine (phase 1)
 

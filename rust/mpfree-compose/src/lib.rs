@@ -112,6 +112,7 @@ pub mod keep;
 pub mod motif;
 pub mod parts;
 pub mod phrase;
+pub mod phrase_part;
 pub mod plan;
 pub mod playing;
 pub mod preview;
