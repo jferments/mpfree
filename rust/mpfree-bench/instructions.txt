@@ -10,9 +10,9 @@
 172383	Analog Poly Brass, 8 voices
 288045	Analog Warm Pad, 8 voices
 409027	Analog Worn Cards, 16 voices
-9679	Arps: 16 latched arps at 32nds
-14954	Arps: 16 latched arps at 32nds, a mod wheel always moving
-3183	Arps: 4 latched arps at 32nds
+9732	Arps: 16 latched arps at 32nds
+15763	Arps: 16 latched arps at 32nds, a mod wheel always moving
+3260	Arps: 4 latched arps at 32nds
 128876	Arrange: a step tap in song mode, 512 blocks of 32 clips: until it plays
 151691614	Arrange: the big song saved and opened, 512 blocks of 32 clips
 6918010	Arrange: the big song's view, 512 blocks of 32 clips: compiled and swapped
@@ -81,17 +81,17 @@
 53403	Frequency shifter
 386476	Fuzz
 17292	Gate
-472729	Grains FX (dense)
-629770	Grains FX (dense, filtered)
-491230	Grains FX (dense, lo-fi)
-501065	Grains FX (dense, tape)
-4043426	Grains worst: 5 pads
-4002263	Grains worst: 5 pads + Grains FX
+529100	Grains FX (dense)
+688657	Grains FX (dense, filtered)
+538707	Grains FX (dense, lo-fi)
+548365	Grains FX (dense, tape)
+4802512	Grains worst: 5 pads
+4707577	Grains worst: 5 pads + Grains FX
 14484869	Grains worst: 5 pads, clean read
 11429892	Grains worst: 5 pads, everything
-5444915	Grains worst: 5 pads, grain filters
+6204037	Grains worst: 5 pads, grain filters
 8702503	Grains worst: 5 pads, pitch spray
-5207169	Grains worst: 64 clouds sharing
+6001626	Grains worst: 64 clouds sharing
 99325	Harmonizer
 250970	Keys Clav, 16 voices
 169233	Keys Clav, 8 voices
@@ -103,6 +103,7 @@
 98264	Limiter (true peak)
 221974	Lo-fi
 129410	Looper (60 s), 4 free loops of 2 layers playing on, the song stopped
+494618	Looper (60 s) on audio tracks: 8 loops of 3 layers, half launched again every bar
 294259	Looper (60 s), 8 loops of 3 layers playing
 417853	Looper (60 s), 8 loops of 3 layers playing, half edited
 34896	Looper (60 s), a free first pass by ear with Auto
@@ -112,6 +113,7 @@
 1616279	Mixer, 12 tracks and 8 pads, with a song's inserts
 1092142	Mixer, 12 tracks and 8 pads, with a song's inserts, Eco reverb
 1197897	Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb
+1618342	Mixer, 12 tracks and 8 pads, with a song's inserts, counted for System status
 461668	Mixer, 16 tracks and 32 pads, routing only
 1442597	Mixer, a song's inserts, 6 tracks frozen, printing a bus
 44777	Mixer, idle (63 strips, nothing playing)
@@ -125,7 +127,7 @@
 149907	Multiband compressor
 4168979	Note editor: 8,192 notes, a velocity change and its UNDO, until it plays
 159762062	Note editor: 8,192 notes, all picked and transposed, until it plays
-423088	Pad synths: 16 Instrument pads of Poly, a hit each per 0.5 s
+438318	Pad synths: 16 Instrument pads of Poly, a hit each per 0.5 s
 212533	Perform FX, 7 pads held (pitch drop, gate, sweeps, crush, riser, echo)
 61602	Perform FX, a wash throw held
 3388	Perform FX, idle
@@ -145,67 +147,69 @@
 277522	Pluck Harp, 16 voices
 128065	Pluck Marimba, 8 voices
 181173	Pluck Steel String, 8 voices
-57831	Poly Acid, 8 voices
-210895	Poly Brass, 8 voices
-41489	Poly Breath Lead, 8 voices
-369437	Poly Digital Bell, 8 voices
-294239	Poly Drift Pad, 8 voices
-355569	Poly Dust Pad, 8 voices
-350506	Poly FM Keys, 8 voices
-67588	Poly Grit Bass, 8 voices
-79025	Poly Growl Bass, 8 voices
-248587	Poly Harmonic Pluck, 8 voices
+59768	Poly Acid, 8 voices
+220495	Poly Brass, 8 voices
+41654	Poly Breath Lead, 8 voices
+378400	Poly Digital Bell, 8 voices
+305158	Poly Drift Pad, 8 voices
+370259	Poly Dust Pad, 8 voices
+360629	Poly FM Keys, 8 voices
+69533	Poly Grit Bass, 8 voices
+80498	Poly Growl Bass, 8 voices
+257511	Poly Harmonic Pluck, 8 voices
 595812	Poly Init, 16 voices, unison 4
-193565	Poly Init, 8 voices
-64618	Poly Lead, 8 voices
-40919	Poly Low Note Lead, 8 voices
-550307	Poly Morph Pad, 8 voices
-266416	Poly Organ, 8 voices
-208324	Poly Pluck, 8 voices
-37721	Poly Portamento Lead, 8 voices
-74769	Poly Singing Lead, 8 voices
-233750	Poly Slide Lead, 8 voices
-31730	Poly Sub Bass, 8 voices
-47093	Poly Super Lead, 8 voices
-284882	Poly Super Pad, 8 voices
-327444	Poly Super Stab, 8 voices
-401599	Poly Super Stack, 8 voices
-335435	Poly Supersaw, 8 voices
-503135	Poly Sync Sweep, 8 voices
-248736	Poly Table Init, 8 voices
+198789	Poly Init, 8 voices
+65504	Poly Lead, 8 voices
+42738	Poly Low Note Lead, 8 voices
+560233	Poly Morph Pad, 8 voices
+275570	Poly Organ, 8 voices
+222121	Poly Pluck, 8 voices
+37737	Poly Portamento Lead, 8 voices
+75893	Poly Singing Lead, 8 voices
+238751	Poly Slide Lead, 8 voices
+33215	Poly Sub Bass, 8 voices
+47217	Poly Super Lead, 8 voices
+294845	Poly Super Pad, 8 voices
+344943	Poly Super Stab, 8 voices
+405269	Poly Super Stack, 8 voices
+348447	Poly Supersaw, 8 voices
+513014	Poly Sync Sweep, 8 voices
+257829	Poly Table Init, 8 voices
 1687855	Poly Table, 16 voices, both osc, unison 8
 664789	Poly Table, 8 voices, both osc, unison 4
-48137	Poly Unison Lead, 8 voices
-47197	Poly Vowel Lead, 8 voices
-246021	Poly Worn Brass, 8 voices
+48777	Poly Unison Lead, 8 voices
+48577	Poly Vowel Lead, 8 voices
+259922	Poly Worn Brass, 8 voices
 4215241	Project: all at once
 295686	Project: bass into the limiter
 1311483	Project: dense synths
 1599146	Project: distortion chain
 567742	Project: fast automation
-742130	Project: granular drums
+788371	Project: granular drums
 290797	Project: long stems
 12921	Ring mod
 145867	Room reverb
 108213	Rotary
-596174	Sampler x16 held
-1548520	Sampler x16 held up
-1801699	Sampler x16 held up, 16-bit sound
-646720	Sampler x16 held, 16-bit sound
-1443226	Sampler x16 held, LFO and pitch envelope
+617430	Sampler x16 held
+1587200	Sampler x16 held up
+1838424	Sampler x16 held up, 16-bit sound
+669942	Sampler x16 held, 16-bit sound
+1489849	Sampler x16 held, LFO and pitch envelope
 881875	Sampler x16 held, comb
 1794930	Sampler x16 held, driven ladder
-692121	Sampler x16 held, vowel
-1505167	Sampler, 20 pads
-2087707	Sampler, 20 pads + master grains
-79153	Sampler, 4 drum kits, 64 voices
-41608	Sampler, drum kit, 24 voices
-43974	Sampler, drum kit, 24 voices, 16-bit sounds
-81098	Sampler, drum kit, 64 voices
-893213	Sampler, the 16 sample pads alone
+721696	Sampler x16 held, vowel
+488150	Sampler x4 held, 4 layers each
+1402092	Sampler, 20 pads
+1985137	Sampler, 20 pads + master grains
+80602	Sampler, 4 drum kits, 64 voices
+81951	Sampler, 4 drum kits, 64 voices, counted for System status
+42339	Sampler, drum kit, 24 voices
+44830	Sampler, drum kit, 24 voices, 16-bit sounds
+82504	Sampler, drum kit, 64 voices
+802604	Sampler, the 16 sample pads alone
 630801	Sampler, the 4 granular pads alone
 5519410	Song view: 4,096 blocks, a frame while the song plays
-4136870	Song: sampler, 2 synths, mixer+FX, time, looper
+4034169	Song: sampler, 2 synths, mixer+FX, time, looper
 261927	Sound Keys Init with Ensemble, 8 voices
 137967	Spring reverb
 58563	Squelch Acid Line, a line

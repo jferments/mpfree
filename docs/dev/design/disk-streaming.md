@@ -315,6 +315,15 @@ D2b found reads waiting behind writes on the stick: 1.65 s beside a recording, 2
 
 The recording file protocol is tested against a model stick that cuts after every operation ([recording-files.md](recording-files.md#how-it-is-tested)). What a model can't show is what a real stick keeps when its power goes mid-write: whether data it said was synced is still there, and what a write in flight leaves. WP finds that out on a spare stick pulled from a computer, so the MPC is never involved; D6, the power cut on the MPC, comes after it with its own safety review.
 
+**The spare stick** is formatted before each run by [`format-spare-stick.py`](../../../tools/mpc-one/format-spare-stick.py) (`--ext4 WP-TEST`, or `--fat32 WP-FAT` and `--exfat WP-EXFAT` for the FAT runs below), never by hand:
+
+- **It finds the stick itself.** It looks for the one whole disk on USB that is marked removable, holds 1 GB to 256 GiB, isn't the MPFree stick, and has nothing mounted but by the desktop. It stops if there is none or more than one, and when another disk already has the label asked for.
+- **It shows what it found before it asks.** That is where the stick is plugged in (its USB port and `/dev/disk/by-path` name), its make, model, serial number and size, its partition table, and each partition with its filesystem, label, size and mount point.
+- **It erases only after `ERASE` is typed.** It unmounts the desktop's mounts with udisks. Then, under sudo, it checks the stick again (same serial number and size, nothing mounted), opens it exclusively, and clears its first 2 MiB and last MiB. It writes an MBR with one partition from 1 MiB, has the kernel read it (with `partx -u` if the re-read stays busy), wipes old signatures, makes the filesystem (an ext4's top folder is the user's), and reads it back with `blkid`.
+- **It mounts the stick** with udisks where the desktop mounts sticks, and prints that place.
+
+Tests: `tools/mpc-one/tests/test_format_spare_stick.py` runs it against a fake `/sys`, `/dev` and mount table, with the real `wipefs`, `mkfs` and `blkid` on the stand-in partition. They cover each filesystem, the refusals, two sticks, a label already used, a typed word other than `ERASE`, a failed unmount, the privileged step's second check, and a busy re-read. The erase step also ran on this machine's real kernel against a loop disk, for each filesystem. There the kernel refused the exclusive open while a partition was mounted.
+
 `mpfree-disktest --desktop-test DIR --cut-test` ([`src/bin/disktest/cut.rs`](../../../rust/mpfree-audiotracks/src/bin/disktest/cut.rs)), with DIR on the spare stick:
 
 - **What it writes:** only its own folder, `mpfree-cuttest/`, which the other runs never clear. 4 takes through MPFree's own recorder at its defaults (stereo float at 48 kHz, 1.54 MB/s in all, a round every 2 s, spread), about 4 minutes of them (368 MiB), while an import beside them publishes 16 MiB files one after another as checked copies are published (`publish`: a part file, synced, read back, renamed, the folder synced), the oldest removed once 4 are there. At most 448 MiB at once, and it needs twice that free.
@@ -353,7 +362,7 @@ The same pull on a spare FAT32 or exFAT stick, for [S2](../hardware/sd-card-and-
 
 An import found under two names is a rename cut between its steps, and the check names it. It is a fail if that import was promised, since its folder had been synced. If it wasn't promised, the check only says so, and the computer's `fsck.vfat -n` (`… and … share clusters`) confirms the cross-link.
 
-The folder stays as found, so the stick is formatted before its next run. An ext4 run's text is refused on a FAT stick, since that check sweeps and deletes.
+The folder stays as found, so the stick is formatted before its next run (`format-spare-stick.py`, above). An ext4 run's text is refused on a FAT stick, since that check sweeps and deletes.
 
 Tests (`tests/disktest.rs`):
 

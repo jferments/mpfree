@@ -30,6 +30,13 @@ pub const ENTRY: clap_plugin_entry = clap_plugin_entry {
 /// `init` calls minus `deinit` calls, for tests of a host's bookkeeping.
 pub static LIVE_INITS: AtomicU32 = AtomicU32::new(0);
 
+/// The note dialects the synth's note port says it takes: CLAP's own and
+/// MIDI. A test of a plugin that takes only MIDI sets it to
+/// `CLAP_NOTE_DIALECT_MIDI` in a test program of its own (it is read for
+/// every synth made after).
+pub static NOTE_DIALECTS: AtomicU32 =
+    AtomicU32::new(CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI);
+
 pub const SYNTH_ID: &str = "org.mpfree.test-synth";
 pub const GAIN_ID: &str = "org.mpfree.test-gain";
 
@@ -884,7 +891,7 @@ unsafe extern "C" fn np_get(
     }
     let info = &mut *info;
     info.id = 0;
-    info.supported_dialects = CLAP_NOTE_DIALECT_CLAP | CLAP_NOTE_DIALECT_MIDI;
+    info.supported_dialects = NOTE_DIALECTS.load(Ordering::Relaxed);
     info.preferred_dialect = CLAP_NOTE_DIALECT_CLAP;
     copy_str(&mut info.name, c"Notes");
     true

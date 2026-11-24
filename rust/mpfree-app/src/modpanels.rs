@@ -163,6 +163,7 @@ impl NotesSource {
                 s.octaves
             ),
             Mode::Pattern => format!("Pattern · {}", s.rate.label()),
+            Mode::Phrase => format!("Phrase · {}", app.phrase_name(t)),
         };
         Some(NotesSource {
             fx: track.note_fx,

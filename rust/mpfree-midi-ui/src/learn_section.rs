@@ -754,22 +754,61 @@ fn looper_rects(l: &Layout) -> ([Rect; 2], [Rect; 9]) {
     )
 }
 
-/// Play's card's buttons, on the same grid: Swing, Filter, XY across and
-/// XY up on the first row, XY Hold, XY layout next and XY layout back on
-/// the second (layout spec 4o).
+/// Where Play's card puts each of its buttons ([`play::ALL`]'s order): a
+/// row and a place on the transport card's grid of four to a row, with a
+/// third row under its two. Swing, Filter, XY across and XY up fill the
+/// first row; XY Hold, XY layout next and XY layout back take the second's
+/// first three (layout spec 4o), Next patch its fourth, and Previous patch
+/// starts the third (live shows C1).
+const PLAY_PLACES: [(i32, usize); play::ALL.len()] = [
+    (0, 0),
+    (0, 1),
+    (0, 2),
+    (0, 3),
+    (1, 0),
+    (1, 1),
+    (1, 2),
+    (1, 3),
+    (2, 0),
+];
+
+/// Play's card's buttons, on the same grid ([`PLAY_PLACES`]).
 fn play_rects(l: &Layout) -> [Rect; play::ALL.len()] {
     let p = pick_rects(l);
-    std::array::from_fn(|i| p[i])
+    std::array::from_fn(|i| {
+        let (row, place) = PLAY_PLACES[i];
+        let r = p[place];
+        Rect::new(r.x, r.y + row * (PICK_H + 8), r.w, r.h)
+    })
 }
+
+/// Whether a learned control steps the song's patches (Next or Previous
+/// patch, live shows C1): its card's third line is Switches, not
+/// Takeover.
+fn steps_patches(s: &Saved) -> bool {
+    s.target.owner == Owner::Play && play::patch_step(s.target.param).is_some()
+}
+
+/// The Switches line's choices for Next and Previous patch: whether the
+/// switch waits for your hands, its words, and what it does.
+const SWITCHES: [(bool, &str, &str); 2] = [
+    (
+        false,
+        "At once",
+        "At once: the patch changes as you press. Held notes and pedals end where they started.",
+    ),
+    (
+        true,
+        "Hands up",
+        "When your hands are up: the patch changes once every key and pedal is up.",
+    ),
+];
 
 /// The Show card's seven, on the transport card's grid.
 fn show_rects(l: &Layout) -> [Rect; 7] {
     let p = pick_rects(l);
     std::array::from_fn(|i| p[i])
 }
-
-// Play's card has the grid's two rows of four.
-const _: () = assert!(play::ALL.len() <= 8);
 
 /// The table's columns: Control, Moves, Now, Kept in (x and width).
 fn columns(body: Rect) -> [(i32, i32); 4] {
@@ -1066,7 +1105,10 @@ impl Learn {
 
     /// Play's card's button `i`: Learn waits for a control to take it.
     fn arm_play(&mut self, i: usize) -> IoReply {
-        let how = if play::is_press(play::ALL[i].0) {
+        let id = play::ALL[i].0;
+        let how = if play::patch_step(id).is_some() {
+            "press a footswitch or a button"
+        } else if play::is_press(id) {
             "press a button, a key or a footswitch"
         } else {
             "move a knob or a fader"
@@ -1199,7 +1241,11 @@ impl Learn {
         if up.contains(x, y) {
             return Some(Hit::Mode(1));
         }
-        for (i, s) in segments(l.line[2], TAKEOVERS.len()).iter().enumerate() {
+        let third = match m.setup.learned_at(self.pick) {
+            Some((_, s)) if steps_patches(s) => SWITCHES.len(),
+            _ => TAKEOVERS.len(),
+        };
+        for (i, s) in segments(l.line[2], third).iter().enumerate() {
             if s.contains(x, y) {
                 return Some(Hit::Takeover(i));
             }
@@ -1366,6 +1412,14 @@ impl Learn {
 
     fn takeover(&mut self, i: usize) -> IoReply {
         self.edit(|l| {
+            // Next and Previous patch: the line is Switches, kept in the
+            // target's number (`play::with_hands_up`).
+            if steps_patches(l) {
+                let to = play::with_hands_up(l.target.param, SWITCHES[i.min(1)].0);
+                let changed = l.target.param != to;
+                l.target.param = to;
+                return Ok(changed);
+            }
             if l.mode != Mode::Absolute {
                 return Err("Takeover is for knobs and faders".to_string());
             }
@@ -1741,23 +1795,26 @@ impl Learn {
             "Tap one, then move a knob or a fader (or press a button) on your controller. \
              It works in every project.",
         );
-        for (i, r) in play_rects(l).into_iter().enumerate() {
+        let rects = play_rects(l);
+        for (i, r) in rects.into_iter().enumerate() {
             button(cx, r, play::ALL[i].1, self.waits_for(m, play_target(i)));
         }
-        let last = play_rects(l)[play::ALL.len() - 1];
+        // The faint lines beside Previous patch, on the third row.
+        let last = rects[rects.len() - 1];
         para(
             cx,
             t.size_small * 0.9,
             Rect::new(
-                ci.x,
-                last.bottom() + 6,
-                ci.w,
-                ci.bottom() - last.bottom() - 6,
+                last.right() + 12,
+                last.y - 4,
+                ci.right() - last.right() - 12,
+                ci.bottom() - last.y + 4,
             ),
             t.text_faint,
             "Swing and Filter turn as Play's Q-Links do (Filter is track 1's). XY across and up \
-             move the pad as a finger does, until both are back (across in the middle, up at the \
-             bottom). XY Hold is the pad's Hold; the layout buttons step through your layouts.",
+             move the pad as a finger does, until both are back; XY Hold is the pad's Hold and \
+             the layout buttons step your layouts. Next and Previous patch step the song's \
+             patches, stopping at the ends.",
         );
     }
 
@@ -1882,17 +1939,26 @@ impl Learn {
         let [down, up] = mode_rects(l.line[1]);
         let mode = MODES.iter().find(|x| x.0 == s.mode).map_or("?", |x| x.1);
         stepper(cx, down, up, mode);
-        // Takeover.
-        label(cx, l.line[2], "Takeover");
+        // Takeover, or Next and Previous patch's Switches.
+        let switches = steps_patches(s);
+        let waits = play::patch_step(s.target.param).is_some_and(|(_, w)| w);
         let knob = s.mode == Mode::Absolute;
-        for (i, sr) in segments(l.line[2], TAKEOVERS.len()).into_iter().enumerate() {
-            segment(
-                cx,
-                sr,
-                TAKEOVERS[i].1,
-                knob && s.takeover == TAKEOVERS[i].0,
-                knob,
-            );
+        if switches {
+            label(cx, l.line[2], "Switches");
+            for (i, sr) in segments(l.line[2], SWITCHES.len()).into_iter().enumerate() {
+                segment(cx, sr, SWITCHES[i].1, waits == SWITCHES[i].0, true);
+            }
+        } else {
+            label(cx, l.line[2], "Takeover");
+            for (i, sr) in segments(l.line[2], TAKEOVERS.len()).into_iter().enumerate() {
+                segment(
+                    cx,
+                    sr,
+                    TAKEOVERS[i].1,
+                    knob && s.takeover == TAKEOVERS[i].0,
+                    knob,
+                );
+            }
         }
         // Kept in.
         label(cx, l.line[3], "Kept in");
@@ -1917,8 +1983,10 @@ impl Learn {
                 Kept::Project => "this song",
             },
         );
-        // What the takeover does, or why there is none.
-        let why = if knob {
+        // What the takeover (or the switch) does, or why there is none.
+        let why = if switches {
+            SWITCHES[waits as usize].2
+        } else if knob {
             TAKEOVERS
                 .iter()
                 .find(|x| x.0 == s.takeover)
@@ -2357,11 +2425,17 @@ impl IoSection for Learn {
         let [down, up] = mode_rects(l.line[1]);
         out.push(Target::tap("learn-mode", 0, "Works as −", down));
         out.push(Target::tap("learn-mode", 1, "Works as +", up));
-        for (i, sr) in segments(l.line[2], TAKEOVERS.len()).into_iter().enumerate() {
-            out.push(
-                Target::tap("learn-takeover", i, TAKEOVERS[i].1, sr)
-                    .disabled_if(s.mode != Mode::Absolute),
-            );
+        if steps_patches(s) {
+            for (i, sr) in segments(l.line[2], SWITCHES.len()).into_iter().enumerate() {
+                out.push(Target::tap("learn-switches", i, SWITCHES[i].1, sr));
+            }
+        } else {
+            for (i, sr) in segments(l.line[2], TAKEOVERS.len()).into_iter().enumerate() {
+                out.push(
+                    Target::tap("learn-takeover", i, TAKEOVERS[i].1, sr)
+                        .disabled_if(s.mode != Mode::Absolute),
+                );
+            }
         }
         for (i, sr) in segments(l.line[3], KEPT.len()).into_iter().enumerate() {
             out.push(Target::tap("learn-kept", i, KEPT[i].1, sr));
@@ -2494,11 +2568,21 @@ impl IoSection for Learn {
                 pos: mode as f32 / (MODES.len() - 1) as f32,
                 enabled: true,
             },
-            IoKnob {
-                label: "Takeover".to_string(),
-                text: TAKEOVERS[take].1.to_string(),
-                pos: take as f32 / (TAKEOVERS.len() - 1) as f32,
-                enabled: s.mode == Mode::Absolute,
+            if steps_patches(s) {
+                let waits = play::patch_step(s.target.param).is_some_and(|(_, w)| w);
+                IoKnob {
+                    label: "Switches".to_string(),
+                    text: SWITCHES[waits as usize].1.to_string(),
+                    pos: f32::from(u8::from(waits)),
+                    enabled: true,
+                }
+            } else {
+                IoKnob {
+                    label: "Takeover".to_string(),
+                    text: TAKEOVERS[take].1.to_string(),
+                    pos: take as f32 / (TAKEOVERS.len() - 1) as f32,
+                    enabled: s.mode == Mode::Absolute,
+                }
             },
         ])
     }
@@ -2512,14 +2596,24 @@ impl IoSection for Learn {
             0 | 1 => self.range(knob, detents, step),
             2 => self.mode(detents.signum()),
             3 => {
-                let at = {
+                let (at, n) = {
                     let m = self.model.lock().unwrap_or_else(|e| e.into_inner());
-                    m.setup
-                        .learned_at(self.pick)
-                        .and_then(|(_, s)| TAKEOVERS.iter().position(|x| x.0 == s.takeover))
-                        .unwrap_or(0)
+                    match m.setup.learned_at(self.pick) {
+                        Some((_, s)) if steps_patches(s) => (
+                            usize::from(play::patch_step(s.target.param).is_some_and(|(_, w)| w)),
+                            SWITCHES.len(),
+                        ),
+                        Some((_, s)) => (
+                            TAKEOVERS
+                                .iter()
+                                .position(|x| x.0 == s.takeover)
+                                .unwrap_or(0),
+                            TAKEOVERS.len(),
+                        ),
+                        None => (0, TAKEOVERS.len()),
+                    }
                 };
-                let to = (at as i32 + detents.signum()).clamp(0, TAKEOVERS.len() as i32 - 1);
+                let to = (at as i32 + detents.signum()).clamp(0, n as i32 - 1);
                 self.takeover(to as usize)
             }
             _ => IoReply::Ignored,
@@ -3143,7 +3237,9 @@ mod tests {
                 "XY up",
                 "XY Hold",
                 "XY layout next",
-                "XY layout back"
+                "XY layout back",
+                "Next patch",
+                "Previous patch"
             ]
         );
         assert_eq!(s.hint(), Some(PLAY_HINT));
@@ -3186,6 +3282,76 @@ mod tests {
         let shown = ids(&s, AREA);
         assert!(shown.contains(&"learn-play-pick") && !shown.contains(&"learn-back"));
         fits(&s, WIDE);
+    }
+
+    /// Next and Previous patch on Play's card (live shows C1): Next patch
+    /// in the second row's fourth place and Previous patch starting a
+    /// third row, each asking for a footswitch; a learned one's card has
+    /// Switches (At once, Hands up) in Takeover's place, kept in the
+    /// control's number so a build without patches keeps the control.
+    #[test]
+    fn next_and_previous_patch_learn_a_footswitch_and_say_when_they_switch() {
+        let m = model();
+        let mut s = Learn::new(m.clone());
+        tap(&mut s, "learn-play", 0);
+        let _ = paint(&s);
+        let rect = |s: &Learn, i: usize| {
+            s.targets(AREA)
+                .into_iter()
+                .find(|t| t.id == "learn-play-pick" && t.index == i)
+                .unwrap()
+                .rect
+        };
+        let (swing, up, next, previous) = (rect(&s, 0), rect(&s, 3), rect(&s, 7), rect(&s, 8));
+        assert_eq!((next.x, previous.x), (up.x, swing.x));
+        assert!(
+            next.y > up.bottom() && previous.y > next.bottom(),
+            "{next:?} {previous:?}"
+        );
+        fits(&s, AREA);
+        fits(&s, WIDE);
+        assert_eq!(tap(&mut s, "learn-play-pick", 7), IoReply::Redraw);
+        assert_eq!(
+            m.lock().unwrap().asks.learn_target,
+            Some(ParamAddr::new(Owner::Play, play::NEXT_PATCH))
+        );
+        assert_eq!(
+            s.take_note().unwrap(),
+            "Next patch: press a footswitch or a button on your controller"
+        );
+        // A footswitch learned on Previous patch, kept in the rig.
+        let pedal = Saved {
+            source: Source::Cc(66),
+            target: ParamAddr::new(Owner::Play, play::PREVIOUS_PATCH),
+            mode: Mode::Momentary,
+            ..learned(None, 66, 0)
+        };
+        m.lock().unwrap().setup.learned_in(Kept::Rig, pedal);
+        let n = m.lock().unwrap().setup.all_learned().count();
+        let _ = paint(&s);
+        tap(&mut s, "learn-row", n - 1);
+        let _ = paint(&s);
+        let shown = ids(&s, AREA);
+        assert!(shown.contains(&"learn-switches") && !shown.contains(&"learn-takeover"));
+        let k = s.qlinks().unwrap();
+        assert_eq!(
+            (k[3].label.as_str(), k[3].text.as_str()),
+            ("Switches", "At once")
+        );
+        assert_eq!(tap(&mut s, "learn-switches", 1), IoReply::Redraw);
+        let target = |m: &Shared| m.lock().unwrap().setup.learned_at(n - 1).unwrap().1.target;
+        assert_eq!(
+            target(&m),
+            ParamAddr::new(Owner::Play, play::PREVIOUS_PATCH_HANDS_UP)
+        );
+        assert_eq!(s.qlinks().unwrap()[3].text, "Hands up");
+        // The fourth Q-Link turns it back.
+        assert_eq!(s.qlink_turn(3, -1, false), IoReply::Redraw);
+        assert_eq!(
+            target(&m),
+            ParamAddr::new(Owner::Play, play::PREVIOUS_PATCH)
+        );
+        assert_eq!(tap(&mut s, "learn-switches", 0), IoReply::Handled);
     }
 
     /// The Show card (live shows B1, layout spec 4d): a set's seven

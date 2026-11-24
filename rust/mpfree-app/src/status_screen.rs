@@ -84,7 +84,7 @@ pub fn chip(look: ChipLook, cpu: Option<f64>, ram: Option<f64>, lit: bool) -> Ch
 
 /// What the screen thread reads besides the board: the head's meters and
 /// the systems' plain words.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Readings {
     /// The sound's share of the processor, %.
     pub cpu_pct: Option<f64>,
@@ -99,6 +99,13 @@ pub struct Readings {
     /// The MPC's temperature and processor clock at the last read (every
     /// 2 s, heat.rs).
     pub heat: Option<Heat>,
+    /// Where the sound's time goes, by engine, in the period's last window
+    /// (`engines::shares`, in `engines::SHARES`' order, %).
+    pub engines: Option<[f64; 6]>,
+    /// The tracks using the most of the sound's time in the last window
+    /// (track_costs.rs), largest first: whose, its words on the screen
+    /// ("Track 3 · Drums") and its share of the period, %.
+    pub tracks: Option<Vec<(crate::track_costs::Who, String, f64)>>,
 }
 
 /// Where the page is: the system picked and the Now | This session switch.
@@ -426,6 +433,24 @@ fn numbers(system: System, r: &Readings) -> Vec<(String, String)> {
                     format!("{p:.0} %"),
                 ));
             }
+            // The tracks using the most (track_costs.rs), first, so they
+            // stay in view when cards push the numbers down; then where it
+            // goes, each engine's part of that share, under "By part".
+            let tracks = r.tracks.as_deref().filter(|t| !t.is_empty());
+            if let Some(tracks) = tracks {
+                out.push(("The tracks using the most".to_string(), String::new()));
+                for (_, words, p) in tracks {
+                    out.push((format!("  {words}"), crate::engines::share_words(*p)));
+                }
+            }
+            if let Some(s) = r.engines {
+                if tracks.is_some() {
+                    out.push(("By part".to_string(), String::new()));
+                }
+                for ((_, name), p) in crate::engines::SHARES.iter().zip(s) {
+                    out.push((format!("  {name}"), crate::engines::share_words(p)));
+                }
+            }
         }
         System::Memory => {
             if let Some(p) = r.ram_pct {
@@ -557,6 +582,8 @@ mod tests {
             free: Some(1_100_000_000),
             stick: None,
             heat: None,
+            engines: None,
+            tracks: None,
         };
         let v = view(&b, &Watch::default(), &r, &mut place, t);
         assert_eq!(v.head, "The sound dropped out");
@@ -658,6 +685,102 @@ mod tests {
         b.tick(later);
         let v = view(&b, &Watch::default(), &r, &mut place, later);
         assert_eq!(v.meters[1].3, Tone::Warn);
+    }
+
+    /// Sound's numbers say where the sound's time goes, engine by engine,
+    /// under its share of the CPU.
+    #[test]
+    fn the_sounds_numbers_say_where_its_time_goes() {
+        let mut place = Place::default();
+        let r = Readings {
+            cpu_pct: Some(41.0),
+            engines: Some([24.4, 0.0, 0.3, 2.0, 6.0, 8.2]),
+            ..Readings::default()
+        };
+        place.picked = System::Sound;
+        let v = view(
+            &Board::new(),
+            &Watch::default(),
+            &r,
+            &mut place,
+            Instant::now(),
+        );
+        let n: Vec<(&str, &str)> = v
+            .numbers
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(
+            n,
+            [
+                ("The sound's share of the CPU", "41 %"),
+                ("  The pads", "24 %"),
+                ("  Synths", "none"),
+                ("  The looper and line input", "under 1 %"),
+                ("  Clips and the arp", "2 %"),
+                ("  Mixing", "6 %"),
+                ("  MPFree's own work", "8 %"),
+            ]
+        );
+    }
+
+    /// The tracks using the most come first under the CPU share, then the
+    /// engines under "By part"; with no track listed the engines stand as
+    /// before.
+    #[test]
+    fn the_sounds_numbers_list_the_tracks_using_the_most() {
+        use crate::track_costs::Who;
+        let mut place = Place {
+            picked: System::Sound,
+            ..Place::default()
+        };
+        let r = Readings {
+            cpu_pct: Some(38.0),
+            engines: Some([17.6, 4.9, 0.0, 1.2, 6.3, 8.1]),
+            tracks: Some(vec![
+                (Who::Track(2), "Track 3 · Drums".into(), 12.6),
+                (Who::Kit(1), "Kit 2 · pads only".into(), 0.4),
+            ]),
+            ..Readings::default()
+        };
+        let v = view(
+            &Board::new(),
+            &Watch::default(),
+            &r,
+            &mut place,
+            Instant::now(),
+        );
+        let n: Vec<(&str, &str)> = v
+            .numbers
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(
+            n[..6],
+            [
+                ("The sound's share of the CPU", "38 %"),
+                ("The tracks using the most", ""),
+                ("  Track 3 · Drums", "13 %"),
+                ("  Kit 2 · pads only", "under 1 %"),
+                ("By part", ""),
+                ("  The pads", "18 %"),
+            ]
+        );
+        assert_eq!(n.len(), 11);
+        // Nothing listed (nothing played): the engines as before.
+        let r = Readings {
+            tracks: Some(Vec::new()),
+            ..r
+        };
+        let v = view(
+            &Board::new(),
+            &Watch::default(),
+            &r,
+            &mut place,
+            Instant::now(),
+        );
+        assert_eq!(v.numbers.len(), 7);
+        assert_eq!(v.numbers[1].0, "  The pads");
     }
 
     /// Phase 3: the MPC's temperature on the head against where it turns

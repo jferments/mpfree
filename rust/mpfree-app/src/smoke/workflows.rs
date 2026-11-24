@@ -2188,9 +2188,13 @@ mod tests {
             s.pad_edge(3, 0, false);
             s.run_periods(1);
             assert!(!s.layer_synth_held(), "ended where it started");
-            // Keep, then Follow track: the layers go too.
+            // Keep, then Follow track (the chip opens What the pads play,
+            // whose first row holds it): the layers go too.
             s.press("synth-pick", "keep", "").run_periods(2).settle();
             s.press("header", "chip", "Pads: FM + Poly")
+                .run_periods(2)
+                .settle();
+            s.press(mpfree_synth_ui::pad_map::PANEL, "base", "Follow track")
                 .run_periods(2)
                 .settle();
             assert!(!s.app.has_layers() && s.mix.instruments.layer_at(0).is_none());
@@ -2328,9 +2332,13 @@ mod tests {
             let fm = s.instrument_list.free_of(0).expect("FM has an id").number();
             s.name_route_synths([Some(fm), None, None, None]);
             assert_eq!(s.mix.instruments.routed_at(0), Some(free(0)));
-            // Follow track: the pads play Track 1's kit; FM stays.
-            s.press("header", "chip", "Pads: FM")
+            // Follow track (the chip opens What the pads play, whose first
+            // row holds it): the pads play Track 1's kit; FM stays.
+            s.press("header", "chip", "Pads: FM").settle();
+            s.press(mpfree_synth_ui::pad_map::PANEL, "base", "Follow track")
                 .run_periods(4)
+                .settle();
+            s.press(mpfree_synth_ui::pad_map::PANEL, "done", "Done")
                 .settle();
             assert!(!s.app.pads_chose_synth());
             assert!(s.mix.instruments.holds(free(0)), "{:?}", s.said());
@@ -2472,8 +2480,11 @@ mod tests {
             // Follow track, then the shared synth chosen for the pads: the
             // keys play it, and still not the kit.
             s.button("STOP").settle();
-            s.press("header", "chip", "Pads: FM")
+            s.press("header", "chip", "Pads: FM").settle();
+            s.press(mpfree_synth_ui::pad_map::PANEL, "base", "Follow track")
                 .run_periods(2)
+                .settle();
+            s.press(mpfree_synth_ui::pad_map::PANEL, "done", "Done")
                 .settle();
             s.route(crate::gui::FromUi::Time(mpfree_time_ui::TimeAction::Arm(
                 Some(0),
@@ -2868,9 +2879,13 @@ mod tests {
             let before = s.previewed.len();
             s.pad(1, 90, 0.05);
             assert_eq!(s.previewed.len(), before + 1, "the pads still play Poly");
-            // The header's chip: Follow track.
+            // The header's chip opens What the pads play: Follow track.
             s.press("header", "tab", "Synth").settle();
             s.press("header", "chip", "Pads: Poly").settle();
+            s.press(mpfree_synth_ui::pad_map::PANEL, "base", "Follow track")
+                .settle();
+            s.press(mpfree_synth_ui::pad_map::PANEL, "done", "Done")
+                .settle();
             assert_eq!(s.app.pads_focus(), PadFocus::Track);
             assert!(s.control("header", "chip", "Pads: Poly").is_none());
             let before = s.previewed.len();
@@ -3301,6 +3316,169 @@ mod tests {
     /// chip went in the Play, Pads and Sequencer redesign): a kit tapped
     /// there loads and the page comes back; Back, the button again or a
     /// tab close it and keep the kit (Jay's card, 13 Nov 14:57Z).
+    #[test]
+    fn a_patch_made_from_plays_menu_splits_the_keys_and_learns_a_zones_end() {
+        use crate::midi_in::Key;
+        use crate::patch_page::{EDIT, EDIT_PAGE, LIST, LIST_PAGE};
+        on_big_stack(|| {
+            let on = |note, velocity| (0u8, Key::Down { note, velocity });
+            let mut s = Session::new();
+            assert!(
+                s.control(crate::play_page::TRANSPORT, "keys", "").is_none(),
+                "no patches: no KEYS PLAY"
+            );
+            // MENU on Play: Patches opens the list, empty.
+            s.button("MENU").settle();
+            let row = s
+                .app
+                .row_of(crate::app::Item::Patches)
+                .expect("Patches on Play's MENU");
+            s.route(crate::gui::FromUi::MenuStep(row, 1));
+            s.run_periods(2).settle();
+            assert_eq!(s.page(), LIST_PAGE);
+            // New patch from Bass + keys: the editor, and the keys play it.
+            s.press(LIST, "new", "New patch").settle();
+            s.press(LIST, "layout", "Bass + keys").settle();
+            assert_eq!(s.page(), EDIT_PAGE);
+            let keys = s
+                .control(crate::play_page::TRANSPORT, "keys", "")
+                .expect("KEYS PLAY over the editor, once the song has a patch");
+            assert!(
+                keys.target.label.contains("1 · Patch 1"),
+                "{}",
+                keys.target.label
+            );
+            // Zone 2 (C3 up) picked, an octave up on Q-Link 3.
+            let zone2 = s
+                .controls()
+                .into_iter()
+                .find(|c| c.widget == EDIT && c.target.id == "zone" && c.target.index == 1)
+                .expect("zone 2's lane");
+            s.press_target(&zone2.target).settle();
+            s.qlink(2, 12).settle();
+            // C2 plays the bass as played; C4 plays an octave up.
+            let down = s.keys_from_gear(&[0x90, 36, 100, 0x90, 60, 90]);
+            assert_eq!(down, [on(36, 100), on(72, 90)], "{:?}", s.said());
+            assert!(
+                s.keys_from_gear(&[0x80, 36, 0]) == [(0, Key::Up { note: 36 })],
+                "a key ends where it started"
+            );
+            let _ = s.keys_from_gear(&[0x80, 60, 0]);
+            // + Zone: Learn low is lit, and the next key, C6, starts it.
+            // The new zone layers over zone 2 from there, untransposed.
+            s.press(EDIT, "add-zone", "+ Zone").settle();
+            let _ = s.keys_from_gear(&[0x90, 84, 80]);
+            let _ = s.keys_from_gear(&[0x80, 84, 0]);
+            assert_eq!(
+                s.keys_from_gear(&[0x90, 72, 64]),
+                [on(84, 64)],
+                "under C6, zone 2 alone"
+            );
+            assert_eq!(
+                s.keys_from_gear(&[0x90, 96, 64]),
+                [on(108, 64), on(96, 64)],
+                "from C6, zone 2 and the new zone"
+            );
+            let _ = s.keys_from_gear(&[0x80, 72, 0, 0x80, 96, 0]);
+            // Close: back to Play's view.
+            s.press(EDIT, "close", "Close").settle();
+            assert_eq!(s.page(), "Play");
+        });
+    }
+
+    /// C1's second half: a footswitch learned on Next and Previous patch
+    /// steps the song's patches from any page, stopping at the ends and
+    /// saying why; one set to wait does so until the key held is up; and
+    /// with Program change in: Picks a patch, program 2 from other gear
+    /// picks patch 2 before the key after it plays.
+    #[test]
+    fn a_footswitch_and_a_program_change_step_the_songs_patches() {
+        use crate::midi_in::Key;
+        use crate::patch_page::{EDIT, LIST};
+        use mpfree_play::mpfree_param::play;
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let keys_play = |s: &mut Session| {
+                s.control(crate::play_page::TRANSPORT, "keys", "")
+                    .map(|c| c.target.label)
+                    .unwrap_or_default()
+            };
+            // No patches yet: the footswitch says so.
+            s.patch_footswitch(play::NEXT_PATCH, 1.0).settle();
+            s.patch_footswitch(play::NEXT_PATCH, 0.0).settle();
+            assert_eq!(s.hint(), "Next patch: this song has no patches yet");
+            // Two patches from Play's MENU: Bass + keys, then Whole keyboard.
+            s.button("MENU").settle();
+            let row = s.app.row_of(crate::app::Item::Patches).unwrap();
+            s.route(crate::gui::FromUi::MenuStep(row, 1));
+            s.run_periods(2).settle();
+            for layout in ["Bass + keys", "Whole keyboard"] {
+                s.press(LIST, "new", "New patch").settle();
+                s.press(LIST, "layout", layout).settle();
+                s.press(EDIT, "back", "‹ Patches").settle();
+            }
+            assert!(
+                keys_play(&mut s).contains("2 · Patch 2"),
+                "{}",
+                keys_play(&mut s)
+            );
+            s.press(LIST, "close", "Close").settle();
+            // Previous patch, then past the first.
+            let press = |s: &mut Session, id| {
+                s.patch_footswitch(id, 1.0).settle();
+                s.patch_footswitch(id, 0.0).settle();
+            };
+            press(&mut s, play::PREVIOUS_PATCH);
+            assert!(
+                keys_play(&mut s).contains("1 · Patch 1"),
+                "{}",
+                keys_play(&mut s)
+            );
+            press(&mut s, play::PREVIOUS_PATCH);
+            assert_eq!(s.hint(), "Previous patch: patch 1 is the song's first");
+            // Next patch set to wait for the hands: C4 held keeps patch 1.
+            let _ = s.keys_from_gear(&[0x90, 60, 90]);
+            press(&mut s, play::NEXT_PATCH_HANDS_UP);
+            assert!(
+                keys_play(&mut s).contains("Patch 1 → Patch 2"),
+                "{}",
+                keys_play(&mut s)
+            );
+            assert_eq!(
+                s.keys_from_gear(&[0x80, 60, 0]),
+                [(0, Key::Up { note: 60 })],
+                "C4 ends on patch 1"
+            );
+            assert!(
+                keys_play(&mut s).contains("2 · Patch 2"),
+                "{}",
+                keys_play(&mut s)
+            );
+            press(&mut s, play::NEXT_PATCH);
+            assert_eq!(s.hint(), "Next patch: patch 2 is the song's last");
+            // Program change in: Picks a patch. Program 1, then a key: patch
+            // 1's bass plays C2.
+            s.program_picks_patches(false);
+            let sent = s.keys_from_gear(&[0xC0, 0, 0x90, 36, 100]);
+            assert_eq!(
+                sent,
+                [(
+                    0,
+                    Key::Down {
+                        note: 36,
+                        velocity: 100
+                    }
+                )]
+            );
+            assert!(
+                keys_play(&mut s).contains("1 · Patch 1"),
+                "{}",
+                keys_play(&mut s)
+            );
+            let _ = s.keys_from_gear(&[0x80, 36, 0]);
+        });
+    }
+
     #[test]
     fn what_the_pads_play_and_the_pads_tabs_kit_open_the_list_of_kits() {
         on_big_stack(|| {
@@ -5710,6 +5888,275 @@ mod tests {
             s.button("UNDO").settle();
             s.run_for(0.2);
             assert_eq!((set(&s), plays(&s)), (before, before), "UNDO");
+        });
+    }
+
+    /// A ready-made layout records too (the XY plan's phase 3, 3.1): its
+    /// settings are the master's, so with Rec song on a touch goes into
+    /// the song's lanes, and with REC alone nowhere.
+    #[test]
+    fn a_ready_made_layout_records_into_the_song() {
+        on_big_stack(|| {
+            use crate::gui::FromUi;
+            use mpfree_play::mpfree_param::{Owner, Strip};
+            use mpfree_seq::mpfree_moves::Target;
+            use mpfree_time_ui::TimeAction;
+            use mpfree_ui::Touch;
+            let mut s = Session::new();
+            s.play_view("All");
+            assert!(!s.mix.xy_play().playing(), "a ready-made layout");
+            s.button_with("SHIFT", "NEXT SEQ").settle();
+            assert_eq!(s.page(), crate::play_page::XY_FULL_PAGE);
+            let pad = s
+                .control(crate::play_page::XY, "xy", "")
+                .expect("the pad")
+                .target
+                .rect;
+            let gesture = |s: &mut Session| {
+                let y = pad.y + pad.h / 3;
+                let at = |k: i32| pad.x + pad.w * k / 10;
+                if let Some(a) = s.screen.touch(9, Touch::Down, at(2), y) {
+                    s.route(a);
+                }
+                for k in 3..=8 {
+                    s.run_for(0.1);
+                    if let Some(a) = s.screen.touch(9, Touch::Move, at(k), y) {
+                        s.route(a);
+                    }
+                }
+                s.run_for(0.1);
+                if let Some(a) = s.screen.touch(9, Touch::Up, at(8), y) {
+                    s.route(a);
+                }
+                s.run_for(0.5);
+            };
+            let master = |t: &Target| matches!(t, Target::Fixed(a) if matches!(a.owner, Owner::Insert(Strip::Master, _)));
+
+            // REC alone: the master's settings aren't the track's.
+            s.button("REC").button("PLAY");
+            let end = s.t() + 6.0;
+            while s.time.info().state != mpfree_transport::State::Recording && s.t() < end {
+                s.run_periods(4);
+            }
+            gesture(&mut s);
+            s.button("STOP");
+            s.run_for(0.5).settle();
+            let p = s.time.project();
+            assert!(p
+                .arrangement
+                .lanes
+                .lanes()
+                .iter()
+                .all(|l| !master(&l.target)));
+            assert!(
+                p.cell_clips()
+                    .all(|(_, _, c)| c.moves.lanes().iter().all(|l| !master(&l.target))),
+                "nothing in a clip"
+            );
+
+            // Rec song: into the song's lanes.
+            s.route(FromUi::Time(TimeAction::Transport(
+                mpfree_transport::Command::Locate(0),
+            )));
+            s.route(FromUi::Time(TimeAction::RecSong(true)));
+            s.button("PLAY").run_for(0.3);
+            gesture(&mut s);
+            let from = s.lines.len();
+            s.button("STOP");
+            s.run_for(0.5).settle();
+            let lanes: Vec<_> = s
+                .time
+                .project()
+                .arrangement
+                .lanes
+                .lanes()
+                .iter()
+                .filter(|l| master(&l.target))
+                .map(|l| (l.target, l.points.len()))
+                .collect();
+            assert!(
+                !lanes.is_empty() && lanes.iter().all(|l| l.1 >= 2),
+                "{lanes:?}: {:?}",
+                &s.lines[from..]
+            );
+            assert!(
+                s.lines[from..]
+                    .iter()
+                    .any(|l| l.starts_with("time: rec song") && l.contains(" XY pad move")),
+                "{:?}",
+                &s.lines[from..]
+            );
+        });
+    }
+
+    /// The XY pad's moves record (the XY plan's phase 3, 3.1): with REC
+    /// on the armed track and Rec song on, a touch on a layout of yours
+    /// records the armed track's synth knob into the clip REC records and
+    /// the master fader into the song's own lanes; one STOP keeps both.
+    #[test]
+    fn a_layout_of_yours_records_into_the_clip_and_the_song() {
+        use mpfree_synth_ui::view as synth_view;
+        on_big_stack(|| {
+            use crate::gui::FromUi;
+            use crate::xy_widgets::XY_BANNER;
+            use mpfree_play::mpfree_param::{Owner, Strip};
+            use mpfree_seq::mpfree_moves::Target;
+            use mpfree_time_ui::TimeAction;
+            use mpfree_ui::Touch;
+            let mut s = Session::new();
+            // The armed track plays the synth.
+            s.pick_synth();
+            assert!(s.app.plays_pads_synth(s.app.track()));
+            s.play_view("All");
+            s.press(crate::play_page::XY, "xy-chip", "").settle();
+            s.press(crate::xy_list::XY_LIST, "new", "+ New layout")
+                .settle();
+            s.press(crate::xy_setup::XY_SETUP, "plus", "+ across")
+                .settle();
+            // The armed track's synth knob and the master fader, across.
+            s.press("header", "tab", "Synth").settle();
+            let knob = s
+                .controls()
+                .into_iter()
+                .find(|o| o.widget == synth_view::TILES && o.target.id == "knob")
+                .expect("a knob on the Synth tab")
+                .target;
+            s.button_edge("SHIFT", true);
+            s.press_target(&knob).settle();
+            s.button_edge("SHIFT", false);
+            s.press("header", "tab", "Mix").settle();
+            s.button_edge("SHIFT", true);
+            s.press("mixer", "fader", "Master fader").settle();
+            s.button_edge("SHIFT", false);
+            s.press(XY_BANNER, "done", "Done").settle();
+            let across = s.xy_yours.yours[0].layout.across.targets.clone();
+            assert_eq!(across.len(), 2, "the knob and the fader: {:?}", s.lines);
+            let synth = across
+                .iter()
+                .map(|t| t.addr)
+                .find(|a| matches!(a.owner, Owner::Inst(_)))
+                .expect("the synth's knob");
+            let master = across
+                .iter()
+                .map(|t| t.addr)
+                .find(|a| a.owner == Owner::Strip(Strip::Master))
+                .expect("the master fader");
+            let armed = s.time.armed().expect("an armed track");
+            assert_eq!(
+                synth.owner,
+                Owner::Inst(armed as u8),
+                "the armed track's synth"
+            );
+
+            // Rec song, then REC and PLAY on the armed track.
+            s.route(FromUi::Time(TimeAction::RecSong(true)));
+            s.button("REC").button("PLAY");
+            let end = s.t() + 6.0;
+            while s.time.info().state != mpfree_transport::State::Recording && s.t() < end {
+                s.run_periods(4);
+            }
+            assert_eq!(s.time.info().state, mpfree_transport::State::Recording);
+            s.run_for(0.2);
+
+            // A gesture on the full-screen pad: down, across, up.
+            s.button_with("SHIFT", "NEXT SEQ").settle();
+            assert_eq!(s.page(), crate::play_page::XY_FULL_PAGE);
+            let pad = s
+                .control(crate::play_page::XY, "xy", "")
+                .expect("the pad")
+                .target
+                .rect;
+            let y = pad.y + pad.h / 2;
+            let at = |k: i32| pad.x + pad.w * k / 10;
+            if let Some(a) = s.screen.touch(9, Touch::Down, at(1), y) {
+                s.route(a);
+            }
+            s.run_for(0.2);
+            for k in 2..=9 {
+                if let Some(a) = s.screen.touch(9, Touch::Move, at(k), y) {
+                    s.route(a);
+                }
+                s.run_for(0.1);
+            }
+            if let Some(a) = s.screen.touch(9, Touch::Up, at(9), y) {
+                s.route(a);
+            }
+            s.run_for(0.5);
+            let from = s.lines.len();
+            s.button("STOP");
+            s.run_for(0.5).settle();
+
+            // The knob is in the clip REC recorded, as its own track's; the
+            // fader is in the song's lanes; neither in the other.
+            let p = s.time.project();
+            let in_clip = Target::for_track(synth, armed as u8);
+            assert!(matches!(in_clip, Target::Track(_)), "{in_clip:?}");
+            let clip = (0..mpfree_seq::ROWS)
+                .filter_map(|row| p.clip(armed, row))
+                .find(|c| c.moves.lane(in_clip).is_some())
+                .unwrap_or_else(|| panic!("a clip with the knob's lane: {:?}", s.lines));
+            assert!(
+                clip.moves
+                    .lane(in_clip)
+                    .is_some_and(|l| l.points.len() >= 2),
+                "the knob's moves"
+            );
+            assert!(
+                clip.moves.lane(Target::Fixed(master)).is_none(),
+                "not the fader"
+            );
+            let song = &p.arrangement.lanes;
+            assert!(
+                song.lane(Target::Fixed(master))
+                    .is_some_and(|l| l.points.len() >= 2),
+                "the fader's moves in the song: {:?}",
+                &s.lines[from..]
+            );
+            assert!(song.lane(in_clip).is_none(), "not the knob");
+            assert!(
+                s.lines[from..]
+                    .iter()
+                    .any(|l| l.starts_with("time: rec song") && l.contains(", 1 XY pad move")),
+                "{:?}",
+                &s.lines[from..]
+            );
+
+            // Rec song alone: the knob goes into the song too.
+            s.route(FromUi::Time(TimeAction::Transport(
+                mpfree_transport::Command::Locate(0),
+            )));
+            s.route(FromUi::Time(TimeAction::RecSong(true)));
+            s.button("PLAY").run_for(0.3);
+            if let Some(a) = s.screen.touch(9, Touch::Down, at(9), y) {
+                s.route(a);
+            }
+            for k in (2..=8).rev() {
+                s.run_for(0.1);
+                if let Some(a) = s.screen.touch(9, Touch::Move, at(k), y) {
+                    s.route(a);
+                }
+            }
+            if let Some(a) = s.screen.touch(9, Touch::Up, at(2), y) {
+                s.route(a);
+            }
+            s.run_for(0.5);
+            let from = s.lines.len();
+            s.button("STOP");
+            s.run_for(0.5).settle();
+            let song = &s.time.project().arrangement.lanes;
+            assert!(
+                song.lane(Target::Fixed(synth))
+                    .is_some_and(|l| l.points.len() >= 2),
+                "the knob in the song: {:?}",
+                &s.lines[from..]
+            );
+            assert!(
+                s.lines[from..]
+                    .iter()
+                    .any(|l| l.starts_with("time: rec song") && l.contains(", 2 XY pad moves")),
+                "{:?}",
+                &s.lines[from..]
+            );
         });
     }
 }

@@ -9,11 +9,13 @@
 //! plain reads and writes through raw pointers are race-free.
 
 use mpfree_node::MAX_BLOCK;
+use mpfree_tuning::WORDS;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 pub const MAGIC: u32 = 0x4D50_4C48; // "MPLH"
-pub const VERSION: u32 = 2;
+/// 3: the instrument's tuning (tunings step T6).
+pub const VERSION: u32 = 3;
 /// Events one block carries to the plugin process.
 pub const MAX_EVENTS: usize = 512;
 /// Parameter values the plugin process reports back each block.
@@ -66,6 +68,14 @@ pub struct Shm {
     pub frame: u64,
     pub bpm: f64,
     pub beats: f64,
+    /// The tuning's number: the host adds one each time it hands the
+    /// instrument another tuning (0: none handed, 12-TET at 440). The
+    /// plugin process takes `tuning` when it sees a number it hasn't, so a
+    /// restarted process takes it at once.
+    pub tuning_gen: u32,
+    pub _tuning_pad: u32,
+    /// The tuning, as plain numbers (`mpfree_tuning::Tuning::words`).
+    pub tuning: [f32; WORDS],
     pub events: [ShmEvent; MAX_EVENTS],
     pub in_l: [f32; MAX_BLOCK],
     pub in_r: [f32; MAX_BLOCK],

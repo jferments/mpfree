@@ -35,9 +35,9 @@ use crate::editor::{
     sound_name, step_name, ChordShape, EditAction, Editor, Fold, GhostLayer, Hearing, LaneShow,
     Lens, LockMark, LockSetting, NoteBox, NoteGrid, NoteTool, ShowOffer, Tool, ToolAct, ToolBar,
     ToolKind, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, CLIP_END, EDIT_BUTTON, ERASE_SWEEP,
-    FIELDS, GHOST_MOST, GHOST_TAP, LOCK_LANES, MENU, PADS_WRITE, PEN, PRESSURE_END, PRESSURE_LANE,
-    ROOT_MENU, SCALE_MENU, SHOW_MENU, SHOW_NONE, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
-    TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
+    FIELDS, GHOST_MOST, GHOST_TAP, HELD_FINE, HELD_FIRST, HELD_RESET, HELD_TURN, LOCK_LANES, MENU,
+    PADS_WRITE, PEN, PRESSURE_END, PRESSURE_LANE, ROOT_MENU, SCALE_MENU, SHOW_MENU, SHOW_NONE,
+    SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK, TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LINK, LIST_LINK_CLOSE, LIST_LINK_FROM_LIST,
@@ -46,8 +46,9 @@ use crate::list::{
 use crate::report::{ReportCard, REPORT_DONE, REPORT_UNDO};
 use crate::song::{
     AudioLane, LaneOver, SongBlocks, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON,
-    INPUTS, MONITORS, NONE, PANEL, PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO,
-    PANEL_TAKES, REC, REGION_SLOTS, RULER_ROW, SECTION_TAP, TEMPO_ROW,
+    DUPLICATE, INPUTS, INPUT_CHIP, MONITORS, NONE, PANEL, PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR,
+    PANEL_MUTE, PANEL_SOLO, PANEL_TAKES, REC, REGION_SLOTS, RULER_ROW, SECTION_TAP, SLIDE_ROW,
+    START_ROW, TEMPO_ROW,
 };
 use crate::widgets::{
     BarButton, BarItem, CellAlert, CellState, ClipGrid, GridCell, GridTrack, MorphBar, Run,
@@ -79,8 +80,6 @@ pub const CLIPS: &str = "clips";
 pub const RECORD: &str = "record";
 /// The clip settings card: the Record panel's Clip tab (sequencer S3).
 pub const CLIP_CARD: &str = "clip-card";
-/// The scene editor: the Record panel's Scene tab (sequencer S4).
-pub const SCENE_CARD: &str = "scene-card";
 pub const TAKES: &str = "takes";
 pub const MORPH: &str = "morph";
 pub const SONG: &str = "song";
@@ -111,22 +110,11 @@ pub const CLIPS_LAYOUT: &str =
 /// The same page in its Song view: the timeline in place of the grid.
 pub const SONG_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, col(record:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
-/// The Clips view, the Song view and the song list with the Record panel
-/// on its Scene tab: the scene editor in the record settings' place.
-pub const CLIPS_SCENE_LAYOUT: &str =
-    "col(header:60, row(col(transport:44, row(col(clips:*, morph:64):*, col(scene-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
-pub const SONG_SCENE_LAYOUT: &str =
-    "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, col(scene-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
-pub const LIST_SCENE_LAYOUT: &str =
-    "col(header:60, row(col(transport:44, row(song-list:*, col(scene-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
 /// The Show view (live shows B1, layout spec 4p): the bar over the view,
 /// in the place of the grid and the Record panel, and the Q-Link column at
 /// the right. No Record panel and no Takes.
 pub const SHOW_LAYOUT: &str =
     "col(header:60, row(col(transport:44, show:*):*, qlinks:128):*, hint:26)";
-/// The hint line with the Record panel's Scene tab.
-pub const SCENE_HINT: &str =
-    "Scene: the one playing, or pick one on its first row   ·   wheel: pick a row, - / +: change it   ·   Mutes now: the mutes as they are now   ·   UNDO takes a change back";
 /// The same page with the song list in place of the grid and the morph
 /// (mockup D), and with the Record panel on its Clip tab.
 pub const LIST_LAYOUT: &str =
@@ -149,7 +137,10 @@ pub const CLIPS_CARD_LAYOUT: &str =
 pub const SONG_CARD_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, col(clip-card:*, takes:240):250):*):*, qlinks:128):*, hint:26)";
 pub const CLIPS_HINT: &str =
-    "Tap a clip: it plays from the next Launch line, or stops   ·   drag it: move it (SHIFT as you lift: copy)   ·   a row's number plays the row   ·   + records   ·   a track's name arms it";
+    "Tap a clip: it plays or stops on the next Launch line   ·   drag it: move it (SHIFT as you lift: copy)   ·   a row's number plays it, held: its card   ·   + records   ·   a track's name arms it";
+/// The hint line while the scene card is open (5.2).
+pub const SCENE_CARD_HINT: &str =
+    "‹ ›: change a setting   ·   a setting's name: the wheel turns it   ·   Tempo or Mutes: tap it to take what plays now   ·   Empty cells: tap a track, Stop or Keep   ·   Done or a tap off the card: close";
 /// The hint line under the Clips grid with the Record panel's Clip tab.
 pub const CLIPS_CARD_HINT: &str =
     "Clip: the armed track's playing clip   ·   wheel: pick a row, - / +: change it   ·   SHIFT + ‹ ›: Length and Speed halve or double   ·   COPY + a clip, then an empty slot: a copy";
@@ -172,8 +163,6 @@ pub fn clip_card_hint(st: &TimeState) -> String {
     }
 }
 
-/// The hint line while COPY is held over the note editor (piano roll
-/// plan 1B.4).
 /// The note inspector (piano roll plan 1C.1): while notes are picked in
 /// the note editor, the Q-Link column's header ("3 notes") and its four
 /// cards, Position, Length, Semitones and Velocity, each with its value
@@ -284,10 +273,13 @@ pub fn copy_hint(st: &TimeState) -> String {
 
 /// The hint line under the Song view.
 pub const SONG_HINT: &str =
-    "Tap a block to pick it   ·   drag a block or a section's name: move it (SHIFT as you lift: copy)   ·   tap the ruler: add a marker   ·   SHIFT + wheel: bars";
+    "Tap a block to pick it (SHIFT + tap: several)   ·   drag across empty space: a box picks blocks   ·   drag a block or a section's name: move it   ·   tap the ruler: a marker";
 /// The hint line under the Song view with a block picked.
 pub const SONG_BLOCK_HINT: &str =
-    "Drag the block: move it a bar at a time (SHIFT as you lift: copy)   ·   drag its end: longer or shorter   ·   push the wheel: move it a beat at a time   ·   SHIFT + wheel: bars";
+    "Drag it: move it (SHIFT as you lift: copy)   ·   drag its start or end: trim   ·   hold it still, then drag: slide what it plays   ·   Split: at the playhead   ·   wheel: a beat";
+/// The hint line under the Song view with several blocks picked (6.5).
+pub const SONG_PICKS_HINT: &str =
+    "Drag one: they all move (SHIFT as you lift: copies)   ·   SHIFT + tap: add or take out a block   ·   Split, Duplicate, Delete: all of them   ·   wheel: a beat";
 /// The hint line under the Song view with a section picked.
 pub const SONG_SECTION_HINT: &str =
     "Drag the name: move the section (SHIFT as you lift: copy)   ·   drag the grip: move where it starts   ·   + Bar: a bar of room before it   ·   push the wheel: move it a section at a time";
@@ -321,6 +313,8 @@ pub fn song_hint(st: &TimeState) -> &'static str {
         SONG_TEMPO_HINT
     } else if st.selected.is_some() {
         SONG_BLOCK_HINT
+    } else if !st.picks.is_empty() {
+        SONG_PICKS_HINT
     } else if st.section.is_some() {
         SONG_SECTION_HINT
     } else {
@@ -353,7 +347,7 @@ pub const EDIT_TRACKER_HINT: &str =
 /// options' drawer closed (piano roll plan 1C.1): the Q-Links are the
 /// note inspector.
 pub const EDIT_PICKED_HINT: &str =
-    "Q-Links: position, length, pitch, velocity (SHIFT: finer)   ·   - / +: nudge   ·   drag: move   ·   handles: start, length   ·   wheel: the cursor   ·   ERASE + tap or drag: erase";
+    "Q-Links: position, length, pitch, velocity (SHIFT: finer)   ·   - / +: nudge   ·   drag: move   ·   handles: start, length   ·   wheel: the cursor, or a held note's velocity   ·   ERASE + tap or drag: erase";
 
 /// The hint line under the note editor showing `lens`, with `tool`, and
 /// `picked` when notes are picked with the drawer closed.
@@ -389,7 +383,9 @@ pub fn tool_hint(t: &NoteTool) -> String {
 }
 
 /// The record settings, top to bottom (short, to fit the 250 px panel).
-pub const RECORD_ROWS: [&str; 10] = [
+/// Makes, last here, shows second while loops go in audio cells
+/// ([`record_order`]).
+pub const RECORD_ROWS: [&str; 11] = [
     "Armed",
     "Mode",
     "Count-in",
@@ -400,7 +396,45 @@ pub const RECORD_ROWS: [&str; 10] = [
     "Launch",
     "Transpose",
     "Follows",
+    "Makes",
 ];
+/// The Record tab's Makes row (phase 4, board 2): what REC makes, a loop
+/// in the armed cell, takes on the song or notes. Shown only with Dev's
+/// "Loops on audio tracks", under Armed.
+pub const MAKES_ROW: usize = 10;
+/// What a step on Makes says: it follows what is armed.
+pub const MAKES_WHY: &str =
+    "Makes follows what is armed: an empty audio cell makes a loop, song mode takes";
+
+/// The Record tab's rows as shown, top to bottom, by their place in
+/// [`RECORD_ROWS`]: Makes under Armed while loops go in audio cells.
+pub fn record_order(st: &TimeState) -> &'static [usize] {
+    if st.loops_on {
+        &[0, MAKES_ROW, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    } else {
+        &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    }
+}
+
+/// A step on the Record tab's shown row, as a step on its place in
+/// [`RECORD_ROWS`]; None for any other event, or when the order is
+/// [`RECORD_ROWS`]' own.
+fn record_event(ev: &UiEvent, st: &TimeState) -> Option<UiEvent> {
+    let (RECORD, EventKind::Step { index, delta }) = (ev.widget.as_str(), &ev.kind) else {
+        return None;
+    };
+    if !st.loops_on {
+        return None;
+    }
+    let index = *record_order(st).get(*index)?;
+    Some(UiEvent {
+        widget: RECORD.to_string(),
+        kind: EventKind::Step {
+            index,
+            delta: *delta,
+        },
+    })
+}
 /// The Record tab's Transpose and Follows rows (sequencer S4, live
 /// transpose), for the armed track.
 pub const TRANSPOSE_ROW: usize = 8;
@@ -408,17 +442,21 @@ pub const FOLLOWS_ROW: usize = 9;
 /// The scene editor's rows, top to bottom. Program and Bank are the
 /// program change the scene sends the armed track's gear (sequencer S5);
 /// Sent to lists every track it sends one.
-pub const SCENE_ROWS: [&str; 9] = [
-    "Scene", "Follow", "After", "Chance", "Or", "Mutes", "Program", "Bank", "Sent to",
+pub const SCENE_ROWS: [&str; 10] = [
+    "Scene", "Follow", "After", "Chance", "Or", "Mutes", "Program", "Bank", "Sent to", "Tempo",
 ];
+/// The scene's Tempo row (the Arrange refactor's 5.2b, on the scene card).
+pub const SCENE_TEMPO: usize = 9;
+/// The scene's Mutes row.
+pub const SCENE_MUTES: usize = 5;
+/// `TimeAction::SceneSettings`'s card row for an empty cell turned over
+/// on the scene card (Keep playing, 5.2): this plus the track.
+pub const SCENE_KEEP_ROW: u8 = 64;
 /// The scene editor's Program and Bank rows.
 pub const SCENE_PROGRAM: usize = 6;
 pub const SCENE_BANK: usize = 7;
 /// `TimeAction::SceneSettings`'s card row for a rename.
 pub const SCENE_NAME: u8 = SCENE_ROWS.len() as u8;
-/// The scene editor's buttons, under its rows: `Toggle(k)`.
-pub const SCENE_RENAME: usize = 0;
-pub const SCENE_MUTES_NOW: usize = 1;
 /// The other actions the scene editor's Or row steps through: Stay,
 /// then the follow actions.
 pub const OTHERS: [FollowAction; 9] = [
@@ -663,6 +701,10 @@ pub struct ClipInfo {
     /// An audio clip's facts, for its cell and card (audio tracks phase
     /// 2); None for a note or loop clip.
     pub audio: Option<AudioCellInfo>,
+    /// A loop cell on an audio track (phase 4, `Clip::loop_clip`): the
+    /// loop it plays, by its lasting id. Its facts come from the looper's
+    /// slot holding that id ([`LoopsInfo::ids`]).
+    pub loop_id: Option<mpfree_seq::LoopId>,
 }
 
 /// What an audio clip's cell and card show (audio tracks phase 2, layout
@@ -699,6 +741,10 @@ pub struct LoopFacts {
     pub copying: bool,
     /// Its small wave for the cells ([`crate::widgets::GridCell::wave`]).
     pub wave: [u8; crate::widgets::CELL_WAVE],
+    /// A closed layer of it isn't on the stick yet (phase 4c writes each
+    /// layer soon after it closes): its cells show an amber dot and
+    /// "writing" (layout spec 4f).
+    pub writing: bool,
 }
 
 /// The loops for the grid: each loop's facts, how many hold a loop, and
@@ -712,6 +758,9 @@ pub struct LoopsInfo {
     /// records: the armed Loop cell says so.
     pub waiting: bool,
     pub recording: bool,
+    /// Loops on audio tracks (phase 4): each slot's loop's lasting id (0:
+    /// none), so a loop cell finds its loop's facts by its id.
+    pub ids: [u128; mpfree_seq::LOOPS],
 }
 
 /// Put in a cell's cell (audio tracks phase 2): the armed track's first
@@ -817,6 +866,9 @@ pub struct TakeRow {
     pub scene: Option<usize>,
     /// Song → scenes filled these rows, as (first, last).
     pub rows: Option<(usize, usize)>,
+    /// The scene card's row tools (5.2, 5.3): "capture" (Capture scene's
+    /// new row) or "delete" (Delete row), and the row.
+    pub row_tool: Option<(&'static str, usize)>,
     /// The take put a clip in this row or took one out, and the song's
     /// parts that follow the row came along ([`Take::followed`]).
     pub followed: Option<usize>,
@@ -863,7 +915,13 @@ impl TakeRow {
             rows: t
                 .rows
                 .as_ref()
+                .filter(|e| e.what == mpfree_play::RowsWhat::ToScenes)
                 .and_then(|e| Some((*e.rows.first()?, *e.rows.last()?))),
+            row_tool: t.rows.as_ref().and_then(|e| match e.what {
+                mpfree_play::RowsWhat::ToScenes => None,
+                mpfree_play::RowsWhat::Captured { row } => Some(("capture", row)),
+                mpfree_play::RowsWhat::Deleted { row } => Some(("delete", row)),
+            }),
             followed: t.followed.as_ref().and_then(|e| match e.change {
                 SongChange::Followed { row } => Some(row),
                 _ => None,
@@ -880,6 +938,9 @@ impl TakeRow {
     /// "list" for the
     /// song list, "scene" for the scene editor and "song → scenes".
     pub fn word(&self) -> &'static str {
+        if let Some((word, _)) = self.row_tool {
+            return word;
+        }
         if self.rows.is_some() {
             return "song → scenes";
         }
@@ -895,12 +956,17 @@ impl TakeRow {
                 SongChange::Split { .. } => "split",
                 SongChange::Trimmed { .. } => "trim",
                 SongChange::Slid { .. } => "slide",
+                SongChange::SeveralMoved { .. } => "move",
+                SongChange::SeveralCopied { .. } => "copy",
+                SongChange::SeveralDeleted { .. } => "delete",
+                SongChange::SeveralSplit { .. } => "split",
                 SongChange::Scenes { .. } => "scenes",
                 SongChange::List | SongChange::ListToSong { .. } => "list",
                 SongChange::Tempo { .. } => "tempo",
                 SongChange::Bars { .. } => "bars",
                 SongChange::Marker { .. } => "marker",
                 SongChange::Followed { .. } => "parts",
+                SongChange::RowDeleted { .. } => "delete",
             };
         }
         if let Some(d) = self.dropped {
@@ -1007,6 +1073,10 @@ pub struct TimeState {
     /// The Loop track cell armed: the next loop recorded lands there
     /// (`TimeAction::LoopCell`).
     pub loop_cell: Option<(usize, usize)>,
+    /// Dev's "Loops on audio tracks" (phase 4, until 4e): an audio
+    /// track's empty cell takes a loop, and the screens show loops in
+    /// audio cells (layout spec 4c, 4f). The time engine sets it.
+    pub loops_on: bool,
     /// Each row's scene name, as far as the project names them (empty: a
     /// plain row, shown as its number).
     pub scenes: Vec<String>,
@@ -1016,6 +1086,9 @@ pub struct TimeState {
     /// its name, mutes and follow action. The app sets them.
     pub scene_focus: usize,
     pub scene: SceneSettings,
+    /// The scene card open over the grid or the song list (the Arrange
+    /// refactor's 5.2): its row, which is the scene in focus too.
+    pub scene_open: Option<usize>,
     /// The page shows the song (the timeline) in place of the grid. The
     /// app sets it.
     pub song_view: bool,
@@ -1097,6 +1170,10 @@ pub struct TimeState {
     pub passes: Vec<Option<(u16, Tick)>>,
     /// The placement selected on the Song view. The app sets it.
     pub selected: Option<usize>,
+    /// The blocks picked together on the Song view (6.5), in order: two
+    /// or more, `selected` being None while they are; empty otherwise.
+    /// The app sets it.
+    pub picks: Vec<usize>,
     /// The section picked on the Song view (by its marker), for the
     /// wheel. The app sets it.
     pub section: Option<usize>,
@@ -1373,6 +1450,7 @@ impl TimeState {
                             }),
                             holds_notes: c.holds == mpfree_seq::Holds::Notes,
                             holds: c.holds,
+                            loop_id: c.loop_id(),
                         })
                     })
                     .collect(),
@@ -1397,9 +1475,11 @@ impl TimeState {
             scene_playing: None,
             scene_cued: None,
             loop_cell: None,
+            loops_on: false,
             scenes: project.scenes.iter().map(|s| s.name.clone()).collect(),
             morph: MorphInfo::default(),
             scene_focus: 0,
+            scene_open: None,
             scene: SceneSettings::default(),
             song_view: false,
             list_view: false,
@@ -1456,6 +1536,7 @@ impl TimeState {
                 })
                 .collect(),
             selected: None,
+            picks: Vec::new(),
             section: None,
             song_rec: false,
             song_with_take: false,
@@ -1674,11 +1755,16 @@ pub enum TimeAction {
     /// (loop-tracks.md part 6): the cell there takes loop `into`, an empty
     /// loop the looper copies the audio into. Not a take: the looper's
     /// UNDO takes the copy back, and its cell goes with it. The app sends
-    /// it for SHIFT + a drop onto another Loop track.
+    /// it for SHIFT + a drop onto another Loop track. With Dev's "Loops on
+    /// audio tracks" a loop cell on an audio track copies onto an empty
+    /// cell of another audio track the same way, as a new loop: `id` is
+    /// its lasting id, which the app gave loop `into` (audio tracks phase
+    /// 4b); 0 for a Loop track's copy.
     LoopCopy {
         from: (usize, usize),
         to: (usize, usize),
         into: u8,
+        id: u128,
     },
     /// Loop `n`'s copy stopped before any of it went in: its cells empty.
     LoopCopyOff(u8),
@@ -1779,6 +1865,22 @@ pub enum TimeAction {
     KeepMorph,
     /// Store every parameter's value now in this row, for the morph.
     SaveScene(usize),
+    /// The scene card (the Arrange refactor's 5.2) opened for row `r`
+    /// (its row's number held on the grid), or closed with None.
+    SceneCard(Option<usize>),
+    /// The scene card's Insert row: an empty row goes in under row `r`,
+    /// the rows under it moving down one (the grid's last must be empty).
+    /// One take, which UNDO takes back.
+    InsertRow(usize),
+    /// The scene card's Delete row: row `r` goes, its clips (the song
+    /// keeps those it plays) and its scene, and the rows under it move up
+    /// one. One take, which UNDO takes back.
+    DeleteRow(usize),
+    /// Capture scene (the Arrange refactor's 5.3): a copy of the clip
+    /// each track plays now goes into the first empty row under the scene
+    /// playing (from row 1 with none), as one take that UNDO takes back.
+    /// What plays plays on.
+    CaptureScene,
     /// Show the Song view (the timeline) or the grid.
     SongView(bool),
     /// The conversion report card closes (its Done, a tap outside it, MENU
@@ -1854,6 +1956,16 @@ pub enum TimeAction {
     SongToScenes,
     /// Select a placement on the Song view, or none.
     SelectPlacement(Option<usize>),
+    /// SHIFT + a tap on a block (6.5): block `i` added to what is picked,
+    /// or taken out of it if it was in.
+    PickPlacement(usize),
+    /// A box dragged across the Song view's lanes (6.5): blocks `set`
+    /// picked, or with `add` (SHIFT held as the finger lifts) added to
+    /// what is picked.
+    PickPlacements {
+        set: Vec<usize>,
+        add: bool,
+    },
     /// A block dragged on the Song view (Jay, 14 Nov: drag and drop), or
     /// moved a beat by the wheel: placement `index` to `track` from
     /// `start`, or with `copy` (SHIFT held as the finger lifts) a copy of
@@ -1906,6 +2018,24 @@ pub enum TimeAction {
         index: usize,
         by: Tick,
     },
+    /// Several blocks picked (phase 6): blocks `set` moved together
+    /// `lanes` lanes down and `by` song ticks later, or with `copy`
+    /// copies of them put there, keeping their places to each other
+    /// (`Arrangement::move_placements`).
+    MovePlacements {
+        set: Vec<usize>,
+        lanes: i32,
+        by: Tick,
+        copy: bool,
+    },
+    /// Copies of blocks `set` right after them, as one (Duplicate with
+    /// several picked).
+    DuplicatePlacements(Vec<usize>),
+    /// Blocks `set` deleted together.
+    DeletePlacements(Vec<usize>),
+    /// Split with several blocks picked (6.5): those of blocks `set`
+    /// across the playhead cut there, the parts after picked.
+    SplitPlacements(Vec<usize>),
     /// Live to song on or off: while on and the transport plays, what the
     /// grid plays is recorded into the song
     /// (`mpfree_perform::SongRecorder`).
@@ -2069,6 +2199,18 @@ pub enum AudioAction {
     Solo {
         track: usize,
         on: bool,
+    },
+    /// With Dev's "Loops on audio tracks" on (phase 4, board 4): open the
+    /// track's input list. The app works out what the mixer offers it
+    /// and refuses ([`crate::inputs::InputChoices`]) and the screen shows
+    /// them.
+    Inputs(usize),
+    /// A pick on the input list the app offered last: `k` is the list's
+    /// `Select` index ([`crate::inputs::LINE`] + k, `PADS`, `MASTER`,
+    /// `STRIP` + i).
+    InputPick {
+        track: usize,
+        k: usize,
     },
     /// Pick a region, or none. Picking one drops the placement picked.
     Pick(Option<RegionId>),
@@ -2272,9 +2414,14 @@ pub fn cell_tap(st: &TimeState, track: usize, slot: usize) -> Option<TimeAction>
     if track >= st.tracks.len() || slot >= SLOTS {
         None
     } else if st.tracks[track].audio && st.clip(track, slot).is_none() {
-        // Nothing records into an audio cell: [`why_not`] says how audio
-        // gets there.
-        None
+        // With Dev's "Loops on audio tracks" (phase 4, board 2), an empty
+        // cell of the armed audio track arms (again: lets go of) a loop
+        // there. Otherwise nothing records into an audio cell: [`why_not`]
+        // says how audio gets there.
+        let armed = st.audio_lane_at(track).is_some_and(|l| l.armed);
+        let cell = (track, slot);
+        (st.loops_on && armed)
+            .then(|| TimeAction::LoopCell((st.loop_cell != Some(cell)).then_some(cell)))
     } else if st.clip(track, slot).is_none() && st.tracks[track].loops.is_some() {
         // An empty Loop cell arms (again: lets go of) a loop there.
         let cell = (track, slot);
@@ -2338,6 +2485,20 @@ pub fn clips_press(st: &TimeState, c: Clips) -> Option<TimeAction> {
 }
 
 pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
+    match record_event(ev, st) {
+        Some(UiEvent {
+            kind: EventKind::Step {
+                index: MAKES_ROW, ..
+            },
+            ..
+        }) => None,
+        Some(ev) => action_of(&ev, st),
+        None => action_of(ev, st),
+    }
+}
+
+/// [`action`], with a Record step at its place in [`RECORD_ROWS`].
+fn action_of(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
     let t = &st.transport;
     match (ev.widget.as_str(), &ev.kind) {
         (TRANSPORT, EventKind::Tab(i)) => Some(match BarButton::ALL.get(*i)? {
@@ -2376,6 +2537,13 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             .focus()
             .filter(|f| st.saved.contains(f))
             .map(|(track, slot)| TimeAction::Reload { track, slot }),
+        // The scene card, over the grid or the list (5.2).
+        (CLIPS | SONG_LIST, EventKind::Toggle(k)) if st.scene_open.is_some() => {
+            scene_card_action(st, *k).ok()
+        }
+        (CLIPS | SONG_LIST, EventKind::Step { index, delta }) if st.scene_open.is_some() => {
+            scene_step(st, *index, *delta).ok()
+        }
         (CLIPS, EventKind::Toggle(row)) => Some(match *row {
             r if r < SLOTS => TimeAction::LaunchScene(r),
             SLOTS => TimeAction::StopAll,
@@ -2513,6 +2681,34 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                         scale,
                     }
                 }
+                // A finger on a note and the wheel (plan 1C.3): its
+                // velocity, the hold's first detent naming the note.
+                // SHIFT + the push on it: its velocity back to a drawn
+                // note's (Jay's card, 23 Nov 2026).
+                EventKind::Values { index, ref set }
+                    if index & !(HELD_FIRST | HELD_FINE) == HELD_TURN + HELD_RESET =>
+                {
+                    let (&(note, _), &(turn, _)) = (set.first()?, set.get(1)?);
+                    EditAction::HeldReset {
+                        index: note,
+                        rev,
+                        turn: turn as u64,
+                        first: index & HELD_FIRST != 0,
+                    }
+                }
+                EventKind::Values { index, ref set }
+                    if index & !(HELD_FIRST | HELD_FINE) == HELD_TURN =>
+                {
+                    let (&(note, ticks), &(turn, _)) = (set.first()?, set.get(1)?);
+                    EditAction::Held {
+                        index: note,
+                        rev,
+                        ticks,
+                        fine: index & HELD_FINE != 0,
+                        turn: turn as u64,
+                        first: index & HELD_FIRST != 0,
+                    }
+                }
                 // ERASE + a drag across the roll (plan 1B.5): the notes
                 // its path crossed.
                 EventKind::Values { index, ref set } if index == ERASE_SWEEP => EditAction::Sweep {
@@ -2611,6 +2807,29 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         ) => Some(TimeAction::SongTempo(TempoEdit::Pick(
             (st.tempo_pick != Some(*col)).then_some(*col),
         ))),
+        // The picked block's start grip and a slide (phase 6).
+        (
+            SONG,
+            EventKind::Place {
+                index,
+                row: START_ROW,
+                at,
+            },
+        ) => Some(TimeAction::TrimPlacement {
+            index: *index,
+            start: *at,
+        }),
+        (
+            SONG,
+            EventKind::Place {
+                index,
+                row: SLIDE_ROW,
+                at,
+            },
+        ) => Some(TimeAction::SlidePlacement {
+            index: *index,
+            by: *at,
+        }),
         // The ruler: a tap where no name is adds a marker; the picked
         // section's grip moves its marker alone (Arrange 3.3).
         (
@@ -2671,12 +2890,39 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 (st.section != Some(k)).then_some(k),
             ))
         }
+        // One of several picked blocks dragged: they all go with it
+        // (6.5).
+        (SONG, EventKind::Place { index, row, at })
+            if *row < TEMPO_ROW && st.picks.contains(index) =>
+        {
+            let p = st.placements.get(*index)?;
+            Some(TimeAction::MovePlacements {
+                set: st.picks.clone(),
+                lanes: i32::try_from(*row).ok()? - i32::try_from(p.track).ok()?,
+                by: *at - p.start,
+                copy: false,
+            })
+        }
         (SONG, EventKind::Place { index, row, at }) => Some(TimeAction::MovePlacement {
             index: *index,
             track: *row,
             start: *at,
             copy: false,
         }),
+        // A box dragged across the lanes (6.5): the blocks it touches.
+        (SONG, EventKind::Span { index, from, to }) if *index >= crate::song::BOX => {
+            let (top, bottom) = crate::song::box_tracks(*index);
+            let set = st
+                .placements
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| {
+                    (top..=bottom).contains(&p.track) && p.start < *to && p.start + p.length > *from
+                })
+                .map(|(i, _)| i)
+                .collect();
+            Some(TimeAction::PickPlacements { set, add: false })
+        }
         (SONG, EventKind::Stretch { index, to }) => Some(TimeAction::StretchPlacement {
             index: *index,
             length: *to,
@@ -2695,6 +2941,10 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         (SONG, EventKind::Tab(crate::song::ADD_CLOSE)) => None,
         (SONG, EventKind::Tab(crate::song::LIST)) => Some(TimeAction::ListView(true)),
         (SONG, EventKind::Tab(crate::song::CLIPS)) => Some(TimeAction::SongView(false)),
+        (SONG, EventKind::Tab(DUPLICATE)) if !st.picks.is_empty() => {
+            Some(TimeAction::DuplicatePlacements(st.picks.clone()))
+        }
+        (SONG, EventKind::Tab(DUPLICATE)) => st.selected.map(TimeAction::DuplicatePlacement),
         (SONG, EventKind::Tab(k)) if *k >= PANEL_CLOSE => {
             let track = st.audio_panel?;
             let lane = st.audio.iter().find(|l| l.track == track);
@@ -2761,9 +3011,22 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             track: *track,
             on: !st.audio.iter().any(|l| l.track == *track && l.armed),
         })),
-        (SONG, EventKind::Cell { row, col: PANEL }) => {
-            Some(TimeAction::Audio(AudioAction::Panel(*row)))
-        }
+        // The input chip, with Dev's "Loops on audio tracks" on: the
+        // track's input list (phase 4, board 4).
+        (
+            SONG,
+            EventKind::Cell {
+                row,
+                col: INPUT_CHIP,
+            },
+        ) if st.loops_on => Some(TimeAction::Audio(AudioAction::Inputs(*row))),
+        (
+            SONG,
+            EventKind::Cell {
+                row,
+                col: PANEL | INPUT_CHIP,
+            },
+        ) => Some(TimeAction::Audio(AudioAction::Panel(*row))),
         (SONG, EventKind::Cell { row, col }) => {
             Some(TimeAction::Audio(AudioAction::Pick(Some(RegionId {
                 track: *row,
@@ -2817,9 +3080,20 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 to: *to,
             })
         }
+        // Several blocks picked (6.5): Split and Delete take them all;
+        // Make unique takes one block at a time (`why_not`).
+        (SONG, EventKind::Tab(0)) if !st.picks.is_empty() => {
+            Some(TimeAction::SplitPlacements(st.picks.clone()))
+        }
+        (SONG, EventKind::Tab(4)) if !st.picks.is_empty() => None,
+        (SONG, EventKind::Tab(5)) if !st.picks.is_empty() => {
+            Some(TimeAction::DeletePlacements(st.picks.clone()))
+        }
         (SONG, EventKind::Tab(k)) => match k {
-            // Button 0 is the audio region's Split alone (the view chip
-            // has Clips, 5.7).
+            // Split at the playhead (phase 6): the picked block, or every
+            // block across it. With an audio region picked, the region's
+            // Split (above).
+            0 => Some(TimeAction::SplitPlacement(st.selected)),
             1 => Some(TimeAction::SongMode(!st.song_on)),
             2 => Some(TimeAction::ScenesToSong),
             3 => Some(TimeAction::SongToScenes),
@@ -2915,9 +3189,6 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             }
         }
         (CLIP_CARD, EventKind::Step { index, delta }) => card_step(st, *index, *delta).ok(),
-        (SCENE_CARD, EventKind::Step { index, delta }) => scene_step(st, *index, *delta).ok(),
-        // Rename is the app's: the text keyboard.
-        (SCENE_CARD, EventKind::Toggle(SCENE_MUTES_NOW)) => scene_mutes_now(st).ok(),
         (CLIP_CARD, EventKind::Toggle(b)) => {
             let (track, slot) = st.focus()?;
             if let Some(c) = st.converting() {
@@ -2952,6 +3223,20 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
 /// the hint line: a faint button, or a setting already at its end (Jay, 13
 /// Nov: say in place when a press would send nothing).
 pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
+    match record_event(ev, st) {
+        Some(UiEvent {
+            kind: EventKind::Step {
+                index: MAKES_ROW, ..
+            },
+            ..
+        }) => Some(MAKES_WHY.to_string()),
+        Some(ev) => why_not_of(&ev, st),
+        None => why_not_of(ev, st),
+    }
+}
+
+/// [`why_not`], with a Record step at its place in [`RECORD_ROWS`].
+fn why_not_of(ev: &UiEvent, st: &TimeState) -> Option<String> {
     let end = |delta: i32, low: &str, high: &str| {
         if delta < 0 {
             low.to_string()
@@ -3012,7 +3297,10 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
         (TAKES, EventKind::Tab(2)) => {
             Some("Nothing to capture yet: play the pads while not recording".to_string())
         }
-        (SONG, EventKind::Tab(4 | 5)) if st.selected.is_none() => {
+        (SONG, EventKind::Tab(4)) if !st.picks.is_empty() => {
+            Some("Make unique takes one block at a time: tap the one to make its own".to_string())
+        }
+        (SONG, EventKind::Tab(4 | 5)) if st.selected.is_none() && st.picks.is_empty() => {
             Some("Tap a block in the song first".to_string())
         }
         (RECORD, EventKind::Step { index: 2, delta }) => Some(end(
@@ -3058,8 +3346,14 @@ pub fn why_not(ev: &UiEvent, st: &TimeState) -> Option<String> {
             transpose_step(st, *index, *delta).err()
         }
         (CLIP_CARD, EventKind::Step { index, delta }) => card_step(st, *index, *delta).err(),
-        (SCENE_CARD, EventKind::Step { index, delta }) => scene_step(st, *index, *delta).err(),
-        (SCENE_CARD, EventKind::Toggle(SCENE_MUTES_NOW)) => scene_mutes_now(st).err(),
+        (CLIPS | SONG_LIST, EventKind::Toggle(k)) if st.scene_open.is_some() => {
+            scene_card_action(st, *k)
+                .err()
+                .filter(|why| !why.is_empty())
+        }
+        (CLIPS | SONG_LIST, EventKind::Step { index, delta }) if st.scene_open.is_some() => {
+            scene_step(st, *index, *delta).err()
+        }
         _ => None,
     }
 }
@@ -3100,25 +3394,26 @@ fn follow_name(a: FollowAction) -> &'static str {
     }
 }
 
-/// The Record panel's tabs: Record, Clip with the focused clip's name
-/// ("Clip · Verse B"; its track is the armed one, lit on the grid), and
-/// Scene (the scene editor, S4).
+/// The Record panel's tabs: Record, and Clip with the focused clip's
+/// name ("Clip · Verse B"; its track is the armed one, lit on the grid).
+/// A scene's settings are on its scene card ([`scene_card_of`]).
 pub fn panel_tabs(st: &TimeState) -> Vec<String> {
     let clip = match st.focus().and_then(|(t, s)| st.clip(t, s)) {
         Some(c) => format!("Clip · {}", c.name),
         None => "Clip".to_string(),
     };
-    vec!["Record".to_string(), clip, "Scene".to_string()]
+    vec!["Record".to_string(), clip]
 }
 
-/// The Record panel's tab widths but the last's (Scene): Record, Clip.
-pub const PANEL_TAB_WIDTHS: [i32; 2] = [66, 104];
+/// The Record panel's tab widths but the last's (Clip): Record.
+pub const PANEL_TAB_WIDTHS: [i32; 1] = [66];
 
 /// The scene editor's rows for the scene in focus.
 pub fn scene_rows(st: &TimeState) -> Vec<OptionRow> {
     let row = |k: usize, value: String| OptionRow {
         name: SCENE_ROWS[k].to_string(),
         value,
+        ..OptionRow::default()
     };
     let s = &st.scene;
     let dash = || "—".to_string();
@@ -3169,7 +3464,158 @@ pub fn scene_rows(st: &TimeState) -> Vec<OptionRow> {
             },
         ),
         row(8, programs_words(st, s)),
+        row(
+            SCENE_TEMPO,
+            s.tempo.map_or_else(
+                || "as it is".to_string(),
+                |t| format!("{}.{} BPM", t / 10, t % 10),
+            ),
+        ),
     ]
+}
+
+/// A tap on the scene card's Tempo value: the scene sets the tempo now
+/// (to the nearest 0.1 BPM), or one with a tempo goes back to leaving it
+/// as it is.
+pub fn scene_tempo_now(st: &TimeState) -> Result<TimeAction, String> {
+    let mut s = st.scene.clone();
+    s.tempo = match s.tempo {
+        Some(_) => None,
+        None => Some(
+            mpfree_seq::scenes::scene_tempo(st.transport.bpm)
+                .ok_or("the tempo now is out of a scene's range, 30 to 300 BPM")?,
+        ),
+    };
+    Ok(TimeAction::SceneSettings {
+        row: st.scene_focus,
+        card_row: SCENE_TEMPO as u8,
+        settings: Box::new(s),
+    })
+}
+
+/// What a tap on the scene card asks for, or why it asks for nothing
+/// (empty: the page's own, or the app's, as Rename is).
+pub fn scene_card_action(st: &TimeState, k: usize) -> Result<TimeAction, String> {
+    use crate::scene_card as sc;
+    let row = st.scene_open.unwrap_or(st.scene_focus);
+    match k {
+        sc::SCENE_DONE => Ok(TimeAction::SceneCard(None)),
+        sc::SCENE_BEFORE => match row.checked_sub(1) {
+            Some(r) => Ok(TimeAction::SceneCard(Some(r))),
+            None => Err("Scene 1 is the first".into()),
+        },
+        sc::SCENE_AFTER if row + 1 < SLOTS => Ok(TimeAction::SceneCard(Some(row + 1))),
+        sc::SCENE_AFTER => Err(format!("Scene {SLOTS} is the last")),
+        sc::SCENE_CAPTURE => Ok(TimeAction::CaptureScene),
+        sc::SCENE_COPY_ROW => Ok(TimeAction::DropRow {
+            from: row,
+            to: row + 1,
+            copy: true,
+        }),
+        sc::SCENE_INSERT_ROW => Ok(TimeAction::InsertRow(row)),
+        sc::SCENE_DELETE_ROW => Ok(TimeAction::DeleteRow(row)),
+        sc::SCENE_TEMPO_NOW => scene_tempo_now(st),
+        sc::SCENE_MUTES_NOW => scene_mutes_now(st),
+        k if (sc::SCENE_KEEP..sc::SCENE_KEEP + MAX_TRACKS).contains(&k) => {
+            scene_keep(st, k - sc::SCENE_KEEP)
+        }
+        _ => Err(String::new()),
+    }
+}
+
+/// The scene card for the row open ([`TimeState::scene_open`]): the scene
+/// in focus is its row.
+pub fn scene_card_of(st: &TimeState) -> Option<crate::scene_card::SceneCard> {
+    use crate::scene_card::{CardCell, CardTrack, SceneCard};
+    let row = st.scene_open?;
+    let s = &st.scene;
+    let name = if s.name.is_empty() {
+        format!("Row {}", row + 1)
+    } else {
+        s.name.clone()
+    };
+    let has_clip = st
+        .tracks
+        .iter()
+        .any(|t| t.slots.get(row).is_some_and(Option::is_some));
+    let bars = s.follow.map_or_else(|| scene_bars(st), |f| f.bars);
+    let mut about = if has_clip {
+        format!("{} {}", bars, if bars == 1 { "bar" } else { "bars" })
+    } else {
+        "no clips".to_string()
+    };
+    if st.scene_playing == Some(row) {
+        about.push_str(" · playing");
+    } else if st.scene_cued == Some(row) {
+        about.push_str(" · waiting");
+    }
+    let tracks = st
+        .tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| !t.audio)
+        .take(MAX_TRACKS)
+        .map(|(i, t)| CardTrack {
+            track: i,
+            name: t.name.clone(),
+            color: track_color(i),
+            cell: match t.slots.get(row).and_then(Option::as_ref) {
+                Some(c) => CardCell::Clip(c.name.clone()),
+                None if s.keep & (1 << i) != 0 => CardCell::Keep,
+                None => CardCell::Stop,
+            },
+        })
+        .collect();
+    let last_free = st
+        .tracks
+        .iter()
+        .all(|t| t.slots.get(SLOTS - 1).is_none_or(Option::is_none));
+    let plays = (0..st.tracks.len()).any(|t| st.launch(t).is_some()) || st.song_on;
+    Some(SceneCard {
+        row,
+        rows_count: SLOTS,
+        name,
+        about,
+        rows: scene_rows(st),
+        picked: 1,
+        tracks,
+        first: 0,
+        can: [
+            plays,
+            last_free && has_clip,
+            last_free && row + 1 < SLOTS - 1,
+            true,
+        ],
+    })
+}
+
+/// A tap on an empty cell's box on the scene card: the track stops as the
+/// scene starts, or keeps playing (Keep playing, 5.2). Refused for a
+/// track the row has a clip for.
+pub fn scene_keep(st: &TimeState, track: usize) -> Result<TimeAction, String> {
+    let name = st.track_name(track);
+    let row = st.scene_focus;
+    if st
+        .tracks
+        .get(track)
+        .and_then(|t| t.slots.get(row))
+        .is_some_and(Option::is_some)
+    {
+        return Err(format!(
+            "{name} has a clip in row {}: it plays as the scene starts",
+            row + 1
+        ));
+    }
+    if track >= MAX_TRACKS {
+        return Err(format!("{name}: no such track"));
+    }
+    let mut s = st.scene.clone();
+    s.keep ^= 1 << track;
+    Ok(TimeAction::SceneSettings {
+        row,
+        card_row: SCENE_KEEP_ROW + track as u8,
+        settings: Box::new(s),
+    })
 }
 
 /// A program change as the gear shows it: 1 to 128.
@@ -3204,14 +3650,6 @@ fn mutes_words(st: &TimeState, mutes: Option<u128>) -> String {
         1 | 2 => names.join(", "),
         n => format!("{} +{}", names[0], n - 1),
     }
-}
-
-/// The scene editor's buttons: Rename and Mutes now.
-pub fn scene_buttons(_st: &TimeState) -> Vec<OptionButton> {
-    vec![
-        OptionButton::new("Rename", true),
-        OptionButton::new("Mutes now", true),
-    ]
 }
 
 /// The tracks muted now, as a scene's mutes.
@@ -3408,8 +3846,32 @@ fn scene_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction, St
             "Arm a track and set Program: this row lists the tracks the scene sends a program change"
                 .into(),
         ),
+        SCENE_TEMPO => scene_tempo_step(st, delta.signum() * 10),
         _ => Err(String::new()),
     }
+}
+
+/// A step of the scene's Tempo, `tenths` of a BPM: from "as it is" the
+/// tempo now, then up or down within 30 to 300 BPM.
+fn scene_tempo_step(st: &TimeState, tenths: i32) -> Result<TimeAction, String> {
+    let Some(now) = st.scene.tempo else {
+        return scene_tempo_now(st);
+    };
+    let range = mpfree_seq::scenes::SCENE_TEMPO;
+    let next = i32::from(now) + tenths;
+    if next < i32::from(*range.start()) {
+        return Err("Tempo is at its slowest, 30 BPM: tap it to leave the tempo as it is".into());
+    }
+    if next > i32::from(*range.end()) {
+        return Err("Tempo is at its fastest, 300 BPM".into());
+    }
+    let mut s = st.scene.clone();
+    s.tempo = Some(next as u16);
+    Ok(TimeAction::SceneSettings {
+        row: st.scene_focus,
+        card_row: SCENE_TEMPO as u8,
+        settings: Box::new(s),
+    })
 }
 
 /// The scene editor's step with SHIFT held or not: with SHIFT, Bank steps
@@ -3421,6 +3883,10 @@ pub fn scene_action(
     delta: i32,
     shift: bool,
 ) -> Result<TimeAction, String> {
+    if shift && index == SCENE_TEMPO {
+        // With SHIFT, a tenth of a BPM.
+        return scene_tempo_step(st, delta.signum());
+    }
     if !(shift && index == SCENE_BANK) {
         return scene_step(st, index, delta);
     }
@@ -3495,10 +3961,12 @@ pub fn clip_rows(st: &TimeState) -> Vec<OptionRow> {
             rows.push(OptionRow {
                 name: CLIP_ROWS[CLIP_MUTATE].to_string(),
                 value: mutate_value(c),
+                ..OptionRow::default()
             });
             rows.push(OptionRow {
                 name: CLIP_ROWS[CLIP_MELODY].to_string(),
                 value: melody_value(c),
+                ..OptionRow::default()
             });
             rows
         }
@@ -3560,6 +4028,7 @@ pub fn card_rows(length: Tick, s: ClipSettings) -> Vec<OptionRow> {
     let row = |k: usize, value: String| OptionRow {
         name: CLIP_ROWS[k].to_string(),
         value,
+        ..OptionRow::default()
     };
     let steps = (length + CARD_STEP - 1) / CARD_STEP;
     let dash = "—".to_string();
@@ -3807,6 +4276,7 @@ fn audio_rows(c: &ClipInfo, meter: Meter) -> Vec<OptionRow> {
         .map(|(name, value)| OptionRow {
             name: name.to_string(),
             value,
+            ..OptionRow::default()
         })
         .collect()
 }
@@ -4501,12 +4971,22 @@ pub fn take_title(st: &TimeState, row: &TakeRow) -> String {
             return format!("{word} {} · row {}", row.shown(), r + 1);
         }
         Some(
+            SongChange::SeveralMoved { blocks, .. }
+            | SongChange::SeveralCopied { blocks, .. }
+            | SongChange::SeveralDeleted { blocks }
+            | SongChange::SeveralSplit { blocks, .. },
+        ) => return format!("{word} {} · {blocks} blocks", row.shown()),
+        Some(
             SongChange::Scenes { .. }
             | SongChange::List
             | SongChange::ListToSong { .. }
+            | SongChange::RowDeleted { .. }
             | SongChange::RecSong { .. },
         )
         | None => {}
+    }
+    if let Some((_, r)) = row.row_tool {
+        return format!("{word} {} · row {}", row.shown(), r + 1);
     }
     if row.rows.is_some() {
         return format!("{word} {}", row.shown());
@@ -4539,6 +5019,11 @@ fn take_detail(st: &TimeState, row: &TakeRow) -> String {
 }
 
 fn take_said(st: &TimeState, row: &TakeRow) -> String {
+    match row.row_tool {
+        Some(("capture", r)) => return format!("into row {}", r + 1),
+        Some((_, r)) => return format!("row {}, the rows under it up one", r + 1),
+        None => {}
+    }
     if let Some((first, last)) = row.rows {
         return rows_named(first, last);
     }
@@ -4587,6 +5072,12 @@ fn take_said(st: &TimeState, row: &TakeRow) -> String {
         }
         Some(SongChange::Marker { at }) => return format!("at bar {}", bar_of(at)),
         Some(SongChange::Followed { .. }) => return "the song's parts".into(),
+        Some(
+            SongChange::SeveralMoved { blocks, .. } | SongChange::SeveralCopied { blocks, .. },
+        ) => return format!("{blocks} blocks"),
+        Some(SongChange::SeveralDeleted { blocks }) => return format!("{blocks} blocks"),
+        Some(SongChange::SeveralSplit { at, .. }) => return format!("at bar {}", bar_of(at)),
+        Some(SongChange::RowDeleted { row: r }) => return format!("row {}", r + 1),
         None => {}
     }
     match row.dropped {
@@ -4705,6 +5196,14 @@ pub struct LoopPlace {
     pub track_name: String,
     /// The row's scene name, or "row 2".
     pub row: String,
+    /// Its cell's name: a loop cell on an audio track is the loop's name
+    /// (phase 4, board 5: "Vox loop").
+    pub clip: String,
+    /// It is an audio track's cell (phase 4): the track's mute and solo
+    /// are the loop's.
+    pub audio: bool,
+    pub mute: bool,
+    pub solo: bool,
 }
 
 impl LoopPlace {
@@ -4728,15 +5227,46 @@ pub fn loop_cell_name(st: &TimeState) -> Option<String> {
     Some(format!("{} · {}", st.tracks.get(t)?.name, row_name(st, s)))
 }
 
+impl TimeState {
+    /// The looper's slot holding the loop a cell plays: a Loop track's
+    /// cell names it (`ClipInfo::looped`), a loop cell on an audio track
+    /// names the loop's id, which the slots hold ([`LoopsInfo::ids`]).
+    pub fn loop_slot(&self, clip: &ClipInfo) -> Option<usize> {
+        if let Some(n) = clip.looped {
+            return Some(usize::from(n));
+        }
+        let id = clip.loop_id?.0;
+        (id != 0).then(|| self.loops.ids.iter().position(|&i| i == id))?
+    }
+
+    /// The armed empty cell is an audio track's (phase 4): REC records a
+    /// loop there.
+    pub fn loop_cell_audio(&self) -> bool {
+        self.loop_cell
+            .is_some_and(|(t, _)| self.tracks.get(t).is_some_and(|t| t.audio))
+    }
+
+    /// How many audio cells hold a loop (phase 4).
+    pub fn loop_cells(&self) -> usize {
+        self.tracks
+            .iter()
+            .flat_map(|t| t.slots.iter().flatten())
+            .filter(|c| c.loop_id.is_some())
+            .count()
+    }
+}
+
 /// Each loop's place on the grid; None for a loop in no cell.
 pub fn loop_places(st: &TimeState) -> [Option<LoopPlace>; mpfree_seq::LOOPS] {
     let mut out: [Option<LoopPlace>; mpfree_seq::LOOPS] = Default::default();
     for (track, t) in st.tracks.iter().enumerate() {
         for (slot, c) in t.slots.iter().enumerate() {
-            let Some(n) = c.as_ref().and_then(|c| c.looped) else {
+            // A Loop track's cell, or a loop cell on an audio track (phase
+            // 4), by the slot holding its loop.
+            let Some(n) = c.as_ref().and_then(|c| st.loop_slot(c)) else {
                 continue;
             };
-            let Some(place @ None) = out.get_mut(usize::from(n)) else {
+            let Some(place @ None) = out.get_mut(n) else {
                 continue;
             };
             *place = Some(LoopPlace {
@@ -4744,6 +5274,10 @@ pub fn loop_places(st: &TimeState) -> [Option<LoopPlace>; mpfree_seq::LOOPS] {
                 slot,
                 track_name: t.name.clone(),
                 row: row_name(st, slot),
+                clip: c.as_ref().map(|c| c.name.clone()).unwrap_or_default(),
+                audio: t.audio,
+                mute: t.mute,
+                solo: t.solo,
             });
         }
     }
@@ -4756,10 +5290,15 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
         if st.loop_cell == Some((track, slot)) {
             // The armed Loop cell: the next loop recorded lands here.
             // Short: the column is 86 px.
+            let audio = st.tracks.get(track).is_some_and(|t| t.audio);
             let (name, detail, foot) = if st.loops.recording {
                 ("REC", "REC ends", "the pass")
             } else if st.loops.waiting {
                 ("Ready", "bar line", "or PLAY")
+            } else if audio {
+                // An armed empty audio cell (phase 4, board 2): REC
+                // records a loop there.
+                ("REC here", "a loop", "")
             } else {
                 ("Armed", "REC here", "")
             };
@@ -4775,13 +5314,17 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
     };
     let t = &st.transport;
     let len = clip.song_len().max(1.0);
-    let facts = clip
-        .looped
-        .and_then(|n| st.loops.loops.get(usize::from(n)))
+    // A loop cell on an audio track (phase 4, board 2): its mark, its
+    // length and the deck's ring in the track's colour, never a wave.
+    let looped = clip.loop_id.is_some();
+    let facts = st
+        .loop_slot(clip)
+        .and_then(|n| st.loops.loops.get(n))
         .copied();
-    // A loop cell shows its wave in the detail's place, and the detail
-    // at the foot.
+    // A Loop track's cell shows its wave in the detail's place, and the
+    // detail at the foot.
     let notes = match (facts, clip.notes) {
+        _ if looped => String::new(),
         (Some(_), _) => String::new(),
         (None, 1) => "1 note".to_string(),
         (None, n) => format!("{n} notes"),
@@ -4795,11 +5338,23 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
         detail: length_label(len, t.meter),
         foot: notes,
         progress: 0.0,
-        wave: facts.map(|f| f.wave),
+        wave: facts.filter(|_| !looped).map(|f| f.wave),
+        looped,
+        writing: looped && facts.is_some_and(|f| f.writing),
         ..GridCell::default()
     };
     if facts.is_some_and(|f| f.copying) {
         cell.foot = "copying in".to_string();
+        cell.alert = if looped {
+            CellAlert::Warn
+        } else {
+            CellAlert::None
+        };
+    } else if cell.writing {
+        // A layer not yet on the stick (layout spec 4f): in amber, in
+        // the length's place while it is stopped.
+        cell.foot = "writing".to_string();
+        cell.alert = CellAlert::Warn;
     }
     let cue = st.cue(track);
     if cue.is_some_and(|c| c.slot == Some(slot)) {
@@ -4982,6 +5537,12 @@ pub fn audio_cell_hint(st: &TimeState, track: usize, slot: usize) -> Option<Stri
         return None;
     }
     let Some(clip) = st.clip(track, slot) else {
+        if st.loops_on {
+            let name = &st.tracks[track].name;
+            return Some(format!(
+                "An empty cell of {name}: arm {name} (tap its name), then tap the cell to record a loop there; or put audio in with To a cell on the Song view."
+            ));
+        }
         return Some(EMPTY_AUDIO_CELL.to_string());
     };
     let a = clip.audio.as_ref()?;
@@ -5512,16 +6073,21 @@ pub fn record_rows(st: &TimeState) -> Vec<OptionRow> {
     let row = |name: &str, value: String| OptionRow {
         name: name.to_string(),
         value,
+        ..OptionRow::default()
     };
-    let armed = st
-        .armed
-        .map_or_else(|| "none".to_string(), |a| st.track_name(a));
+    // An armed empty audio cell names its place (phase 4, board 2).
+    let armed = match loop_cell_name(st).filter(|_| st.loops_on && st.loop_cell_audio()) {
+        Some(place) => place,
+        None => st
+            .armed
+            .map_or_else(|| "none".to_string(), |a| st.track_name(a)),
+    };
     let count_in = match t.count_in {
         0 => "off".to_string(),
         1 => "1 bar".to_string(),
         n => format!("{n} bars"),
     };
-    vec![
+    let rows = vec![
         row(RECORD_ROWS[0], armed),
         row(
             RECORD_ROWS[1],
@@ -5562,7 +6128,30 @@ pub fn record_rows(st: &TimeState) -> Vec<OptionRow> {
                 _ => "–".to_string(),
             },
         ),
-    ]
+        row(RECORD_ROWS[MAKES_ROW], makes(st).to_string()),
+    ];
+    record_order(st)
+        .iter()
+        .filter_map(|&k| rows.get(k).cloned())
+        .collect()
+}
+
+/// What REC makes now, for the Record tab's Makes row (phase 4, board 2):
+/// a loop in the armed empty audio cell; takes on the song, song mode on,
+/// for armed audio tracks; else the armed track's notes, or a loop on a
+/// Loop track.
+pub fn makes(st: &TimeState) -> &'static str {
+    if st.loop_cell_audio() {
+        return "a loop";
+    }
+    if st.song_on && st.audio.iter().any(|l| l.armed) {
+        return "takes";
+    }
+    match st.armed.and_then(|a| st.tracks.get(a)) {
+        Some(tr) if tr.loops.is_some() => "a loop",
+        Some(tr) if !tr.audio => "notes",
+        _ => "–",
+    }
 }
 
 /// A track's live transpose as the screens say it: "as written", "+5 st",
@@ -5653,13 +6242,18 @@ pub fn min_sec(seconds: f64) -> String {
 /// waveforms are left out: [`TimePage::update`] copies `st.waves` only
 /// when they change, as they can be large.
 pub fn song_lanes(st: &TimeState, first_bar: i64) -> SongLanes {
-    song_lanes_with(st, first_bar, None)
+    song_lanes_with(st, first_bar, 16, None)
 }
 
 /// [`song_lanes`], with `blocks` for the blocks when they were made from
 /// `st.placements` ([`SongBlocks::made_from`]), so an update that changes
 /// no block copies none (Arrange refactor 2.4).
-fn song_lanes_with(st: &TimeState, first_bar: i64, blocks: Option<SongBlocks>) -> SongLanes {
+fn song_lanes_with(
+    st: &TimeState,
+    first_bar: i64,
+    bars_shown: i64,
+    blocks: Option<SongBlocks>,
+) -> SongLanes {
     let t = &st.transport;
     let bar = t.meter.bar_ticks();
     let blocks = blocks.unwrap_or_else(|| SongBlocks::of(&st.placements));
@@ -5701,10 +6295,12 @@ fn song_lanes_with(st: &TimeState, first_bar: i64, blocks: Option<SongBlocks>) -
             false => Vec::new(),
         },
         bar,
+        beat: t.meter.beat_ticks(),
         first_bar,
-        bars: 16,
+        bars: bars_shown,
         playhead: Some(t.position),
         selected: st.selected,
+        picks: st.picks.clone(),
         section: st.section,
         on: st.song_on,
         rec: st.song_rec,
@@ -5978,6 +6574,10 @@ pub struct TimePage {
     pub first_track: usize,
     /// The first bar the Song view shows (0-based).
     pub first_bar: i64,
+    /// How many bars the Song view shows (the zoom chip, 6.4): one of
+    /// `song::ZOOMS`, 0 for the 16 a new page starts with. Kept while
+    /// the app runs, whichever view shows; not saved with the project.
+    pub song_bars: i64,
     /// The armed track last shown, so a newly armed track off the page
     /// brings its page.
     armed_seen: Option<usize>,
@@ -5985,8 +6585,6 @@ pub struct TimePage {
     rows_seen: usize,
     /// The Record panel shows its Clip tab: the clip settings card.
     pub clip_card: bool,
-    /// The Record panel shows its Scene tab: the scene editor.
-    pub scene_card: bool,
     /// The note editor shows on another page (the app's Sequencer tab):
     /// while it is open the Clips page keeps the grid, the song or the
     /// list, and the editor's layout comes back once this is false again.
@@ -6002,6 +6600,9 @@ pub struct TimePage {
     pub adding: bool,
     /// Link's chooser is open on a song list that isn't linked (4b.5).
     pub linking: bool,
+    /// The scene card's row the wheel and - / + turn (a [`SCENE_ROWS`]
+    /// index; 0, the Scene row, means Follow).
+    pub scene_row: usize,
     /// A kind of track was picked in the chooser with this many tracks:
     /// once there are more, the new one is brought into view.
     reveal: Option<usize>,
@@ -6045,6 +6646,23 @@ pub struct TimePage {
 }
 
 impl TimePage {
+    /// How many bars the Song view shows (6.4): 16 until the zoom chip
+    /// picks another.
+    pub fn bars_shown(&self) -> i64 {
+        if crate::song::ZOOMS.contains(&self.song_bars) {
+            self.song_bars
+        } else {
+            16
+        }
+    }
+
+    /// How many bars the Song view scrolls a step (the wheel, a drag held
+    /// at an edge): one, up to 16 shown; a sixteenth of what shows past
+    /// that (6.4).
+    fn bars_step(&self) -> i64 {
+        (self.bars_shown() / 16).max(1)
+    }
+
     /// Add the bar, the grid, the record settings, the takes and the Clips
     /// page. The app's `header` and `hint` must be in `ui` already. The
     /// Q-Link column is the app's: an empty one is added only when `ui`
@@ -6057,11 +6675,7 @@ impl TimePage {
         ui.add(TRANSPORT, TransportBar::new());
         ui.add(CLIPS, ClipGrid::new("Clips", SLOTS));
         let mut record = OptionList::new("Record");
-        record.tabs = vec![
-            "Record".to_string(),
-            "Clip".to_string(),
-            "Scene".to_string(),
-        ];
+        record.tabs = vec!["Record".to_string(), "Clip".to_string()];
         record.tab_widths = PANEL_TAB_WIDTHS.to_vec();
         let mut card = OptionList::new("Clip");
         card.tabs = record.tabs.clone();
@@ -6069,14 +6683,8 @@ impl TimePage {
         card.tab = 1;
         card.right = "wheel or arrows".to_string();
         card.empty = "Arm a track with a clip".to_string();
-        let mut scene = OptionList::new("Scene");
-        scene.tabs = record.tabs.clone();
-        scene.tab_widths = record.tab_widths.clone();
-        scene.tab = 2;
-        scene.right = "wheel or arrows".to_string();
         ui.add(RECORD, record);
         ui.add(CLIP_CARD, card);
-        ui.add(SCENE_CARD, scene);
         ui.add(TAKES, TakeList::new("Takes"));
         ui.add(MORPH, MorphBar::new());
         ui.add(SONG, SongLanes::new());
@@ -6107,6 +6715,14 @@ impl TimePage {
     /// app's ([`action`]); the new track comes into view once it is
     /// there. Call [`TimePage::update`] after.
     pub fn chooser(&mut self, ev: &UiEvent, st: &TimeState, shift: bool) -> bool {
+        // A row's name on the scene card picks it for the wheel (5.2).
+        if let (CLIPS | SONG_LIST, EventKind::Toggle(k)) = (ev.widget.as_str(), &ev.kind) {
+            let pick = crate::scene_card::SCENE_PICK;
+            if st.scene_open.is_some() && (pick..pick + SCENE_ROWS.len()).contains(k) {
+                self.scene_row = k - pick;
+                return true;
+            }
+        }
         let (button, kind, off) = match (ev.widget.as_str(), &ev.kind) {
             (CLIPS, EventKind::Toggle(k)) => (
                 *k == SLOTS + ADD_TRACK,
@@ -6159,9 +6775,17 @@ impl TimePage {
         let step = match (ev.widget.as_str(), &ev.kind) {
             (SONG, EventKind::Tab(k)) if *k == BARS_BACK || *k == BARS_ON => {
                 // A dragged block or section held at the left or right
-                // edge.
+                // edge: a bar a step, more zoomed out (6.4).
                 let d = if *k == BARS_ON { 1 } else { -1 };
-                self.first_bar = (self.first_bar + d).max(0);
+                self.first_bar = (self.first_bar + d * self.bars_step()).max(0);
+                return true;
+            }
+            // The zoom chip (6.4): the Song view shows that many bars.
+            (SONG, EventKind::Tab(k))
+                if (crate::song::ZOOM..crate::song::ZOOM + crate::song::ZOOMS.len())
+                    .contains(k) =>
+            {
+                self.song_bars = crate::song::ZOOMS[*k - crate::song::ZOOM];
                 return true;
             }
             // The note editor's Edit button: the drawer.
@@ -6172,11 +6796,10 @@ impl TimePage {
             // The roll's view moved: the roll keeps it; the page keeps it
             // for the clip and lets Snap Auto follow ([`TimePage::update`]).
             (NOTES, EventKind::View { .. }) => return true,
-            (RECORD | CLIP_CARD | SCENE_CARD, EventKind::Tab(k)) => {
-                // The Record panel's tabs: the record settings, the clip
-                // settings card or the scene editor.
+            (RECORD | CLIP_CARD, EventKind::Tab(k)) => {
+                // The Record panel's tabs: the record settings or the
+                // clip settings card.
                 self.clip_card = *k == 1;
-                self.scene_card = *k == 2;
                 return true;
             }
             (CLIPS, EventKind::Toggle(k)) if *k == SLOTS + PAGE_BACK => -1,
@@ -6349,7 +6972,7 @@ impl TimePage {
             ui.layout_of(CLIPS_PAGE),
             Some(SONG_LAYOUT | SONG_CARD_LAYOUT)
         ) {
-            self.first_bar = (self.first_bar + i64::from(delta)).max(0);
+            self.first_bar = (self.first_bar + i64::from(delta) * self.bars_step()).max(0);
             return None;
         }
         if matches!(
@@ -6370,11 +6993,11 @@ impl TimePage {
     /// card or neither shows (the grid, the note editor).
     pub fn report_on(&self, ui: &Ui) -> Option<&'static str> {
         match ui.layout_of(CLIPS_PAGE)? {
-            SONG_LAYOUT | SONG_CARD_LAYOUT | SONG_SCENE_LAYOUT => ui
+            SONG_LAYOUT | SONG_CARD_LAYOUT => ui
                 .get::<SongLanes>(SONG)
                 .is_some_and(|l| l.report.is_some())
                 .then_some(SONG),
-            LIST_LAYOUT | LIST_CARD_LAYOUT | LIST_SCENE_LAYOUT => ui
+            LIST_LAYOUT | LIST_CARD_LAYOUT => ui
                 .get::<SongListView>(SONG_LIST)
                 .is_some_and(|l| l.report.is_some())
                 .then_some(SONG_LIST),
@@ -6405,7 +7028,6 @@ impl TimePage {
         match ui.layout_of(CLIPS_PAGE) {
             Some(EDIT_LAYOUT | EDIT_DRAWER_LAYOUT) => EDIT_OPTIONS,
             Some(CLIPS_CARD_LAYOUT | SONG_CARD_LAYOUT | LIST_CARD_LAYOUT) => CLIP_CARD,
-            Some(CLIPS_SCENE_LAYOUT | SONG_SCENE_LAYOUT | LIST_SCENE_LAYOUT) => SCENE_CARD,
             _ => RECORD,
         }
     }
@@ -6476,6 +7098,11 @@ impl TimePage {
         // looper's loops hold one, and the share of its memory in use (the
         // row numbers say which rows show). Past 8 tracks the pager takes
         // the legend's place, so the gauge is not there.
+        let slots = format!(
+            "Slots {}–{} of {SLOTS}",
+            self.first_row + 1,
+            (self.first_row + rows).min(SLOTS)
+        );
         let title = if st.tracks.iter().any(|t| t.loops.is_some()) {
             let l = &st.loops;
             format!(
@@ -6484,12 +7111,16 @@ impl TimePage {
                 mpfree_seq::LOOPS,
                 l.memory_pct
             )
-        } else {
+        } else if st.loops_on && st.loop_cells() > 0 {
+            // Loops in audio cells (phase 4, board 2): the loops' gauge
+            // after the rows in view.
             format!(
-                "Slots {}–{} of {SLOTS}",
-                self.first_row + 1,
-                (self.first_row + rows).min(SLOTS)
+                "{slots} · Loops {} of {}",
+                st.loops.in_use,
+                mpfree_seq::LOOPS
             )
+        } else {
+            slots
         };
         let legend = "ring: one pass   ·   amber: waiting   ·   red: recording".to_string();
         let can_add = st.tracks.len() < MAX_TRACKS;
@@ -6530,11 +7161,8 @@ impl TimePage {
             (true, ..) if self.edit_drawer => EDIT_DRAWER_LAYOUT,
             (true, ..) => EDIT_LAYOUT,
             _ if self.show && self.set_open => SHOW_LAYOUT,
-            _ if st.list_view && self.scene_card => LIST_SCENE_LAYOUT,
             _ if st.list_view && self.clip_card => LIST_CARD_LAYOUT,
             _ if st.list_view => LIST_LAYOUT,
-            (false, true, _) if self.scene_card => SONG_SCENE_LAYOUT,
-            (false, false, _) if self.scene_card => CLIPS_SCENE_LAYOUT,
             (false, true, false) => SONG_LAYOUT,
             (false, true, true) => SONG_CARD_LAYOUT,
             (false, false, false) => CLIPS_LAYOUT,
@@ -6587,6 +7215,48 @@ impl TimePage {
                     .map(|r| ReportCard::new(r, &report_tracks(st)));
             }
         }
+        // The scene card (5.2), over the grid or the list, whichever
+        // shows; its cells' page stays while it is the same row's.
+        let mut card = scene_card_of(st);
+        if let Some(c) = card.as_mut() {
+            c.picked = match self.scene_row {
+                0 => 1,
+                k => k,
+            };
+        }
+        let (on_grid, on_list) = if st.list_view {
+            (None, card)
+        } else if st.song_view {
+            (None, None)
+        } else {
+            (card, None)
+        };
+        let keep = |new: &mut Option<crate::scene_card::SceneCard>,
+                    old: &Option<crate::scene_card::SceneCard>| {
+            if let (Some(n), Some(o)) = (new.as_mut(), old.as_ref()) {
+                n.keep_page(o);
+            }
+        };
+        for (name, mut new) in [(CLIPS, on_grid), (SONG_LIST, on_list)] {
+            let old = if name == CLIPS {
+                ui.get::<ClipGrid>(CLIPS).map(|g| g.scene_card.clone())
+            } else {
+                ui.get::<SongListView>(SONG_LIST)
+                    .map(|l| l.scene_card.clone())
+            };
+            let Some(old) = old else { continue };
+            keep(&mut new, &old);
+            if new == old {
+                continue;
+            }
+            if name == CLIPS {
+                if let Some(g) = ui.get_mut::<ClipGrid>(CLIPS) {
+                    g.scene_card = new;
+                }
+            } else if let Some(l) = ui.get_mut::<SongListView>(SONG_LIST) {
+                l.scene_card = new;
+            }
+        }
         // The blocks shown, while the placements are the same list: a frame
         // that only moves the playhead or scrolls copies and compares no
         // block (Arrange refactor 2.4).
@@ -6596,21 +7266,37 @@ impl TimePage {
             .filter(|b| b.made_from(&st.placements))
             .cloned();
         let kept = blocks.is_some();
-        let mut lanes = song_lanes_with(st, self.first_bar, blocks);
+        let mut lanes = song_lanes_with(st, self.first_bar, self.bars_shown(), blocks);
         lanes.show_button = self.set_open;
         lanes.adding = adding;
-        let (same, same_waves) = ui.get::<SongLanes>(SONG).map_or((true, true), |l| {
-            let waves = crate::song::same_waves(&l.waves, &st.waves);
-            lanes.keep_scroll(l);
-            if reveal {
-                lanes.first_lane = usize::MAX;
+        let (same, same_waves, only_playhead) =
+            ui.get::<SongLanes>(SONG).map_or((true, true, false), |l| {
+                let waves = crate::song::same_waves(&l.waves, &st.waves);
+                lanes.keep_scroll(l);
+                if reveal {
+                    lanes.first_lane = usize::MAX;
+                }
+                lanes.waves = Vec::new();
+                let mut was = l.clone_without_waves();
+                was.keep_scroll(l);
+                let same = was == lanes;
+                // Only the playhead moved, as each frame while the song
+                // plays: the view keeps what it last painted and draws
+                // only its line's strips (`SongLanes::changed_parts`).
+                let only_playhead = !same && was.playhead != lanes.playhead && {
+                    was.playhead = lanes.playhead;
+                    was == lanes
+                };
+                (same, waves, only_playhead)
+            });
+        if only_playhead && same_waves {
+            if let Some(l) = ui.get_mut::<SongLanes>(SONG) {
+                l.playhead = lanes.playhead;
+                if !kept {
+                    l.blocks = lanes.blocks;
+                }
             }
-            lanes.waves = Vec::new();
-            let mut was = l.clone_without_waves();
-            was.keep_scroll(l);
-            (was == lanes, waves)
-        });
-        if !(same && same_waves) {
+        } else if !(same && same_waves) {
             if let Some(l) = ui.get_mut::<SongLanes>(SONG) {
                 let waves = std::mem::take(&mut l.waves);
                 *l = lanes;
@@ -6801,21 +7487,9 @@ impl TimePage {
                     l.reset_view();
                 }
                 l.rows = rows;
-                l.tabs = tabs.clone();
-                l.buttons = buttons;
-                l.note = note;
-            }
-        }
-        let rows = scene_rows(st);
-        let buttons = scene_buttons(st);
-        if ui
-            .get::<OptionList>(SCENE_CARD)
-            .is_some_and(|l| l.rows != rows || l.tabs != tabs || l.buttons != buttons)
-        {
-            if let Some(l) = ui.get_mut::<OptionList>(SCENE_CARD) {
-                l.rows = rows;
                 l.tabs = tabs;
                 l.buttons = buttons;
+                l.note = note;
             }
         }
         let (items, current) = take_items(st);
@@ -6844,6 +7518,7 @@ impl TimePage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::HELD_PICKS;
 
     /// The Scale menu's taps (piano roll plan 2B.1) become the clip's
     /// scale, from the editor's offers on the clip's root, or its root.
@@ -7036,6 +7711,57 @@ mod tests {
             }),
             edit(EditAction::Length { to: 7680 })
         );
+        // A finger on a note and the wheel (plan 1C.3): the first detent
+        // names the note, a later one only the hold.
+        assert_eq!(
+            ev(EventKind::Values {
+                index: HELD_TURN + HELD_FIRST + HELD_FINE,
+                set: vec![(3, -2), (7, 0)]
+            }),
+            edit(EditAction::Held {
+                index: 3,
+                rev: 0,
+                ticks: -2,
+                fine: true,
+                turn: 7,
+                first: true
+            })
+        );
+        assert_eq!(
+            ev(EventKind::Values {
+                index: HELD_TURN,
+                set: vec![(HELD_PICKS, 1), (7, 0)]
+            }),
+            edit(EditAction::Held {
+                index: HELD_PICKS,
+                rev: 0,
+                ticks: 1,
+                fine: false,
+                turn: 7,
+                first: false
+            })
+        );
+        assert_eq!(
+            ev(EventKind::Values {
+                index: HELD_TURN,
+                set: vec![(3, 1)]
+            }),
+            None,
+            "no hold's number"
+        );
+        // SHIFT + the push on a held note: back to a drawn note's velocity.
+        assert_eq!(
+            ev(EventKind::Values {
+                index: HELD_TURN + HELD_RESET + HELD_FIRST,
+                set: vec![(3, 0), (7, 0)]
+            }),
+            edit(EditAction::HeldReset {
+                index: 3,
+                rev: 0,
+                turn: 7,
+                first: true
+            })
+        );
         // ERASE + a drag (plan 1B.5): the notes it crossed.
         assert_eq!(
             ev(EventKind::Values {
@@ -7169,6 +7895,7 @@ mod tests {
             .map(|k| OptionRow {
                 name: RECORD_ROWS[k].to_string(),
                 value: String::new(),
+                ..OptionRow::default()
             })
             .collect();
         assert!(list.row_rects(record, 5).is_none());
@@ -7998,6 +8725,213 @@ mod tests {
         assert_eq!(l.blocks.get(4).map(|b| b.name.as_str()), Some("Clip 4"));
     }
 
+    /// While the song plays, a frame that only moves the playhead draws
+    /// the Song view's strips its line left and reached
+    /// (`SongLanes::changed_parts`), and the screen is the one a whole
+    /// paint of the same state gives, in a plain and a glowing theme; a
+    /// scroll or a pick draws the view whole again.
+    #[test]
+    fn the_song_views_playhead_strips_paint_as_a_whole_frame_does() {
+        for theme in [Theme::dark(), Theme::synthwave()] {
+            let make = || {
+                let mut ui = Ui::new(theme.clone(), Fonts::embedded(), 1280, 800);
+                ui.add("header", Header::new(&["Play", "Clips"]));
+                ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+                let page = TimePage::add_to(&mut ui).unwrap();
+                ui.show(CLIPS_PAGE).unwrap();
+                (ui, page)
+            };
+            let mut st = state();
+            st.song_view = true;
+            st.song_on = true;
+            let place = |renamed: bool| -> Arc<[PlacementInfo]> {
+                (0..24)
+                    .map(|k| PlacementInfo {
+                        track: k % 3,
+                        start: (k / 3) as Tick * BAR,
+                        length: BAR,
+                        name: if renamed && k == 7 {
+                            "Renamed".to_string()
+                        } else {
+                            format!("Clip {k}")
+                        },
+                        unique: k == 4,
+                    })
+                    .collect::<Vec<_>>()
+                    .into()
+            };
+            st.placements = place(false);
+            // The picture a fresh screen paints whole from `st`, its view
+            // scrolled as the one under test.
+            let whole = |st: &TimeState, first_bar: i64| {
+                let (mut ui, mut page) = make();
+                page.update(&mut ui, st);
+                page.scroll(&mut ui, first_bar as i32);
+                page.update(&mut ui, st);
+                let mut c = SoftCanvas::new(1280, 800);
+                ui.paint(&mut c);
+                c.px
+            };
+            let (mut ui, mut page) = make();
+            page.update(&mut ui, &st);
+            let mut now = SoftCanvas::new(1280, 800);
+            ui.paint(&mut now);
+            let song = ui.rect_of(SONG).unwrap();
+            for frame in 0..6 {
+                let strips = match frame {
+                    // A scroll, and a block renamed: the view whole.
+                    3 => {
+                        page.scroll(&mut ui, 1);
+                        false
+                    }
+                    5 => {
+                        st.placements = place(true);
+                        false
+                    }
+                    _ => true,
+                };
+                // An eighth of a bar a frame: the clip waiting on track 2
+                // starts (on bar 6) with the renamed block.
+                st.transport.position += BAR / 8;
+                page.update(&mut ui, &st);
+                let drawn = ui.paint(&mut now);
+                let on_song: Vec<mpfree_ui::Rect> = drawn
+                    .iter()
+                    .map(|d| d.intersect(song))
+                    .filter(|d| !d.is_empty())
+                    .collect();
+                if strips {
+                    assert!(
+                        !on_song.is_empty() && on_song.iter().all(|d| d.w <= 6),
+                        "{} frame {frame}: only the playhead's strips, not {on_song:?}",
+                        theme.name
+                    );
+                } else {
+                    assert!(on_song.contains(&song), "{} frame {frame}", theme.name);
+                }
+                assert!(
+                    now.px == whole(&st, page.first_bar),
+                    "{} frame {frame}: the strips paint what a whole frame does",
+                    theme.name
+                );
+            }
+        }
+    }
+
+    /// Several blocks (6.5): a box picks the blocks it touches; with
+    /// several picked, a drag of one moves them all, and Split, Duplicate
+    /// and Delete take them all while Make unique says why not. The zoom
+    /// chip (6.4) is the page's own, and the wheel scrolls by it.
+    #[test]
+    fn several_picked_blocks_act_together_and_the_zoom_chip_is_the_pages() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        st.song_view = true;
+        let block = |track, start, length| PlacementInfo {
+            track,
+            start,
+            length,
+            name: "B".into(),
+            unique: false,
+        };
+        st.placements = vec![
+            block(0, 0, 3840),
+            block(0, 4 * 3840, 3840),
+            block(1, 3840, 2 * 3840),
+        ]
+        .into();
+        let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
+        // A box over both lanes from bar 2 to bar 5: the bass's block, and
+        // the drums' second block it reaches into.
+        assert_eq!(
+            song(
+                EventKind::Span {
+                    index: crate::song::BOX + 1,
+                    from: 3840,
+                    to: 4 * 3840 + 10
+                },
+                &st
+            ),
+            Some(TimeAction::PickPlacements {
+                set: vec![1, 2],
+                add: false
+            })
+        );
+        st.picks = vec![1, 2];
+        assert_eq!(song_hint(&st), SONG_PICKS_HINT);
+        // The drums' second block dragged a lane down and a bar back: both
+        // go a lane down and a bar back.
+        assert_eq!(
+            song(
+                EventKind::Place {
+                    index: 1,
+                    row: 1,
+                    at: 3 * 3840
+                },
+                &st
+            ),
+            Some(TimeAction::MovePlacements {
+                set: vec![1, 2],
+                lanes: 1,
+                by: -3840,
+                copy: false
+            })
+        );
+        // A block not picked moves alone.
+        assert!(matches!(
+            song(
+                EventKind::Place {
+                    index: 0,
+                    row: 0,
+                    at: 3840
+                },
+                &st
+            ),
+            Some(TimeAction::MovePlacement { index: 0, .. })
+        ));
+        assert_eq!(
+            song(EventKind::Tab(0), &st),
+            Some(TimeAction::SplitPlacements(vec![1, 2]))
+        );
+        assert_eq!(
+            song(EventKind::Tab(DUPLICATE), &st),
+            Some(TimeAction::DuplicatePlacements(vec![1, 2]))
+        );
+        assert_eq!(
+            song(EventKind::Tab(5), &st),
+            Some(TimeAction::DeletePlacements(vec![1, 2]))
+        );
+        assert_eq!(song(EventKind::Tab(4), &st), None);
+        let why = why_not(&ev(SONG, EventKind::Tab(4)), &st).unwrap();
+        assert!(why.starts_with("Make unique takes one block"), "{why}");
+        // The lanes show the picks.
+        page.update(&mut ui, &st);
+        assert_eq!(ui.get::<SongLanes>(SONG).unwrap().picks, [1, 2]);
+        // The zoom chip: the page's own; 64 bars shown, and the wheel
+        // scrolls four bars a detent.
+        let zoom = ev(SONG, EventKind::Tab(crate::song::ZOOM + 4));
+        assert_eq!(action(&zoom, &st), None);
+        assert!(page.page_tracks(&zoom, &st));
+        assert_eq!(page.bars_shown(), 64);
+        page.update(&mut ui, &st);
+        assert_eq!(ui.get::<SongLanes>(SONG).unwrap().bars, 64);
+        page.scroll(&mut ui, 1);
+        assert_eq!(page.first_bar, 4);
+        assert!(page.page_tracks(&ev(SONG, EventKind::Tab(BARS_BACK)), &st));
+        assert_eq!(page.first_bar, 0);
+        let zoom = ev(SONG, EventKind::Tab(crate::song::ZOOM));
+        assert!(page.page_tracks(&zoom, &st));
+        assert_eq!(page.bars_shown(), 4);
+        page.scroll(&mut ui, 1);
+        assert_eq!(page.first_bar, 1);
+        // Another Song tab isn't the page's.
+        assert!(!page.page_tracks(&ev(SONG, EventKind::Tab(0)), &st));
+    }
+
     #[test]
     fn the_song_view_swaps_in_for_the_grid_and_its_buttons_act() {
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
@@ -8029,13 +8963,17 @@ mod tests {
         page.scroll(&mut ui, 4);
         assert_eq!(page.first_bar, 4, "the wheel scrolls bars");
         let song = |k: EventKind, st: &TimeState| action(&ev(SONG, k), st);
-        // The view chip's Clips (5.7); the bottom row's first place is the
-        // audio region's Split alone.
+        // The view chip's Clips (5.7); the bottom row's first place is
+        // Split (phase 6): every block at the playhead with none picked.
         assert_eq!(
             song(EventKind::Tab(crate::song::CLIPS), &st),
             Some(TimeAction::SongView(false))
         );
-        assert_eq!(song(EventKind::Tab(0), &st), None);
+        assert_eq!(
+            song(EventKind::Tab(0), &st),
+            Some(TimeAction::SplitPlacement(None))
+        );
+        assert_eq!(song(EventKind::Tab(DUPLICATE), &st), None, "nothing picked");
         assert_eq!(
             song(EventKind::Tab(1), &st),
             Some(TimeAction::SongMode(true))
@@ -8059,6 +8997,41 @@ mod tests {
         assert_eq!(
             song(EventKind::Tab(5), &st),
             Some(TimeAction::DeletePlacement(0))
+        );
+        // Phase 6: Split cuts the picked block, Duplicate copies it, its
+        // start grip trims it and a slide moves what it plays.
+        assert_eq!(
+            song(EventKind::Tab(0), &st),
+            Some(TimeAction::SplitPlacement(Some(0)))
+        );
+        assert_eq!(
+            song(EventKind::Tab(DUPLICATE), &st),
+            Some(TimeAction::DuplicatePlacement(0))
+        );
+        assert_eq!(
+            song(
+                EventKind::Place {
+                    index: 0,
+                    row: START_ROW,
+                    at: 3840
+                },
+                &st
+            ),
+            Some(TimeAction::TrimPlacement {
+                index: 0,
+                start: 3840
+            })
+        );
+        assert_eq!(
+            song(
+                EventKind::Place {
+                    index: 0,
+                    row: SLIDE_ROW,
+                    at: -240
+                },
+                &st
+            ),
+            Some(TimeAction::SlidePlacement { index: 0, by: -240 })
         );
         // Rec song, on the Song view and on the grid.
         assert_eq!(
@@ -8545,6 +9518,128 @@ mod tests {
         );
     }
 
+    /// Phase 4, board 2 (layout spec 4f, Loops in audio cells), with Dev's
+    /// "Loops on audio tracks" on: a loop cell on an audio track shows its
+    /// length and the ring, never a wave; queued, when it starts; a layer
+    /// still being written, the dot and "writing". A tap on an empty cell
+    /// of the armed audio track arms it ("REC here", "a loop"), Record
+    /// says where and what (Armed, then Makes), and the title counts the
+    /// loops. With the switch off none of it shows.
+    #[test]
+    fn with_loops_on_a_loop_cell_on_an_audio_track_reads_as_a_loop() {
+        use crate::song::AudioLane;
+        let mut st = state();
+        st.loops_on = true;
+        st.tracks[1].audio = true;
+        st.audio = vec![AudioLane {
+            track: 4,
+            row: 1,
+            name: st.tracks[1].name.clone(),
+            color: track_color(1),
+            armed: true,
+            input: Input::Left,
+            mix: None,
+            level: 0.0,
+            volume: 1.0,
+            pan: 0.0,
+            monitor: Monitor::Auto,
+            mute: false,
+            solo: false,
+            blocks: Vec::new(),
+            takes: Vec::new(),
+            recording: None,
+            clips: Vec::new(),
+        }];
+        // Rows 1 and 2 hold loops, in the looper's slots 3 and 5; row 2's
+        // launch waits for bar 6 (the fixture's).
+        for s in [0, 1] {
+            let c = st.tracks[1].slots[s].as_mut().unwrap();
+            c.loop_id = Some(mpfree_seq::LoopId(70 + s as u128));
+            c.notes = 0;
+        }
+        st.loops.ids[3] = 70;
+        st.loops.ids[5] = 71;
+        st.loops.in_use = 6;
+        let cell = cell_of(&st, 1, 0);
+        assert!(
+            cell.looped && cell.wave.is_none() && !cell.writing,
+            "{cell:?}"
+        );
+        assert_eq!(
+            (cell.state, cell.detail.as_str(), cell.foot.as_str()),
+            (CellState::Stopped, "2 bars", "")
+        );
+        let queued = cell_of(&st, 1, 1);
+        assert_eq!(queued.state, CellState::Queued);
+        assert_eq!(queued.foot, "from 6.1");
+        // A layer still being written.
+        st.loops.loops[3].writing = true;
+        let writing = cell_of(&st, 1, 0);
+        assert!(writing.writing);
+        assert_eq!(
+            (writing.foot.as_str(), writing.alert),
+            ("writing", CellAlert::Warn)
+        );
+        // The looper's slot is found by the loop's id; its place too.
+        assert_eq!(st.loop_slot(st.clip(1, 1).unwrap()), Some(5));
+        let places = loop_places(&st);
+        assert_eq!(places[3].as_ref().map(|p| (p.track, p.slot)), Some((1, 0)));
+        // An empty cell of the armed audio track arms a loop there; a
+        // second tap lets go.
+        let empty = ev(CLIPS, EventKind::Select(SLOTS + 2));
+        assert_eq!(
+            action(&empty, &st),
+            Some(TimeAction::LoopCell(Some((1, 2))))
+        );
+        st.loop_cell = Some((1, 2));
+        let armed = cell_of(&st, 1, 2);
+        assert_eq!(
+            (armed.state, armed.name.as_str(), armed.detail.as_str()),
+            (CellState::Armed, "REC here", "a loop")
+        );
+        assert_eq!(action(&empty, &st), Some(TimeAction::LoopCell(None)));
+        // Record: where (Armed) and what (Makes, under it).
+        let rows = record_rows(&st);
+        let row = |k: usize| (rows[k].name.as_str(), rows[k].value.as_str());
+        assert_eq!(row(0), ("Armed", "Bass · row 3"));
+        assert_eq!(row(1), ("Makes", "a loop"));
+        assert_eq!(row(2).0, "Mode");
+        assert_eq!(rows.len(), 11);
+        // A step on a row under Makes steps that row; on Makes, it says why.
+        let step = |index| ev(RECORD, EventKind::Step { index, delta: 1 });
+        assert_eq!(
+            action(&step(2), &st),
+            Some(TimeAction::Transport(Command::ToggleOverdub))
+        );
+        assert_eq!(action(&step(1), &st), None);
+        assert_eq!(why_not(&step(1), &st).as_deref(), Some(MAKES_WHY));
+        // The title counts the loops after the rows.
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        page.update(&mut ui, &st);
+        let title = &ui.get::<ClipGrid>(CLIPS).unwrap().title;
+        assert!(title.ends_with(" · Loops 6 of 8"), "{title}");
+        // The audio track not armed: a tap says how.
+        st.audio[0].armed = false;
+        let other = ev(CLIPS, EventKind::Select(SLOTS + 3));
+        assert_eq!(action(&other, &st), None);
+        assert!(why_not(&other, &st).is_some_and(|w| w.contains("arm Bass")));
+        // The switch off: nothing of it.
+        st.loops_on = false;
+        st.audio[0].armed = true;
+        assert_eq!(action(&other, &st), None);
+        assert_eq!(why_not(&other, &st).as_deref(), Some(EMPTY_AUDIO_CELL));
+        assert_eq!(record_rows(&st)[1].name, "Mode");
+        assert_eq!(record_rows(&st).len(), 10);
+        assert_eq!(
+            action(&step(1), &st),
+            Some(TimeAction::Transport(Command::ToggleOverdub))
+        );
+    }
+
     /// Layout spec 4f: an audio clip's cell shows its name, its wave and
     /// its length, and in the wave's place the word that matters, each
     /// with its full sentence on the hint line.
@@ -8898,6 +9993,20 @@ mod tests {
         );
         assert_eq!(
             song(EventKind::Cell { row: 2, col: PANEL }, &st),
+            audio(AudioAction::Panel(2))
+        );
+        // The input chip opens the panel too; with Dev's "Loops on audio
+        // tracks", the track's input list (phase 4, board 4).
+        let chip = EventKind::Cell {
+            row: 2,
+            col: INPUT_CHIP,
+        };
+        assert_eq!(song(chip.clone(), &st), audio(AudioAction::Panel(2)));
+        let mut on = st.clone();
+        on.loops_on = true;
+        assert_eq!(song(chip, &on), audio(AudioAction::Inputs(2)));
+        assert_eq!(
+            song(EventKind::Cell { row: 2, col: PANEL }, &on),
             audio(AudioAction::Panel(2))
         );
         assert_eq!(
@@ -9300,6 +10409,7 @@ mod tests {
             variant: None,
             scene: None,
             rows: None,
+            row_tool: None,
             followed: None,
         };
         let mut st = st;
@@ -9553,7 +10663,7 @@ mod tests {
         assert_eq!(st.focus(), Some((0, 0)));
         st.armed = Some(1);
         assert_eq!(st.focus(), Some((1, 1)));
-        assert_eq!(panel_tabs(&st), ["Record", "Clip · B", "Scene"]);
+        assert_eq!(panel_tabs(&st), ["Record", "Clip · B"]);
         let rows: Vec<String> = clip_rows(&st)
             .iter()
             .map(|r| format!("{} {}", r.name, r.value))
@@ -10133,10 +11243,12 @@ mod tests {
         assert_eq!(page.wheel_list(&ui), RECORD);
     }
 
-    /// The scene editor (S4, part 7): the Record panel's third tab, its
-    /// rows for the scene in focus, and what each row's – / + asks for.
+    /// The scene card (5.2, part 7 of S4 before it): open on a row over
+    /// the grid, its rows for that scene, and what each row's ‹ › and
+    /// the card's other taps ask for.
     #[test]
-    fn the_scene_tab_steps_the_scene_in_focus() {
+    fn the_scene_card_steps_the_scene_it_is_open_on() {
+        use crate::scene_card as sc;
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
         ui.add("header", Header::new(&["Play", "Arrange"]));
         ui.add("hint", Label::new("", Tone::Dim, Align::Center));
@@ -10145,12 +11257,20 @@ mod tests {
         let mut st = state();
         st.scene_focus = 1;
         page.update(&mut ui, &st);
-        assert!(page.page_tracks(&ev(RECORD, EventKind::Tab(2)), &st));
+        assert!(ui.get::<ClipGrid>(CLIPS).unwrap().scene_card.is_none());
+        st.scene_open = Some(1);
         page.update(&mut ui, &st);
-        assert_eq!(ui.layout_of(CLIPS_PAGE), Some(CLIPS_SCENE_LAYOUT));
-        assert_eq!(page.wheel_list(&ui), SCENE_CARD);
-        let card = ui.get::<OptionList>(SCENE_CARD).unwrap();
-        assert_eq!((card.tab, card.tabs[2].as_str()), (2, "Scene"));
+        // On the grid, over the Clips view's own layout: the Record panel
+        // keeps its two tabs.
+        assert_eq!(ui.layout_of(CLIPS_PAGE), Some(CLIPS_LAYOUT));
+        assert_eq!(panel_tabs(&st).len(), 2);
+        let card = ui
+            .get::<ClipGrid>(CLIPS)
+            .unwrap()
+            .scene_card
+            .clone()
+            .unwrap();
+        assert_eq!((card.row, card.name.as_str()), (1, "Row 2"));
         let shown = |st: &TimeState| -> Vec<String> {
             scene_rows(st)
                 .iter()
@@ -10168,37 +11288,37 @@ mod tests {
                 "Mutes as they are",
                 "Program off",
                 "Bank —",
-                "Sent to none"
+                "Sent to none",
+                "Tempo as it is"
             ]
         );
         let step = |st: &TimeState, row: usize, delta: i32| {
-            action(&ev(SCENE_CARD, EventKind::Step { index: row, delta }), st)
+            action(&ev(CLIPS, EventKind::Step { index: row, delta }), st)
         };
+        let tap = |st: &TimeState, k: usize| action(&ev(CLIPS, EventKind::Toggle(k)), st);
         let set = |a: Option<TimeAction>| match a {
             Some(TimeAction::SceneSettings {
                 row: 1, settings, ..
             }) => *settings,
             other => panic!("{other:?}"),
         };
-        // ‹ › on the Scene row: the scene in focus.
-        assert_eq!(step(&st, 0, -1), Some(TimeAction::SceneFocus(0)));
-        st.scene_focus = 0;
-        assert_eq!(step(&st, 0, -1), None);
+        // ‹ › by the name: the scene before or after, its card.
         assert_eq!(
-            why_not(
-                &ev(
-                    SCENE_CARD,
-                    EventKind::Step {
-                        index: 0,
-                        delta: -1
-                    }
-                ),
-                &st
-            )
-            .as_deref(),
+            tap(&st, sc::SCENE_BEFORE),
+            Some(TimeAction::SceneCard(Some(0)))
+        );
+        assert_eq!(
+            tap(&st, sc::SCENE_AFTER),
+            Some(TimeAction::SceneCard(Some(2)))
+        );
+        let mut first = st.clone();
+        first.scene_open = Some(0);
+        first.scene_focus = 0;
+        assert_eq!(tap(&first, sc::SCENE_BEFORE), None);
+        assert_eq!(
+            why_not(&ev(CLIPS, EventKind::Toggle(sc::SCENE_BEFORE)), &first).as_deref(),
             Some("Scene 1 is the first")
         );
-        st.scene_focus = 1;
         // Follow on: Next, after the scene's longest clip (B, under a
         // bar: 1 bar).
         st.scene = set(step(&st, 1, 1));
@@ -10213,51 +11333,79 @@ mod tests {
         assert_eq!(st.scene.follow.map(|f| f.chance), Some(90));
         st.scene = set(step(&st, 4, 1));
         assert_eq!(st.scene.follow.map(|f| f.other), Some(OTHERS[1]));
-        // Mutes: none to begin with, then – takes them off again.
-        st.scene = set(step(&st, 5, 1));
+        // Mutes: none to begin with, then – takes them off again; a tap on
+        // its value takes the mutes as they are now.
+        st.scene = set(step(&st, SCENE_MUTES, 1));
         assert_eq!(st.scene.mutes, Some(0));
-        assert_eq!(shown(&st)[5], "Mutes none");
+        assert_eq!(shown(&st)[SCENE_MUTES], "Mutes none");
         st.tracks[0].mute = true;
         st.tracks[2].mute = true;
         assert_eq!(
-            action(&ev(SCENE_CARD, EventKind::Toggle(SCENE_MUTES_NOW)), &st)
-                .map(|a| set(Some(a)).mutes),
+            tap(&st, sc::SCENE_MUTES_NOW).map(|a| set(Some(a)).mutes),
             Some(Some(0b101))
         );
         st.scene.mutes = Some(0b101);
-        assert_eq!(shown(&st)[5], "Mutes Drums, Stab");
-        st.scene = set(step(&st, 5, -1));
+        assert_eq!(shown(&st)[SCENE_MUTES], "Mutes Drums, Stab");
+        st.scene = set(step(&st, SCENE_MUTES, -1));
         assert_eq!(st.scene.mutes, None);
         // Follow off again.
         st.scene = set(step(&st, 1, -1));
         assert_eq!(st.scene.follow, None);
-        // A name shows by the number.
+        // A name shows by the number, and on the card.
         st.scene.name = "Drop".into();
         assert_eq!(shown(&st)[0], "Scene 2 · Drop");
-        // The Record tab again.
-        assert!(page.page_tracks(&ev(SCENE_CARD, EventKind::Tab(0)), &st));
         page.update(&mut ui, &st);
-        assert_eq!(ui.layout_of(CLIPS_PAGE), Some(CLIPS_LAYOUT));
+        let card = ui
+            .get::<ClipGrid>(CLIPS)
+            .unwrap()
+            .scene_card
+            .clone()
+            .unwrap();
+        assert_eq!(card.name, "Drop");
+        // The foot: Capture, Copy row, Insert row and Delete row.
+        assert_eq!(tap(&st, sc::SCENE_CAPTURE), Some(TimeAction::CaptureScene));
+        assert_eq!(
+            tap(&st, sc::SCENE_COPY_ROW),
+            Some(TimeAction::DropRow {
+                from: 1,
+                to: 2,
+                copy: true
+            })
+        );
+        assert_eq!(
+            tap(&st, sc::SCENE_INSERT_ROW),
+            Some(TimeAction::InsertRow(1))
+        );
+        assert_eq!(
+            tap(&st, sc::SCENE_DELETE_ROW),
+            Some(TimeAction::DeleteRow(1))
+        );
+        // Done closes it, and the grid has no card.
+        assert_eq!(tap(&st, sc::SCENE_DONE), Some(TimeAction::SceneCard(None)));
+        st.scene_open = None;
+        page.update(&mut ui, &st);
+        assert!(ui.get::<ClipGrid>(CLIPS).unwrap().scene_card.is_none());
     }
 
     /// The scene editor's Program and Bank (S5): the program change the
     /// scene sends the armed track, off then 1 to 128, its bank with it
     /// (SHIFT steps a whole CC 0); Sent to lists every track's.
     #[test]
-    fn the_scene_tab_sets_the_armed_tracks_program_change() {
+    fn the_scene_card_sets_the_armed_tracks_program_change() {
         let mut st = state();
         st.scene_focus = 1;
+        st.scene_open = Some(1);
         let shown = |st: &TimeState| -> Vec<String> {
-            scene_rows(st)[SCENE_PROGRAM..]
+            scene_rows(st)[SCENE_PROGRAM..SCENE_TEMPO]
                 .iter()
                 .map(|r| format!("{} {}", r.name, r.value))
                 .collect()
         };
         let step = |st: &TimeState, row: usize, delta: i32| {
-            action(&ev(SCENE_CARD, EventKind::Step { index: row, delta }), st)
+            action(&ev(CLIPS, EventKind::Step { index: row, delta }), st)
         };
         let why = |st: &TimeState, row: usize, delta: i32| {
-            why_not(&ev(SCENE_CARD, EventKind::Step { index: row, delta }), st)
+            why_not(&ev(CLIPS, EventKind::Step { index: row, delta }), st)
         };
         let set = |a: Option<TimeAction>| match a {
             Some(TimeAction::SceneSettings {
@@ -10937,6 +12085,7 @@ mod tests {
             variant: None,
             scene: None,
             rows: None,
+            row_tool: None,
             followed: None,
         };
         st.done = vec![row(1), row(2)];
@@ -10981,6 +12130,7 @@ mod tests {
             variant: None,
             scene: None,
             rows: None,
+            row_tool: None,
             followed: None,
         };
         let (items, _) = take_items(&st);
@@ -11010,6 +12160,7 @@ mod tests {
             variant: None,
             scene: None,
             rows: None,
+            row_tool: None,
             followed: None,
         };
         assert_eq!(take_items(&st).0[2].title, "Edit 5 · Bass / 1");

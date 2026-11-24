@@ -3,22 +3,33 @@
 //! [`GrainClip`] is what [`mpfree_grain::Clip`] is, for a sound held as
 //! floats or as 16 bits, read the same way (a 16-bit sound's grains are its
 //! floats' grains, bit for bit), plus the sampler's clean pitching: unless
-//! the pad is Vintage, a grain more than [`CLEAN_ABOVE`] faster than the
-//! sound's own rate reads band-limited, as a sample voice pitched up does
-//! ([`bandlimit::read2`], past an octave from the sound's octave copies), so
-//! what it would fold back above the output's Nyquist frequency is filtered
-//! out instead. Grains at or under two semitones up keep the Hermite read
-//! and its cost.
+//! the pad is Vintage, a grain reads as a sample voice at its speed does.
+//! At and under [`CLEAN_ABOVE`] (two semitones up) that is the 8-point read
+//! ([`bandlimit::near_kernel`]); faster, the band-limited read
+//! ([`bandlimit::read2`], past an octave from the sound's octave copies),
+//! so what it would fold back above the output's Nyquist frequency is
+//! filtered out instead. A Vintage pad's grains read with Hermite.
 
 use mpfree_grain::buffer::{first_hit, read_run_each, run_frames, small_run};
 use mpfree_grain::{hermite, Aim, GrainSource};
 
-use crate::bandlimit::{self, Kernel, Octaves, Reach};
+use crate::bandlimit::{
+    self, near_kernel, near_sum, near_sum2, Kernel, Octaves, Reach, NEAR_HALF, NEAR_TAPS,
+};
 use crate::dsp::Sample;
 use crate::engine::CLEAN_ABOVE;
 
 /// One output frame's step in the sampler's 32.32 fixed point.
 const ONE: f64 = 4_294_967_296.0;
+
+/// The 8-point read's aim: no taps marks it (a band-limited read always
+/// has some).
+const NEAR: Aim = Aim {
+    clean: true,
+    octave: 0,
+    step: 0,
+    taps: 0,
+};
 
 /// A region of an interleaved sound (1 or 2 channels) for grains.
 #[derive(Clone, Copy)]
@@ -166,12 +177,16 @@ impl<S: Sample> GrainSource for GrainClip<'_, S> {
         read_run_each(self, pos, inc, out);
     }
 
-    /// Clean (unless Vintage) past [`CLEAN_ABOVE`]: the octave copy that
-    /// brings the speed under [`bandlimit::MAX_STRETCH`], and the filter
-    /// stretched for what is left, as a sample voice aims ([`Reach`]).
+    /// Unless Vintage: the 8-point read at and under [`CLEAN_ABOVE`]
+    /// ([`NEAR`]); past it the octave copy that brings the speed under
+    /// [`bandlimit::MAX_STRETCH`], and the filter stretched for what is
+    /// left, as a sample voice aims ([`Reach`]).
     fn aim(&self, speed: f64) -> Aim {
-        if self.kernel.is_none() || speed * ONE <= CLEAN_ABOVE as f64 {
+        if self.kernel.is_none() {
             return Aim::default();
+        }
+        if speed * ONE <= CLEAN_ABOVE as f64 {
+            return NEAR;
         }
         let mut r = speed as f32;
         let mut octave = 0u8;
@@ -204,6 +219,19 @@ impl<S: Sample> GrainSource for GrainClip<'_, S> {
         if self.end <= self.start {
             return [0.0; 2];
         }
+        if aim == NEAR {
+            let mut o = [[0.0f32; 2]; 1];
+            near_run(
+                self.data,
+                self.channels == 2,
+                self.start,
+                self.end,
+                pos,
+                0.0,
+                &mut o,
+            );
+            return o[0];
+        }
         let k = u32::from(aim.octave);
         let at = (pos * ONE) as i64;
         let (lo, hi, at) = (self.start >> k, (self.end - 1) >> k, at >> k);
@@ -234,6 +262,18 @@ impl<S: Sample> GrainSource for GrainClip<'_, S> {
         };
         if self.end <= self.start {
             out.fill([0.0; 2]);
+            return;
+        }
+        if aim == NEAR {
+            near_run(
+                self.data,
+                self.channels == 2,
+                self.start,
+                self.end,
+                pos,
+                inc,
+                out,
+            );
             return;
         }
         let k = u32::from(aim.octave);
@@ -286,5 +326,87 @@ fn clean_run<T: Sample>(
             *o = [l, r];
             pos += inc;
         }
+    }
+}
+
+/// The 8-point read for a run of frames from `pos`, `inc` apart, as a
+/// sample voice reads at the same speed; frames outside `start..end` read
+/// as 0 (as the Hermite read's edges do).
+#[inline(always)]
+fn near_run<T: Sample>(
+    data: &[T],
+    stereo: bool,
+    start: i64,
+    end: i64,
+    mut pos: f64,
+    inc: f64,
+    out: &mut [[f32; 2]],
+) {
+    let k = near_kernel();
+    let ch = if stereo { 2 } else { 1 };
+    // Every frame inside: no edge tests, and the position split through
+    // an i32 (one instruction) instead of a floor.
+    if small_run(pos, inc, out.len()) {
+        let (lo, hi) = run_frames(pos, inc, out.len());
+        if lo + 1 - NEAR_HALF as i64 >= start && hi + (NEAR_HALF as i64) < end {
+            for o in out.iter_mut() {
+                let f = pos as i32;
+                let c = k.weights(((pos - f64::from(f)) * ONE) as u32);
+                let at = (f as usize + 1 - NEAR_HALF) * ch;
+                if stereo {
+                    let w: &[T; 2 * NEAR_TAPS] = data[at..at + 2 * NEAR_TAPS]
+                        .try_into()
+                        .expect("8 stereo frames");
+                    let (l, r) = near_sum2(&c, &w.map(T::f));
+                    *o = [l, r];
+                } else {
+                    let w: &[T; NEAR_TAPS] = data[at..at + NEAR_TAPS].try_into().expect("8 frames");
+                    let l = near_sum(&c, &w.map(T::f));
+                    *o = [l, l];
+                }
+                pos += inc;
+            }
+            return;
+        }
+    }
+    for o in out.iter_mut() {
+        let f = pos.floor();
+        let i = f as i64;
+        let c = k.weights(((pos - f) * ONE) as u32);
+        let first = i + 1 - NEAR_HALF as i64;
+        if first >= start && first + NEAR_TAPS as i64 <= end {
+            let at = first as usize * ch;
+            if stereo {
+                let mut x = [0.0f32; 2 * NEAR_TAPS];
+                for (d, s) in x.iter_mut().zip(&data[at..at + 2 * NEAR_TAPS]) {
+                    *d = s.f();
+                }
+                let (l, r) = near_sum2(&c, &x);
+                *o = [l, r];
+            } else {
+                let mut x = [0.0f32; NEAR_TAPS];
+                for (d, s) in x.iter_mut().zip(&data[at..at + NEAR_TAPS]) {
+                    *d = s.f();
+                }
+                let l = near_sum(&c, &x);
+                *o = [l, l];
+            }
+        } else {
+            let get = |j: i64, c: usize| {
+                if j < start || j >= end {
+                    0.0
+                } else {
+                    data[j as usize * ch + c].f()
+                }
+            };
+            let mut l = [0.0f32; NEAR_TAPS];
+            let mut r = [0.0f32; NEAR_TAPS];
+            for m in 0..NEAR_TAPS {
+                l[m] = get(first + m as i64, 0);
+                r[m] = get(first + m as i64, ch - 1);
+            }
+            *o = [near_sum(&c, &l), near_sum(&c, &r)];
+        }
+        pos += inc;
     }
 }

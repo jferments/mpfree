@@ -39,6 +39,24 @@ mod tests {
         Lab { s, dir }
     }
 
+    /// The song's tuning on the Tunings page (tunings step T6): the Synth
+    /// tab's options, the Tuning row's help card link, the page's rows
+    /// stepped (`steps`: row, delta; row 1 the song's tuning, 2 its root,
+    /// 3 its A4), then MENU back to the Synth options and MENU shut.
+    fn song_tuning(s: &mut Session, steps: &[(usize, i32)]) {
+        use crate::gui::FromUi;
+        s.press("header", "tab", "Synth").settle();
+        s.button("MENU").settle();
+        s.press("options", "row", "Tuning").settle();
+        s.press("help", "link", "Tunings").settle();
+        for &(row, d) in steps {
+            s.route(FromUi::MenuStep(row, d));
+            s.run_for(0.05);
+        }
+        s.button("MENU").settle();
+        s.button("MENU").settle();
+    }
+
     /// BROWSE, Projects, the song's row tapped twice (the first picks it,
     /// the second opens it): as on the MPC.
     fn open(s: &mut Session, name: &str) {
@@ -720,7 +738,6 @@ mod tests {
     #[test]
     fn a_song_in_just_on_d_plays_its_keygroups_tuned_and_keeps_it() {
         on_big_stack(|| {
-            use crate::gui::FromUi;
             use mpfree_sampler::engine::EngineView;
             use mpfree_sampler::model::{Layer, Pad, Project, Region, Source};
             use mpfree_tuning::{Builtin, Tuning};
@@ -797,16 +814,8 @@ mod tests {
             );
             assert!(kits(s).iter().all(Tuning::is_standard));
 
-            // The Synth tab's options: Tuning to Just, its root to D.
-            s.press("header", "tab", "Synth").settle();
-            s.button("MENU").settle();
-            s.route(FromUi::MenuStep(5, 1));
-            s.run_for(0.05);
-            for _ in 0..2 {
-                s.route(FromUi::MenuStep(6, 1));
-                s.run_for(0.05);
-            }
-            s.button("MENU").settle();
+            // The song's tuning to Just, its root to D, on the Tunings page.
+            song_tuning(s, &[(1, 1), (2, 1), (2, 1)]);
             let just_d = Builtin::Just.tuning(2, 440.0);
             let said = "sampler: the kits' keygroups play Just (5-limit) on D \
                         (pad hits and slices as tuned on the pad)";
@@ -843,6 +852,197 @@ mod tests {
             keygroup(s);
             let again = key(s, f_sharp);
             assert!(cents(again, want).abs() < 1.0, "{again} Hz, not {want}");
+        });
+    }
+
+    /// Tunings step T5: instruments in two tunings at once, each keeping
+    /// its own. Kit 1 and kit 2 each play a keygroup (a 220 Hz tone on A3
+    /// over the keyboard), and Track 2 has its own Poly. The song goes to
+    /// just on D on the Synth tab; kit 2 gets a tuning of its own,
+    /// meantone at A4 = 415. Kit 1 and Track 2's Poly play the song's and
+    /// kit 2 its own, at once. The song back to 12-TET moves only those on
+    /// Song's. Saved, the project has a tunings part and needs
+    /// own-tunings; opened again, kit 2 keeps its own. A tunings part with
+    /// a line that doesn't read refuses the project, said.
+    #[test]
+    fn instruments_play_their_own_tunings_and_the_songs_at_once() {
+        on_big_stack(|| {
+            use crate::synth::{Builtin, TuningPick};
+            use mpfree_sampler::engine::EngineView;
+            use mpfree_sampler::model::{Layer, Pad, Project, Region, Source};
+            const RATE: u32 = crate::RATE;
+            let mut l = lab("own-tunings");
+            let s = &mut l.s;
+            let name = "Night Market";
+            let lib = s.library.clone().expect("a library");
+            let loc = mpfree_library::Loc::top(mpfree_library::Place::Projects)
+                .join(name)
+                .expect("a project's place");
+            open(s, name);
+            s.make_sounds().run_for(0.05);
+            s.give_own(1, crate::synth::Engine::Poly).run_for(0.05);
+            // Kit `kit` a keygroup over the whole keyboard.
+            let keygroup = |s: &mut Session, kit: usize| {
+                let n = (RATE as f32 * 0.7) as usize;
+                let x = (0..n)
+                    .map(|i| 0.3 * (i as f32 * 220.0 * std::f32::consts::TAU / RATE as f32).sin())
+                    .collect();
+                let tone = Source::new("tone", RATE, 1, x).unwrap();
+                let mut p = Project::new();
+                p.add_source(tone.clone());
+                p.set_pad(
+                    0,
+                    Some(Pad::new("tone", Layer::new(Region::whole(&tone)))),
+                    None,
+                )
+                .unwrap();
+                p.spread_to_keys(0, 57).unwrap();
+                let mut swap = crate::sampler::ViewSwap {
+                    kit,
+                    view: Some(EngineView::build(&p, RATE)),
+                    routes: vec![None; mpfree_sampler::model::PADS],
+                };
+                let player = s.sounds.as_mut().expect("a kit");
+                player.select(kit);
+                assert!(player.swap_view(&mut swap));
+            };
+            // The pitch a key sounds at on kit `kit`, from the left channel.
+            let key = |s: &mut Session, kit: usize, note: u8| -> f64 {
+                s.run_for(0.3);
+                s.heard = Some(Vec::new());
+                let player = s.sounds.as_mut().expect("a kit");
+                assert!(player.key_kit_at(kit, note, 100, 0));
+                s.run_for(0.35);
+                let h = s.heard.take().unwrap();
+                let x: Vec<f64> = h.iter().step_by(2).map(|&v| f64::from(v)).collect();
+                let (from, to) = ((RATE / 20) as usize, (RATE as f64 * 0.3) as usize);
+                let ups: Vec<f64> = (from..to)
+                    .filter(|&i| x[i - 1] < 0.0 && x[i] >= 0.0)
+                    .map(|i| (i - 1) as f64 + x[i - 1] / (x[i - 1] - x[i]))
+                    .collect();
+                assert!(ups.len() > 50, "the key sounds: {}", ups.len());
+                let span = ups[ups.len() - 1] - ups[0];
+                (ups.len() - 1) as f64 * f64::from(RATE) / span
+            };
+            let cents = |a: f64, b: f64| 1200.0 * (a / b).log2();
+            let kit_tuning = |s: &Session, k: usize| {
+                s.sounds
+                    .as_ref()
+                    .and_then(|p| p.kit_tuning(k).cloned())
+                    .expect("a kit place")
+            };
+            let poly = |s: &Session| {
+                s.mix
+                    .instruments
+                    .tuning(1)
+                    .cloned()
+                    .expect("Track 2's Poly")
+            };
+            keygroup(s, 0);
+            keygroup(s, 1);
+            let kit2 = s.instrument_list.of_kit(1).expect("kit 2 has an id");
+
+            // The song in just on D; kit 2 in its own meantone at 415.
+            song_tuning(s, &[(1, 1), (2, 1), (2, 1)]);
+            let meantone = TuningPick {
+                builtin: Builtin::Meantone,
+                a4_hz: 415,
+                ..TuningPick::default()
+            };
+            let fx = s.app.set_own_tuning(kit2, Some(meantone));
+            s.fx.extend(fx);
+            s.run_for(0.05);
+            let said = "tunings: Kit 2 plays its own tuning, Meantone 1/4 comma on C, A4 415 Hz";
+            assert!(s.until_said(said, 1.0), "{:?}", s.said());
+            let (just_d, mean) = (
+                Builtin::Just.tuning(2, 440.0),
+                Builtin::Meantone.tuning(0, 415.0),
+            );
+            assert_eq!(kit_tuning(s, 0), just_d);
+            assert_eq!(kit_tuning(s, 1), mean);
+            assert_eq!(poly(s), just_d);
+            // Each kit's F#4 at its own tuning's pitch.
+            let f_sharp = 66u8;
+            for (kit, t) in [(0, &just_d), (1, &mean)] {
+                let heard = key(s, kit, f_sharp);
+                let want = f64::from(t.hz(66.0));
+                assert!(
+                    cents(heard, want).abs() < 1.0,
+                    "kit {}: {heard} Hz, not {want}",
+                    kit + 1
+                );
+            }
+
+            // The song back to 12-TET: kit 1 and the Poly follow, kit 2
+            // keeps its own.
+            song_tuning(s, &[(1, -1)]);
+            let said = "sampler: the kits' keygroups play 12-TET (pad hits and slices as tuned on the pad); 1 with a tuning of their own keep it";
+            assert!(s.until_said(said, 1.0), "{:?}", s.said());
+            assert!(kit_tuning(s, 0).is_standard());
+            assert!(poly(s).is_standard());
+            assert_eq!(kit_tuning(s, 1), mean);
+            // And the song in just on D again, to save.
+            song_tuning(s, &[(1, 1)]);
+            assert_eq!(kit_tuning(s, 0), just_d);
+
+            // Saved: the tunings part and the needs line.
+            s.button_with("SHIFT", "BROWSE");
+            let saved = format!("project: saved {name}");
+            assert!(s.until_said(&saved, 5.0), "{saved}: {:?}", s.said());
+            let snap = lib.open_project(&loc).expect("it opens");
+            let part = snap.part(crate::project::TUNINGS).expect("a tunings part");
+            assert_eq!(
+                part,
+                format!("mpfree-tunings 1\ninstrument {kit2} root C a4 415 meantone\n")
+            );
+            let needs = snap
+                .meta
+                .extra
+                .iter()
+                .find(|(k, _)| k == crate::project::NEEDS_KEY);
+            assert!(
+                needs.is_some_and(|(_, v)| v.split_whitespace().any(|n| n == "own-tunings")),
+                "{:?}",
+                snap.meta.extra
+            );
+
+            // New project: every instrument on the song's 12-TET.
+            s.button("BROWSE");
+            s.press("browser", "place", "Projects");
+            s.press("browser", "button", "New project");
+            s.run_for(0.3);
+            assert!(kit_tuning(s, 1).is_standard());
+            assert_eq!(s.app.tunings().owned(), 0);
+
+            // Opened again: kit 2 in its own, the song's just on D.
+            open(s, name);
+            s.run_for(0.05);
+            assert_eq!(s.app.tunings().own(kit2), Some(meantone));
+            assert_eq!(kit_tuning(s, 0), just_d);
+            assert_eq!(kit_tuning(s, 1), mean);
+            let opened = s.lines.iter().any(|l| {
+                l == "tunings: the song plays Just (5-limit) on D; with their own: Kit 2 Meantone 1/4 comma on C, A4 415 Hz"
+            });
+            assert!(opened, "{:?}", s.said());
+
+            // Edit pad's Tuning on the Pads tab (tunings step T6, board 4),
+            // as its arrows send it: kit 2 back on Song's.
+            s.route(crate::gui::FromUi::KitTuning { kit: 1, delta: -9 });
+            s.run_for(0.05);
+            let said = "tunings: Kit 2 plays the song's tuning, Just (5-limit) on D";
+            assert!(s.until_said(said, 1.0), "{:?}", s.said());
+            assert_eq!(s.app.tunings().own(kit2), None);
+            assert_eq!(kit_tuning(s, 1), just_d);
+
+            // A tunings part that doesn't read: the project isn't opened.
+            let mut bad = snap.clone();
+            for (k, v) in bad.parts.iter_mut() {
+                if k == crate::project::TUNINGS {
+                    *v = "mpfree-tunings 1\ninstrument 9 root H a4 440 just\n".to_string();
+                }
+            }
+            let why = crate::project::check(&bad).expect_err("refused");
+            assert!(why.contains("its tunings can't be read"), "{why}");
         });
     }
 
@@ -1860,6 +2060,324 @@ mod tests {
         });
     }
 
+    /// Sampler step 15e's screens (the canvas "Pads and kits: step 15e",
+    /// boards 1 and 2, Jay's "Build as drawn" of 23 Nov): the list's Kits
+    /// side puts kit 2 on the pads with no track changed, and it plays on
+    /// its own; Keep keeps it ("Pads: <kit 2>"). With Bank B only a kit of
+    /// one bank plays from it, and Follow base gives bank B back. An empty
+    /// kit goes on the pads too, and the hint says to load sounds on the
+    /// Sample page. The first tile, "Track 1's kit", gives the pads back.
+    #[test]
+    fn the_lists_kits_side_puts_a_kit_on_the_pads_with_no_track_changed() {
+        use mpfree_synth_ui::pick::{SynthList, PICK};
+        fn tiles(s: &Session) -> Vec<String> {
+            s.screen
+                .ui
+                .get::<SynthList>(PICK)
+                .map(|l| l.kits.tiles.iter().map(|t| t.name.clone()).collect())
+                .unwrap_or_default()
+        }
+        on_big_stack(|| {
+            let mut session = Session::new();
+            let s = &mut session;
+            s.make_sounds();
+            s.run_periods(2);
+            s.fill_kits(&[0, 1]);
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-inst", "card", "").settle();
+            s.press("synth-pick", "side", "Kits").settle();
+            let names = tiles(s);
+            assert_eq!(
+                names.first().map(String::as_str),
+                Some("Track 1's kit"),
+                "{names:?}"
+            );
+            let two = names
+                .iter()
+                .find(|n| n.starts_with("2 · "))
+                .cloned()
+                .expect("kit 2's tile");
+            let empty = names
+                .iter()
+                .find(|n| n.ends_with("· Empty"))
+                .cloned()
+                .expect("an empty kit's tile");
+            s.press("synth-pick", "kit", &two).run_periods(4).settle();
+            assert_eq!(s.app.pads_kit(), Some(1), "the pads play kit 2");
+            assert_eq!(s.track_kits.kit_of(0), Some(0), "Track 1 keeps kit 1");
+            let player = s.sounds.as_ref().expect("the kits");
+            let pad = (0..16)
+                .find(|&p| player.has_sound(1, p))
+                .expect("a pad kit 2 fills");
+            s.pad_edge(pad, 100, true);
+            s.run_periods(2);
+            let player = s.sounds.as_ref().expect("the kits");
+            assert!(player.kit_pad_voices(1, pad) > 0, "kit 2's pad plays");
+            s.pad_edge(pad, 0, false);
+            let short = two.trim_start_matches("2 · ").to_string();
+            assert!(
+                s.control("synth-pick", "keep", &format!("Keep {short}"))
+                    .is_some(),
+                "Keep names the kit"
+            );
+            s.press("synth-pick", "keep", "").run_periods(2).settle();
+            assert!(
+                s.control("header", "chip", &format!("Pads: {short}"))
+                    .is_some(),
+                "the chip names the kit"
+            );
+            // Bank B only: kit 2 there, then Follow base gives it back.
+            s.button("PAD BANK B/F").settle();
+            s.press("synth-inst", "card", "").settle();
+            assert!(
+                s.screen
+                    .ui
+                    .get::<SynthList>(PICK)
+                    .is_some_and(|l| l.kits.shown),
+                "the list opens on the Kits side while a kit plays"
+            );
+            s.press("synth-pick", "bank-only", "Bank B only").settle();
+            assert_eq!(tiles(s).first().map(String::as_str), Some("Follow base"));
+            s.press("synth-pick", "kit", &two).run_periods(2).settle();
+            assert!(
+                s.app.pads_part().contains("\nbank B instrument "),
+                "{}",
+                s.app.pads_part()
+            );
+            s.press("synth-pick", "kit", "Follow base")
+                .run_periods(2)
+                .settle();
+            assert!(
+                !s.app.pads_part().contains("\nbank B "),
+                "{}",
+                s.app.pads_part()
+            );
+            // An empty kit: on the pads, playing nothing, and the hint says
+            // where its sounds come from.
+            s.press("synth-pick", "all-banks", "All banks").settle();
+            s.press("synth-pick", "kit", &empty).run_periods(2).settle();
+            let k: usize = empty
+                .split(" · ")
+                .next()
+                .and_then(|n| n.parse().ok())
+                .expect("its number");
+            assert_eq!(s.app.pads_kit(), Some(k - 1));
+            assert!(
+                s.hint()
+                    .starts_with(&format!("Kit {k} is empty: load sounds on the Sample page")),
+                "{}",
+                s.hint()
+            );
+            // Track 1's kit: the pads follow the track again.
+            s.press("synth-pick", "kit", "Track 1's kit")
+                .run_periods(2)
+                .settle();
+            assert_eq!(s.app.pads_kit(), None);
+            s.press("synth-pick", "keep", "").run_periods(2).settle();
+            assert_eq!(s.track_kits.kit_of(0), Some(0), "no track changed");
+        });
+    }
+
+    /// Sampler step 15e's screens, board 3 (Jay's "Build as drawn, with
+    /// your picks" of 23 Nov, question 1): the Pads chip, tapped on Play,
+    /// opens What the pads play over the Synth tab. A tap on bank E's row
+    /// opens the list for bank E alone while the pads are on bank A; a kit
+    /// tapped and kept comes back to the panel, its row names the kit and
+    /// the UNDO box the change. UNDO takes it back, and the box then names
+    /// the pick before it; Done closes the panel.
+    #[test]
+    fn the_pads_chip_opens_what_the_pads_play_and_undo_takes_a_pick_back() {
+        use mpfree_synth_ui::pad_map::{PadMapPanel, BANK, PANEL};
+        use mpfree_synth_ui::pick::{SynthList, PICK};
+        fn panel(s: &Session) -> PadMapPanel {
+            s.screen
+                .ui
+                .get::<PadMapPanel>(PANEL)
+                .cloned()
+                .expect("What the pads play")
+        }
+        fn tile(s: &Session, number: &str) -> String {
+            s.screen
+                .ui
+                .get::<SynthList>(PICK)
+                .and_then(|l| {
+                    l.kits
+                        .tiles
+                        .iter()
+                        .find(|t| t.name.starts_with(number))
+                        .map(|t| t.name.clone())
+                })
+                .expect("the kit's tile")
+        }
+        on_big_stack(|| {
+            let mut session = Session::new();
+            let s = &mut session;
+            s.make_sounds();
+            s.run_periods(2);
+            s.fill_kits(&[0, 1]);
+            // Kit 2 on the pads, from the list: the first step.
+            s.press("header", "tab", "Synth").settle();
+            s.press("synth-inst", "card", "").settle();
+            s.press("synth-pick", "side", "Kits").settle();
+            let two = tile(s, "2 · ");
+            let short = two.trim_start_matches("2 · ").to_string();
+            s.press("synth-pick", "kit", &two).run_periods(2).settle();
+            s.press("synth-pick", "keep", "").run_periods(2).settle();
+            assert_eq!(s.app.pads_kit(), Some(1));
+            // The chip on Play opens the panel over the Synth tab.
+            s.press("header", "tab", "Play").settle();
+            s.press("header", "chip", &format!("Pads: {short}"))
+                .run_periods(2)
+                .settle();
+            assert_eq!(s.page(), crate::gui::PAD_MAP_PAGE, "{}", s.page());
+            let p = panel(s);
+            assert_eq!(p.base.what, short);
+            assert_eq!(p.base.buttons, ["Follow track", "Pick"]);
+            assert_eq!(p.current, 0, "the pads are on bank A");
+            assert_eq!(p.last, Some(format!("the base got {short}")));
+            // Bank E's row: the list for bank E alone.
+            let row = s
+                .controls()
+                .into_iter()
+                .find(|o| o.widget == PANEL && o.target.id == "row" && o.target.index == BANK + 4)
+                .expect("bank E's row")
+                .target;
+            s.press_target(&row).settle();
+            assert!(
+                s.screen
+                    .ui
+                    .get::<SynthList>(PICK)
+                    .is_some_and(|l| l.bank == Some(('E', true))),
+                "the list is bank E's"
+            );
+            s.press("synth-pick", "side", "Kits").settle();
+            let one = tile(s, "1 · ");
+            let first = one.trim_start_matches("1 · ").to_string();
+            s.press("synth-pick", "kit", &one).run_periods(2).settle();
+            assert!(
+                s.app.pads_part().contains("\nbank E instrument "),
+                "{}",
+                s.app.pads_part()
+            );
+            assert_eq!(s.app.pads_kit(), Some(1), "bank A plays kit 2 still");
+            s.press("synth-pick", "keep", "").run_periods(2).settle();
+            assert_eq!(s.page(), crate::gui::PAD_MAP_PAGE, "back to the panel");
+            let p = panel(s);
+            assert_eq!(p.banks[4].what, first);
+            assert_eq!(p.banks[4].buttons, ["Follow base"]);
+            assert_eq!(p.last, Some(format!("bank E got {first}, from its bank A")));
+            // UNDO: bank E plays the base again, and the box names the
+            // pick before.
+            s.button("UNDO").run_periods(2).settle();
+            assert!(
+                !s.app.pads_part().contains("\nbank E "),
+                "{}",
+                s.app.pads_part()
+            );
+            let p = panel(s);
+            assert_eq!(p.banks[4].what, "The base");
+            assert_eq!(p.last, Some(format!("the base got {short}")));
+            assert_eq!(s.app.pads_kit(), Some(1), "the base keeps kit 2");
+            // Done closes it.
+            s.press(PANEL, "done", "Done").settle();
+            assert_eq!(s.page(), "Synth");
+            assert_eq!(s.track_kits.kit_of(0), Some(0), "no track changed");
+        });
+    }
+
+    /// Sampler step 15e's screens, board 4: bank D plays kit 2 from its
+    /// bank A. A hit there shows kit 2 on the Sample page, and its bar says
+    /// so ("<kit 2>, from pad D3") with the "Track 1's kit" chip, which
+    /// shows Track 1's kit again at the pad hit last there.
+    #[test]
+    fn the_sample_pages_bar_names_the_kit_a_hit_shows_and_gives_the_tracks_back() {
+        use mpfree_sampler_ui::wave_tab::BAR;
+        use mpfree_sampler_ui::widgets::PadBar;
+        fn bar(s: &Session) -> (Option<String>, Option<String>) {
+            s.screen
+                .ui
+                .get::<PadBar>(BAR)
+                .map(|b| (b.kit_note.clone(), b.track_kit.clone()))
+                .expect("the Sample page's bar")
+        }
+        fn hit(s: &mut Session, pad: usize) {
+            s.pad_edge(pad, 100, true);
+            s.run_periods(2);
+            s.pad_edge(pad, 0, false);
+            s.run_periods(2);
+            s.settle();
+        }
+        on_big_stack(|| {
+            let mut session = Session::new();
+            let s = &mut session;
+            s.make_sounds();
+            s.run_periods(2);
+            s.fill_kits(&[0, 1]);
+            s.press("header", "tab", "Sample").settle();
+            // Pads the kits play and the Sample page has a sound for.
+            let player = s.sounds.as_ref().expect("the kits");
+            let page = &s.screen.sample;
+            let both = |k: usize, p: usize| {
+                player.has_sound(k, p)
+                    && page
+                        .project(k)
+                        .and_then(|pr| pr.pad(p))
+                        .is_some_and(|pd| !pd.layers.is_empty())
+            };
+            let pad = (0..16)
+                .find(|&p| both(1, p))
+                .expect("a pad of kit 2's bank A");
+            // A pad of kit 1 hit first: the chip comes back to the pad it
+            // showed.
+            let first = (0..16)
+                .find(|&p| player.has_sound(0, p) && p != pad)
+                .expect("a pad of kit 1");
+            // (The test kit's pads play its keygroup: a hit shows that.)
+            hit(s, first);
+            assert_eq!(s.screen.sample.edit_kit(), 0);
+            let was = s.screen.sample.pad();
+            assert_eq!(bar(s), (None, None), "Track 1's own kit");
+            let kit_2 = s.instrument_list.of_kit(1).expect("kit 2 has an id");
+            let part = format!("mpfree-pads 2\nplay track\nbank D instrument {kit_2} from A\n");
+            let (notes, fx) = s.app.open_pads(Some(&part));
+            assert!(notes.is_empty(), "{notes:?}");
+            s.fx.extend(fx);
+            s.run_periods(2);
+            s.button("PAD BANK D/H");
+            s.run_periods(4);
+            hit(s, pad);
+            assert_eq!(s.screen.sample.edit_kit(), 1);
+            let name = s
+                .screen
+                .sample
+                .kit_name(1)
+                .filter(|n| !n.is_empty())
+                .map_or_else(|| "Kit 2".to_string(), str::to_string);
+            assert_eq!(
+                bar(s),
+                (
+                    Some(format!(
+                        "{name}, from pad {}",
+                        crate::app::kit_pad_name(48 + s.screen.sample.pad() % 16)
+                    )),
+                    Some("Track 1's kit".to_string())
+                )
+            );
+            // The chip: Track 1's kit again, at the pad hit last there.
+            s.press(BAR, "track-kit", "Track 1's kit").settle();
+            assert_eq!(
+                (s.screen.sample.edit_kit(), s.screen.sample.pad()),
+                (0, was)
+            );
+            assert_eq!(bar(s), (None, None));
+            assert!(
+                s.hint().starts_with("Track 1's kit, at pad "),
+                "{}",
+                s.hint()
+            );
+        });
+    }
+
     /// Sampler step 15e, the engine half: a bank's own kit from another of
     /// its banks plays that bank's pads. Bank D on kit 2 from A plays kit
     /// 2's A pads, on its own while the track plays kit 1, and the Sample
@@ -2149,6 +2667,94 @@ mod tests {
         });
     }
 
+    /// Sampler step 16: SHIFT + a touch on a pad's setting learns the kit
+    /// the Sample page shows by its number in the list, not the track; a
+    /// touch on a synth knob learns the instrument the Synth tab shows
+    /// (the shared synth here). The same touch again cancels.
+    #[test]
+    fn a_touch_learns_the_kit_and_the_synth_the_screen_shows() {
+        use crate::gui::{FromUi, LearnValue};
+        use mpfree_play::mpfree_param::{Owner, ParamAddr};
+        on_big_stack(|| {
+            let mut session = Session::new();
+            let s = &mut session;
+            s.make_sounds();
+            s.run_periods(2);
+            let kit_2 = s.instrument_list.of_kit(1).expect("kit 2 has an id");
+            let n = u16::try_from(kit_2.number()).unwrap();
+            assert_eq!(
+                s.track_kits.kit_of(s.app.track()),
+                Some(0),
+                "the track plays kit 1"
+            );
+            let pad = LearnValue::Pad {
+                kit: 1,
+                pad: 4,
+                field: 2,
+            };
+            s.route(FromUi::LearnValue(pad));
+            assert_eq!(
+                s.music.armed(),
+                Some(ParamAddr::new(Owner::KitPad(n, 4), 2))
+            );
+            s.route(FromUi::LearnValue(pad));
+            assert_eq!(s.music.armed(), None, "the same touch cancels");
+            s.route(FromUi::LearnValue(LearnValue::Synth(7)));
+            assert_eq!(
+                s.music.armed(),
+                Some(ParamAddr::new(Owner::Sound(1), 7)),
+                "the shared synth, instrument 1"
+            );
+        });
+    }
+
+    /// Sampler step 15d, part 2: a kit no track plays gets a strip of its
+    /// own. With kit 2 on the pads and no track playing it, it sounds on a
+    /// kit strip named for it, shown with the tracks, not on the pad
+    /// channels kit 1 has.
+    #[test]
+    fn the_pads_own_kit_sounds_on_a_kit_strip_of_its_own() {
+        use mpfree_fx::StripId;
+        on_big_stack(|| {
+            let mut session = Session::new();
+            let s = &mut session;
+            s.make_sounds();
+            s.run_periods(2);
+            assert_eq!(s.mix.kit_strips(), [None; crate::mixing::KIT_STRIPS]);
+            let kit_2 = s.instrument_list.of_kit(1).expect("kit 2 has an id");
+            let part = format!("mpfree-pads 2\nplay instrument {kit_2}\n");
+            let (notes, fx) = s.app.open_pads(Some(&part));
+            assert!(notes.is_empty(), "{notes:?}");
+            s.fx.extend(fx);
+            s.run_periods(4);
+            assert_eq!(s.app.pads_kit(), Some(1), "the pads play kit 2");
+            assert_eq!(s.mix.kit_strip(1), Some(0), "on the first kit strip");
+            assert_eq!(s.mix.kit_strip(0), None, "kit 1 keeps the pad channels");
+            let strip = StripId::Track(crate::mixing::kit_channel(0));
+            assert_eq!(s.mix.strip_name(strip), "Kit 2");
+            assert!(s.mix.track_strips().contains(&strip));
+            let player = s.sounds.as_ref().expect("the kits");
+            let pad = (0..16)
+                .find(|&p| player.has_sound(1, p))
+                .expect("a pad kit 2 fills");
+            let _ = s.mix.mixer.take_input_peaks(strip);
+            let _ = s.mix.mixer.take_input_peaks(StripId::Pad(pad));
+            s.pad_edge(pad, 100, true);
+            s.run_periods(4);
+            assert!(
+                s.mix.mixer.take_input_peaks(strip)[0] > 0.0,
+                "kit 2's pad is heard on its strip"
+            );
+            assert_eq!(
+                s.mix.mixer.take_input_peaks(StripId::Pad(pad)),
+                [0.0; 2],
+                "not on kit 1's pad channel"
+            );
+            s.pad_edge(pad, 0, false);
+            s.run_periods(2);
+        });
+    }
+
     /// Sampler step 15c: NOTE REPEAT while the pads play a kit on their
     /// own repeats that kit's pad (the pads' arp), never the track's, and
     /// the pads keep the kit; let go, the repeats stop. Held again, Follow
@@ -2221,6 +2827,83 @@ mod tests {
             s.pad_edge(pad, 0, false);
         });
     }
+    /// Phrases meet sampler step 15c: a phrase stays with its track.
+    /// Track 1 plays the synth with its arp on the Phrase tab while the
+    /// pads play kit 2 on their own. A pad held there plays kit 2's pad
+    /// once, as pressed: the pads' arp has the track's settings and no
+    /// phrase, and must never play the engine's stand-in for one (the held
+    /// note on every beat). NOTE REPEAT repeats the pad, as on a kit track
+    /// left on Phrase, and the track's own arp stays on its phrase.
+    #[test]
+    fn a_phrase_stays_with_its_track_while_the_pads_play_a_kit_on_their_own() {
+        use crate::PadsPreview;
+        use mpfree_arp::Mode;
+        use mpfree_arp_ui::view::ArpAction;
+        on_big_stack(|| {
+            let mut session = Session::new();
+            let s = &mut session;
+            s.make_sounds();
+            s.run_periods(2);
+            s.pick_synth();
+            let kit_2 = s.instrument_list.of_kit(1).expect("kit 2 has an id");
+            let part = format!("mpfree-pads 2\nplay instrument {kit_2}\n");
+            let (notes, fx) = s.app.open_pads(Some(&part));
+            assert!(notes.is_empty(), "{notes:?}");
+            s.fx.extend(fx);
+            s.run_periods(4);
+            assert_eq!(s.app.pads_kit(), Some(1), "the pads play kit 2");
+            let fx = s.app.toggle_panel();
+            s.fx.extend(fx);
+            let fx = s.app.arp_action(ArpAction::Mode(Mode::Phrase));
+            s.fx.extend(fx);
+            s.run_periods(4);
+            let track = |s: &Session| s.app.arps.engine_at(s.app.track()).settings().mode;
+            assert!(s.app.phrases_play(), "Track 1 plays the synth");
+            assert_eq!(track(s), Mode::Phrase, "the track's arp is on its phrase");
+            let player = s.sounds.as_ref().expect("the kits");
+            let pad = (0..16)
+                .find(|&p| player.has_sound(1, p))
+                .expect("a pad kit 2 fills");
+            // Held for two beats and more: once, as pressed.
+            s.arp_played.clear();
+            s.previewed.clear();
+            s.pad_edge(pad, 100, true);
+            s.run_periods(2);
+            let player = s.sounds.as_ref().expect("the kits");
+            assert!(player.kit_pad_voices(1, pad) > 0, "kit 2's pad plays");
+            s.run_for(1.5);
+            assert!(s.arp_played.is_empty(), "no phrase: {:?}", s.arp_played);
+            assert_eq!(s.previewed.len(), 1, "once: {:?}", s.previewed);
+            assert_eq!(s.pads_arp_sounding(), 0);
+            s.pad_edge(pad, 0, false);
+            s.run_periods(2);
+            // NOTE REPEAT: the pad repeats on kit 2, and the track keeps
+            // its phrase.
+            s.button_edge("NOTE REPEAT", true);
+            s.run_periods(2);
+            assert_eq!(track(s), Mode::Phrase);
+            assert_eq!(s.app.pads_own_mode(), Mode::Repeat);
+            s.pad_edge(pad, 100, true);
+            s.run_for(1.0);
+            let repeats = s
+                .arp_played
+                .iter()
+                .filter(|&&(to, n, _)| to == PadsPreview::Kit(1) && usize::from(n) == pad)
+                .count();
+            assert!(repeats >= 6, "kit 2's pad repeats: {:?}", s.arp_played);
+            assert_eq!(repeats, s.arp_played.len(), "nothing else plays");
+            s.pad_edge(pad, 0, false);
+            s.run_for(0.3);
+            let n = s.arp_played.len();
+            s.run_for(0.5);
+            assert_eq!(s.arp_played.len(), n, "let go: the repeats stop");
+            s.button_edge("NOTE REPEAT", false);
+            s.run_periods(2);
+            assert_eq!(track(s), Mode::Phrase, "the panel is still on Phrase");
+            assert_eq!(s.pads_arp_sounding(), 0);
+        });
+    }
+
     /// REC records what is heard (sampler step 15c's second part): every
     /// sound of the pad map on a track of its own, in one take. The pads
     /// play kit 2 on their own and bank B the synth, while Track 1 keeps

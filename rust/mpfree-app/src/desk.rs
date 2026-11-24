@@ -86,7 +86,44 @@ pub fn learn_addr(v: gui::LearnValue, t: u8) -> mpfree_play::mpfree_param::Param
         gui::LearnValue::Param(a) => a,
         gui::LearnValue::Synth(id) => ParamAddr::new(Owner::Inst(t), id),
         gui::LearnValue::Arp(id) => ParamAddr::new(Owner::Arp(t), id),
-        gui::LearnValue::Pad { pad, field } => ParamAddr::new(Owner::Pad(t, pad), field),
+        gui::LearnValue::Pad { pad, field, .. } => ParamAddr::new(Owner::Pad(t, pad), field),
+    }
+}
+
+/// The setting a SHIFT + touch names for MIDI Learn (sampler step 16): a
+/// knob on the Synth tab names the instrument the tab shows, and a pad's
+/// setting the kit the Sample or Pads tab shows, by its number in the
+/// project's list, so the control stays on it whichever track plays it.
+/// A list without the number falls back to the track ([`learn_addr`]).
+pub fn learn_addr_named(
+    v: gui::LearnValue,
+    t: u8,
+    listed: &crate::instrument_list::InstrumentList,
+    mix: &mixing::MixHost,
+    app: &app::App,
+) -> mpfree_play::mpfree_param::ParamAddr {
+    use crate::instrument_list::InstrumentId;
+    use mpfree_play::mpfree_param::{Owner, ParamAddr};
+    let number = |id: Option<InstrumentId>| id.and_then(|id| u16::try_from(id.number()).ok());
+    match v {
+        gui::LearnValue::Synth(id) => {
+            let h =
+                crate::instrument_track(&mix.instruments, crate::tab_who(app, &mix.instruments));
+            let shown = if mix.instruments.holds(h) {
+                listed.of_holder(h)
+            } else {
+                Some(InstrumentId::SHARED_SYNTH)
+            };
+            match number(shown) {
+                Some(n) => ParamAddr::new(Owner::Sound(n), id),
+                None => learn_addr(v, t),
+            }
+        }
+        gui::LearnValue::Pad { kit, pad, field } => match number(listed.of_kit(usize::from(kit))) {
+            Some(n) => ParamAddr::new(Owner::KitPad(n, pad), field),
+            None => learn_addr(v, t),
+        },
+        _ => learn_addr(v, t),
     }
 }
 
@@ -100,6 +137,9 @@ pub struct Desk<'a> {
     /// The audio tracks on the Song view's lanes.
     pub tracks: &'a mut audiotracks::TrackHost,
     pub music: &'a mut midi_in::MusicIn,
+    /// The project's list of instruments, for what MIDI Learn names a kit
+    /// or a synth by (sampler step 16).
+    pub listed: &'a crate::instrument_list::InstrumentList,
     /// The Level (the mixer's master fader), in dB, and its top.
     pub level_db: &'a mut f32,
     pub max_db: f32,
@@ -126,6 +166,7 @@ impl Desk<'_> {
             looper,
             tracks,
             music,
+            listed,
             level_db,
             max_db,
             ..
@@ -221,11 +262,15 @@ impl Desk<'_> {
             }
             // SHIFT + a touch on a value (layout spec 4d): MIDI Learn waits
             // for a control to take it, and the same value again cancels.
-            // A knob on the Synth tab is the selected track's synth's, an
-            // arp slider the armed track's arp's, and a pad's setting on
-            // the Sample or Pads tab the armed track's kit's.
+            // An arp slider is the armed track's arp's. A knob on the Synth
+            // tab names the instrument the tab shows, and a pad's setting
+            // on the Sample or Pads tab the kit they show, by its number in
+            // the project's list (sampler step 16), so the control stays on
+            // it whichever track plays it; only a list without the number
+            // falls back to the track, as before.
             gui::FromUi::LearnValue(v) => {
-                let addr = learn_addr(v, u8::try_from(app.track()).unwrap_or(u8::MAX));
+                let t = u8::try_from(app.track()).unwrap_or(u8::MAX);
+                let addr = learn_addr_named(v, t, listed, mix, app);
                 if music.armed() == Some(addr) && music.waits() {
                     music.disarm();
                 } else {
@@ -338,6 +383,7 @@ impl Desk<'_> {
             gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),
             gui::FromUi::GuideButton(k) => fx.extend(app.guide_button(k)),
             gui::FromUi::HelpButton(k) => fx.extend(app.help_button(k)),
+            gui::FromUi::KitTuning { kit, delta } => fx.extend(app.step_kit_tuning(kit, delta)),
             gui::FromUi::Arp(a) => fx.extend(app.arp_action(a)),
             gui::FromUi::Workspace(a) => fx.extend(app.workspace_action(*a)),
             gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
@@ -387,6 +433,21 @@ impl Desk<'_> {
                     let loops = |t: usize| time.project().tracks.get(t).is_some_and(|t| t.is_loops());
                     if from.0 != to.0 && loops(from.0) && loops(to.0) {
                         fx.extend(copy_loop_cell(time, looper, out, from, to));
+                        return None;
+                    }
+                    // An audio track's loop cell (Dev's switch, phase 4b):
+                    // onto another audio track, a new loop.
+                    let loop_id = time
+                        .project()
+                        .clip(from.0, from.1)
+                        .and_then(|c| c.loop_id());
+                    let audio = |t: usize| time.project().tracks.get(t).is_some_and(|t| t.is_audio());
+                    if let Some(id) = loop_id.filter(|_| {
+                        app.settings.loops_on && from.0 != to.0 && audio(to.0)
+                    }) {
+                        fx.extend(copy_audio_loop_cell(
+                            time, tracks, looper, out, from, to, id,
+                        ));
                         return None;
                     }
                 }
@@ -679,11 +740,20 @@ impl Desk<'_> {
             gui::FromUi::SynthPickClose(keep) => fx.extend(app.close_synth_pick(keep)),
             gui::FromUi::SynthPickScope(only) => fx.extend(app.synth_pick_scope(only)),
             gui::FromUi::SynthPickLayer(on) => fx.extend(app.synth_pick_layer(on)),
+            gui::FromUi::SynthPickSide(kits) => fx.extend(app.synth_pick_side(kits)),
+            gui::FromUi::SynthPickKit {
+                kit,
+                name,
+                empty,
+                banks,
+            } => fx.extend(app.pick_pads_kit(kit, &name, empty, banks)),
+            gui::FromUi::SynthPickFrom(from) => fx.extend(app.pick_kit_from(from)),
+            gui::FromUi::PadMapOpen => fx.extend(app.open_pad_map()),
+            gui::FromUi::PadMapTap { row, act } => fx.extend(app.pad_map_tap(row, act)),
             // The Synth tab's button: the synth on the pads whichever track
             // is selected, or Follow track (app/pads_focus.rs).
             gui::FromUi::PlayOnPads => fx.extend(app.toggle_pads_synth()),
             // The "Pads: Poly" chip: Follow track.
-            gui::FromUi::FollowTrack => fx.extend(app.pads_follow_track()),
             // The audio loop's own: named one by one, so a new action has
             // to be given a home here or there.
             a @ (gui::FromUi::Pad { .. }
@@ -715,6 +785,9 @@ impl Desk<'_> {
             | gui::FromUi::SampleGrains(_)
             | gui::FromUi::SaveProject
             | gui::FromUi::OpenProject(_)
+            // The song's patches and the patch picked: MIDI in's.
+            | gui::FromUi::Patches(_)
+            | gui::FromUi::PickPatch(_)
             | gui::FromUi::SongEnd(_)
             | gui::FromUi::SongEndReset
             | gui::FromUi::OpenLoops(_)
@@ -768,6 +841,7 @@ impl Desk<'_> {
             app::Effect::Mixer(v) => mix.show(v),
             // The list of synths over the Synth tab (app/synth_pick.rs).
             app::Effect::SynthPick(v) => out.show(gui::ToUi::SynthPick(v.map(Box::new))),
+            app::Effect::PadMap(v) => out.show(gui::ToUi::PadMap(v.map(Box::new))),
             app::Effect::MixerLast => mix.show(Some(mix.last())),
             app::Effect::MixerFaders => out.show(gui::ToUi::MixerFaders),
             // The wheel on the mixer: Q-Link 1 on a strips view, the
@@ -892,6 +966,7 @@ impl Desk<'_> {
             app::Effect::ClearLogs => out.show(gui::ToUi::ClearLogs),
             app::Effect::ClearConsole => out.show(gui::ToUi::ClearConsole),
             app::Effect::TouchLab => out.show(gui::ToUi::TouchLab),
+            app::Effect::PatchList => out.show(gui::ToUi::PatchList),
             app::Effect::SetMenu(m) => out.show(gui::ToUi::SetMenu(m)),
             app::Effect::ShowKey(k) => out.show(gui::ToUi::ShowKey(k)),
             app::Effect::CalibrateTouch => out.show(gui::ToUi::CalibrateTouch),
@@ -899,6 +974,7 @@ impl Desk<'_> {
             app::Effect::TouchStep(d) => out.show(gui::ToUi::TouchStep(d)),
             app::Effect::Arp(v) => out.show(gui::ToUi::Arp(Box::new(v))),
             app::Effect::Patterns(list) => out.show(gui::ToUi::Patterns(list)),
+            app::Effect::Phrases(list) => out.show(gui::ToUi::Phrases(list)),
             app::Effect::Workspace(w) => out.show(gui::ToUi::Workspace(Box::new(w))),
             app::Effect::Recorded(p, next) => out.show(gui::ToUi::Recorded(Box::new(p), next)),
             app::Effect::WorkspaceWheel(d) => out.show(gui::ToUi::WorkspaceWheel(d)),
@@ -985,6 +1061,7 @@ impl Desk<'_> {
             | app::Effect::Bank { .. }
             | app::Effect::BankLights
             | app::Effect::SavePatterns(_)
+            | app::Effect::SavePhrases(_)
             | app::Effect::SetupNextStart { .. }) => return Some(e),
         }
         None
@@ -1907,7 +1984,11 @@ fn arm_loop_cell(
     use crate::rec_arm::{Mover, Target};
     let n = match looper.free_loop() {
         Ok(n) => n,
-        Err(why) => return vec![app::Effect::Tell(why)],
+        Err(why) => {
+            return vec![app::Effect::Tell(
+                full_words(time, looper, t).unwrap_or(why),
+            )]
+        }
     };
     let now = rec_now(time, looper);
     let was = app.rec;
@@ -1928,20 +2009,30 @@ fn arm_loop_cell(
         mpfree_time_ui::TimeAction::LoopCell(Some((t, s))),
     );
     out.show(gui::ToUi::Rec(app.rec));
-    let input = time
-        .project()
-        .tracks
-        .get(t)
-        .and_then(|tr| tr.loops())
-        .unwrap_or_default();
     // On the song's clock whatever Sync says: a free loop has no cell.
     fx.push(app::Effect::Looper(looping::LoopAction::SelectForCell(n)));
-    fx.extend(app.loop_input(input));
+    // An audio track's cell (Dev's switch, phase 4b) records the track's
+    // own input; a Loop track's, its Loop input.
+    let from = match tracks.loop_input(t, mix) {
+        Some(input) => {
+            fx.extend(app.loop_track_input(input));
+            looping::source_words(looping::LoopSource::Track(input), None)
+        }
+        None => {
+            let input = time
+                .project()
+                .tracks
+                .get(t)
+                .and_then(|tr| tr.loops())
+                .unwrap_or_default();
+            fx.extend(app.loop_input(input));
+            input.name().to_lowercase()
+        }
+    };
     fx.extend(rec_effects(done, time, looper));
     if let Some(name) = mpfree_time_ui::view::loop_cell_name(&time.state()) {
         fx.push(app::Effect::Tell(format!(
-            "REC \u{2192} {name}: REC records a loop there, from {}",
-            input.name().to_lowercase()
+            "REC \u{2192} {name}: REC records a loop there, from {from}"
         )));
     }
     fx
@@ -1962,6 +2053,47 @@ fn cell_lets_go(time: &time::TimeHost, a: looping::LoopAction) -> Vec<app::Effec
         app::Effect::Time(mpfree_time_ui::TimeAction::LoopCell(None)),
         app::Effect::Tell(format!("{name} let go: a free loop has no cell")),
     ]
+}
+
+/// Every loop in use, an audio track's empty cell tapped (Dev's "Loops on
+/// audio tracks", phase 4, board 3): the REC chip's refusal and the cells
+/// holding the loops, "REC: 8 loops · clear one (Vocal · row 2, Bass ·
+/// row 1, …)". None for a Loop track's cell, or while a loop is free.
+fn full_words(time: &time::TimeHost, looper: &looping::LoopHost, t: usize) -> Option<String> {
+    use mpfree_looper::Phase;
+    let p = time.project();
+    if !p.tracks.get(t)?.is_audio() {
+        return None;
+    }
+    let full = (0..mpfree_looper::MAX_LOOPS).all(|n| {
+        looper
+            .looper
+            .loop_status(n)
+            .is_some_and(|s| s.phase != Phase::Empty)
+    });
+    if !full {
+        return None;
+    }
+    let row = |s: usize| match p.scenes.get(s).filter(|sc| !sc.name.is_empty()) {
+        Some(sc) => sc.name.clone(),
+        None => format!("row {}", s + 1),
+    };
+    let places: Vec<String> = looper
+        .loop_ids()
+        .iter()
+        .filter(|&&id| id != 0)
+        .filter_map(|&id| mpfree_seq::loops::audio_cells(p, mpfree_seq::LoopId(id)).next())
+        .map(|(tr, s)| format!("{} · {}", p.tracks[tr].name, row(s)))
+        .collect();
+    let cells = if places.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", places.join(", "))
+    };
+    Some(format!(
+        "REC: {} loops \u{b7} clear one{cells}",
+        mpfree_looper::MAX_LOOPS
+    ))
 }
 
 /// SHIFT + a loop's cell dropped on an empty cell of another Loop track
@@ -1994,6 +2126,7 @@ fn copy_loop_cell(
         from,
         to,
         into: m as u8,
+        id: 0,
     }) {
         Ok(line) => line,
         Err(why) => return tell(why),
@@ -2005,6 +2138,56 @@ fn copy_loop_cell(
             return tell(why);
         }
     }
+    tell(said)
+}
+
+/// SHIFT + an audio track's loop cell dropped on an empty cell of
+/// another audio track (Dev's "Loops on audio tracks", phase 4b): a copy
+/// is a new loop, so an empty loop takes a new lasting id, the cell there
+/// names it, and the looper copies the layers into it, silent until the
+/// cell is launched. Says why not, and takes the id back.
+fn copy_audio_loop_cell(
+    time: &mut time::TimeHost,
+    tracks: &mut audiotracks::TrackHost,
+    looper: &mut looping::LoopHost,
+    out: &mut Out,
+    from: (usize, usize),
+    to: (usize, usize),
+    id: mpfree_seq::LoopId,
+) -> Vec<app::Effect> {
+    use mpfree_time_ui::TimeAction::{LoopCopy, LoopCopyOff};
+    let tell = |s: String| vec![app::Effect::Tell(s)];
+    let Some(n) = looper.slot_of(id.0) else {
+        return tell("clips: that loop isn't in memory to copy".to_string());
+    };
+    let m = match looper.free_loop() {
+        Ok(m) => m,
+        Err(why) => return tell(why),
+    };
+    let new = tracks.fresh_loop_id();
+    let was = looper.loop_ids()[m];
+    looper.set_loop_id(m, new);
+    let said = match time.act(LoopCopy {
+        from,
+        to,
+        into: m as u8,
+        id: new,
+    }) {
+        Ok(line) => line,
+        Err(why) => {
+            looper.set_loop_id(m, was);
+            return tell(why);
+        }
+    };
+    match looper.copy_loop(n, m) {
+        Ok(line) => out.note(&line),
+        Err(why) => {
+            let _ = time.act(LoopCopyOff(m as u8));
+            looper.set_loop_id(m, was);
+            return tell(why);
+        }
+    }
+    looper.look_again();
     tell(said)
 }
 
@@ -2177,6 +2360,30 @@ pub fn remote_in(
         fx.extend(a.map(app::Effect::Time));
     }
     fx
+}
+
+/// Next patch (`d` 1) or Previous patch (-1) from a learned control (the
+/// Learn section's Play card, live shows C1), at once or when every key
+/// and pedal is up. None when it picked one (KEYS PLAY shows it); else
+/// why it didn't, for the hint line.
+pub fn step_patch(music: &mut crate::midi_in::MusicIn, d: i32, hands_up: bool) -> Option<String> {
+    use mpfree_patch::keys::When;
+    let when = if hands_up { When::HandsUp } else { When::Now };
+    let (playing, waiting, _) = music.keys_at();
+    if music.step_patch(d, when).is_some() {
+        return None;
+    }
+    let what = if d > 0 {
+        "Next patch"
+    } else {
+        "Previous patch"
+    };
+    Some(match waiting.unwrap_or(playing) {
+        _ if music.patch_count() == 0 => format!("{what}: this song has no patches yet"),
+        None => format!("{what}: the keys play as routed, and Next patch picks patch 1"),
+        Some(i) if d > 0 => format!("{what}: patch {} is the song's last", i + 1),
+        Some(_) => format!("{what}: patch 1 is the song's first"),
+    })
 }
 
 /// Where other gear's MMC Locate goes (the Sync section's MMC in): the

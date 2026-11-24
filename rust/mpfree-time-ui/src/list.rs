@@ -137,6 +137,9 @@ pub struct SongListView {
     /// The last conversion's report card, open over the list (the
     /// Arrange refactor's 4.3): it takes the list's touches and targets.
     pub report: Option<ReportCard>,
+    /// The scene card, open over the list (the Arrange refactor's 5.2):
+    /// a held step's scene. It takes the list's touches while it is.
+    pub scene_card: Option<crate::scene_card::SceneCard>,
     /// The first step in view, and the pick it last followed.
     top: Cell<usize>,
     followed: Cell<Option<Option<usize>>>,
@@ -167,6 +170,20 @@ struct Geo {
 impl SongListView {
     pub fn new() -> SongListView {
         SongListView::default()
+    }
+
+    /// The step whose grip (its number) a finger holds still, for the
+    /// app's hold that opens its scene's card.
+    pub fn held_number(&self) -> Option<usize> {
+        self.grab.filter(|g| g.grip && !g.dragging).map(|g| g.step)
+    }
+
+    /// The hold on a step's number opened its scene's card: the finger's
+    /// lift picks and moves nothing.
+    pub fn let_go_of_step(&mut self) {
+        if self.held_number().is_some() {
+            self.grab = None;
+        }
     }
 
     fn geo(r: Rect) -> Geo {
@@ -625,10 +642,16 @@ impl Widget for SongListView {
         if let Some(card) = &self.report {
             card.paint(cx, r);
         }
+        if let Some(card) = &self.scene_card {
+            card.paint(cx, r);
+        }
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
         if let Some(card) = &self.report {
+            return card.targets(r);
+        }
+        if let Some(card) = &self.scene_card {
             return card.targets(r);
         }
         let link = self.link_rect(r);
@@ -718,6 +741,10 @@ impl Widget for SongListView {
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if let Some(card) = self.report.as_mut() {
             return card.touch(finger, phase, x, y, r);
+        }
+        if let Some(card) = self.scene_card.as_mut() {
+            self.grab = None;
+            return card.touch(phase, x, y, r);
         }
         // Link's chooser open: a choice, Link again, or a touch anywhere
         // else closes it (and does nothing else).

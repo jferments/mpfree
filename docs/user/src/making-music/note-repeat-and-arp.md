@@ -6,9 +6,9 @@ checked: 2026-11-19 a6fb29b2
 
 # Note Repeat, Latch and the arpeggiator
 
-Hold **NOTE REPEAT** and a pad you hold plays again and again, exactly in time: hi-hat rolls, snare fills, rapid-fire chops. Latch keeps it going after you let go, so your hands are free. And the same engine turns held notes into arpeggios and rhythmic patterns, which is how a single held chord becomes a moving synth line.
+Hold **NOTE REPEAT** and a pad you hold plays again and again, exactly in time: hi-hat rolls, snare fills, rapid-fire chops. Latch keeps it going after you let go, so your hands are free. And the same engine turns held notes into arpeggios and rhythmic patterns, which is how a single held chord becomes a moving synth line. On a synth it plays **phrases** too: a whole bass line or riff from one held note.
 
-All of this works on drum kits and on the synth alike. Everything it plays is in time with the transport, and when the transport is stopped it keeps its own time at the current tempo.
+Note Repeat, Latch, the arp and patterns work on drum kits and on the synth alike; phrases move notes, so they play on synth tracks. Everything it plays is in time with the transport, and when the transport is stopped it keeps its own time at the current tempo.
 
 ## Note Repeat
 
@@ -22,8 +22,8 @@ While NOTE REPEAT is held, a slim **quick band** appears on the Play page, betwe
 | Control | While NOTE REPEAT is held |
 |---|---|
 | Data wheel | The rate: 1/4, 1/8, 1/8T, 1/16, 1/16T, 1/32 or 1/32T (T is a triplet) |
-| **–** and **+** | The mode: Repeat, Arp or Pattern (see below) |
-| Q-Link 1 | Rate |
+| **–** and **+** | The mode: Repeat, Arp or Pattern, and on a synth track Phrase (see below) |
+| Q-Link 1 | Rate (while a phrase plays, its speed) |
 | Q-Link 2 | Gate: how long each repeat sounds, as a share of the step |
 | Q-Link 3 | Swing |
 | Q-Link 4 | Octaves: how many octaves an arpeggio climbs |
@@ -44,7 +44,7 @@ What a new pad press does while Latch is on is a setting in [Prefs](../reference
 
 ### Latching with the sustain pedal
 
-With a keyboard's sustain pedal plugged in, turn on **Sustain pedal latches** (in [Prefs](../reference/prefs.md), or in the arp's options below) and the pedal works Latch while the arp plays (Repeat, Arp or Pattern): hold the pedal down and what you play keeps going after you let go; lift it and the notes you aren't holding stop. While it latches the arp, the pedal doesn't hold the sound's notes. With the arp on Direct, the pedal sustains the sound as it always does.
+With a keyboard's sustain pedal plugged in, turn on **Sustain pedal latches** (in [Prefs](../reference/prefs.md), or in the arp's options below) and the pedal works Latch while the arp plays (Repeat, Arp, Pattern or Phrase): hold the pedal down and what you play keeps going after you let go; lift it and the notes you aren't holding stop. While it latches the arp, the pedal doesn't hold the sound's notes. With the arp on Direct, the pedal sustains the sound as it always does.
 
 A latched pad repeats at the velocity you struck it with, not at the pressure of your finger as it lifted.
 
@@ -62,6 +62,7 @@ Note Repeat, Latch and the arpeggiator play whatever the pads play, and turning 
 - **On a synth** the arp plays the notes of the pads you hold, chords too, as the synth's pad layout has them.
 - **On a kit** it plays the kit's pads on the bank the pads are on.
 - **When the pads move to something else** (Follow track, another bank with its own pick, another synth or kit), what the arp was playing there stops, latched notes too. Play again to start it on what the pads play now.
+- **A phrase stays with its track.** A [phrase](#phrases) moves the notes of the selected track's synth, so the synth or kit the pads play on their own never plays one: with the Arp panel on Phrase the pads play it as pressed, and NOTE REPEAT and Latch repeat it.
 - **Layers** play each hit once, as you press it; the repeats play the pads' first sound.
 - **Recording:** REC records the synth or kit on a free track as usual (see [Synths](synths.md)), and the arp's notes record as you hear them. Once that track is selected the pads play through it and its arp. While the pads play a bank's own synth or kit, the arp's notes go into that sound's own track (see [Recording every bank](synths.md#recording-every-bank)).
 
@@ -71,7 +72,7 @@ The **Arp panel** opens on the Play page, in place of the loops, the rows and th
 
 {{shot: arp-panel | The Arp panel in Arp mode: the order (Up), the four Q-Link settings as sliders, and the notes being played along the bottom, here 1-3-5 and the same an octave up.}}
 
-The four tabs along the top are the four **modes**:
+The five tabs along the top are the five **modes**:
 
 | Mode | What the pads do |
 |---|---|
@@ -79,8 +80,9 @@ The four tabs along the top are the four **modes**:
 | **Repeat** | Each held pad repeats at the rate (this is Note Repeat). |
 | **Arp** | The held notes play one after another, in an order, over the octaves you set. |
 | **Pattern** | The held notes follow a rhythmic pattern of steps, with rests, ties, accents and octave jumps. |
+| **Phrase** | One held note plays a whole phrase: a bass line, a riff, chords or an arp line. On synth tracks (see [Phrases](#phrases)). |
 
-Along the bottom of the panel, the notes the arp is about to play light up in turn, with their octave.
+Along the bottom of the panel, the notes the arp is about to play light up in turn, with their octave. (The Phrase tab draws its phrase's notes in a picture of their own.)
 
 To turn rate, gate, swing or octaves from a knob on your keyboard or controller, hold **SHIFT**, touch the slider, then move the knob (see [MIDI Learn](midi-and-cv.md#midi-learn)). The same works on the Q-Link cards while NOTE REPEAT is held or latched.
 
@@ -102,20 +104,26 @@ In Arp mode the data wheel picks the **order** the held notes play in, from elev
 
 ### Patterns
 
-In Pattern mode the wheel picks a **pattern**. MPFree comes with ten:
+In Pattern mode the list holds MPFree's **74 patterns**, in nine groups, and yours after them. The groups are tabs along the top of the list: tap one and its first pattern plays. The wheel picks a pattern, and **SHIFT + wheel** jumps to the next group (or back to the start of this one, then the one before).
 
-| Pattern | Feel |
+{{shot: arp-pattern-rolls | The Rolls group, with Snare build picked: each row shows the rhythm of its first bar, and its steps as text at the right.}}
+
+Each row has a picture of the pattern's first bar, so you can see its rhythm before you hear it: a block for each hit, a tall orange block for an accent, thin bars for a roll (several hits in one step), three small blocks for the whole chord at once, a faint block for a step that plays only sometimes, a bar for a tie and a dot for a rest. Patterns longer than a bar say how many steps they have.
+
+| Group | What's in it |
 |---|---|
-| Straight | Every step, the held notes in turn |
-| Gallop | Two hits, a rest, a hit |
-| Bounce | First, third, second, third note |
-| Climb | Three notes, then the same an octave up and two up |
-| Pulse | Accents and soft notes in a pumping pulse |
-| Stabs | Chord stabs with rests between |
-| Rolls | Single hits, then quick rolls of two and three |
-| Drift | Loose: random notes, chance steps and ties |
-| Three over four | A three-note octave figure across a four-step bar, with its own accents |
-| Climbing line | One held note becomes a scale line going up and back |
+| Starters | The first ten: straight steps, a gallop, bounces, climbs, stabs and rolls |
+| Chords | The whole chord in rhythm: offbeats, two and four, tresillo, clave, Charleston, two-step, long chords, a funk comp |
+| Gates | The chord chopped and pumped: a trance gate, a sidechain-style pump, stutters, swells |
+| Rolls | Rolls for hats and snares: trap hats, a snare build, triplet rolls, a four-bar fill |
+| Riffs | The low note does the work: gallops, chugs, palm mutes, a breakdown, tremolo |
+| Lines | Melodic shapes over the chord: spirals, octave leaps, a waterfall, a pentatonic run |
+| Bass | Bass lines from the lowest note: disco octaves, rolling, acid, sub, walking |
+| Polymeter | Lanes and lengths that loop against the bar: five over four, Euclidean rhythms, dotted eighths |
+| Chance | Never quite the same bar twice: sparse hits, ghost notes, random notes and rolls |
+| My patterns | Yours: patterns from your patterns file that aren't MPFree's (a pattern you save in the workspace keeps its place in its group) |
+
+Every pattern plays the notes you hold, so it follows your chord. [Arp patterns](../reference/arp-patterns.md) lists all 74 and what each one plays.
 
 Under the list, four buttons work on the pattern:
 
@@ -123,6 +131,63 @@ Under the list, four buttons work on the pattern:
 - **Record on pads** opens the workspace and records a new pattern from the pads.
 - **Mutate** changes some of the pattern's steps at random. Press it again for more.
 - **Original** puts back the pattern as it was in the list.
+
+### Phrases
+
+A **phrase** is a short piece of music, a bar or two long, that plays from the note you hold: a bass line, a riff, a run of chords or an arp line, with its own rhythm, long and short notes and accents. Hold one pad on a synth track and the whole phrase plays from that pad's note, round and round. Hold another pad and it carries on from there, without losing its place. It is the quickest way from one finger to a part that sounds written.
+
+{{shot: arp-phrase | The Phrase tab: the kinds of phrase on the left, the basses in the middle with Night drive picked, and on the right its notes over two bars with a line where it is playing, what it follows, and the four Q-Link settings.}}
+
+MPFree comes with 64 phrases of its own, 16 of each kind: **Bass**, **Riff**, **Chords** and **Arp lines**. **Yours** is for phrases of your own. It is empty until you have one, and making them on the screen comes next.
+
+1. Open the Arp panel on a synth track and tap **Phrase**.
+2. Tap a kind on the left, then a phrase in the list, or turn the data wheel.
+3. Hold a pad. Latch keeps the phrase going, as it does the arp.
+
+| Control | On the Phrase tab |
+|---|---|
+| Data wheel | The phrase, up and down the kind that shows |
+| **–** and **+** | The kind. **–** on the first kind goes back to the Pattern tab |
+| Q-Link 1 | **Speed**: half, as written or double |
+| Q-Link 2 | **Gate**: shorter or longer notes. Halfway plays them as written |
+| Q-Link 3 | **Swing** |
+| Q-Link 4 | **Octaves**: with 2 or more, each time through plays an octave higher than the last, then it starts from the bottom again |
+
+Tapping a kind, or stepping to it with **–** and **+**, also picks a phrase of that kind: the one you last played there, or its first. So the row lit in the list is always the phrase a held pad plays, and stepping through the kinds is a quick way to hear one of each.
+
+In the list, each phrase shows its length and its notes drawn small. The phrases that suit the key you are in come first. One written for the other kind of scale (a major phrase while you play in minor) comes after them, faint, and says which scale it was written in. It still plays, moved onto your key.
+
+**Follows**, under the phrase's picture, sets how the phrase finds its notes:
+
+- **In key** moves the phrase onto a scale, so every note belongs. It follows the arp's own **Scale** if you set one (see [Arp options](#arp-options)), otherwise the scale the pads play; the key is named beside the switch. With no scale anywhere it plays by semitones, as Exact does.
+- **Exact** plays the phrase's notes as written, counted in semitones from the note you hold, whatever the key.
+
+A phrase written in triplets is never swung: its Swing slider goes faint and reads "straight". Gate, Swing and Octaves learn a knob as on the other tabs; **Speed** can't learn one yet. The same goes for the [XY pad](xy-layouts.md#the-arp-on-the-pad): a layout of yours can hold a phrase's Gate, Swing and Octaves, but not its Speed yet. A layout that holds the arp's Rate plays a phrase faster or slower while your finger is down, and the phrase goes back to its own speed when you lift, even with Let go: Stay.
+
+#### Changing phrase while one plays
+
+{{shot: arp-phrase-next-bar | A phrase picked while another plays, with the transport running: Dub steps waits in amber and comes in on the next bar line; Night drive, in green, plays until then.}}
+
+While the transport plays, a phrase you pick waits for the next bar line of the one playing and comes in there, so the change always lands in time. Until then its row is outlined in amber ("next bar"), the phrase still playing is marked in green ("playing"), and the arp chip in the top bar keeps naming the one you hear. Pick again before the bar line and the new pick waits in its place; pick the one that is playing and nothing changes at all.
+
+With the transport stopped there are no bars to keep, so a pick comes in on the phrase's next step: turning the wheel through a list is quick to hear.
+
+#### On a kit track
+
+{{shot: arp-phrase-kit | The Phrase tab on a kit track: it says the track's instrument is a kit, where the list would be.}}
+
+A kit's pads are different sounds, not notes, so there is nothing for a phrase to move: on a kit track the Phrase tab says so, and the pads play as pressed. NOTE REPEAT still repeats them, even if you left the panel on Phrase, and its **–** and **+** step Repeat, Arp and Pattern there.
+
+A synth or kit you have chosen for the pads while the track plays something else plays as pressed too: see [When the pads play something of their own](#when-the-pads-play-something-of-their-own).
+
+#### On the quick band
+
+{{shot: arp-quick-band-phrase | Holding NOTE REPEAT on a synth track with the mode on Phrase: the band names the phrase, and its – and + step the speed (1× here).}}
+
+Hold NOTE REPEAT on a synth track and press **+** until the band reads Phrase. The band names the phrase, its own **–** and **+** buttons step the speed (½×, 1×, 2×), and the data wheel moves through the phrases of the same kind. To change the kind, open the panel.
+
+> [!TIP]
+> Latch a bass phrase, then play single pads with one finger: the line follows you from note to note, and a new phrase picked on the panel drops in on the bar.
 
 ## Arp options
 
@@ -212,4 +277,4 @@ Drag a cell up or down, or select it and turn the data wheel, to change it. **Ro
 > Saved patterns are kept on the MPFree stick, so they are still there after you switch off. Each track's arp, with its pattern as you left it, is saved in your project too, and comes back when you open it. See [Saving your work](saving.md).
 
 > [!MPC]
-> On the MPC, Note Repeat and the arpeggiator share one window: hold **NOTE REPEAT**, tap **Arp**, and pick its Action (Arp, Note Repeat, Rhythm or Pattern). In MPFree NOTE REPEAT's – and + switch between repeat, arp and pattern while you play, and the Arp panel takes the middle of the Play page while the transport bar, the master bar and the Q-Links stay on screen. Latch is a double press of NOTE REPEAT. The MPC's arpeggiator modifiers let several controllers push it at once; MPFree's Modifier takes one controller per track, can push the other way too (slower, fewer octaves, shorter notes), and adds rolls and accents. The MPC's Rhythm and Pattern actions play patterns from its own lists; MPFree's patterns are your own, written step by step or tapped in, with ratchets, chance, ties and octave jumps.
+> On the MPC, Note Repeat and the arpeggiator share one window: hold **NOTE REPEAT**, tap **Arp**, and pick its Action (Arp, Note Repeat, Rhythm or Pattern). In MPFree NOTE REPEAT's – and + switch between repeat, arp and pattern (and on a synth track phrase) while you play, and the Arp panel takes the middle of the Play page while the transport bar, the master bar and the Q-Links stay on screen. Latch is a double press of NOTE REPEAT. The MPC's arpeggiator modifiers let several controllers push it at once; MPFree's Modifier takes one controller per track, can push the other way too (slower, fewer octaves, shorter notes), and adds rolls and accents. The MPC's Rhythm action plays the held chord in a rhythm from its list; MPFree's Chords and Gates groups do the same, and every one of its 74 patterns follows the notes you hold. You can also write your own step by step or tap them in, with ratchets, chance, ties and octave jumps.

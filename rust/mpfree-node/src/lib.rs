@@ -442,6 +442,14 @@ pub trait Node: Send {
     fn set_tuning(&mut self, tuning: &Tuning) {
         let _ = tuning;
     }
+    /// Whether [`Node::set_tuning`] moves its notes. False for an
+    /// instrument that plays 12-TET at A4 = 440 Hz whatever it is handed (a
+    /// plugin that takes only MIDI notes), so the host can say so: a
+    /// fallback is shown, never silent. The default, true, also covers
+    /// nodes without notes and those that pitch each pad their own way.
+    fn follows_tuning(&self) -> bool {
+        true
+    }
     /// Whether the node can run with its input `frames` late and its output
     /// still on time ("lead"): true when every part of its output comes at
     /// least that long after the input that made it (a reverb's pre-delay)

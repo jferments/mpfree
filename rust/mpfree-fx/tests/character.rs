@@ -3,7 +3,8 @@
 //! ones; Tape lifts its head bump and loses a little top; Soften takes the
 //! edge off loud highs and leaves quiet ones and lows alone; Mix 0 is the
 //! input (late, through an all-pass) and Output scales; a change of mode
-//! does not click.
+//! does not click, and one out of Iron (which runs at the base rate) fades
+//! as if the half-bands had kept running.
 
 use std::f32::consts::PI;
 
@@ -30,9 +31,19 @@ fn sine(hz: f32, amp: f32, frames: usize) -> Vec<f32> {
 }
 
 fn run(c: &mut Character, l: &mut [f32], r: &mut [f32], events: &[(usize, u16, f32)]) {
+    run_in(c, l, r, events, 128);
+}
+
+fn run_in(
+    c: &mut Character,
+    l: &mut [f32],
+    r: &mut [f32],
+    events: &[(usize, u16, f32)],
+    block: usize,
+) {
     let mut at = 0;
     while at < l.len() {
-        let len = 128.min(l.len() - at);
+        let len = block.min(l.len() - at);
         let ev: Vec<Timed> = events
             .iter()
             .filter(|(f, _, _)| (at..at + len).contains(f))
@@ -214,4 +225,41 @@ fn a_change_of_mode_crossfades_without_a_click() {
         .fold(0.0f32, f32::max);
     println!("worst step {worst:.4}, the sine's steepest {steep:.4}");
     assert!(worst < 2.0 * steep, "worst step {worst}");
+}
+
+#[test]
+fn leaving_iron_fades_as_if_the_half_bands_had_kept_running() {
+    // Iron runs at the base rate, and the half-bands the other modes use
+    // sit still meanwhile. A change to Console brings them back from the
+    // last frames of input, so its fade is Console's and Iron's own sounds
+    // crossfaded, the same in any block size.
+    let n = RATE as usize / 2;
+    let x: Vec<f32> = sine(110.0, 0.5, n)
+        .iter()
+        .zip(sine(2750.0, 0.3, n))
+        .map(|(a, b)| a + b)
+        .collect();
+    let at = RATE as usize / 4 + 37;
+    let fade = (RATE / 100) as usize;
+    let alone = |mode: f32| {
+        let mut c = character(&[(MODE, mode), (AMOUNT, 100.0)]);
+        let (mut l, mut r) = (x.clone(), x.clone());
+        run(&mut c, &mut l, &mut r, &[]);
+        l
+    };
+    let (iron, console) = (alone(IRON), alone(CONSOLE));
+    for block in [1, 7, 128, MAX_BLOCK] {
+        let mut c = character(&[(MODE, IRON), (AMOUNT, 100.0)]);
+        let (mut l, mut r) = (x.clone(), x.clone());
+        run_in(&mut c, &mut l, &mut r, &[(at, MODE, CONSOLE)], block);
+        let mut worst = 0.0f32;
+        for i in at - 100..at + 2 * fade {
+            let t = (fade as f32 - (i as f32 - at as f32)).clamp(0.0, fade as f32) / fade as f32;
+            let t = if i < at { 1.0 } else { t };
+            let want = console[i] + (iron[i] - console[i]) * t;
+            worst = worst.max((l[i] - want).abs());
+        }
+        println!("block {block}: worst {worst:.2e}");
+        assert!(worst < 1e-4, "block {block}: {worst}");
+    }
 }

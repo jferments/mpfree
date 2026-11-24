@@ -277,6 +277,9 @@ pub struct Instruments {
     /// Ring-outs cut short to lend their slot (more than [`SLOTS`] at once),
     /// or by a new instrument while an older one still rang out there.
     cut: u64,
+    /// Instruments put in so far ([`Instruments::put`]): the audio loop
+    /// hands a new one its tuning (`main.rs`, `TuningsHanded`).
+    puts: u64,
     /// The values under the clips' locks on the instruments' parameters
     /// ([`Instruments::lock`]), keyed by track and parameter.
     locks: crate::locks::Under,
@@ -316,6 +319,7 @@ impl Instruments {
             slot_of: [NO_SLOT; WHO],
             refused: 0,
             cut: 0,
+            puts: 0,
             locks: crate::locks::Under::new(rate),
             first: crate::mixing::track_channel(0),
             sends: [NO_SEND; WHO],
@@ -743,7 +747,20 @@ impl Instruments {
         // locks are forgotten.
         let t = track as u32;
         self.locks.forget(|k| k >> 16 == t, |_, _| {});
+        self.puts += 1;
         Ok(())
+    }
+
+    /// How many instruments have been put in ([`Instruments::put`]), to
+    /// see that one came in.
+    pub fn puts(&self) -> u64 {
+        self.puts
+    }
+
+    /// The tuning holder `track`'s instrument plays in, if it has one.
+    #[cfg(test)]
+    pub fn tuning(&self, track: usize) -> Option<&Tuning> {
+        self.host.tuning(self.slot(track)?)
     }
 
     /// Takes track `track`'s instrument out, so it plays the pads again,
@@ -1150,6 +1167,15 @@ impl Instruments {
         }
     }
 
+    /// Whether track `track`'s instrument plays the tuning it's handed:
+    /// false for a plugin that takes only MIDI notes, which plays 12-TET
+    /// (`Node::follows_tuning`). True with no instrument.
+    pub fn follows_tuning(&self, track: usize) -> bool {
+        self.slot(track)
+            .and_then(|s| self.host.instrument(s))
+            .is_none_or(|i| mpfree_node::Node::follows_tuning(i.node()))
+    }
+
     /// Every slot's next `frames` frames into its track's mixer channel.
     pub fn render(&mut self, ctx: &Ctx, frames: usize, out: &mut dyn Outputs) {
         // The locks that ended play now: forget them. A knob a new owner
@@ -1207,6 +1233,23 @@ impl Instruments {
     /// Instruments moved between cores since the lanes started.
     pub fn lane_moves(&self) -> u64 {
         self.host.moves()
+    }
+
+    /// Counts each instrument's time from the next render on, while on
+    /// (`TrackHost::set_spending`), for System status's tracks.
+    pub fn set_spending(&mut self, on: bool) {
+        self.host.set_spending(on);
+    }
+
+    /// Each instrument's counted time since the last take, ns, with the
+    /// mixer channel it plays into (a ring-out's too), and starts again.
+    /// Never allocates.
+    pub fn take_spent(&mut self, mut f: impl FnMut(usize, u64)) {
+        self.host.take_spent(|_, ch, ns| {
+            if let Some(ch) = ch {
+                f(ch, ns);
+            }
+        });
     }
 
     /// An instrument taken out, after its ring-out: drop it off the audio

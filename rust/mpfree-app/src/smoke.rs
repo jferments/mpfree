@@ -20,6 +20,7 @@ use mpfree_ui::{Fonts, Gesture, PageTarget, SoftCanvas, Touch};
 
 mod catalogue;
 mod eq_sound;
+mod note_workflows;
 mod phases;
 mod scripts;
 mod session;
@@ -428,6 +429,69 @@ mod tests {
         let text = std::fs::read_to_string(catalogue::PATH).expect("docs/dev/guides/controls.md");
         let listed = catalogue::keys(&text);
         for r in ours {
+            assert!(
+                listed.contains(&r.key()),
+                "{} not in the catalogue",
+                r.key()
+            );
+        }
+    }
+
+    /// The Arp panel's Phrase tab, swept on its own: every control on its
+    /// four screens does something, its own are all pressed, and each is
+    /// in the catalogue.
+    #[test]
+    fn the_phrase_tabs_controls_do_something_and_are_in_the_catalogue() {
+        let rows = on_big_stack(|| {
+            let mut rows = Vec::new();
+            for name in gui::PHRASE_SAMPLES {
+                let make = || gui::sample_phrase(name, Fonts::embedded());
+                let mut p = make();
+                let mut fresh = make;
+                rows.extend(sweep(name, &mut p, &mut fresh));
+            }
+            rows
+        });
+        let text = std::fs::read_to_string(catalogue::PATH).expect("docs/dev/guides/controls.md");
+        let listed = catalogue::keys(&text);
+        // The tab's own controls, on the screens that show them.
+        for (key, screen, least) in [
+            ("arp-phrase-kinds/kind", "arp-phrase", 5),
+            ("arp-phrase-kinds/kind", "arp-phrase-kit", 5),
+            ("arp-phrase-list/phrase", "arp-phrase", 8),
+            ("arp-phrase-plays/follow", "arp-phrase", 2),
+            ("arp-phrase-plays/slider", "arp-phrase", 4),
+            ("arp-modes/segment", "arp-phrase", 5),
+            ("arp-mini/slower", "arp-quick-band-phrase", 1),
+            ("arp-mini/faster", "arp-quick-band-phrase", 1),
+        ] {
+            let pressed = rows
+                .iter()
+                .filter(|r| r.key() == key && r.screen == screen)
+                .filter(|r| r.outcome != Outcome::Skipped)
+                .count();
+            assert!(pressed >= least, "{key} on {screen}: {pressed} pressed");
+            assert!(
+                listed.iter().any(|k| k == key),
+                "{key} not in the catalogue"
+            );
+        }
+        let dead: Vec<String> = rows
+            .iter()
+            .filter(|r| r.outcome == Outcome::Dead)
+            .filter(|r| !catalogue::known_dead(&r.key()))
+            .map(|r| {
+                format!(
+                    "{} #{} \"{}\" on {}",
+                    r.key(),
+                    r.target.index,
+                    r.target.label,
+                    r.screen
+                )
+            })
+            .collect();
+        assert!(dead.is_empty(), "dead: {dead:#?}");
+        for r in rows.iter().filter(|r| r.widget.starts_with("arp-")) {
             assert!(
                 listed.contains(&r.key()),
                 "{} not in the catalogue",

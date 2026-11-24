@@ -14,6 +14,37 @@ use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------- drawing
 
+/// The loop mark (the ⟳ the screens' fonts don't have) in `r`: a circle
+/// open just before twelve o'clock, its arrowhead pointing on clockwise.
+pub fn loop_mark(canvas: &mut dyn Canvas, r: Rect, color: Color) {
+    let s = r.w.min(r.h) as f32;
+    if s < 6.0 {
+        return;
+    }
+    let (cx, cy) = (r.x as f32 + s / 2.0, r.y as f32 + s / 2.0);
+    let rad = s / 2.0 - 1.5;
+    let up = -std::f32::consts::FRAC_PI_2;
+    let (a0, a1) = (up + 0.55, up + TAU - 0.45);
+    let mut m = mpfree_ui::Shape::new(r.inset_xy(-2, -2));
+    m.arc(cx, cy, rad, a0, a1, 1.6);
+    // The arrowhead at the arc's end, along its way round.
+    let (p, d, n) = (
+        (cx + rad * a1.cos(), cy + rad * a1.sin()),
+        (-a1.sin(), a1.cos()),
+        (a1.cos(), a1.sin()),
+    );
+    let tip = (p.0 + d.0 * 2.2, p.1 + d.1 * 2.2);
+    let wing = s / 5.0;
+    for side in [1.0f32, -1.0] {
+        let w = (
+            p.0 - d.0 * 1.2 + n.0 * wing * side,
+            p.1 - d.1 * 1.2 + n.1 * wing * side,
+        );
+        m.segment(tip, w, 1.6);
+    }
+    m.draw(canvas, color);
+}
+
 /// A progress ring: a circle `size` pixels across with its top left corner
 /// at (x, y), `width` pixels thick. The part from twelve o'clock clockwise
 /// to `frac` (0.0 to 1.0) is drawn in `color`, the rest in `rest`.
@@ -482,6 +513,13 @@ pub struct GridCell {
     /// Perform: how near its line is, an amber bar along its foot as a
     /// queued cell's (0 draws none).
     pub countdown: f32,
+    /// A loop cell on an audio track (phase 4, layout spec 4f): the loop
+    /// mark before its name, and the deck's ring at its right in the
+    /// track's colour, stopped or not (`progress`), never a wave.
+    pub looped: bool,
+    /// A layer of its loop not yet on the stick: an amber dot at the
+    /// name's right, until its file is written.
+    pub writing: bool,
 }
 
 /// The colour of a cell's word ([`GridCell::alert`]).
@@ -590,6 +628,15 @@ pub struct ClipGrid {
     /// [`ROW_MIN_H`] with rings and countdowns. Off (Make), the rows are
     /// compact, [`ROW_MIN_H_MAKE`], eight in view with names and lengths.
     pub big: bool,
+    /// The scene card, open over the grid (the Arrange refactor's 5.2):
+    /// it takes the grid's touches while it is.
+    pub scene_card: Option<crate::scene_card::SceneCard>,
+    /// An audio track's input list is open over the grid (phase 4, board
+    /// 4; [`crate::inputs`]): the grid is veiled but for this track's
+    /// column head, outlined, and a touch anywhere on it gives
+    /// `Toggle(slots + `[`VEIL_TAP`]`)`, which closes the list and does
+    /// nothing else.
+    pub veil: Option<usize>,
     /// What was drawn last, so a change redraws only the cells that changed.
     drawn: RefCell<Option<Drawn>>,
     /// A finger down on a track's name: where (x) and which track. Let go
@@ -651,8 +698,11 @@ struct Drawn {
     big: bool,
     back_to_song: bool,
     show_button: bool,
+    veil: Option<usize>,
     /// Where a dragged clip or row was drawn.
     dragged: Option<(Held, (i32, i32))>,
+    /// The scene card was drawn over it.
+    card: bool,
 }
 
 /// `Toggle(slots + ADD_TRACK)`: "+ Track".
@@ -678,6 +728,9 @@ pub const ADD_DISMISS: usize = 13;
 /// `Toggle(slots + SHOW_VIEW)`: Show, back to the Show view while a set is
 /// open (live shows B1). After the view chip's List ([`LIST_VIEW`]).
 pub const SHOW_VIEW: usize = 15;
+/// `Toggle(slots + VEIL_TAP)`: a touch on the grid while an input list is
+/// open over it ([`ClipGrid::veil`]).
+pub const VEIL_TAP: usize = 16;
 /// The Show button's width, on the grid, the Song view and the song list
 /// (layout spec 4p).
 pub const SHOW_W: i32 = 72;
@@ -841,6 +894,27 @@ struct Geo {
 }
 
 impl ClipGrid {
+    /// The row whose number a finger holds still (not dragged), for the
+    /// app's hold that opens its scene card.
+    pub fn held_row(&self) -> Option<usize> {
+        match self.grip {
+            Some(Grip {
+                held: Held::Row(row),
+                lifted: false,
+                ..
+            }) => Some(row),
+            _ => None,
+        }
+    }
+
+    /// The hold on a row's number opened its scene card: the finger's lift
+    /// launches nothing and drops nothing.
+    pub fn let_go_of_row(&mut self) {
+        if self.held_row().is_some() {
+            self.grip = None;
+        }
+    }
+
     pub fn new(title: &str, slots: usize) -> ClipGrid {
         ClipGrid {
             title: title.to_string(),
@@ -857,6 +931,8 @@ impl ClipGrid {
             big: false,
             back_to_song: false,
             show_button: false,
+            scene_card: None,
+            veil: None,
             drawn: RefCell::new(None),
             press: None,
             grip: None,
@@ -1249,8 +1325,12 @@ impl Widget for ClipGrid {
             || d.big != self.big
             || d.back_to_song != self.back_to_song
             || d.show_button != self.show_button
+            || d.veil != self.veil
+            || self.veil.is_some()
             || d.dragged.is_some()
             || self.dragged_now().is_some()
+            || d.card
+            || self.scene_card.is_some()
         {
             return None;
         }
@@ -1290,7 +1370,9 @@ impl Widget for ClipGrid {
             big: self.big,
             back_to_song: self.back_to_song,
             show_button: self.show_button,
+            veil: self.veil,
             dragged: self.dragged_now(),
+            card: self.scene_card.is_some(),
         });
         // The view chip, then the title, shortened to what comes before
         // " · " where "Back to song" or Show leaves it no room.
@@ -1568,9 +1650,31 @@ impl Widget for ClipGrid {
         if let Some(rows) = self.chooser_rects(r) {
             crate::song::paint_chooser(cx, &rows);
         }
+        // An input list open over the grid: all but the track's column
+        // head behind a veil, the head outlined as the list is.
+        if let Some(track) = self.veil {
+            let head = self.head_rect(r, track).unwrap_or_default();
+            let veil = t.bg.with_alpha(180);
+            for part in r.uncovered(&[head]) {
+                cx.canvas.fill_rect(part, veil);
+            }
+            if !head.is_empty() {
+                cx.canvas.stroke_round_rect(head, t.round(8), 2, t.good);
+            }
+        }
+        if let Some(card) = &self.scene_card {
+            card.paint(cx, r);
+        }
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
+        if let Some(card) = &self.scene_card {
+            return card.targets(r);
+        }
+        // An input list open over the grid: a touch anywhere closes it.
+        if self.veil.is_some() {
+            return vec![Target::tap("veil", 0, "Close the input list", r)];
+        }
         // The chooser open: its rows, and anywhere else closes it.
         if let Some(rows) = self.chooser_rects(r) {
             let mut out: Vec<Target> = rows
@@ -1633,6 +1737,17 @@ impl Widget for ClipGrid {
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        // The scene card open: its touches, and one off it closes it.
+        if let Some(card) = self.scene_card.as_mut() {
+            self.grip = None;
+            self.empty = None;
+            self.press = None;
+            return card.touch(phase, x, y, r);
+        }
+        // An input list open over the grid: a touch only closes it.
+        if self.veil.is_some() {
+            return (phase == Touch::Down).then_some(EventKind::Toggle(self.slots + VEIL_TAP));
+        }
         // The "+ Track" chooser open: a row adds that kind of track, and a
         // touch anywhere else only closes it.
         if self.adding {
@@ -2142,6 +2257,7 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
     }
     let inner = cr.inset_xy(10, 8);
     let (name, rest) = inner.take_top(20);
+    let name = loop_marks(cx, name, cell, base);
     cx.text(
         FontId::Bold,
         t.size_small + 1.0,
@@ -2157,12 +2273,10 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
         _ => t.readable(t.text_dim, fill),
     };
     let rolling = matches!(cell.state, CellState::Playing | CellState::Recording);
-    // A loop shows its pass on its wave, not with a ring.
-    let ring_room = if rolling && cell.wave.is_none() {
-        RING + 4
-    } else {
-        0
-    };
+    // A Loop track's loop shows its pass on its wave, not with a ring; a
+    // loop cell on an audio track has its ring, stopped or not.
+    let ringed = (rolling && cell.wave.is_none()) || cell.looped;
+    let ring_room = if ringed { RING + 4 } else { 0 };
     let foot = Rect::new(
         inner.x,
         inner.bottom() - 18,
@@ -2234,11 +2348,11 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
             );
         }
     }
-    if rolling && cell.wave.is_none() && inner.h >= RING + 20 {
-        let color = if cell.state == CellState::Recording {
-            t.bad
-        } else {
-            t.good
+    if ringed && inner.h >= RING + 20 {
+        let color = match cell.state {
+            CellState::Recording => t.bad,
+            _ if cell.looped => base,
+            _ => t.good,
         };
         ring(
             cx.canvas,
@@ -2270,6 +2384,30 @@ fn paint_cell(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
         cx.canvas
             .fill_round_rect(Rect::new(track.x, track.y, w.max(2), 3), 1, t.warn);
     }
+}
+
+/// A loop cell's marks on its name line (layout spec 4f): the loop mark
+/// before the name in the track's colour, and while a layer is being
+/// written an amber dot at its right. The room left for the name.
+fn loop_marks(cx: &mut PaintCx, name: Rect, cell: &GridCell, base: Color) -> Rect {
+    if !cell.looped {
+        return name;
+    }
+    let t = cx.theme.clone();
+    let mut name = name;
+    if cell.writing {
+        let (dot, rest) = name.take_right(12);
+        cx.canvas.fill_round_rect(
+            Rect::new(dot.right() - 8, dot.y + dot.h / 2 - 4, 8, 8),
+            4,
+            t.warn,
+        );
+        name = rest;
+    }
+    let size = 12.min(name.h);
+    let mark = Rect::new(name.x, name.y + (name.h - size) / 2, size, size);
+    loop_mark(cx.canvas, mark, base.mix(t.text, 0.25));
+    name.take_left(size + 4).1
 }
 
 /// A loop cell's small wave in `band`, lit up to the playhead while it
@@ -2340,7 +2478,7 @@ fn paint_compact(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color, fill:
         _ => {}
     }
     let rolling = matches!(cell.state, CellState::Playing | CellState::Recording);
-    let ringed = rolling && cell.wave.is_none();
+    let ringed = (rolling && cell.wave.is_none()) || cell.looped;
     let inner = cr.inset_xy(9, 4);
     let inner = if ringed {
         inner.take_right(SMALL_RING + 4).1
@@ -2355,6 +2493,7 @@ fn paint_compact(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color, fill:
         name = name.take_left(13).1;
         name_ink = t.readable(t.bad, fill);
     }
+    let name = loop_marks(cx, name, cell, base);
     cx.text(
         FontId::Bold,
         t.size_small,
@@ -2387,10 +2526,10 @@ fn paint_compact(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color, fill:
         }
     }
     if ringed {
-        let color = if cell.state == CellState::Recording {
-            t.bad
-        } else {
-            t.good
+        let color = match cell.state {
+            CellState::Recording => t.bad,
+            _ if cell.looped => base,
+            _ => t.good,
         };
         ring(
             cx.canvas,

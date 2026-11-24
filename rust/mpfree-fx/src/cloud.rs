@@ -44,7 +44,7 @@ use std::f32::consts::{LN_10, PI};
 use mpfree_node::{Ctx, Curve, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Smooth, Timed, Unit};
 
 use crate::kit::{self, Blend};
-use crate::oversample::{IirDown2, IirUp2};
+use crate::oversample::IirPair;
 use crate::svf::Segs;
 use crate::{defaults, flush, lerp, Preset};
 
@@ -1900,13 +1900,23 @@ const ECO_RING: usize = 448;
 /// ring, so nothing it still holds is cut off (115 network frames to
 /// -100 dB).
 const ECO_DRAIN: u32 = 128;
+/// Eco's half-bands drop what is too small to hear every this many of
+/// their frames.
+const ECO_SETTLE: u32 = 16;
 
 /// Eco's resamplers: the input down to the network's half rate and the wet
 /// signal back up, with a two-frame queue between the pairs the network
 /// takes and the frames the node gives back.
 struct EcoRate {
-    down: [IirDown2; 2],
-    up: [IirUp2; 2],
+    /// Each side's half-bands: the input's down-sampler and the wet
+    /// signal's up-sampler, of one design.
+    iir: [IirPair<ECO_SECTIONS>; 2],
+    /// Pairs down and network frames up since the reset, modulo
+    /// [`ECO_SETTLE`]: each side drops what is too small to hear on a grid
+    /// of its own frames, so a chunk's order of the two doesn't matter
+    /// (the same in any block size).
+    settle_down: u32,
+    settle_up: u32,
     /// The first frame of a pair still waiting for its second.
     first: (f32, f32),
     held: usize,
@@ -1923,14 +1933,9 @@ const QUEUE: usize = 2 * CHUNK + 4;
 impl EcoRate {
     fn new() -> EcoRate {
         let mut e = EcoRate {
-            down: [
-                IirDown2::new(ECO_SECTIONS, ECO_TBW),
-                IirDown2::new(ECO_SECTIONS, ECO_TBW),
-            ],
-            up: [
-                IirUp2::new(ECO_SECTIONS, ECO_TBW),
-                IirUp2::new(ECO_SECTIONS, ECO_TBW),
-            ],
+            iir: [IirPair::new(ECO_TBW), IirPair::new(ECO_TBW)],
+            settle_down: 0,
+            settle_up: 0,
             first: (0.0, 0.0),
             held: 0,
             queue: [[0.0; QUEUE]; 2],
@@ -1941,12 +1946,11 @@ impl EcoRate {
         e
     }
     fn reset(&mut self) {
-        for d in &mut self.down {
-            d.reset();
+        for h in &mut self.iir {
+            h.reset();
         }
-        for u in &mut self.up {
-            u.reset();
-        }
+        self.settle_down = 0;
+        self.settle_up = 0;
         self.held = 0;
         self.queue = [[0.0; QUEUE]; 2];
         self.head = 0;
@@ -1964,15 +1968,27 @@ impl EcoRate {
             return None;
         }
         self.held = 0;
+        if self.settle_down == 0 {
+            for h in &mut self.iir {
+                h.settle_down();
+            }
+        }
+        self.settle_down = (self.settle_down + 1) % ECO_SETTLE;
         Some((
-            self.down[0].run([self.first.0, l]),
-            self.down[1].run([self.first.1, r]),
+            self.iir[0].down([self.first.0, l]),
+            self.iir[1].down([self.first.1, r]),
         ))
     }
     /// One network frame of the wet signal in, two node frames queued.
     #[inline]
     fn up(&mut self, l: f32, r: f32) {
-        let (a, b) = (self.up[0].run(l), self.up[1].run(r));
+        if self.settle_up == 0 {
+            for h in &mut self.iir {
+                h.settle_up();
+            }
+        }
+        self.settle_up = (self.settle_up + 1) % ECO_SETTLE;
+        let (a, b) = (self.iir[0].up(l), self.iir[1].up(r));
         for (x, y) in a.into_iter().zip(b) {
             // One wrap at most (head and len are under QUEUE): no divide.
             let at = self.head + self.len;

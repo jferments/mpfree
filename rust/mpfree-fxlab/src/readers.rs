@@ -90,11 +90,14 @@ pub enum Reader {
     Pad,
     /// A Vintage pad: Hermite at every speed, no low-pass (by choice).
     PadVintage,
-    /// A sampler pad's grains ([`GrainClip`] with its clean read):
-    /// band-limited above two semitones up, Hermite at and under.
+    /// A sampler pad's grains ([`GrainClip`] with its clean read): the
+    /// 8-point read at and under two semitones up, as a pad's, and
+    /// band-limited above.
     PadGrains,
     /// The grain engine's own read ([`Clip`], and the live buffers the
-    /// Grains effect reads): Hermite at every speed.
+    /// Grains effect reads): the 8-point read at and under two semitones
+    /// up, a windowed sinc stretched by the speed above (up to an octave's
+    /// stretch).
     Grains,
     /// The streaming cursor's band-limited read (8 crossings a side, the
     /// default).
@@ -219,7 +222,8 @@ impl Reader {
                 // From frame 8, so the read's neighbours are all inside.
                 if self == Reader::Grains {
                     let clip = Clip::new(&data, 1, rate).expect("a lab clip");
-                    clip.read_run(8.0, v, &mut out);
+                    let aim = clip.aim(v);
+                    clip.read_aimed_run(8.0, v, aim, &mut out);
                 } else {
                     let octaves = Octaves::make(&data, 1);
                     let clip = GrainClip::new(&data, 1, rate)

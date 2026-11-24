@@ -52,6 +52,10 @@ pub struct TransportLook {
     pub rec: Option<RecChip>,
     /// What the pads play, on Play's card only.
     pub pads: Option<PadsPlay>,
+    /// What the keys play (live shows C1, layout spec 4q), on Play's card
+    /// only while the song has patches: KEYS PLAY takes the bar and step
+    /// dots' place.
+    pub keys: Option<crate::patch_page::KeysPlay>,
 }
 
 /// What the pads play, on Play's transport card: the armed track, its kit
@@ -127,6 +131,18 @@ pub enum RecState {
     Recording,
 }
 
+/// What the REC chip warns of (loops on audio tracks, phase 4, board 3).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RecAlert {
+    #[default]
+    None,
+    /// In amber: REC does what it says, and more than the take alone
+    /// ("Bass · row 2 · closes Vocal's loop").
+    Warn,
+    /// In red, no arrow: REC is refused ("REC: 8 loops · clear one").
+    Refused,
+}
+
 /// The REC chip on the transport bars: what REC records and where its take
 /// stands (sequencer decision 1, mockups F and G).
 #[derive(Clone, Debug, PartialEq)]
@@ -138,6 +154,8 @@ pub struct RecChip {
     pub add: bool,
     /// Only a tap on Arm moves the arm (the target list's Pin the arm).
     pub pinned: bool,
+    /// Said before the press, in amber or red (board 3).
+    pub alert: RecAlert,
 }
 
 impl RecChip {
@@ -154,9 +172,21 @@ impl RecChip {
         }
     }
 
-    /// The chip as one line, for the Arrange bar and the log: "REC → Loop 1".
+    /// The chip as one line, for the Arrange bar and the log: "REC → Loop 1";
+    /// refused, "REC: 8 loops · clear one".
     pub fn line(&self) -> String {
-        format!("{} → {}", self.head(), self.what)
+        match self.alert {
+            RecAlert::Refused => format!("REC: {}", self.what),
+            _ => format!("{} → {}", self.head(), self.what),
+        }
+    }
+
+    /// Its tone on the Arrange bar: red, or amber for a warning.
+    pub fn tone(&self) -> mpfree_ui::Tone {
+        match self.alert {
+            RecAlert::Warn => mpfree_ui::Tone::Warn,
+            _ => mpfree_ui::Tone::Bad,
+        }
     }
 }
 
@@ -311,13 +341,30 @@ pub fn paint_rec_chip(cx: &mut PaintCx, r: Rect, c: &RecChip) {
         RecState::Recording => (t.bad, t.ink_on(t.bad), t.ink_on(t.bad)),
     };
     cx.canvas.fill_round_rect(r, t.round(10), fill);
-    if c.state == RecState::Ready {
-        cx.canvas.stroke_round_rect(r, t.round(10), 2, t.bad);
+    // A warning (amber) or a refusal (red) outlines it and colours its
+    // words (board 3).
+    let edge = match c.alert {
+        RecAlert::Warn => Some(t.warn),
+        RecAlert::Refused => Some(t.bad),
+        RecAlert::None => (c.state == RecState::Ready).then_some(t.bad),
+    };
+    if let Some(edge) = edge {
+        cx.canvas.stroke_round_rect(r, t.round(10), 2, edge);
     }
+    let ink = match c.alert {
+        RecAlert::Warn if c.state != RecState::Recording => t.readable(t.warn, fill),
+        RecAlert::Refused => t.readable(t.bad, fill),
+        _ => ink,
+    };
     let mut x = r.x + 12;
     if c.state == RecState::Armed {
+        let dot = if c.alert == RecAlert::Warn {
+            t.warn
+        } else {
+            t.bad
+        };
         cx.canvas
-            .fill_round_rect(Rect::new(x, r.y + 13, 8, 8), 4, t.bad);
+            .fill_round_rect(Rect::new(x, r.y + 13, 8, 8), 4, dot);
         x += 14;
     }
     let half = r.h / 2;
@@ -335,7 +382,10 @@ pub fn paint_rec_chip(cx: &mut PaintCx, r: Rect, c: &RecChip) {
         Rect::new(r.x + 12, r.y + half - 2, r.w - 20, half),
         Align::Left,
         ink,
-        &format!("→ {}", c.what),
+        &match c.alert {
+            RecAlert::Refused => c.what.clone(),
+            _ => format!("→ {}", c.what),
+        },
     );
 }
 
@@ -398,6 +448,7 @@ impl Default for TransportLook {
             view: 0,
             rec: None,
             pads: None,
+            keys: None,
         }
     }
 }
@@ -413,6 +464,8 @@ struct TransportAreas {
     rec: Rect,
     /// What the pads play, if it was drawn.
     pads: Rect,
+    /// KEYS PLAY, if it was drawn.
+    keys: Rect,
 }
 
 /// [`PlayTransport`]'s event for a tap on the tempo
@@ -425,6 +478,9 @@ pub const TAP_REC: usize = 1;
 /// [`PlayTransport`]'s event for a tap on what the pads play
 /// ([`PadsPlay`]): the app opens the list of kits.
 pub const TAP_PADS: usize = 2;
+/// [`PlayTransport`]'s event for a tap on KEYS PLAY: the app opens the
+/// patch list.
+pub const TAP_KEYS: usize = 3;
 
 /// The transport card. A tap on the switch gives `Tab(view)`.
 #[derive(Default)]
@@ -627,12 +683,22 @@ impl Widget for PlayTransport {
             paint_pads_play(cx, pads, p);
             end = pads.x - 12;
         }
+        // What the keys play, before PADS PLAY, in the dots' place.
+        let mut keys = Rect::default();
+        if let Some(k) = &self.look.keys {
+            let tw = cx.measure(FontId::Bold, 14.0, k.text()) + 12 + 14 + 12;
+            let w = tw.clamp(crate::patch_page::KEYS_MIN_W, crate::patch_page::KEYS_MAX_W);
+            let h = REC_CHIP_H.min(inner.h);
+            keys = Rect::new(end - w, inner.y + (inner.h - h) / 2, w, h);
+            crate::patch_page::paint_keys_play(cx, keys, k);
+            end = keys.x - 12;
+        }
         // The REC chip between the tempo and where the bar is. The dots go
         // wherever there's no switch beside what the pads play (Play's
         // card has the dots beside PADS PLAY, board 1 of the looper
         // redesign's step 5).
         let left = x + bw + 6 + bpm_word + 14;
-        let gw = if self.look.pads.is_some() && !segs.is_empty() {
+        let gw = if (self.look.pads.is_some() && !segs.is_empty()) || self.look.keys.is_some() {
             0
         } else {
             16 * DOT_CELL + 3 * 6
@@ -685,6 +751,7 @@ impl Widget for PlayTransport {
                 bpm,
                 rec,
                 pads,
+                keys,
             },
         ));
     }
@@ -714,6 +781,9 @@ impl Widget for PlayTransport {
             if let (true, false, Some(p)) = (*pr == r, a.pads.is_empty(), &self.look.pads) {
                 out.push(Target::tap("pads", 0, p.text(), a.pads));
             }
+            if let (true, false, Some(k)) = (*pr == r, a.keys.is_empty(), &self.look.keys) {
+                out.push(Target::tap("keys", 0, k.text(), a.keys));
+            }
         }
         out
     }
@@ -737,6 +807,8 @@ impl Widget for PlayTransport {
             Some(EventKind::Select(TAP_REC))
         } else if !a.pads.is_empty() && a.pads.contains(x, y) {
             Some(EventKind::Select(TAP_PADS))
+        } else if !a.keys.is_empty() && a.keys.contains(x, y) {
+            Some(EventKind::Select(TAP_KEYS))
         } else {
             None
         }

@@ -3,8 +3,9 @@
 //! and sampler filter on its own against the curve its page draws, and a
 //! ratchet of their own (`tests/filters.rs`, `quality/filters.tsv`).
 //!
-//! - **The filters:** Poly's four (Wavetable runs the same,
-//!   `mpfree_synth::dsp::Filter`), Analog's four, Squelch's and Bass's
+//! - **The filters:** Poly's four (`mpfree_synth::poly_filter`, matched
+//!   above 2 kHz since step 2.2c; Wavetable keeps the bilinear
+//!   `mpfree_synth::dsp::Filter` Poly had before), Analog's four, Squelch's and Bass's
 //!   ladders, each through its engine's `FilterProbe` (the voice's own
 //!   solve, coefficients and make-up, and for Squelch and Bass the inner
 //!   rate and half-band), and every kind of the sampler's filter, played
@@ -50,7 +51,8 @@
 use std::f64::consts::TAU;
 
 use mpfree_sampler::dsp::{Comb, Filter as PadFilter, FilterKind, VoiceFilter};
-use mpfree_synth::dsp::{Filter as SynthFilter, FilterCoefs, FilterGlide, FilterMode};
+use mpfree_synth::dsp::FilterMode;
+use mpfree_synth::poly_filter::{PolyDesign, PolyFilter, PolyGlide};
 use mpfree_synth::{analog, bass, poly, squelch};
 
 use crate::fft::{power_spectrum, Fft};
@@ -143,14 +145,14 @@ fn subjects(rate: u32) -> Vec<Subject> {
         v.push(Subject {
             name: format!("Poly {label}"),
             make: Box::new(move |fc, r| {
-                let c = FilterCoefs::new(fc, r, rate as f32);
-                let mut f = SynthFilter::default();
+                let c = PolyDesign::default().coefs(mode, fc, r, rate as f32);
+                let mut f = PolyFilter::default();
                 Set {
                     os: 1,
                     run: Box::new(move |x| {
-                        x.iter()
-                            .map(|&s| f64::from(f.process(mode, &c, s as f32)))
-                            .collect()
+                        let mut buf: Vec<f32> = x.iter().map(|&s| s as f32).collect();
+                        f.run(mode, &c, &mut buf);
+                        buf.into_iter().map(f64::from).collect()
                     }),
                 }
             }),
@@ -164,13 +166,23 @@ fn subjects(rate: u32) -> Vec<Subject> {
             sings: false,
             // The voice works out its coefficients once a control step
             // and moves them in a straight line across it.
-            moving: Box::new(move |fc, r, _| {
-                let mut f = SynthFilter::default();
-                let mut glide = FilterGlide::default();
-                glide.snap(FilterCoefs::new(fc, r, rate as f32));
+            moving: Box::new(move |fc, r, ctrl| {
+                let mut f = PolyFilter::default();
+                let mut design = PolyDesign::default();
+                let mut glide = PolyGlide::default();
+                // As the voice: the cutoff in octaves, and a step that
+                // moves too little keeps the last design. Moved every
+                // frame (the reference the engine's step is held to), every
+                // frame is designed exactly.
+                let first = design.step(mode, fc.log2(), r, rate as f32);
+                glide.snap(first.expect("a first design"));
                 let step: Step = Box::new(move |fc, r, x| {
-                    let c = FilterCoefs::new(fc, r, rate as f32);
-                    glide.step(Some(c), x.len() as u32);
+                    let c = if ctrl == 1 {
+                        Some(design.coefs(mode, fc, r, rate as f32))
+                    } else {
+                        design.step(mode, fc.log2(), r, rate as f32)
+                    };
+                    glide.step(c, x.len() as u32);
                     let mut buf: Vec<f32> = x.iter().map(|&s| s as f32).collect();
                     glide.set_pos(f.run_moving(mode, &glide, &mut buf));
                     buf.into_iter().map(f64::from).collect()
@@ -280,6 +292,12 @@ fn subjects(rate: u32) -> Vec<Subject> {
         ("band-pass 4-pole", FilterKind::BandPass, 4),
         ("notch 2-pole", FilterKind::Notch, 2),
         ("notch 4-pole", FilterKind::Notch, 4),
+        // The filter gap plan's F4: the odd and steep slopes and the Peak.
+        ("low-pass 1-pole", FilterKind::LowPass, 1),
+        ("low-pass 8-pole", FilterKind::LowPass, 8),
+        ("high-pass 8-pole", FilterKind::HighPass, 8),
+        ("band-pass 8-pole", FilterKind::BandPass, 8),
+        ("Peak", FilterKind::Peak, 2),
         ("Ladder", FilterKind::Ladder, 4),
         ("Vowel", FilterKind::Vowel, 2),
         ("Comb", FilterKind::Comb, 2),
@@ -319,6 +337,7 @@ fn subjects(rate: u32) -> Vec<Subject> {
                 FilterKind::LowPass
                     | FilterKind::HighPass
                     | FilterKind::BandPass
+                    | FilterKind::Peak
                     | FilterKind::Ladder
             ),
             sings: kind == FilterKind::Ladder,

@@ -56,7 +56,19 @@ pub struct PadBar {
     /// pointing left; a tap gives [`EventKind::Tab`] 0. Used when `tabs`
     /// is empty and there is no `button`.
     pub back: Option<String>,
+    /// The page shows a kit other than the selected track's, the one the
+    /// pad hit plays (sampler step 15e, board 4 of the canvas "Pads and
+    /// kits: step 15e"): its name and the pad pressed ("Big Kit, from pad
+    /// B1"), ahead of the subtitle.
+    pub kit_note: Option<String>,
+    /// With it, a chip that shows the track's own kit again ("Track 1's
+    /// kit"), left of the bar's right side: raised; a tap gives
+    /// [`EventKind::Tab`]`(`[`TRACK_KIT`]`)`.
+    pub track_kit: Option<String>,
 }
+
+/// The tab number a tap on [`PadBar::track_kit`] gives.
+pub const TRACK_KIT: usize = 99;
 
 const SEG_H: i32 = 40;
 const SEG_PAD: i32 = 4;
@@ -69,6 +81,8 @@ const KIT_W: i32 = 220;
 const KIT_GAP: i32 = 10;
 /// The width of the chip that goes back ([`PadBar::back`]).
 const BACK_W: i32 = 150;
+/// The width of the track's kit chip ([`PadBar::track_kit`]).
+const TRACK_KIT_W: i32 = 160;
 
 impl PadBar {
     pub fn new(tabs: &[&str]) -> PadBar {
@@ -84,13 +98,36 @@ impl PadBar {
             kit: None,
             switch: None,
             back: None,
+            kit_note: None,
+            track_kit: None,
         }
     }
 
     /// The part a tap names the pad in: the swatch, title and subtitle.
     pub fn name_rect(&self, r: Rect) -> Rect {
-        let right = self.kit_rect(r).unwrap_or_else(|| self.tabs_rect(r)).x;
+        let right = self.words_end(r);
         Rect::new(r.x, r.y, (right - r.x - 10).max(0), r.h)
+    }
+
+    /// Where the title and subtitle end: the first thing at the right.
+    fn words_end(&self, r: Rect) -> i32 {
+        self.track_kit_rect(r)
+            .or_else(|| self.kit_rect(r))
+            .unwrap_or_else(|| self.tabs_rect(r))
+            .x
+    }
+
+    /// The track's kit chip, when it has one: left of the kit's button,
+    /// the tabs, the button or the chip that goes back.
+    pub fn track_kit_rect(&self, r: Rect) -> Option<Rect> {
+        self.track_kit.as_ref()?;
+        let right = self.kit_rect(r).unwrap_or_else(|| self.tabs_rect(r));
+        Some(Rect::new(
+            right.x - KIT_GAP - TRACK_KIT_W,
+            right.y,
+            TRACK_KIT_W,
+            right.h.max(SEG_H + 2 * SEG_PAD),
+        ))
     }
 
     /// The kit's button, when it has one (beside the bar's button).
@@ -151,11 +188,11 @@ impl Widget for PadBar {
         let swatch = Rect::new(r.x + t.pad, r.y + (r.h - sq) / 2, sq, sq);
         cx.canvas
             .fill_round_rect(swatch, t.round(8), self.color.on(&t));
-        let tabs = self.kit_rect(r).unwrap_or_else(|| self.tabs_rect(r));
+        let tabs = self.tabs_rect(r);
         let text = Rect::new(
             swatch.right() + 14,
             r.y + 6,
-            (tabs.x - swatch.right() - 24).max(0),
+            (self.words_end(r) - swatch.right() - 24).max(0),
             r.h - 12,
         );
         let (top, bottom) = text.take_top(text.h / 2 + 2);
@@ -179,14 +216,45 @@ impl Widget for PadBar {
                 x += 8;
             }
         }
-        cx.text(
-            FontId::Sans,
-            t.size_small,
-            bottom,
-            Align::Left,
-            t.text_dim,
-            &self.subtitle,
-        );
+        match &self.kit_note {
+            // The kit shown, first, in the text colour (board 4).
+            Some(note) => {
+                let w = cx.text(
+                    FontId::Bold,
+                    t.size_small,
+                    bottom,
+                    Align::Left,
+                    t.text,
+                    note,
+                );
+                let rest = Rect::new(bottom.x + w, bottom.y, (bottom.w - w).max(0), bottom.h);
+                if !self.subtitle.is_empty() {
+                    cx.text(
+                        FontId::Sans,
+                        t.size_small,
+                        rest,
+                        Align::Left,
+                        t.text_dim,
+                        &format!(" · {}", self.subtitle),
+                    );
+                }
+            }
+            None => {
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    bottom,
+                    Align::Left,
+                    t.text_dim,
+                    &self.subtitle,
+                );
+            }
+        }
+        if let (Some(k), Some(label)) = (self.track_kit_rect(r), self.track_kit.as_ref()) {
+            // The track's kit chip: raised, the label centred.
+            cx.canvas.fill_round_rect(k, t.round(12), t.raised);
+            cx.text(FontId::Bold, t.size_body, k, Align::Center, t.text, label);
+        }
         if let (Some(k), Some(name)) = (self.kit_rect(r), self.kit.as_ref()) {
             // The kit's button: raised, "Kit" faint before the name, a
             // chevron at its right (it opens a list).
@@ -315,12 +383,18 @@ impl Widget for PadBar {
         if let (Some(k), Some(name)) = (self.kit_rect(r), self.kit.as_ref()) {
             out.push(Target::tap("kit", 0, format!("Kit {name}"), k));
         }
+        if let (Some(k), Some(label)) = (self.track_kit_rect(r), self.track_kit.as_ref()) {
+            out.push(Target::tap("track-kit", TRACK_KIT, label.clone(), k));
+        }
         out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
+        }
+        if self.track_kit_rect(r).is_some_and(|k| k.contains(x, y)) {
+            return Some(EventKind::Tab(TRACK_KIT));
         }
         if self.nameable && self.name_rect(r).contains(x, y) {
             return Some(EventKind::Type(0));
@@ -2065,6 +2139,49 @@ impl Widget for PadMap {
                 })
             }
             Touch::Move => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sampler step 15e, board 4: with a kit other than the track's shown,
+    /// the bar's track's kit chip sits left of what is at its right, the
+    /// words end before it, and a tap on it gives its tab number.
+    #[test]
+    fn the_track_kit_chip_sits_before_the_right_side_and_takes_its_tap() {
+        let r = Rect::new(0, 0, 1000, 64);
+        for back in [None, Some("‹ Pads".to_string())] {
+            let mut bar = PadBar::new(&[]);
+            bar.back = back.clone();
+            bar.title = "Pad C1 · Snare 3".into();
+            bar.subtitle = "Source 91ac…02 · mono".into();
+            assert!(bar.track_kit_rect(r).is_none());
+            bar.kit_note = Some("Big Kit, from pad B1".into());
+            bar.track_kit = Some("Track 1's kit".into());
+            let k = bar.track_kit_rect(r).expect("the chip");
+            let right = bar.back_rect(r).map_or(r.right(), |b| b.x);
+            assert!(k.right() <= right, "{k:?} before {right}");
+            assert!(bar.name_rect(r).right() <= k.x, "the words end first");
+            let (x, y) = (k.x + k.w / 2, k.y + k.h / 2);
+            assert_eq!(
+                bar.touch(0, Touch::Down, x, y, r),
+                Some(EventKind::Tab(TRACK_KIT))
+            );
+            assert!(bar
+                .targets(r)
+                .iter()
+                .any(|t| t.id == "track-kit" && t.label == "Track 1's kit"));
+            if back.is_some() {
+                let b = bar.back_rect(r).unwrap();
+                assert_eq!(
+                    bar.touch(0, Touch::Down, b.x + 4, b.y + 4, r),
+                    Some(EventKind::Tab(0)),
+                    "the chip that goes back still does"
+                );
+            }
         }
     }
 }

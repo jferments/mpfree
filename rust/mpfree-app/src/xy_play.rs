@@ -35,6 +35,13 @@
 //!   layout following the selected track points at that track's settings)
 //!   is fixed when it begins, until it lets go.
 //!
+//! - **Recording** (phase 3): each Set setting's moves wait as
+//!   [`RecMove`]s, a value a setting at most until the sound loop takes
+//!   them each period ([`XyPlay::take_moves`]), then its let-go; the loop
+//!   sends them where they record (`xy_rec.rs`). The gate records too, so
+//!   a recorded XY FX plays, and so do a ready-made layout's settings
+//!   ([`XyPlay::ready_made`]). An Add setting's push doesn't record yet.
+//!
 //! What a setting is reached through is the [`Reach`]: the mod engine's
 //! settings (the mixer, effects, MIDI effects, outside gear, macros and
 //! the morph) straight through `ModMix`, and a synth's and a pad's own
@@ -51,12 +58,32 @@ use mpfree_xy::{Compiled, How, Lift, SLOTS};
 /// Stay (Go back uses the layout's own glide).
 pub const PUSH_AWAY_MS: f32 = 120.0;
 
+/// The most moves that wait for the sound loop: a value and a let-go for
+/// each setting, twice over (a lift and a landing in one period).
+pub const REC_MOVES: usize = SLOTS * 4;
+
+/// A Set setting's move, for recording it (`xy_rec.rs`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RecMove {
+    /// The pad's hand put it at this value, in its own units.
+    Moved(ParamAddr, f32),
+    /// The pad let go of it (a lift, Hold off, a layout switched).
+    Ended(ParamAddr),
+}
+
 /// What a layout of yours does to the settings it plays: the sound loop's
 /// side of each kind of setting.
 pub trait Reach {
     /// The pad's hand moves `addr` to `value` (a Set setting): false when
     /// nothing reaches it.
     fn touch(&mut self, addr: ParamAddr, value: f32) -> bool;
+    /// A newer gesture (a knob turned) took `addr` from the pad, which
+    /// still holds it: its moves play nothing, so they don't record.
+    /// A synth's, a pad's and an arp's own settings say false: their
+    /// lock tables keep that.
+    fn lost(&self, _addr: ParamAddr) -> bool {
+        false
+    }
     /// The pad lets go of `addr` over `frames` (0: at once).
     fn let_go(&mut self, addr: ParamAddr, frames: u32);
     /// Stay: the pad's `value` becomes `addr`'s own and the pad lets go.
@@ -129,6 +156,9 @@ impl Reach for ModReach<'_> {
         }
         self.modu.pad_touch(self.mixer, addr, value, self.recording)
     }
+    fn lost(&self, addr: ParamAddr) -> bool {
+        !is_own(addr) && self.modu.pad_lost(addr)
+    }
     fn let_go(&mut self, addr: ParamAddr, frames: u32) {
         if is_own(addr) {
             return self.own.let_go(addr, frames);
@@ -187,6 +217,8 @@ pub struct XyPlay {
     rowed: [bool; SLOTS],
     /// Settings the pad holds (a Set setting touched, an Add one pushed).
     held: [bool; SLOTS],
+    /// Set settings a knob took from the gesture: they record no more.
+    taken: [bool; SLOTS],
     /// Each setting's last value from the pad (a push for Add).
     last: [f32; SLOTS],
     away: [Away; SLOTS],
@@ -205,6 +237,11 @@ pub struct XyPlay {
     pub refused: u64,
     /// Set settings nothing reached.
     pub unreached: u64,
+    /// Moves waiting for the sound loop to record them, in order.
+    rec: [Option<RecMove>; REC_MOVES],
+    n_rec: usize,
+    /// Moves that found no room (the loop didn't take them in time).
+    pub rec_lost: u64,
 }
 
 impl XyPlay {
@@ -217,6 +254,7 @@ impl XyPlay {
             now: None,
             rowed: [false; SLOTS],
             held: [false; SLOTS],
+            taken: [false; SLOTS],
             last: [0.0; SLOTS],
             away: [Away::default(); SLOTS],
             gated: false,
@@ -228,7 +266,54 @@ impl XyPlay {
             kept: Vec::with_capacity(SLOTS),
             refused: 0,
             unreached: 0,
+            rec: [None; REC_MOVES],
+            n_rec: 0,
+            rec_lost: 0,
         }
+    }
+
+    /// A Set setting's value waits to be recorded: one a setting at most
+    /// since its last let-go, so a period keeps its last.
+    fn rec_moved(&mut self, addr: ParamAddr, value: f32) {
+        let last = self.rec[..self.n_rec]
+            .iter_mut()
+            .rev()
+            .find(|m| matches!(m, Some(RecMove::Moved(a, _) | RecMove::Ended(a)) if *a == addr));
+        if let Some(Some(RecMove::Moved(_, v))) = last {
+            *v = value;
+            return;
+        }
+        self.rec_push(RecMove::Moved(addr, value));
+    }
+
+    fn rec_push(&mut self, m: RecMove) {
+        if self.n_rec == REC_MOVES {
+            self.rec_lost += 1;
+            return;
+        }
+        self.rec[self.n_rec] = Some(m);
+        self.n_rec += 1;
+    }
+
+    /// A ready-made layout set `addr` to `value` (`mixing.rs`'s
+    /// `play_xy`): it records as a Set setting's move, and the lift
+    /// (`down` false) ends it.
+    pub fn ready_made(&mut self, addr: ParamAddr, value: f32, down: bool) {
+        self.rec_moved(addr, value);
+        if !down {
+            self.rec_push(RecMove::Ended(addr));
+        }
+    }
+
+    /// The Set settings' moves since the last call, in order, for the sound
+    /// loop to record (`xy_rec.rs`). Nothing allocates.
+    pub fn take_moves(&mut self, mut f: impl FnMut(RecMove)) {
+        for m in self.rec[..self.n_rec].iter_mut() {
+            if let Some(m) = m.take() {
+                f(m);
+            }
+        }
+        self.n_rec = 0;
     }
 
     /// Whether a layout of yours plays (else a ready-made one does).
@@ -298,6 +383,7 @@ impl XyPlay {
         // settings carry on under the new gesture.
         if self.now.is_none() {
             self.now = Some(if l.follows() { l.mapped(follow) } else { l });
+            self.taken = [false; SLOTS];
         }
         self.down = true;
         self.here = self.pos;
@@ -307,6 +393,9 @@ impl XyPlay {
         if let Some(g) = self.now.and_then(|c| c.gate()) {
             if !self.gated {
                 self.gated = r.touch(g, 1.0);
+                if self.gated {
+                    self.rec_moved(g, 1.0);
+                }
             }
         }
         self.moved(r, x, y);
@@ -322,12 +411,23 @@ impl XyPlay {
         }
         let (px, py) = c.start().place(self.here, self.landed, (x, y));
         self.pos = (px, py);
+        // The Set settings the hand reached, to record once it has, and
+        // those a knob took from it.
+        let mut rec = [None; SLOTS];
+        let mut gone = [None; SLOTS];
         c.each(px, py, |i, t, v| {
             self.last[i] = v;
             match t.how {
                 How::Set => {
                     if r.touch(t.addr, v) {
                         self.held[i] = true;
+                        if !r.lost(t.addr) {
+                            rec[i] = Some((t.addr, v));
+                        } else if !self.taken[i] {
+                            // A knob took it: what records ends here.
+                            self.taken[i] = true;
+                            gone[i] = Some(t.addr);
+                        }
                     } else {
                         self.unreached += 1;
                     }
@@ -340,6 +440,12 @@ impl XyPlay {
                 How::Add => {}
             }
         });
+        for (addr, v) in rec.into_iter().flatten() {
+            self.rec_moved(addr, v);
+        }
+        for addr in gone.into_iter().flatten() {
+            self.rec_push(RecMove::Ended(addr));
+        }
     }
 
     /// The finger lifts. With Hold on the pad keeps its settings;
@@ -404,6 +510,7 @@ impl XyPlay {
         // The gate closes at once, Stay or not (an echo rings out).
         if let Some(g) = c.gate().filter(|_| self.gated) {
             r.let_go(g, 0);
+            self.rec_push(RecMove::Ended(g));
             self.gated = false;
         }
         for (i, t) in c.slots() {
@@ -413,6 +520,9 @@ impl XyPlay {
             match t.how {
                 How::Set => {
                     self.held[i] = false;
+                    if !self.taken[i] {
+                        self.rec_push(RecMove::Ended(t.addr));
+                    }
                     if stay && !recording {
                         if let Some(before) = r.keep(t.addr, self.last[i]) {
                             if self.kept.len() < self.kept.capacity() {
@@ -450,13 +560,19 @@ impl XyPlay {
         if let Some(c) = self.now.take().or(self.layout) {
             if let Some(g) = c.gate().filter(|_| self.gated) {
                 r.let_go(g, 0);
+                self.rec_push(RecMove::Ended(g));
             }
             for (i, t) in c.slots() {
                 if !self.held[i] {
                     continue;
                 }
                 match t.how {
-                    How::Set => r.let_go(t.addr, 0),
+                    How::Set => {
+                        r.let_go(t.addr, 0);
+                        if !self.taken[i] {
+                            self.rec_push(RecMove::Ended(t.addr));
+                        }
+                    }
                     How::Add => r.push(source(i), 0.0),
                 }
             }
@@ -511,12 +627,13 @@ impl XyPlay {
     pub fn describe(&self) -> String {
         let n = self.layout.map_or(0, |l| l.slots().count());
         format!(
-            "XY layout of yours: {} ({n} settings, {} pushed by Add, {} Add refused a row, {} not reached){}",
+            "XY layout of yours: {} ({n} settings, {} pushed by Add, {} Add refused a row, {} not reached){}; {} moves not recorded (no room)",
             if self.layout.is_some() { "playing" } else { "none" },
             self.rowed.iter().filter(|&&r| r).count(),
             self.refused,
             self.unreached,
-            if self.hold { ", Hold on" } else { "" }
+            if self.hold { ", Hold on" } else { "" },
+            self.rec_lost
         )
     }
 }
@@ -532,12 +649,17 @@ mod tests {
     struct Log {
         said: Vec<String>,
         push: [f32; 32],
+        /// Settings a knob took from the pad.
+        lost: Vec<ParamAddr>,
     }
 
     impl Reach for Log {
         fn touch(&mut self, addr: ParamAddr, value: f32) -> bool {
             self.said.push(format!("touch {addr} {value}"));
             true
+        }
+        fn lost(&self, addr: ParamAddr) -> bool {
+            self.lost.contains(&addr)
         }
         fn let_go(&mut self, addr: ParamAddr, frames: u32) {
             self.said.push(format!("let go {addr} {frames}"));
@@ -619,6 +741,66 @@ mod tests {
         assert_eq!(followed(fx, 4), fx);
         let pad = ParamAddr::new(Owner::Pad(1, 2), 3);
         assert_eq!(followed(pad, 4), pad);
+    }
+
+    /// The Set settings' moves wait for the sound loop to record them: a
+    /// period's last value of each, then its let-go, in order; Hold keeps
+    /// the gesture going over a lift; an Add setting's push isn't recorded.
+    #[test]
+    fn the_set_settings_moves_wait_to_be_recorded_and_end_at_the_let_go() {
+        let mut l = Layout::new("Rec");
+        l.put(false, Target::linear(insert(1, 3), 0.0, 1.0))
+            .unwrap();
+        l.put(true, Target::add(insert(1, 4), 0.0, 0.5)).unwrap();
+        let mut p = XyPlay::new(1000);
+        let mut r = Log::default();
+        p.load(&mut r, Some(l.compile().unwrap()));
+        let take = |p: &mut XyPlay| {
+            let mut v = Vec::new();
+            p.take_moves(|m| v.push(m));
+            v
+        };
+        assert!(take(&mut p).is_empty());
+        let a = insert(1, 3);
+        p.begin(&mut r, 0.25, 0.0, |a| a);
+        p.moved(&mut r, 0.5, 0.0);
+        p.moved(&mut r, 0.75, 1.0);
+        assert_eq!(take(&mut p), [RecMove::Moved(a, 0.75)], "the last, no push");
+        // Hold keeps it going over a lift; it ends when Hold goes off.
+        p.set_hold(&mut r, true, false);
+        p.end(&mut r, false);
+        assert!(take(&mut p).is_empty(), "Hold keeps it");
+        p.begin(&mut r, 0.5, 0.0, |a| a);
+        p.set_hold(&mut r, false, false);
+        p.end(&mut r, false);
+        assert_eq!(take(&mut p), [RecMove::Moved(a, 0.5), RecMove::Ended(a)]);
+        // A lift and a landing in one period keep their order.
+        p.begin(&mut r, 1.0, 0.0, |a| a);
+        p.end(&mut r, false);
+        p.begin(&mut r, 0.0, 0.0, |a| a);
+        p.cancel(&mut r);
+        assert_eq!(
+            take(&mut p),
+            [
+                RecMove::Moved(a, 1.0),
+                RecMove::Ended(a),
+                RecMove::Moved(a, 0.0),
+                RecMove::Ended(a)
+            ]
+        );
+        // A knob takes it mid-gesture: what records ends there, once, and
+        // the next gesture records it again.
+        p.begin(&mut r, 0.25, 0.0, |a| a);
+        r.lost.push(a);
+        p.moved(&mut r, 0.5, 0.0);
+        p.moved(&mut r, 0.75, 0.0);
+        p.end(&mut r, false);
+        assert_eq!(take(&mut p), [RecMove::Moved(a, 0.25), RecMove::Ended(a)]);
+        r.lost.clear();
+        p.begin(&mut r, 1.0, 0.0, |a| a);
+        p.end(&mut r, false);
+        assert_eq!(take(&mut p), [RecMove::Moved(a, 1.0), RecMove::Ended(a)]);
+        assert_eq!(p.rec_lost, 0);
     }
 
     /// Cancelling lets go of everything at once, even with Hold on, and

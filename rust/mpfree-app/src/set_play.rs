@@ -75,6 +75,17 @@ pub enum Do {
     NotStarted,
 }
 
+/// A keyboard the rig knows (live shows B1), by the name the musician
+/// gave it, and the song's patch on it (C1).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct KeyboardNow {
+    pub name: String,
+    pub connected: bool,
+    /// The patch its keys reach, and that patch's zones on it; None while
+    /// the song has no patches.
+    pub patch: Option<(String, Vec<mpfree_time_ui::show::KeyBar>)>,
+}
+
 /// The song playing, as the screen knows it, for the Show view.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Now {
@@ -90,8 +101,8 @@ pub struct Now {
     pub click: bool,
     /// Bars of count-in.
     pub count_in: u8,
-    /// The rig's keyboards: name, and whether it is connected.
-    pub keyboards: Vec<(String, bool)>,
+    /// The rig's keyboards.
+    pub keyboards: Vec<KeyboardNow>,
     pub autosave_waiting: bool,
 }
 
@@ -490,17 +501,21 @@ impl SetPlay {
         let keyboards = now
             .keyboards
             .iter()
-            .map(|(name, connected)| KeyboardLine {
-                name: name.clone(),
-                plays: if *connected {
-                    "connected".into()
-                } else {
-                    "not connected".into()
+            .map(|k| KeyboardLine {
+                name: k.name.clone(),
+                plays: match (&k.patch, k.connected) {
+                    (_, false) => "not connected".into(),
+                    (Some((patch, _)), true) => patch.clone(),
+                    (None, true) => "connected".into(),
                 },
-                tone: match (*connected, needs.contains(&name.as_str())) {
+                tone: match (k.connected, needs.contains(&k.name.as_str())) {
                     (true, _) => Tone::Normal,
                     (false, true) => Tone::Bad,
                     (false, false) => Tone::Dim,
+                },
+                bars: match &k.patch {
+                    Some((_, bars)) if k.connected => bars.clone(),
+                    _ => Vec::new(),
                 },
             })
             .collect();
@@ -854,6 +869,50 @@ mod tests {
         );
         assert_eq!(v.parts[2].mark, PartMark::Next);
         assert_eq!(v.parts[1].meta, "\u{d7} 2 \u{b7} 8 bars");
+    }
+
+    /// The keyboards card (live shows C1): with patches, a keyboard's line
+    /// names the patch its keys reach and draws its zones; without, it
+    /// says whether it is connected; one not connected says so either way.
+    #[test]
+    fn the_keyboards_card_names_the_patch_each_keyboard_plays() {
+        use mpfree_time_ui::show::KeyBar;
+        let bar = KeyBar {
+            from: 0,
+            to: 333,
+            row: 0,
+            rows: 1,
+            color: mpfree_ui::Color::rgb(0x4FA3FF),
+            missing: false,
+        };
+        let kb = |name: &str, connected, patch: Option<&str>| KeyboardNow {
+            name: name.into(),
+            connected,
+            patch: patch.map(|p| (p.to_string(), vec![bar])),
+        };
+        let now = Now {
+            keyboards: vec![
+                kb("KeyLab 61", true, Some("Chorus split")),
+                kb("Nord", false, Some("Chorus split")),
+                kb("Keystep", true, None),
+            ],
+            ..Now::default()
+        };
+        let v = started().view(&now);
+        let lines: Vec<(&str, &str, usize)> = v
+            .keyboards
+            .iter()
+            .map(|k| (k.name.as_str(), k.plays.as_str(), k.bars.len()))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                ("KeyLab 61", "Chorus split", 1),
+                ("Nord", "not connected", 0),
+                ("Keystep", "connected", 0)
+            ]
+        );
+        assert_eq!(v.keyboards[1].tone, Tone::Dim);
     }
 
     /// The set changes while it plays: a check marks a song not ready, and

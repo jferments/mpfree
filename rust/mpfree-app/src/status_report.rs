@@ -172,6 +172,28 @@ pub fn text(f: &Facts, board: &Board, names: &Watch) -> String {
             ));
         }
     }
+    if let Some(s) = r.engines {
+        let parts: Vec<String> = crate::engines::SHARES
+            .iter()
+            .zip(s)
+            .map(|((_, name), p)| format!("{name} {}", crate::engines::share_words(p)))
+            .collect();
+        now.push(format!("where the sound's time goes: {}", parts.join(", ")));
+    }
+    // By track, by number only: a report never holds a name someone typed.
+    if let Some(t) = r.tracks.as_deref().filter(|t| !t.is_empty()) {
+        let parts: Vec<String> = t
+            .iter()
+            .map(|(who, _, p)| {
+                format!(
+                    "{} {}",
+                    crate::track_costs::report_label(*who),
+                    crate::engines::share_words(*p)
+                )
+            })
+            .collect();
+        now.push(format!("the tracks using the most: {}", parts.join(", ")));
+    }
     if now.is_empty() {
         now.push("nothing read yet".to_string());
     }
@@ -252,6 +274,7 @@ pub fn save(store: &Store, names: &mut Names, text: String) -> String {
 mod tests {
     use super::*;
     use crate::status_watch::Look;
+    use crate::track_costs::Who;
     use mpfree_status::{kinds, Report};
 
     fn facts<'a>(
@@ -312,6 +335,11 @@ mod tests {
         let readings = Readings {
             cpu_pct: Some(24.0),
             ram_pct: Some(41.0),
+            engines: Some([12.2, 0.0, 0.0, 1.0, 4.0, 6.6]),
+            tracks: Some(vec![
+                (Who::Track(2), "Track 3 · Dana's drums".into(), 9.6),
+                (Who::Kit(1), "Kit 2 · pads only".into(), 0.3),
+            ]),
             ..Readings::default()
         };
         let lines = vec![log_line(
@@ -332,6 +360,19 @@ mod tests {
         assert!(!t.contains("danas-mpc") && !t.contains("Host name"), "{t}");
         assert!(t.contains("A normal start."), "{t}");
         assert!(t.contains("the sound's share of the CPU 24 %"), "{t}");
+        assert!(
+            t.contains(
+                "where the sound's time goes: The pads 12 %, Synths none, The looper and line \
+                 input none, Clips and the arp 1 %, Mixing 4 %, MPFree's own work 7 %"
+            ),
+            "{t}"
+        );
+        // By track, by number: the name typed stays out.
+        assert!(
+            t.contains("the tracks using the most: track 3 10 %, kit 2, pads only under 1 %"),
+            "{t}"
+        );
+        assert!(!t.contains("Dana's drums"), "{t}");
         assert!(
             t.contains("red sound/dropout: The sound dropped out. 3 times · first at 0:12"),
             "{t}"

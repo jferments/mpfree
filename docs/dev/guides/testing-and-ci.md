@@ -223,6 +223,14 @@ touchscreen, using the list of controls each widget gives
   the tempo tapped; the master level from both ends; the kit from the
   wheel and from the list of kits; Full level turned off from its chip. A new
   feature a musician uses gets a workflow here.
+- **Note editor workflows** (`smoke/note_workflows.rs`) do the same for
+  the note editor (the piano roll plan): kicks drawn on the Steps, the
+  editor opened by the Sequencer's Notes switch, then a finger resting on
+  a note while the data wheel turns its velocity (alone, or the picks,
+  with SHIFT widening the gap, and SHIFT + the push putting it back to
+  100), ERASE held while a finger drags along a
+  row, and the clip's end dragged on the ruler to its stop. Each is
+  checked against the time engine's clip and taken back with one UNDO.
 - **Song workflows** (`smoke/song_workflows.rs`) do the same with three
   whole demo songs written in code (`smoke/songs.rs`), saved into a
   library in a temporary folder and opened from BROWSE as a musician

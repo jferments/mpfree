@@ -35,9 +35,26 @@ pub enum Source {
     Plugins,
 }
 
+/// The SD card place's state, which the app gives ([`Browser::set_card`]):
+/// the card opens read only when the place is first shown
+/// ([`BrowseAction::OpenCard`]) and closes with the browser.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum CardState {
+    /// Not asked for since the browser opened.
+    #[default]
+    Closed,
+    /// Asked for: the MPC is opening it (a few seconds, a minute at most).
+    Opening,
+    /// Open, read only. `about` is what it is ("exFAT, 63.9 GB"); `dirty`,
+    /// that it wasn't safely removed last time.
+    Open { about: String, dirty: bool },
+    /// Not opened, and why, in the musician's words.
+    NotOpened(String),
+}
+
 /// The places column, top to bottom. A gap is drawn before Recent and
 /// before Trash.
-pub const SOURCES: [Source; 12] = [
+pub const SOURCES: [Source; 13] = [
     Source::Place(Place::Projects),
     Source::Place(Place::Sets),
     Source::Place(Place::Samples),
@@ -49,6 +66,7 @@ pub const SOURCES: [Source; 12] = [
     Source::Recent,
     Source::Favourites,
     Source::Factory,
+    Source::Place(Place::Card),
     Source::Place(Place::Trash),
 ];
 
@@ -119,7 +137,7 @@ impl Pick {
                     at(Source::Favourites),
                 ];
             }
-            Pick::Sample => &[Place::Samples, Place::Recordings],
+            Pick::Sample => &[Place::Samples, Place::Recordings, Place::Card],
             Pick::Project => &[Place::Projects],
             Pick::XyLayout => &[Place::Instruments],
         };
@@ -177,7 +195,7 @@ impl Pick {
             }
             Pick::Sample => {
                 matches!(r.kind, Kind::Folder | Kind::Audio(_))
-                    && matches!(loc.place, Place::Samples | Place::Recordings)
+                    && matches!(loc.place, Place::Samples | Place::Recordings | Place::Card)
             }
             Pick::Project => r.kind == Kind::Project,
             Pick::XyLayout => matches!(r.kind, Kind::Folder | Kind::Preset) && in_xy_folder(loc),
@@ -625,6 +643,11 @@ pub enum BrowseAction {
         loc: Loc,
         set: Set,
     },
+    /// The SD card place was shown with the card not open (or a tap on it
+    /// again after it couldn't be): open the card read only, and answer
+    /// with [`Browser::set_card`] (and the library's
+    /// [`Library::set_card`]). The app closes it when the browser closes.
+    OpenCard,
     /// A finger on the pad map (the Selected column's pads): kit pad `pad`
     /// (0 is A1) pressed or lifted. The app picks it, as a hit on the
     /// MPC's pad does, so Load names it, and plays what is on it while the
@@ -931,6 +954,8 @@ pub struct Browser {
     entries: Vec<Entry>,
     trash: Vec<TrashItem>,
     factory: Vec<String>,
+    /// The SD card place's state, from the app.
+    card: CardState,
     rows: Vec<Row>,
     selected: Option<usize>,
     top: usize,
@@ -1049,6 +1074,7 @@ impl Browser {
             entries: Vec::new(),
             trash: Vec::new(),
             factory: Vec::new(),
+            card: CardState::Closed,
             rows: Vec::new(),
             selected: None,
             top: 0,
@@ -1598,9 +1624,54 @@ impl Browser {
         match self.current() {
             Source::Place(Place::Trash) => self.send(Job::Trash),
             Source::Place(Place::Sets) => self.sets_refresh(),
+            Source::Place(Place::Card) if !matches!(self.card, CardState::Open { .. }) => {
+                self.entries.clear();
+                self.rebuild();
+            }
             Source::Place(_) => self.send_in(Lane::List, Job::List(self.folder.clone())),
             _ => self.rebuild(),
         }
+    }
+
+    /// The SD card's state, from the app (after [`BrowseAction::OpenCard`],
+    /// or when it closes). While the card place shows, it is listed again.
+    pub fn set_card(&mut self, state: CardState) {
+        if state == self.card {
+            return;
+        }
+        let was_open = matches!(self.card, CardState::Open { .. });
+        self.card = state;
+        match &self.card {
+            CardState::Open { dirty: true, .. } => {
+                self.status = Some((
+                    "This card wasn't safely removed last time: check it on a computer".into(),
+                    true,
+                ));
+            }
+            CardState::NotOpened(why) if self.current() == Source::Place(Place::Card) => {
+                self.status = Some((format!("The SD card didn't open: {why}"), true));
+            }
+            _ => {}
+        }
+        // What was copied from the card can't be pasted once it is closed.
+        if was_open
+            && !matches!(self.card, CardState::Open { .. })
+            && matches!(&self.clip, Some(Clip::Copy(l)) if l.place == Place::Card)
+        {
+            self.clip = None;
+        }
+        if self.current() == Source::Place(Place::Card) {
+            if !matches!(self.card, CardState::Open { .. }) {
+                self.folder = Loc::top(Place::Card);
+            }
+            self.selected = None;
+            self.refresh();
+        }
+    }
+
+    /// The SD card place's state.
+    pub fn card(&self) -> &CardState {
+        &self.card
     }
 
     // ------------------------------------------------------------ rows
@@ -1923,6 +1994,10 @@ impl Browser {
     }
 
     fn remember(&mut self, l: Loc) {
+        // The card comes and goes: what is on it isn't kept in Recent.
+        if l.place == Place::Card {
+            return;
+        }
         self.recent.retain(|r| *r != l);
         self.recent.insert(0, l);
         self.recent.truncate(RECENT);
@@ -1972,7 +2047,27 @@ impl Browser {
         if SOURCES[i] == Source::Place(Place::Sets) {
             self.sets_reset();
         }
+        if SOURCES[i] == Source::Place(Place::Card)
+            && matches!(self.card, CardState::Closed | CardState::NotOpened(_))
+        {
+            self.card = CardState::Opening;
+            self.status = None;
+            self.actions.push(BrowseAction::OpenCard);
+        }
         self.refresh();
+    }
+
+    /// The browser shows again (BROWSE, the folder icon): the SD card
+    /// place, if it is the one shown and its card was put away meanwhile,
+    /// asks for the card again rather than wait for a tap. A card that
+    /// didn't open waits for the tap.
+    pub fn shown_again(&mut self) {
+        if self.current() == Source::Place(Place::Card) && self.card == CardState::Closed {
+            self.card = CardState::Opening;
+            self.status = None;
+            self.actions.push(BrowseAction::OpenCard);
+            self.refresh();
+        }
     }
 
     /// The Plugins place is the one shown (and no picker is open).
@@ -2455,6 +2550,13 @@ impl Browser {
         }) else {
             return;
         };
+        if loc.place == Place::Card {
+            self.status = Some((
+                "Things on the SD card can't be starred: copy it into the library first".into(),
+                false,
+            ));
+            return;
+        }
         let now = if let Some(i) = self.favourites.iter().position(|f| *f == loc) {
             self.favourites.remove(i);
             false
@@ -2627,6 +2729,25 @@ impl Browser {
         }
         let row = self.selected_row().cloned();
         let loc = row.as_ref().and_then(|r| r.loc.clone());
+        // The SD card is read only: nothing on it is renamed, moved or
+        // deleted (ERASE included), and nothing is made there.
+        let on_card = loc.as_ref().map_or(
+            self.current() == Source::Place(Place::Card) && self.mode == Mode::Folder,
+            |l| l.place == Place::Card,
+        );
+        if on_card
+            && matches!(
+                b,
+                Button::Delete | Button::Rename | Button::Cut | Button::NewFolder | Button::Paste
+            )
+        {
+            self.status = Some((
+                "The SD card is read only: nothing on it changes. Copy puts a thing in the library."
+                    .into(),
+                false,
+            ));
+            return;
+        }
         // An earlier save's row stands for the project's folder: only
         // opening it means anything (never Delete, Rename ... on the project).
         if let Some(id) = row.as_ref().and_then(|r| r.version.clone()) {
@@ -3497,6 +3618,12 @@ impl Browser {
             (Mode::Versions(l, _), _) => format!("{} / Earlier saves", l.name()),
             (Mode::Found(q, _), _) => format!("Search: \u{201c}{q}\u{201d}"),
             (_, Source::Place(Place::Trash)) => "Trash".into(),
+            (_, Source::Place(Place::Card)) => match &self.card {
+                CardState::Open { about, .. } if self.folder.is_top() => {
+                    format!("SD card \u{b7} {about} \u{b7} read only")
+                }
+                _ => self.folder.display(),
+            },
             (_, Source::Place(_)) => self.folder.display(),
             (_, s) => s.label().into(),
         }
@@ -3538,6 +3665,8 @@ impl Browser {
                 // Nothing to make or paste in a search or a project's saves.
                 _ if self.mode != Mode::Folder => Vec::new(),
                 Source::Place(Place::Trash) => vec![Button::EmptyTrash],
+                // Read only: nothing is made or pasted there.
+                Source::Place(Place::Card) => Vec::new(),
                 Source::Place(p) => {
                     // Projects are made by saving, so no New folder there:
                     // Save and Save as instead (New project is at the foot
@@ -3689,6 +3818,17 @@ impl Browser {
                         "None saved yet: Save preset keeps the sound you have".into()
                     }
                     Source::Place(Place::Trash) => "The Trash is empty".into(),
+                    Source::Place(Place::Card) => match &self.card {
+                        CardState::Opening => "Opening the SD card, read only…".into(),
+                        CardState::NotOpened(why) => {
+                            format!("{why} Tap SD card to try again.")
+                        }
+                        CardState::Closed => "Tap SD card to open it".into(),
+                        CardState::Open { .. } if self.folder.is_top() => {
+                            "Nothing on the card".into()
+                        }
+                        CardState::Open { .. } => "Empty folder".into(),
+                    },
                     Source::Factory => "No factory kits on this stick".into(),
                     Source::Recent => "Nothing loaded or saved yet".into(),
                     Source::Favourites => "Nothing starred yet".into(),
@@ -3873,6 +4013,21 @@ impl Browser {
             d.buttons
                 .retain(|b| !matches!(b, Button::Cut | Button::Rename));
         }
+        if loc.is_some_and(|l| l.place == Place::Card) {
+            // Read only: heard, loaded and copied out, nothing else.
+            d.buttons.retain(|b| {
+                matches!(
+                    b,
+                    Button::Load
+                        | Button::LoadToPad
+                        | Button::Audition
+                        | Button::NewTrack
+                        | Button::Copy
+                )
+            });
+            d.lines
+                .push(("Read only".into(), "Copy, then Paste in a place".into()));
+        }
         if let Some(p) = &self.pick {
             d.buttons.retain(|b| p.allows(*b));
         }
@@ -3887,7 +4042,7 @@ impl SourceKind {
         matches!(self.0, Source::Place(_))
     }
     fn is_writable_place(&self) -> bool {
-        matches!(self.0, Source::Place(p) if p != Place::Trash)
+        matches!(self.0, Source::Place(p) if p != Place::Trash && p != Place::Card)
     }
 }
 

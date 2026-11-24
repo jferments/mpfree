@@ -110,6 +110,36 @@ fn a_slot_plays_into_its_own_track_and_routes_move_it() {
     assert_eq!(host.stats(0).notes, 1);
 }
 
+/// Spending (System status's tracks): each slot's render time counts
+/// while on, with its slot and track; a slot with nothing to play counts
+/// nothing; a take starts again; off, nothing counts.
+#[test]
+fn spending_counts_each_slots_render_only_while_on() {
+    let mut host = TrackHost::new(3, RATE, 1024);
+    host.swap(0, Some(poly())).unwrap();
+    host.route(0, Some(2));
+    let mut out = Split::new(3, 128);
+    let mut frame = 0;
+    host.note_on(0, 0, 60, 100);
+    run(&mut host, &mut out, &mut frame, 4, 128);
+    let mut seen = Vec::new();
+    host.take_spent(|slot, track, ns| seen.push((slot, track, ns)));
+    assert!(seen.is_empty(), "nothing while off: {seen:?}");
+    host.set_spending(true);
+    run(&mut host, &mut out, &mut frame, 4, 128);
+    host.take_spent(|slot, track, ns| seen.push((slot, track, ns)));
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!((seen[0].0, seen[0].1), (0, Some(2)));
+    assert!(seen[0].2 > 0);
+    seen.clear();
+    host.take_spent(|slot, track, ns| seen.push((slot, track, ns)));
+    assert!(seen.is_empty(), "a take starts again");
+    host.set_spending(false);
+    run(&mut host, &mut out, &mut frame, 2, 128);
+    host.take_spent(|slot, track, ns| seen.push((slot, track, ns)));
+    assert!(seen.is_empty(), "off again");
+}
+
 #[test]
 fn a_note_two_sources_hold_ends_with_the_last_of_them() {
     let mut host = TrackHost::new(1, RATE, 1024);

@@ -30,7 +30,7 @@ use mpfree_seq::arrange::SONG_LANE_LEN;
 use mpfree_seq::mpfree_moves::{Kind, Map, Moves, Target};
 use mpfree_seq::steps::Edit;
 use mpfree_seq::{
-    touch_fits, Clip, ClipId, ClipProgram, ClipRegion, DestId, Direction, LaunchGrid, Lock,
+    touch_fits, Clip, ClipId, ClipProgram, ClipRegion, DestId, Direction, LaunchGrid, Lock, LoopId,
     ModelError, Note, Project, Quantise, Speed, Touch, TouchPoint, MAX_LOCKS, MAX_NOTES,
     MAX_TRACKS, ROWS,
 };
@@ -109,6 +109,22 @@ pub struct MuteCue {
 pub struct SceneProgram {
     pub program: ClipProgram,
     pub line: Option<LaunchGrid>,
+    pub id: u32,
+}
+
+/// A scene's tempo (the Arrange refactor's 5.2b, `mpfree_seq::Scene::tempo`)
+/// as the view carries it: `bpm` from song tick `at` (None: at once, the
+/// scene launched while stopped). A tick already played when the view
+/// arrives (a late launch) is at once too, as the scene's cues are.
+/// `from` is the project's tempo when the launch was made: a tempo
+/// turned after it is the newer decision, and the scene's is left out.
+/// Every launch with a tempo has a new `id` (they rise), so the audio
+/// half changes the tempo once a launch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SceneTempo {
+    pub bpm: f64,
+    pub at: Option<Tick>,
+    pub from: f64,
     pub id: u32,
 }
 
@@ -220,6 +236,31 @@ pub(crate) struct AudioView {
     pub once: bool,
 }
 
+/// A loop cell as the view keeps it (phase 4): its loop and the clip's
+/// lasting id. The loop's id is kept as two halves so the view's clips
+/// stay 8-byte aligned (a `u128` would make every [`ClipView`] 16-byte
+/// aligned, which the track player's hot loop pays for); [`Self::id`]
+/// joins them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LoopView {
+    halves: [u64; 2],
+    pub clip: ClipId,
+}
+
+impl LoopView {
+    pub fn new(id: LoopId, clip: ClipId) -> Self {
+        Self {
+            halves: [id.0 as u64, (id.0 >> 64) as u64],
+            clip,
+        }
+    }
+
+    /// The loop it places.
+    pub fn id(&self) -> LoopId {
+        LoopId(u128::from(self.halves[0]) | u128::from(self.halves[1]) << 64)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ClipView {
     pub slot: usize,
@@ -262,22 +303,16 @@ pub(crate) struct ClipView {
     pub holds_notes: bool,
     /// An audio clip's regions; None for a note clip.
     pub audio: Option<AudioView>,
+    /// A loop cell's loop on an audio track (phase 4, step 4b): what the
+    /// track player has the looper play ([`crate::AudioPlays::Loop`]).
+    /// None for any other clip.
+    pub looped: Option<LoopView>,
 }
 
 impl ClipView {
     /// A note of the clip, compiled: quantise and speed applied.
     fn note_view(&self, n: &Note) -> NoteView {
-        let at = self
-            .quantise
-            .map_or(n.tick as f64, |q| q.apply(n.tick as f64));
-        NoteView {
-            // Quantise can move a note at the very end onto the next pass's start.
-            local: at.rem_euclid(self.length as f64),
-            len: self.speed.to_song(n.len as f64),
-            note: n.note,
-            velocity: n.velocity,
-            src: *n,
-        }
+        note_view(self.quantise, self.length, self.speed, n)
     }
 
     /// A lock of the clip, compiled: quantise applied, like its note.
@@ -717,6 +752,8 @@ pub struct PlayView {
     /// The song's tempo map while song mode plays its tempo points
     /// ([`PlayView::set_tempo_map`]), for the host's transport.
     pub(crate) tempo: Option<TempoMap>,
+    /// The tempo the scene launched last sets ([`PlayView::set_scene_tempo`]).
+    pub(crate) scene_tempo: Option<SceneTempo>,
     /// The project's launch quantise ([`Project::launch`]): the line a
     /// live hit on a pad that starts on the line waits for (sampler
     /// R5.3b; the host waits, [`PlayView::launch`]).
@@ -825,6 +862,7 @@ impl PlayView {
             song_keys: Vec::new(),
             includes: None,
             tempo: None,
+            scene_tempo: None,
             launch: project.launch,
             audio: project
                 .tracks
@@ -847,6 +885,19 @@ impl PlayView {
 
     pub fn tempo_map(&self) -> Option<&TempoMap> {
         self.tempo.as_ref()
+    }
+
+    /// The tempo the scene launched last sets on its line (the Arrange
+    /// refactor's 5.2b), or None. The view only carries it; the host's
+    /// audio half changes the transport's tempo on the frame its tick
+    /// comes (`Command::TempoNow`), unless song mode plays the song's
+    /// tempo points or a followed clock leads.
+    pub fn set_scene_tempo(&mut self, t: Option<SceneTempo>) {
+        self.scene_tempo = t;
+    }
+
+    pub fn scene_tempo(&self) -> Option<SceneTempo> {
+        self.scene_tempo
     }
 
     /// The project's launch quantise as it was compiled: where a live hit
@@ -918,6 +969,7 @@ impl PlayView {
                 steps: 0,
                 holds_notes: false,
                 audio: None,
+                looped: None,
             };
             // Recorded moves land here in place too: keep it as they would.
             song.stamp = stamp_of(&song);
@@ -1461,6 +1513,13 @@ pub(crate) fn view_of(
     } else {
         clip.moves.clone()
     };
+    let (quantise, length, speed) = (clip.quantise, clip.length, clip.speed);
+    let mut notes: Vec<NoteView> = clip
+        .notes
+        .iter()
+        .map(|n| note_view(quantise, length, speed, n))
+        .collect();
+    notes.sort_by(|a, b| a.local.total_cmp(&b.local));
     let mut view = ClipView {
         slot,
         origin,
@@ -1470,7 +1529,7 @@ pub(crate) fn view_of(
         quantise: clip.quantise,
         song_len: clip.speed.to_song(clip.length as f64),
         swing: clip.swing.or(track_swing),
-        notes: Vec::new(),
+        notes,
         locks: Vec::new(),
         moves,
         touch: clip.touch.clone(),
@@ -1486,9 +1545,8 @@ pub(crate) fn view_of(
             last_frame: a.last_frame,
             once: clip.once,
         }),
+        looped: clip.loop_id().map(|id| LoopView::new(id, clip.id)),
     };
-    view.notes = clip.notes.iter().map(|n| view.note_view(n)).collect();
-    view.notes.sort_by(|a, b| a.local.total_cmp(&b.local));
     view.locks = clip
         .locks
         .iter()
@@ -1498,6 +1556,21 @@ pub(crate) fn view_of(
     view.locks.sort_by(|a, b| a.local.total_cmp(&b.local));
     view.stamp = stamp_of(&view);
     view
+}
+
+/// Note `n` of a clip `length` ticks long at `speed` with `quantise`,
+/// compiled ([`ClipView::note_view`]); apart from the view, so a compile's
+/// loop over the notes keeps the three in registers.
+fn note_view(quantise: Option<Quantise>, length: Tick, speed: Speed, n: &Note) -> NoteView {
+    let at = quantise.map_or(n.tick as f64, |q| q.apply(n.tick as f64));
+    NoteView {
+        // Quantise can move a note at the very end onto the next pass's start.
+        local: at.rem_euclid(length as f64),
+        len: speed.to_song(n.len as f64),
+        note: n.note,
+        velocity: n.velocity,
+        src: *n,
+    }
 }
 
 /// FNV-1a over whole words, finished with a mix so that the sums in
@@ -1739,6 +1812,7 @@ fn stamp_of(v: &ClipView) -> u64 {
         steps,
         holds_notes,
         audio,
+        looped,
     } = v;
     let mut h = Fnv::new();
     h.word(*length as u64);
@@ -1754,6 +1828,9 @@ fn stamp_of(v: &ClipView) -> u64 {
     h.word(u64::from(*steps));
     h.word(u64::from(*holds_notes));
     h.word(audio.as_ref().map_or(0, audio_hash));
+    // A loop cell's loop: its two halves, so another loop is another stamp.
+    h.word(looped.map_or(0, |l| l.halves[0]));
+    h.word(looped.map_or(0, |l| l.halves[1]));
     let notes = notes.iter().map(note_hash);
     let locks = locks.iter().map(lock_hash);
     let touch = touch.iter().enumerate().map(|(i, p)| touch_hash(i, *p));

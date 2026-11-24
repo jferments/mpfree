@@ -1,102 +1,102 @@
 # The pitched reads' quality ratchet: every number may stay or get better, never worse.
 # Written by `MPFREE_QUALITY_BLESS=1 cargo test --locked -p mpfree-fxlab --test readers`;
 # see docs/dev/design/pitched-reads.md. key<TAB>value
-reads/grains[15 kHz an octave up]/heard_db	0
-reads/grains[18 kHz a fifth up]/heard_db	-2.4151
-reads/grains[a fifth down, 13.5 kHz out]/level_db	-4.608
-reads/grains[a fifth down, 13.5 kHz out]/spur_worst_db	-3.4072
-reads/grains[a fifth down, 3 kHz out]/level_db	-0.0176
-reads/grains[a fifth down, 3 kHz out]/spur_worst_db	-50.1629
-reads/grains[a fifth down, 9 kHz out]/level_db	-1.1334
-reads/grains[a fifth down, 9 kHz out]/spur_worst_db	-43.5527
-reads/grains[a fifth up, 13.5 kHz out]/level_db	-0.2581
-reads/grains[a fifth up, 13.5 kHz out]/spur_worst_db	-29.7099
-reads/grains[a fifth up, 3 kHz out]/level_db	-0.0007
-reads/grains[a fifth up, 3 kHz out]/spur_worst_db	-72.9519
-reads/grains[a fifth up, 9 kHz out]/level_db	-0.0547
-reads/grains[a fifth up, 9 kHz out]/spur_worst_db	-41.7638
-reads/grains[a semitone down, 13.5 kHz out]/level_db	-1.3972
-reads/grains[a semitone down, 13.5 kHz out]/spur_worst_db	-16.2859
-reads/grains[a semitone down, 3 kHz out]/level_db	-0.0045
-reads/grains[a semitone down, 3 kHz out]/spur_worst_db	-60.964
-reads/grains[a semitone down, 9 kHz out]/level_db	-0.3191
-reads/grains[a semitone down, 9 kHz out]/spur_worst_db	-28.8939
-reads/grains[a semitone up, 13.5 kHz out]/level_db	-0.9253
-reads/grains[a semitone up, 13.5 kHz out]/spur_worst_db	-19.0368
-reads/grains[a semitone up, 3 kHz out]/level_db	-0.0028
-reads/grains[a semitone up, 3 kHz out]/spur_worst_db	-63.2895
-reads/grains[a semitone up, 9 kHz out]/level_db	-0.2067
-reads/grains[a semitone up, 9 kHz out]/spur_worst_db	-31.4533
-reads/grains[an octave and a fifth up, 13.5 kHz out]/level_db	-0.0178
-reads/grains[an octave and a fifth up, 13.5 kHz out]/spur_worst_db	-50.2461
-reads/grains[an octave and a fifth up, 3 kHz out]/level_db	0
-reads/grains[an octave and a fifth up, 3 kHz out]/spur_worst_db	-91.9196
-reads/grains[an octave and a fifth up, 9 kHz out]/level_db	-0.0036
-reads/grains[an octave and a fifth up, 9 kHz out]/spur_worst_db	-61.7892
-reads/grains[an octave down, 3 kHz out]/level_db	-0.0513
-reads/grains[an octave down, 3 kHz out]/spur_worst_db	-44.5432
-reads/grains[an octave down, 9 kHz out]/level_db	-3.004
-reads/grains[an octave down, 9 kHz out]/spur_worst_db	-7.677
-reads/grains[two semitones down, 13.5 kHz out]/level_db	-1.7124
-reads/grains[two semitones down, 13.5 kHz out]/spur_worst_db	-13.5279
-reads/grains[two semitones down, 3 kHz out]/level_db	-0.0056
-reads/grains[two semitones down, 3 kHz out]/spur_worst_db	-58.4507
-reads/grains[two semitones down, 9 kHz out]/level_db	-0.3958
-reads/grains[two semitones down, 9 kHz out]/spur_worst_db	-26.2578
-reads/grains[two semitones up, 13.5 kHz out]/level_db	-0.7512
-reads/grains[two semitones up, 13.5 kHz out]/spur_worst_db	-22.426
-reads/grains[two semitones up, 3 kHz out]/level_db	-0.0023
-reads/grains[two semitones up, 3 kHz out]/spur_worst_db	-66.4846
-reads/grains[two semitones up, 9 kHz out]/level_db	-0.166
-reads/grains[two semitones up, 9 kHz out]/spur_worst_db	-34.7611
+reads/grains[15 kHz an octave up]/heard_db	-68.2811
+reads/grains[18 kHz a fifth up]/heard_db	-54.9171
+reads/grains[a fifth down, 13.5 kHz out]/level_db	-5.923
+reads/grains[a fifth down, 13.5 kHz out]/spur_worst_db	-9.3058
+reads/grains[a fifth down, 3 kHz out]/level_db	0.0153
+reads/grains[a fifth down, 3 kHz out]/spur_worst_db	-55.7025
+reads/grains[a fifth down, 9 kHz out]/level_db	-0.348
+reads/grains[a fifth down, 9 kHz out]/spur_worst_db	-57.9236
+reads/grains[a fifth up, 13.5 kHz out]/level_db	0.4008
+reads/grains[a fifth up, 13.5 kHz out]/spur_worst_db	-70.5221
+reads/grains[a fifth up, 3 kHz out]/level_db	0.0541
+reads/grains[a fifth up, 3 kHz out]/spur_worst_db	-73.597
+reads/grains[a fifth up, 9 kHz out]/level_db	0.0085
+reads/grains[a fifth up, 9 kHz out]/spur_worst_db	-74.6255
+reads/grains[a semitone down, 13.5 kHz out]/level_db	-0.2066
+reads/grains[a semitone down, 13.5 kHz out]/spur_worst_db	-55.2116
+reads/grains[a semitone down, 3 kHz out]/level_db	0.0242
+reads/grains[a semitone down, 3 kHz out]/spur_worst_db	-57.6798
+reads/grains[a semitone down, 9 kHz out]/level_db	0.0104
+reads/grains[a semitone down, 9 kHz out]/spur_worst_db	-72.32
+reads/grains[a semitone up, 13.5 kHz out]/level_db	0.194
+reads/grains[a semitone up, 13.5 kHz out]/spur_worst_db	-55.132
+reads/grains[a semitone up, 3 kHz out]/level_db	0.0269
+reads/grains[a semitone up, 3 kHz out]/spur_worst_db	-57.5557
+reads/grains[a semitone up, 9 kHz out]/level_db	0.0014
+reads/grains[a semitone up, 9 kHz out]/spur_worst_db	-64.9167
+reads/grains[an octave and a fifth up, 13.5 kHz out]/level_db	0.3958
+reads/grains[an octave and a fifth up, 13.5 kHz out]/spur_worst_db	-79.9603
+reads/grains[an octave and a fifth up, 3 kHz out]/level_db	0.0528
+reads/grains[an octave and a fifth up, 3 kHz out]/spur_worst_db	-78.9048
+reads/grains[an octave and a fifth up, 9 kHz out]/level_db	0.0027
+reads/grains[an octave and a fifth up, 9 kHz out]/spur_worst_db	-97.727
+reads/grains[an octave down, 3 kHz out]/level_db	0.0049
+reads/grains[an octave down, 3 kHz out]/spur_worst_db	-48.4641
+reads/grains[an octave down, 9 kHz out]/level_db	-3.1598
+reads/grains[an octave down, 9 kHz out]/spur_worst_db	-22.4696
+reads/grains[two semitones down, 13.5 kHz out]/level_db	-0.5638
+reads/grains[two semitones down, 13.5 kHz out]/spur_worst_db	-56.2324
+reads/grains[two semitones down, 3 kHz out]/level_db	0.0227
+reads/grains[two semitones down, 3 kHz out]/spur_worst_db	-56.4631
+reads/grains[two semitones down, 9 kHz out]/level_db	0.0078
+reads/grains[two semitones down, 9 kHz out]/spur_worst_db	-67.7116
+reads/grains[two semitones up, 13.5 kHz out]/level_db	0.2929
+reads/grains[two semitones up, 13.5 kHz out]/spur_worst_db	-62.928
+reads/grains[two semitones up, 3 kHz out]/level_db	0.0282
+reads/grains[two semitones up, 3 kHz out]/spur_worst_db	-59.5825
+reads/grains[two semitones up, 9 kHz out]/level_db	-0.0051
+reads/grains[two semitones up, 9 kHz out]/spur_worst_db	-63.5773
 reads/pad grains[15 kHz an octave up]/heard_db	-83.4248
 reads/pad grains[18 kHz a fifth up]/heard_db	-54.9174
-reads/pad grains[a fifth down, 13.5 kHz out]/level_db	-4.608
-reads/pad grains[a fifth down, 13.5 kHz out]/spur_worst_db	-3.4072
-reads/pad grains[a fifth down, 3 kHz out]/level_db	-0.0176
-reads/pad grains[a fifth down, 3 kHz out]/spur_worst_db	-50.1629
-reads/pad grains[a fifth down, 9 kHz out]/level_db	-1.1334
-reads/pad grains[a fifth down, 9 kHz out]/spur_worst_db	-43.5527
-reads/pad grains[a fifth up, 13.5 kHz out]/level_db	0.013
+reads/pad grains[a fifth down, 13.5 kHz out]/level_db	-5.923
+reads/pad grains[a fifth down, 13.5 kHz out]/spur_worst_db	-9.3058
+reads/pad grains[a fifth down, 3 kHz out]/level_db	0.0153
+reads/pad grains[a fifth down, 3 kHz out]/spur_worst_db	-55.7025
+reads/pad grains[a fifth down, 9 kHz out]/level_db	-0.348
+reads/pad grains[a fifth down, 9 kHz out]/spur_worst_db	-57.9236
+reads/pad grains[a fifth up, 13.5 kHz out]/level_db	0.4008
 reads/pad grains[a fifth up, 13.5 kHz out]/spur_worst_db	-70.5222
-reads/pad grains[a fifth up, 3 kHz out]/level_db	0.0133
+reads/pad grains[a fifth up, 3 kHz out]/level_db	0.0541
 reads/pad grains[a fifth up, 3 kHz out]/spur_worst_db	-73.5969
-reads/pad grains[a fifth up, 9 kHz out]/level_db	0.0081
+reads/pad grains[a fifth up, 9 kHz out]/level_db	0.0085
 reads/pad grains[a fifth up, 9 kHz out]/spur_worst_db	-74.6254
-reads/pad grains[a semitone down, 13.5 kHz out]/level_db	-1.3972
-reads/pad grains[a semitone down, 13.5 kHz out]/spur_worst_db	-16.2859
-reads/pad grains[a semitone down, 3 kHz out]/level_db	-0.0045
-reads/pad grains[a semitone down, 3 kHz out]/spur_worst_db	-60.964
-reads/pad grains[a semitone down, 9 kHz out]/level_db	-0.3191
-reads/pad grains[a semitone down, 9 kHz out]/spur_worst_db	-28.8939
-reads/pad grains[a semitone up, 13.5 kHz out]/level_db	-0.9253
-reads/pad grains[a semitone up, 13.5 kHz out]/spur_worst_db	-19.0368
-reads/pad grains[a semitone up, 3 kHz out]/level_db	-0.0028
-reads/pad grains[a semitone up, 3 kHz out]/spur_worst_db	-63.2895
-reads/pad grains[a semitone up, 9 kHz out]/level_db	-0.2067
-reads/pad grains[a semitone up, 9 kHz out]/spur_worst_db	-31.4533
-reads/pad grains[an octave and a fifth up, 13.5 kHz out]/level_db	0.014
+reads/pad grains[a semitone down, 13.5 kHz out]/level_db	-0.2066
+reads/pad grains[a semitone down, 13.5 kHz out]/spur_worst_db	-55.2116
+reads/pad grains[a semitone down, 3 kHz out]/level_db	0.0242
+reads/pad grains[a semitone down, 3 kHz out]/spur_worst_db	-57.6798
+reads/pad grains[a semitone down, 9 kHz out]/level_db	0.0104
+reads/pad grains[a semitone down, 9 kHz out]/spur_worst_db	-72.32
+reads/pad grains[a semitone up, 13.5 kHz out]/level_db	0.194
+reads/pad grains[a semitone up, 13.5 kHz out]/spur_worst_db	-55.132
+reads/pad grains[a semitone up, 3 kHz out]/level_db	0.0269
+reads/pad grains[a semitone up, 3 kHz out]/spur_worst_db	-57.5557
+reads/pad grains[a semitone up, 9 kHz out]/level_db	0.0014
+reads/pad grains[a semitone up, 9 kHz out]/spur_worst_db	-64.9167
+reads/pad grains[an octave and a fifth up, 13.5 kHz out]/level_db	0.4018
 reads/pad grains[an octave and a fifth up, 13.5 kHz out]/spur_worst_db	-70.5221
-reads/pad grains[an octave and a fifth up, 3 kHz out]/level_db	0.0142
+reads/pad grains[an octave and a fifth up, 3 kHz out]/level_db	0.055
 reads/pad grains[an octave and a fifth up, 3 kHz out]/spur_worst_db	-73.5971
-reads/pad grains[an octave and a fifth up, 9 kHz out]/level_db	0.0087
+reads/pad grains[an octave and a fifth up, 9 kHz out]/level_db	0.0091
 reads/pad grains[an octave and a fifth up, 9 kHz out]/spur_worst_db	-74.6254
-reads/pad grains[an octave down, 3 kHz out]/level_db	-0.0513
-reads/pad grains[an octave down, 3 kHz out]/spur_worst_db	-44.5432
-reads/pad grains[an octave down, 9 kHz out]/level_db	-3.004
-reads/pad grains[an octave down, 9 kHz out]/spur_worst_db	-7.677
-reads/pad grains[two semitones down, 13.5 kHz out]/level_db	-1.7124
-reads/pad grains[two semitones down, 13.5 kHz out]/spur_worst_db	-13.5279
-reads/pad grains[two semitones down, 3 kHz out]/level_db	-0.0056
-reads/pad grains[two semitones down, 3 kHz out]/spur_worst_db	-58.4507
-reads/pad grains[two semitones down, 9 kHz out]/level_db	-0.3958
-reads/pad grains[two semitones down, 9 kHz out]/spur_worst_db	-26.2578
-reads/pad grains[two semitones up, 13.5 kHz out]/level_db	-0.7512
-reads/pad grains[two semitones up, 13.5 kHz out]/spur_worst_db	-22.426
-reads/pad grains[two semitones up, 3 kHz out]/level_db	-0.0023
-reads/pad grains[two semitones up, 3 kHz out]/spur_worst_db	-66.4846
-reads/pad grains[two semitones up, 9 kHz out]/level_db	-0.166
-reads/pad grains[two semitones up, 9 kHz out]/spur_worst_db	-34.7611
+reads/pad grains[an octave down, 3 kHz out]/level_db	0.0049
+reads/pad grains[an octave down, 3 kHz out]/spur_worst_db	-48.4641
+reads/pad grains[an octave down, 9 kHz out]/level_db	-3.1598
+reads/pad grains[an octave down, 9 kHz out]/spur_worst_db	-22.4696
+reads/pad grains[two semitones down, 13.5 kHz out]/level_db	-0.5638
+reads/pad grains[two semitones down, 13.5 kHz out]/spur_worst_db	-56.2324
+reads/pad grains[two semitones down, 3 kHz out]/level_db	0.0227
+reads/pad grains[two semitones down, 3 kHz out]/spur_worst_db	-56.4631
+reads/pad grains[two semitones down, 9 kHz out]/level_db	0.0078
+reads/pad grains[two semitones down, 9 kHz out]/spur_worst_db	-67.7116
+reads/pad grains[two semitones up, 13.5 kHz out]/level_db	0.2929
+reads/pad grains[two semitones up, 13.5 kHz out]/spur_worst_db	-62.928
+reads/pad grains[two semitones up, 3 kHz out]/level_db	0.0282
+reads/pad grains[two semitones up, 3 kHz out]/spur_worst_db	-59.5825
+reads/pad grains[two semitones up, 9 kHz out]/level_db	-0.0051
+reads/pad grains[two semitones up, 9 kHz out]/spur_worst_db	-63.5773
 reads/pad vintage[15 kHz an octave up]/heard_db	-3.0104
 reads/pad vintage[18 kHz a fifth up]/heard_db	-5.4256
 reads/pad vintage[a fifth down, 13.5 kHz out]/level_db	-4.6081

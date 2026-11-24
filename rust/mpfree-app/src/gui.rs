@@ -101,6 +101,10 @@ pub const OPTIONS_LAYOUT: &str = "col(header:60, row(options:*, help:470):*, hin
 /// wide range), over the page it was asked from.
 pub const NUMPAD: &str = "numpad";
 pub const NUMPAD_PAGE: &str = "Type a number";
+/// The hint line while an audio track's input list is open (phase 4,
+/// board 4).
+pub const INPUT_LIST_HINT: &str =
+    "Tap an input: the track records from it   \u{b7}   a dim one says why it can't   \u{b7}   tap anywhere else: no change";
 const NUMPAD_LAYOUT: &str = "col(header:60, numpad:*, hint:26)";
 const NUMPAD_HINT: &str = "Tap the number, then Enter   ·   wheel or - / +: step it   ·   push the wheel: Enter   ·   Cancel: leave it as it was";
 /// The text keyboard (the sampler review's R1: names), over the page it
@@ -166,6 +170,8 @@ fn guarded(widget: &str, t: &mpfree_ui::Target) -> bool {
     match (widget, t.id) {
         // The song list's Remove.
         (SONG_LIST, "button") => label == "Remove",
+        // The scene card's Delete row (5.2), over the grid or the list.
+        (mpfree_time_ui::view::CLIPS | SONG_LIST, "scene-delete") => true,
         // The Song view's Delete (a block) and Erase (an audio region),
         // and the note editor's Delete.
         (SONG, "button") | (NOTES, "button") => label == "Delete",
@@ -220,6 +226,9 @@ pub const GUIDE_LAYOUT: &str = "col(header:60, row(guide:*, found:400):*, hint:2
 pub const KITS_PAGE: &str = "Kits";
 /// The Synth tab with the list of synths over its page (app/synth_pick.rs).
 pub const SYNTH_PICK_PAGE: &str = "Synth · synths";
+/// The Synth tab with What the pads play over its page (sampler step
+/// 15e, app/pad_map_panel.rs).
+pub const PAD_MAP_PAGE: &str = "Synth · pads";
 /// The Synth tab's middle (the title bar over the page) in its layout,
 /// which the list of synths takes.
 const SYNTH_MIDDLE: &str = "col(synth-title:56, synth-tiles:*):*";
@@ -510,7 +519,8 @@ const SHIFT_SYNTH_HINT: &str =
 const SHIFT_SAMPLE_HINT: &str =
     "SHIFT +   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: back to bar 1";
 /// SHIFT held on the Sample tab's Play page, where a touch on a knob arms
-/// MIDI Learn on the pad's setting.
+/// MIDI Learn on the pad's setting, or with the Grain tool open, where a
+/// touch on a row or a Q-Link card arms it on the layer's grain setting.
 const SHIFT_SAMPLE_LEARN_HINT: &str =
     "SHIFT +   touch a knob: MIDI Learn   ·   wheel: pad   ·   Q-Links: finer   ·   UNDO: redo   ·   MENU: Prefs   ·   STOP: back to bar 1";
 /// SHIFT held on the Pads tab, where a touch on Level, Pan or Tune arms
@@ -735,6 +745,8 @@ enum HistoryOf {
     Perform,
     /// The Synth tab's or the mixer's turns, which the app keeps.
     Turns(UndoOn),
+    /// The song's patches, on the patch screens (live shows C1).
+    Patches,
 }
 
 /// The undo history open over a page: whose, the page to go back to, and
@@ -800,6 +812,8 @@ enum TypeTo {
     /// A song marker's name (the Song view's Rename, a section picked;
     /// Arrange 3.3).
     MarkerName(usize),
+    /// A patch's name (the patch editor's name tapped; live shows C1).
+    PatchName(usize),
     /// An audio clip's name, as (track, slot): its card's Name row
     /// (layout spec 4j).
     ClipName(usize, usize),
@@ -817,6 +831,7 @@ impl TypeTo {
                 | TypeTo::SceneName(_)
                 | TypeTo::PerformPage(_)
                 | TypeTo::MarkerName(_)
+                | TypeTo::PatchName(_)
                 | TypeTo::ClipName(..)
                 | TypeTo::XyNames(_)
         )
@@ -1089,6 +1104,10 @@ fn fill_sounds(
 /// The drum synth's id: its notes are drums, so it never transposes.
 const DRUMS_ENGINE: &str = "mpfree.drums";
 
+/// A tap on the Looper tab's Records into, loops in audio cells (phase 4,
+/// board 5): a loop records from its track's input.
+pub const ON_TRACKS_INPUT: &str = "A loop records from its track's input: tap the input under an audio track's name on Clips to change it";
+
 /// The loops as the Loop tracks' cells show them, from the Looper's view:
 /// each loop's layers and whether it overdubs, how many hold a loop, and
 /// the memory in use.
@@ -1109,12 +1128,18 @@ fn loops_info(v: &crate::looping::LooperView) -> mpfree_time_ui::view::LoopsInfo
     info.in_use = v.loops.iter().filter(|s| s.phase != Phase::Empty).count();
     info.waiting = v.loops.iter().any(|s| s.phase == Phase::Armed);
     info.recording = v.loops.iter().any(|s| s.phase == Phase::Recording);
+    info.ids = v.ids;
     let m = v.memory;
     info.memory_pct = (m.used * 100)
         .checked_div(m.capacity)
         .map_or(0, |p| p.min(100) as u8);
     info
 }
+
+/// What the Sample and Pads pages' hint depends on ([`Player::sample_after`]):
+/// the keyboard shown, a row that pad hits edit or the kit's Tuning picked,
+/// the Wave page's REC, a take shown, and its Warp, Grain or Slice tool.
+type SampleKeys = (bool, (bool, bool), bool, bool, (bool, bool, bool));
 
 pub enum ToUi {
     /// Controller mode (controller_out.rs) is on, as shown, or off.
@@ -1167,6 +1192,12 @@ pub enum ToUi {
     KitIds(Box<crate::instrument_list::KitIds>),
     /// An open done: the engines it replaced, to free here.
     ProjectBack(Box<crate::project::Opening>),
+    /// The song's patches as the audio loop played them before an edit
+    /// ([`FromUi::Patches`]), to free here.
+    PatchesBack(Box<crate::patch_in::PatchRig>),
+    /// What the keys do now (live shows C1): the patch playing, a pick
+    /// waiting for the hands, the keys down. Sent when it changes.
+    Keys(Box<crate::patch_screen::KeysNow>),
     /// How a set's song's ending stands (live shows B1, song_end.rs).
     SongEnd(crate::song_end::News),
     /// A learned Show control was pressed (live shows B1): its id in
@@ -1182,6 +1213,10 @@ pub enum ToUi {
     /// A line shown in place of the hint for [`TELL_SECONDS`] (it was
     /// logged as a `Line` too): why something did nothing.
     Tell(String),
+    /// An audio track's input list, as the mixer offers it, in answer to
+    /// `AudioAction::Inputs` (phase 4, board 4): it opens over the Clips
+    /// grid or the Song view, whichever shows.
+    InputList(Box<mpfree_time_ui::inputs::InputChoices>),
     /// UNDO (true: SHIFT + UNDO, redo) on a page whose history the screen
     /// picks ([`Player::undo`]).
     Undo(bool),
@@ -1289,6 +1324,9 @@ pub enum ToUi {
     /// channel of its own, by kit and pad): the Pads tab's Effects row
     /// names them.
     PadFx(Vec<crate::modpanels::PadFx>),
+    /// Each kit's tuning as the app names it, in kit order (tunings step
+    /// T6): Edit pad's Tuning and the pad's line show the kit's.
+    KitTunings(Vec<mpfree_sampler_ui::play_tab::KitTuning>),
     /// The synth-voice pads that play through the Synth channel (past the
     /// sixteen with a synth of their own, or whose own couldn't be made),
     /// by kit and pad: the Pads tab says so under the pad.
@@ -1422,11 +1460,12 @@ pub enum ToUi {
     },
     /// Every value of the synth, in its parameter order (after a preset).
     SynthValues(Vec<f32>),
-    /// Learned MIDI controls moved kit pads' own settings (MIDI Learn,
-    /// `Owner::Pad`): `(kit, pad, setting, value)`, each in the setting's
-    /// units, set on the kit as the Play tab's knob sets it
+    /// Learned MIDI controls moved kit pads' settings (MIDI Learn,
+    /// `Owner::Pad`, `Owner::KitPad`): `(kit, pad, setting, value)`, each
+    /// in the setting's units, set on the kit as the Play tab's knob sets a
+    /// pad's own and the Grain tool's row a layer's grain setting
     /// ([`sample_page::SamplePage::learned`]).
-    PadsLearned(Vec<(usize, u8, mpfree_sampler::engine::PadField, f32)>),
+    PadsLearned(Vec<(usize, u8, crate::sampler::PadParam, f32)>),
     /// Save preset's answer (`presets::Ask::Text`): the Synth tab's sound
     /// as preset text and the engine's folder it goes in, or why not.
     PresetText {
@@ -1447,6 +1486,9 @@ pub enum ToUi {
     /// The list of synths over the Synth tab, or closed (None)
     /// (app/synth_pick.rs, the instrument redesign's step 6).
     SynthPick(Option<Box<crate::app::SynthPickView>>),
+    /// What the pads play, the panel over the Synth tab, or closed (None)
+    /// (app/pad_map_panel.rs, sampler step 15e).
+    PadMap(Option<Box<crate::app::PadMapView>>),
     /// What the pads play: the selected track's instrument, or the synth
     /// chosen for them (app/pads_focus.rs).
     PadsFocus(crate::app::PadFocus),
@@ -1547,6 +1589,8 @@ pub enum ToUi {
     },
     /// Open the Touch lab page; any `Show` closes it again.
     TouchLab,
+    /// Open Play's patch list (Play's MENU, live shows C1).
+    PatchList,
     /// Open the Calibrate touch page; any `Show` closes it again.
     CalibrateTouch,
     /// The touch tuning kept in the store (at the start).
@@ -1566,6 +1610,8 @@ pub enum ToUi {
     LevelsWheel(i32),
     /// The arp's pattern list.
     Patterns(Vec<(String, Pattern)>),
+    /// The arp's phrase list.
+    Phrases(mpfree_arp_ui::PhraseList),
     Workspace(Box<WorkspaceView>),
     /// A step recorded on the pads: the pattern so far and the next step.
     Recorded(Box<Pattern>, usize),
@@ -1743,6 +1789,13 @@ pub enum FromUi {
     /// Start an export: the pass plays the range into its files
     /// (export.rs); it comes back as `ToUi::ExportOver`.
     Export(Box<crate::export::Run>),
+    /// The song's patches after an edit on the patch screens (live shows
+    /// C1): the audio loop plays them from now on and sends the old ones
+    /// back ([`ToUi::PatchesBack`]).
+    Patches(Box<crate::patch_in::PatchRig>),
+    /// The keys play patch N (from 0; None: as routed), at once: a tap
+    /// on the patch list or its wheel.
+    PickPatch(Option<usize>),
     /// Open a project (or a new one): the pieces built here, swapped in
     /// between two periods (project.rs).
     OpenProject(Box<crate::project::Opening>),
@@ -1797,6 +1850,21 @@ pub enum FromUi {
     /// The list's Layer switch on or off (step 11b): a tap adds a synth to
     /// what the pads play or takes it off.
     SynthPickLayer(bool),
+    /// The list's Synths (false) or Kits (true) side (sampler step 15e).
+    SynthPickSide(bool),
+    /// A tile of the list's Kits side (sampler step 15e): the kit in place
+    /// `kit` (None: the first tile, Follow track or Follow base), by
+    /// `name`, `empty` for one with no sounds, `banks` a bit for each bank
+    /// of it that holds sounds.
+    SynthPickKit {
+        kit: Option<usize>,
+        name: String,
+        empty: bool,
+        banks: u8,
+    },
+    /// The source bank row: the bank the pads are on plays this bank of its
+    /// own kit (sampler step 15e).
+    SynthPickFrom(u8),
     /// The Synth tab's gear: its options, as MENU opens them; on the
     /// options, their Back button: back to the page.
     OptionsButton,
@@ -1804,8 +1872,14 @@ pub enum FromUi {
     /// pads whichever track is selected, or Follow track
     /// (app/pads_focus.rs).
     PlayOnPads,
-    /// A tap on the "Pads: Poly" chip: Follow track.
-    FollowTrack,
+    /// A tap on the "Pads: Poly" chip: What the pads play opens over the
+    /// Synth tab (sampler step 15e), or, open, closes.
+    PadMapOpen,
+    /// A tap on What the pads play: `act` on `row`.
+    PadMapTap {
+        row: crate::app::MapRow,
+        act: crate::app::MapAct,
+    },
     /// The preset picker on the Synth tab's sound: try, load, put back or
     /// save a preset (presets.rs).
     Preset(crate::presets::Ask),
@@ -1970,6 +2044,12 @@ pub enum FromUi {
     SamplePadLive {
         kit: usize,
         values: Vec<(u8, mpfree_sampler::engine::PadField, f32)>,
+    },
+    /// Edit pad's Tuning, under The kit's pads, stepped by `delta`: kit
+    /// `kit`'s own tuning, or Song's (tunings step T6). The app keeps it.
+    KitTuning {
+        kit: usize,
+        delta: i32,
     },
     /// A key pressed (`down`) or let go on the Play tab's keyboard: kit
     /// `kit`'s keygroups play `note`, while that kit is the one playing.
@@ -2257,15 +2337,20 @@ pub enum LearnValue {
     /// A mixer strip's fader, pan or send, an effect's knob on the chain
     /// editor, or a macro's knob.
     Param(ParamAddr),
-    /// A knob of the synth the Synth tab shows (the selected track's), by
-    /// its parameter id.
+    /// A knob of the synth the Synth tab shows (the selected track's, or
+    /// the one the pads play), by its parameter id. Learn names the
+    /// instrument itself (sampler step 16), so the knob stays on it.
     Synth(u16),
     /// One of the armed track's arp settings its Q-Links turn, by its id
     /// in `mpfree_param::arp`.
     Arp(u16),
     /// A setting of a pad of the kit the Sample and Pads tabs show (the
-    /// armed track's): the pad, and the setting's `PadField` number.
-    Pad { pad: u8, field: u16 },
+    /// kit the last hit played, else the armed track's; sampler step 15d):
+    /// its kit place, the pad, and the setting's parameter id (a
+    /// `PadField` number, or a layer's grain setting from 256, sampler
+    /// refactor step 17: `crate::sampler::PadParam`). Learn names the kit
+    /// itself (sampler step 16), so the knob stays on it.
+    Pad { kit: u8, pad: u8, field: u16 },
 }
 
 /// A track asked of the time engine for a kit: by "+ Kit track", or by a
@@ -2395,8 +2480,9 @@ pub struct Player {
     /// The menu's selected row is open for the wheel (its push opened it).
     menu_editing: bool,
     /// The Sample page's Play tab showed its keyboard, a row that pad hits
-    /// edit, and the Wave page's REC on (each changes its hint).
-    sample_keys: (bool, bool, bool, bool, (bool, bool, bool)),
+    /// edit (or the kit's Tuning) picked, and the Wave page's REC on (each
+    /// changes its hint).
+    sample_keys: SampleKeys,
     /// What the REC chip last called the Wave page's REC take.
     here_chip: Option<String>,
     /// What the Play page's Q-Links turn, as its hint names them.
@@ -2455,6 +2541,15 @@ pub struct Player {
     synth: Option<SynthPanel>,
     /// The list of synths over the Synth tab, while it is open.
     synth_pick: Option<Box<crate::app::SynthPickView>>,
+    /// The list's Kits side by tile (sampler step 15e): each tile's kit
+    /// place (None: the first), name, emptiness and filled banks; and the
+    /// source bank row's banks.
+    pick_kits: Vec<(Option<usize>, String, bool, u8)>,
+    pick_from: Vec<u8>,
+    /// What the pads play, while open (sampler step 15e), and what each of
+    /// its rows' buttons does, by the panel's row number.
+    pads_panel: Option<Box<crate::app::PadMapView>>,
+    pads_panel_acts: Vec<(usize, Vec<crate::app::MapAct>)>,
     /// The Sample page and the kits' projects it edits (the Pads tab's
     /// screens too).
     pub sample: SamplePage,
@@ -2463,6 +2558,13 @@ pub struct Player {
     browser: Option<Box<mpfree_browser_ui::Browser>>,
     /// The I/O view's model (its MIDI setup is the project's `midi` part).
     io_model: Option<mpfree_midi_ui::Shared>,
+    /// The song's patches (live shows C1, the project's `patches` part):
+    /// what the keys play. The audio loop plays its own copy
+    /// (`patch_in::PatchRig`).
+    patches: mpfree_patch::Patches,
+    /// The patch screens: which shows, the zone picked, their UNDO, and
+    /// what the keys do now (gui/patches.rs).
+    patch: crate::patch_screen::PatchScreen,
     /// The parts New project goes back to, once the audio loop sent them.
     project_defaults: Option<crate::project::Defaults>,
     /// The plugins an open makes a project's plugin effects and synths
@@ -2482,10 +2584,13 @@ pub struct Player {
     /// BROWSE's Plugins place: the Open MPC catalog, installed plugins and
     /// zips on the stick (plugin_page.rs).
     plugin_page: crate::plugin_page::PluginPage,
-    /// The hint line shows the Plugins place's.
     /// The browser place's own hint line last shown (Plugins, Sets, a set
     /// being edited), or "".
     plugins_hinted: &'static str,
+    /// BROWSE's SD card place: the card in the slot, opened read-only
+    /// when the place asks and put away once the browser has been hidden
+    /// for a while (sd_card.rs).
+    pub(crate) sd_card: crate::sd_card::Slot,
     /// What each track plays ([`ToUi::TrackSounds`]), written under its
     /// name on Arrange.
     track_sounds: TrackSounds,
@@ -2601,6 +2706,9 @@ pub struct Player {
     pub workspace: PatternWorkspace,
     /// What the arp screens show, from the app.
     pub arp: ArpState,
+    /// A phrase plays on the armed track (its pads press notes), so the
+    /// NOTE REPEAT band's - and + reach Phrase: what its hint lists.
+    phrases_play: bool,
     /// The Q-Link slider a finger is on, on the panel.
     qlink_focus: Option<usize>,
     /// Where the arp chip is in the header's chips.
@@ -2774,6 +2882,10 @@ pub struct Player {
     /// lane's pad, the step on the page, seconds held), for
     /// [`Self::step_hold_tick`].
     step_hold: Option<(u64, usize, usize, f32)>,
+    /// A finger held still on a row's number on the grid (false) or a
+    /// step's on the song list (true), and for how long (s): after
+    /// [`STEP_HOLD`] its scene card opens (the Arrange refactor's 5.2).
+    row_hold: Option<((bool, usize), f32)>,
     guard_done: Option<u64>,
     /// The finger whose SHIFT + touch armed MIDI Learn: it does nothing
     /// else until it lifts.
@@ -2814,6 +2926,9 @@ pub struct Player {
     xy_setup: bool,
     /// Your layouts, as the sound loop last told them ([`ToUi::Xy`]).
     xy_song: crate::xy_song::XyView,
+    /// An audio track's input list open over the Clips page (phase 4,
+    /// board 4): the page it floats on and the track.
+    input_list: Option<(String, usize)>,
     /// The Pads tab's Perform view: the project's Perform set
     /// ([`crate::perform_tab`]).
     perform: crate::perform_tab::PerformTab,
@@ -2951,6 +3066,14 @@ impl Player {
         );
         ui.add(crate::xy_list::XY_LIST, crate::xy_list::XyList::new(0));
         ui.add(
+            crate::patch_page::LIST,
+            crate::patch_page::PatchList::default(),
+        );
+        ui.add(
+            crate::patch_page::EDIT,
+            crate::patch_page::PatchEditor::default(),
+        );
+        ui.add(
             crate::xy_widgets::XY_BAR,
             crate::xy_widgets::XyBar::default(),
         );
@@ -2962,10 +3085,18 @@ impl Player {
             crate::xy_widgets::XY_BANNER,
             crate::xy_widgets::XyBanner::default(),
         );
+        ui.add(
+            mpfree_time_ui::inputs::INPUT_LIST,
+            mpfree_time_ui::inputs::InputList::default(),
+        );
         ui.add(play_page::SYNTH_PADS_HEAD, PadsBar::default());
         ui.add(
             mpfree_synth_ui::pick::PICK,
             mpfree_synth_ui::pick::SynthList::default(),
+        );
+        ui.add(
+            mpfree_synth_ui::pad_map::PANEL,
+            mpfree_synth_ui::pad_map::PadMapPanel::default(),
         );
         ui.add("midi", LogPanel::new("MIDI in and out", true, 300));
         ui.add("events", LogPanel::new("Events", false, 200));
@@ -3022,6 +3153,16 @@ impl Player {
             &play_page::frame(&format!("{}:*", crate::xy_list::XY_LIST)),
         )
         .expect("the XY pad's list");
+        ui.add_page(
+            crate::patch_page::LIST_PAGE,
+            &play_page::frame(&format!("{}:*", crate::patch_page::LIST)),
+        )
+        .expect("the patch list");
+        ui.add_page(
+            crate::patch_page::EDIT_PAGE,
+            &play_page::frame(&format!("{}:*", crate::patch_page::EDIT)),
+        )
+        .expect("the patch editor");
         ui.add_page(play_page::XY_FULL_PAGE, &play_page::xy_full_layout())
             .expect("the XY pad full screen");
         ui.add_page(
@@ -3065,6 +3206,10 @@ impl Player {
             patterns,
             pattern_index: 0,
             pattern_changed: false,
+            phrases: mpfree_arp_ui::PhraseList::built_in(),
+            phrase_index: 0,
+            pads_key: None,
+            phrase: arp_view::PhraseNow::default(),
             notes: Vec::new(),
             step: 0,
             latched: false,
@@ -3153,6 +3298,7 @@ impl Player {
             keep_press: None,
             guard_press: None,
             step_hold: None,
+            row_hold: None,
             guard_done: None,
             learn_finger: None,
             report_finger: None,
@@ -3169,6 +3315,7 @@ impl Player {
             xy_full: false,
             xy_setup: false,
             xy_song: crate::xy_song::XyView::default(),
+            input_list: None,
             perform: crate::perform_tab::PerformTab::default(),
             throw_strips: vec![("Master".to_string(), mpfree_fx::StripId::Master)],
             play_own: PlayView::All,
@@ -3191,7 +3338,7 @@ impl Player {
             screen_row: ("-".to_string(), Tone::Dim),
             timed,
             menu_editing: false,
-            sample_keys: (false, false, false, false, (false, false, false)),
+            sample_keys: (false, (false, false), false, false, (false, false, false)),
             here_chip: None,
             sample_qlinks: String::new(),
             sample_live: false,
@@ -3220,9 +3367,15 @@ impl Player {
             rec_plan: None,
             synth: None,
             synth_pick: None,
+            pick_kits: Vec::new(),
+            pick_from: Vec::new(),
+            pads_panel: None,
+            pads_panel_acts: Vec::new(),
             sample,
             browser: None,
             io_model: None,
+            patches: mpfree_patch::Patches::default(),
+            patch: crate::patch_screen::PatchScreen::default(),
             project_defaults: None,
             project_plugins: std::sync::Arc::new(crate::plugins::Plugins::none()),
             drive: None,
@@ -3231,6 +3384,7 @@ impl Player {
             crash_why: None,
             plugin_page: crate::plugin_page::PluginPage::new(),
             plugins_hinted: "",
+            sd_card: crate::sd_card::Slot::on_the_mpc(std::path::Path::new(crate::REPORT_DIR)),
             track_sounds: [None; crate::instruments::HOLDERS],
             track_sends: [None; crate::instruments::TRACKS],
             track_kits: crate::sampler::TrackKits::default(),
@@ -3276,6 +3430,7 @@ impl Player {
             },
             workspace,
             arp,
+            phrases_play: false,
             qlink_focus: None,
             arp_chip: None,
             clock_from: None,
@@ -4649,12 +4804,203 @@ impl Player {
     fn synth_page(&self) -> String {
         if self.skin.as_ref().is_some_and(|s| s.on) {
             skin_page::PAGE.to_string()
+        } else if self.pads_panel.is_some() && self.ui.pages().iter().any(|p| p == PAD_MAP_PAGE) {
+            PAD_MAP_PAGE.to_string()
         } else if self.synth_pick.is_some() && self.ui.pages().iter().any(|p| p == SYNTH_PICK_PAGE)
         {
             SYNTH_PICK_PAGE.to_string()
         } else {
             "Synth".to_string()
         }
+    }
+
+    /// The list's Kits side for `v` (sampler step 15e; the canvas "Pads and
+    /// kits: step 15e", boards 1 and 2): the first tile (Follow track,
+    /// "Track 1's kit", or Follow base with Bank B only), then each kit
+    /// but the synth's, by place, an empty one last-named "9 · Empty"; the
+    /// outlined kit's source bank row and Keys play. With them, each
+    /// tile's kit for its tap and the source row's banks.
+    #[allow(clippy::type_complexity)]
+    fn pick_kit_side(
+        &self,
+        v: &crate::app::SynthPickView,
+    ) -> (
+        mpfree_synth_ui::pick::KitsSide,
+        Vec<(Option<usize>, String, bool, u8)>,
+        Vec<u8>,
+    ) {
+        use crate::app::KitOn;
+        use mpfree_synth_ui::pick::{FromRow, KitTile, KitsSide};
+        let letter = crate::app::bank_letter;
+        let kit_name = |k: usize| {
+            self.kits.get(k).map_or_else(
+                || format!("Kit {}", k + 1),
+                |kit| chip_kit_name(&kit.name, k),
+            )
+        };
+        // The pads that hold a sound, and whether one is a keygroup.
+        let filled = |k: usize| -> (usize, u8, bool) {
+            match self.sample.project(k) {
+                Some(p) => (0..128).filter_map(|i| p.pad(i).map(|pd| (i, pd))).fold(
+                    (0, 0u8, false),
+                    |(n, banks, keys), (i, pd)| {
+                        (
+                            n + 1,
+                            banks | 1 << (i / 16).min(7),
+                            keys || pd.keys.is_some(),
+                        )
+                    },
+                ),
+                None => self.kits.get(k).map_or((0, 0, false), |kit| {
+                    kit.pads
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, p)| p.is_some())
+                        .fold((0, 0u8, false), |(n, banks, _), (i, _)| {
+                            (n + 1, banks | 1 << (i / 16).min(7), false)
+                        })
+                }),
+            }
+        };
+        let plays_kit = |t: usize| {
+            played(&self.track_sounds, &self.track_sends, t)
+                .is_none()
+                .then(|| self.track_kits.kit_of(t))
+                .flatten()
+        };
+        let only = v.bank.filter(|b| b.1).map(|b| b.0);
+        let track_says = match played(&self.track_sounds, &self.track_sends, v.track) {
+            Some((h, from)) => played_name(h, from),
+            None => plays_kit(v.track).map_or_else(|| "its kit".to_string(), kit_name),
+        };
+        let first = match only {
+            Some(b) => KitTile {
+                name: "Follow base".to_string(),
+                short: "Follow base".to_string(),
+                sub: format!("Bank {b} plays what every bank plays"),
+                colour: None,
+                empty: false,
+            },
+            None => {
+                let name = if plays_kit(v.track).is_some() {
+                    format!("Track {}'s kit", v.track + 1)
+                } else {
+                    "Follow track".to_string()
+                };
+                KitTile {
+                    short: name.clone(),
+                    name,
+                    sub: format!("The pads follow the track: {track_says}"),
+                    colour: None,
+                    empty: false,
+                }
+            }
+        };
+        let mut tiles = vec![first];
+        let mut taps = vec![(None, String::new(), false, 0u8)];
+        for k in (0..self.kits.len()).filter(|&k| self.kits[k].synth.is_none()) {
+            let (n, banks, keys) = filled(k);
+            let empty = n == 0;
+            let short = if empty {
+                format!("Kit {}", k + 1)
+            } else {
+                kit_name(k)
+            };
+            let track = (0..self.time.tracks.len())
+                .filter(|&t| self.time.tracks[t].loops.is_none())
+                .find(|&t| plays_kit(t) == Some(k));
+            let sub = if empty {
+                "Start a kit here".to_string()
+            } else {
+                let span = if banks.count_ones() > 1 {
+                    format!(
+                        " in {} to {}",
+                        letter(banks.trailing_zeros() as usize),
+                        letter(7 - banks.leading_zeros() as usize)
+                    )
+                } else {
+                    String::new()
+                };
+                format!(
+                    "{n} pad{}{span}{} · {}",
+                    if n == 1 { "" } else { "s" },
+                    if keys { ", keygroups" } else { "" },
+                    track.map_or_else(|| "no track".to_string(), |t| format!("Track {}", t + 1))
+                )
+            };
+            tiles.push(KitTile {
+                name: if empty {
+                    format!("{} · Empty", k + 1)
+                } else {
+                    format!("{} · {short}", k + 1)
+                },
+                short: short.clone(),
+                sub,
+                colour: (!empty).then(|| Color::from_pad(self.kits[k].colour)),
+                empty,
+            });
+            taps.push((Some(k), short, empty, banks));
+        }
+        let tile_of = |on: KitOn| match on {
+            KitOn::Follow => Some(0),
+            KitOn::Kit(k) => taps.iter().position(|t| t.0 == Some(k)),
+            KitOn::Other => None,
+        };
+        let (mut from, mut keys, mut from_banks) = (None, None, Vec::new());
+        if let KitOn::Kit(k) = v.kit_now {
+            let (_, banks, holds_keys) = filled(k);
+            if let Some(b) = only.filter(|_| banks.count_ones() > 1) {
+                from_banks = (0..8u8).filter(|&i| banks >> i & 1 == 1).collect();
+                let plays = v.from.unwrap_or((b as u8).wrapping_sub(b'A')).min(7);
+                from = Some(FromRow {
+                    bank: b,
+                    kit: kit_name(k),
+                    banks: from_banks.iter().map(|&i| letter(usize::from(i))).collect(),
+                    on: from_banks.iter().position(|&i| i == plays).unwrap_or(0),
+                });
+            }
+            if holds_keys {
+                let play = self.sample.project(k).map_or(0, |p| match p.keys_play() {
+                    mpfree_sampler::model::KeysPlay::Pads => 0,
+                    mpfree_sampler::model::KeysPlay::Keygroups => 1,
+                    mpfree_sampler::model::KeysPlay::Both => 2,
+                });
+                keys = Some((kit_name(k), play));
+            }
+        }
+        let side = KitsSide {
+            shown: v.kits,
+            now: tile_of(v.kit_now),
+            had: tile_of(v.kit_had),
+            layers: v
+                .kit_layers
+                .iter()
+                .filter_map(|&k| tile_of(KitOn::Kit(k)))
+                .collect(),
+            from,
+            keys,
+            tiles,
+        };
+        (side, taps, from_banks)
+    }
+
+    /// A Keys play choice on the list's Kits side (sampler step 15e,
+    /// question 2): the outlined kit's keys play its pads (0), its
+    /// keygroups (1) or both (2), one undo step on the kit; the list
+    /// again.
+    fn pick_keys_play(&mut self, choice: usize) {
+        let Some(crate::app::KitOn::Kit(k)) = self.synth_pick.as_ref().map(|v| v.kit_now) else {
+            return;
+        };
+        let play = match choice {
+            0 => mpfree_sampler::model::KeysPlay::Pads,
+            1 => mpfree_sampler::model::KeysPlay::Keygroups,
+            _ => mpfree_sampler::model::KeysPlay::Both,
+        };
+        let line = self.sample.set_keys_play(&mut self.ui, k, play);
+        self.tell(&line);
+        let pick = self.synth_pick.take();
+        self.set_synth_pick(pick);
     }
 
     /// The list of synths opened, changed or closed (app/synth_pick.rs):
@@ -4674,13 +5020,22 @@ impl Player {
                 .ui
                 .get_mut::<mpfree_synth_ui::pick::SynthList>(mpfree_synth_ui::pick::PICK)
             {
-                w.title = "Pick a synth for the pads".to_string();
+                w.title = "Pick what the pads play".to_string();
                 w.choices = v.choices.clone();
                 w.now = v.now;
                 w.had = v.had;
                 w.bank = v.bank;
                 w.layer = v.layer;
                 w.layers = v.layers.clone();
+            }
+            let (side, tiles, from) = self.pick_kit_side(v);
+            self.pick_kits = tiles;
+            self.pick_from = from;
+            if let Some(w) = self
+                .ui
+                .get_mut::<mpfree_synth_ui::pick::SynthList>(mpfree_synth_ui::pick::PICK)
+            {
+                w.kits = side;
             }
         }
         let was = self.synth_pick.is_some();
@@ -4691,6 +5046,280 @@ impl Player {
         }
         if self.view == View::Synth && was != open {
             self.show_view(View::Synth);
+        }
+    }
+
+    /// What the pads play over the Synth tab (sampler step 15e), or
+    /// closed: its page is the Synth tab's with the panel in the middle,
+    /// as the list of synths'.
+    fn set_pads_panel(&mut self, v: Option<Box<crate::app::PadMapView>>) {
+        use mpfree_synth_ui::pad_map::{PadMapPanel, PANEL};
+        if let (Some(view), Some(p)) = (v.as_ref(), self.synth.as_ref()) {
+            let spec = p.spec();
+            let page = spec.replacen(SYNTH_MIDDLE, PANEL, 1);
+            if page != spec && self.pads_panel.is_none() {
+                if let Err(e) = self.ui.add_page(PAD_MAP_PAGE, &page) {
+                    println!("screen: no What the pads play ({e})");
+                }
+            }
+            let (panel, acts) = self.pads_panel_rows(view);
+            self.pads_panel_acts = acts;
+            if let Some(w) = self.ui.get_mut::<PadMapPanel>(PANEL) {
+                *w = panel;
+            }
+        }
+        let was = self.pads_panel.is_some();
+        self.pads_panel = v;
+        if self.view == View::Synth && was != self.pads_panel.is_some() {
+            self.show_view(View::Synth);
+        }
+    }
+
+    /// The selected track's instrument, as the panel's Follow track says
+    /// it ("Track 1's kit: Boom Bap", "Track 2: Poly").
+    fn track_plays_words(&self, t: usize) -> String {
+        match played(&self.track_sounds, &self.track_sends, t) {
+            Some((h, from)) => format!("Track {}: {}", t + 1, played_name(h, from)),
+            None => match self.track_kits.kit_of(t) {
+                Some(k) => format!("Track {}'s kit: {}", t + 1, self.pads_kit_name(k)),
+                None => format!("Track {}'s instrument", t + 1),
+            },
+        }
+    }
+
+    /// Kit place `k`'s name, as the chip says it.
+    fn pads_kit_name(&self, k: usize) -> String {
+        self.kits.get(k).map_or_else(
+            || format!("Kit {}", k + 1),
+            |kit| chip_kit_name(&kit.name, k),
+        )
+    }
+
+    /// What `s` plays, by name.
+    fn map_sound_name(&self, s: crate::app::MapSound) -> String {
+        use crate::app::MapSound;
+        match s {
+            MapSound::Track => "Follow track".to_string(),
+            MapSound::Kit(k) => self.pads_kit_name(k),
+            MapSound::Synth(n) => n.to_string(),
+            MapSound::Missing(id) => format!("Missing: instrument {id}"),
+        }
+    }
+
+    /// The panel's rows for `v` (the canvas "Pads and kits: step 15e",
+    /// board 3), and what each row's buttons do, by its row number.
+    #[allow(clippy::type_complexity)]
+    fn pads_panel_rows(
+        &self,
+        v: &crate::app::PadMapView,
+    ) -> (
+        mpfree_synth_ui::pad_map::PadMapPanel,
+        Vec<(usize, Vec<crate::app::MapAct>)>,
+    ) {
+        use crate::app::{MapAct, MapChange, MapSound};
+        use mpfree_synth_ui::pad_map::{Look, MapRow, PadMapPanel, BANK, BASE, LAYER};
+        let letter = crate::app::bank_letter;
+        let colour = |s: MapSound| match s {
+            MapSound::Kit(k) => self.kits.get(k).map(|kit| Color::from_pad(kit.colour)),
+            _ => None,
+        };
+        let look = |s: MapSound| match s {
+            MapSound::Missing(_) => Look::Missing,
+            _ => Look::Own,
+        };
+        let mut acts = Vec::new();
+        // The base, every bank.
+        let (sub, buttons) = match v.base {
+            MapSound::Track => (self.track_plays_words(v.track), vec![MapAct::Pick]),
+            MapSound::Missing(_) => (
+                format!("{} plays meanwhile", self.track_plays_words(v.track)),
+                vec![MapAct::FollowTrack, MapAct::Pick],
+            ),
+            MapSound::Kit(_) => (
+                format!("A whole kit · Track {} keeps what it plays", v.track + 1),
+                vec![MapAct::FollowTrack, MapAct::Pick],
+            ),
+            MapSound::Synth(_) => (
+                format!("A synth · Track {} keeps what it plays", v.track + 1),
+                vec![MapAct::FollowTrack, MapAct::Pick],
+            ),
+        };
+        let words = |a: &MapAct| match a {
+            MapAct::Pick => "Pick",
+            MapAct::FollowTrack => "Follow track",
+            MapAct::FollowBase => "Follow base",
+            _ => "",
+        };
+        let base = MapRow {
+            letter: None,
+            what: self.map_sound_name(v.base),
+            sub,
+            colour: colour(v.base),
+            look: look(v.base),
+            buttons: buttons.iter().map(|a| words(a).to_string()).collect(),
+        };
+        acts.push((BASE, buttons));
+        // The banks.
+        let mut missing: Vec<String> = Vec::new();
+        if let MapSound::Missing(id) = v.base {
+            missing.push(format!(
+                "This project names instrument {id} for every bank, which isn't in its list: the track's instrument plays until it's replaced."
+            ));
+        }
+        let banks = (0..v.banks.len())
+            .map(|b| {
+                let on = (b == v.current).then(|| format!("you are on {}", letter(b)));
+                match v.banks[b] {
+                    None => {
+                        acts.push((BANK + b, Vec::new()));
+                        MapRow {
+                            letter: Some(letter(b)),
+                            what: "The base".to_string(),
+                            sub: on.unwrap_or_default(),
+                            look: Look::Faint,
+                            ..MapRow::default()
+                        }
+                    }
+                    Some((MapSound::Missing(id), _)) => {
+                        missing.push(format!(
+                            "This project names instrument {id} for bank {}, which isn't in its list. Bank {} plays the base until it's replaced or removed.",
+                            letter(b),
+                            letter(b)
+                        ));
+                        acts.push((BANK + b, vec![MapAct::Pick, MapAct::FollowBase]));
+                        MapRow {
+                            letter: Some(letter(b)),
+                            what: self.map_sound_name(MapSound::Missing(id)),
+                            sub: "Plays the base meanwhile".to_string(),
+                            look: Look::Missing,
+                            buttons: vec!["Replace".to_string(), "Remove".to_string()],
+                            ..MapRow::default()
+                        }
+                    }
+                    Some((s, from)) => {
+                        let mut sub: Vec<String> = Vec::new();
+                        if s == MapSound::Track {
+                            sub.push(self.track_plays_words(v.track));
+                        }
+                        if let Some(f) = from {
+                            sub.push(format!("From its bank {}", letter(usize::from(f))));
+                        }
+                        if !v.banks_apply {
+                            sub.push("Waits: PAD BANK picks the synth's layouts".to_string());
+                        }
+                        sub.extend(on);
+                        acts.push((BANK + b, vec![MapAct::FollowBase]));
+                        MapRow {
+                            letter: Some(letter(b)),
+                            what: self.map_sound_name(s),
+                            sub: sub.join(" · "),
+                            colour: None,
+                            look: Look::Own,
+                            buttons: vec!["Follow base".to_string()],
+                        }
+                    }
+                }
+            })
+            .collect();
+        // The layers.
+        let layers = v
+            .layers
+            .iter()
+            .enumerate()
+            .map(|(l, layer)| {
+                if let MapSound::Missing(id) = layer.sound {
+                    missing.push(format!(
+                        "This project names instrument {id} as a layer, which isn't in its list: it's silent until it's removed."
+                    ));
+                    acts.push((LAYER + l, vec![MapAct::Remove]));
+                    return MapRow {
+                        what: self.map_sound_name(layer.sound),
+                        sub: "Silent until it's removed".to_string(),
+                        look: Look::Missing,
+                        buttons: vec!["Remove".to_string()],
+                        ..MapRow::default()
+                    };
+                }
+                let reach = layer
+                    .reach
+                    .map_or_else(|| "Every bank".to_string(), |r| format!("Bank {}", letter(usize::from(r))));
+                let mut sub = match layer.reach {
+                    None => "Every bank".to_string(),
+                    Some(r) => format!("Bank {} only", letter(usize::from(r))),
+                };
+                if let Some(f) = layer.from {
+                    sub.push_str(&format!(", from its bank {}", letter(usize::from(f))));
+                }
+                acts.push((LAYER + l, vec![MapAct::Reach, MapAct::Remove]));
+                MapRow {
+                    letter: None,
+                    what: self.map_sound_name(layer.sound),
+                    sub,
+                    colour: colour(layer.sound),
+                    look: Look::Own,
+                    buttons: vec![reach, "Remove".to_string()],
+                }
+            })
+            .collect::<Vec<_>>();
+        let named = |s: MapSound| self.map_sound_name(s);
+        let last = v.last.map(|c| match c {
+            MapChange::FollowTrack => "Follow track gave every bank back to the track".to_string(),
+            MapChange::Base(MapSound::Track) => "the base follows the track again".to_string(),
+            MapChange::Base(s) => format!("the base got {}", named(s)),
+            MapChange::Bank(b, None) => format!("bank {} plays the base again", letter(b)),
+            MapChange::Bank(b, Some((s, from))) => format!(
+                "bank {} got {}{}",
+                letter(b),
+                named(s),
+                from.map(|f| format!(", from its bank {}", letter(usize::from(f))))
+                    .unwrap_or_default()
+            ),
+            MapChange::LayerOn(s) => format!("{} was added as a layer", named(s)),
+            MapChange::LayerOff(s) => format!("{} came off the layers", named(s)),
+            MapChange::LayerReach(s, None) => format!("{} plays on every bank", named(s)),
+            MapChange::LayerReach(s, Some(r)) => {
+                format!("{} plays on bank {} only", named(s), letter(usize::from(r)))
+            }
+            MapChange::Several => "a pick that changed more than one row".to_string(),
+        });
+        let panel = PadMapPanel {
+            base,
+            banks,
+            current: v.current,
+            can_add: v.layers.len() + 1 < v.most,
+            layers,
+            most: v.most,
+            last,
+            missing: missing.first().cloned().map(|m| (missing.len(), m)),
+        };
+        (panel, acts)
+    }
+
+    /// A tap on What the pads play: Done, + Add a layer, or a row's button
+    /// (the row itself picks its sound).
+    fn pads_panel_event(&mut self, kind: &EventKind) -> Option<FromUi> {
+        use crate::app::{MapAct, MapRow};
+        use mpfree_synth_ui::pad_map::{ADD_LAYER, BANK, BASE, DONE, LAYER, ROW};
+        let row_of = |n: usize| match n {
+            BASE => Some(MapRow::Base),
+            n if (BANK..LAYER).contains(&n) => Some(MapRow::Bank(n - BANK)),
+            n if n >= LAYER => Some(MapRow::Layer(n - LAYER)),
+            _ => None,
+        };
+        let tap = |row, act| Some(FromUi::PadMapTap { row, act });
+        match *kind {
+            EventKind::Tab(DONE) => tap(MapRow::Base, MapAct::Done),
+            EventKind::Tab(ADD_LAYER) => tap(MapRow::Base, MapAct::AddLayer),
+            EventKind::Cell { row, col } if col == ROW => tap(row_of(row)?, MapAct::Pick),
+            EventKind::Cell { row, col } => {
+                let act = self
+                    .pads_panel_acts
+                    .iter()
+                    .find(|(n, _)| *n == row)
+                    .and_then(|(_, a)| a.get(col).copied())?;
+                tap(row_of(row)?, act)
+            }
+            _ => None,
         }
     }
 
@@ -4845,6 +5474,10 @@ impl Player {
             });
             held_title = format!("Q-Links · Controller {}", c.bank_words());
             (held_title.as_str(), cards)
+        } else if let Some(cards) = self.patch_qlinks() {
+            // The patch editor: the picked zone's ends, transpose and
+            // softest velocity (layout spec 4q).
+            ("Q-Links · Patch", cards)
         } else if let Some(cards) = self.xy_setup_cards() {
             // XY Setup: the picked setting's range and curve, the glide.
             ("Q-Links · XY setup", cards)
@@ -5931,10 +6564,11 @@ impl Player {
             println!("play view: {}", v.name());
         }
         // A view picked closes the REC chip's target list, the XY pad's
-        // list and the XY pad full screen.
+        // list, the XY pad full screen and the patch screens.
         self.rec_list = false;
         self.xy_list = false;
         self.xy_full = false;
+        self.patch.open = crate::patch_screen::Open::Closed;
         self.xy_setup = false;
         self.play.view = v;
         if v != PlayView::Beats {
@@ -6129,6 +6763,7 @@ impl Player {
     fn toggle_xy_list(&mut self) {
         self.xy_list = !self.xy_list && self.view == View::Play;
         self.rec_list = false;
+        self.patch.open = crate::patch_screen::Open::Closed;
         self.xy_setup = false;
         let picked = self.play.xy_effect.map_or(0, |k| k + 1);
         if let Some(l) = self
@@ -6212,6 +6847,7 @@ impl Player {
         self.xy_full = !self.xy_full && self.view == View::Play;
         self.xy_list = false;
         self.rec_list = false;
+        self.patch.open = crate::patch_screen::Open::Closed;
         self.xy_setup = false;
         if self.view == View::Play {
             self.show_view(self.view);
@@ -6246,6 +6882,7 @@ impl Player {
         if self.view != View::Play {
             return;
         }
+        self.patch.open = crate::patch_screen::Open::Closed;
         self.xy_list = false;
         self.rec_list = false;
         self.xy_full = true;
@@ -6521,6 +7158,7 @@ impl Player {
     fn toggle_rec_list(&mut self) {
         self.rec_list = !self.rec_list;
         self.xy_list = false;
+        self.patch.open = crate::patch_screen::Open::Closed;
         self.refresh_rec_list();
         if self.play_frame() {
             self.show_view(self.view);
@@ -6751,7 +7389,7 @@ impl Player {
                 g.arm = Some(looped);
             }
         }
-        let bar = vec![Chip::new(chip.line(), Tone::Bad)];
+        let bar = vec![Chip::new(chip.line(), chip.tone())];
         if self.time.chips != bar {
             self.time.chips = bar;
             self.time_page.update(&mut self.ui, &self.time);
@@ -6793,6 +7431,7 @@ impl Player {
                 what: format!("{name} · {}", self.sample.chip_source()),
                 add: false,
                 pinned: false,
+                alert: play_widgets::RecAlert::None,
             };
         }
         // While the pads have a synth the armed track doesn't play, REC
@@ -6810,6 +7449,7 @@ impl Player {
                     what: format!("{names} + {}", l.what),
                     add: if n.state >= l.state { n.add } else { l.add },
                     pinned: false,
+                    alert: l.alert,
                 }
             } else {
                 play_widgets::RecChip { what: names, ..n }
@@ -6828,6 +7468,7 @@ impl Player {
                 ),
                 add: if n.state >= l.state { n.add } else { l.add },
                 pinned: false,
+                alert: l.alert,
             }
         } else {
             self.rec_chip_of(self.rec.target)
@@ -6838,6 +7479,220 @@ impl Player {
             chip.what.push_str(" + Rec song");
         }
         chip
+    }
+
+    /// Each loop's place, and with Dev's "Loops on audio tracks" where
+    /// the next loop goes, to the Looper tab (phase 4, board 5). True when
+    /// either changed.
+    fn refresh_loop_places(&mut self) -> bool {
+        let places = time_view::loop_places(&self.time);
+        let into = self.records_into();
+        let placed = self.looper_page.set_places(places);
+        self.looper_page.set_on_tracks(into) || placed
+    }
+
+    /// An audio track's input list, as the app says the mixer offers it
+    /// (phase 4, board 4): over the Clips grid under the track's column
+    /// head, the grid veiled, or over the Song view under its lane's
+    /// header. Each strip an instrument plays into takes its track's
+    /// colour. Not opened on another page (the answer came late).
+    fn open_input_list(&mut self, mut c: mpfree_time_ui::inputs::InputChoices) {
+        use mpfree_time_ui::inputs::{InputList, INPUT_LIST};
+        use mpfree_time_ui::song::SongLanes;
+        use mpfree_time_ui::widgets::ClipGrid;
+        let page = self.ui.page().to_string();
+        if page != time_view::CLIPS_PAGE || !self.time.loops_on {
+            return;
+        }
+        if self.input_list.is_some() {
+            self.close_input_list();
+        }
+        for ch in c.strips.iter_mut().chain(c.pads.as_mut()) {
+            ch.color = ch.owner.map(time_view::track_color);
+        }
+        let row = self
+            .time
+            .audio
+            .iter()
+            .find(|l| l.track == c.track)
+            .map(|l| l.row);
+        let morph = self.ui.rect_of(time_view::MORPH);
+        let (area, head) = if let Some(grid) = self.ui.rect_of(time_view::CLIPS) {
+            let head = self
+                .ui
+                .get::<ClipGrid>(time_view::CLIPS)
+                .and_then(|g| g.head_rect(grid, row?));
+            (grid, head)
+        } else if let Some(song) = self.ui.rect_of(time_view::SONG) {
+            let head = self.ui.get::<SongLanes>(time_view::SONG).and_then(|s| {
+                let a = s.audio.iter().position(|l| l.track == c.track)?;
+                s.header_rect(song, a)
+            });
+            (song, head)
+        } else {
+            return;
+        };
+        let area = morph.map_or(area, |m| area.union(m));
+        let track = c.track;
+        let Some(list) = self.ui.get_mut::<InputList>(INPUT_LIST) else {
+            return;
+        };
+        list.choices = c;
+        let at = list.place(
+            area,
+            head.unwrap_or(mpfree_ui::Rect::new(area.x, area.y, 0, 40)),
+        );
+        if self.ui.set_float(&page, INPUT_LIST, Some(at)).is_err() {
+            return;
+        }
+        let on_grid = self.ui.rect_of(time_view::CLIPS).is_some();
+        if let (Some(g), Some(row)) = (self.ui.get_mut::<ClipGrid>(time_view::CLIPS), row) {
+            if on_grid {
+                g.veil = Some(row);
+            }
+        }
+        self.input_list = Some((page, track));
+        self.refresh_hint();
+    }
+
+    /// Closes the input list, if it is open, and takes the grid's veil.
+    fn close_input_list(&mut self) {
+        let Some((page, _)) = self.input_list.take() else {
+            return;
+        };
+        let _ = self
+            .ui
+            .set_float(&page, mpfree_time_ui::inputs::INPUT_LIST, None);
+        if self
+            .ui
+            .get::<mpfree_time_ui::widgets::ClipGrid>(time_view::CLIPS)
+            .is_some_and(|g| g.veil.is_some())
+        {
+            if let Some(g) = self
+                .ui
+                .get_mut::<mpfree_time_ui::widgets::ClipGrid>(time_view::CLIPS)
+            {
+                g.veil = None;
+            }
+        }
+        self.refresh_hint();
+    }
+
+    /// With Dev's "Loops on audio tracks" on (phase 4, board 5): where REC
+    /// puts the next loop and from what, for the Looper tab's header in
+    /// Records from's place: the armed empty audio cell ("Vocal · row 3 ·
+    /// Line L"), else the picked loop's cell, which REC overdubs, else that
+    /// none is armed. None with the switch off.
+    fn records_into(&self) -> Option<String> {
+        let st = &self.time;
+        if !st.loops_on {
+            return None;
+        }
+        let at = |t: usize, s: usize| {
+            let place = format!(
+                "{} \u{b7} {}",
+                self.track_name(t),
+                time_view::row_name(st, s)
+            );
+            match st.audio_lane_at(t).map(mpfree_time_ui::song::input_words) {
+                Some(i) => format!("{place} \u{b7} {i}"),
+                None => place,
+            }
+        };
+        if let Some((t, s)) = st.loop_cell.filter(|_| st.loop_cell_audio()) {
+            return Some(at(t, s));
+        }
+        let places = time_view::loop_places(st);
+        Some(
+            match places
+                .get(self.looper.selected)
+                .and_then(|p| p.as_ref())
+                .filter(|p| p.audio)
+            {
+                Some(p) => at(p.track, p.slot),
+                None => "no cell armed".to_string(),
+            },
+        )
+    }
+
+    /// The REC chip's words for a loop on an audio track, with Dev's
+    /// "Loops on audio tracks" on (phase 4, board 3; layout spec 4c, What
+    /// REC records): an armed empty audio cell and the track's input
+    /// ("Vocal · row 3 · Line L"); while another loop's first pass
+    /// records, that REC closes it first, in amber ("Bass · row 2 · closes
+    /// Vocal's loop"); the picked loop in an audio cell, which REC
+    /// overdubs ("Vox loop · overdub"); with every loop in use and the
+    /// picked one in no cell, the refusal ("8 loops · clear one"). None:
+    /// the Loop track's words.
+    fn audio_loop_chip(&self) -> Option<(String, play_widgets::RecAlert)> {
+        use mpfree_looper::Phase;
+        use play_widgets::RecAlert;
+        let st = &self.time;
+        if !st.loops_on {
+            return None;
+        }
+        let places = time_view::loop_places(st);
+        if st.loop_cell_audio() {
+            let place = time_view::loop_cell_name(st)?;
+            // One loop records at a time: REC hands over (Jay's pick, 23
+            // Nov 2026 19:24Z).
+            let first = self
+                .looper
+                .loops
+                .iter()
+                .position(|s| s.phase == Phase::Recording)
+                .filter(|&n| n != self.looper.selected);
+            if let Some(n) = first {
+                let whose = places
+                    .get(n)
+                    .and_then(|p| p.as_ref())
+                    .map_or_else(|| self.looper_page.loop_name(n), |p| p.track_name.clone());
+                return Some((format!("{place} · closes {whose}'s loop"), RecAlert::Warn));
+            }
+            let input = st
+                .loop_cell
+                .and_then(|(t, _)| st.audio_lane_at(t))
+                .map(mpfree_time_ui::song::input_words);
+            return Some((
+                match input {
+                    Some(i) => format!("{place} · {i}"),
+                    None => place,
+                },
+                RecAlert::None,
+            ));
+        }
+        let n = self.looper.selected;
+        let place = places.get(n).and_then(|p| p.as_ref());
+        let audio = place.filter(|p| st.tracks.get(p.track).is_some_and(|t| t.audio));
+        match audio {
+            Some(p) => {
+                let name = st.clip(p.track, p.slot)?.name.clone();
+                let phase = self.looper.loops.get(n)?.phase;
+                Some(match phase {
+                    Phase::Playing | Phase::Overdubbing => {
+                        (format!("{name} · overdub"), RecAlert::None)
+                    }
+                    _ => (name, RecAlert::None),
+                })
+            }
+            None if st.loops.in_use >= mpfree_seq::LOOPS && place.is_none() => Some((
+                format!("{} loops · clear one", mpfree_seq::LOOPS),
+                RecAlert::Refused,
+            )),
+            None => None,
+        }
+    }
+
+    /// Loop `n`'s audio track, with Dev's "Loops on audio tracks" on, as
+    /// (its engine track, muted, soloed): its M and S on the Looper tab are
+    /// the track's (board 5).
+    fn track_of_loop(&self, n: usize) -> Option<(usize, bool, bool)> {
+        if !self.time.loops_on {
+            return None;
+        }
+        let place = self.looper_page.place(n).filter(|p| p.audio)?;
+        let lane = self.time.audio_lane_at(place.track)?;
+        Some((lane.track, lane.mute, lane.solo))
     }
 
     /// The armed tracks' names for the REC chip while more than one is
@@ -6914,17 +7769,26 @@ impl Player {
             }
             Target::Loop => {
                 let phase = self.looper.status.phase;
+                // Loops on audio tracks (phase 4, board 3): where the loop
+                // goes and from which input, or what else REC does.
+                let (what, alert) = self.audio_loop_chip().unwrap_or_else(|| {
+                    (
+                        // A Loop cell armed on the grid: "Loops C · Drop".
+                        time_view::loop_cell_name(&self.time)
+                            .unwrap_or_else(|| self.looper_page.loop_name(self.looper.selected)),
+                        play_widgets::RecAlert::None,
+                    )
+                });
                 RecChip {
                     state: match phase {
                         Phase::Recording | Phase::Overdubbing => RecState::Recording,
                         Phase::Armed => RecState::Ready,
                         Phase::Empty | Phase::Playing => RecState::Armed,
                     },
-                    // A Loop cell armed on the grid: "Loops C · Drop".
-                    what: time_view::loop_cell_name(&self.time)
-                        .unwrap_or_else(|| self.looper_page.loop_name(self.looper.selected)),
+                    what,
                     add: phase == Phase::Overdubbing,
                     pinned: false,
+                    alert,
                 }
             }
         }
@@ -7012,6 +7876,7 @@ impl Player {
         let mut look = self.play.transport_look();
         look.rec = Some(self.refresh_rec_chip());
         look.pads = self.pads_play();
+        look.keys = self.patch_keys_look();
         if self
             .ui
             .get::<PlayTransport>(play_page::TRANSPORT)
@@ -7164,6 +8029,8 @@ impl Player {
                 crate::rec_list::REC_PAGE
             } else if self.xy_list && self.view == View::Play {
                 crate::xy_list::XY_PAGE
+            } else if self.patch_showing() {
+                self.patch_page()
             } else if self.xy_setup && self.view == View::Play {
                 crate::xy_setup::XY_SETUP_PAGE
             } else if self.xy_full && self.view == View::Play {
@@ -7464,6 +8331,18 @@ impl Player {
                         out.push(FromUi::Looper(crate::looper_page::B_RECORD));
                     }
                 }
+                // A loop on an audio track (Dev's switch, board 5): its M
+                // and S are its track's.
+                LoopAct::Mute(n) | LoopAct::Solo(n) if self.track_of_loop(n).is_some() => {
+                    if let Some((track, mute, solo)) = self.track_of_loop(n) {
+                        let a = if matches!(a, LoopAct::Mute(_)) {
+                            mpfree_time_ui::view::AudioAction::Mute { track, on: !mute }
+                        } else {
+                            mpfree_time_ui::view::AudioAction::Solo { track, on: !solo }
+                        };
+                        out.push(FromUi::Time(TimeAction::Audio(a)));
+                    }
+                }
                 LoopAct::Mute(n) => out.push(FromUi::LoopMute(Some(n))),
                 LoopAct::Solo(n) => out.push(FromUi::LoopSolo(n)),
                 LoopAct::PadKeys => out.push(FromUi::LoopKeys),
@@ -7482,6 +8361,11 @@ impl Player {
                     if let Some(l) = self.looper_page.layer_info(k) {
                         out.push(FromUi::LoopLayer { id: l.id, command });
                     }
+                }
+                // With loops in audio cells (board 5) a loop records from
+                // its track's input: the header says where it goes.
+                LoopAct::Strip(Ctl::Input) if self.time.loops_on => {
+                    self.tell(ON_TRACKS_INPUT);
                 }
                 // Records from (the deck's header): its choices open in the
                 // lanes' place.
@@ -7784,11 +8668,17 @@ impl Player {
         // The level is on the master bar and the tempo on the transport, so
         // the header keeps to the chips that change how the pads play. The
         // arp chip shows while the arp, a repeat or a pattern is on (a tap
-        // opens the panel; NOTE REPEAT + MENU opens it too).
+        // opens the panel; NOTE REPEAT + MENU opens it too). Where the
+        // bar has no room for every chip in full (a long name does that: a
+        // phrase's, a pattern's, "Random, no repeats"), this chip's tempo
+        // goes first, as it is on the transport, so the chips after it
+        // (MAKE or PERFORM, the last) keep their places where they can;
+        // then the end of the name is cut, and the chip stays.
         self.arp_chip = None;
         let s = &self.status;
         if self.arp.settings.mode != Mode::Direct || self.arp.latched || s.repeat || s.latched {
             let mut arp = arp_view::chip(&self.arp);
+            arp.short = Some(arp.text.clone());
             arp.text = format!("{} · {:.0} BPM", arp.text, self.arp.bpm);
             self.arp_chip = Some(chips.len());
             chips.push(arp);
@@ -8000,9 +8890,13 @@ impl Player {
         let stop = self.stop_words();
         self.stop_said = stop;
         let mode = self.arp.settings.mode;
-        let wheel = match mode {
+        // The wheel and Q-Link 1 follow the tab: the mode the pads play
+        // through, or Phrase while the panel shows that tab on a kit.
+        let tab = self.arp.tab();
+        let wheel = match tab {
             Mode::Arp => "order",
-            Mode::Pattern => "pattern",
+            Mode::Pattern => "pattern   ·   SHIFT + wheel: group",
+            Mode::Phrase => "phrase",
             Mode::Direct | Mode::Repeat => "rate",
         };
         let text = if self.power.is_some() {
@@ -8025,6 +8919,8 @@ impl Player {
             .to_string()
         } else if self.history.is_some() {
             HISTORY_HINT.to_string()
+        } else if self.input_list.is_some() {
+            INPUT_LIST_HINT.to_string()
         } else if self.recall.is_some() {
             mpfree_sampler_ui::recall::HINT.to_string()
         } else if self.kit_list {
@@ -8073,6 +8969,14 @@ impl Player {
             SHIFT_SAMPLE_LEARN_HINT.to_string()
         } else if self.status.shift && self.ready && self.perform_showing() {
             SHIFT_PERFORM_HINT.to_string()
+        } else if self.status.shift
+            && self.ready
+            && self.view == View::Sample
+            && self.sample.grain_tool()
+        {
+            // The Grain tool's rows and Q-Link cards learn a layer's grain
+            // setting (sampler refactor step 17).
+            SHIFT_SAMPLE_LEARN_HINT.to_string()
         } else if self.status.shift && self.ready && self.view == View::Sample {
             SHIFT_SAMPLE_HINT.to_string()
         } else if self.status.shift
@@ -8087,7 +8991,9 @@ impl Player {
         } else if self.status.shift
             && self.ready
             && (matches!(self.view, View::Mixer | View::Chain | View::Macros)
-                || (self.view == View::Arp && self.ui.rect_of(arp_view::QLINKS).is_some()))
+                || (self.view == View::Arp
+                    && (self.ui.rect_of(arp_view::QLINKS).is_some()
+                        || self.ui.rect_of(arp_view::PLAYS).is_some())))
             && (self.view != View::Mixer || mpfree_mixer_ui::io_hint(&self.ui).is_none())
         {
             SHIFT_LEARN_HINT.to_string()
@@ -8115,6 +9021,11 @@ impl Player {
             REC_LIST_HINT.to_string()
         } else if self.ready && self.view == View::Play && self.xy_list {
             XY_LIST_HINT.to_string()
+        } else if self.ready && self.patch_showing() {
+            match self.patch.open {
+                crate::patch_screen::Open::Edit(_) => patches::EDIT_HINT.to_string(),
+                _ => patches::LIST_HINT.to_string(),
+            }
         } else if self.ready && self.view == View::Play && self.xy_setup {
             XY_SETUP_HINT.to_string()
         } else if self.ready && self.view == View::Play && self.xy_full {
@@ -8169,7 +9080,15 @@ impl Player {
             format!("Latched: {}   ·   NOTE REPEAT: let go   ·   hold NOTE REPEAT for the wheel, - / + and Q-Links   ·   \
                      {stop}", crate::app::mode_label(mode))
         } else if self.play_frame() && self.band_showing() {
-            format!("Wheel: {wheel}   ·   - / +: Repeat, Arp, Pattern   ·   Q-Links: rate, gate, swing, octaves   ·   \
+            // On a synth, - and + reach Phrase too; a phrase's first
+            // Q-Link is its speed.
+            let modes = if self.phrases_play {
+                "Repeat, Arp, Pattern, Phrase"
+            } else {
+                "Repeat, Arp, Pattern"
+            };
+            let first = if tab == Mode::Phrase { "speed" } else { "rate" };
+            format!("Wheel: {wheel}   ·   - / +: {modes}   ·   Q-Links: {first}, gate, swing, octaves   ·   \
                      + MENU: Arp panel")
         } else if self.view == View::Play && self.levels.open {
             LEVELS_HINT.to_string()
@@ -8238,6 +9157,7 @@ impl Player {
                     .report
                     .as_deref()
                     .map_or_else(String::new, time_view::report_hint),
+                View::Arrange if self.time.scene_open.is_some() => time_view::SCENE_CARD_HINT.to_string(),
                 View::Arrange if self.time_page.adding => mpfree_time_ui::song::ADD_HINT.to_string(),
                 // Link's chooser (the Arrange refactor's 4b.5).
                 View::Arrange if self.time_page.linking => time_view::LINK_HINT.to_string(),
@@ -8247,7 +9167,6 @@ impl Player {
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.clip_card => time_view::clip_card_hint(&self.time),
-                View::Arrange if self.time_page.scene_card => time_view::SCENE_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 // A snap over recorded audio asks: Snap anyway and Not
                 // now float at this line's end.
@@ -8266,8 +9185,14 @@ impl Player {
                 View::Synth if self.skin_showing() => format!("{}'s own screen   ·   tap a control: pick it   ·   Wheel: pick one, push and turn: change it   ·   \
                                         Q-Links 1-4: the skin's knobs   ·   MPFree page: MPFree's own page   ·   {stop}",
                                        self.synth.as_ref().map_or("The plugin", |p| p.state.info.name)),
+                View::Synth if self.pads_panel.is_some() => format!("Tap a row: pick its sound   ·   Follow base: the bank plays the base again   ·   \
+                                        UNDO: the last change here   ·   Done or a tab: close   ·   {stop}"),
+                View::Synth if self.synth_pick.as_ref().is_some_and(|p| p.layer && p.kits) => format!("Layer: a tap adds a kit to the pads or takes it off, up to 4   ·   \
+                                        Keep: the pads keep them   ·   Cancel: what they played   ·   No track changes   ·   {stop}"),
                 View::Synth if self.synth_pick.as_ref().is_some_and(|p| p.layer) => format!("Layer: a tap adds a synth to the pads or takes it off, up to 4   ·   \
                                         Keep: the pads keep them   ·   Cancel: what they played   ·   No track changes   ·   {stop}"),
+                View::Synth if self.synth_pick.as_ref().is_some_and(|p| p.kits) => format!("Tap a kit: the pads play it now   ·   \
+                                        Keep: the pads keep it   ·   Cancel: what they played   ·   No track changes   ·   {stop}"),
                 View::Synth if self.synth_pick.is_some() => format!("Tap a synth: the pads play it now   ·   \
                                         Keep: the pads keep it   ·   Cancel: what they played   ·   No track changes   ·   {stop}"),
                 View::Synth if self.pads_layers.is_some() => {
@@ -8362,6 +9287,10 @@ impl Player {
                     "Hit pads to add them to the row picked or take them out   ·   Wheel: the next pad   ·   \
                      tap another row when done   ·   UNDO: undo".to_string()
                 }
+                // The kit's Tuning picked (tunings step T6).
+                View::Pads if self.sample.play_row(&self.ui) == Some(mpfree_sampler_ui::play_tab::Row::KitTuning) => {
+                    mpfree_sampler_ui::play_tab::TUNING_HINT.to_string()
+                }
                 View::Pads if self.sample.page() == sample_page::PLAY_PAGE && self.sample.play_keys_shown() => {
                     format!("Press keys to hear the kit   ·   drag the zone edges and root   ·   \
                      Q-Links 1-4: {}   ·   {ROWS_HINT}", self.sample.play_qlinks_text())
@@ -8407,6 +9336,14 @@ impl Player {
                 View::Chain => mpfree_chain_ui::chain_hint(&self.ui).to_string(),
                 View::Macros => mpfree_chain_ui::MACROS_HINT.to_string(),
                 View::Guide => GUIDE_HINT.to_string(),
+                // The Phrase tab: - and + step its kinds first (the modes
+                // are a tap away); on a kit it says why no list shows.
+                View::Arp if tab == Mode::Phrase => match &self.arp.phrase.kit_track {
+                    Some(track) => format!("{track}'s instrument is a kit   ·   phrases play on a synth   ·   - / +: kind   ·   \
+                                            MENU: options   ·   NOTE REPEAT + MENU: close"),
+                    None => "Wheel: phrase   ·   - / +: kind   ·   Q-Links: speed, gate, swing, octaves   ·   \
+                             MENU: options   ·   NOTE REPEAT + MENU: close".to_string(),
+                },
                 View::Arp => format!("Wheel: {wheel}   ·   - / +: mode   ·   Q-Links: rate, gate, swing, octaves   ·   \
                                       MENU: options   ·   NOTE REPEAT + MENU: close"),
                 View::Pattern => self.workspace.hint().to_string(),
@@ -8653,6 +9590,10 @@ impl Player {
                 self.perform_undo(redo);
                 return;
             }
+            Some(HistoryOf::Patches) => {
+                self.patch_undo(redo);
+                return;
+            }
             Some(HistoryOf::Sample) => {
                 let before = self.sample.page();
                 self.sample.undo(&mut self.ui, redo);
@@ -8681,6 +9622,9 @@ impl Player {
     /// the kit's edits on the Sample and Pads tabs, and the turns on the
     /// Synth tab and the mixer. None elsewhere.
     fn undo_source(&self) -> Option<HistoryOf> {
+        if self.patch_showing() {
+            return Some(HistoryOf::Patches);
+        }
         Some(match self.view {
             // The XY pad full screen and Setup: Stay's turns.
             View::Play if self.xy_full || self.xy_setup => HistoryOf::Turns(UndoOn::Xy),
@@ -8802,6 +9746,10 @@ impl Player {
                 let (rows, now) = self.perform.history_rows(&self.perform_names());
                 Some((title("Perform set"), rows, now))
             }
+            HistoryOf::Patches => {
+                let (rows, now) = self.patch_history();
+                Some((title("Patches"), rows, now))
+            }
             HistoryOf::Turns(_) => None,
         }
     }
@@ -8848,6 +9796,11 @@ impl Player {
                     self.perform_undo(redo);
                 }
             }
+            HistoryOf::Patches => {
+                for _ in 0..n {
+                    self.patch_undo(redo);
+                }
+            }
             HistoryOf::Turns(on) => {
                 self.outbox
                     .extend((0..n).map(|_| FromUi::UndoOn { on, redo }));
@@ -8863,6 +9816,11 @@ impl Player {
     /// control to control, press the control it is on, or grab a value and
     /// turn it.
     fn nav(&mut self, n: Nav) {
+        // The patch list takes the wheel: it moves the tile picked, the
+        // push picks it, - / + the patch before or after.
+        if self.patch_nav(n) {
+            return;
+        }
         // The step size list takes the wheel: it moves the row picked,
         // and the push gives the steps that size.
         if self.size_list {
@@ -9173,6 +10131,7 @@ impl Player {
             Some(HistoryOf::Takes) => !self.time.done.is_empty(),
             Some(HistoryOf::Sample) => self.sample.can_undo(),
             Some(HistoryOf::Perform) => self.perform.can_undo(),
+            Some(HistoryOf::Patches) => self.patch.can_undo(),
             Some(HistoryOf::Turns(UndoOn::Synth)) => self.turns_ready.0,
             Some(HistoryOf::Turns(UndoOn::Mixer)) => self.turns_ready.1,
             Some(HistoryOf::Turns(UndoOn::Xy)) => self.turns_ready.2,
@@ -9485,7 +10444,31 @@ impl Player {
             free: self.mem_free,
             stick: self.drive.as_ref().and_then(|d| d.get()).flatten(),
             heat: self.heat,
+            engines: self.engines.as_deref().and_then(crate::engines::shares),
+            tracks: self.engines.as_deref().and_then(|e| self.status_tracks(e)),
         }
+    }
+
+    /// System status's tracks using the most (track_costs.rs), each with
+    /// its words: the track's number, and its name when you gave it one.
+    fn status_tracks(
+        &self,
+        e: &crate::engines::EngineShared,
+    ) -> Option<Vec<(crate::track_costs::Who, String, f64)>> {
+        use crate::track_costs::{label, Who};
+        let name = |w: Who| match w {
+            Who::Track(t) => {
+                let n = self.track_name(t);
+                (n != format!("Track {}", t + 1)).then_some(n)
+            }
+            Who::Kit(_) => None,
+        };
+        let top = e.tracks.top()?;
+        Some(
+            top.into_iter()
+                .map(|(w, p)| (w, label(w, name), p))
+                .collect(),
+        )
     }
 
     /// The watchers' look (status_watch.rs), each time the audio loop's
@@ -10045,6 +11028,7 @@ impl Player {
             | TypeTo::SceneName(_)
             | TypeTo::PerformPage(_)
             | TypeTo::MarkerName(_)
+            | TypeTo::PatchName(_)
             | TypeTo::ClipName(..)
             | TypeTo::XyNames(_) => None,
         }
@@ -10066,6 +11050,11 @@ impl Player {
             let (_, name) = names.into_iter().next()?;
             let acts = self.perform.rename(page, &name);
             self.perform_acts(acts);
+            return None;
+        }
+        if let Some(TypeTo::PatchName(i)) = to {
+            let (_, name) = names.into_iter().next()?;
+            self.patch_named(i, &name);
             return None;
         }
         if let Some(TypeTo::XyNames(layout)) = to {
@@ -10274,6 +11263,7 @@ impl Player {
         }
         match msg {
             ToUi::Tell(l) => self.tell(&l),
+            ToUi::InputList(c) => self.open_input_list(*c),
             ToUi::Undo(redo) => self.undo(redo),
             ToUi::UndoButton(down) => {
                 self.undo_held = (down && self.typing.is_none()).then_some(0.0);
@@ -10458,8 +11448,10 @@ impl Player {
             ToUi::KitSource(b) => {
                 if b != self.kit_source {
                     self.kit_source = b;
-                    // The Sample and Pads tabs go to the pad of that bank.
+                    // The Sample and Pads tabs go to the pad of that bank,
+                    // and the bar says the bank pressed ("from pad B1").
                     self.sample.set_pad_page(self.kit_page());
+                    self.sample.set_from_bank(b.map(|_| self.pad_page));
                     self.sample_changed();
                 }
             }
@@ -10479,6 +11471,7 @@ impl Player {
             ToUi::PadPage(page) => {
                 if page != self.pad_page {
                     self.pad_page = page;
+                    self.sample.set_from_bank(self.kit_source.map(|_| page));
                     // The 16 pads show the page's sounds; Beats keeps its
                     // lanes (any of the kit's pads), with the page's empty
                     // pads last.
@@ -10572,7 +11565,9 @@ impl Player {
                 }
             }
             ToUi::PlayQLink(k, ticks) => {
-                if self.xy_setup_showing() {
+                if self.patch_qlink(k, ticks) {
+                    // The patch editor's zone.
+                } else if self.xy_setup_showing() {
                     // XY Setup: the picked setting's range and curve.
                     self.xy_setup_qlink(k, ticks);
                 } else if self.play.held.is_some()
@@ -10622,7 +11617,7 @@ impl Player {
                 // MAIN on Play: one view, All, so nothing to step through.
                 self.show_play_view(v.unwrap_or(PlayView::All));
             }
-            // With a set open (layout spec 4p): MAIN from another page goes
+            // With a set open (layout spec 4q): MAIN from another page goes
             // to the Show view, and on Arrange goes Show, Clips, Song, the
             // song list, round.
             ToUi::ArrangeView(v) if self.set_play.is_some() => {
@@ -10723,7 +11718,15 @@ impl Player {
                 let loops = loops_info(&self.looper);
                 if loops != self.time.loops {
                     self.time.loops = loops;
-                    if self.time.tracks.iter().any(|t| t.loops.is_some()) {
+                    // Loops on audio tracks: their cards find their places
+                    // by the loops' ids (phase 4).
+                    if self.time.loops_on && self.refresh_loop_places() {
+                        self.refresh_looper();
+                    }
+                    // Loop cells on audio tracks too (phase 4).
+                    if self.time.tracks.iter().any(|t| t.loops.is_some())
+                        || (self.time.loops_on && self.time.loop_cells() > 0)
+                    {
                         self.time_page.update(&mut self.ui, &self.time);
                     }
                 }
@@ -10752,6 +11755,7 @@ impl Player {
             }
             ToUi::MixerQLink(k, d) => self.mixer_qlink(k, d),
             ToUi::PadFx(fx) => self.sample.set_pad_fx(&mut self.ui, fx),
+            ToUi::KitTunings(t) => self.sample.set_kit_tunings(&mut self.ui, t),
             ToUi::PadsOnSynth(on) => self.sample.set_pads_on_synth(&mut self.ui, on),
             ToUi::MixerFaders => {
                 mpfree_mixer_ui::set_look(&mut self.ui, mpfree_mixer_ui::Look::Faders);
@@ -10976,6 +11980,8 @@ impl Player {
             // The engines an open replaced: freed here. The open is in:
             // nothing is unsaved (its own news in the next moments isn't
             // an edit).
+            ToUi::PatchesBack(old) => drop(old),
+            ToUi::Keys(now) => self.patch_keys(*now),
             ToUi::ProjectBack(old) => {
                 drop(old);
                 self.opens_out = self.opens_out.saturating_sub(1);
@@ -11006,10 +12012,21 @@ impl Player {
                         o.reset_view();
                     }
                     o.title = m.title;
+                    let mut marks = m.marks.into_iter();
                     o.rows = m
                         .rows
                         .into_iter()
-                        .map(|(name, value)| OptionRow { name, value })
+                        .map(|(name, value)| {
+                            let mark = marks.next().unwrap_or_default();
+                            OptionRow {
+                                name,
+                                value,
+                                tag: mark.tag.to_string(),
+                                sub: mark.sub,
+                                fixed: mark.fixed,
+                                heading: mark.heading,
+                            }
+                        })
                         .collect();
                     o.selected = m.selected;
                     o.editing = m.editing;
@@ -11020,16 +12037,31 @@ impl Player {
                 }
                 if let Some(c) = self.ui.get_mut::<Card>("help") {
                     c.heading = m.help_heading;
-                    // The row's facts first, brighter, then a gap (the
-                    // Instrument row's track line, step 11d).
-                    let gap = (!m.facts.is_empty()).then(String::new);
+                    // The row's facts first, brighter (amber when they
+                    // warn), then a gap (the Instrument row's track line,
+                    // step 11d) or the link to a page (a Tuning row's
+                    // Tunings button, tunings step T6).
+                    let facts = m.facts.len();
+                    let fact_tone = if m.facts_warn {
+                        Tone::Warn
+                    } else {
+                        Tone::Normal
+                    };
+                    let gap = (facts > 0 && m.help_link.is_none()).then(String::new);
                     c.lines = m
                         .facts
                         .into_iter()
-                        .chain(gap)
-                        .map(|l| (l, Tone::Normal))
+                        .map(|l| (l, fact_tone))
+                        .chain(gap.map(|l| (l, Tone::Normal)))
                         .chain(m.help.into_iter().map(|l| (l, Tone::Dim)))
                         .collect();
+                    c.link = m
+                        .help_link
+                        .map(|(title, sub)| mpfree_ui::widgets::CardLink {
+                            title,
+                            sub,
+                            after: facts,
+                        });
                     c.buttons = m.help_buttons;
                 }
             }
@@ -11282,6 +12314,10 @@ impl Player {
                 self.set_synth_pick(v);
                 self.refresh_hint();
             }
+            ToUi::PadMap(v) => {
+                self.set_pads_panel(v);
+                self.refresh_hint();
+            }
             ToUi::SampleKits { projects, rate } => {
                 self.project_rate = rate;
                 self.sample.set_kits(&mut self.ui, projects, rate);
@@ -11372,6 +12408,7 @@ impl Player {
                 self.refill_sounds();
             }
             ToUi::TouchLab => self.open_touch_page("touchlab", "Touch lab"),
+            ToUi::PatchList => self.open_patch_list(),
             ToUi::CalibrateTouch => self.open_touch_page("calibrate", "Calibrate touch"),
             ToUi::TouchTuning(t) => {
                 self.saved_tuning = t;
@@ -11398,6 +12435,9 @@ impl Player {
             }
             ToUi::Arp(v) => {
                 let v = *v;
+                // The Phrase tab on a kit names the track, as Arrange does.
+                let kit_track = v.phrase.kit_track.map(|t| self.track_name(t));
+                self.phrases_play = v.phrase.plays;
                 let a = &mut self.arp;
                 a.settings = v.settings;
                 a.live = v.live;
@@ -11405,6 +12445,15 @@ impl Player {
                 a.pattern = v.pattern;
                 a.pattern_index = v.pattern_index;
                 a.pattern_changed = v.pattern_changed;
+                a.phrase_index = v.phrase_index;
+                a.pads_key = v.pads_key;
+                a.phrase = arp_view::PhraseNow {
+                    shelf: v.phrase.shelf,
+                    at: v.phrase.at,
+                    waits: v.phrase.waits,
+                    playing: v.phrase.playing,
+                    kit_track,
+                };
                 a.notes = v.notes;
                 a.step = v.step;
                 a.latched = v.latched;
@@ -11425,6 +12474,10 @@ impl Player {
             }
             ToUi::Patterns(list) => {
                 self.arp.patterns = list;
+                self.refresh_arp();
+            }
+            ToUi::Phrases(list) => {
+                self.arp.phrases = list;
                 self.refresh_arp();
             }
             ToUi::Workspace(w) => {
@@ -11466,6 +12519,7 @@ impl Player {
                 let swapped = st.song_view != self.time.song_view
                     || st.list_view != self.time.list_view
                     || st.list_linked != self.time.list_linked
+                    || st.scene_open.is_some() != self.time.scene_open.is_some()
                     || lens(&st) != lens(&self.time)
                     || time_view::song_hint(&st) != time_view::song_hint(&self.time)
                     || time_view::clip_card_hint(&st) != time_view::clip_card_hint(&self.time);
@@ -11515,9 +12569,16 @@ impl Player {
                     // The armed track, and where it is transposed to.
                     self.refresh_levels();
                 }
+                // The input list closes once its page goes, or the switch.
+                let gone = self
+                    .input_list
+                    .as_ref()
+                    .is_some_and(|(p, _)| self.ui.page() != p || !self.time.loops_on);
+                if gone {
+                    self.close_input_list();
+                }
                 // Play's strip and the Looper tab name a loop by its place.
-                let places = time_view::loop_places(&self.time);
-                if self.looper_page.set_places(places) {
+                if self.refresh_loop_places() {
                     if matches!(self.view, View::Looper | View::Play) {
                         self.refresh_looper();
                     }
@@ -11528,6 +12589,7 @@ impl Player {
                 self.sample.set_tempo(self.time.transport.bpm);
                 self.refresh_edit_pads();
                 self.time_page.update(&mut self.ui, &self.time);
+                self.retell_held_note();
                 self.refresh_show();
                 self.play.set_transport(self.time.transport);
                 self.refresh_play();
@@ -11708,6 +12770,7 @@ impl Player {
             // The Song view with a block, a section or a tempo point
             // picked: the push grabs it for the wheel, and lets go again.
             let picked = self.time.selected.is_some()
+                || !self.time.picks.is_empty()
                 || self.time.section.is_some()
                 || self.time.tempo_pick.is_some();
             let song = self.view == View::Arrange
@@ -11716,7 +12779,7 @@ impl Player {
             if song && ((on && picked) || (!on && self.song_grab)) {
                 self.song_grab = on;
                 let name = self.song_picked_name();
-                let each = if self.time.selected.is_some() {
+                let each = if self.time.selected.is_some() || !self.time.picks.is_empty() {
                     "a beat"
                 } else {
                     "a section"
@@ -11756,12 +12819,42 @@ impl Player {
             for list in [
                 time_view::RECORD,
                 time_view::CLIP_CARD,
-                time_view::SCENE_CARD,
                 time_view::EDIT_OPTIONS,
             ] {
                 if let Some(l) = self.ui.get_mut::<OptionList>(list) {
                     l.editing = on;
                 }
+            }
+            return;
+        }
+        // The scene card (5.2): the wheel picks one of its settings, in
+        // its order down the left and then the right, and - / + step it.
+        if self.view == View::Arrange && self.time.scene_open.is_some() {
+            let order: Vec<usize> = mpfree_time_ui::scene_card::LEFT_ROWS
+                .iter()
+                .chain(&mpfree_time_ui::scene_card::RIGHT_ROWS)
+                .copied()
+                .collect();
+            let now = match self.time_page.scene_row {
+                0 => 1,
+                k => k,
+            };
+            match k {
+                RowKey::Pick(d) => {
+                    let i = order.iter().position(|&x| x == now).unwrap_or(0) as i32;
+                    let j = (i + d).clamp(0, order.len() as i32 - 1) as usize;
+                    self.time_page.scene_row = order[j];
+                    self.time_page.update(&mut self.ui, &self.time);
+                }
+                RowKey::Step(d) => {
+                    match time_view::scene_action(&self.time, now, d, self.status.shift) {
+                        Ok(a) => self.outbox.push(FromUi::Time(a)),
+                        Err(why) if !why.is_empty() => self.tell(&why),
+                        Err(_) => {}
+                    }
+                }
+                // - / + came as Step above.
+                RowKey::Editing(_) | RowKey::Arrow { .. } => {}
             }
             return;
         }
@@ -11852,6 +12945,9 @@ impl Player {
         if let Some(p) = st.selected.and_then(|i| st.placements.get(i)) {
             return p.name.clone();
         }
+        if !st.picks.is_empty() {
+            return format!("the {} blocks", st.picks.len());
+        }
         st.section
             .and_then(|k| st.markers.get(k))
             .map_or_else(|| "it".to_string(), |m| m.1.clone())
@@ -11883,6 +12979,23 @@ impl Player {
                 index,
                 track: p.track,
                 start,
+                copy: false,
+            })
+        } else if !st.picks.is_empty() {
+            // Several picked (6.5): they all move, none before bar 1.
+            let beat = st.transport.meter.beat_ticks();
+            let first = st
+                .picks
+                .iter()
+                .filter_map(|&i| st.placements.get(i))
+                .map(|p| p.start)
+                .min()
+                .unwrap_or(0);
+            let by = (i64::from(d) * beat).max(-first);
+            (by != 0).then(|| TimeAction::MovePlacements {
+                set: st.picks.clone(),
+                lanes: 0,
+                by,
                 copy: false,
             })
         } else if let Some(k) = st.section.filter(|&k| k < st.markers.len()) {
@@ -11963,14 +13076,16 @@ impl Player {
             self.sample_changed();
         }
         // The keyboard came or went on the Play tab, a row that pad hits
-        // edit was picked, another section (with its own Q-Links) opened,
+        // edit (or the kit's Tuning) was picked, another section (with its own Q-Links) opened,
         // the Slice tool went live, the Wave page's REC went on or off, a
         // take kept on the page came or went on the Wave page, or its
         // Slice, Warp or Grain tool was picked or put down: its hint with
         // it.
+        let tuning =
+            self.sample.play_row(&self.ui) == Some(mpfree_sampler_ui::play_tab::Row::KitTuning);
         let keys = (
             self.sample.play_keys_shown(),
-            self.sample.play_takes_pads(&self.ui),
+            (self.sample.play_takes_pads(&self.ui), tuning),
             self.sample.recorder_on(),
             self.sample.take_shown().is_some(),
             (
@@ -12396,6 +13511,9 @@ impl Player {
             }
             A::SaveKitRequested => self.save_kit(),
             A::Note(line) => self.say(line),
+            // BROWSE's SD card place shows: the card is asked for, in a
+            // thread; sd_card_tick gives the browser its answer.
+            A::OpenCard => self.sd_card.open(),
             // Projects (project.rs).
             A::SaveRequested => self.ask_save(),
             A::NewProject => {
@@ -12516,6 +13634,46 @@ impl Player {
                     _ => "a project",
                 }
             )),
+        }
+    }
+
+    /// The SD card place's card, once a frame: what the slot heard goes to
+    /// the library (where the card's files are) and the browser (what the
+    /// place says). The card is in use while the browser shows or its
+    /// worker has jobs (a copy from the card, say).
+    fn sd_card_tick(&mut self) {
+        let using = self.browsing() || self.browser.as_ref().is_some_and(|b| b.busy());
+        for h in self.sd_card.tick(using) {
+            use crate::sd_card::Heard;
+            use mpfree_browser_ui::CardState;
+            let (mount, state) = match h {
+                Heard::Say(line) => {
+                    self.say(line);
+                    continue;
+                }
+                Heard::Open(card) => (
+                    Some(card.mount.clone()),
+                    CardState::Open {
+                        about: card.describe(),
+                        dirty: card.dirty,
+                    },
+                ),
+                Heard::NotOpened(why) => {
+                    self.say(format!("sd card: not opened: {why}"));
+                    (None, CardState::NotOpened(why))
+                }
+                Heard::Closed(line) => {
+                    self.say(line);
+                    (None, CardState::Closed)
+                }
+            };
+            if let Some(b) = self.browser.as_mut() {
+                b.library().set_card(mount);
+                b.set_card(state);
+                if self.view == View::Browser {
+                    mpfree_browser_ui::show(&mut self.ui, b);
+                }
+            }
         }
     }
 
@@ -12990,6 +14148,11 @@ impl Player {
                 mpfree_midi_ui::MidiPart(m.clone()).save(),
             ));
         }
+        // Only while the song has patches: one without plays its keys as
+        // before, and opens in any build.
+        if !self.patches.list.is_empty() {
+            extra.push((crate::project::PATCHES.to_string(), self.patches.to_text()));
+        }
         let mut samples: Vec<_> = sounds
             .into_iter()
             .map(|(file, src)| {
@@ -13142,7 +14305,22 @@ impl Player {
                 }),
             );
         }
-        self.open_midi(snap.part(crate::project::MIDI));
+        // Learned pad settings and synth knobs that name their track (a
+        // project from before sampler step 16) name what the track plays.
+        let midi = snap.part(crate::project::MIDI).map(|t| {
+            crate::project::learns_moved_up(t, &o.track_kits, &o.sends, &o.instrument_list)
+        });
+        if let Some((_, n @ 1..)) = midi {
+            let s = if n == 1 { "" } else { "s" };
+            self.say(format!(
+                "project: {n} learned control{s} now stay on their kit or synth, \
+                 whichever track plays it"
+            ));
+        }
+        self.open_midi(midi.as_ref().map(|(t, _)| t.as_str()));
+        // Its patches: the screen keeps the list, the loop plays the rig.
+        self.patches = std::mem::take(&mut o.patch_list);
+        self.patches_opened();
         self.opens_out += 1;
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
         // No kits saved: the factory kits, as New has them.
@@ -13632,12 +14810,7 @@ impl Player {
             beats: u32::from(t.meter.beats),
             click: self.settings.metronome,
             count_in: t.count_in,
-            keyboards: self
-                .rig()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|r| (r.name, r.connected))
-                .collect(),
+            keyboards: self.show_keyboards(),
             autosave_waiting: self.autosave_held(),
         };
         let v = sp.view(&now);
@@ -14542,7 +15715,9 @@ impl Player {
                 | FromUi::SynthPickOpen
                 | FromUi::OptionsButton
                 | FromUi::PlayOnPads
-                | FromUi::FollowTrack
+                | FromUi::PadMapOpen
+                | FromUi::PadMapTap { .. }
+                | FromUi::PickPatch(_)
                 | FromUi::Preview(_)
                 | FromUi::PreviewStop
                 | FromUi::SaveBrowserLists(_)
@@ -14593,10 +15768,18 @@ impl Player {
                 c.open = false;
             }
         }
+        if v != View::Synth {
+            // What the pads play too (the app closed it).
+            self.pads_panel = None;
+        }
         // Another page (MENU's options too) closes the conversion report
         // card and keeps what the conversion did (layout spec 4n).
         if self.view == View::Arrange && v != View::Arrange && self.time.report.is_some() {
             self.outbox.push(FromUi::Time(TimeAction::CloseReport));
+        }
+        // And the scene card (5.2).
+        if self.view == View::Arrange && v != View::Arrange && self.time.scene_open.is_some() {
+            self.outbox.push(FromUi::Time(TimeAction::SceneCard(None)));
         }
         if v == View::Pads && self.view != View::Pads && self.perform.shown {
             // Back on the Perform view: the app sends its throws' settings
@@ -14618,6 +15801,7 @@ impl Player {
         if v != View::Play {
             self.xy_list = false;
             self.xy_full = false;
+            self.patch.open = crate::patch_screen::Open::Closed;
             self.xy_setup = false;
         }
         let followed = self.play_follows(v);
@@ -14632,6 +15816,7 @@ impl Player {
                 crate::rec_list::REC_PAGE.to_string()
             }
             View::Play if self.xy_list && self.ready => crate::xy_list::XY_PAGE.to_string(),
+            View::Play if self.patch_showing() && self.ready => self.patch_page().to_string(),
             View::Play if self.xy_setup && self.ready => crate::xy_setup::XY_SETUP_PAGE.to_string(),
             View::Play if self.xy_full && self.ready => play_page::XY_FULL_PAGE.to_string(),
             View::Play | View::Sequencer => self
@@ -14645,11 +15830,13 @@ impl Player {
             View::Sample => {
                 let name = self.auto_synth_name();
                 self.sample.set_auto_synth(&mut self.ui, name);
+                self.sample.set_track(self.time.selected().unwrap_or(0));
                 self.sample.show_sample(&mut self.ui);
                 self.sample.page().to_string()
             }
             View::Pads => {
                 self.follow_pad_ports();
+                self.sample.set_track(self.time.selected().unwrap_or(0));
                 self.sample.show_pads(&mut self.ui);
                 if self.perform.shown && self.show_perform() {
                     // The Perform set in the kit's place.
@@ -14707,6 +15894,9 @@ impl Player {
                         b.take_actions();
                     }
                     self.preset_picker.opened(b);
+                    // The SD card place asks again for a card put away
+                    // while the browser was hidden.
+                    b.shown_again();
                     if std::mem::take(&mut self.xy_browse.pending) {
                         b.open_picker(mpfree_browser_ui::Pick::XyLayout);
                         self.xy_browse.open = true;
@@ -15157,7 +16347,16 @@ impl Player {
                 .get::<QLinkColumn>(play_page::QLINKS)
                 .is_some_and(|q| q.title == ARP_QLINKS)
         };
-        if w == arp_view::QLINKS || (w == play_page::QLINKS && arp_cards()) {
+        // The Phrase tab's own sliders are the same four, but its first is
+        // the phrase's speed, which has no parameter of its own yet (the
+        // rate's would turn the wrong thing), so it learns nothing.
+        let slider = w == arp_view::QLINKS
+            || (w == arp_view::PLAYS && t.id == "slider")
+            || (w == play_page::QLINKS && arp_cards());
+        if slider {
+            if t.index == 0 && self.arp.tab() == Mode::Phrase {
+                return None;
+            }
             let (id, _) = mpfree_play::mpfree_param::arp::ALL.get(t.index)?;
             return Some(LearnValue::Arp(*id));
         }
@@ -15195,11 +16394,13 @@ impl Player {
             return skin.param_id_at(x, y, r).map(LearnValue::Synth);
         }
         // A pad's own setting: a knob of the Sample tab's Play page, or
-        // the Pads tab's Level, Pan or Tune.
-        if let Some((pad, field)) = self.sample.learn_field(w, t) {
+        // the Pads tab's Level, Pan or Tune; or a grain setting of the
+        // layer the Grain tool edits (sampler refactor step 17).
+        if let Some((pad, what)) = self.sample.learn_field(w, t) {
             return Some(LearnValue::Pad {
+                kit: u8::try_from(self.sample.kit()).ok()?,
                 pad: u8::try_from(pad).ok()?,
-                field: field as u16,
+                field: what.id(),
             });
         }
         mpfree_chain_ui::param_of(&self.ui, w, t).map(LearnValue::Param)
@@ -15271,6 +16472,25 @@ impl Player {
         }
     }
 
+    /// A note held on the roll while the wheel turns its velocity (piano
+    /// roll plan 1C.3): the hint line says the velocity the clip has
+    /// now, as each turn's edit comes back.
+    fn retell_held_note(&mut self) {
+        let Some(h) = self.ui.held() else {
+            return;
+        };
+        let told = self.told.as_ref().map(|(t, _, _)| t.clone());
+        if h.widget != time_view::NOTES || !told.as_ref().is_some_and(|t| t.ends_with(HELD_TOLD)) {
+            return;
+        }
+        if let Some(text) = self
+            .held_value(&h)
+            .filter(|t| told.as_ref() != Some(&tell_text(t)))
+        {
+            self.tell(&text);
+        }
+    }
+
     /// The held finger's touch is the wheel's now: a macro card's long
     /// press or the tempo's tap ends, as if the finger had lifted.
     fn held_used(&mut self) {
@@ -15287,6 +16507,15 @@ impl Player {
     fn held_value(&self, h: &mpfree_ui::PageTarget) -> Option<String> {
         if h.widget == synth_view::TILES {
             return self.synth.as_ref()?.wheel_text();
+        }
+        if h.widget == time_view::NOTES && h.target.id == mpfree_time_ui::editor::HELD_NOTE {
+            // A note on the roll (piano roll plan 1C.3): its velocity, or
+            // the picks' with it.
+            let v = self
+                .ui
+                .get::<NoteGrid>(time_view::NOTES)?
+                .held_velocity(h.target.index)?;
+            return Some(format!("{v}{HELD_TOLD}"));
         }
         if mpfree_chain_ui::ChainView::is_note_setting(&h.target) {
             // A MIDI effect's setting: the page knows its value.
@@ -15475,6 +16704,65 @@ impl Player {
         self.refresh_qlinks();
     }
 
+    /// A finger held still on a row's number on the grid, or a step's on
+    /// the song list, from `tick`: after [`STEP_HOLD`] its scene card
+    /// opens (the Arrange refactor's 5.2), and the finger's lift launches,
+    /// picks and moves nothing. A drag or a lift lets it go.
+    fn row_hold_tick(&mut self, dt: f32) {
+        use mpfree_time_ui::list::SongListView;
+        use mpfree_time_ui::widgets::ClipGrid;
+        let held = if self.view != View::Arrange || self.time.scene_open.is_some() {
+            None
+        } else if self.time.list_view {
+            self.ui
+                .get::<SongListView>(time_view::SONG_LIST)
+                .and_then(SongListView::held_number)
+                .map(|k| (true, k))
+        } else if !self.time.song_view {
+            self.ui
+                .get::<ClipGrid>(time_view::CLIPS)
+                .and_then(ClipGrid::held_row)
+                .map(|r| (false, r))
+        } else {
+            None
+        };
+        let Some(h) = held else {
+            self.row_hold = None;
+            return;
+        };
+        let t = match self.row_hold {
+            Some((was, t)) if was == h => t + dt.max(0.0),
+            _ => 0.0,
+        };
+        if t < STEP_HOLD {
+            self.row_hold = Some((h, t));
+            return;
+        }
+        self.row_hold = None;
+        let row = match h {
+            (true, k) => {
+                if let Some(l) = self.ui.get_mut::<SongListView>(time_view::SONG_LIST) {
+                    l.let_go_of_step();
+                }
+                self.time.list.get(k).and_then(|r| r.scene)
+            }
+            (false, r) => {
+                if let Some(g) = self.ui.get_mut::<ClipGrid>(time_view::CLIPS) {
+                    g.let_go_of_row();
+                }
+                Some(r)
+            }
+        };
+        match row {
+            Some(row) => {
+                println!("scene card: row {} held", row + 1);
+                self.outbox
+                    .push(FromUi::Time(TimeAction::SceneCard(Some(row))));
+            }
+            None => self.tell("This part is the song's own: it has no scene"),
+        }
+    }
+
     /// The guard's hold, from `tick`: the fill crosses the button, and
     /// once it is across the button is pressed, as a tap would.
     fn guard_tick(&mut self, dt: f32) {
@@ -15590,6 +16878,30 @@ impl Player {
 
     /// A touch meant something: hand it to the audio thread, which decides.
     pub fn on_event(&mut self, ev: UiEvent) -> Option<FromUi> {
+        // An audio track's input list open (phase 4, board 4): a tap on
+        // an input picks it, or says why it can't; a touch anywhere else
+        // only closes it.
+        if let Some((_, track)) = self.input_list {
+            if ev.widget != mpfree_time_ui::inputs::INPUT_LIST {
+                self.close_input_list();
+                return None;
+            }
+            let EventKind::Select(k) = ev.kind else {
+                return None;
+            };
+            let list = self
+                .ui
+                .get::<mpfree_time_ui::inputs::InputList>(mpfree_time_ui::inputs::INPUT_LIST)?;
+            if let Some(why) = list.refused(k) {
+                self.tell(&why);
+                return None;
+            }
+            self.close_input_list();
+            return Some(FromUi::Time(TimeAction::Audio(AudioAction::InputPick {
+                track,
+                k,
+            })));
+        }
         if [skin_page::SKIN, skin_page::TABS, skin_page::CHIP].contains(&ev.widget.as_str()) {
             self.skin_event(&ev);
             return None;
@@ -15613,9 +16925,33 @@ impl Player {
                 _ => return a.map(FromUi::Synth),
             }
         }
+        if ev.widget == mpfree_synth_ui::pad_map::PANEL {
+            return self.pads_panel_event(&ev.kind);
+        }
         if ev.widget == mpfree_synth_ui::pick::PICK {
+            use mpfree_synth_ui::pick::{FROM_BANK, KEYS, KITS, KIT_TILES, SYNTHS};
             return match ev.kind {
                 EventKind::Select(i) => Some(FromUi::SynthPickTap(i)),
+                // Synths or Kits (sampler step 15e).
+                EventKind::Tab(k) if k == SYNTHS || k == KITS => {
+                    Some(FromUi::SynthPickSide(k == KITS))
+                }
+                EventKind::Cell { row, col } if row == KIT_TILES => {
+                    let (kit, name, empty, banks) = self.pick_kits.get(col)?.clone();
+                    Some(FromUi::SynthPickKit {
+                        kit,
+                        name,
+                        empty,
+                        banks,
+                    })
+                }
+                EventKind::Cell { row, col } if row == FROM_BANK => {
+                    self.pick_from.get(col).copied().map(FromUi::SynthPickFrom)
+                }
+                EventKind::Cell { row, col } if row == KEYS => {
+                    self.pick_keys_play(col);
+                    None
+                }
                 // All banks or Bank B only (step 6c).
                 EventKind::Tab(k)
                     if k == mpfree_synth_ui::pick::ALL_BANKS
@@ -15718,6 +17054,11 @@ impl Player {
             }
             self.sample_after(before);
             self.print_sample_lines();
+            return None;
+        }
+        // The patch screens (ERASE + a lane is the editor's own).
+        if ev.widget == crate::patch_page::LIST || ev.widget == crate::patch_page::EDIT {
+            self.patch_event(&ev);
             return None;
         }
         if self.status.erase {
@@ -15844,6 +17185,11 @@ impl Player {
             }
             (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_BPM)) => {
                 Some(FromUi::TapTempo)
+            }
+            // KEYS PLAY: the patch list (live shows C1).
+            (play_page::TRANSPORT, EventKind::Select(crate::play_widgets::TAP_KEYS)) => {
+                self.toggle_patch_list();
+                None
             }
             // What the pads play: the list of kits. In controller mode the
             // pads play the gear, and the Controller chip gives them back.
@@ -15997,7 +17343,9 @@ impl Player {
                 if matches!(self.view, View::Play | View::Sequencer | View::Arrange)
                     && !self.band_showing() =>
             {
-                if !self.audio_qlink(index, delta) {
+                if self.patch_qlink(index, delta) {
+                    // The patch editor's zone.
+                } else if !self.audio_qlink(index, delta) {
                     self.play_qlink(index, delta);
                 }
                 None
@@ -16519,7 +17867,7 @@ impl Player {
                 Some(FromUi::StepsOff)
             }
             ("header", EventKind::Select(i)) if Some(i) == self.pads_chip => {
-                Some(FromUi::FollowTrack)
+                Some(FromUi::PadMapOpen)
             }
             ("header", EventKind::Select(i)) if Some(i) == self.perform_set_chip => {
                 Some(FromUi::PerformOff)
@@ -16584,7 +17932,12 @@ impl Player {
             // track's input steps to the next (Pads, Line in, Resample).
             (time_view::CLIPS, EventKind::Tab(k)) if k >= mpfree_time_ui::widgets::SOUND_TAP => {
                 let t = k - mpfree_time_ui::widgets::SOUND_TAP;
-                if let Some(tr) = self.time.tracks.get(t).filter(|tr| tr.audio) {
+                let lane = self.time.audio_lane_at(t).map(|l| l.track);
+                if let Some(lane) = lane.filter(|_| self.time.loops_on) {
+                    // Its input list (phase 4, board 4): the app says what
+                    // the mixer offers, and it opens.
+                    Some(FromUi::Time(TimeAction::Audio(AudioAction::Inputs(lane))))
+                } else if let Some(tr) = self.time.tracks.get(t).filter(|tr| tr.audio) {
                     // An audio track's input: its panel on the Song view.
                     let line = format!(
                         "{}'s input: tap its name on the Song view (Song ›) to open its panel",
@@ -16625,15 +17978,23 @@ impl Player {
             // SHIFT + the clip card's arrows: Length and Speed halve or
             // double, Bank steps a whole CC 0; on the scene editor, Bank
             // does too.
-            (time_view::CLIP_CARD | time_view::SCENE_CARD, EventKind::Step { index, delta })
-                if self.status.shift =>
+            // SHIFT + the scene card's arrows (5.2): Bank a whole CC 0,
+            // Tempo a tenth of a BPM.
+            (time_view::CLIPS | time_view::SONG_LIST, EventKind::Step { index, delta })
+                if self.status.shift && self.time.scene_open.is_some() =>
             {
-                let a = if ev.widget == time_view::CLIP_CARD {
-                    time_view::card_action(&self.time, index, delta, true)
-                } else {
-                    time_view::scene_action(&self.time, index, delta, true)
-                };
-                match a {
+                match time_view::scene_action(&self.time, index, delta, true) {
+                    Ok(a) => Some(FromUi::Time(a)),
+                    Err(why) => {
+                        if !why.is_empty() {
+                            self.tell(&why);
+                        }
+                        None
+                    }
+                }
+            }
+            (time_view::CLIP_CARD, EventKind::Step { index, delta }) if self.status.shift => {
+                match time_view::card_action(&self.time, index, delta, true) {
                     Ok(a) => Some(FromUi::Time(a)),
                     Err(why) => {
                         if !why.is_empty() {
@@ -16667,12 +18028,13 @@ impl Player {
             }
             (time_view::CLIPS, EventKind::Toggle(_))
             | (time_view::NOTES, EventKind::Tab(_) | EventKind::View { .. })
-            | (
-                time_view::RECORD | time_view::CLIP_CARD | time_view::SCENE_CARD,
-                EventKind::Tab(_),
-            ) if self.time_page.page_tracks(&ev, &self.time) => {
-                // The grid's pager and the Record panel's tabs: the page's
-                // own, nothing for the app but the hint line.
+            | (time_view::SONG, EventKind::Tab(_))
+            | (time_view::RECORD | time_view::CLIP_CARD, EventKind::Tab(_))
+                if self.time_page.page_tracks(&ev, &self.time) =>
+            {
+                // The grid's pager, the Record panel's tabs, and the Song
+                // view's zoom and its bars scrolled at an edge (6.4): the
+                // page's own, nothing for the app but the hint line.
                 self.time_page.update(&mut self.ui, &self.time);
                 self.refresh_hint();
                 None
@@ -16695,9 +18057,12 @@ impl Player {
                 );
                 None
             }
-            // The scene editor's Rename: the text keyboard, its name typed
+            // The scene card's Rename: the text keyboard, its name typed
             // over the scene's.
-            (time_view::SCENE_CARD, EventKind::Toggle(time_view::SCENE_RENAME)) => {
+            (
+                time_view::CLIPS | time_view::SONG_LIST,
+                EventKind::Toggle(mpfree_time_ui::scene_card::SCENE_RENAME),
+            ) => {
                 let row = self.time.scene_focus;
                 let name = &self.time.scene.name;
                 self.open_textpad(
@@ -16721,7 +18086,6 @@ impl Player {
                 | time_view::CLIPS
                 | time_view::RECORD
                 | time_view::CLIP_CARD
-                | time_view::SCENE_CARD
                 | time_view::TAKES
                 | time_view::MORPH
                 | time_view::SONG
@@ -16785,6 +18149,24 @@ impl Player {
                         }
                         // SHIFT + "+ Track": a Loop track.
                         TimeAction::AddTrack if fine && plus => TimeAction::AddLoopTrack,
+                        // SHIFT + a tap on a block adds it to what is
+                        // picked, or takes it out; SHIFT as a box lifts adds
+                        // its blocks; several dragged with SHIFT are copied
+                        // (6.5).
+                        TimeAction::SelectPlacement(Some(i)) if fine => {
+                            TimeAction::PickPlacement(i)
+                        }
+                        TimeAction::PickPlacements { set, .. } => {
+                            TimeAction::PickPlacements { set, add: fine }
+                        }
+                        TimeAction::MovePlacements { set, lanes, by, .. } => {
+                            TimeAction::MovePlacements {
+                                set,
+                                lanes,
+                                by,
+                                copy: fine,
+                            }
+                        }
                         // SHIFT held as the finger lifts: a copy, not a move.
                         TimeAction::DropClip { from, to, .. } => TimeAction::DropClip {
                             from,
@@ -16836,6 +18218,7 @@ impl Player {
         self.script_hold_tick(dt);
         self.guard_tick(dt);
         self.step_hold_tick(dt);
+        self.row_hold_tick(dt);
         // UNDO held: the page's undo history.
         if let Some(held) = self.undo_held {
             let held = held + dt.max(0.0);
@@ -17025,6 +18408,7 @@ impl Player {
         // Monitor's switch and level, turned on the recorder's Q-Link 4.
         let monitor = self.sample.take_monitor();
         self.outbox.extend(monitor);
+        self.sd_card_tick();
         // The browser: its touches and the worker's answers (a save's too,
         // made from another page); a preview's file and an opened
         // project's loops once read.
@@ -18755,12 +20139,14 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::LevelsWheel(d) => p.apply(ToUi::LevelsWheel(d)),
             Effect::Steps(_) => {}
             Effect::Patterns(l) => p.apply(ToUi::Patterns(l)),
+            Effect::Phrases(l) => p.apply(ToUi::Phrases(l)),
             Effect::Workspace(w) => p.apply(ToUi::Workspace(Box::new(w))),
             Effect::Recorded(pat, next) => p.apply(ToUi::Recorded(Box::new(pat), next)),
             Effect::WorkspaceWheel(d) => p.apply(ToUi::WorkspaceWheel(d)),
             Effect::ClearLogs => p.apply(ToUi::ClearLogs),
             Effect::ClearConsole => p.apply(ToUi::ClearConsole),
             Effect::TouchLab => p.apply(ToUi::TouchLab),
+            Effect::PatchList => p.apply(ToUi::PatchList),
             Effect::SetMenu(m) => p.apply(ToUi::SetMenu(m)),
             Effect::ShowKey(k) => p.apply(ToUi::ShowKey(k)),
             Effect::CalibrateTouch => p.apply(ToUi::CalibrateTouch),
@@ -18796,6 +20182,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::SaveProject => p.ask_save(),
             Effect::PerformSet { set, opened } => p.apply(ToUi::PerformSet { set, opened }),
             Effect::SynthPick(v) => p.apply(ToUi::SynthPick(v.map(Box::new))),
+            Effect::PadMap(v) => p.apply(ToUi::PadMap(v.map(Box::new))),
             Effect::PadsFocus(f) => p.apply(ToUi::PadsFocus(f)),
             Effect::Light(..)
             | Effect::StopSounds
@@ -18809,6 +20196,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::PlayFx(_)
             | Effect::TrackMute { .. }
             | Effect::SavePatterns(_)
+            | Effect::SavePhrases(_)
             | Effect::SynthPads(_)
             | Effect::TrackSound { .. }
             | Effect::TrackSend { .. }
@@ -18862,6 +20250,57 @@ fn run_arp(p: &mut Player, app: &mut crate::app::App, frames: u32) {
     }
     let fx: Vec<_> = app.arp_poll().into_iter().collect();
     apply_effects(p, fx);
+}
+
+/// As [`run_arp`] with the transport playing at 120 BPM from period
+/// `*from` on, so a phrase picked while one plays waits for its bar line.
+fn run_arp_playing(p: &mut Player, app: &mut crate::app::App, from: &mut u64, periods: u64) {
+    let mut ev = mpfree_arp::Events::new();
+    for _ in 0..periods {
+        app.set_clock(Some(mpfree_arp::Clock::playing(0, *from * 128, 120.0)));
+        app.process(128, &mut ev);
+        *from += 1;
+    }
+    let fx: Vec<_> = app.arp_poll().into_iter().collect();
+    apply_effects(p, fx);
+}
+
+/// The pad player and its screen with the pads on the synth, In key in A
+/// minor: where a phrase plays (it moves notes, so never on a kit).
+fn phrase_player(fonts: Fonts) -> (Player, crate::app::App) {
+    use mpfree_arp::scale::pads::{layout, PadLayout};
+    // The synth as the Synth tab's options would set it.
+    let mut synth = crate::synth::Synth::new(44_100);
+    let mut set = synth.settings();
+    set.scale = mpfree_arp::scale::by_name("Minor")
+        .map(|m| mpfree_arp::scale::Scale::with_down(9, m.mask, m.down));
+    set.set_layout(PadLayout::InKey);
+    synth.set_settings(set);
+    let synth_kit = sample_kits().len();
+    let mut p = quiet_player(fonts);
+    p.apply(ToUi::KitChanged {
+        kit: synth_kit,
+        view: synth.kit_view(),
+    });
+    p.apply(ToUi::Synth(synth.state()));
+    p.apply(ToUi::Kit(synth_kit));
+    // The pad player in the same key, its pads pressing the synth's notes.
+    let mut app = sample_app();
+    let mut key = mpfree_store::Settings::default();
+    key.set_str("scale-root", "A");
+    key.set_str("scale", "Minor");
+    app.open_synth(&key);
+    app.set_pad_layout(Some(layout(&synth.setup())));
+    (p, app)
+}
+
+/// The place of MPFree's phrase `name` in the pad player's list.
+fn phrase_named(name: &str) -> usize {
+    mpfree_arp_ui::PhraseList::built_in()
+        .phrases
+        .iter()
+        .position(|(n, _)| n == name)
+        .unwrap_or(0)
 }
 
 /// The sample player with no pad held or fading, for the arp's screens.
@@ -20287,6 +21726,43 @@ fn browser_sets(fonts: Fonts, edit: bool) -> Result<Player, String> {
     built
 }
 
+/// The whole browser (BROWSE) on its SD card place: a stand-in card beside
+/// a scratch library, open read only as the pad player opens the real one
+/// (nothing is asked of the stick), Rhodes chord picked. Removed again once
+/// the browser has read what it shows. For the manual's Saving chapter.
+fn browser_sd_card(fonts: Fonts) -> Result<Player, String> {
+    use mpfree_browser_ui::sample::{fill, fill_card, select, source};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("mpfree-sd-card-{}-{nanos}", std::process::id()));
+    let built = (|| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let lib = fill(&dir)?;
+        let card = fill_card(&lib, &dir.join("card"))?;
+        let mut p = sample_sampler(fonts);
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        p.take_actions();
+        p.apply(ToUi::Show(View::Browser));
+        let b = p.browser.as_mut().ok_or("no browser")?;
+        b.go_source(source("SD card"));
+        // OpenCard: the stand-in is opened here, not asked of the stick.
+        b.take_actions();
+        b.library().set_card(Some(card));
+        b.set_card(mpfree_browser_ui::CardState::Open {
+            about: "exFAT, 63.9 GB".into(),
+            dirty: false,
+        });
+        select(b, "Rhodes chord.wav");
+        p.step_browser();
+        p.take_actions();
+        Ok(p)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    built
+}
+
 /// The whole browser (BROWSE) in its Plugins place: a made-up catalog
 /// with two plugins installed and a zip on the stick, Mono Bass picked
 /// (installed, an update out), its own screen drawn from the test skin. Nothing is fetched or written. For
@@ -20354,7 +21830,17 @@ fn add_io_sections(ui: &mut Ui, model: &mpfree_midi_ui::Shared) -> Vec<String> {
 /// whose setup calls deep into the engines is best its own
 /// `#[inline(never)]` function, as `io_section_screen` is, so its locals
 /// leave the frame when it returns.
-pub const SCREENS_STACK: usize = 32 << 20;
+///
+/// On 23 Nov (merge train 158: live shows' patches, tunings T5/T6, the
+/// scene card and the arp pattern library together) the frame reached
+/// 32,299,488 bytes (x86-64 debug, measured under gdb as the gap between
+/// `sample_screens`' stack pointer and its caller's), and with
+/// `sample_beats_synth` under it the preview overflowed 32 MiB. 64 MiB
+/// leaves room again. It is only reserved: pages the thread never touches
+/// cost nothing, and only the commands that draw every sample screen
+/// (`--preview`, `--display-lists`, `--check-theme`, `--contact-sheet`)
+/// and tests run on this stack.
+pub const SCREENS_STACK: usize = 64 << 20;
 
 /// Held by each test that builds every sample screen at once, so no two
 /// of them run together: each holds about 0.9 GB in a debug build (the
@@ -20711,6 +22197,19 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     full.refresh_play();
     full.toggle_xy_full();
     out.push(("play-xy-full", full));
+    // Patches (live shows C1, layout spec 4q): KEYS PLAY on the transport
+    // bar, the patch list from it, and the editor with three keys held.
+    let mut keys = sample_player(fonts());
+    patches::sample(&mut keys);
+    out.push(("play-keys", keys));
+    let mut list = sample_player(fonts());
+    patches::sample(&mut list);
+    list.toggle_patch_list();
+    out.push(("play-patches", list));
+    let mut edit = sample_player(fonts());
+    patches::sample(&mut edit);
+    patches::sample_edit(&mut edit);
+    out.push(("play-patch-edit", edit));
     // Your XY layouts (the XY controller plan's phase 2, boards 1 to 4 of
     // the mockups approved 23 Nov 10:34Z): the list with two of yours,
     // Squelch playing full screen, its Setup with a setting picked, and
@@ -21352,7 +22851,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut console = sample_player(fonts());
     console.apply(ToUi::Show(View::Console));
     out.push(("syslog", console));
-    use mpfree_controller::mpc_one::button::{MENU, NOTE_REPEAT, PLUS};
+    use mpfree_controller::mpc_one::button::{MENU, NOTE_REPEAT, PLUS, SHIFT};
     let mut app = sample_app();
     for (name, shift) in [("prefs", true), ("options", false)] {
         let mut p = sample_player(fonts());
@@ -21477,6 +22976,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         variant: None,
         scene: None,
         rows: None,
+        row_tool: None,
         followed: None,
     };
     st.done = vec![
@@ -21829,50 +23329,6 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("clips-card sample: {e}"),
     }
-    // The Record panel's Scene tab (sequencer S4 and S5): scene 2, named
-    // Drop, moves on to the next scene after 4 bars four times in five
-    // (else plays again), mutes Track 2 when it starts, and sends Track
-    // 1's gear program 12.
-    match sample_clips(fonts()) {
-        Ok(mut p) => {
-            let mut st = p.time.clone();
-            st.scene_focus = 1;
-            st.scenes = vec![String::new(), "Drop".into()];
-            st.scene = mpfree_seq::SceneSettings {
-                keep: 0,
-                name: "Drop".into(),
-                mutes: Some(0b10),
-                follow: Some(mpfree_seq::Follow {
-                    chance: 80,
-                    ..mpfree_seq::Follow::after(4, mpfree_seq::FollowAction::Next)
-                }),
-                programs: vec![mpfree_seq::TrackProgram {
-                    track: 0,
-                    program: mpfree_seq::ClipProgram {
-                        program: 11,
-                        bank: None,
-                    },
-                }],
-            };
-            p.time_page.scene_card = true;
-            p.apply(ToUi::Time(Box::new(st.clone())));
-            p.apply(ToUi::Show(View::Arrange));
-            out.push(("clips-scene", p));
-            // The same scene's program change rows (S5), scrolled to: the
-            // armed track's Program and Bank, and Sent to.
-            if let Ok(mut p) = sample_clips(fonts()) {
-                st.armed = Some(0);
-                p.time_page.scene_card = true;
-                p.apply(ToUi::Time(Box::new(st)));
-                p.apply(ToUi::Show(View::Arrange));
-                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::SCENE_CARD) {
-                    l.selected = mpfree_time_ui::view::SCENE_ROWS.len() - 1;
-                }
-                out.push(("clips-scene-program", p));
-            }
-        }
-        Err(e) => eprintln!("clips-scene sample: {e}"),
-    }
     // The mute queue (sequencer S4): in Perform, Track 2's mute and
     // Track 3's solo wait for the next bar, their headers hatched and the
     // transport bar saying WAITING.
@@ -21924,6 +23380,58 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("clips-perform", p));
         }
         Err(e) => eprintln!("clips-perform sample: {e}"),
+    }
+    // The scene card (the Arrange refactor's 5.2), row 2's number held:
+    // Verse moves on to the next scene after 4 bars four times in five,
+    // sets 95 BPM on its line, mutes Hats and sends Stab's gear program
+    // 12; Chords and Dust keep playing through it, the other empty cells
+    // stop. In Make over the grid; then over the song list, in Perform.
+    for (name, list) in [
+        ("clips-scene-card", false),
+        ("arrange-list-scene-card", true),
+    ] {
+        let st = if list {
+            sample_list_state()
+        } else {
+            mpfree_time_ui::sample::playing().map(|s| {
+                let mut st = s.state();
+                st.scenes = ["Intro", "Verse", "Break", "Drop"]
+                    .iter()
+                    .map(|n| n.to_string())
+                    .collect();
+                st
+            })
+        };
+        match st {
+            Ok(mut st) => {
+                let mut p = quiet_player(fonts());
+                st.scene_open = Some(1);
+                st.scene_focus = 1;
+                st.armed = Some(5);
+                st.scene = mpfree_seq::SceneSettings {
+                    name: "Verse".into(),
+                    mutes: Some(0b10),
+                    follow: Some(mpfree_seq::Follow {
+                        chance: 80,
+                        ..mpfree_seq::Follow::after(4, mpfree_seq::FollowAction::Next)
+                    }),
+                    programs: vec![mpfree_seq::TrackProgram {
+                        track: 5,
+                        program: mpfree_seq::ClipProgram {
+                            program: 11,
+                            bank: None,
+                        },
+                    }],
+                    keep: 1 << 4 | 1 << 6,
+                    tempo: Some(950),
+                };
+                p.time_page.scene_row = mpfree_time_ui::view::SCENE_TEMPO;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                out.push((name, p));
+            }
+            Err(e) => eprintln!("{name} sample: {e}"),
+        }
     }
     // What each track plays (the Arrange refactor's 5.1, D3), in Perform
     // with song mode on: SONG tags on the grid, filled where the track
@@ -22260,6 +23768,129 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("arrange-song", p));
         }
         Err(e) => eprintln!("arrange-song sample: {e}"),
+    }
+    // The Song view's block tools (the Arrange refactor's phase 6): Hook
+    // picked, with its start grip, Split and Duplicate lit; then its start
+    // grip held and dragged two bars to the left (trim from the left).
+    for (name, trim) in [("arrange-song-block", false), ("arrange-song-trim", true)] {
+        match mpfree_time_ui::sample::busy_song_state() {
+            Ok(mut state) => {
+                state.selected = state.placements.iter().position(|b| b.name == "Hook");
+                let mut p = quiet_player(fonts());
+                busy_sounds(&mut p);
+                p.apply(ToUi::Time(Box::new(state)));
+                p.apply(ToUi::Show(View::Arrange));
+                if trim {
+                    let (w, h) = SCREEN;
+                    let mut c = SoftCanvas::new(w, h);
+                    p.ui.paint(&mut c);
+                    let r = p.ui.rect_of(time_view::SONG);
+                    let grip = r.and_then(|r| {
+                        p.ui.get::<mpfree_time_ui::song::SongLanes>(time_view::SONG)?
+                            .start_rect(r)
+                    });
+                    if let (Some(g), Some(r)) = (grip, r) {
+                        let bar_px = (r.w - 28 - mpfree_time_ui::song::NAME_W) / 16;
+                        let (x, y) = (g.x + g.w / 2 + 4, g.y + g.h / 2);
+                        p.touch(901, Touch::Down, x, y);
+                        p.touch(901, Touch::Move, x - 2 * bar_px, y);
+                    }
+                }
+                out.push((name, p));
+            }
+            Err(e) => eprintln!("{name} sample: {e}"),
+        }
+    }
+    // Several blocks picked (the Arrange refactor's 6.5): Bass B, Walk,
+    // Hook and Hook B, each outlined, the hint line saying what they do
+    // together; then Rhodes B and Chop B picked and Rhodes B dragged four
+    // bars on, Chop B's card going with it; then a box dragged from bar
+    // 15 on the Keys lane back to bar 7 on the Hats lane, outlining the
+    // blocks it touches.
+    for name in [
+        "arrange-song-picks",
+        "arrange-song-picks-drag",
+        "arrange-song-box",
+    ] {
+        match mpfree_time_ui::sample::busy_song_state() {
+            Ok(mut state) => {
+                let pick = |n: &str| state.placements.iter().position(|b| b.name == n);
+                state.selected = None;
+                let names: &[&str] = match name {
+                    "arrange-song-picks" => &["Bass B", "Walk", "Hook", "Hook B"],
+                    "arrange-song-picks-drag" => &["Rhodes B", "Chop B"],
+                    _ => &[],
+                };
+                let mut picks: Vec<usize> = names.iter().filter_map(|n| pick(n)).collect();
+                picks.sort_unstable();
+                state.picks = picks;
+                let mut p = quiet_player(fonts());
+                busy_sounds(&mut p);
+                p.apply(ToUi::Time(Box::new(state)));
+                p.apply(ToUi::Show(View::Arrange));
+                if name == "arrange-song-picks" {
+                    out.push((name, p));
+                    continue;
+                }
+                // A drag or a box: laid out first, to find where to touch.
+                let (w, h) = SCREEN;
+                let mut c = SoftCanvas::new(w, h);
+                p.ui.paint(&mut c);
+                let r = p.ui.rect_of(time_view::SONG);
+                let lanes =
+                    p.ui.get::<mpfree_time_ui::song::SongLanes>(time_view::SONG)
+                        .cloned();
+                if let (Some(r), Some(l)) = (r, lanes) {
+                    let bar_px = (r.w - 28 - mpfree_time_ui::song::NAME_W) / 16;
+                    let x_bar = |k: i32| r.x + 14 + mpfree_time_ui::song::NAME_W + k * bar_px;
+                    let rect_of = |n: &str| {
+                        l.blocks
+                            .iter()
+                            .find(|b| b.name == n)
+                            .and_then(|b| l.block_rect(r, b))
+                    };
+                    match name {
+                        "arrange-song-picks-drag" => {
+                            if let Some(b) = rect_of("Rhodes B") {
+                                let (x, y) = (b.x + 30, b.y + b.h / 2);
+                                p.touch(902, Touch::Down, x, y);
+                                p.touch(902, Touch::Move, x + 4 * bar_px + 4, y);
+                            }
+                        }
+                        "arrange-song-box" => {
+                            if let (Some(keys), Some(hats)) =
+                                (rect_of("Rhodes B"), rect_of("Shaker"))
+                            {
+                                p.touch(903, Touch::Down, x_bar(14) + 10, keys.y + keys.h / 2);
+                                p.touch(903, Touch::Move, x_bar(6) + 10, hats.y + hats.h / 2);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                out.push((name, p));
+            }
+            Err(e) => eprintln!("{name} sample: {e}"),
+        }
+    }
+    // The zoom chip (6.4): the busy song at 4 bars (a faint line on each
+    // beat) and at 64 (the bar numbers every 8 bars).
+    for (name, bars) in [("arrange-song-zoom-4", 4), ("arrange-song-zoom-64", 64)] {
+        match mpfree_time_ui::sample::busy_song_state() {
+            Ok(mut state) => {
+                state.selected = None;
+                let mut p = quiet_player(fonts());
+                busy_sounds(&mut p);
+                p.time_page.song_bars = bars;
+                if bars == 4 {
+                    p.time_page.first_bar = 4;
+                }
+                p.apply(ToUi::Time(Box::new(state)));
+                p.apply(ToUi::Show(View::Arrange));
+                out.push((name, p));
+            }
+            Err(e) => eprintln!("{name} sample: {e}"),
+        }
     }
     // The same song with the Verse picked by a tap on its name (Arrange
     // 3.3): its grip left of the marker and + Bar, Rename, Remove marker
@@ -22927,6 +24558,99 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     fx.extend(a.select(3));
     apply_effects(&mut options, fx);
     out.push(("synth-options", options));
+    // The tuning screens (tunings step T6, layout spec 3): Track 2's Poly
+    // on Song's, Track 3's FM (Tracks 3 and 4) in its own meantone at 415
+    // Hz, Track 6's Bassline that takes only MIDI, the song in just on D.
+    let tunings_app = || {
+        use crate::instruments::Held;
+        let mut a = sample_app();
+        a.set_track_count(6);
+        let mut list = crate::instrument_list::InstrumentList::new();
+        list.follow_kits(2);
+        list.follow(0b10_0110);
+        a.set_instrument_list(&list);
+        a.set_kit_names(vec!["Classic House".to_string(), String::new()]);
+        for (t, id, name) in [
+            (1, "mpfree.poly", "Poly"),
+            (2, "mpfree.fm", "FM"),
+            (5, "clap:com.example.bassline", "Bassline"),
+        ] {
+            a.set_track_sound(
+                t,
+                Some(Held {
+                    id,
+                    name,
+                    instance: 0,
+                }),
+            );
+        }
+        let mut sends = [None; mpfree_seq::MAX_TRACKS];
+        sends[3] = Some(2);
+        a.set_track_sends(&sends);
+        let mut kit_of = [None; mpfree_seq::MAX_TRACKS];
+        kit_of[0] = Some(0);
+        a.set_tuning_facts((1 << 5, 0), kit_of);
+        let song = crate::synth::TuningPick {
+            builtin: crate::synth::Builtin::Just,
+            root: 2,
+            ..Default::default()
+        };
+        let meantone = crate::synth::TuningPick {
+            builtin: crate::synth::Builtin::Meantone,
+            a4_hz: 415,
+            ..Default::default()
+        };
+        a.set_song_tuning(song);
+        if let Some(fm) = list.own_of(2) {
+            a.set_own_tuning(fm, Some(meantone));
+        }
+        a
+    };
+    // Board 1: Track 2's Poly on Song's, the Tuning row picked.
+    let mut songs = sample_player(fonts());
+    let mut a = tunings_app();
+    let mut fx = a.set_track(1);
+    fx.extend(a.open_tab(View::Synth));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, true, 0.0));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, false, 0.0));
+    let at = a
+        .row_of(crate::app::Item::Synth(crate::app::SynthItem::Tuning))
+        .unwrap_or(5);
+    fx.extend(a.select(at));
+    apply_effects(&mut songs, fx);
+    out.push(("synth-options-tuning", songs));
+    // Board 2: Track 3's FM in its own tuning, its root and A4 under it.
+    let mut own_tuning = sample_player(fonts());
+    let mut a = tunings_app();
+    let mut fx = a.set_track(2);
+    fx.extend(a.open_tab(View::Synth));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, true, 0.0));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, false, 0.0));
+    fx.extend(a.select(at));
+    apply_effects(&mut own_tuning, fx);
+    out.push(("synth-options-own-tuning", own_tuning));
+    // Board 5: Track 6's Bassline can't follow.
+    let mut deaf = sample_player(fonts());
+    let mut a = tunings_app();
+    let mut fx = a.set_track(5);
+    fx.extend(a.open_tab(View::Synth));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, true, 0.0));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, false, 0.0));
+    fx.extend(a.select(at));
+    apply_effects(&mut deaf, fx);
+    out.push(("synth-options-cant-follow", deaf));
+    // Board 3: the Tunings page, FM's row picked.
+    let mut page = sample_player(fonts());
+    let mut a = tunings_app();
+    let mut fx = a.set_track(1);
+    fx.extend(a.open_tab(View::Synth));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, true, 0.0));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, false, 0.0));
+    fx.extend(a.select(at));
+    fx.extend(a.help_button(mpfree_ui::widgets::CARD_LINK));
+    fx.extend(a.select(8));
+    apply_effects(&mut page, fx);
+    out.push(("tunings-page", page));
     // The Instrument row on track 2 stepped past the engines to a plugin
     // synth (two found), its help open.
     let mut inst = sample_player(fonts());
@@ -23032,6 +24756,38 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     layers.apply(ToUi::PadsHost(Some("FM")));
     layers.apply(ToUi::PadsLayers(a.pads_layer_names()));
     out.push(("synth-pick-layers", layers));
+    // The list's Kits side (sampler step 15e, boards 1 and 2): Track 1's
+    // kit first, then each kit with its pads and banks, the empty ones last.
+    // Track 1 plays kit 1 and Track 2 kit 2, so their tiles name them.
+    let mut kits = sample_player(fonts());
+    sample_kit_tracks(&mut kits);
+    let mut a = sample_app();
+    let mut fx = a.open_tab(View::Synth);
+    fx.extend(a.open_synth_pick());
+    fx.extend(a.set_instrument_list(&listed));
+    fx.extend(a.synth_pick_side(true));
+    apply_effects(&mut kits, fx);
+    out.push(("synth-pick-kits", kits));
+    // What the pads play (step 15e, board 3), opened by the Pads chip: FM
+    // for every bank and Pluck layered on it, each row with what it plays.
+    let mut map = sample_player(fonts());
+    let mut a = sample_app();
+    let mut fx = a.open_tab(View::Synth);
+    fx.extend(a.open_synth_pick());
+    fx.extend(a.pick_pads_synth(2));
+    let mut two = crate::instrument_list::InstrumentList::new();
+    two.follow_free(1);
+    fx.extend(a.set_instrument_list(&two));
+    fx.extend(a.synth_pick_layer(true));
+    fx.extend(a.pick_pads_synth(4));
+    two.follow_free(0b11);
+    fx.extend(a.set_instrument_list(&two));
+    fx.extend(a.close_synth_pick(true));
+    fx.extend(a.open_pad_map());
+    apply_effects(&mut map, fx);
+    map.apply(ToUi::PadsHost(Some("FM")));
+    map.apply(ToUi::PadsLayers(a.pads_layer_names()));
+    out.push(("pad-map", map));
     // The mixer with two tracks playing their own instruments: Poly on
     // track 1 in the Drums strip, named "Track 1" for it, and FM on track 2
     // in its own channel after Synth and Loop.
@@ -23141,6 +24897,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Ok(browser) => out.push(("browser", browser)),
         Err(e) => eprintln!("browser: not drawn ({e})"),
     }
+    // The browser's SD card place, a stand-in card open read only.
+    match browser_sd_card(fonts()) {
+        Ok(card) => out.push(("browser-sd-card", card)),
+        Err(e) => eprintln!("browser-sd-card: not drawn ({e})"),
+    }
     // The browser's Plugins place over a made-up catalog.
     match browser_plugins(fonts()) {
         Ok(plugins) => out.push(("browser-plugins", plugins)),
@@ -23213,12 +24974,13 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         widget: mpfree_sampler_ui::play_tab::SECTIONS.into(),
         kind: EventKind::Tab(2),
     });
+    // Off, LP 1-pole, LP 2-pole.
     let filter = mpfree_sampler_ui::play_tab::Row::Filter.place();
     play.on_event(UiEvent {
         widget: mpfree_sampler_ui::play_tab::LIST.into(),
         kind: EventKind::Step {
             index: filter,
-            delta: 1,
+            delta: 2,
         },
     });
     play.on_event(UiEvent {
@@ -23534,6 +25296,42 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         keys.take_actions();
         out.push(("pads-edit-keys", keys));
     }
+    // The kit's Tuning (tunings step T6, board 4): the pad a keygroup, the
+    // pads playing notes, the song in just on D and the kit on Song's,
+    // its Tuning picked.
+    {
+        use mpfree_sampler_ui::play_tab::{KitTuning, Row, LIST};
+        use mpfree_sampler_ui::widgets::SettingList;
+        let mut tuned = sample_sampler(fonts());
+        edit_pad(&mut tuned);
+        for (row, delta) in [
+            (Row::Keys, 1),
+            (Row::LowKey, 36),
+            (Row::HighKey, -43),
+            (Row::PadsPlay, 1),
+        ] {
+            let index = play_row(&mut tuned, row);
+            tuned.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+            tuned.apply(ToUi::SampleLift);
+        }
+        tuned.apply(ToUi::KitTunings(vec![KitTuning {
+            value: "Song's: Just (5-limit) on D".into(),
+            line: "tuning: song's".into(),
+        }]));
+        let index = play_row(&mut tuned, Row::KitTuning);
+        if let Some(list) = tuned.ui.get_mut::<SettingList>(LIST) {
+            list.selected = index;
+        }
+        tuned.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Select(index),
+        });
+        tuned.take_actions();
+        out.push(("pads-edit-kit-tuning", tuned));
+    }
     // A bank mapped to keys on the Pads tab: five pads named by their
     // notes, one keygroup instrument; the Play tab's keyboard with A5's
     // zone picked and E3 held.
@@ -23762,14 +25560,14 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         out.push(("pads-edit-mono", mono));
     }
     // The Filter section's Ladder, resonant and driven 12 dB (sampler
-    // R5.6): Filter steps Off, LP2, LP4, HP2, HP4, BP2, BP4, Notch2, Notch4,
-    // Ladder.
+    // R5.6): Filter steps Off, LP 1 to 8-pole (six), HP the same, BP 2 to
+    // 8-pole (four), Notch2, Notch4, Peak, Ladder.
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST};
         let mut ladder = sample_sampler(fonts());
         edit_pad(&mut ladder);
         for (row, delta) in [
-            (Row::Filter, 9),
+            (Row::Filter, 20),
             (Row::Cutoff, -3),
             (Row::Resonance, 14),
             (Row::Drive, 4),
@@ -24102,6 +25900,50 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     run_arp(&mut panel, &mut app, 3 * 5513 + 2000);
     out.push(("arp-panel", panel));
+    // The Arp panel in Pattern mode over pads 1 3 5, latched: the starters
+    // with Climb picked; Snare build in the Rolls group (SHIFT + wheel
+    // three groups on, then the wheel); two patterns of the owner's.
+    for (name, shift_turns, turns, mine) in [
+        ("arp-pattern", 0, 3, false),
+        ("arp-pattern-rolls", 3, 1, false),
+        ("arp-pattern-mine", 0, 75, true),
+    ] {
+        let mut pat = quiet_player(fonts());
+        let mut app = sample_app();
+        let mut fx = Vec::new();
+        if mine {
+            fx.extend(app.load_patterns(
+                "Skip = 1 . 3 2 . 3 x:2 .\nLift = 1 2 3 4 | oct 0 0 1 | vel 110 70\n",
+            ));
+        }
+        fx.extend(app.button(NOTE_REPEAT, true, 0.0));
+        fx.extend(app.button(MENU, true, 0.0));
+        fx.extend(app.button(MENU, false, 0.0));
+        fx.extend(app.button(NOTE_REPEAT, false, 0.0));
+        fx.extend(app.button(PLUS, true, 0.0));
+        fx.extend(app.button(PLUS, true, 0.0));
+        fx.extend(app.arp_action(ArpAction::Latch));
+        if shift_turns > 0 {
+            fx.extend(app.button(SHIFT, true, 0.0));
+            for _ in 0..shift_turns {
+                fx.extend(app.wheel(1));
+            }
+            fx.extend(app.button(SHIFT, false, 0.0));
+        }
+        for _ in 0..turns {
+            fx.extend(app.wheel(1));
+        }
+        for pad in [0, 2, 4] {
+            fx.extend(app.pad_down(pad, 100));
+        }
+        for pad in [0, 2, 4] {
+            app.pad_up(pad);
+        }
+        fx.push(app.arp_view());
+        apply_effects(&mut pat, fx);
+        run_arp(&mut pat, &mut app, 4 * 5513 + 2000);
+        out.push((name, pat));
+    }
     // The same, with the Modifier on the mod wheel (rate +2, an octave
     // and the gate +30 at its top), the wheel 80 % up: 1/16 → 1/32,
     // 2 → 3 octaves, 50 → 74 %.
@@ -24174,12 +26016,102 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     apply_effects(&mut ws, fx);
     out.push(("arp-workspace-record", ws));
+    // The Arp panel's Phrase tab.
+    for name in PHRASE_SAMPLES {
+        out.push((name, sample_phrase(name, fonts())));
+    }
     out
+}
+
+/// The sample screens of the Arp panel's Phrase tab ([`sample_phrase`]).
+pub const PHRASE_SAMPLES: [&str; 4] = [
+    "arp-phrase",
+    "arp-phrase-next-bar",
+    "arp-phrase-kit",
+    "arp-quick-band-phrase",
+];
+
+/// Sample screen `name` of the Arp panel's Phrase tab, as the owner's
+/// boards have it (23 Nov 2026), each with the real pad player behind it.
+/// On their own so that a test can sweep them without building every
+/// screen.
+pub fn sample_phrase(name: &str, fonts: Fonts) -> Player {
+    use mpfree_controller::mpc_one::button::{NOTE_REPEAT, PLUS};
+    // Night drive of MPFree's basses latched on pad 1, in A minor.
+    let night_drive = |p: &mut Player, app: &mut crate::app::App| {
+        let mut fx = app.toggle_panel();
+        fx.extend(app.arp_action(ArpAction::Mode(Mode::Phrase)));
+        fx.extend(app.arp_action(ArpAction::Phrase(phrase_named("Night drive"))));
+        fx.extend(app.arp_action(ArpAction::Latch));
+        fx.extend(app.pad_down(0, 100));
+        app.pad_up(0);
+        apply_effects(p, fx);
+    };
+    match name {
+        // The transport playing: Dub steps picked two beats into Night
+        // drive waits for the bar line (amber), Night drive still heard
+        // (green).
+        "arp-phrase-next-bar" => {
+            let (mut p, mut app) = phrase_player(fonts);
+            night_drive(&mut p, &mut app);
+            let mut period = 0;
+            run_arp_playing(&mut p, &mut app, &mut period, 344);
+            let fx = app.arp_action(ArpAction::Phrase(phrase_named("Dub steps")));
+            apply_effects(&mut p, fx);
+            run_arp_playing(&mut p, &mut app, &mut period, 86);
+            // The transport bar at the same place: two and a half beats in.
+            p.apply(ToUi::Transport(TransportInfo {
+                state: mpfree_transport::State::Playing,
+                position: (period * 128) as i64 * mpfree_transport::time::PPQ as i64 / 22_050,
+                bpm: 120.0,
+                ..TransportInfo::default()
+            }));
+            p
+        }
+        // The tab on a kit track, whose pads play as pressed: it says so
+        // where the list would be, and the kinds stay to look through.
+        "arp-phrase-kit" => {
+            let mut p = quiet_player(fonts);
+            let mut app = sample_app();
+            let mut fx = app.toggle_panel();
+            fx.extend(app.arp_action(ArpAction::Mode(Mode::Phrase)));
+            apply_effects(&mut p, fx);
+            run_arp(&mut p, &mut app, 128);
+            p
+        }
+        // NOTE REPEAT held on the synth with + pressed to Phrase: the band
+        // names the phrase and steps its speed.
+        "arp-quick-band-phrase" => {
+            let (mut p, mut app) = phrase_player(fonts);
+            let mut fx = app.button(NOTE_REPEAT, true, 0.0);
+            for _ in 0..3 {
+                fx.extend(app.button(PLUS, true, 0.0));
+                fx.extend(app.button(PLUS, false, 0.0));
+            }
+            fx.extend(app.pad_down(0, 100));
+            apply_effects(&mut p, fx);
+            p.apply(ToUi::PadDown {
+                pad: 0,
+                velocity: 100,
+            });
+            run_arp(&mut p, &mut app, 3 * 22_050);
+            p
+        }
+        // The tab: MPFree's basses, Night drive three beats in.
+        _ => {
+            let (mut p, mut app) = phrase_player(fonts);
+            night_drive(&mut p, &mut app);
+            run_arp(&mut p, &mut app, 3 * 22_050);
+            p
+        }
+    }
 }
 
 fn button_play() -> u8 {
     mpfree_controller::mpc_one::button::PLAY
 }
+
+mod patches;
 
 #[cfg(test)]
 mod tests {
@@ -24510,6 +26442,96 @@ mod tests {
             })]
         );
         p.apply(ToUi::Rows(RowKey::Editing(false)));
+    }
+
+    /// Several blocks (6.5): SHIFT + a tap adds a block to the pick, a box
+    /// dragged with SHIFT adds its blocks, several dragged with SHIFT are
+    /// copied, and the wheel's push grabs them all. The zoom chip (6.4)
+    /// changes the bars shown, on the page alone.
+    #[test]
+    fn shift_picks_several_blocks_and_the_zoom_chip_shows_more_bars() {
+        use crate::app::RowKey;
+        use mpfree_time_ui::song::SongLanes;
+        let mut p = sample_clips(Fonts::embedded()).unwrap();
+        p.time.song_view = true;
+        let block = |track, start, name: &str| time_view::PlacementInfo {
+            track,
+            start,
+            length: 3840,
+            name: name.into(),
+            unique: false,
+        };
+        p.time.placements = vec![block(0, 0, "Beat"), block(1, 3840, "Bass")].into();
+        p.time_page.update(&mut p.ui, &p.time);
+        p.ui.paint(&mut SoftCanvas::new(1280, 800));
+        let area = p.ui.rect_of(time_view::SONG).unwrap();
+        let lanes = p.ui.get::<SongLanes>(time_view::SONG).unwrap().clone();
+        let tap = |p: &mut Player, r: mpfree_ui::Rect| {
+            let (x, y) = (r.x + 8, r.y + r.h / 2);
+            p.touch(1, Touch::Down, x, y)
+                .or(p.touch(1, Touch::Up, x, y))
+        };
+        let bass = lanes.block_rect(area, &lanes.blocks[1]).unwrap();
+        p.status.shift = true;
+        assert_eq!(
+            tap(&mut p, bass),
+            Some(FromUi::Time(TimeAction::PickPlacement(1)))
+        );
+        // A box from right of the bass's block back over both: added.
+        let (x0, y0) = (bass.right() + 40, bass.bottom() - 4);
+        assert_eq!(p.touch(1, Touch::Down, x0, y0), None);
+        p.touch(1, Touch::Move, x0 - 200, y0 - 60);
+        let a = p.touch(1, Touch::Up, x0 - 200, y0 - 60);
+        assert!(
+            matches!(
+                &a,
+                Some(FromUi::Time(TimeAction::PickPlacements { add: true, .. }))
+            ),
+            "{a:?}"
+        );
+        // Both picked: the beat's dragged a bar on with SHIFT copies both.
+        p.time.picks = vec![0, 1];
+        p.time_page.update(&mut p.ui, &p.time);
+        let beat = lanes.block_rect(area, &lanes.blocks[0]).unwrap();
+        let bar_px = beat.w;
+        let (x, y) = (beat.x + 8, beat.y + beat.h / 2);
+        p.touch(1, Touch::Down, x, y);
+        p.touch(1, Touch::Move, x + 2 * bar_px + 4, y);
+        assert_eq!(
+            p.touch(1, Touch::Up, x + 2 * bar_px + 4, y),
+            Some(FromUi::Time(TimeAction::MovePlacements {
+                set: vec![0, 1],
+                lanes: 0,
+                by: 2 * 3840,
+                copy: true
+            }))
+        );
+        p.status.shift = false;
+        // The wheel's push grabs them; a turn moves both a beat.
+        p.take_actions();
+        p.apply(ToUi::Rows(RowKey::Editing(true)));
+        let told = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(told.contains("the 2 blocks a beat at a time"), "{told}");
+        p.apply(ToUi::Rows(RowKey::Step(1)));
+        assert_eq!(
+            p.take_actions(),
+            vec![FromUi::Time(TimeAction::MovePlacements {
+                set: vec![0, 1],
+                lanes: 0,
+                by: 960,
+                copy: false
+            })]
+        );
+        // Back before bar 1 they can't go: nothing.
+        p.apply(ToUi::Rows(RowKey::Step(-1)));
+        assert!(p.take_actions().is_empty());
+        p.apply(ToUi::Rows(RowKey::Editing(false)));
+        // The zoom chip's 64: the page's own, no action, 64 bars shown.
+        let z = lanes.zoom_part_rect(area, 4);
+        assert_eq!(tap(&mut p, z), None);
+        assert!(p.take_actions().is_empty());
+        let shown = p.ui.get::<SongLanes>(time_view::SONG).unwrap();
+        assert_eq!(shown.bars, 64);
     }
 
     /// Perform's guard (sequencer decision 5): the Song view's Delete
@@ -25092,12 +27114,13 @@ mod tests {
         );
     }
 
-    /// The scene editor (sequencer S4, part 7): the Record panel's Scene
-    /// tab shows the scene in focus; the wheel steps its rows, Mutes now
-    /// takes the mutes as they are, and Rename types the scene's name on
-    /// the text keyboard.
+    /// The scene card (the Arrange refactor's 5.2): a row's number held
+    /// opens it; a tap on Mutes' value takes the mutes as they are, a tap
+    /// on the name types the scene's name on the text keyboard, and a tap
+    /// off the card closes it.
     #[test]
-    fn the_scene_tab_edits_the_scene_and_rename_types_its_name() {
+    fn a_held_row_number_opens_the_scene_card_and_rename_types_its_name() {
+        use mpfree_time_ui::widgets::ClipGrid;
         use mpfree_ui::textpad::{char_key, TextPad, KEY_CLEAR, KEY_ENTER};
         let mut p = sample_clips(Fonts::embedded()).unwrap();
         let tap = |p: &mut Player, (x, y): (i32, i32)| {
@@ -25105,55 +27128,52 @@ mod tests {
             down.or(p.touch(1, Touch::Up, x, y))
         };
         let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
-        let record = p.ui.rect_of(time_view::RECORD).unwrap();
-        let scene_tab =
-            p.ui.get::<OptionList>(time_view::RECORD)
+        let grid = p.ui.rect_of(time_view::CLIPS).unwrap();
+        let number =
+            p.ui.get::<ClipGrid>(time_view::CLIPS)
                 .unwrap()
-                .tab_rect(record, 2)
+                .scene_rect(grid, 0)
                 .unwrap();
-        assert_eq!(tap(&mut p, (scene_tab.x + 10, scene_tab.y + 20)), None);
-        assert_eq!(
-            p.ui.layout_of(time_view::CLIPS_PAGE),
-            Some(time_view::CLIPS_SCENE_LAYOUT)
-        );
-        assert_eq!(hint(&p), time_view::SCENE_HINT);
-        let rows = |p: &Player| -> Vec<String> {
-            p.ui.get::<OptionList>(time_view::SCENE_CARD)
-                .unwrap()
-                .rows
-                .iter()
-                .map(|r| format!("{} {}", r.name, r.value))
+        let (x, y) = (number.x + number.w / 2, number.y + number.h / 2);
+        // Held: under the hold nothing; past it, the card for row 1, and
+        // the lift plays nothing.
+        let asks = |p: &mut Player| -> Vec<FromUi> {
+            p.take_actions()
+                .into_iter()
+                .filter(|a| matches!(a, FromUi::Time(_)))
                 .collect()
         };
-        assert_eq!(
-            rows(&p),
-            [
-                "Scene 1",
-                "Follow off",
-                "After —",
-                "Chance —",
-                "Or —",
-                "Mutes as they are",
-                "Program off",
-                "Bank —",
-                "Sent to none"
-            ]
-        );
-        // The wheel on the Scene row: the next scene.
-        p.apply(ToUi::ClipsWheel {
-            delta: 1,
-            scroll: false,
-        });
-        assert_eq!(p.take_actions(), [FromUi::Time(TimeAction::SceneFocus(1))]);
+        assert_eq!(p.touch(1, Touch::Down, x, y), None);
+        p.tick(0.016);
+        p.tick(0.2);
+        assert_eq!(asks(&mut p), []);
+        p.tick(0.3);
+        assert_eq!(asks(&mut p), [FromUi::Time(TimeAction::SceneCard(Some(0)))]);
+        assert_eq!(p.touch(1, Touch::Up, x, y), None);
+        assert_eq!(asks(&mut p), []);
+        // The engine opens it.
+        let mut st = p.time.clone();
+        st.scene_open = Some(0);
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(hint(&p), time_view::SCENE_CARD_HINT);
+        let card =
+            p.ui.get::<ClipGrid>(time_view::CLIPS)
+                .unwrap()
+                .scene_card
+                .clone()
+                .unwrap();
+        let parts = card.parts(grid);
+        let mid = |row: usize| {
+            let r = parts.rows.iter().find(|(k, _)| *k == row).unwrap().1;
+            // The value box's middle, between its arrows.
+            (r.x + 96 + (r.w - 96) / 2, r.y + r.h / 2)
+        };
         // Mutes now: Bass is muted, so the scene mutes Bass.
-        p.time.tracks[1].mute = true;
-        p.time_page.update(&mut p.ui, &p.time);
-        let card = p.ui.rect_of(time_view::SCENE_CARD).unwrap();
-        let list = p.ui.get::<OptionList>(time_view::SCENE_CARD).unwrap();
-        let mutes = list.button_rect(card, time_view::SCENE_MUTES_NOW).unwrap();
-        let rename = list.button_rect(card, time_view::SCENE_RENAME).unwrap();
+        let mut st = p.time.clone();
+        st.tracks[1].mute = true;
+        p.apply(ToUi::Time(Box::new(st)));
         assert_eq!(
-            tap(&mut p, (mutes.x + mutes.w / 2, mutes.y + mutes.h / 2)),
+            tap(&mut p, mid(time_view::SCENE_MUTES)),
             Some(FromUi::Time(TimeAction::SceneSettings {
                 row: 0,
                 card_row: 5,
@@ -25165,10 +27185,8 @@ mod tests {
         );
         // Rename: the keyboard on "Scene 1"; "Drop" typed over it names
         // the scene.
-        assert_eq!(
-            tap(&mut p, (rename.x + rename.w / 2, rename.y + rename.h / 2)),
-            None
-        );
+        let name = parts.name;
+        assert_eq!(tap(&mut p, (name.x + 20, name.y + name.h / 2)), None);
         assert_eq!(p.page(), TEXTPAD_PAGE);
         let r = p.ui.rect_of(TEXTPAD).unwrap();
         {
@@ -25196,6 +27214,11 @@ mod tests {
         got.extend(enter);
         assert!(got.contains(&named), "{got:?}");
         assert_eq!(p.page(), CLIPS_PAGE);
+        // A tap off the card closes it.
+        assert_eq!(
+            tap(&mut p, (grid.x + 2, grid.y + 2)),
+            Some(FromUi::Time(TimeAction::SceneCard(None)))
+        );
     }
 
     #[test]
@@ -25226,9 +27249,16 @@ mod tests {
                     .unwrap();
             (r.x + r.w / 2, r.y + r.h / 2)
         };
+        // A finger on a note tells the app it holds a value the wheel
+        // turns (piano roll plan 1C.3): the tap goes after that.
         let tap = |p: &mut Player, (x, y): (i32, i32)| {
             let down = p.touch(1, Touch::Down, x, y);
-            down.or(p.touch(1, Touch::Up, x, y))
+            let up = p.touch(1, Touch::Up, x, y);
+            down.or(up).or_else(|| {
+                p.take_actions()
+                    .into_iter()
+                    .find(|a| !matches!(a, FromUi::Held(_)))
+            })
         };
         let empty = cell(&p, 1, 0);
         assert_eq!(
@@ -25465,6 +27495,49 @@ mod tests {
                 to: 1200
             })))
         );
+        // A finger on a note and the wheel (piano roll plan 1C.3): the
+        // wheel goes to it, its first detent naming the note and later
+        // ones only the hold; the hint line says the velocity as each
+        // edit comes back, and the lift taps nothing.
+        timed(&mut p);
+        assert!(p.touch(1, Touch::Down, nx, ny).is_none());
+        assert!(p.take_actions().contains(&FromUi::Held(true)));
+        p.apply(ToUi::Held {
+            delta: 2,
+            fine: false,
+        });
+        let held_turn = |index, ticks, first| {
+            FromUi::Time(TimeAction::Edit(EditAction::Held {
+                index,
+                rev: 0,
+                ticks,
+                fine: false,
+                turn: 1,
+                first,
+            }))
+        };
+        assert_eq!(timed(&mut p), vec![held_turn(1, 2, true)]);
+        let said = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert_eq!(said(&p), "Velocity 90 · the wheel turns it while you hold");
+        let mut back = p.time.clone();
+        if let Some(e) = back.edit.as_mut() {
+            let mut c = (*e.clip).clone();
+            c.notes[1].velocity = 92;
+            e.clip = c.into();
+            e.editor.sel = vec![1];
+        }
+        p.apply(ToUi::Time(Box::new(back)));
+        assert_eq!(said(&p), "Velocity 92 · the wheel turns it while you hold");
+        p.apply(ToUi::Held {
+            delta: -1,
+            fine: false,
+        });
+        assert_eq!(
+            timed(&mut p),
+            vec![held_turn(mpfree_time_ui::editor::HELD_PICKS, -1, false)]
+        );
+        assert!(p.touch(1, Touch::Up, nx, ny).is_none());
+        assert!(timed(&mut p).is_empty(), "no tap");
         // COPY held (piano roll plan 1B.4): a tap on a note copies the
         // picked notes (or that one), a tap on empty roll pastes them
         // there, and the hint line says so.
@@ -27410,6 +29483,7 @@ mod tests {
             variant: None,
             scene: None,
             rows: None,
+            row_tool: None,
             followed: None,
         };
         let mut st = p.time.clone();
@@ -27641,7 +29715,7 @@ mod tests {
             p.apply(ToUi::PadsLearned(vec![(
                 0,
                 pad as u8,
-                PadField::Tune,
+                crate::sampler::PadParam::Own(PadField::Tune),
                 cents,
             )]));
         };
@@ -27659,6 +29733,137 @@ mod tests {
             "{:?}",
             events_log(&p)
         );
+    }
+
+    /// Sampler refactor step 17: with the Grain tool open, SHIFT + a touch
+    /// on a row with a range or on a Q-Link card learns that grain setting
+    /// of the layer the tool edits (`mpfree_param::pad::layer`); a choice
+    /// learns nothing. A learned move sets it on the kit as the row does,
+    /// one undo step a turn.
+    #[test]
+    fn shift_and_a_touch_on_the_grain_tool_learns_the_layers_grain_setting() {
+        use crate::sampler::PadParam;
+        use mpfree_play::mpfree_param::pad as ids;
+        use mpfree_sampler::grain_field::GrainField;
+        use mpfree_sampler_ui::grain_tab::Row;
+        use mpfree_sampler_ui::grain_tool::GrainPart;
+        use mpfree_sampler_ui::wave_tab::{self, Tool};
+        use mpfree_ui::Rect;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        pick_tool(&mut p, Tool::Grain);
+        p.apply(ToUi::SampleLift);
+        for v in views(p.take_actions()).0 {
+            p.apply(ToUi::SampleViewBack(v));
+        }
+        grain_part(&mut p, GrainPart::Filter);
+        p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+        p.take_actions();
+        let region = |p: &Player| {
+            p.sample.project(0).unwrap().pad(pad).unwrap().layers[0]
+                .region
+                .clone()
+        };
+        let centre = |r: Rect| (r.x + r.w / 2, r.y + r.h / 2);
+        let row_at = |p: &Player, row: Row| {
+            let i = GrainPart::Filter
+                .rows(&region(p))
+                .iter()
+                .position(|r| *r == row)
+                .unwrap();
+            p.ui.targets()
+                .into_iter()
+                .find(|pt| {
+                    pt.widget == wave_tab::REGION
+                        && pt.target.index == i + 1
+                        && mpfree_sampler_ui::play_tab::is_value_target(&pt.target)
+                })
+                .map(|pt| centre(pt.target.rect))
+                .unwrap()
+        };
+        let card_at = |p: &Player, k: usize| {
+            p.ui.targets()
+                .into_iter()
+                .find(|pt| pt.widget == wave_tab::QLINKS[k])
+                .map(|pt| centre(pt.target.rect))
+                .unwrap()
+        };
+        let press = |p: &mut Player, (x, y): (i32, i32)| {
+            let mut acts: Vec<FromUi> =
+                [p.touch(1, Touch::Down, x, y), p.touch(1, Touch::Up, x, y)]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+            acts.extend(p.take_actions());
+            acts
+        };
+        let learn = |f: GrainField| {
+            [FromUi::LearnValue(LearnValue::Pad {
+                kit: 0,
+                pad: pad as u8,
+                field: ids::layer(0, f as u8).unwrap(),
+            })]
+        };
+        p.status.shift = true;
+        p.refresh_hint();
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(
+            hint.starts_with("SHIFT +   touch a knob: MIDI Learn"),
+            "{hint}"
+        );
+        let cutoff = row_at(&p, Row::Cutoff);
+        assert_eq!(press(&mut p, cutoff), learn(GrainField::Cutoff));
+        let size = card_at(&p, 1);
+        assert_eq!(
+            press(&mut p, size),
+            learn(GrainField::Size),
+            "Q-Link 2's card"
+        );
+        // The filter's kind: its choices are buttons, not a value.
+        let kind =
+            p.ui.targets()
+                .into_iter()
+                .find(|pt| {
+                    pt.widget == wave_tab::REGION
+                        && pt.target.id == "choice"
+                        && pt.target.label.starts_with("Pass: ")
+                })
+                .map(|pt| centre(pt.target.rect))
+                .unwrap();
+        assert!(
+            !press(&mut p, kind)
+                .iter()
+                .any(|a| matches!(a, FromUi::LearnValue(_))),
+            "the filter's kind is a choice"
+        );
+        p.status.shift = false;
+        // A turn of the learned control: the layer's region follows, its
+        // view goes out once, and one undo step takes the turn back.
+        let was = region(&p).grain.size_ms;
+        let what = PadParam::Grain {
+            layer: 0,
+            field: GrainField::Size,
+        };
+        p.apply(ToUi::PadsLearned(vec![(0, pad as u8, what, 300.0)]));
+        p.apply(ToUi::PadsLearned(vec![(0, pad as u8, what, 450.0)]));
+        assert_eq!(region(&p).grain.size_ms, 450.0);
+        let (sent, _) = views(p.take_actions());
+        assert_eq!(sent.len(), 1);
+        p.apply(ToUi::SampleViewBack(sent.into_iter().next().unwrap()));
+        p.apply(ToUi::PadsLearned(vec![(0, pad as u8, what, 450.0)]));
+        assert!(
+            views(p.take_actions()).0.is_empty(),
+            "the same value sends nothing"
+        );
+        // A layer the pad hasn't got changes nothing.
+        let second = PadParam::Grain {
+            layer: 1,
+            field: GrainField::Size,
+        };
+        p.apply(ToUi::PadsLearned(vec![(0, pad as u8, second, 90.0)]));
+        assert!(views(p.take_actions()).0.is_empty());
+        p.apply(ToUi::SampleUndo(false));
+        assert_eq!(region(&p).grain.size_ms, was);
     }
 
     #[test]
@@ -27691,6 +29896,7 @@ mod tests {
         };
         let learn = |field: PadField| {
             [FromUi::LearnValue(LearnValue::Pad {
+                kit: 0,
                 pad: pad as u8,
                 field: field as u16,
             })]
@@ -27717,13 +29923,13 @@ mod tests {
         p.apply(ToUi::PadsLearned(vec![(
             0,
             pad as u8,
-            PadField::Tune,
+            crate::sampler::PadParam::Own(PadField::Tune),
             700.0,
         )]));
         p.apply(ToUi::PadsLearned(vec![(
             0,
             pad as u8,
-            PadField::Tune,
+            crate::sampler::PadParam::Own(PadField::Tune),
             1_200.4,
         )]));
         assert_eq!(
@@ -27737,7 +29943,7 @@ mod tests {
         p.apply(ToUi::PadsLearned(vec![(
             0,
             pad as u8,
-            PadField::Tune,
+            crate::sampler::PadParam::Own(PadField::Tune),
             1_200.0,
         )]));
         assert!(views(p.take_actions()).0.is_empty());
@@ -28065,6 +30271,7 @@ mod tests {
             variant: None,
             scene: None,
             rows: None,
+            row_tool: None,
             followed: None,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
@@ -31377,6 +33584,269 @@ mod tests {
         assert!(!fx.contains(&Effect::QLinkBank), "{fx:?}");
     }
 
+    /// The audio tracks rethink's phase 4, board 4: with Dev's "Loops on
+    /// audio tracks" on, a tap on an audio column's input line asks the
+    /// app for its input list; the list opens over the grid under the
+    /// column's head, the grid veiled but for it, each instrument's strip
+    /// in its track's colour; a dim input says why and stays open; a pick
+    /// goes to the tracks and closes it; a touch on the grid only closes
+    /// it. With the switch off the line says where the panel is, as before.
+    #[test]
+    fn an_audio_columns_input_line_opens_its_input_list() {
+        use mpfree_time_ui::inputs::{Choice, InputChoices, InputList, INPUT_LIST, STRIP};
+        use mpfree_time_ui::widgets::{ClipGrid, SOUND_TAP};
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let ev = |widget: &str, kind| mpfree_ui::UiEvent {
+            widget: widget.to_string(),
+            kind,
+        };
+        let mut st = mpfree_time_ui::sample::clips_audio_state().unwrap();
+        st.loops_on = true;
+        let vocal = st.audio[0].row;
+        let mut p = quiet_player(Fonts::embedded());
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.apply(ToUi::Show(View::Arrange));
+        // Vocal's page of tracks, as a finger on its head would have it.
+        p.time_page.show_cell(vocal, 0);
+        p.time_page.update(&mut p.ui, &p.time);
+        assert_eq!(
+            p.on_event(ev(time_view::CLIPS, EventKind::Tab(SOUND_TAP + vocal))),
+            Some(FromUi::Time(TimeAction::Audio(AudioAction::Inputs(0))))
+        );
+        let choice = |name: &str, owner, refused: Option<&str>| Choice {
+            name: name.to_string(),
+            owner,
+            color: None,
+            refused: refused.map(str::to_string),
+        };
+        let c = InputChoices {
+            track: 0,
+            name: "Vocal".into(),
+            line: Some(mpfree_audiotracks::Input::Left),
+            picked: None,
+            pads: Some(choice("Pads \u{b7} Kit 1", Some(0), None)),
+            pads_why: String::new(),
+            strips: vec![
+                choice("Bass", Some(1), None),
+                choice(
+                    "Bus A",
+                    None,
+                    Some("Vocal plays into Bus A, so it would record itself"),
+                ),
+            ],
+            strips_why: "Bus A is dim: Vocal plays into it. Pick a strip Vocal doesn't feed."
+                .into(),
+            master: choice("Master", None, None),
+            master_why: String::new(),
+        };
+        p.apply(ToUi::InputList(Box::new(c.clone())));
+        let grid = p.ui.rect_of(time_view::CLIPS).expect("the grid");
+        let head =
+            p.ui.get::<ClipGrid>(time_view::CLIPS)
+                .unwrap()
+                .head_rect(grid, vocal)
+                .expect("Vocal's head");
+        let at =
+            p.ui.rect_of(INPUT_LIST)
+                .expect("the list floats over the page");
+        assert!(at.y > head.bottom() && at.w > 600, "{at:?} under {head:?}");
+        assert_eq!(
+            p.ui.get::<ClipGrid>(time_view::CLIPS).unwrap().veil,
+            Some(vocal)
+        );
+        assert_eq!(hint(&p), INPUT_LIST_HINT);
+        let list = p.ui.get::<InputList>(INPUT_LIST).unwrap();
+        assert_eq!(
+            list.choices.strips[0].color,
+            Some(time_view::track_color(1))
+        );
+        assert_eq!(list.choices.strips[1].color, None);
+        let mut canvas = SoftCanvas::new(1280, 800);
+        p.ui.paint(&mut canvas);
+        // A dim one: said, and the list stays.
+        assert_eq!(
+            p.on_event(ev(INPUT_LIST, EventKind::Select(STRIP + 1))),
+            None
+        );
+        assert!(
+            p.told
+                .as_ref()
+                .is_some_and(|t| t.0.contains("plays into Bus A")),
+            "{:?}",
+            p.told
+        );
+        assert!(p.input_list.is_some());
+        // A pick: to the tracks, and the list closes.
+        assert_eq!(
+            p.on_event(ev(INPUT_LIST, EventKind::Select(STRIP))),
+            Some(FromUi::Time(TimeAction::Audio(AudioAction::InputPick {
+                track: 0,
+                k: STRIP
+            })))
+        );
+        assert!(p.input_list.is_none());
+        assert_eq!(p.ui.rect_of(INPUT_LIST), None);
+        assert_eq!(p.ui.get::<ClipGrid>(time_view::CLIPS).unwrap().veil, None);
+        assert_ne!(hint(&p), INPUT_LIST_HINT);
+        // Again: a touch on the grid, off the list, only closes it.
+        p.apply(ToUi::InputList(Box::new(c.clone())));
+        p.take_actions();
+        let (x, y) = (grid.x + 4, grid.bottom() - 4);
+        p.touch(1, Touch::Down, x, y);
+        p.touch(1, Touch::Up, x, y);
+        assert!(p.input_list.is_none());
+        assert!(p.take_actions().is_empty());
+        // Away from the page, it closes; an answer that comes late to
+        // another page doesn't open.
+        p.apply(ToUi::InputList(Box::new(c.clone())));
+        p.apply(ToUi::Show(View::Looper));
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert!(p.input_list.is_none());
+        p.apply(ToUi::InputList(Box::new(c)));
+        assert!(p.input_list.is_none());
+        // The switch off: the line says where the panel is.
+        p.apply(ToUi::Show(View::Arrange));
+        st.loops_on = false;
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(
+            p.on_event(ev(time_view::CLIPS, EventKind::Tab(SOUND_TAP + vocal))),
+            None
+        );
+        assert!(p.told.as_ref().is_some_and(|t| t.0.contains("Song view")));
+    }
+
+    /// The audio tracks rethink's phase 4, board 3: with Dev's "Loops on
+    /// audio tracks" on and an empty audio cell armed, the REC chip names
+    /// the cell and the track's input; while another loop's first pass
+    /// records it says, in amber, that REC closes it; the picked loop in an
+    /// audio cell is overdubbed; with all 8 loops in use and none picked in
+    /// a cell, it is refused in red. With the switch off, the old words.
+    #[test]
+    fn with_loops_on_rec_names_the_cell_and_hands_over_a_first_pass() {
+        use crate::rec_arm::Target;
+        use mpfree_looper::Phase;
+        use play_widgets::RecAlert;
+        let mut st = mpfree_time_ui::sample::clips_audio_state().unwrap();
+        st.loops_on = true;
+        let vocal = st.audio[0].row;
+        let empty = st.tracks[vocal]
+            .slots
+            .iter()
+            .position(|s| s.is_none())
+            .expect("an empty cell of Vocal's");
+        st.loop_cell = Some((vocal, empty));
+        let mut p = quiet_player(Fonts::embedded());
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        p.rec.target = Target::Loop;
+        let row = time_view::row_name(&p.time, empty);
+        let chip = p.rec_chip();
+        assert_eq!(chip.what, format!("Vocal \u{b7} {row} \u{b7} Line L"));
+        assert_eq!(chip.alert, RecAlert::None);
+        // Another loop's first pass records: REC closes it first, said.
+        let mut v = LooperView::default();
+        v.loops[2].phase = Phase::Recording;
+        v.selected = 0;
+        p.apply(ToUi::Looper(Box::new(v.clone())));
+        let chip = p.rec_chip();
+        assert!(chip.what.ends_with("'s loop"), "{}", chip.what);
+        assert!(chip.what.contains("closes"), "{}", chip.what);
+        assert_eq!(chip.alert, RecAlert::Warn);
+        assert_eq!(chip.tone(), Tone::Warn);
+        // Every loop in use, none picked in a cell and no cell armed:
+        // refused, in red.
+        for l in v.loops.iter_mut() {
+            l.phase = Phase::Playing;
+        }
+        p.apply(ToUi::Looper(Box::new(v)));
+        st.loop_cell = None;
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(p.time.loops.in_use, mpfree_seq::LOOPS);
+        let chip = p.rec_chip();
+        assert_eq!(chip.what, "8 loops \u{b7} clear one");
+        assert_eq!(chip.alert, RecAlert::Refused);
+        assert!(chip.line().starts_with("REC: "), "{}", chip.line());
+        // The switch off: the old words.
+        st.loops_on = false;
+        st.loop_cell = Some((vocal, empty));
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(p.rec_chip().alert, RecAlert::None);
+    }
+
+    /// The audio tracks rethink's phase 4, board 6: with Dev's "Loops on
+    /// audio tracks" on, an audio track's strip says its input and, while
+    /// it plays one, what ("loop · row 2" over the clip's name, or a take
+    /// clip's "take · row 1"); with no Loop track in the project there is
+    /// no Loop strip.
+    #[test]
+    fn with_loops_on_the_mixer_tags_what_an_audio_track_plays() {
+        use mpfree_fx::StripId;
+        let mut project = mpfree_seq::Project::new();
+        project.tracks.push(mpfree_seq::Track::new("Drums", 0));
+        project
+            .tracks
+            .push(mpfree_seq::Track::new_audio("Vocal", 0));
+        project.give_track_ids();
+        let lp = mpfree_seq::Clip::new_audio_loop(mpfree_seq::LoopId(7), "Vox loop", 4 * 3840);
+        if let Some(cell) = project.tracks[1].slots.get_mut(1) {
+            *cell = Some(lp);
+        }
+        project.give_clip_ids();
+        let clip = project.tracks[1]
+            .slots
+            .iter()
+            .next()
+            .expect("the loop cell")
+            .1
+            .id;
+        let mut tracks = crate::audiotracks::TrackHost::new(44_100, 1);
+        tracks.sync(&project, 0, true);
+        let mut mix = crate::mixing::MixHost::new(44_100, -18.0, -12.0);
+        let vocal = StripId::Track(mix.track_channel(1));
+        mix.audio_tracks = 0b10;
+        mix.show(Some(mpfree_mixer_ui::MixView::Tracks));
+        let mut st = mix
+            .poll_state(std::time::Instant::now())
+            .expect("the mixer shows");
+        let looper = StripId::Track(crate::mixing::LOOP);
+        let had_loop = st.strips.iter().any(|v| v.id == looper);
+        tracks.dress_strips(&mut st, &project, 0, &mix);
+        tracks.dress_loop_strips(
+            &mut st,
+            &project,
+            |p| (p == 1).then_some((true, clip)),
+            &mix,
+        );
+        let v = st
+            .strips
+            .iter()
+            .find(|v| v.id == vocal)
+            .expect("Vocal's strip");
+        assert_eq!(v.audio.as_deref(), Some("Line L"));
+        assert_eq!(
+            v.tag,
+            Some(("loop \u{b7} row 2".to_string(), "Vox loop".to_string()))
+        );
+        assert!(had_loop, "the Loop strip was there");
+        assert!(
+            !st.strips.iter().any(|v| v.id == looper),
+            "no Loop track: no Loop strip"
+        );
+        // A take clip: "take"; nothing playing: no tag.
+        tracks.dress_loop_strips(
+            &mut st,
+            &project,
+            |p| (p == 1).then_some((false, clip)),
+            &mix,
+        );
+        let v = st.strips.iter().find(|v| v.id == vocal).unwrap();
+        assert_eq!(
+            v.tag.as_ref().map(|t| t.0.as_str()),
+            Some("take \u{b7} row 2")
+        );
+        tracks.dress_loop_strips(&mut st, &project, |_| None, &mix);
+        assert_eq!(st.strips.iter().find(|v| v.id == vocal).unwrap().tag, None);
+    }
+
     /// Arrange has Play's column (layout spec 4c): the same knobs, turned
     /// by the Q-Links and by a drag on a card, and Q-LINK steps the same
     /// macro banks, which Play then still shows.
@@ -31612,6 +34082,7 @@ mod tests {
             scene: None,
             rows: None,
             followed: None,
+            row_tool: None,
         });
         p.apply(ToUi::Time(Box::new(st)));
         assert_eq!(undo(&mut p, false), [FromUi::Time(TimeAction::Undo)]);
@@ -33908,6 +36379,7 @@ mod tests {
                     fade_old: 1.0,
                     speed: 0,
                     rate: 0,
+                    id: 0,
                     clock: mpfree_looper::Clock::Song,
                     layers: vec![mpfree_looper::save::LayerFile {
                         level: 0.5,
@@ -33972,6 +36444,7 @@ mod tests {
             track_kits: String::new(),
             instrument_list: crate::instrument_list::InstrumentList::new().text(),
             pads: String::new(),
+            tunings: String::new(),
             perform: String::new(),
             xy: String::new(),
             loops: Some(loops),
@@ -34563,6 +37036,7 @@ mod tests {
             track_kits: String::new(),
             instrument_list: crate::instrument_list::InstrumentList::new().text(),
             pads: String::new(),
+            tunings: String::new(),
             perform: String::new(),
             xy: String::new(),
             loops: None,
@@ -34731,6 +37205,7 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: crate::instrument_list::InstrumentList::new().text(),
                 pads: String::new(),
+                tunings: String::new(),
                 perform: String::new(),
                 xy: String::new(),
                 loops: None,
@@ -34834,6 +37309,7 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: crate::instrument_list::InstrumentList::new().text(),
                 pads: String::new(),
+                tunings: String::new(),
                 perform: String::new(),
                 xy: String::new(),
                 loops: None,
@@ -35311,6 +37787,105 @@ mod tests {
         p.tick(0.033);
         assert_eq!(load_on(&p).as_deref(), Some("A2"));
         assert_eq!(p.page(), mpfree_browser_ui::BROWSER_PAGE, "it stays open");
+    }
+
+    /// BROWSE's SD card place: showing it asks for the card (a window
+    /// opened before is taken over here, as after a restart), and what the
+    /// slot hears goes to the library and the place: the card's files,
+    /// what it is, and that it wasn't safely removed. With the browser
+    /// hidden for the put-away time, the card is put away and the place
+    /// says so.
+    #[test]
+    fn the_sd_card_place_opens_the_card_and_puts_it_away_once_hidden() {
+        use crate::sd_card::{Paths, Slot, Timing};
+        use mpfree_browser_ui::sample::source;
+        use mpfree_browser_ui::CardState;
+        use std::time::Duration;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("mpfree-sd-place-{}-{nanos}", std::process::id()));
+        let card = dir.join("card");
+        std::fs::create_dir_all(card.join("Breaks")).unwrap();
+        std::fs::create_dir_all(dir.join("run")).unwrap();
+        std::fs::write(dir.join("setup-sd-card.sh"), "# service\n").unwrap();
+        std::fs::write(
+            dir.join("mounts"),
+            format!("card {} exfat ro 0 0\n", card.display()),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("run/sd-card-status"),
+            format!(
+                "state=open\nmessage=The SD card is open, read-only.\nask=00cc\ncard=mmcblk1\nfs=exfat\nsectors=124735488\nmount={}\ndirty=yes\n",
+                card.display()
+            ),
+        )
+        .unwrap();
+        let mut p = browser_samples(Fonts::embedded()).unwrap();
+        p.sd_card = Slot::new(
+            Paths {
+                service: dir.join("setup-sd-card.sh"),
+                status: dir.join("run/sd-card-status"),
+                request: dir.join("run/sd-card.request"),
+                close: dir.join("run/sd-card.close"),
+                alive: dir.join("run/sd-card.alive"),
+                mounts: dir.join("mounts"),
+            },
+            Timing {
+                poll: Duration::from_millis(5),
+                answer: Duration::from_millis(500),
+                close: Duration::from_millis(50),
+                beat: Duration::from_millis(10),
+            },
+            Duration::from_millis(100),
+        );
+        let state = |p: &Player| p.browser.as_ref().unwrap().card().clone();
+        let until = |p: &mut Player, done: &dyn Fn(&Player) -> bool| {
+            let end = Instant::now() + Duration::from_secs(3);
+            while !done(p) {
+                assert!(Instant::now() < end, "not yet: {:?}", state(p));
+                p.tick(0.01);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
+        p.browser.as_mut().unwrap().go_source(source("SD card"));
+        assert_eq!(state(&p), CardState::Opening);
+        p.step_browser();
+        until(&mut p, &|p| matches!(state(p), CardState::Open { .. }));
+        assert_eq!(
+            state(&p),
+            CardState::Open {
+                about: "exFAT, 63.9 GB".into(),
+                dirty: true
+            }
+        );
+        let b = p.browser.as_ref().unwrap();
+        assert!(b.screen().rows.iter().any(|r| r.name == "Breaks"));
+        assert!(b
+            .status_line()
+            .is_some_and(|(t, bad)| bad && t.contains("wasn't safely removed")));
+        assert!(
+            !dir.join("run/sd-card.request").exists(),
+            "taken over, not asked again"
+        );
+        // In use while the browser shows.
+        std::thread::sleep(Duration::from_millis(150));
+        p.tick(0.01);
+        assert!(matches!(state(&p), CardState::Open { .. }));
+        // Hidden: put away, and asked to close (by the close's own thread).
+        p.apply(ToUi::Show(View::Play));
+        let close = dir.join("run/sd-card.close");
+        until(&mut p, &|p| state(p) == CardState::Closed && close.exists());
+        assert!(p.browser.as_ref().unwrap().library().card().is_none());
+        // Shown again on the card place: asked for again (here the window
+        // is still open, so it is taken over).
+        p.apply(ToUi::Show(View::Browser));
+        until(&mut p, &|p| matches!(state(p), CardState::Open { .. }));
+        assert!(p.browser.as_ref().unwrap().library().card().is_some());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The browser's pad map (the redesign's board 8): under a sound, the
@@ -43649,8 +46224,9 @@ mod tests {
     /// redesign): on a track whose instrument is a kit, the button under
     /// the synth's card chooses the synth for the pads and the track keeps
     /// its kit; the header names it on every page ("Pads: Poly") and Play's
-    /// transport says the pads play it; the button again, or the chip, is
-    /// Follow track. While the synth is the track's own, there is no
+    /// transport says the pads play it; the button again is Follow track,
+    /// and the chip opens What the pads play (sampler step 15e), whose
+    /// first row holds it. While the synth is the track's own, there is no
     /// button.
     #[test]
     fn the_synth_chosen_for_the_pads_is_named_and_follow_track_gives_them_back() {
@@ -43754,7 +46330,7 @@ mod tests {
                 .unwrap();
         assert_eq!(
             p.touch(3, Touch::Down, chip.x + 10, chip.y + 10),
-            Some(FromUi::FollowTrack)
+            Some(FromUi::PadMapOpen)
         );
         p.touch(3, Touch::Up, chip.x + 10, chip.y + 10);
         apply_effects(&mut p, a.pads_follow_track());
@@ -43846,9 +46422,10 @@ mod tests {
             0,
             "the panel belongs to Play"
         );
+        // The last of its five tabs is Phrase.
         let modes = p.ui.rect_of(arp_view::MODES).unwrap();
         let a = p.touch(9, Touch::Down, modes.right() - 10, modes.y + modes.h / 2);
-        assert_eq!(a, Some(FromUi::Arp(ArpAction::Mode(Mode::Pattern))));
+        assert_eq!(a, Some(FromUi::Arp(ArpAction::Mode(Mode::Phrase))));
         p.touch(9, Touch::Up, modes.right() - 10, modes.y + modes.h / 2);
         assert!(p
             .ui

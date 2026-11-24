@@ -15,7 +15,9 @@
 //! - **Following the Synth tab.** A copy's values follow the Synth tab's
 //!   for its engine ([`PadSynths::follow`], a few times a second), and a
 //!   new design (a preset with its own effects or macros) makes the copy
-//!   again. Its tuning is the Synth tab's.
+//!   again. Its tuning is its kit's (tunings step T5): the pad is the
+//!   kit's, so a kit with a tuning of its own plays it on its synth pads
+//!   too.
 //! - **Rest.** A copy renders only while it has notes sounding or events
 //!   to play (an old one ringing out included), so sixteen quiet pads cost
 //!   next to nothing.
@@ -138,6 +140,9 @@ pub struct PadSynths {
     ticks: u32,
     /// Values sent to copies to follow the Synth tab.
     followed: u64,
+    /// Copies put in so far ([`PadSynths::put`]): the audio loop hands a
+    /// new one its kit's tuning (`main.rs`, `TuningsHanded`).
+    puts: u64,
 }
 
 impl PadSynths {
@@ -158,6 +163,7 @@ impl PadSynths {
             on_synth: [0; KITS],
             fell_back: 0,
             ticks: 0,
+            puts: 0,
             followed: 0,
         }
     }
@@ -488,7 +494,20 @@ impl PadSynths {
         self.forget_voices(s);
         self.held[s] = Some(p);
         self.woke[s] = true;
+        self.puts += 1;
         Ok(())
+    }
+
+    /// How many copies have been put in ([`PadSynths::put`]), to see that
+    /// one came in.
+    pub fn puts(&self) -> u64 {
+        self.puts
+    }
+
+    /// The kit of the pad slot `s`'s copy plays, while it holds one (of
+    /// [`HOST_SLOTS`]).
+    pub fn kit_of(&self, s: usize) -> Option<usize> {
+        self.held.get(s)?.map(|p| usize::from(p.kit))
     }
 
     /// The hits slot `s`'s copy held, which ended with it (it went or was
@@ -499,6 +518,24 @@ impl PadSynths {
                 *v = None;
             }
         }
+    }
+
+    /// Counts each copy's time from the next render on, while on
+    /// (`TrackHost::set_spending`), for System status's tracks.
+    pub fn set_spending(&mut self, on: bool) {
+        self.host.set_spending(on);
+    }
+
+    /// Each copy's counted time since the last take, ns, with the kit of
+    /// the pad it plays for, and starts again. An old copy ringing out
+    /// after its pad moved on is left out. Never allocates.
+    pub fn take_spent(&mut self, mut f: impl FnMut(usize, u64)) {
+        let held = &self.held;
+        self.host.take_spent(|slot, _, ns| {
+            if let Some(h) = held.get(slot).copied().flatten() {
+                f(usize::from(h.kit), ns);
+            }
+        });
     }
 
     /// A copy taken out (after its ring-out), to drop off the audio thread.
@@ -581,11 +618,10 @@ impl PadSynths {
         }
     }
 
-    /// Every copy plays in `tuning` (the Synth tab's).
-    pub fn set_tuning(&mut self, tuning: &Tuning) {
-        for s in 0..HOST_SLOTS {
-            self.host.set_tuning(s, tuning);
-        }
+    /// Slot `s`'s copy plays in `tuning` (its kit's: tunings step T5)
+    /// from the next block, and so does the next copy put in there.
+    pub fn set_tuning(&mut self, s: usize, tuning: &Tuning) {
+        self.host.set_tuning(s, tuning);
     }
 
     // ------------------------------------------------------------ sound

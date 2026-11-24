@@ -23,6 +23,11 @@ pub const MAP: &str = "map";
 /// (the patterns Save keeps and the owner's own scales).
 pub const ARP: &str = "arp";
 pub const ARP_PATTERNS: &str = "patterns.txt";
+/// The owner's own phrases, a library file beside the patterns. A file of
+/// its own, so a start of an older MPFree, which reads a phrase line as a
+/// bad pattern and then leaves the whole file unused, still has the
+/// patterns, and its Save never writes over the phrases.
+pub const ARP_PHRASES: &str = "phrases.txt";
 /// The Dev tab's Touch page keeps its tuning as these settings
 /// (`mpfree_touch::tuning::Tuning::to_pairs`).
 pub const TOUCH: &str = "touch";
@@ -103,6 +108,7 @@ impl App {
         );
         out.set_i64("audio-memory", i64::from(s.audio_memory.seconds()));
         out.set_bool("stream-audio", s.stream_audio);
+        out.set_bool("loops-on-tracks", s.loops_on_tracks);
         out.set_str("start-with", if s.open_last { "last" } else { "new" });
         out.set_str("export", s.export_mode.key());
         out.set_str(
@@ -225,6 +231,7 @@ impl App {
                     .map(|m| s.audio_memory = m)
                     .is_some(),
                 "stream-audio" => app.get_bool(k).map(|b| s.stream_audio = b).is_some(),
+                "loops-on-tracks" => app.get_bool(k).map(|b| s.loops_on_tracks = b).is_some(),
                 "start-with" => match v {
                     "new" => Some(false),
                     "last" => Some(true),

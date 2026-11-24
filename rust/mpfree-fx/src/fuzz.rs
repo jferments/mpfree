@@ -20,7 +20,7 @@ use mpfree_node::{Ctx, Kind, NodeInfo, ParamInfo, Smooth};
 
 use crate::adaa::{log_cosh, Adaa};
 use crate::kit::{node_impl, param, Choice, Crossover, Db, Glide, Linear, Percent, NONE};
-use crate::oversample::{IirDown2, IirUp2};
+use crate::oversample::IirPair;
 use crate::svf::{Svf, SvfMode};
 use crate::{db_to_gain, defaults, fast_tanh, flush, Preset};
 
@@ -328,8 +328,12 @@ pub struct Fuzz {
     v: [f32; 6],
     rate: u32,
     c: Coefs,
-    up: [[IirUp2; 2]; 2],
-    down: [[IirDown2; 2]; 2],
+    /// Each side's half-bands: the first stage's (up first, down last)
+    /// and the second's.
+    hb1: [IirPair<HB1_N>; 2],
+    hb2: [IirPair<HB2_N>; 2],
+    /// Frames since the stream started, modulo [`SETTLE`].
+    settle: u32,
     guard: Svf,
     /// Each side's state for each model.
     sides: [[Side; 3]; 2],
@@ -354,8 +358,17 @@ pub struct Fuzz {
     drive: [Drive; 3],
 }
 
-const HB1: (usize, f64) = (5, 0.06);
-const HB2: (usize, f64) = (4, 0.12);
+/// The half-bands, as Amp's: the first stage (the base rate to twice it)
+/// five sections with a transition half-width of 0.06, the second (twice
+/// to four times) four with 0.12.
+const HB1_N: usize = 5;
+const HB1_TBW: f64 = 0.06;
+const HB2_N: usize = 4;
+const HB2_TBW: f64 = 0.12;
+
+/// The half-bands drop what is too small to hear every this many frames
+/// from the stream's start (the same in any block size).
+const SETTLE: u32 = 32;
 
 impl Default for Fuzz {
     fn default() -> Self {
@@ -366,14 +379,13 @@ impl Default for Fuzz {
 impl Fuzz {
     pub fn new() -> Fuzz {
         let v = defaults(&FUZZ_PARAMS);
-        let up = || [IirUp2::new(HB1.0, HB1.1), IirUp2::new(HB2.0, HB2.1)];
-        let down = || [IirDown2::new(HB2.0, HB2.1), IirDown2::new(HB1.0, HB1.1)];
         let mut f = Fuzz {
             v,
             rate: 48_000,
             c: Coefs::default(),
-            up: [up(), up()],
-            down: [down(), down()],
+            hb1: [IirPair::new(HB1_TBW), IirPair::new(HB1_TBW)],
+            hb2: [IirPair::new(HB2_TBW), IirPair::new(HB2_TBW)],
+            settle: 0,
             guard: Svf::default(),
             sides: [[Side::default(); 3]; 2],
             model: 0,
@@ -489,6 +501,15 @@ impl Fuzz {
         let c = self.c;
         let inv_fade = 1.0 / self.fade_len as f32;
         for i in 0..l.len() {
+            if self.settle == 0 {
+                for h in &mut self.hb1 {
+                    h.settle();
+                }
+                for h in &mut self.hb2 {
+                    h.settle();
+                }
+            }
+            self.settle = (self.settle + 1) % SETTLE;
             let k = [self.knob.glide(), self.tone.glide(), self.gate.glide()];
             if k != self.at {
                 self.at = k;
@@ -527,9 +548,9 @@ impl Fuzz {
                     0.0
                 };
                 let mut quad = [0.0f32; 4];
-                let [a, b] = self.up[ch][0].run(*x);
+                let [a, b] = self.hb1[ch].up(*x);
                 for (h, v) in [a, b].into_iter().enumerate() {
-                    let [c0, c1] = self.up[ch][1].run(v);
+                    let [c0, c1] = self.hb2[ch].up(v);
                     quad[2 * h] = c0;
                     quad[2 * h + 1] = c1;
                 }
@@ -545,9 +566,9 @@ impl Fuzz {
                     };
                     *q = self.guard.run(ch, y);
                 }
-                let h0 = self.down[ch][0].run([quad[0], quad[1]]);
-                let h1 = self.down[ch][0].run([quad[2], quad[3]]);
-                let mut y = self.down[ch][1].run([h0, h1]);
+                let h0 = self.hb2[ch].down([quad[0], quad[1]]);
+                let h1 = self.hb2[ch].down([quad[2], quad[3]]);
+                let mut y = self.hb1[ch].down([h0, h1]);
                 if keep > 0.0 {
                     let (_, hp) = self.post.split(ch, y);
                     y += (hp - y) * keep;
@@ -591,14 +612,13 @@ impl Fuzz {
     }
 
     fn clear(&mut self) {
-        for ch in 0..2 {
-            for u in &mut self.up[ch] {
-                u.reset();
-            }
-            for d in &mut self.down[ch] {
-                d.reset();
-            }
+        for h in &mut self.hb1 {
+            h.reset();
         }
+        for h in &mut self.hb2 {
+            h.reset();
+        }
+        self.settle = 0;
         for s in [
             &mut self.keep,
             &mut self.keep_hz,

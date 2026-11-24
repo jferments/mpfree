@@ -40,6 +40,7 @@ use mpfree_sampler::engine::{
     CloudState, Engine, EngineView, Event, GrainView, KitKeys, LaneConfig, LaneSetup, LaneStats,
     PadField, PadOut, MAX_GRAINS, TAKE_PAD,
 };
+use mpfree_sampler::grain_field::GrainField;
 use mpfree_sampler::model::{
     GrainParams, Layer, Pad, PadKind, PlayMode, PressureRoute, PressureTarget, Project, Region,
     Source, PADS,
@@ -59,11 +60,67 @@ pub const KEY_BEND_CENTS: f32 = 200.0;
 
 /// The sampler setting a clip's lock on a kit pad's sound names
 /// (`Owner::Pad`): its parameter is the [`PadField`]'s number (Level 0,
-/// Pan 1, Tune 2, Cutoff 3, Resonance 4, Attack 5, Decay 6, Release 7), and
-/// its value is in the field's own unit (dB, -1 to 1, cents, Hz, 0 to 1,
-/// ms).
+/// Pan 1, Tune 2, Cutoff 3, Resonance 4, Attack 5, Decay 6, Release 7,
+/// ... Drive 12, Env depth 13), and its value is in the field's own unit
+/// (dB, -1 to 1, cents, Hz, 0 to 1, ms, octaves).
 pub fn pad_field(param: u16) -> Option<PadField> {
     PadField::ALL.get(usize::from(param)).copied()
+}
+
+/// What a kit pad's parameter id names (`Owner::Pad`, `Owner::KitPad`):
+/// one of the pad's own settings ([`pad_field`]), or one of its layers'
+/// grain settings (sampler refactor step 17: the layer's place on the pad
+/// and the setting, `mpfree_param::pad::layer`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PadParam {
+    Own(PadField),
+    Grain { layer: u8, field: GrainField },
+}
+
+impl PadParam {
+    /// What parameter `id` names; None for a number that names nothing.
+    pub fn of(id: u16) -> Option<PadParam> {
+        match mpfree_play::mpfree_param::pad::layer_of(id) {
+            Some((layer, g)) => Some(PadParam::Grain {
+                layer,
+                field: GrainField::of(g)?,
+            }),
+            None => pad_field(id).map(PadParam::Own),
+        }
+    }
+
+    /// Its parameter id ([`PadParam::of`]'s inverse).
+    pub fn id(self) -> u16 {
+        match self {
+            PadParam::Own(f) => f as u16,
+            PadParam::Grain { layer, field } => {
+                mpfree_play::mpfree_param::pad::layer(layer, field as u8).unwrap_or(u16::MAX)
+            }
+        }
+    }
+
+    /// Its name and the range a learned control covers: [`pad_info`] for
+    /// the pad's own (`slices` for Slice), the Grain tab's for a layer's
+    /// grain setting ([`GrainField::info`]).
+    pub fn info(self, slices: usize) -> mpfree_node::ParamInfo {
+        match self {
+            PadParam::Own(f) => pad_info(f, slices),
+            PadParam::Grain { field, .. } => {
+                let mut i = field.info();
+                i.id = self.id();
+                i
+            }
+        }
+    }
+
+    /// The layer it is on, counted from 1 as the Play tab's layer map
+    /// shows them; None for one of the pad's own settings.
+    pub fn layer_shown(self) -> Option<usize> {
+        match self {
+            PadParam::Own(_) => None,
+            PadParam::Grain { layer, .. } => Some(usize::from(layer) + 1),
+        }
+    }
 }
 
 /// A kit pad's own setting as MIDI Learn moves it (`Owner::Pad`): its name
@@ -117,6 +174,14 @@ pub fn pad_info(field: PadField, slices: usize) -> mpfree_node::ParamInfo {
                 Unit::Ms,
                 Curve::Log,
             )
+        }
+        PadField::Drive => {
+            let top = mpfree_sampler::dsp::MAX_DRIVE_DB;
+            info("Drive", 0.0, top, 0.0, Unit::Db, Curve::Linear)
+        }
+        PadField::EnvDepth => {
+            let o = mpfree_sampler::dsp::MAX_ENV_OCTAVES;
+            info("Env depth", -o, o, 0.0, Unit::Octaves, Curve::Linear)
         }
     }
 }
@@ -348,6 +413,17 @@ impl TrackKits {
     pub fn kit_of(&self, track: usize) -> Option<usize> {
         let e = self.entry(track);
         (e != usize::from(self.synth)).then_some(e)
+    }
+
+    /// The first track that plays entry `entry` (a kit, or the synth's)
+    /// and `plays(t)` says plays it (not an instrument of its own or MIDI
+    /// Out), for System status's tracks (track_costs.rs). Never allocates.
+    pub fn first_on(&self, entry: usize, plays: impl Fn(usize) -> bool) -> Option<usize> {
+        self.entries
+            .iter()
+            .enumerate()
+            .find(|&(t, &e)| usize::from(e) == entry && plays(t))
+            .map(|(t, _)| t)
     }
 
     /// The synth's entry.
@@ -762,7 +838,7 @@ impl Player {
         self.users.clone()
     }
 
-    #[cfg(test)]
+    /// How many kit places the engine has.
     pub fn kits(&self) -> usize {
         self.engine.kits()
     }
@@ -1152,6 +1228,24 @@ impl Player {
         })
     }
 
+    /// Kit `kit`'s pad `pad`'s value of `p` as edited: its own setting
+    /// ([`Player::pad_own`]), or a layer's grain setting as the kit's view
+    /// keeps it (sampler refactor step 17), in the units
+    /// [`PadParam::info`] shows. None for a pad without a sound, or a
+    /// layer it hasn't got.
+    pub fn pad_param_now(&self, kit: usize, pad: usize, p: PadParam) -> Option<f32> {
+        match p {
+            PadParam::Own(f) => self.pad_own(kit, pad, f),
+            PadParam::Grain { layer, field } => {
+                if !self.has_sound(kit, pad) {
+                    return None;
+                }
+                let g = self.engine.kit_layer_grain(kit, pad, usize::from(layer))?;
+                Some(field.get(g))
+            }
+        }
+    }
+
     /// How many slices kit `kit`'s pad `pad` plays from (1 unsliced).
     pub fn pad_slices(&self, kit: usize, pad: usize) -> usize {
         self.engine.kit_pad_slices(kit, pad)
@@ -1308,15 +1402,13 @@ impl Player {
         }
     }
 
-    /// Every kit's tuning (tunings plan T3: the song's, until each kit can
-    /// have its own): their keygroups, the pads playing notes and 16 Levels
-    /// of Tune play it, playing notes moving there; pad hits and slices
-    /// don't ([`Engine::set_tuning`]). Never allocates; cheap for a kit
-    /// already in it, so call it when the song's tuning may have changed.
-    pub fn set_tuning(&mut self, tuning: &mpfree_tuning::Tuning) {
-        for k in 0..self.engine.kits() {
-            self.engine.set_tuning(k, tuning);
-        }
+    /// Kit `kit`'s tuning (its own, or the song's: tunings step T5): its
+    /// keygroups, the pads playing notes and 16 Levels of Tune play it,
+    /// playing notes moving there; pad hits and slices don't
+    /// ([`Engine::set_tuning`]). Never allocates; cheap for a kit already
+    /// in it.
+    pub fn set_kit_tuning(&mut self, kit: usize, tuning: &mpfree_tuning::Tuning) {
+        self.engine.set_tuning(kit, tuning);
     }
 
     /// Kit `kit`'s tuning (None out of range).
@@ -1430,6 +1522,18 @@ impl Player {
     pub fn render_routed_until(&mut self, frames: usize, out: &mut impl PadOut, deadline: Instant) {
         self.engine.render_routed_until(frames, out, deadline);
         self.peak_grains = self.peak_grains.max(self.engine.live_grains());
+    }
+
+    /// Counts what each kit's voices cost from the next render on, while
+    /// on (`Engine::count_kits`), for System status's tracks.
+    pub fn count_kits(&mut self, on: bool) {
+        self.engine.count_kits(on);
+    }
+
+    /// Each kit's count since the last take, added into `out`
+    /// (`Engine::take_kit_counts`). Never allocates.
+    pub fn take_kit_counts(&mut self, out: &mut [u64]) {
+        self.engine.take_kit_counts(out);
     }
 
     /// Splits the engine's voices over two cores: half render on a lane
