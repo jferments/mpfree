@@ -462,6 +462,60 @@ pub enum CapturePoint {
     AfterSafety,
 }
 
+/// What a recording takes from inside the mix ([`Mixer::capture_for`],
+/// [`Mixer::set_capture_from`]): a strip at a point, and on a strip's way
+/// in (a submix or the master, before its effects), maybe without one
+/// strip that plays into it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptureFrom {
+    pub strip: StripId,
+    pub point: CapturePoint,
+    /// A strip left out: the recording track, so the take never holds
+    /// what the track plays. The mixer adds a second sum of everything
+    /// else that plays into `strip` while the capture is in use, the same
+    /// samples at the same gains and delays, so the take is that strip's
+    /// input as if the track weren't there, not a subtraction afterwards.
+    pub without: Option<StripId>,
+}
+
+/// Why a recording into a track can't take its input from a strip, in a
+/// musician's words ([`Mixer::capture_for`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureRefusal {
+    /// The strip, or the track's own, isn't in the mix.
+    NotInMix,
+    /// It is the track's own strip: it would record itself.
+    Itself,
+    /// The track plays into the strip, which can leave it out only on its
+    /// way in (a submix or the master, before its effects).
+    PastItsWayIn,
+    /// The track reaches the strip through this one (a submix, or a track
+    /// a pad or input plays into), whose sound can't be had without it.
+    Through(StripId),
+    /// The track sends to this return, which plays into the strip: its
+    /// own echoes would be recorded.
+    Sends(usize),
+}
+
+impl CaptureRefusal {
+    /// The line the recording screen shows.
+    pub fn text(self) -> &'static str {
+        match self {
+            CaptureRefusal::NotInMix => "that strip isn't in the mix",
+            CaptureRefusal::Itself => "a track can't record itself",
+            CaptureRefusal::PastItsWayIn => {
+                "the track plays into it: record it before its effects"
+            }
+            CaptureRefusal::Through(_) => {
+                "the track goes to a submix on the way, so it would record itself"
+            }
+            CaptureRefusal::Sends(_) => {
+                "the track sends to a return, so it would record its own echoes: turn that send down"
+            }
+        }
+    }
+}
+
 /// Where a strip's freeze is ([`Mixer::freeze_state`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FreezeState {
@@ -990,6 +1044,9 @@ struct Capture {
     /// use first, so a block looks only at them.
     slot: u8,
     src: Option<(u16, CapturePoint)>,
+    /// A strip left out of `src`'s input ([`CaptureFrom::without`]), or
+    /// NONE: `buf` is then a second sum of every other strip's way in.
+    without: u16,
     buf: [Vec<f32>; 2],
 }
 
@@ -1384,6 +1441,7 @@ impl Mixer {
                 .map(|slot| Capture {
                     slot: slot as u8,
                     src: None,
+                    without: NONE,
                     buf: block(),
                 })
                 .collect(),
@@ -1622,6 +1680,59 @@ impl Mixer {
         true
     }
 
+    /// Moves strip `from`'s inserts onto strip `to`, from the next block:
+    /// each with its state, its slot id, its bypass and its key, so an
+    /// effect's tail rings on where the sound now goes. For a host whose
+    /// sound moves from one strip to another (a kit getting a track), with
+    /// the strip's own controls set alongside ([`Mixer::set_now`]).
+    /// Real-time safe: the chains swap, `from` taking `to`'s empty one.
+    ///
+    /// False, and nothing changes, unless both strips are tracks or pad
+    /// channels (one stage) and `to` has no inserts, neither has an edit
+    /// waiting, is frozen or has its inserts away on a lane, no other
+    /// strip is keyed from `from`, and every key the inserts take is
+    /// allowed on `to` (module docs).
+    pub fn move_chain(&mut self, from: StripId, to: StripId) -> bool {
+        let topo = self.plan.topo;
+        let (Some(f), Some(t)) = (topo.order(from), topo.order(to)) else {
+            return false;
+        };
+        let stage = |k: usize| self.strips[k].role;
+        if f == t
+            || stage(f) != stage(t)
+            || !matches!(stage(f), Role::Track | Role::Pad)
+            || !self.strips[t].chain.is_empty()
+            || [f, t].iter().any(|&k| {
+                self.away(k)
+                    || self.strips[k].fz != Fz::Off
+                    || self.strips[k].frozen.is_some()
+                    || self.edits.iter().any(|e| topo.order(e.strip()) == Some(k))
+            })
+        {
+            return false;
+        }
+        let keyed_from = self.strips.iter().enumerate().any(|(k, st)| {
+            k != f && (0..st.chain.len()).any(|s| st.chain.key(s) == Some(f as u16))
+        });
+        let chain = &self.strips[f].chain;
+        let keys_ok = (0..chain.len())
+            .filter_map(|s| chain.key(s))
+            .all(|j| may_key(&topo, j as usize, t));
+        if keyed_from || !keys_ok {
+            return false;
+        }
+        let (a, b) = (f.min(t), f.max(t));
+        let (lo, hi) = self.strips.split_at_mut(b);
+        std::mem::swap(&mut lo[a].chain, &mut hi[0].chain);
+        if !self.reorder() {
+            let (lo, hi) = self.strips.split_at_mut(b);
+            std::mem::swap(&mut lo[a].chain, &mut hi[0].chain);
+            self.reorder();
+            return false;
+        }
+        true
+    }
+
     /// Why strip `key` can't feed the sidechain of strip `s`'s inserts
     /// (what [`Mixer::set_key`] would refuse it for), or None when it can:
     /// the sidechain list greys a strip with this. A strip `s` doesn't
@@ -1829,20 +1940,58 @@ impl Mixer {
     /// not there, or [`CapturePoint::AfterSafety`] is asked of a strip
     /// other than the master.
     pub fn set_capture(&mut self, slot: usize, src: Option<(StripId, CapturePoint)>) -> bool {
-        let src = match src {
-            None => None,
-            Some((s, p)) => match self.plan.topo.order(s) {
-                Some(k) if p != CapturePoint::AfterSafety || s == StripId::Master => {
-                    Some((k as u16, p))
+        self.set_capture_from(
+            slot,
+            src.map(|(strip, point)| CaptureFrom {
+                strip,
+                point,
+                without: None,
+            }),
+        )
+    }
+
+    /// [`Mixer::set_capture`] with a strip maybe left out
+    /// ([`CaptureFrom::without`]), as [`Mixer::capture_for`] answers. False
+    /// as `set_capture` says, and also if the strip left out isn't in the
+    /// mix, is the strip itself, or `from` isn't a submix or the master
+    /// before its effects. Real-time safe.
+    pub fn set_capture_from(&mut self, slot: usize, from: Option<CaptureFrom>) -> bool {
+        let topo = self.plan.topo;
+        let (src, without) = match from {
+            None => (None, NONE),
+            Some(CaptureFrom {
+                strip: s,
+                point: p,
+                without,
+            }) => {
+                let Some(k) = topo.order(s) else {
+                    return false;
+                };
+                if p == CapturePoint::AfterSafety && s != StripId::Master {
+                    return false;
                 }
-                _ => return false,
-            },
+                let without = match without {
+                    None => NONE,
+                    Some(w) => match topo.order(w) {
+                        Some(j)
+                            if j != k
+                                && p == CapturePoint::BeforeInserts
+                                && matches!(topo.role(k).0, Role::Bus | Role::Master) =>
+                        {
+                            j as u16
+                        }
+                        _ => return false,
+                    },
+                };
+                (Some((k as u16, p)), without)
+            }
         };
         let Some(i) = self.caps.iter().position(|c| usize::from(c.slot) == slot) else {
             return false;
         };
         let was = self.caps[i].src.is_some();
         self.caps[i].src = src;
+        self.caps[i].without = without;
         // Those in use stay first.
         match (was, src.is_some()) {
             (false, true) => {
@@ -1883,6 +2032,95 @@ impl Mixer {
         })
     }
 
+    /// Where a recording into `track` takes `source` (a strip at a
+    /// point), as one answer on the mixer's graph: the strip itself while
+    /// the track's sound doesn't reach it; a submix or the master on its
+    /// way in without the track, when the track plays straight into it
+    /// ([`CaptureFrom::without`]: a second sum, not a subtraction
+    /// afterwards); refused when the track would be recorded anyway, by a
+    /// send, through a submix, or past the strip's way in, or is the
+    /// strip. Asked again each period, a change of route is caught where
+    /// it happens. An echo that still rings after its send came down is
+    /// the host's to wait out (it is time, not the graph). Cheap, and it
+    /// allocates nothing.
+    pub fn capture_for(
+        &self,
+        source: (StripId, CapturePoint),
+        track: StripId,
+    ) -> Result<CaptureFrom, CaptureRefusal> {
+        use CaptureRefusal as No;
+        let topo = self.plan.topo;
+        let (strip, point) = source;
+        let (Some(s), Some(t)) = (topo.order(strip), topo.order(track)) else {
+            return Err(No::NotInMix);
+        };
+        if point == CapturePoint::AfterSafety && strip != StripId::Master {
+            return Err(No::NotInMix);
+        }
+        if s == t {
+            return Err(No::Itself);
+        }
+        let from = CaptureFrom {
+            strip,
+            point,
+            without: None,
+        };
+        // A strip only ever plays into later ones.
+        if s < t || !self.reach(t).get(s) {
+            return Ok(from);
+        }
+        if topo.role(t).0.has_sends() {
+            for r in 0..RETURNS {
+                let j = topo.ret(r);
+                if self.strips[t].send_g[r] > 0.0 && (j == s || self.reach(j).get(s)) {
+                    return Err(No::Sends(r));
+                }
+            }
+        }
+        match topo.resolve(t, self.sw.out[t], self.sw.out_track[t]) {
+            Some(d) if d == s => {
+                let way_in = point == CapturePoint::BeforeInserts
+                    && matches!(topo.role(s).0, Role::Bus | Role::Master);
+                if way_in {
+                    Ok(CaptureFrom {
+                        without: Some(track),
+                        ..from
+                    })
+                } else {
+                    Err(No::PastItsWayIn)
+                }
+            }
+            Some(d) => Err(No::Through(topo.id(d))),
+            // Never reached: the strip is reached by a send or the output.
+            None => Ok(from),
+        }
+    }
+
+    /// The strips strip `k`'s sound reaches, by its output and its sends
+    /// and theirs on (not `k` itself).
+    fn reach(&self, k: usize) -> Bits {
+        let topo = self.plan.topo;
+        let mut seen = Bits::default();
+        seen.set(k, true);
+        for j in k..topo.len() {
+            if !seen.get(j) {
+                continue;
+            }
+            if let Some(d) = topo.resolve(j, self.sw.out[j], self.sw.out_track[j]) {
+                seen.set(d, true);
+            }
+            if topo.role(j).0.has_sends() {
+                for r in 0..RETURNS {
+                    if self.strips[j].send_g[r] > 0.0 {
+                        seen.set(topo.ret(r), true);
+                    }
+                }
+            }
+        }
+        seen.set(k, false);
+        seen
+    }
+
     /// Times the whole mixer, every strip and every insert per block (see
     /// [`Mixer::probe`], [`Mixer::strip_probe`] and [`Chain::probe`]), at
     /// two clock reads each. Off by default; the Dev pages switch it on.
@@ -1895,6 +2133,31 @@ impl Mixer {
 
     pub fn profiling(&self) -> bool {
         self.profiling
+    }
+
+    /// Counts each strip's inserts' time from the next block on, while on
+    /// (two clock reads a strip with inserts that runs; inserts on a lane
+    /// count there), for [`Mixer::take_spent`]. System status's "tracks
+    /// using the most" turns it on one block in a few. A chain away on a
+    /// late lane when this changes keeps its old setting until the next
+    /// change.
+    pub fn set_spending(&mut self, on: bool) {
+        for st in &mut self.strips {
+            st.chain.set_spending(on);
+        }
+    }
+
+    /// Each strip's counted insert time since the last take, ns (strips
+    /// with none left out), and starts the count again. A chain still on
+    /// a late lane keeps its count until it is back. Never allocates.
+    pub fn take_spent(&mut self, mut f: impl FnMut(StripId, u64)) {
+        let topo = self.plan.topo;
+        for (k, st) in self.strips.iter_mut().enumerate() {
+            let ns = st.chain.take_spent();
+            if ns > 0 {
+                f(topo.id(k), ns);
+            }
+        }
     }
 
     /// The whole mixer's time per block, while profiling.
@@ -2436,6 +2699,11 @@ impl Mixer {
         }
         // Only the capture points in use (kept first) are looked at.
         let caps: &mut [Capture] = &mut caps[..*caps_used];
+        // A strip's way in without one strip is summed afresh each block.
+        for c in caps.iter_mut().filter(|c| c.without != NONE) {
+            c.buf[0][..len].fill(0.0);
+            c.buf[1][..len].fill(0.0);
+        }
         let base = Ctx {
             sidechain: None,
             ..*ctx
@@ -3419,7 +3687,8 @@ fn hold_input(st: &mut Strip, len: usize, tap_step: f32, sc: &mut Scratch) {
 }
 
 /// Copies frames `a..a + n` of `src` into every capture point on strip `k`
-/// at `point`.
+/// at `point` (not one that leaves a strip out: that one is summed as the
+/// strips play in, [`run_chunk`]).
 fn take(
     caps: &mut [Capture],
     k: usize,
@@ -3429,7 +3698,7 @@ fn take(
     b: usize,
 ) {
     for c in caps.iter_mut() {
-        if c.src == Some((k as u16, point)) {
+        if c.src == Some((k as u16, point)) && c.without == NONE {
             c.buf[0][a..b].copy_from_slice(&src[0][a..b]);
             c.buf[1][a..b].copy_from_slice(&src[1][a..b]);
         }
@@ -3599,6 +3868,28 @@ fn run_chunk(
     for (r, w) in st.routes.iter_mut().zip(w_route.iter()) {
         if r.idle() {
             continue;
+        }
+        // A recording of where this goes, without another strip, hears it
+        // as that strip does: the same samples at the same gain (a copy of
+        // the glide, so the route's own moves on once).
+        for c in caps.iter_mut() {
+            let without = c.without;
+            if without != NONE
+                && usize::from(without) != k
+                && c.src == Some((r.dest, CapturePoint::BeforeInserts))
+            {
+                let mut g = r.g;
+                add(
+                    &st.post_line,
+                    &r.tap,
+                    &w[..n],
+                    post_l,
+                    post_r,
+                    &mut g,
+                    &mut c.buf,
+                    a,
+                );
+            }
         }
         let dst = &mut hi[r.dest as usize - k - 1];
         dst.touched = true;

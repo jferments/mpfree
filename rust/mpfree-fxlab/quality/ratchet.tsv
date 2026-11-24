@@ -422,11 +422,11 @@ drive/iron/alias_2k5_0dbfs	-140
 drive/iron/alias_5k_0dbfs	-140
 drive/iron/alias_5k_m12dbfs	-140
 drive/iron/alias_8k_0dbfs	-140
-drive/iron/flat_m40dbfs	0.0073
-drive/iron/flat_mix50	0.0037
-drive/iron/lu_pink18_amount0	-0.0098
-drive/iron/lu_pink18_amount100	-0.1289
-drive/iron/lu_pink18_amount50	-0.0432
+drive/iron/flat_m40dbfs	0.0016
+drive/iron/flat_mix50	0.0009
+drive/iron/lu_pink18_amount0	-0.01
+drive/iron/lu_pink18_amount100	-0.123
+drive/iron/lu_pink18_amount50	-0.042
 drive/iron/zipper_db	0
 drive/iron[Iron bass]/alias_5k_0dbfs	-140
 drive/iron[Iron bass]/zipper_db	0

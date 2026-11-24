@@ -17,7 +17,7 @@
 - [Your own XY layouts](making-music/xy-layouts.md)
 - [Note Repeat, Latch and the arpeggiator](making-music/note-repeat-and-arp.md)
 - [The Sequencer: programming steps](making-music/sequencer.md)
-- [Editing notes](making-music/editing-notes.md)
+- [Editing notes in the piano roll](making-music/editing-notes.md)
 - [The Pads tab](making-music/pads.md)
 - [Recording loops](making-music/looping.md)
 - [Sampling](making-music/sampling.md)

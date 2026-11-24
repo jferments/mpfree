@@ -35,7 +35,7 @@ Its settings come in **sections**, a button each across the top of the page, wit
 | **Pitch** | Tune, Wow & flutter, Vintage, and the keys: Keys, Low key, High key, Root key, Key fade, and Mono, Legato, Glide and Glide on | tune, wow, low key, high key |
 | **Mod** | Vel → level, Vel → start, Vel → cutoff, Vel → pitch, Pressure and its Depth | vel → level, vel → start, pressure, depth |
 | **Movement** | LFO to, LFO wave, LFO rate, LFO depth, Sync to tempo, Retrigger, Pitch env and Pitch decay | LFO rate, LFO depth, pitch env, pitch decay |
-| **Pad** | Polyphony, Mute group, Stops, Also plays, Latch, and the kit's Pads play, Pads from and Levels by | voices, mute group, pads play, pads from |
+| **Pad** | Polyphony, Mute group, Stops, Also plays, Latch, and the kit's Pads play, Pads from, Levels by and Tuning | voices, mute group, pads play, pads from |
 
 On a Q-Link, SHIFT turns finer. Hold **SHIFT** and touch a knob to give it a knob on your MIDI controller instead (see [MIDI Learn](midi-and-cv.md#midi-learn)). A setting that has nothing to change right now (the filter's while it is off, the keys' while the pad isn't a keygroup) shows its control and its card faint, and a tap on it says why.
 
@@ -98,7 +98,7 @@ To fill in **Stops** or **Also plays**, tap its selector, then hit the pads you 
 
 Play a sound higher than it was recorded (**Tune** up, a key above a keygroup's root, pressure on pitch) and its top end moves up past what the MPC can play. On old samplers that part folds back down as harsh, metallic tones that were never in the sound (aliasing): a hi-hat pitched up an octave gains a whine. MPFree filters it out as it plays, so pitched-up hats, breaks and keys stay clean. A sound recorded at a higher rate, such as a 96 kHz file, plays clean too, and so do the grains of a granular pad whose **Pitch** or **Pitch spray** takes them up.
 
-Pitched down, or only a little up, a sound is filled in between its samples. The quick way old samplers did that leaves faint tones near the top that were never in the sound. MPFree fills it in more carefully, so those stay much quieter (a granular pad's grains still use the quick way). The difference is small: in a blind listening test with drums, synth chords, a keygroup melody and a pitch bend, the two couldn't be told apart.
+Pitched down, or only a little up, a sound is filled in between its samples. The quick way old samplers did that leaves faint tones near the top that were never in the sound. MPFree fills it in more carefully, so those stay much quieter, and a granular pad's grains (and the **Grains** effect's) are filled in the same careful way. The difference is small: in a blind listening test with drums, synth chords, a keygroup melody and a pitch bend, the two couldn't be told apart.
 
 The **Vintage** switch of the Pitch section turns both off for one pad, its grains included. At **On** the pad plays pitched the way old samplers did, grit and all, for when that is the sound you want. Vintage is saved with the kit.
 
@@ -153,7 +153,7 @@ Under the wave, the **Grain** section takes the place of the sound's Mode, Gain 
 - **Grain LFO** and **Grain env**: the cloud's own LFO and envelope, which move it as it plays (see Movement below).
 - **Presets**: eight starting points, one tap each (see Presets below).
 
-Touch a control and turn the data wheel to change it, or drag a knob up or down; the wheel walks through the controls of the part that is open. In a grain mode other than Cloud, each part shows only the controls that mode uses. The **Sound** section beside it keeps the pad's own envelope, filter, pitch and movement, and its **Grain** button shows Position, Size, Density and Grain pitch there too, so you can reach them while another tool is picked. The grains' own filter, LFO, envelope and pitch say **Grain** in their names, so they are never mistaken for the pad's in the Sound section beside them.
+Touch a control and turn the data wheel to change it, or drag a knob up or down; the wheel walks through the controls of the part that is open. Hold **SHIFT** and touch a control with a range, or a Q-Link card, to give it to a knob on your keyboard or controller ([MIDI Learn](midi-and-cv.md#midi-learn)). In a grain mode other than Cloud, each part shows only the controls that mode uses. The **Sound** section beside it keeps the pad's own envelope, filter, pitch and movement, and its **Grain** button shows Position, Size, Density and Grain pitch there too, so you can reach them while another tool is picked. The grains' own filter, LFO, envelope and pitch say **Grain** in their names, so they are never mistaken for the pad's in the Sound section beside them.
 
 The line at the Grain section's top right says how the cloud plays: how many grains are playing, and **thinned to fit 64** when the cloud wants more grains at once than a pad plays: the pad spaces them out to fit and keeps its level. If the texture sounds thinner than you want, shorten the grains or lower the density until it goes. With **Grain filter**, **Grain LFO**, **Grain env** or **Presets** open, the line says what that part does now instead. On the wave, the shaded band round GRAIN is where new grains can start: it widens and narrows as **Spray** and anything moving it change, as the pad plays. The playhead on the wave is where the grains are reading, walking through the sound as **Scan** moves it.
 
@@ -232,7 +232,7 @@ A keyboard on MIDI IN or USB plays a kit of keygroups by pitch too, and a key ou
 
 The Pitch section's Keys controls do the same with numbers: the Keys switch makes one pad a keygroup, Low key, High key and Root key set its range, and the Pad section's Pads play switches the pads between their own sounds and notes.
 
-Keygroups play the song's [tuning](synths.md#tuning), set in the Synth tab's options. In standard tuning a key plays its sound a semitone higher for each key above the root. In another tuning, MPFree takes the sound to be at its root note's standard pitch and plays every key, the root too, at the tuning's pitch for that key. The pad's own Tune still moves it as before, and a hit on the pad itself doesn't follow the tuning.
+Keygroups play their kit's [tuning](synths.md#tuning): the song's, or the kit's own. The Pad section's **Tuning**, under The kit's pads, picks it: **Song's** first (it says what the song plays in, "Song's: Just (5-limit) on D"), then the built-in tunings and your tuning files as the kit's own. The line under it says what follows: keys, notes and 16 Levels; hits don't. A keygroup's line at the top says "tuning: song's" or "tuning: own". A kit's own root and A4 are on the [Tunings page](synths.md#tuning), where every instrument is listed. In standard tuning a key plays its sound a semitone higher for each key above the root. In another tuning, MPFree takes the sound to be at its root note's standard pitch and plays every key, the root too, at the tuning's pitch for that key. The pad's own Tune still moves it as before, and a hit on the pad itself doesn't follow the tuning.
 
 ### Crossfades
 

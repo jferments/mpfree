@@ -104,6 +104,7 @@ pub mod ends;
 pub mod find;
 pub mod heard;
 pub mod hits;
+mod on_track;
 mod outs;
 pub mod print;
 pub mod reading;
@@ -112,6 +113,7 @@ mod view;
 
 pub use ends::{Candidate, Event, EventLog, InnerBeat, NoteStart, Verdict};
 pub use heard::{Take, HEARD_SECONDS};
+pub use on_track::{PlayRun, MAX_PLAY_RUNS};
 pub use outs::LoopOuts;
 pub use reading::{
     read_bars, read_bars_with, Reading, Sure, TempoHint, TempoKind, LOOP_MAX_BPM, LOOP_MIN_BPM,
@@ -122,6 +124,7 @@ use ends::NoteLog;
 use find::FindJob;
 use heard::Heard;
 use hits::{HitLog, HitTrack};
+use on_track::{OnTrack, Told};
 
 use view::{Cursor, View};
 
@@ -1106,6 +1109,9 @@ pub struct Stats {
     /// short, or too cut up: a view holds at most 8 pieces), and merges
     /// refused (not playing, recording, nothing to merge, no memory).
     pub refused: u64,
+    /// Overdubs on a loop on a track that punched out because the track
+    /// stopped playing it (audio tracks phase 4b), each its layer kept.
+    pub track_punch_outs: u64,
     /// Layer commands for a layer that is not there, and loop numbers past
     /// [`MAX_LOOPS`].
     pub no_layer: u64,
@@ -1402,6 +1408,10 @@ struct Run<'a> {
     /// The run's first frame.
     f: u64,
     playing: bool,
+    /// For a loop on an audio track ([`Looper::play`]): whether its first
+    /// frame looks for a jump, in place of the span's first frame doing so
+    /// (`on_track::first_of`).
+    first: Option<bool>,
 }
 
 #[derive(Clone, Copy)]
@@ -2669,6 +2679,9 @@ pub struct Looper {
     /// What each loop and Listen played in the last period, apart
     /// ([`Looper::process_each`]).
     outs: LoopOuts,
+    /// The loops on audio tracks ([`Looper::play`]): where the track
+    /// player says each sounds next. None: the loop launches itself.
+    on_track: [Option<OnTrack>; MAX_LOOPS],
 }
 
 /// The looper's side of the free loops ([`Clock::Free`]).
@@ -2931,6 +2944,7 @@ impl Looper {
             },
             free_ticks: [0.0; RUN],
             outs: LoopOuts::new(MAX_PERIOD as usize),
+            on_track: [None; MAX_LOOPS],
         }
     }
 
@@ -3082,6 +3096,56 @@ impl Looper {
     /// if the queue is full.
     pub fn launch(&mut self, n: usize, on: bool, at: Option<Tick>) -> bool {
         self.push(Queued::Launch { n, on, at })
+    }
+
+    /// Loop `n` plays on an audio track (audio tracks phase 4, step 4b):
+    /// `runs` are the frames of the next period it sounds on, in order,
+    /// each at its place counted from its origin (`on_track`'s module
+    /// says how). The first call puts the loop on the track: from then
+    /// the track player says where it sounds, a period at a time (no call,
+    /// or no runs, is silence, and a loop told nothing isn't run), and the
+    /// loop's own launch, mute and solo are refused. Call it before
+    /// [`Looper::process_each`] each period; its own buffer
+    /// ([`LoopOuts::loop_out`]) then holds it, at full gain, for the
+    /// track to fade and mix. False (counted as refused, and the runs told
+    /// before kept) if `n` is past the loops or the runs are more than
+    /// [`MAX_PLAY_RUNS`], empty, out of order or overlapping.
+    ///
+    /// A track places only a song loop: its runs are the song's frames
+    /// and ticks. A free loop ([`Clock::Free`]) keeps its own clock, so it
+    /// is refused too (counted, and not put on the track), and a loop on a
+    /// track refuses Sync: Free ([`Command::SetClock`]).
+    pub fn play(&mut self, n: usize, runs: &[PlayRun]) -> bool {
+        let Some(l) = self.loops.get_mut(n).filter(|l| l.clock == Clock::Song) else {
+            self.stats.refused += 1;
+            return false;
+        };
+        let t = self.on_track[n].get_or_insert_with(|| {
+            // The track fades it: it is on, unmuted and not soloed.
+            l.on = true;
+            l.cue = None;
+            l.muted = false;
+            l.solo = false;
+            OnTrack::default()
+        });
+        if !t.tell(runs) {
+            self.stats.refused += 1;
+            return false;
+        }
+        true
+    }
+
+    /// Loop `n` launches itself again, as it did before it went on a
+    /// track ([`Looper::play`]): on, from the next period.
+    pub fn leave_track(&mut self, n: usize) {
+        if let Some(t) = self.on_track.get_mut(n) {
+            *t = None;
+        }
+    }
+
+    /// Loop `n` is on an audio track ([`Looper::play`]).
+    pub fn on_track(&self, n: usize) -> bool {
+        self.on_track.get(n).is_some_and(|t| t.is_some())
     }
 
     /// The loop the commands act on (as of the last period).
@@ -3276,6 +3340,7 @@ impl Looper {
             fade_old: l.fade_old,
             speed: l.speed,
             rate: l.rate,
+            id: 0,
             clock: l.clock,
             layers,
         })
@@ -3306,7 +3371,7 @@ impl Looper {
             let p = (from + i) % l.len;
             let mut x = layer_frame(&self.store, blocks, valid, view, l.seam, p);
             if replacing {
-                let d = l.ducks(&l.views, l.len, p, strength)[slot];
+                let d = l.ducks(&l.views, l.len, p, None, strength)[slot];
                 x = x.map(|v| v * d);
             }
             y.copy_from_slice(&x);
@@ -3777,10 +3842,30 @@ impl Looper {
         self.close_free(block);
         self.tend_captures();
         self.play_listen(block, n, outs);
-        // A loop with sound soloed: the others fall silent.
-        let any_solo = self.loops.iter().any(|l| l.solo && l.phase != Phase::Empty);
-        for l in &mut self.loops {
+        // A loop with sound soloed: the others fall silent. A loop on a
+        // track is its track's to solo, and plays at full gain while it
+        // plays: the track fades it (a clear or a swap still fades it out).
+        // One that was heard as it went on the track (its first pass just
+        // ended, its own fade in under way) rises on to full gain as it
+        // would have off the track, so the track takes it on unfaded with
+        // no step (`LoopPlayer::moving`).
+        let tracked = |k: usize| self.on_track[k].is_some();
+        let any_solo = (self.loops.iter().enumerate())
+            .any(|(k, l)| l.solo && l.phase != Phase::Empty && !tracked(k));
+        let mut told = [None; MAX_LOOPS];
+        for (k, l) in self.loops.iter_mut().enumerate() {
             l.solo_out = any_solo && !l.solo;
+            if let Some(t) = self.on_track[k].as_mut() {
+                told[k] = Some(t.take());
+                l.solo_out = false;
+                if matches!(l.phase, Phase::Playing | Phase::Overdubbing)
+                    && !l.clearing
+                    && !l.swapping
+                    && l.gain == 0.0
+                {
+                    l.gain = 1.0;
+                }
+            }
         }
         let end = block.start_frame + n as u64;
         for k in 0..self.loops.len() {
@@ -3796,6 +3881,7 @@ impl Looper {
             prints,
             loads,
             heard,
+            on_track,
             free_time,
             free_ticks,
             ..
@@ -3857,11 +3943,14 @@ impl Looper {
         }
         // Loops resampling run last in each run, on what the others played
         // in it.
-        let rs = loops
-            .iter()
-            .enumerate()
-            .fold(0u32, |m, (k, l)| m | (u32::from(l.resample) << k));
+        // (Not a loop on a track: it hears its track's input.)
+        let rs = loops.iter().enumerate().fold(0u32, |m, (k, l)| {
+            m | (u32::from(l.resample && on_track[k].is_none()) << k)
+        });
         outs.set_resampling(rs);
+        outs.set_on_track(
+            (on_track.iter().enumerate()).fold(0u32, |m, (k, t)| m | (u32::from(t.is_some()) << k)),
+        );
         // Free loops keep time with the free clock: each run gets its ticks
         // too, its bar lines cut the runs, and of the song's marks they
         // hear only what [`FreeTime::mark`] makes of them. With no free
@@ -4013,6 +4102,7 @@ impl Looper {
                     input: &input[2 * off..2 * (off + frames)],
                     f,
                     playing,
+                    first: None,
                 };
                 // The free loops' run: the same frames on the free clock. Its
                 // place can jump only where the clock starts.
@@ -4028,7 +4118,14 @@ impl Looper {
                     if rs & (1 << k) == 0 && !l.quiet() {
                         let (p, waiting) = (prints[k].now.as_ref(), prints[k].next.is_some());
                         let r = l.run_from(any_free, free_rolling, &run, &free_run);
-                        l.run(store, stats, k, r, p, waiting, outs.run_mut(k, off, frames));
+                        match (on_track[k].as_mut(), &told[k]) {
+                            (Some(t), Some(told)) => {
+                                l.run_told(store, stats, k, t, told, r, off, p, waiting, outs)
+                            }
+                            _ => {
+                                l.run(store, stats, k, r, p, waiting, outs.run_mut(k, off, frames))
+                            }
+                        }
                     }
                 }
                 if rs != 0 {
@@ -5161,6 +5258,8 @@ impl Looper {
         match q {
             Queued::Select(n) if n < MAX_LOOPS => self.selected = n,
             Queued::Select(_) => self.stats.no_layer += 1,
+            // A loop on a track launches only where the track says.
+            Queued::Launch { n, .. } if self.on_track(n) => self.stats.refused += 1,
             Queued::Launch { n, on, at } => match self.loops.get_mut(n) {
                 Some(l) => match at {
                     Some(t) => l.cue = Some((on, t)),
@@ -5171,6 +5270,12 @@ impl Looper {
                 },
                 None => self.stats.no_layer += 1,
             },
+            // Its track mutes and solos it, on the song's clock.
+            Queued::Loop(Command::Mute(_) | Command::Solo(_) | Command::SetClock(Clock::Free))
+                if self.on_track(s) =>
+            {
+                self.stats.refused += 1
+            }
             Queued::Loop(Command::SetLatency(l)) => {
                 for lp in &mut self.loops {
                     lp.latency = l;
@@ -7058,7 +7163,7 @@ impl Loop {
             let strength = |s: &Slot| if s.heard(any_solo) { 1.0 } else { 0.0 };
             for (j, a) in acc.iter_mut().enumerate() {
                 let p = from + j;
-                let d = self.ducks(&self.views, self.len, p, strength);
+                let d = self.ducks(&self.views, self.len, p, None, strength);
                 for &k in &self.order[..self.in_order] {
                     let k = k as usize;
                     let g = gains[k];
@@ -7893,7 +7998,9 @@ impl Loop {
         // Nothing after STOP is kept.
         if self.finish_len(store, stats, me, end_t, len, false) {
             self.cut = len.min(f.saturating_sub(self.rec_from) as usize);
-            self.slots[0].valid = (0, KEEP_BEFORE + self.cut);
+            // What it has written of that: the rest comes in over the
+            // writer's `latency` frames ([`Loop::write_first`]).
+            self.slots[0].valid = (0, KEEP_BEFORE + self.cut.min(self.written));
         }
     }
 
@@ -7945,14 +8052,14 @@ impl Loop {
         self.len_ticks = t - self.origin;
         self.order[0] = 0;
         self.in_order = 1;
-        // A pass that closed after its end (smart loop end's Auto listens
-        // on past it) has written what it heard after the end already:
-        // that is the start of what it keeps after it.
-        let heard = if tail {
-            (KEEP_BEFORE + self.written).clamp(kept, kept + KEEP_AFTER)
-        } else {
-            kept
-        };
+        // What the writer has written: it runs `latency` frames behind,
+        // so a pass closed on its end has that much of it still to come,
+        // which is the loop's only once written ([`Loop::write_first`]):
+        // till then a reused block's old audio would play there. A pass
+        // that closed after its end (smart loop end's Auto listens on past
+        // it) has written what it heard after the end already: that is
+        // the start of what it keeps after it.
+        let heard = (KEEP_BEFORE + self.written).min(if tail { kept + KEEP_AFTER } else { kept });
         self.slots[0] = Slot {
             valid: (0, heard),
             ..Slot::NEW
@@ -8026,6 +8133,11 @@ impl Loop {
         }
         store.set(me, 0, q, x);
         self.written = self.written.max(j + 1);
+        // Closed (or cut by STOP) with its last frames still coming in:
+        // each is the loop's once it is written.
+        if self.len > 0 && self.slots[0].valid == (0, q) {
+            self.slots[0].valid.1 = q + 1;
+        }
     }
 
     /// What the writer hears after the loop's end, as frame `q` of the
@@ -8529,6 +8641,105 @@ impl Loop {
         }
     }
 
+    /// A loop on a track's part of a run ([`Looper::play`]): only the
+    /// frames it was told, each cut of the run at its place counted from
+    /// its run's origin (its ticks moved by its own origin less the
+    /// run's), into its own buffer. Frames it wasn't told stay silent.
+    ///
+    /// Where the track stops playing it while it overdubs (a launch, a
+    /// block's end, STOP), the overdub punches out on that frame, its
+    /// layer kept, and the writer's tail (the input that belongs before
+    /// the frame, then its fade) runs on silently at the place it would
+    /// have played, so nothing waits for its next launch to finish
+    /// writing. Runs and the gaps between them go in time order.
+    #[allow(clippy::too_many_arguments)]
+    fn run_told(
+        &mut self,
+        store: &mut Store,
+        stats: &mut Stats,
+        me: usize,
+        t: &mut OnTrack,
+        told: &Told,
+        r: &Run,
+        off: usize,
+        print: Option<&Print>,
+        waiting: bool,
+        outs: &mut LoopOuts,
+    ) {
+        let frames = r.ticks.len();
+        let end = off + frames;
+        let mut ticks = [0.0f64; RUN];
+        // After the last run, the rest of the period is a gap.
+        let rest = PlayRun {
+            from: end as u32,
+            to: end as u32,
+            origin: 0.0,
+        };
+        let mut at = 0usize;
+        for p in told.runs().iter().chain([&rest]) {
+            let (from, to) = (p.from as usize, p.to as usize);
+            // The gap before this run: only a writer still going is run.
+            let (a, b) = (at.max(off), from.min(end));
+            at = at.max(to);
+            let tail = self.phase == Phase::Overdubbing || self.od_open;
+            let gap = t
+                .last
+                .filter(|l| a < b && tail && l.0 == r.f + (a - off) as u64);
+            if let Some((e, origin)) = gap {
+                if self.phase == Phase::Overdubbing {
+                    self.punch_out();
+                    stats.track_punch_outs += 1;
+                }
+                let (j, m) = (a - off, b - a);
+                let shift = self.origin as f64 - origin;
+                for (t, &s) in ticks[..m].iter_mut().zip(&r.ticks[j..j + m]) {
+                    *t = s + shift;
+                }
+                let f = r.f + j as u64;
+                let cut = Run {
+                    from: r.from + j,
+                    ticks: &ticks[..m],
+                    input: &r.input[2 * j..2 * (j + m)],
+                    f,
+                    playing: r.playing,
+                    first: on_track::first_of(Some((e, origin)), f, origin),
+                };
+                let mut gone = [[0f32; 2]; RUN];
+                self.run(store, stats, me, &cut, print, waiting, &mut gone[..m]);
+                t.last = Some((f + m as u64, origin));
+            }
+            // The run itself.
+            let (a, b) = (from.max(off), to.min(end));
+            if a >= b {
+                continue;
+            }
+            let (j, m) = (a - off, b - a);
+            let shift = self.origin as f64 - p.origin;
+            for (t, &s) in ticks[..m].iter_mut().zip(&r.ticks[j..j + m]) {
+                *t = s + shift;
+            }
+            let f = r.f + j as u64;
+            let cut = Run {
+                from: r.from + j,
+                ticks: &ticks[..m],
+                input: &r.input[2 * j..2 * (j + m)],
+                f,
+                playing: r.playing,
+                first: on_track::first_of(t.last, f, p.origin),
+            };
+            self.run(
+                store,
+                stats,
+                me,
+                &cut,
+                print,
+                waiting,
+                outs.run_mut(me, a, m),
+            );
+            t.last = Some((f + m as u64, p.origin));
+        }
+    }
+
     /// Nothing to play and nothing coming in: empty, with no load and no
     /// layer copying in. Its run would do nothing ([`Loop::run`]), so it
     /// isn't run.
@@ -8602,7 +8813,7 @@ impl Loop {
             if self.fitting && f >= self.fit_at && self.jump == 0 && self.xf == 0 {
                 self.finish_fit(store, stats, me, print);
             }
-            let first = r.from + j == 0;
+            let first = j == 0 && r.first.unwrap_or(r.from == 0);
             if !first && self.still(r.playing, live) {
                 // Still to the run's end, or to where a merge or a fit
                 // takes over.
@@ -8684,11 +8895,15 @@ impl Loop {
         views: &[View; MAX_LAYERS],
         len: usize,
         p: usize,
+        had: Option<&[u8]>,
         strength: impl Fn(&Slot) -> f32,
     ) -> [f32; MAX_LAYERS] {
         let mut out = [1.0f32; MAX_LAYERS];
         let mut d = 1.0f32;
         for &k in self.order[..self.in_order].iter().rev() {
+            if had.is_some_and(|h| !h.contains(&k)) {
+                continue;
+            }
             let k = k as usize;
             out[k] = d;
             let s = &self.slots[k];
@@ -8973,7 +9188,7 @@ impl Loop {
     /// The layers at the loop's place, through a jump's or an edit's
     /// crossfade.
     fn layers_at(&self, store: &Store, me: usize) -> [f32; 2] {
-        let now = (self.len, self.seam, &self.views);
+        let now = (self.len, self.seam, &self.views, None);
         let mut y = self.sample_at(store, me, self.pos, now);
         if self.jump > 0 {
             let w = self.jump as f32 * STEP;
@@ -8985,7 +9200,16 @@ impl Loop {
         if self.xf > 0 {
             let w = self.xf as f32 * STEP;
             let sh = &self.shapes[self.xf_shape];
-            let old = self.sample_at(store, me, self.xf_pos, (sh.len, sh.seam, &sh.views));
+            // The loop before the edit: the layers it had, through their
+            // views then. A layer that came in since (an overdub opened in
+            // the crossfade, in a slot another layer had before) has no
+            // view in it: read through the slot's old view, it would play
+            // wrong frames, or (a valid stretch past the old view's end)
+            // panic on the arithmetic. The layers it had are all still the
+            // loop's: Undo, Delete and Merge wait for the crossfade
+            // ([`Loop::must_wait`]).
+            let had = Some(&sh.order[..sh.in_order]);
+            let old = self.sample_at(store, me, self.xf_pos, (sh.len, sh.seam, &sh.views, had));
             for (v, o) in y.iter_mut().zip(old) {
                 *v = *v * (1.0 - w) + o * w;
             }
@@ -9029,15 +9253,16 @@ impl Loop {
 
     /// Every layer at `pos`, read between frames, at its gains, through
     /// a shape's views (the loop's `len`, `seam` and `views`, now or before
-    /// an edit). Only the frames a layer has written count.
+    /// an edit, with the layers it had then). Only the frames a layer has
+    /// written count.
     fn sample_at(
         &self,
         store: &Store,
         me: usize,
         pos: f64,
-        shape: (usize, usize, &[View; MAX_LAYERS]),
+        shape: (usize, usize, &[View; MAX_LAYERS], Option<&[u8]>),
     ) -> [f32; 2] {
-        let (len, seam, views) = shape;
+        let (len, seam, views, had) = shape;
         let i0 = (pos as usize).min(len - 1);
         let frac = (pos - i0 as f64) as f32;
         let i1 = if i0 + 1 == len { 0 } else { i0 + 1 };
@@ -9047,13 +9272,16 @@ impl Loop {
         let (d0, d1) = if self.replacing() {
             let strength = |s: &Slot| s.duck * s.presence;
             (
-                self.ducks(views, len, i0, strength),
-                self.ducks(views, len, i1, strength),
+                self.ducks(views, len, i0, had, strength),
+                self.ducks(views, len, i1, had, strength),
             )
         } else {
             ([1.0; MAX_LAYERS], [1.0; MAX_LAYERS])
         };
         for &k in &self.order[..self.in_order] {
+            if had.is_some_and(|h| !h.contains(&k)) {
+                continue;
+            }
             let k = k as usize;
             let s = &self.slots[k];
             let g = [s.gl * s.presence, s.gr * s.presence];

@@ -567,10 +567,7 @@ mod tests {
             about: "4 bars".into(),
             rows: SCENE_ROWS
                 .iter()
-                .map(|n| OptionRow {
-                    name: n.to_string(),
-                    value: "off".into(),
-                })
+                .map(|n| OptionRow::new(n, "off"))
                 .collect(),
             picked: 1,
             tracks: (0..tracks)

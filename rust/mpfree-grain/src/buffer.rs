@@ -3,14 +3,19 @@
 //! Both are addressed by absolute frame number, so a grain keeps reading the
 //! same audio while a live buffer moves on underneath it.
 
+use std::sync::OnceLock;
+
+use mpfree_stream::resample::{near_kernel, near_sum, near_sum2, Kernel, NEAR_HALF, NEAR_TAPS};
+
 use crate::hermite;
 
 /// How a source reads one grain, chosen when the grain is born
-/// ([`GrainSource::aim`]) from how fast it reads. The default is the
-/// Hermite read ([`GrainSource::read`]). A source with a band-limited read
-/// (the sampler's sounds, for grains pitched up) keeps here which copy of
-/// its sound the grain reads and how its filter reaches: the numbers are
-/// the source's own.
+/// ([`GrainSource::aim`]) from how fast it reads. The trait's default is
+/// the Hermite read ([`GrainSource::read`]). A source with clean reads
+/// keeps here which one the grain uses: the sampler's sounds, which copy
+/// of the sound and how the filter reaches; this crate's [`Clip`] and
+/// [`LiveBuffer`], the 8-point read or the stretched read and its reach.
+/// The numbers are the source's own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Aim {
     /// Read with [`GrainSource::read_aimed`], not [`GrainSource::read`].
@@ -207,7 +212,8 @@ fn read4(w: &[f32], channels: usize, t: f32) -> [f32; 2] {
     }
 }
 
-/// A region of an interleaved sample: granular playback.
+/// A region of an interleaved sample: granular playback. Grains read it
+/// clean ([`GrainSource::aim`]); [`GrainSource::read`] is the Hermite read.
 #[derive(Clone, Copy, Debug)]
 pub struct Clip<'a> {
     data: &'a [f32],
@@ -225,6 +231,7 @@ impl<'a> Clip<'a> {
         if !(1..=2).contains(&channels) || !data.len().is_multiple_of(channels) || rate == 0 {
             return None;
         }
+        warm_kernels();
         let end = (data.len() / channels) as i64;
         Some(Clip {
             data,
@@ -288,7 +295,20 @@ impl GrainSource for Clip<'_> {
         }
         read_run_each(self, pos, inc, out);
     }
+    /// Every grain reads clean: the 8-point read at and under two
+    /// semitones up, the stretched read faster.
     #[inline]
+    fn aim(&self, speed: f64) -> Aim {
+        clean_aim(speed)
+    }
+    fn read_aimed(&self, pos: f64, aim: Aim) -> [f32; 2] {
+        let mut o = [[0.0f32; 2]; 1];
+        self.read_clean(pos, 0.0, aim, &mut o);
+        o[0]
+    }
+    fn read_aimed_run(&self, pos: f64, inc: f64, aim: Aim, out: &mut [[f32; 2]]) {
+        self.read_clean(pos, inc, aim, out);
+    }
     fn next_hit(&self, from: f64, to: f64) -> Option<f64> {
         first_hit(self.hits, from, to)
     }
@@ -342,6 +362,7 @@ impl LiveBuffer {
         if !(1..=2).contains(&channels) || frames == 0 || rate == 0 {
             return None;
         }
+        warm_kernels();
         Some(LiveBuffer {
             data: vec![0.0; frames * channels],
             channels,
@@ -474,6 +495,20 @@ impl GrainSource for LiveBuffer {
     fn rate(&self) -> u32 {
         self.rate
     }
+    /// Every grain reads clean: the 8-point read at and under two
+    /// semitones up, the stretched read faster.
+    #[inline]
+    fn aim(&self, speed: f64) -> Aim {
+        clean_aim(speed)
+    }
+    fn read_aimed(&self, pos: f64, aim: Aim) -> [f32; 2] {
+        let mut o = [[0.0f32; 2]; 1];
+        self.read_clean(pos, 0.0, aim, &mut o);
+        o[0]
+    }
+    fn read_aimed_run(&self, pos: f64, inc: f64, aim: Aim, out: &mut [[f32; 2]]) {
+        self.read_clean(pos, inc, aim, out);
+    }
     /// It fills from empty, and frozen it can be let go again.
     fn grows(&self) -> bool {
         true
@@ -529,5 +564,224 @@ impl GrainSource for LiveBuffer {
             }
         }
         read_run_each(self, pos, inc, out);
+    }
+}
+
+// ---- The clean reads (DSP quality: grain reads) ----
+
+/// Two semitones up (2^(1/6)), the fastest a grain reads with the 8-point
+/// read, as the sampler's `CLEAN_ABOVE` (a hair over, for rounding).
+const NEAR_UP_TO: f64 = 1.122_462_048_309_373 + 1.0 / 65_536.0;
+
+/// The 8-point read's aim: no taps marks it (the stretched read always
+/// has some).
+const NEAR: Aim = Aim {
+    clean: true,
+    octave: 0,
+    step: 0,
+    taps: 0,
+};
+
+/// The stretched read's kernel: 8 crossings a side, Kaiser window shape
+/// 5, 128 table steps a crossing. Made the first time it is asked for, so
+/// a source asks when it is made ([`warm_kernels`]).
+fn stretch_kernel() -> &'static Kernel {
+    static K: OnceLock<Kernel> = OnceLock::new();
+    K.get_or_init(|| Kernel::new(8, 5.0, 128))
+}
+
+/// Makes both reads' tables, off the sound thread (they allocate once).
+fn warm_kernels() {
+    near_kernel();
+    stretch_kernel();
+}
+
+/// How a grain at `speed` reads: at and under two semitones up the 8-point
+/// read a sampler voice uses there ([`NEAR`]); faster, the stretched read,
+/// a windowed sinc widened by the speed to keep what would fold back past
+/// the output's Nyquist frequency out, up to an octave up (`step` holds the
+/// stretch's bits, `taps` its reach). Past an octave it stays an octave's,
+/// and what lies above folds back a little.
+fn clean_aim(speed: f64) -> Aim {
+    if speed <= NEAR_UP_TO {
+        return NEAR;
+    }
+    let stretch = speed.clamp(1.0, 2.0) as f32;
+    Aim {
+        clean: true,
+        octave: 0,
+        step: stretch.to_bits(),
+        taps: (8.0 * stretch).ceil() as u32,
+    }
+}
+
+/// The frames an aim's read looks at before and after its frame.
+fn reach(aim: Aim) -> (i64, i64) {
+    if aim.taps == 0 {
+        (NEAR_HALF as i64 - 1, NEAR_HALF as i64)
+    } else {
+        (aim.taps as i64 - 1, aim.taps as i64)
+    }
+}
+
+/// One frame of an aim's read at `whole + frac`, frames from `get(j, ch)`
+/// (0 outside the source, as the Hermite read's edges are).
+#[inline(always)]
+fn read_one(
+    aim: Aim,
+    whole: i64,
+    frac: f64,
+    get: impl Fn(i64, usize) -> f32,
+    stereo: bool,
+) -> [f32; 2] {
+    let last = usize::from(stereo);
+    if aim.taps == 0 {
+        let c = near_kernel().weights((frac * 4_294_967_296.0) as u32);
+        let first = whole + 1 - NEAR_HALF as i64;
+        let mut l = [0.0f32; NEAR_TAPS];
+        let mut r = [0.0f32; NEAR_TAPS];
+        for m in 0..NEAR_TAPS {
+            l[m] = get(first + m as i64, 0);
+            r[m] = get(first + m as i64, last);
+        }
+        return [near_sum(&c, &l), near_sum(&c, &r)];
+    }
+    // The stretched read: the kernel's table read with linear
+    // interpolation in 16.16 fixed point, its weights summed so the read
+    // keeps a steady level whatever the fraction.
+    let k = stretch_kernel();
+    let tab = k.table();
+    let mask = tab.len() - 1;
+    let stretch = f64::from(f32::from_bits(aim.step));
+    let per = k.steps() as f64 / stretch;
+    const ONE: f64 = 65_536.0;
+    const INV: f32 = 1.0 / 65_536.0;
+    let step = (per * ONE) as u32;
+    let tap = |p: u32| {
+        let i = (p >> 16) as usize;
+        let a = tab[i & mask];
+        a + (p & 0xFFFF) as f32 * INV * (tab[(i + 1) & mask] - a)
+    };
+    let r = aim.taps as i64;
+    let (mut a, mut b, mut total) = (0.0f32, 0.0f32, 0.0f32);
+    let mut p = (frac * per * ONE) as u32;
+    for m in 0..r {
+        let w = tap(p);
+        a += w * get(whole - m, 0);
+        b += w * get(whole - m, last);
+        total += w;
+        p += step;
+    }
+    let mut p = ((1.0 - frac) * per * ONE) as u32;
+    for m in 1..=r {
+        let w = tap(p);
+        a += w * get(whole + m, 0);
+        b += w * get(whole + m, last);
+        total += w;
+        p += step;
+    }
+    let n = if total == 0.0 { 0.0 } else { 1.0 / total };
+    [a * n, b * n]
+}
+
+/// A small run of an aim's read from `data` (interleaved, `channels` 1 or
+/// 2) where frame `f` starts at `(f + shift) * channels` and every frame
+/// the run reads is known to be there: no edge tests, and the position
+/// split through an `i32` (one instruction on ARMv7) instead of a floor.
+#[inline(always)]
+fn read_clean_in(
+    data: &[f32],
+    channels: usize,
+    shift: i64,
+    aim: Aim,
+    mut pos: f64,
+    inc: f64,
+    out: &mut [[f32; 2]],
+) {
+    let stereo = channels == 2;
+    if aim.taps == 0 {
+        let k = near_kernel();
+        for o in out.iter_mut() {
+            let f = pos as i32;
+            let c = k.weights(((pos - f64::from(f)) * 4_294_967_296.0) as u32);
+            let at = (i64::from(f) + 1 - NEAR_HALF as i64 + shift) as usize * channels;
+            if stereo {
+                let w: &[f32; 2 * NEAR_TAPS] = data[at..at + 2 * NEAR_TAPS]
+                    .try_into()
+                    .expect("8 stereo frames");
+                let (l, r) = near_sum2(&c, w);
+                *o = [l, r];
+            } else {
+                let w: &[f32; NEAR_TAPS] = data[at..at + NEAR_TAPS].try_into().expect("8 frames");
+                let l = near_sum(&c, w);
+                *o = [l, l];
+            }
+            pos += inc;
+        }
+        return;
+    }
+    for o in out.iter_mut() {
+        let f = pos as i32;
+        let get = |j: i64, ch: usize| data[(j + shift) as usize * channels + ch.min(channels - 1)];
+        *o = read_one(aim, i64::from(f), pos - f64::from(f), get, stereo);
+        pos += inc;
+    }
+}
+
+impl Clip<'_> {
+    /// [`GrainSource::read_aimed_run`]: in one piece when every frame the
+    /// run reads is inside the region, else frame by frame.
+    fn read_clean(&self, pos: f64, inc: f64, aim: Aim, out: &mut [[f32; 2]]) {
+        let (before, after) = reach(aim);
+        if small_run(pos, inc, out.len()) {
+            let (lo, hi) = run_frames(pos, inc, out.len());
+            if lo - before >= self.start && hi + after < self.end {
+                return read_clean_in(self.data, self.channels, 0, aim, pos, inc, out);
+            }
+        }
+        let mut pos = pos;
+        for o in out.iter_mut() {
+            let f = pos.floor();
+            *o = read_one(
+                aim,
+                f as i64,
+                pos - f,
+                |j, ch| self.sample(ch, j),
+                self.channels == 2,
+            );
+            pos += inc;
+        }
+    }
+}
+
+impl LiveBuffer {
+    /// [`GrainSource::read_aimed_run`]: in one piece when every frame the
+    /// run reads is held and doesn't wrap round the end of memory, else
+    /// frame by frame.
+    fn read_clean(&self, pos: f64, inc: f64, aim: Aim, out: &mut [[f32; 2]]) {
+        let (before, after) = reach(aim);
+        if small_run(pos, inc, out.len()) {
+            let (lo, hi) = run_frames(pos, inc, out.len());
+            let (oldest, end) = self.held();
+            if lo - before >= oldest && hi + after < end {
+                let first = self.slot(lo - before);
+                if first + ((hi - lo + before + after) as usize) < self.capacity as usize {
+                    let shift = first as i64 - (lo - before);
+                    return read_clean_in(&self.data, self.channels, shift, aim, pos, inc, out);
+                }
+            }
+        }
+        let mut pos = pos;
+        for o in out.iter_mut() {
+            let f = pos.floor();
+            *o = read_one(
+                aim,
+                f as i64,
+                pos - f,
+                |j, ch| self.sample(ch, j),
+                self.channels == 2,
+            );
+            pos += inc;
+        }
     }
 }

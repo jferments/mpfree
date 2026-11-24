@@ -4,6 +4,8 @@
 //! - The **Arp panel** shows every setting of one track's arp beside the
 //!   pads: mode tabs, the list the wheel moves through, the Q-Link sliders or
 //!   the pattern buttons, and the step strip while the arp is generating.
+//!   Its fifth tab, Phrase, is three panels of its own in the pads' place
+//!   too ([`crate::phrase_tab`]).
 //! - The **quick band** is a slim strip at the top of the right-hand column
 //!   while NOTE REPEAT is held, or while notes are latched: what the arp
 //!   plays, the rate with − and +, and Latch. The rest of the column stays
@@ -21,15 +23,19 @@
 //! pads, the header and the hint line belong to the app; the panel only adds
 //! its own widgets and the layouts that place them.
 
+use crate::phrase_tab::{self, PhraseKinds, PhraseKit, PhrasePlays, PhraseRows};
+use crate::phrases::{PhraseList, Shelf};
 use crate::widgets::{
-    Button, ButtonRow, CellKind, Mark, MiniBar, ModBox, PatternList, PatternRow, Segments,
+    Button, ButtonRow, CellKind, Mark, MiniBar, ModBox, PatternList, PatternRow, Segments, Slider,
     SliderStack, StepCell, StepStrip, MARKS, MINI_FASTER, MINI_LATCH, MINI_OPEN, MINI_SLOWER,
+    STRIP_EMPTY,
 };
 use mpfree_arp::{
-    Engine, Held, ModSource, Mode, Order, Pattern, Pick, Rate, Settings, Step, MAX_NOTES,
+    Engine, Feel, Follow, Held, Join, ModSource, Mode, Order, Pattern, Pick, Rate, Scale, Settings,
+    Speed, Step, MAX_NOTES,
 };
 use mpfree_ui::widgets::{Chip, ListItem, ListView};
-use mpfree_ui::{EventKind, Tone, Ui, UiEvent};
+use mpfree_ui::{EventKind, Tone, Ui, UiEvent, Widget};
 
 /// Widget names the page adds. The app's own are `header`, `pads` and `hint`.
 pub const MODES: &str = "arp-modes";
@@ -45,11 +51,18 @@ pub const MINI: &str = "arp-mini";
 pub const MODBOX: &str = "arp-mod";
 /// Its width.
 pub const MODBOX_W: i32 = 340;
+/// The Phrase tab's panels ([`crate::phrase_tab`]): the kinds, the shown
+/// kind's phrases, the phrase that plays and, on a kit track, the panel
+/// that says why none does.
+pub const KINDS: &str = "arp-phrase-kinds";
+pub const PHRASES: &str = "arp-phrase-list";
+pub const PLAYS: &str = "arp-phrase-plays";
+pub const KIT: &str = "arp-phrase-kit";
 
-/// Every layout keeps the pads where the Play page has them: the arp's
-/// widgets only ever take the right-hand column, [`SIDE`] pixels wide, so
-/// nothing under the player's fingers moves or resizes when the band or the
-/// panel comes up.
+/// Every layout but the Phrase tab's keeps the pads where the Play page has
+/// them: the arp's widgets only ever take the right-hand column, [`SIDE`]
+/// pixels wide, so nothing under the player's fingers moves or resizes when
+/// the band or the panel comes up.
 ///
 /// Direct: nothing is generated, so there is no step strip.
 pub const DIRECT_LAYOUT: &str =
@@ -62,6 +75,18 @@ pub const ARP_LAYOUT: &str =
 /// pattern buttons, and the step strip.
 pub const PATTERN_LAYOUT: &str =
     "col(header:60, row(pads:*, col(arp-modes:52, arp-patterns:*, arp-actions:128, arp-steps:112):460):*, hint:26)";
+/// Phrase: the kinds, the shown kind's phrases and the phrase that plays,
+/// side by side under the tabs. A list of phrases with a picture of each
+/// and the one that plays, large, do not fit a 460-pixel column, so this
+/// tab takes the pads' room as well: the one layout here without them. (The
+/// app's Play frame gives every tab the whole width, and there the pads
+/// are not on the panel at all.)
+pub const PHRASE_LAYOUT: &str =
+    "col(header:60, col(arp-modes:52, row(arp-phrase-kinds:166, arp-phrase-list:*, arp-phrase-plays:397):*):*, hint:26)";
+/// Phrase on a kit track, whose pads play as pressed: the kinds, and one
+/// panel that says so in the place of the other two.
+pub const PHRASE_KIT_LAYOUT: &str =
+    "col(header:60, col(arp-modes:52, row(arp-phrase-kinds:166, arp-phrase-kit:*):*):*, hint:26)";
 /// The quick band: a slim strip ([`MINI`], [`MINI_H`] pixels) at the top of
 /// the right-hand column. An app puts it over its own column with
 /// [`ArpPanel::set_quick_layout`] (the pad player keeps its kits, level and
@@ -77,7 +102,7 @@ pub const SIDE: i32 = 460;
 /// `layout` with the Modifier box ([`MODBOX`], [`MODBOX_W`] pixels) at the
 /// right of the mode tabs' row, for a panel as wide as the app's Play page
 /// gives it (the tabs keep the rest). The layouts above leave it out: the
-/// 460-pixel column has no room beside four tabs.
+/// 460-pixel column has no room beside the tabs.
 pub fn with_modifier(layout: &str) -> String {
     layout.replacen(
         &format!("{MODES}:52"),
@@ -87,9 +112,17 @@ pub fn with_modifier(layout: &str) -> String {
 }
 
 /// The mode tabs, in [`Mode`] order.
-pub const MODE_TABS: [&str; 4] = ["Direct", "Repeat", "Arp", "Pattern"];
+pub const MODE_TABS: [&str; 5] = ["Direct", "Repeat", "Arp", "Pattern", "Phrase"];
 /// The Q-Links, top to bottom, as Jay's plan maps them.
 pub const QLINK_LABELS: [&str; 4] = ["Rate · Q1", "Gate · Q2", "Swing · Q3", "Octaves · Q4"];
+/// The Q-Links on the Phrase tab: a phrase has its own rhythm, so the first
+/// sets how fast it plays against it, not a rate.
+pub const PHRASE_QLINK_LABELS: [&str; 4] =
+    ["Speed · Q1", "Gate · Q2", "Swing · Q3", "Octaves · Q4"];
+/// The Swing slider's label while the phrase is written in triplets, which
+/// swing leaves as they are: its value reads [`STRAIGHT`].
+pub const SWING_TRIPLETS: &str = "Swing · Q3 · triplets";
+pub const STRAIGHT: &str = "straight";
 /// The pattern buttons, in [`PatternButton`] order.
 pub const PATTERN_BUTTONS: [(&str, Tone); 4] = [
     ("Edit pattern", Tone::Accent),
@@ -100,7 +133,31 @@ pub const PATTERN_BUTTONS: [(&str, Tone); 4] = [
 /// The most cells the step strip shows at once.
 pub const STRIP_CELLS: usize = 16;
 
-const MODES_ALL: [Mode; 4] = [Mode::Direct, Mode::Repeat, Mode::Arp, Mode::Pattern];
+const MODES_ALL: [Mode; 5] = [
+    Mode::Direct,
+    Mode::Repeat,
+    Mode::Arp,
+    Mode::Pattern,
+    Mode::Phrase,
+];
+
+/// What the Phrase tab shows beyond the list and the track's pick.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PhraseNow {
+    /// The kind the list shows when it is not the pick's: an empty one the
+    /// owner stepped to (their own, before they have made a phrase).
+    pub shelf: Option<Shelf>,
+    /// Where the phrase is as it plays, 0.0 to 1.0 of the way through.
+    pub at: Option<f32>,
+    /// The pick waits for the bar line while another phrase plays on: the
+    /// transport is playing ([`Engine::phrase_waiting`]).
+    pub waits: bool,
+    /// The phrase that plays until then, as a place in the list.
+    pub playing: Option<usize>,
+    /// The track's name while the tab shows on a kit track, whose pads
+    /// play as pressed: the tab says so in the place of the list.
+    pub kit_track: Option<String>,
+}
 
 /// Everything the page shows.
 #[derive(Clone, Debug)]
@@ -118,6 +175,14 @@ pub struct ArpState {
     /// The loaded pattern was changed (mutated, edited or recorded) from the
     /// one in the list: Original puts it back.
     pub pattern_changed: bool,
+    /// The phrases to choose from, and the track's pick.
+    pub phrases: PhraseList,
+    pub phrase_index: usize,
+    /// The scale the pads play: the key a phrase follows In key while the
+    /// arp's own scale is off ([`ArpState::phrase_key`]).
+    pub pads_key: Option<Scale>,
+    /// What the Phrase tab shows of the phrase as it plays.
+    pub phrase: PhraseNow,
     /// The notes the generator plays, in the order they were pressed.
     pub notes: Vec<Held>,
     /// Steps played since the notes started ([`Engine::step`]).
@@ -128,7 +193,8 @@ pub struct ArpState {
 
 impl ArpState {
     /// What the engine shows now. The pattern list and its state are the
-    /// app's, so they are passed in.
+    /// app's, so they are passed in; the phrases are MPFree's own, on the
+    /// first, until the app sends its list and the track's pick.
     pub fn from_engine(
         e: &Engine,
         patterns: Vec<(String, Pattern)>,
@@ -143,11 +209,60 @@ impl ArpState {
             patterns,
             pattern_index,
             pattern_changed,
+            phrases: PhraseList::built_in(),
+            phrase_index: 0,
+            pads_key: e.key(),
+            phrase: PhraseNow {
+                at: e
+                    .phrase_at()
+                    .map(|t| (t / f64::from(e.phrase().ticks().max(1))) as f32),
+                waits: e.phrase_waiting() == Some(Join::Bar),
+                ..PhraseNow::default()
+            },
             notes: e.active().as_slice().to_vec(),
             step: e.step(),
             latched: e.latch() != mpfree_arp::LatchMode::Off,
             bpm: e.bpm(),
         }
+    }
+
+    /// The name of the track's phrase.
+    pub fn phrase_name(&self) -> &str {
+        self.phrases.name(self.phrase_index)
+    }
+
+    /// The key a phrase follows In key now: the arp's own scale, or with
+    /// that off the scale the pads play. None: it moves by semitones.
+    pub fn phrase_key(&self) -> Option<Scale> {
+        self.settings.scale.or(self.pads_key)
+    }
+
+    /// The tab the panel shows: the mode the pads play through, or Phrase
+    /// on a kit track, where that tab is picked and the pads play as
+    /// pressed all the same. The layout, the Q-Links and the hint follow
+    /// the tab.
+    pub fn tab(&self) -> Mode {
+        if self.phrase.kit_track.is_some() {
+            Mode::Phrase
+        } else {
+            self.settings.mode
+        }
+    }
+
+    /// The kind the Phrase tab's list shows: the pick's, unless an empty
+    /// one was stepped to ([`PhraseNow::shelf`]).
+    pub fn shelf(&self) -> Shelf {
+        self.phrase
+            .shelf
+            .unwrap_or_else(|| self.phrases.shelf_of(self.phrase_index))
+    }
+
+    /// The name the chip and the quick band give the phrase: the one that
+    /// plays, which while a pick waits for the bar line is still the one
+    /// before it.
+    pub fn phrase_heard(&self) -> &str {
+        let playing = self.phrase.playing.filter(|_| self.phrase.waits);
+        self.phrases.name(playing.unwrap_or(self.phrase_index))
     }
 
     /// The notes the steps work from: the held notes (or, while they take
@@ -187,6 +302,11 @@ pub enum ArpAction {
     OpenPanel,
     /// The Modifier box was tapped: open its options.
     Modifier,
+    /// A phrase of the list was tapped: the track picks phrase `i` of
+    /// [`ArpState::phrases`].
+    Phrase(usize),
+    /// A kind was tapped on the Phrase tab: show its phrases.
+    Shelf(Shelf),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -222,14 +342,47 @@ fn octave_sub(oct: i32) -> String {
     }
 }
 
-/// The Q-Link sliders' positions, 0.0 to 1.0, and their texts.
-pub fn qlink_values(s: &Settings) -> [(f32, String); 4] {
-    let rate = Rate::ALL.iter().position(|r| *r == s.rate).unwrap_or(0);
-    [
+/// The Q-Links' labels on a tab.
+pub fn qlink_labels(tab: Mode) -> [&'static str; 4] {
+    if tab == Mode::Phrase {
+        PHRASE_QLINK_LABELS
+    } else {
+        QLINK_LABELS
+    }
+}
+
+/// A phrase's speed on its slider: half at the left, as written in the
+/// middle and double at the right, with what a Modifier's push on the rate
+/// makes of it between or beyond them (a number of times: "1.5×").
+pub fn speed_value(factor: f64) -> (f32, String) {
+    let at = ((factor.max(1e-6).log2() + 1.0) / 2.0).clamp(0.0, 1.0) as f32;
+    let named = Speed::ALL
+        .iter()
+        .find(|s| (s.factor() - factor).abs() < 1e-6);
+    let text = match named {
+        Some(s) => s.label().to_lowercase(),
+        None => {
+            let n = format!("{factor:.2}");
+            format!("{}×", n.trim_end_matches('0').trim_end_matches('.'))
+        }
+    };
+    (at, text)
+}
+
+/// The Q-Link sliders' positions, 0.0 to 1.0, and their texts, on a tab:
+/// the first is the rate, or on the Phrase tab the phrase's speed.
+pub fn qlink_values(s: &Settings, tab: Mode) -> [(f32, String); 4] {
+    let first = if tab == Mode::Phrase {
+        speed_value(s.speed.factor())
+    } else {
+        let rate = Rate::ALL.iter().position(|r| *r == s.rate).unwrap_or(0);
         (
             rate as f32 / (Rate::ALL.len() - 1) as f32,
             s.rate.label().to_string(),
-        ),
+        )
+    };
+    [
+        first,
         (f32::from(s.gate - 1) / 99.0, format!("{} %", s.gate)),
         (
             f32::from(s.swing - 50) / 25.0,
@@ -243,11 +396,12 @@ pub fn qlink_values(s: &Settings) -> [(f32, String); 4] {
     ]
 }
 
-/// The settings with Q-Link `i` moved to `v` (0.0 to 1.0).
-pub fn with_qlink(mut s: Settings, i: usize, v: f32) -> Settings {
+/// The settings with Q-Link `i` moved to `v` (0.0 to 1.0) on a tab.
+pub fn with_qlink(mut s: Settings, tab: Mode, i: usize, v: f32) -> Settings {
     let v = v.clamp(0.0, 1.0);
     let pick = |n: usize| ((v * (n - 1) as f32).round() as usize).min(n - 1);
     match i {
+        0 if tab == Mode::Phrase => s.speed = Speed::ALL[pick(Speed::ALL.len())],
         0 => s.rate = Rate::ALL[pick(Rate::ALL.len())],
         1 => s.gate = 1 + pick(100) as u8,
         2 => s.swing = 50 + pick(26) as u8,
@@ -255,6 +409,46 @@ pub fn with_qlink(mut s: Settings, i: usize, v: f32) -> Settings {
         _ => {}
     }
     s.clamped()
+}
+
+/// The Q-Link sliders as the panel shows them for `st`: each one's label,
+/// where it is set, and where the Modifier pushes it now. On the Phrase
+/// tab the first is the speed, which a push on the rate moves by the same
+/// ratio ([`mpfree_arp::phrase_speed`]), and while the phrase is written in
+/// triplets, which swing leaves alone, the Swing slider is quiet and says
+/// so.
+pub fn qlink_rows(st: &ArpState) -> [Slider; 4] {
+    let tab = st.tab();
+    let labels = qlink_labels(tab);
+    let set = qlink_values(&st.settings, tab);
+    let mut now = qlink_values(&st.live, tab);
+    let phrase = (tab == Mode::Phrase)
+        .then(|| st.phrases.phrases.get(st.phrase_index))
+        .flatten();
+    if tab == Mode::Phrase {
+        now[0] = speed_value(mpfree_arp::phrase_speed(&st.settings, &st.live));
+    }
+    let triplets = phrase.is_some_and(|(_, p)| p.feel() == Feel::Triplet);
+    let mut rows: [Slider; 4] = Default::default();
+    for (i, ((row, (value, text)), now)) in rows.iter_mut().zip(set).zip(now).enumerate() {
+        *row = Slider {
+            label: labels[i].to_string(),
+            pushed: (now.1 != text).then_some(now),
+            value,
+            text,
+            quiet: false,
+        };
+    }
+    if triplets {
+        rows[2] = Slider {
+            label: SWING_TRIPLETS.to_string(),
+            text: STRAIGHT.to_string(),
+            pushed: None,
+            quiet: true,
+            ..rows[2].clone()
+        };
+    }
+    rows
 }
 
 /// A short picture of an order played over three notes, such as "1 2 3 2".
@@ -274,12 +468,13 @@ pub fn order_preview(order: Order) -> String {
 
 /// The step strip for the Arp and Repeat modes: the order's notes over the
 /// held pads, with the octaves the Modifier pushes to. Returns the cells,
-/// the first step's number and the playing cell.
+/// the first step's number and the playing cell. A phrase plays its own
+/// notes, not steps of an order, so it has none.
 pub fn arp_cells(st: &ArpState) -> (Vec<StepCell>, usize, Option<usize>) {
     let s = &st.live;
     let sorted = st.sorted();
     let n = sorted.len();
-    if n == 0 || s.mode == Mode::Direct {
+    if n == 0 || matches!(s.mode, Mode::Direct | Mode::Phrase) {
         return (Vec::new(), 0, None);
     }
     let all = |label: &str| StepCell {
@@ -453,6 +648,12 @@ pub fn chip(st: &ArpState) -> Chip {
         }
         Mode::Repeat => format!("Repeat {}", s.rate.label()),
         Mode::Arp => format!("Arp: {} {}", s.order.label(), s.rate.label()),
+        // The phrase heard: while a pick waits for its bar line, still the
+        // one before it.
+        Mode::Phrase => match st.phrase_heard() {
+            "" => "Phrase".to_string(),
+            name => format!("Phrase: {name}"),
+        },
         Mode::Pattern => {
             let name = st
                 .patterns
@@ -482,7 +683,7 @@ pub fn chips(st: &ArpState) -> Vec<Chip> {
     ]
 }
 
-/// The hint line under the panel, for each mode.
+/// The hint line under the panel, for each tab.
 pub fn hint(mode: Mode) -> &'static str {
     match mode {
         Mode::Direct => "Pads play as pressed · hold NOTE REPEAT to repeat · press it twice: latch",
@@ -493,6 +694,28 @@ pub fn hint(mode: Mode) -> &'static str {
         Mode::Pattern => {
             "Patterns play the chord you hold: \"2\" is the 2nd lowest held pad · Wheel: pattern · SHIFT + wheel: group"
         }
+        Mode::Phrase => PHRASE_HINT,
+    }
+}
+
+/// What the step strip says while a phrase plays: it has no steps of an
+/// order to show.
+pub const PHRASE_STRIP: &str = "the phrase's notes are on the Arp panel's Phrase tab";
+
+/// The Phrase tab's hint: what the wheel, - and + and the Q-Links do there.
+pub const PHRASE_HINT: &str = "Wheel: phrase · − / +: kind · Q-Links: speed, gate, swing, octaves";
+
+/// The Phrase tab's hint on a kit track, named as the tab's panel names it.
+pub fn phrase_kit_hint(track: &str) -> String {
+    format!("{track}'s instrument is a kit · phrases play on a synth · − / +: kind")
+}
+
+/// The hint line under the panel for `st`: its tab's ([`hint`]), or on a
+/// kit track's Phrase tab why no phrase plays.
+pub fn hint_for(st: &ArpState) -> String {
+    match &st.phrase.kit_track {
+        Some(track) => phrase_kit_hint(track),
+        None => hint(st.tab()).to_string(),
     }
 }
 
@@ -501,16 +724,54 @@ pub fn quick_hint(mode: Mode) -> &'static str {
     match mode {
         Mode::Pattern => "Tap a rate · Q-Links: rate, gate, swing, octaves · Wheel: pattern · SHIFT + wheel: group · let go: back to your page",
         Mode::Arp => "Tap a rate · Q-Links: rate, gate, swing, octaves · Wheel: order · let go: back to your page",
+        Mode::Phrase => "Tap a speed · Q-Links: speed, gate, swing, octaves · Wheel: phrase · let go: back to your page",
         _ => "Tap a rate while you play · press harder for louder · let go: back to your page",
     }
 }
 
-/// The panel's layout for a mode.
+/// The panel's layout for a tab (the Phrase tab's as a synth track has
+/// it; [`layout_of`] knows a kit track's).
 pub fn layout_for(mode: Mode) -> &'static str {
     match mode {
         Mode::Direct => DIRECT_LAYOUT,
         Mode::Repeat | Mode::Arp => ARP_LAYOUT,
         Mode::Pattern => PATTERN_LAYOUT,
+        Mode::Phrase => PHRASE_LAYOUT,
+    }
+}
+
+/// The panel's layout for `st`: its tab's, and on a kit track's Phrase
+/// tab the one with the panel that says why no phrase plays.
+pub fn layout_of(st: &ArpState) -> &'static str {
+    if st.phrase.kit_track.is_some() {
+        PHRASE_KIT_LAYOUT
+    } else {
+        layout_for(st.tab())
+    }
+}
+
+/// The quick band's speed, short enough for its room between − and +.
+fn speed_short(factor: f64) -> String {
+    match Speed::ALL
+        .iter()
+        .find(|s| (s.factor() - factor).abs() < 1e-6)
+    {
+        Some(Speed::Half) => "½×".to_string(),
+        Some(Speed::AsWritten) => "1×".to_string(),
+        Some(Speed::Double) => "2×".to_string(),
+        None => speed_value(factor).1,
+    }
+}
+
+/// `new` goes into widget `name` when it shows something else. A widget
+/// reached to be changed is drawn again whether it changed or not, so
+/// one that shows the same is left alone: the panel hears from the app
+/// every time a step plays or a phrase's cursor moves.
+fn show<W: Widget + PartialEq>(ui: &mut Ui, name: &str, new: W) {
+    if ui.get::<W>(name).is_some_and(|w| *w != new) {
+        if let Some(w) = ui.get_mut::<W>(name) {
+            *w = new;
+        }
     }
 }
 
@@ -543,6 +804,10 @@ impl ArpPanel {
         ui.add(STEPS, StepStrip::new(8));
         ui.add(MINI, MiniBar::default());
         ui.add(MODBOX, ModBox::default());
+        ui.add(KINDS, PhraseKinds::default());
+        ui.add(PHRASES, PhraseRows::default());
+        ui.add(PLAYS, PhrasePlays::new(&PHRASE_QLINK_LABELS));
+        ui.add(KIT, PhraseKit::default());
         ui.add_page(quick, QUICK_LAYOUT)?;
         let mut panel = ArpPanel {
             name: name.to_string(),
@@ -580,46 +845,30 @@ impl ArpPanel {
         Ok(())
     }
 
-    /// Shows `st` on both. The panel's layout follows the mode
-    /// ([`layout_for`]).
+    /// Shows `st` on both. The panel's layout follows the tab
+    /// ([`layout_of`]). A widget that shows the same as before is left
+    /// alone, so it is not drawn again ([`show`]).
     pub fn update(&mut self, ui: &mut Ui, st: &ArpState) -> Result<(), String> {
         let s = &st.settings;
-        let layout = layout_for(s.mode);
+        let tab = st.tab();
+        let layout = layout_of(st);
         if self.layout != Some(layout) {
             ui.add_page(&self.name, &self.spec(layout))?;
             self.layout = Some(layout);
         }
-        if let Some(m) = ui.get_mut::<MiniBar>(MINI) {
-            let at = Rate::ALL.iter().position(|r| *r == s.rate).unwrap_or(0);
-            m.mode = match s.mode {
-                Mode::Direct => "Direct".to_string(),
-                Mode::Repeat => "Repeat".to_string(),
-                Mode::Arp => format!("Arp · {}", s.order.label()),
-                Mode::Pattern => {
-                    let name = st
-                        .patterns
-                        .get(st.pattern_index)
-                        .map_or("", |(n, _)| n.as_str());
-                    format!(
-                        "Pattern · {}{}",
-                        short(name, 14),
-                        if st.pattern_changed { "*" } else { "" }
-                    )
-                }
-            };
-            // The rate playing: pushed, in the second accent.
-            m.rate = st.live.rate.label().to_string();
-            m.pushed = st.live.rate != s.rate;
-            m.latched = st.latched;
-            m.can_slower = at > 0;
-            m.can_faster = at + 1 < Rate::ALL.len();
-        }
-        if let Some(m) = ui.get_mut::<Segments>(MODES) {
-            m.active = MODES_ALL.iter().position(|x| *x == s.mode).unwrap_or(0);
+        show(ui, MINI, mini_bar(st));
+        let active = MODES_ALL.iter().position(|x| *x == tab).unwrap_or(0);
+        if ui
+            .get::<Segments>(MODES)
+            .is_some_and(|m| m.active != active)
+        {
+            if let Some(m) = ui.get_mut::<Segments>(MODES) {
+                m.active = active;
+            }
         }
         if let Some(list) = ui.get_mut::<ListView>(LIST) {
             match s.mode {
-                Mode::Direct | Mode::Repeat => {
+                Mode::Direct | Mode::Repeat | Mode::Phrase => {
                     list.title = "Rate · Wheel".into();
                     list.items = Rate::ALL
                         .iter()
@@ -672,22 +921,25 @@ impl ArpPanel {
             }
             list.selected = st.pattern_index.min(st.patterns.len().saturating_sub(1));
         }
-        if let Some(q) = ui.get_mut::<SliderStack>(QLINKS) {
-            let live = qlink_values(&st.live);
-            for ((row, (v, text)), now) in q.rows.iter_mut().zip(qlink_values(s)).zip(live) {
-                row.pushed = (now.1 != text).then_some(now);
-                row.value = v;
-                row.text = text;
+        // The Q-Link sliders. The Phrase tab draws its own in the panel
+        // of the phrase that plays; the stack here gets the same rows on
+        // every tab, for an app that reads the Q-Links from it.
+        let rows = qlink_rows(st);
+        if ui
+            .get::<SliderStack>(QLINKS)
+            .is_some_and(|q| q.rows != rows)
+        {
+            if let Some(q) = ui.get_mut::<SliderStack>(QLINKS) {
+                q.rows = rows.to_vec();
             }
         }
-        if let Some(b) = ui.get_mut::<ModBox>(MODBOX) {
-            let m = s.modifier;
-            (b.source, b.amount) = if m.source == ModSource::Off {
-                (String::new(), 0.0)
-            } else {
-                (m.source.label().to_string(), st.push)
-            };
-        }
+        let m = s.modifier;
+        let (source, amount) = if m.source == ModSource::Off {
+            (String::new(), 0.0)
+        } else {
+            (m.source.label().to_string(), st.push)
+        };
+        show(ui, MODBOX, ModBox { source, amount });
         if let Some(b) = ui.get_mut::<ButtonRow>(ACTIONS) {
             b.buttons[3] = Button {
                 disabled: !st.pattern_changed,
@@ -708,6 +960,32 @@ impl ArpPanel {
             } else {
                 STRIP_CELLS
             };
+            // A phrase plays its own notes, which its tab draws.
+            strip.empty = if s.mode == Mode::Phrase {
+                PHRASE_STRIP
+            } else {
+                STRIP_EMPTY
+            };
+        }
+        if tab == Mode::Phrase {
+            show(ui, KINDS, phrase_tab::kinds(st));
+            if st.phrase.kit_track.is_some() {
+                show(ui, KIT, phrase_tab::kit(st));
+            } else {
+                show(ui, PHRASES, phrase_tab::rows(st));
+                let plays = phrase_tab::plays(st);
+                // Its sliders may be under a finger, so the panel is
+                // changed in place, and only when it shows something else.
+                if ui
+                    .get::<PhrasePlays>(PLAYS)
+                    .is_some_and(|w| w.show != plays || w.sliders.rows != rows)
+                {
+                    if let Some(w) = ui.get_mut::<PhrasePlays>(PLAYS) {
+                        w.show = plays;
+                        w.sliders.rows = rows.to_vec();
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -724,7 +1002,9 @@ impl ArpPanel {
         match (ev.widget.as_str(), &ev.kind) {
             (MODES, EventKind::Tab(i)) => MODES_ALL.get(*i).map(|m| ArpAction::Mode(*m)),
             (LIST, EventKind::Select(i)) => match s.mode {
-                Mode::Direct | Mode::Repeat => Rate::ALL.get(*i).map(|r| ArpAction::Rate(*r)),
+                Mode::Direct | Mode::Repeat | Mode::Phrase => {
+                    Rate::ALL.get(*i).map(|r| ArpAction::Rate(*r))
+                }
                 Mode::Arp => Order::ALL.get(*i).map(|o| ArpAction::Order(*o)),
                 Mode::Pattern => (*i < st.patterns.len()).then_some(ArpAction::Pattern(*i)),
             },
@@ -735,13 +1015,22 @@ impl ArpPanel {
             (PATTERNS, EventKind::Tab(g)) => pattern_groups(st)
                 .get(*g)
                 .map(|(_, at)| ArpAction::Pattern(*at)),
-            (QLINKS, EventKind::Select(i)) => {
+            // The sliders, in their own panel or the Phrase tab's.
+            (QLINKS | PLAYS, EventKind::Select(i)) => {
                 *qlink = Some(*i);
                 None
             }
-            (QLINKS, EventKind::Value(v)) => {
-                qlink.map(|i| ArpAction::Settings(with_qlink(s, i, *v)))
+            (QLINKS | PLAYS, EventKind::Value(v)) => {
+                qlink.map(|i| ArpAction::Settings(with_qlink(s, st.tab(), i, *v)))
             }
+            (KINDS, EventKind::Select(i)) => Shelf::ALL.get(*i).map(|k| ArpAction::Shelf(*k)),
+            (PHRASES, EventKind::Select(i)) => {
+                (*i < st.phrases.phrases.len()).then_some(ArpAction::Phrase(*i))
+            }
+            // In key or Exact.
+            (PLAYS, EventKind::Tab(i)) => Follow::ALL
+                .get(*i)
+                .map(|f| ArpAction::Settings(Settings { follow: *f, ..s })),
             (ACTIONS, EventKind::Tab(i)) => [
                 PatternButton::Edit,
                 PatternButton::Record,
@@ -752,6 +1041,17 @@ impl ArpPanel {
             .map(|b| ArpAction::Button(*b)),
             (STEPS, EventKind::Select(i)) if s.mode == Mode::Pattern => Some(ArpAction::Step(*i)),
             (MODBOX, EventKind::Tab(_)) => Some(ArpAction::Modifier),
+            // The band's − and + on a phrase: its speed.
+            (MINI, EventKind::Tab(i @ (MINI_SLOWER | MINI_FASTER))) if s.mode == Mode::Phrase => {
+                let at = Speed::ALL.iter().position(|x| *x == s.speed).unwrap_or(1);
+                let to = if *i == MINI_SLOWER {
+                    at.checked_sub(1)
+                } else {
+                    Some(at + 1)
+                };
+                to.and_then(|j| Speed::ALL.get(j))
+                    .map(|speed| ArpAction::Settings(Settings { speed: *speed, ..s }))
+            }
             (MINI, EventKind::Tab(i)) => {
                 let at = Rate::ALL.iter().position(|r| *r == s.rate).unwrap_or(0);
                 match *i {
@@ -778,6 +1078,54 @@ impl ArpPanel {
             }
             _ => None,
         }
+    }
+}
+
+/// What the quick band shows for `st`: what the arp plays, and between its
+/// − and + the rate, or for a phrase its speed.
+fn mini_bar(st: &ArpState) -> MiniBar {
+    let s = &st.settings;
+    let mode = match s.mode {
+        Mode::Direct => "Direct".to_string(),
+        Mode::Repeat => "Repeat".to_string(),
+        Mode::Phrase => match st.phrase_heard() {
+            "" => "Phrase".to_string(),
+            name => format!("Phrase · {}", short(name, 14)),
+        },
+        Mode::Arp => format!("Arp · {}", s.order.label()),
+        Mode::Pattern => {
+            let name = st
+                .patterns
+                .get(st.pattern_index)
+                .map_or("", |(n, _)| n.as_str());
+            format!(
+                "Pattern · {}{}",
+                short(name, 14),
+                if st.pattern_changed { "*" } else { "" }
+            )
+        }
+    };
+    // What plays now: pushed, in the second accent.
+    let (rate, at, of) = if s.mode == Mode::Phrase {
+        (
+            speed_short(mpfree_arp::phrase_speed(s, &st.live)),
+            Speed::ALL.iter().position(|x| *x == s.speed).unwrap_or(1),
+            Speed::ALL.len(),
+        )
+    } else {
+        (
+            st.live.rate.label().to_string(),
+            Rate::ALL.iter().position(|r| *r == s.rate).unwrap_or(0),
+            Rate::ALL.len(),
+        )
+    };
+    MiniBar {
+        mode,
+        rate,
+        pushed: st.live.rate != s.rate,
+        latched: st.latched,
+        can_slower: at > 0,
+        can_faster: at + 1 < of,
     }
 }
 
@@ -819,6 +1167,10 @@ mod tests {
             patterns: built_in_patterns(),
             pattern_index: 0,
             pattern_changed: false,
+            phrases: PhraseList::built_in(),
+            phrase_index: 0,
+            pads_key: None,
+            phrase: PhraseNow::default(),
             notes: held
                 .iter()
                 .map(|&note| Held {
@@ -869,13 +1221,26 @@ mod tests {
             let mut canvas = SoftCanvas::new(1280, 800);
             s.ui.paint(&mut canvas);
             let mode = s.state.settings.mode;
-            let mut want = vec!["header", "pads", "hint"];
+            let mut want = vec!["header", "hint"];
             let mut gone = vec![];
+            let phrase = [KINDS, PHRASES, PLAYS, KIT];
             if s.quick {
-                want.extend([MINI, STEPS]);
-                gone.extend([MODES, LIST, QLINKS, ACTIONS]);
+                want.extend(["pads", MINI, STEPS]);
+                gone.extend([MODES, LIST, PATTERNS, QLINKS, ACTIONS]);
+                gone.extend(phrase);
+            } else if s.state.tab() == Mode::Phrase {
+                // The Phrase tab: its own panels, in the pads' place too.
+                want.extend([MODES, KINDS]);
+                if s.state.phrase.kit_track.is_some() {
+                    want.push(KIT);
+                    gone.extend([PHRASES, PLAYS]);
+                } else {
+                    want.extend([PHRASES, PLAYS]);
+                    gone.push(KIT);
+                }
+                gone.extend(["pads", LIST, PATTERNS, QLINKS, ACTIONS, STEPS, MINI]);
             } else {
-                want.push(MODES);
+                want.extend(["pads", MODES]);
                 want.extend(if mode == Mode::Pattern {
                     [PATTERNS, ACTIONS]
                 } else {
@@ -888,6 +1253,7 @@ mod tests {
                     want.push(STEPS)
                 }
                 gone.push(MINI);
+                gone.extend(phrase);
             }
             for name in want {
                 let r =
@@ -977,6 +1343,57 @@ mod tests {
         assert_eq!(s.ui.get::<StepStrip>(STEPS).unwrap().cells[0].label, "3");
     }
 
+    /// With a phrase the band's − and + step its speed, and between them
+    /// it says how fast the phrase plays; the strip under it has no steps
+    /// of an order to show.
+    #[test]
+    fn the_quick_band_on_a_phrase_steps_its_speed() {
+        let mut s = sample("quick-phrase");
+        let r = s.ui.rect_of(MINI).unwrap();
+        let bar = s.ui.get::<MiniBar>(MINI).unwrap().clone();
+        assert_eq!(
+            (bar.mode.as_str(), bar.rate.as_str(), bar.pushed),
+            ("Phrase · Night drive", "1×", false)
+        );
+        assert!(bar.can_slower && bar.can_faster);
+        let parts = bar.parts(r);
+        let mut tap = |i: usize| {
+            let p = parts[i];
+            let ev = s.ui.touch(1, Touch::Down, p.x + 10, p.y + 10);
+            s.ui.touch(1, Touch::Up, 0, 0);
+            ev.and_then(|ev| s.page.action(&ev, &s.state, &mut None))
+        };
+        let speed = |a: Option<ArpAction>| match a {
+            Some(ArpAction::Settings(set)) => (set.speed, set.rate),
+            other => panic!("{other:?}"),
+        };
+        let rate = s.state.settings.rate;
+        assert_eq!(speed(tap(MINI_SLOWER)), (Speed::Half, rate));
+        assert_eq!(speed(tap(MINI_FASTER)), (Speed::Double, rate));
+        assert_eq!(tap(MINI_LATCH), Some(ArpAction::Latch));
+        // At half speed there is no slower; a push on the rate shows.
+        let mut st = s.state.clone();
+        st.settings.speed = Speed::Half;
+        st.live.speed = Speed::Half;
+        s.page.update(&mut s.ui, &st).unwrap();
+        let bar = s.ui.get::<MiniBar>(MINI).unwrap();
+        assert_eq!(
+            (bar.rate.as_str(), bar.can_slower, bar.can_faster),
+            ("½×", false, true)
+        );
+        st.live.rate = Rate::ThirtySecond;
+        s.page.update(&mut s.ui, &st).unwrap();
+        let bar = s.ui.get::<MiniBar>(MINI).unwrap();
+        assert_eq!((bar.rate.as_str(), bar.pushed), ("1×", true));
+        let strip = s.ui.get::<StepStrip>(STEPS).unwrap();
+        assert!(strip.cells.is_empty());
+        assert_eq!(strip.empty, PHRASE_STRIP);
+        assert_eq!(
+            quick_hint(Mode::Phrase),
+            "Tap a speed · Q-Links: speed, gate, swing, octaves · Wheel: phrase · let go: back to your page"
+        );
+    }
+
     #[test]
     fn the_chip_says_what_the_arp_does_and_whether_it_is_latched() {
         let mut st = state(
@@ -1005,6 +1422,16 @@ mod tests {
             chip(&st).text,
             format!("Pattern: {}* 1/32T", st.patterns[0].0)
         );
+        // A phrase by its name, as a pattern.
+        st.settings.mode = Mode::Phrase;
+        st.phrase_index = 4;
+        assert_eq!(chip(&st).text, format!("Phrase: {}", st.phrases.name(4)));
+        st.latched = true;
+        assert_eq!(
+            chip(&st).text,
+            format!("Phrase: {}, latched", st.phrases.name(4))
+        );
+        st.latched = false;
         st.settings.mode = Mode::Direct;
         assert_eq!(
             (chip(&st).text, chip(&st).tone),
@@ -1012,6 +1439,20 @@ mod tests {
         );
         st.latched = true;
         assert_eq!(chip(&st).text, "Latch on");
+    }
+
+    /// In key, a phrase follows the arp's own scale, or with that off the
+    /// scale the pads play.
+    #[test]
+    fn a_phrases_key_is_the_arps_scale_or_the_pads() {
+        let mut st = state(Settings::default(), &[], 0);
+        assert_eq!(st.phrase_key(), None);
+        let pads = Scale::new(9, mpfree_arp::scale::MINOR);
+        st.pads_key = Some(pads);
+        assert_eq!(st.phrase_key(), Some(pads));
+        let own = Scale::new(2, mpfree_arp::scale::MAJOR);
+        st.settings.scale = Some(own);
+        assert_eq!(st.phrase_key(), Some(own));
     }
 
     #[test]
@@ -1167,25 +1608,64 @@ mod tests {
     #[test]
     fn qlinks_cover_every_value_and_round_trip() {
         let base = Settings::default();
+        let arp = Mode::Arp;
         for (k, r) in Rate::ALL.iter().enumerate() {
-            let s = with_qlink(base, 0, k as f32 / 6.0);
+            let s = with_qlink(base, arp, 0, k as f32 / 6.0);
             assert_eq!(s.rate, *r);
-            assert_eq!(with_qlink(base, 0, qlink_values(&s)[0].0).rate, *r);
+            assert_eq!(
+                with_qlink(base, arp, 0, qlink_values(&s, arp)[0].0).rate,
+                *r
+            );
         }
-        for g in 1..=100u8 {
-            let s = Settings { gate: g, ..base };
-            assert_eq!(with_qlink(base, 1, qlink_values(&s)[1].0).gate, g);
+        // The three after it are the same on every tab.
+        for tab in [arp, Mode::Phrase] {
+            for g in 1..=100u8 {
+                let s = Settings { gate: g, ..base };
+                assert_eq!(with_qlink(base, tab, 1, qlink_values(&s, tab)[1].0).gate, g);
+            }
+            for w in 50..=75u8 {
+                let s = Settings { swing: w, ..base };
+                assert_eq!(
+                    with_qlink(base, tab, 2, qlink_values(&s, tab)[2].0).swing,
+                    w
+                );
+            }
+            for o in 1..=4u8 {
+                let s = Settings { octaves: o, ..base };
+                assert_eq!(
+                    with_qlink(base, tab, 3, qlink_values(&s, tab)[3].0).octaves,
+                    o
+                );
+            }
         }
-        for w in 50..=75u8 {
-            let s = Settings { swing: w, ..base };
-            assert_eq!(with_qlink(base, 2, qlink_values(&s)[2].0).swing, w);
+        assert_eq!(with_qlink(base, arp, 1, 9.0).gate, 100);
+        assert_eq!(qlink_values(&base, arp)[2].1, "off");
+    }
+
+    /// On the Phrase tab the first Q-Link is the phrase's speed: half at
+    /// the left, as written in the middle, double at the right, and the
+    /// rate is left where it was.
+    #[test]
+    fn on_the_phrase_tab_the_first_qlink_is_the_speed() {
+        let base = Settings::default();
+        let tab = Mode::Phrase;
+        assert_eq!(qlink_labels(tab)[0], "Speed · Q1");
+        assert_eq!(qlink_labels(Mode::Arp)[0], "Rate · Q1");
+        let texts = ["half", "as written", "double"];
+        for (k, speed) in Speed::ALL.iter().enumerate() {
+            let at = k as f32 / 2.0;
+            let s = with_qlink(base, tab, 0, at);
+            assert_eq!((s.speed, s.rate), (*speed, base.rate));
+            let (value, text) = qlink_values(&s, tab)[0].clone();
+            assert_eq!((value, text.as_str()), (at, texts[k]));
+            assert_eq!(with_qlink(base, tab, 0, value).speed, *speed);
         }
-        for o in 1..=4u8 {
-            let s = Settings { octaves: o, ..base };
-            assert_eq!(with_qlink(base, 3, qlink_values(&s)[3].0).octaves, o);
-        }
-        assert_eq!(with_qlink(base, 1, 9.0).gate, 100);
-        assert_eq!(qlink_values(&base)[2].1, "off");
+        // Between and beyond the three, a push reads as a number of times.
+        let (at, text) = speed_value(1.5);
+        assert!((at - 0.7925).abs() < 1e-3 && text == "1.5×", "{at} {text}");
+        assert_eq!(speed_value(4.0), (1.0, "4×".to_string()));
+        assert_eq!(speed_value(0.25).1, "0.25×");
+        assert_eq!(speed_value(2.0 / 3.0).1, "0.67×");
     }
 
     #[test]
@@ -1339,11 +1819,16 @@ mod tests {
             ui.touch(1, Touch::Up, x, y);
             ev
         };
-        // The Pattern tab (the last of four).
-        let ev = tap(&mut s.ui, MODES, 0.9, 0.5).unwrap();
+        // The Pattern tab (the fourth of five), then Phrase (the last).
+        let ev = tap(&mut s.ui, MODES, 0.7, 0.5).unwrap();
         assert_eq!(
             s.page.action(&ev, &s.state, &mut qlink),
             Some(ArpAction::Mode(Mode::Pattern))
+        );
+        let ev = tap(&mut s.ui, MODES, 0.9, 0.5).unwrap();
+        assert_eq!(
+            s.page.action(&ev, &s.state, &mut qlink),
+            Some(ArpAction::Mode(Mode::Phrase))
         );
         // The first row of the order list is Up.
         let ev = tap(&mut s.ui, LIST, 0.5, 0.25).unwrap();
@@ -1550,6 +2035,12 @@ mod tests {
                 ),
             )
             .unwrap();
+            if mode == Mode::Phrase {
+                // The one tab that takes the pads' room: a list of phrases
+                // with the one that plays does not fit beside them.
+                assert_eq!(ui.rect_of("pads"), None, "the Phrase tab");
+                continue;
+            }
             assert_eq!(ui.rect_of("pads").unwrap(), pads, "the panel in {mode:?}");
         }
     }

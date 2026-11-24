@@ -32,12 +32,15 @@
 mod arp;
 pub mod mapper;
 mod pad_layers;
+mod pad_map_panel;
 mod pads_focus;
 mod route_synths;
 pub mod saved;
 pub mod step_pads;
 mod synth_pads;
 mod synth_pick;
+mod tuning_picks;
+mod tunings_page;
 
 pub use arp::{
     built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView, ARP_HEADER,
@@ -45,6 +48,7 @@ pub use arp::{
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
 pub use pad_layers::{layer_names, LayerRec};
+pub use pad_map_panel::{MapAct, MapChange, MapRow, MapSound, PadMapView};
 pub use pads_focus::{
     layer_takes, synth_track, unfit, BankEntry, LayerEntry, LayerTake, PadFocus, PadMap, RecPlan,
     RecSound, SynthTake,
@@ -54,7 +58,7 @@ use pads_focus::{RecFrom, RecMore};
 pub use route_synths::REC_MORE;
 pub use step_pads::StepPads;
 pub use synth_pads::{sent_name, SynthItem};
-pub use synth_pick::SynthPickView;
+pub use synth_pick::{KitOn, SynthPickView};
 
 use crate::cores::SoundCores;
 use crate::looping::{LoopAction, LoopMemory, LoopSource};
@@ -806,6 +810,16 @@ pub struct Settings {
     /// as it was at start, if the stream layer started): a project opening
     /// then reads only its takes' headers. Never saved.
     pub audio_streams: bool,
+    /// Dev's options "Loops on audio tracks" (the audio tracks rethink,
+    /// phase 4, steps 4b to 4d: docs/dev/design/loops-on-audio-tracks.md):
+    /// from the next start, a loop a loop cell of an audio track names
+    /// plays on that track, where the arranger says. Off by default until
+    /// 4e switches it on for good; a project saved with it on is a
+    /// development file.
+    pub loops_on_tracks: bool,
+    /// Whether loops play on audio tracks in this start (the switch above
+    /// as it was at start). Never saved.
+    pub loops_on: bool,
     /// Prefs "At start": open the last project (true, the default since
     /// round 4 of the creator run: a restart lost the pads the owner had
     /// set) or start with a new one. The screen opens it once the sound is
@@ -848,9 +862,9 @@ impl Settings {
     /// which are in time with the transport (the host makes up the mix's
     /// own).
     pub fn loop_latency_now(&self) -> u32 {
-        match self.loop_source {
-            LoopSource::Pads | LoopSource::Mix(_) => 0,
-            LoopSource::Line => self.loop_latency,
+        match self.loop_source.line() {
+            false => 0,
+            true => self.loop_latency,
         }
     }
 }
@@ -892,6 +906,8 @@ impl Default for Settings {
             audio_memory: crate::audiotracks::AudioMemory::default(),
             stream_audio: false,
             audio_streams: false,
+            loops_on_tracks: false,
+            loops_on: false,
             open_last: true,
             export_mode: mpfree_export::Mode::Fast,
             export_bits: mpfree_fx::Bits::I24,
@@ -978,6 +994,8 @@ pub enum Item {
     ClearLogs,
     /// Dev's options: takes play from their files from the next start.
     StreamAudio,
+    /// Dev's options: loops play on audio tracks from the next start.
+    LoopsOnTracks,
     ConsoleFollow,
     ClearConsole,
     LineInput,
@@ -1014,6 +1032,9 @@ pub enum Item {
     Arp(ArpItem),
     /// The synth's engine and pad layouts (the Synth tab's options).
     Synth(SynthItem),
+    /// Row `k` of the Tunings page (tunings step T6,
+    /// [`tunings_page::TuningsRow`]).
+    Tunings(u16),
 }
 
 /// A row whose + opens a page or does a thing once, rather than stepping
@@ -1078,10 +1099,14 @@ const PLAY_OPTIONS: [Item; 8] = [
 ];
 
 /// The menu on screen: its rows (name, value), the selected row and help.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct MenuView {
     pub title: String,
     pub rows: Vec<(String, String)>,
+    /// What marks each row beyond its name and value, row by row (tunings
+    /// step T6: the OWN tag, a line under the name, a value that can't be
+    /// changed, a section heading). Empty: no row has any.
+    pub marks: Vec<RowMark>,
     pub selected: usize,
     /// The wheel's push opened the selected row: the wheel changes its
     /// value until the next push.
@@ -1090,10 +1115,31 @@ pub struct MenuView {
     /// What the selected row's choice means now, over its help, brighter
     /// (the Instrument row: the track's line, step 11d). Mostly empty.
     pub facts: Vec<String>,
+    /// The facts warn: drawn in amber (an instrument that can't follow its
+    /// tuning).
+    pub facts_warn: bool,
+    /// A button after the facts that opens a page: its title and the line
+    /// under it ("Tunings", "The song's tuning and every instrument's"). A
+    /// tap is `FromUi::HelpButton(mpfree_ui::widgets::CARD_LINK)`.
+    pub help_link: Option<(String, String)>,
     pub help: Vec<String>,
     /// Buttons under the help ("Keep" and "Go back" while a theme is on
     /// trial); a tap is `FromUi::HelpButton`.
     pub help_buttons: Vec<String>,
+}
+
+/// One menu row's marks beyond its name and value
+/// (`mpfree_ui::widgets::OptionRow`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RowMark {
+    /// A chip after the name ("OWN").
+    pub tag: &'static str,
+    /// A line under the name ("Tracks 3 and 4").
+    pub sub: String,
+    /// The value can't be changed: amber, no arrows.
+    pub fixed: bool,
+    /// A section heading: not picked by a tap or the wheel.
+    pub heading: bool,
 }
 
 /// How long "Keep this theme?" waits before it puts the old theme back.
@@ -1316,6 +1362,9 @@ pub enum Effect {
     /// The list of synths over the Synth tab (step 6, app/synth_pick.rs):
     /// open as it draws, or closed (None).
     SynthPick(Option<SynthPickView>),
+    /// What the pads play, the panel over the Synth tab (sampler step
+    /// 15e, app/pad_map_panel.rs): open as it draws, or closed (None).
+    PadMap(Option<PadMapView>),
     /// REC while the synth is chosen for the pads: this track plays the
     /// synth from now on (the Synth kit, as a pick in the list of kits), so
     /// the take plays the one instance that was heard (app/pads_focus.rs).
@@ -1461,6 +1510,9 @@ pub enum Effect {
     Arp(ArpView),
     /// The arp's pattern list (names and patterns), when it changes.
     Patterns(Vec<(String, Pattern)>),
+    /// The arp's phrase list, whenever it changes: MPFree's own, the
+    /// owner's and the open project's.
+    Phrases(mpfree_arp_ui::PhraseList),
     /// The pattern workspace: open it on a pattern, or start or stop
     /// recording on the pads.
     Workspace(WorkspaceView),
@@ -1482,6 +1534,9 @@ pub enum Effect {
     /// Keep this library text in the store as arp/patterns.txt (the store's
     /// own thread writes it).
     SavePatterns(String),
+    /// Keep this library text, the owner's own phrases, in the store as
+    /// arp/phrases.txt.
+    SavePhrases(String),
     /// STOP in the timed `play` step: end it.
     Quit,
     /// Open the Touch lab page (it starts at its first step).
@@ -1819,6 +1874,22 @@ pub struct App {
     /// The patterns to pick from (built in; Save changes them in memory).
     patterns: Vec<(String, Pattern)>,
     pattern_index: usize,
+    /// The phrases to pick from, in three runs (`app/arp/phrases.rs`):
+    /// MPFree's own (the first `phrases_built`), the owner's (up to
+    /// `phrases_own`: the store's arp/phrases.txt), then the ones only the
+    /// open project has.
+    phrases: Vec<(String, mpfree_arp::Phrase)>,
+    phrases_built: usize,
+    phrases_own: usize,
+    /// The armed track's phrase, as a place in `phrases`.
+    phrase_index: usize,
+    /// The kind of phrase the Phrase tab's list shows when it is not the
+    /// pick's: an empty one stepped to (the owner's, before they have
+    /// made a phrase). None: the pick's.
+    phrase_shelf: Option<mpfree_arp_ui::phrases::Shelf>,
+    /// The phrase last picked on each kind's shelf, so stepping back to a
+    /// kind returns to it (`app/arp/phrases.rs`).
+    phrase_last: [Option<usize>; mpfree_arp_ui::phrases::Shelf::ALL.len()],
     /// The pattern the engine plays (edited, mutated or recorded from the
     /// list's).
     pattern: Pattern,
@@ -1828,7 +1899,8 @@ pub struct App {
     /// How the next recording on the pads goes: Step time or Free time.
     record_mode: RecordMode,
     /// Save also keeps the patterns in the store (arp/patterns.txt, when
-    /// the store saves: `app --data DIR`), through [`Effect::SavePatterns`].
+    /// the store saves: `app --data DIR`), through [`Effect::SavePatterns`],
+    /// and the owner's phrases beside them ([`Effect::SavePhrases`]).
     pub pattern_file: bool,
     /// Q-Link turns not yet used, per knob (rate and octaves need several).
     qlink_turns: [i32; 4],
@@ -1838,6 +1910,10 @@ pub struct App {
     /// The Modifier's push the arp screens last showed, in percent, and
     /// the settings it played (they redraw when either moves).
     sent_push: (u8, mpfree_arp::Settings),
+    /// The 1/32 of its phrase the Phrase tab's cursor was last sent at
+    /// (while the Arp panel shows), and whether a pick waited for the bar
+    /// line.
+    sent_phrase: (Option<u32>, bool),
     /// Where the sustain pedal went down, while it is down
     /// ([`App::arp_pedal`]).
     pedal_down: Option<arp::PedalTo>,
@@ -1895,6 +1971,27 @@ pub struct App {
     /// ([`App::set_instrument_list`]): what an instrument chosen for the
     /// pads is, and where it is held (step 6).
     instrument_list: crate::instrument_list::InstrumentList,
+    /// The song's tuning and each instrument's own (tunings step T5,
+    /// `app/tuning_picks.rs`). The Tunings page sets the song's, a Tuning
+    /// row an instrument's own (T6, `app/tunings_page.rs`);
+    /// `synth_pads.tuning` is what the shared synth plays.
+    tunings: Box<crate::tunings::Tunings>,
+    /// A track whose own instrument is a copy (Duplicate), waiting for its
+    /// id in the list to take the tuning of the instrument it copies (by
+    /// that one's id).
+    tuning_copies: Box<[Option<crate::instrument_list::InstrumentId>; mpfree_seq::MAX_TRACKS]>,
+    /// The options show the Tunings page (tunings step T6,
+    /// app/tunings_page.rs), opened from a Tuning row's help.
+    tunings_page: bool,
+    /// The tracks' own instruments and the free places' that can't follow
+    /// a tuning (a plugin that takes only MIDI notes), a bit each, as the
+    /// audio loop last said ([`App::set_tuning_deaf`]).
+    tuning_deaf: (u128, u16),
+    /// The kit each track plays, as the audio loop last said, and the
+    /// kits' names from the start: the Tunings page lists and names kits
+    /// by them.
+    track_kits: Box<[Option<u8>; mpfree_seq::MAX_TRACKS]>,
+    kit_names: Vec<String>,
     /// A free place given a synth for the pads, waiting for its id in the
     /// list: the pads play it once it has one (step 6).
     pads_to: Option<usize>,
@@ -1909,6 +2006,12 @@ pub struct App {
     route_synths: [Option<crate::instrument_list::InstrumentId>; route_synths::ROUTE_SYNTHS],
     /// The list of synths, while open (app/synth_pick.rs).
     synth_pick: Option<synth_pick::SynthPick>,
+    /// What the pads play is open over the Synth tab (sampler step 15e,
+    /// app/pad_map_panel.rs).
+    map_panel: bool,
+    /// The pad map before each change made by a pick, Follow or Remove,
+    /// the last last: what UNDO takes back while the panel is open.
+    map_undo: Vec<PadMap>,
     /// The tracks that play the shared synth, a bit each
     /// ([`App::set_synth_tracks`]).
     synth_tracks: u128,
@@ -2003,6 +2106,7 @@ impl App {
         let arps = TrackArps::new(sample_rate, settings.bpm);
         let patterns = arp::built_in_patterns();
         let pattern = patterns.first().map(|(_, p)| *p).unwrap_or_default();
+        let phrases = arp::built_in_phrases();
         let sent_notes = arps.engine_at(0).active().clone();
         let mut app = App {
             settings,
@@ -2073,6 +2177,12 @@ impl App {
             swing_from_transport: true,
             patterns,
             pattern_index: 0,
+            phrases_built: phrases.len(),
+            phrases_own: phrases.len(),
+            phrases,
+            phrase_index: 0,
+            phrase_shelf: None,
+            phrase_last: [None; mpfree_arp_ui::phrases::Shelf::ALL.len()],
             pattern,
             mutations: 0,
             recorder: None,
@@ -2081,6 +2191,7 @@ impl App {
             qlink_turns: [0; 4],
             sent_step: 0,
             sent_push: (0, mpfree_arp::Settings::default()),
+            sent_phrase: (None, false),
             pedal_down: None,
             pedal_latch: None,
             sent_notes,
@@ -2101,11 +2212,19 @@ impl App {
             arp_layout: None,
             pad_map: PadMap::default(),
             instrument_list: crate::instrument_list::InstrumentList::new(),
+            tunings: Box::new(crate::tunings::Tunings::new()),
+            tuning_copies: Box::new([None; mpfree_seq::MAX_TRACKS]),
+            tunings_page: false,
+            tuning_deaf: (0, 0),
+            track_kits: Box::new([None; mpfree_seq::MAX_TRACKS]),
+            kit_names: Vec::new(),
             pads_to: None,
             bank_to: [None; KIT_PAGES],
             layer_to: [None; pad_layers::MORE],
             route_synths: [None; route_synths::ROUTE_SYNTHS],
             synth_pick: None,
+            map_panel: false,
+            map_undo: Vec::new(),
             synth_tracks: 0,
             kit_tracks: [(usize::MAX, 0); pads_focus::MAP_KITS],
             configured: 0,
@@ -2135,11 +2254,13 @@ impl App {
             project_edit: false,
             arp_seen: 0,
         };
-        // Every track's arp starts on the first pattern, as the panel does.
-        // Settings alone don't start an engine, so this needn't mark all
-        // 128 in use.
+        // Every track's arp starts on the first pattern and the first
+        // phrase, as the panel does. Settings alone don't start an engine,
+        // so this needn't mark all 128 in use.
+        let phrase = app.phrases.first().map(|(_, p)| *p).unwrap_or_default();
         for (e, u) in app.arps.engines_mut().zip(app.track_ui.iter_mut()) {
             e.set_pattern(pattern);
+            e.set_phrase(phrase);
             u.pattern = pattern;
         }
         app.update_engine();
@@ -2509,6 +2630,7 @@ impl App {
             Effect::Settings(self.settings.clone()),
             Effect::Light(button::FULL_LEVEL, LIGHT_OFF),
             Effect::Patterns(self.patterns.clone()),
+            Effect::Phrases(self.phrase_list()),
             self.arp_view(),
         ];
         fx.extend(self.repeat_light());
@@ -3110,8 +3232,8 @@ impl App {
         !self.swing_from_transport
     }
 
-    /// The engine makes notes of its own (Repeat, Arp or Pattern), so a hit
-    /// may sound later than the press, and latched pads stay lit.
+    /// The engine makes notes of its own (Repeat, Arp, Pattern or Phrase),
+    /// so a hit may sound later than the press, and latched pads stay lit.
     pub fn generating(&self) -> bool {
         self.arps.engine_at(self.track).settings().mode != Mode::Direct
     }
@@ -3668,6 +3790,17 @@ impl App {
             // UNDO while a pad take records throws it away, on every page.
             fx.push(Effect::Undo { redo: false });
             fx.push(Effect::UndoButton(true));
+        } else if self.view == View::Synth && self.map_panel && Some(note) == self.map.undo {
+            // What the pads play (sampler step 15e): the last change to
+            // the pad map; it has no redo.
+            fx.extend(if shift {
+                vec![Effect::Tell(
+                    "What the pads play has no redo: pick it again".to_string(),
+                )]
+            } else {
+                self.pad_map_undo()
+            });
+            fx.push(Effect::UndoButton(true));
         } else if self.view == View::Looper && Some(note) == self.map.undo {
             fx.extend(self.looper_tap(if shift {
                 crate::looper_page::B_REDO
@@ -3705,6 +3838,10 @@ impl App {
             {
                 // MENU in a Prefs section: back to the main rows.
                 fx.extend(self.leave_prefs_section());
+            } else if !shift && self.on_tunings_page() {
+                // MENU on the Tunings page: back to the options it opened
+                // from.
+                fx.extend(self.leave_tunings_page());
             } else if !shift && self.view == View::Options && self.mod_section {
                 // And in the arp options' Modifier section.
                 fx.extend(self.leave_mod_section());
@@ -4221,8 +4358,8 @@ impl App {
                 self.step_item(self.selected, delta.signum())
             }
             _ if self.in_menu() => {
-                let last = (self.items().len() as i32 - 1).max(0);
-                self.select((self.selected as i32 + delta).clamp(0, last) as usize)
+                let at = self.menu_row_from(self.selected, delta);
+                self.select(at)
             }
             // The Show view (live shows B1): the wheel arms the song after
             // or before; SHIFT + wheel keeps scrolling Arrange's views.
@@ -4351,6 +4488,7 @@ impl App {
         // what they play (step 6, app/synth_pick.rs).
         if v != View::Synth {
             self.synth_pick = None;
+            self.map_panel = false;
         }
         let was_editing = std::mem::take(&mut self.page_editing);
         if self.view != v
@@ -4408,6 +4546,7 @@ impl App {
             fx.push(Effect::Map(self.mapper.view()));
         }
         self.view = v;
+        self.tunings_page = false;
         if self.in_menu() {
             self.selected = 0;
             self.prefs_section = PrefsSection::Main;
@@ -4563,6 +4702,7 @@ impl App {
     /// opens its options, and the options' Back goes back to the page.
     pub fn options_button(&mut self) -> Vec<Effect> {
         match self.view {
+            View::Options if self.tunings_page => self.leave_tunings_page(),
             View::Prefs if self.prefs_section != PrefsSection::Main => self.leave_prefs_section(),
             View::Options if self.mod_section => self.leave_mod_section(),
             View::Prefs => self.toggle(View::Prefs),
@@ -4911,6 +5051,26 @@ impl App {
         fx
     }
 
+    /// An audio track's empty cell armed for a loop (audio tracks phase 4b,
+    /// behind Dev's switch): the looper records the track's own input, as
+    /// a take on the track would ([`crate::looping::TrackInput`]). A line
+    /// pick switches the line input on, as a Loop track's Line in does.
+    /// Records from shows it until another source is picked or a Loop
+    /// cell is armed.
+    pub fn loop_track_input(&mut self, input: crate::looping::TrackInput) -> Vec<Effect> {
+        let mut fx = Vec::new();
+        if matches!(input.from, crate::looping::TrackFrom::Line(_)) && !self.settings.line_input {
+            fx.extend(self.looper_setting(Item::LineInput, 1));
+        }
+        let set = self.set_loop_source(LoopSource::Track(input));
+        if !set.is_empty() {
+            self.save_dirty = true;
+            fx.extend(set);
+            fx.push(Effect::Settings(self.settings.clone()));
+        }
+        fx
+    }
+
     /// Records from (the Looper tab's picker): a mix, the master or one
     /// strip (a track or a submix), as `mixing::MixHost::loop_take` takes it.
     pub fn loop_mix(&mut self, strip: mpfree_fx::StripId) -> Vec<Effect> {
@@ -4944,6 +5104,9 @@ impl App {
     }
 
     fn items(&self) -> &'static [Item] {
+        if self.on_tunings_page() {
+            return &tunings_page::TUNINGS_ROWS[..self.tunings_rows().len()];
+        }
         match (self.view, self.back) {
             (View::Prefs, _) if self.prefs_section == PrefsSection::Touch => PREFS_TOUCH_ROWS,
             (View::Prefs, _) if self.prefs_section == PrefsSection::Setup => PREFS_SETUP_ROWS,
@@ -4969,7 +5132,12 @@ impl App {
                 | View::StatusBoard,
             ) => {
                 // The MIDI page's monitor has its own Hold.
-                &[Item::ShowPressure, Item::ClearLogs, Item::StreamAudio]
+                &[
+                    Item::ShowPressure,
+                    Item::ClearLogs,
+                    Item::StreamAudio,
+                    Item::LoopsOnTracks,
+                ]
             }
             // The full-screen touch checks, also in Prefs > Touch screen.
             (_, View::Touch) => &[Item::CalibrateTouch, Item::TouchLab],
@@ -4978,7 +5146,8 @@ impl App {
             (_, View::Arp) => &arp::ARP_OPTIONS,
             (_, View::Arrange) if self.show_view => &SHOW_OPTIONS,
             (_, View::Play) => &PLAY_OPTIONS,
-            (_, View::Synth) => &synth_pads::SYNTH_OPTIONS,
+            (_, View::Synth) if self.synth_tab_owns_tuning() => &synth_pads::SYNTH_OPTIONS,
+            (_, View::Synth) => &synth_pads::SYNTH_OPTIONS_SONGS,
             _ => &[
                 Item::Rate,
                 Item::Tempo,
@@ -5107,6 +5276,16 @@ impl App {
                 }
                 .to_string(),
             ),
+            Item::LoopsOnTracks => (
+                "Loops on audio tracks",
+                match (s.loops_on_tracks, s.loops_on_tracks == s.loops_on) {
+                    (true, true) => "On",
+                    (false, true) => "Off",
+                    (true, false) => "On (next start)",
+                    (false, false) => "Off (next start)",
+                }
+                .to_string(),
+            ),
             Item::ConsoleFollow => (
                 "Console",
                 if s.console_paused {
@@ -5200,6 +5379,8 @@ impl App {
             ),
             Item::Arp(a) => self.arp_item_text(a),
             Item::Synth(a) => self.synth_item_text(a),
+            // The Tunings page draws its own rows (tunings_page_view).
+            Item::Tunings(_) => ("Tunings", String::new()),
         }
     }
 
@@ -5392,6 +5573,13 @@ impl App {
                 "From the next start. A test: off on the MPC",
                 "until the stick tests have run.",
             ],
+            Item::LoopsOnTracks => vec![
+                "A loop a loop cell of an audio track names",
+                "plays on that track, where the song and the",
+                "launches say. From the next start. Being",
+                "built: a project saved with it on may not",
+                "open in a later build.",
+            ],
             Item::ConsoleFollow => vec![
                 "Pause the console to read it; it keeps",
                 "collecting lines meanwhile.",
@@ -5505,11 +5693,15 @@ impl App {
                 "it for one export.",
             ],
             Item::Arp(a) => Self::arp_item_help(a),
-            Item::Synth(a) => Self::synth_item_help(a),
+            Item::Synth(a) => self.synth_item_help(a),
+            Item::Tunings(_) => Vec::new(),
         }
     }
 
     pub fn menu_view(&self) -> Effect {
+        if self.on_tunings_page() {
+            return Effect::Menu(self.tunings_page_view());
+        }
         let items = self.items();
         let selected = self.selected.min(items.len() - 1);
         let title = match (self.view, self.back) {
@@ -5564,13 +5756,35 @@ impl App {
             selected,
             editing: self.menu_editing,
             help_heading,
+            marks: items.iter().map(|&i| self.item_mark(i)).collect(),
             facts: match items[selected] {
                 Item::Synth(synth_pads::SynthItem::Engine) => self.track_line.clone(),
+                Item::Synth(synth_pads::SynthItem::Tuning) => self.synth_tuning_facts(),
                 _ => Vec::new(),
+            },
+            facts_warn: items[selected] == Item::Synth(synth_pads::SynthItem::Tuning)
+                && self.synth_tab_deaf(),
+            help_link: match items[selected] {
+                Item::Synth(
+                    synth_pads::SynthItem::Tuning
+                    | synth_pads::SynthItem::TuningRoot
+                    | synth_pads::SynthItem::A4,
+                ) => Some(tunings_page::link()),
+                _ => None,
             },
             help,
             help_buttons,
         })
+    }
+
+    /// Row `item`'s marks: the Synth tab's Tuning row's and the Tunings
+    /// page's (tunings step T6).
+    fn item_mark(&self, item: Item) -> RowMark {
+        match item {
+            Item::Synth(a) => self.synth_item_mark(a),
+            Item::Tunings(k) => self.tunings_item_mark(usize::from(k)),
+            _ => RowMark::default(),
+        }
     }
 
     /// From a Prefs section back to Prefs' main rows, on the row that opened it.
@@ -5654,9 +5868,33 @@ impl App {
         if !self.in_menu() {
             return Vec::new();
         }
-        self.selected = i.min(self.items().len() - 1);
+        let items = self.items();
+        let i = i.min(items.len() - 1);
+        if self.item_mark(items[i]).heading {
+            // A heading is no row to pick.
+            return Vec::new();
+        }
+        self.selected = i;
         self.menu_editing = false;
         vec![self.menu_view()]
+    }
+
+    /// The row the wheel moves to from row `from`, `delta` rows on: past
+    /// the ends it stays at the end, and a heading is passed over the way
+    /// it turned (or, at an end, it stays where it was).
+    fn menu_row_from(&self, from: usize, delta: i32) -> usize {
+        let items = self.items();
+        let last = (items.len() as i32 - 1).max(0);
+        let mut at = (from as i32 + delta).clamp(0, last);
+        let way = delta.signum();
+        while way != 0 && self.item_mark(items[at as usize]).heading {
+            let next = at + way;
+            if !(0..=last).contains(&next) {
+                return from.min(last as usize);
+            }
+            at = next;
+        }
+        at as usize
     }
 
     /// SHIFT + the wheel's push goes to the outlined control: a page with
@@ -5724,6 +5962,10 @@ impl App {
             return self.end_theme_trial(true);
         }
         if opens_something(items[i]) {
+            return self.step_item(i, 1);
+        }
+        if self.item_mark(items[i]).fixed {
+            // A value that can't be changed: the push says why.
             return self.step_item(i, 1);
         }
         self.menu_editing = true;
@@ -5957,6 +6199,20 @@ impl App {
                 fx.extend(self.arp_changed());
             }
             Item::ShowPressure => s.show_pressure = d > 0,
+            Item::LoopsOnTracks => {
+                let on = d > 0;
+                if on != s.loops_on_tracks {
+                    s.loops_on_tracks = on;
+                    fx.push(Effect::Note(format!(
+                        "looper: loops play {} from the next start",
+                        if on {
+                            "on audio tracks"
+                        } else {
+                            "on the Loop track"
+                        }
+                    )));
+                }
+            }
             Item::StreamAudio => {
                 let on = d > 0;
                 if on != s.stream_audio {
@@ -6043,6 +6299,7 @@ impl App {
             }
             Item::Arp(a) => fx.extend(self.step_arp_item(a, d)),
             Item::Synth(a) => fx.extend(self.step_synth_item(a, d)),
+            Item::Tunings(k) => fx.extend(self.step_tunings_row(usize::from(k), d)),
         }
         fx.push(Effect::Settings(self.settings.clone()));
         if self.in_menu() {
@@ -6143,6 +6400,9 @@ impl App {
     /// The help panel's buttons while "Keep this theme?" asks: Keep (0) or
     /// Go back (1).
     pub fn help_button(&mut self, i: usize) -> Vec<Effect> {
+        if i == mpfree_ui::widgets::CARD_LINK {
+            return self.follow_help_link();
+        }
         if self.theme_trial.is_none() {
             return Vec::new();
         }
@@ -7779,6 +8039,37 @@ mod tests {
         assert_eq!(next.item_text(Item::StreamAudio).1, "Off (next start)");
     }
 
+    /// The audio tracks rethink, phase 4b: Dev's options "Loops on audio
+    /// tracks", off by default, kept, from the next start.
+    #[test]
+    fn loops_on_audio_tracks_is_a_dev_option_from_the_next_start() {
+        let mut app = App::new(44_100, false);
+        app.set_debug_mode(true);
+        app.debug_page(1);
+        app.button(MENU, true, 0.0);
+        app.button(MENU, false, 0.0);
+        let at = row(&app, Item::LoopsOnTracks);
+        assert_eq!(
+            app.item_text(Item::LoopsOnTracks),
+            ("Loops on audio tracks", "Off".to_string())
+        );
+        let fx = app.step_item(at, 1);
+        assert!(app.settings.loops_on_tracks && !app.settings.loops_on);
+        assert_eq!(app.item_text(Item::LoopsOnTracks).1, "On (next start)");
+        assert!(fx.contains(&Effect::Note(
+            "looper: loops play on audio tracks from the next start".into()
+        )));
+        let kept = app.app_settings();
+        assert_eq!(kept.get_bool("loops-on-tracks"), Some(true));
+        let mut next = App::new(44_100, false);
+        next.restore(&kept, &mpfree_store::Settings::default());
+        assert!(next.settings.loops_on_tracks && !next.settings.loops_on);
+        next.settings.loops_on = true;
+        assert_eq!(next.item_text(Item::LoopsOnTracks).1, "On");
+        next.settings.loops_on_tracks = false;
+        assert_eq!(next.item_text(Item::LoopsOnTracks).1, "Off (next start)");
+    }
+
     /// Layout spec 4c: Prefs "Audio track memory", right after Loop
     /// memory, picks 30 s to 10 min of stereo, kept, from the next start.
     #[test]
@@ -8099,18 +8390,194 @@ mod tests {
         assert_eq!(app.tab(0), vec![Effect::Show(View::Play)]);
     }
 
+    /// Tunings step T5 in the app: the Synth tab's Tuning rows set the
+    /// song's tuning; the shared synth plays its own when it has one; an
+    /// instrument's own goes with its id, and a project's tunings part
+    /// gives them back, an instrument the list hasn't got said.
     #[test]
-    fn the_synth_options_pick_the_tuning_its_root_and_a4() {
+    fn each_instrument_has_its_own_tuning_or_the_songs() {
+        use crate::instrument_list::{InstrumentId, InstrumentList};
+        use crate::synth::{Builtin, TuningPick};
+        let mut app = ready();
+        let mut list = InstrumentList::new();
+        list.follow_kits(3);
+        list.follow(0b10);
+        app.set_instrument_list(&list);
+        let (shared, kit2, track2) = (
+            InstrumentId::SHARED_SYNTH,
+            list.of_kit(1).unwrap(),
+            list.own_of(1).unwrap(),
+        );
+        let synth_tuning = |fx: &[Effect]| {
+            fx.iter().find_map(|e| match e {
+                Effect::SynthPads(p) => Some(p.tuning),
+                _ => None,
+            })
+        };
+        let meantone = TuningPick {
+            builtin: Builtin::Meantone,
+            a4_hz: 415,
+            ..TuningPick::default()
+        };
+        // The shared synth in its own meantone: the synth plays it, the
+        // song stays 12-TET.
+        let fx = app.set_own_tuning(shared, Some(meantone));
+        assert_eq!(synth_tuning(&fx), Some(meantone));
+        assert!(fx.contains(&Effect::Note(
+            "tunings: the shared synth plays its own tuning, Meantone 1/4 comma on C, A4 415 Hz"
+                .to_string()
+        )));
+        assert_eq!(app.tunings().song(), TuningPick::default());
+        assert_eq!(app.synth_settings().get_str("tuning"), Some("12-tet"));
+        // The song's Tuning row (the Tunings page): the song goes to just,
+        // said to the synth only as a change of the options (the shared
+        // synth keeps its own).
+        open_tunings_page(&mut app);
+        let fx = app.step_item(1, 1);
+        assert_eq!(synth_tuning(&fx), Some(meantone));
+        assert_eq!(app.tunings().song().builtin, Builtin::Just);
+        assert_eq!(app.synth_settings().get_str("tuning"), Some("just"));
+        // Back on Song's: the synth plays just.
+        let fx = app.set_own_tuning(shared, None);
+        assert_eq!(synth_tuning(&fx).map(|t| t.builtin), Some(Builtin::Just));
+        assert!(app.set_own_tuning(shared, None).is_empty());
+        // An instrument the list hasn't got: nothing.
+        let none = InstrumentId::from_number(99).unwrap();
+        assert!(app.set_own_tuning(none, Some(meantone)).is_empty());
+        assert_eq!(app.tunings().owned(), 0);
+
+        // Kit 2 and Track 2's own in tunings of their own, saved.
+        app.set_own_tuning(kit2, Some(meantone));
+        app.set_own_tuning(
+            track2,
+            Some(TuningPick {
+                builtin: Builtin::Equal24,
+                ..TuningPick::default()
+            }),
+        );
+        let part = app.tunings_part();
+        assert_eq!(part.lines().count(), 3, "{part}");
+        // Track 2's instrument taken out: its tuning goes.
+        list.follow(0);
+        app.set_instrument_list(&list);
+        assert_eq!(app.tunings().own(track2), None);
+        assert_eq!(app.tunings().own(kit2), Some(meantone));
+
+        // Opened in a new app: the synth part's song, the part's own. The
+        // instrument the list hasn't got any more is said and left out.
+        let mut next = ready();
+        let (_, _) = next.open_synth(&app.synth_settings());
+        next.set_instrument_list(&list);
+        let (notes, fx) = next.open_tunings(Some(&part));
+        assert_eq!(next.tunings().song().builtin, Builtin::Just);
+        assert_eq!(next.tunings().own(kit2), Some(meantone));
+        assert_eq!(next.tunings().own(track2), None);
+        assert_eq!(synth_tuning(&fx).map(|t| t.builtin), Some(Builtin::Just));
+        assert_eq!(
+            notes,
+            [
+                format!("tunings: left out the tuning of instrument {track2}, not in the project's list"),
+                "tunings: the song plays Just (5-limit) on C; with their own: Kit 2 Meantone 1/4 comma on C, A4 415 Hz"
+                    .to_string(),
+            ]
+        );
+        // A new project's synth part: every instrument on Song's again.
+        next.open_synth(&Default::default());
+        let (notes, _) = next.open_tunings(None);
+        assert!(notes.is_empty());
+        assert_eq!(next.tunings(), &crate::tunings::Tunings::new());
+        // A part that doesn't read is said, and changes nothing.
+        let (notes, _) = next.open_tunings(Some("mpfree-tunings 1\nsong root C a4 440 just\n"));
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].starts_with("tunings: its tunings can't be read"),
+            "{notes:?}"
+        );
+        assert_eq!(next.tunings().owned(), 0);
+    }
+
+    /// Duplicate copies the tuning (tunings step T5): a copy of Track 2's
+    /// own takes its tuning once the list gives it its id, and a copy into
+    /// a track that has its own already takes it at once.
+    #[test]
+    fn a_copy_takes_the_tuning_of_the_instrument_it_copies() {
+        use crate::instrument_list::InstrumentList;
+        use crate::synth::{Builtin, TuningPick};
+        let mut app = ready();
+        let mut list = InstrumentList::new();
+        list.follow_kits(1);
+        list.follow(0b10);
+        app.set_instrument_list(&list);
+        let track2 = list.own_of(1).unwrap();
+        let poly = crate::instruments::Held {
+            id: "mpfree.poly",
+            name: "Poly",
+            instance: 0,
+        };
+        app.set_track_sound(1, Some(poly));
+        let meantone = TuningPick {
+            builtin: Builtin::Meantone,
+            ..TuningPick::default()
+        };
+        app.set_own_tuning(track2, Some(meantone));
+        // Track 3 takes a copy: no id yet, so it waits.
+        app.track = 2;
+        app.copy_track_sound(1);
+        assert_eq!(app.tunings().owned(), 1);
+        list.follow(0b110);
+        app.set_instrument_list(&list);
+        let track3 = list.own_of(2).unwrap();
+        assert_eq!(app.tunings().own(track3), Some(meantone));
+        // Track 4 has its own already (on Song's): the copy's tuning at once.
+        list.follow(0b1110);
+        app.set_instrument_list(&list);
+        let track4 = list.own_of(3).unwrap();
+        app.track = 3;
+        app.copy_track_sound(1);
+        assert_eq!(app.tunings().own(track4), Some(meantone));
+        // A copy of one on Song's puts the copy on Song's.
+        app.set_own_tuning(track2, None);
+        app.copy_track_sound(1);
+        assert_eq!(app.tunings().own(track4), None);
+    }
+
+    /// The Synth tab's options open the Tunings page from the Tuning row's
+    /// help (tunings step T6): its song's Tuning, Tuning root and A4 rows
+    /// come first, under their heading.
+    fn open_tunings_page(app: &mut App) -> MenuView {
+        app.open_tab(View::Synth);
+        press(app, MENU);
+        let at = app.row_of(Item::Synth(SynthItem::Tuning)).unwrap();
+        app.select(at);
+        let fx = app.help_button(mpfree_ui::widgets::CARD_LINK);
+        let Some(Effect::Menu(m)) = fx.last() else {
+            panic!("{fx:?}")
+        };
+        assert_eq!(m.title, "Tunings");
+        assert_eq!(
+            m.rows[..4].iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
+            ["The song's tuning", "Tuning", "Tuning root", "A4"]
+        );
+        assert!(m.marks[0].heading && !m.marks[1].heading);
+        assert_eq!(m.selected, 1);
+        m.clone()
+    }
+
+    /// The Tunings page's rows of the song's tuning (the Synth tab's
+    /// before tunings step T6).
+    #[derive(Clone, Copy)]
+    enum SongRow {
+        Tuning = 1,
+        TuningRoot,
+        A4,
+    }
+
+    #[test]
+    fn the_tunings_page_picks_the_songs_tuning_its_root_and_a4() {
         use crate::synth::{Builtin, A4_MAX, A4_MIN};
         let mut app = ready();
-        app.open_tab(View::Synth);
-        press(&mut app, MENU);
-        let row = |a: SynthItem| {
-            synth_pads::SYNTH_OPTIONS
-                .iter()
-                .position(|&i| i == Item::Synth(a))
-                .unwrap()
-        };
+        open_tunings_page(&mut app);
+        let row = |a: SongRow| a as usize;
         let tuning = |fx: &[Effect]| {
             fx.iter().find_map(|e| match e {
                 Effect::SynthPads(p) => Some(p.tuning),
@@ -8119,43 +8586,43 @@ mod tests {
         };
         // Every built-in tuning in turn, and no further.
         for &want in &Builtin::ALL[1..] {
-            let t = tuning(&app.step_item(row(SynthItem::Tuning), 1)).unwrap();
+            let t = tuning(&app.step_item(row(SongRow::Tuning), 1)).unwrap();
             assert_eq!(t.builtin, want);
         }
-        assert_eq!(tuning(&app.step_item(row(SynthItem::Tuning), 1)), None);
+        assert_eq!(tuning(&app.step_item(row(SongRow::Tuning), 1)), None);
         for _ in 0..3 {
-            app.step_item(row(SynthItem::Tuning), -1);
+            app.step_item(row(SongRow::Tuning), -1);
         }
         assert_eq!(app.synth_pads.tuning.builtin, Builtin::Just);
         // Root D: the row reads it, now that just intonation uses one.
-        app.step_item(row(SynthItem::TuningRoot), 1);
-        let fx = app.step_item(row(SynthItem::TuningRoot), 1);
+        app.step_item(row(SongRow::TuningRoot), 1);
+        let fx = app.step_item(row(SongRow::TuningRoot), 1);
         assert_eq!(tuning(&fx).unwrap().root, 2);
         let Some(Effect::Menu(m)) = fx.last() else {
             panic!("{fx:?}")
         };
-        let at = row(SynthItem::Tuning);
+        let at = row(SongRow::Tuning);
         assert_eq!(
             (m.rows[at].1.as_str(), m.rows[at + 1].1.as_str()),
             ("Just (5-limit)", "D")
         );
         // A4 down to 432 Hz, and it stops at the ends.
         for _ in 0..8 {
-            app.step_item(row(SynthItem::A4), -1);
+            app.step_item(row(SongRow::A4), -1);
         }
         assert_eq!(app.synth_pads.tuning.a4_hz, 432);
         for _ in 0..200 {
-            app.step_item(row(SynthItem::A4), 1);
+            app.step_item(row(SongRow::A4), 1);
         }
         assert_eq!(app.synth_pads.tuning.a4_hz, A4_MAX);
-        assert_eq!(tuning(&app.step_item(row(SynthItem::A4), 1)), None);
+        assert_eq!(tuning(&app.step_item(row(SongRow::A4), 1)), None);
         for _ in 0..200 {
-            app.step_item(row(SynthItem::A4), -1);
+            app.step_item(row(SongRow::A4), -1);
         }
         assert_eq!(app.synth_pads.tuning.a4_hz, A4_MIN);
         // The root stays at B and C; the engine and scale are untouched.
         for _ in 0..20 {
-            app.step_item(row(SynthItem::TuningRoot), 1);
+            app.step_item(row(SongRow::TuningRoot), 1);
         }
         assert_eq!(app.synth_pads.tuning.root, 11);
         assert_eq!(app.synth_pads.engine, crate::synth::Engine::Poly);
@@ -8163,22 +8630,15 @@ mod tests {
     }
 
     #[test]
-    fn the_synth_options_offer_tuning_files_after_the_built_in_tunings() {
+    fn the_tunings_page_offers_tuning_files_after_the_built_in_tunings() {
         use crate::synth::Builtin;
         let mut app = ready();
         app.tuning_files = vec![
             ("werckmeister3".to_string(), false),
             ("bohlen-pierce-with-a-long-name".to_string(), true),
         ];
-        app.open_tab(View::Synth);
-        press(&mut app, MENU);
-        let row = |a: SynthItem| {
-            synth_pads::SYNTH_OPTIONS
-                .iter()
-                .position(|&i| i == Item::Synth(a))
-                .unwrap()
-        };
-        let at = row(SynthItem::Tuning);
+        open_tunings_page(&mut app);
+        let at = SongRow::Tuning as usize;
         let step = |app: &mut App, d: i32| {
             let fx = app.step_item(at, d);
             let tuning = fx.iter().find_map(|e| match e {
@@ -8218,6 +8678,335 @@ mod tests {
         assert_eq!(rows, ["24-TET quarter tones", "C (not used)", "440 Hz"]);
     }
 
+    /// The last menu in `fx`.
+    fn last_menu(fx: &[Effect]) -> MenuView {
+        match fx.iter().rev().find(|e| matches!(e, Effect::Menu(_))) {
+            Some(Effect::Menu(m)) => m.clone(),
+            _ => panic!("no menu: {fx:?}"),
+        }
+    }
+
+    /// Tunings step T6, the Synth tab's Tuning row: it is the instrument's
+    /// own. Song's first ("Song's: 12-TET"), then its own, tagged OWN with
+    /// its own root and A4 under it; back to Song's takes them away. The
+    /// help says what it and the song play in, with the Tunings button;
+    /// the song and the shared synth are untouched.
+    #[test]
+    fn the_synth_tuning_row_gives_the_instrument_its_own_tuning() {
+        use crate::instrument_list::{InstrumentId, InstrumentList};
+        use crate::synth::{Builtin, TuningPick};
+        let mut app = ready();
+        let mut list = InstrumentList::new();
+        list.follow_kits(1);
+        list.follow(0b100);
+        app.set_instrument_list(&list);
+        let fm = crate::instruments::Held {
+            id: "mpfree.fm",
+            name: "FM",
+            instance: 0,
+        };
+        app.set_track_sound(2, Some(fm));
+        let track3 = list.own_of(2).unwrap();
+        app.track = 2;
+        app.open_tab(View::Synth);
+        press(&mut app, MENU);
+        let at = app.row_of(Item::Synth(SynthItem::Tuning)).unwrap();
+        let m = last_menu(&app.select(at));
+        assert_eq!(m.rows.len(), synth_pads::SYNTH_OPTIONS_SONGS.len());
+        assert_eq!(
+            m.rows[at],
+            ("Tuning".to_string(), "Song's: 12-TET".to_string())
+        );
+        assert_eq!(m.marks[at], RowMark::default());
+        assert_eq!(
+            m.facts,
+            [
+                "FM · Track 3 plays the song's tuning",
+                "The song: 12-TET, A4 = 440 Hz"
+            ]
+        );
+        assert!(!m.facts_warn);
+        assert_eq!(m.help_link, Some(tunings_page::link()));
+        assert!(m.help[0].starts_with("Song's: this instrument plays"));
+
+        // Its own: 12-TET first, tagged, its root and A4 under it.
+        let fx = app.step_item(at, 1);
+        assert_eq!(app.tunings().own(track3), Some(TuningPick::default()));
+        assert!(fx.contains(&Effect::Note(
+            "tunings: Track 3's own instrument plays its own tuning, 12-TET".to_string()
+        )));
+        let m = last_menu(&fx);
+        assert_eq!(m.rows.len(), synth_pads::SYNTH_OPTIONS.len());
+        assert_eq!(m.rows[at].1, "12-TET");
+        assert_eq!(m.marks[at].tag, "own");
+        assert_eq!(
+            (m.rows[at + 1].clone(), m.rows[at + 2].clone()),
+            (
+                ("Tuning root".to_string(), "C (not used)".to_string()),
+                ("A4".to_string(), "440 Hz".to_string())
+            )
+        );
+        // Just on D at 432 Hz, its own.
+        app.step_item(at, 1);
+        app.step_item(at + 1, 1);
+        app.step_item(at + 1, 1);
+        for _ in 0..8 {
+            app.step_item(at + 2, -1);
+        }
+        let just = TuningPick {
+            builtin: Builtin::Just,
+            root: 2,
+            a4_hz: 432,
+            ..TuningPick::default()
+        };
+        assert_eq!(app.tunings().own(track3), Some(just));
+        assert_eq!(app.tunings().song(), TuningPick::default());
+        assert_eq!(app.tunings().own(InstrumentId::SHARED_SYNTH), None);
+        let m = last_menu(&app.select(at));
+        assert_eq!(
+            m.facts.join(" "),
+            "FM · Track 3 plays its own tuning: Just (5-limit) on D, A4 = 432 Hz The song: 12-TET, A4 = 440 Hz"
+        );
+        assert!(m.help[0].starts_with("Its own tuning stays"));
+        assert!(app.take_project_edit());
+        // Back to Song's: the rows go.
+        let fx = app.step_item(at, -1);
+        assert_eq!(
+            app.tunings().own(track3).map(|p| p.builtin),
+            Some(Builtin::Equal12)
+        );
+        assert_eq!(last_menu(&fx).rows.len(), synth_pads::SYNTH_OPTIONS.len());
+        let fx = app.step_item(at, -1);
+        assert_eq!(app.tunings().own(track3), None);
+        assert!(fx.contains(&Effect::Note(
+            "tunings: Track 3's own instrument plays the song's tuning, 12-TET".to_string()
+        )));
+        let m = last_menu(&fx);
+        assert_eq!(m.rows.len(), synth_pads::SYNTH_OPTIONS_SONGS.len());
+        assert_eq!(m.rows[at].1, "Song's: 12-TET");
+        let fx = app.step_item(at, -1);
+        assert!(
+            !fx.iter().any(|e| matches!(e, Effect::Note(_))),
+            "no further"
+        );
+    }
+
+    /// A plugin that takes only MIDI notes (tunings step T6): its Tuning
+    /// row says "12-TET (can't follow)" in amber and can't be stepped (a
+    /// step or a push says why), and the Tunings page lists it so.
+    #[test]
+    fn an_instrument_that_cant_follow_says_so_and_cant_be_stepped() {
+        use crate::instrument_list::InstrumentList;
+        let mut app = ready();
+        let mut list = InstrumentList::new();
+        list.follow_kits(1);
+        list.follow(1 << 5);
+        app.set_instrument_list(&list);
+        let bassline = crate::instruments::Held {
+            id: "clap.bassline",
+            name: "Bassline",
+            instance: 0,
+        };
+        app.set_track_sound(5, Some(bassline));
+        let track6 = list.own_of(5).unwrap();
+        app.track = 5;
+        app.open_tab(View::Synth);
+        press(&mut app, MENU);
+        let at = app.row_of(Item::Synth(SynthItem::Tuning)).unwrap();
+        app.select(at);
+        let fx = app.set_tuning_facts((1 << 5, 0), [None; mpfree_seq::MAX_TRACKS]);
+        let m = last_menu(&fx);
+        assert_eq!(m.rows[at].1, "12-TET (can't follow)");
+        assert!(m.marks[at].fixed && m.marks[at].tag.is_empty());
+        assert!(m.facts_warn);
+        assert_eq!(m.facts[0], "Bassline takes MIDI notes only, so it plays");
+        assert!(app
+            .set_tuning_facts((1 << 5, 0), [None; mpfree_seq::MAX_TRACKS])
+            .is_empty());
+        let says = |fx: &[Effect]| {
+            fx.iter().any(
+                |e| matches!(e, Effect::Tell(t) if t.starts_with("Bassline takes MIDI notes only")),
+            )
+        };
+        assert!(says(&app.step_item(at, 1)));
+        assert!(says(&press(&mut app, button::DATA_PUSH)));
+        assert!(!app.menu_editing, "a push opens nothing to change");
+        assert_eq!(app.tunings().own(track6), None);
+        // The Tunings page: the same.
+        let fx = app.help_button(mpfree_ui::widgets::CARD_LINK);
+        let m = last_menu(&fx);
+        let k = m
+            .rows
+            .iter()
+            .position(|r| r.0 == "Bassline · Track 6")
+            .unwrap();
+        assert_eq!(m.rows[k].1, "12-TET (can't follow)");
+        assert!(m.marks[k].fixed);
+        assert_eq!(m.marks[k].sub, "plugin, takes MIDI only");
+        assert!(says(&app.step_item(k, 1)));
+    }
+
+    /// The Tunings page (tunings step T6): the song's rows, then every
+    /// instrument with what it plays in (the kits the tracks play, the
+    /// shared synth, the tracks' own); a kit's own root and A4 under its
+    /// row; the wheel passes over the headings; a synth's "Open its
+    /// options" arms its track on the Synth options' Tuning row; Back and
+    /// MENU go back there.
+    #[test]
+    fn the_tunings_page_lists_every_instrument_and_goes_back() {
+        use crate::instrument_list::InstrumentList;
+        use crate::synth::{Builtin, TuningPick};
+        let mut app = ready();
+        let mut list = InstrumentList::new();
+        list.follow_kits(2);
+        list.follow(0b100);
+        app.set_instrument_list(&list);
+        app.set_kit_names(vec!["Classic House".to_string(), String::new()]);
+        let fm = crate::instruments::Held {
+            id: "mpfree.fm",
+            name: "FM",
+            instance: 0,
+        };
+        app.set_track_sound(2, Some(fm));
+        let mut sends = [None; mpfree_seq::MAX_TRACKS];
+        sends[3] = Some(2);
+        app.set_track_sends(&sends);
+        let mut kit_of = [None; mpfree_seq::MAX_TRACKS];
+        kit_of[0] = Some(0);
+        app.set_tuning_facts((0, 0), kit_of);
+        let (kit1, track3) = (list.of_kit(0).unwrap(), list.own_of(2).unwrap());
+        let m = open_tunings_page(&mut app);
+        assert_eq!(m.rows[4].0, "Instruments · what each plays in");
+        assert!(m.marks[4].heading);
+        assert_eq!(
+            m.rows[5],
+            ("Classic House · kit".to_string(), "Song's".to_string())
+        );
+        assert_eq!(m.marks[5].sub, "Track 1 · keygroups, Notes and 16 Levels");
+        assert!(m.rows[6].0.starts_with("Poly · "), "{:?}", m.rows[6]);
+        assert_eq!(m.marks[6].sub, "on the pads too");
+        assert_eq!(
+            m.rows[7],
+            ("FM · Tracks 3 and 4".to_string(), "Song's".to_string())
+        );
+        assert_eq!(m.rows.len(), 8, "Kit 2 plays nowhere: not listed");
+        assert!(m.help.last().unwrap().starts_with("Gear on MIDI out"));
+        // FM in its own just intonation.
+        app.step_item(7, 1);
+        app.step_item(7, 1);
+        let m = last_menu(&app.select(7));
+        assert_eq!(
+            app.tunings().own(track3).map(|p| p.builtin),
+            Some(Builtin::Just)
+        );
+        assert_eq!(m.rows[7].1, "Just (5-limit) on C");
+        assert_eq!(m.marks[7].sub, "its own");
+        assert_eq!(m.help_heading, "FM · Tracks 3 and 4");
+        assert_eq!(m.facts, ["Its own: Just (5-limit) on C, A4 = 440 Hz"]);
+        assert_eq!(m.help_link.as_ref().unwrap().0, "Open its options");
+        // The kit in its own 12-TET: its root and A4 come under it.
+        let fx = app.step_item(5, 1);
+        assert_eq!(app.tunings().own(kit1), Some(TuningPick::default()));
+        let m = last_menu(&fx);
+        assert_eq!(m.rows.len(), 10);
+        assert_eq!(
+            (m.rows[6].clone(), m.marks[6].sub.clone()),
+            (
+                ("Tuning root".to_string(), "C (not used)".to_string()),
+                "Classic House's own".to_string()
+            )
+        );
+        assert_eq!(m.rows[7].0, "A4");
+        app.step_item(6, 1);
+        app.step_item(7, -1);
+        assert_eq!(
+            app.tunings().own(kit1).map(|p| (p.root, p.a4_hz)),
+            Some((1, 439))
+        );
+        assert!(app.select(5).iter().any(|e| matches!(e, Effect::Menu(_))));
+        assert!(
+            last_menu(&app.select(5)).help_link.is_none(),
+            "a kit has no options to open"
+        );
+        // The wheel passes over the headings and stops at the ends.
+        app.select(3);
+        assert_eq!(last_menu(&app.wheel(1)).selected, 5);
+        assert_eq!(last_menu(&app.wheel(-1)).selected, 3);
+        app.select(1);
+        assert_eq!(last_menu(&app.wheel(-1)).selected, 1);
+        assert!(app.select(0).is_empty(), "a heading is no row to pick");
+        // Back and MENU: the Synth options, on the Tuning row.
+        let fx = app.options_button();
+        let m = last_menu(&fx);
+        assert_eq!(m.title, "Synth options");
+        assert_eq!(
+            m.selected,
+            app.row_of(Item::Synth(SynthItem::Tuning)).unwrap()
+        );
+        assert_eq!(app.view(), View::Options);
+        app.help_button(mpfree_ui::widgets::CARD_LINK);
+        let m = last_menu(&press(&mut app, MENU));
+        assert_eq!(m.title, "Synth options");
+        // FM's options: Track 3 armed, its own Tuning row.
+        app.help_button(mpfree_ui::widgets::CARD_LINK);
+        let k = 9;
+        assert_eq!(last_menu(&app.select(k)).rows[k].0, "FM · Tracks 3 and 4");
+        let fx = app.help_button(mpfree_ui::widgets::CARD_LINK);
+        assert_eq!(app.track, 2);
+        let m = last_menu(&fx);
+        assert_eq!(m.title, "Synth options");
+        let at = app.row_of(Item::Synth(SynthItem::Tuning)).unwrap();
+        assert_eq!((m.selected, m.rows[at].1.as_str()), (at, "Just (5-limit)"));
+        assert_eq!(m.marks[at].tag, "own");
+    }
+
+    /// Tunings step T6, board 4 (layout spec 4e): the Pads tab's Edit pad
+    /// steps a kit's own tuning as its row on the Tunings page does, and
+    /// each kit's is named for its Tuning and its pad line.
+    #[test]
+    fn the_pads_tab_steps_a_kits_own_tuning_and_names_each_kits() {
+        use crate::instrument_list::InstrumentList;
+        use crate::synth::{Builtin, TuningPick};
+        let mut app = ready();
+        let mut list = InstrumentList::new();
+        list.follow_kits(2);
+        app.set_instrument_list(&list);
+        let (kit1, kit2) = (list.of_kit(0).unwrap(), list.of_kit(1).unwrap());
+        let song = TuningPick {
+            builtin: Builtin::Just,
+            root: 2,
+            ..TuningPick::default()
+        };
+        app.set_song_tuning(song);
+        let key = app.kit_tunings_key();
+        let names = app.kit_tunings();
+        assert_eq!(names[0].value, "Song's: Just (5-limit) on D");
+        assert_eq!(names[0].line, "tuning: song's");
+        assert_eq!(names[1], names[0]);
+        // Kit 2 on: its own, from the song's root and A4.
+        let fx = app.step_kit_tuning(1, 1);
+        assert!(
+            fx.iter()
+                .any(|e| matches!(e, Effect::Note(l) if l.starts_with("tunings: Kit 2 plays its own tuning"))),
+            "{fx:?}"
+        );
+        assert_eq!(app.tunings().own(kit1), None);
+        let own = app.tunings().own(kit2).expect("kit 2's own");
+        assert_eq!((own.builtin, own.root), (Builtin::Equal12, 2));
+        assert_ne!(app.kit_tunings_key(), key, "the loop sees it");
+        app.step_kit_tuning(1, 2);
+        let names = app.kit_tunings();
+        assert_eq!(names[1].value, "Pythagorean on D");
+        assert_eq!(names[1].line, "tuning: own");
+        assert_eq!(names[0].value, "Song's: Just (5-limit) on D");
+        // Back to the start: Song's again. A kit the list hasn't got does
+        // nothing.
+        app.step_kit_tuning(1, -9);
+        assert_eq!(app.tunings().own(kit2), None);
+        assert_eq!(app.kit_tunings_key(), key);
+        assert!(app.step_kit_tuning(7, 1).is_empty());
+    }
+
     #[test]
     fn the_synth_options_go_in_the_project_not_in_prefs() {
         use crate::synth::{Builtin, Engine, PadSettings};
@@ -8230,7 +9019,7 @@ mod tests {
         app.open_tab(View::Synth);
         press(&mut app, MENU);
         let row = |a: SynthItem| {
-            synth_pads::SYNTH_OPTIONS
+            synth_pads::SYNTH_OPTIONS_SONGS
                 .iter()
                 .position(|&i| i == Item::Synth(a))
                 .unwrap()
@@ -8251,9 +9040,16 @@ mod tests {
         step(SynthItem::Root, 1, 9);
         step(SynthItem::Layout, 1, 2);
         step(SynthItem::Rows, 1, 1);
-        step(SynthItem::Tuning, 1, Builtin::ALL.len());
-        step(SynthItem::TuningRoot, 1, 2);
-        step(SynthItem::A4, -1, 8);
+        // The song's tuning, on the Tunings page (tunings step T6).
+        open_tunings_page(&mut app);
+        let mut step = |a: SongRow, d: i32, times: usize| {
+            for _ in 0..times {
+                app.step_item(a as usize, d);
+            }
+        };
+        step(SongRow::Tuning, 1, Builtin::ALL.len());
+        step(SongRow::TuningRoot, 1, 2);
+        step(SongRow::A4, -1, 8);
         assert!(app.take_saves().is_empty(), "they aren't Prefs");
         assert!(app.take_project_edit(), "they are the project's");
         assert!(!app.take_project_edit(), "said once");
@@ -9204,8 +10000,6 @@ mod tests {
                 "Pad layout",
                 "In key rows",
                 "Tuning",
-                "Tuning root",
-                "A4",
                 "Note repeat rate",
                 "Tempo",
                 "Pad level",
@@ -9213,13 +10007,11 @@ mod tests {
             ]
         );
         assert_eq!(m.rows[0].1, "Kit");
-        assert_eq!(m.rows[5].1, "12-TET");
-        assert_eq!(m.rows[6].1, "C (not used)");
-        assert_eq!(m.rows[7].1, "440 Hz");
+        assert_eq!(m.rows[5].1, "Song's: 12-TET");
         assert_eq!(m.rows[1].1, "Off");
         assert_eq!(m.rows[3].1, "Chromatic (no scale)");
         let row = |a: SynthItem| {
-            synth_pads::SYNTH_OPTIONS
+            synth_pads::SYNTH_OPTIONS_SONGS
                 .iter()
                 .position(|&i| i == Item::Synth(a))
                 .unwrap()

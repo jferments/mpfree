@@ -34,7 +34,18 @@ pub struct Chip {
     /// Lit, as the folder icon is while the browser shows: the page it
     /// opens is showing.
     pub lit: bool,
+    /// The same said in fewer words, for a bar with no room for every
+    /// chip in full: the header shows this then, cut with "…" if it is
+    /// still too long, so the chip keeps its place, a tap still finds it,
+    /// and the chips after it keep theirs where they can. A chip without
+    /// one is left out when it doesn't fit, with the chips after it. For
+    /// a plain chip (no `inks`).
+    pub short: Option<String>,
 }
+
+/// The least room, in pixels of text, a chip's short form is shown in
+/// (about ten characters): with less the chip is left out.
+const SHORT_MIN: i32 = 72;
 
 impl Chip {
     pub fn new(text: impl Into<String>, tone: Tone) -> Chip {
@@ -45,7 +56,15 @@ impl Chip {
             inks: Vec::new(),
             ring: false,
             lit: false,
+            short: None,
         }
+    }
+
+    /// The chip saying `short` where the bar has no room for every chip
+    /// in full.
+    pub fn short(mut self, short: impl Into<String>) -> Chip {
+        self.short = Some(short.into());
+        self
     }
 
     /// The chip as wide as `widest` (or its text, if that is wider).
@@ -328,15 +347,40 @@ impl Widget for Header {
         let h = 34.min(r.h);
         let mut drawn = self.drawn_chips.borrow_mut();
         drawn.clear();
+        // Each chip's text as wide as it is in full (or as its fixed room).
+        let full: Vec<i32> = self
+            .chips
+            .iter()
+            .map(|chip| {
+                let tw = cx.measure(FontId::Sans, t.size_small, &chip.text);
+                chip.room
+                    .map_or(tw, |r| tw.max(cx.measure(FontId::Sans, t.size_small, r)))
+            })
+            .collect();
+        // With no room for every chip in full, the chips that have a short
+        // form say that, so that as few chips as can be are left out.
+        let all: i32 = full.iter().map(|tw| tw + 40 + 8).sum::<i32>() - 8;
+        let crowded = right - all < limit;
         for (i, chip) in self.chips.iter().enumerate() {
-            let tw = cx.measure(FontId::Sans, t.size_small, &chip.text);
-            let tw = chip
-                .room
-                .map_or(tw, |r| tw.max(cx.measure(FontId::Sans, t.size_small, r)));
-            let w = tw + 40;
-            if right - w < limit {
-                break;
+            let short = chip
+                .short
+                .as_deref()
+                .filter(|_| crowded && chip.inks.is_empty());
+            let said = short.unwrap_or(chip.text.as_str());
+            let mut tw = match short {
+                Some(s) => cx.measure(FontId::Sans, t.size_small, s),
+                None => full[i],
+            };
+            if right - (tw + 40) < limit {
+                // Still no room: a short form is cut to the room left;
+                // any other chip is left out, with the chips after it.
+                let room = right - limit - 40;
+                if short.is_none() || room < SHORT_MIN {
+                    break;
+                }
+                tw = room;
             }
+            let w = tw + 40;
             let cr = Rect::new(right - w, r.y + (r.h - h) / 2, w, h);
             drawn.push((i, cr));
             let well = if chip.lit { t.raised } else { t.surface };
@@ -361,14 +405,7 @@ impl Widget for Header {
             }
             if chip.inks.is_empty() {
                 let text = Rect::new(cr.x + 28, cr.y, tw + 4, h);
-                cx.text(
-                    FontId::Sans,
-                    t.size_small,
-                    text,
-                    Align::Left,
-                    t.text,
-                    &chip.text,
-                );
+                cx.text(FontId::Sans, t.size_small, text, Align::Left, t.text, said);
             } else {
                 let mut x = cr.x + 28;
                 for (part, ink) in &chip.inks {
@@ -1242,15 +1279,37 @@ impl Widget for Loading {
 
 /// A titled panel with a large heading, lines of text and buttons along the
 /// bottom. A tap on button `i` gives `Tab(i)`.
+///
+/// With a `link`, a full-width button sits among the lines, after the
+/// first `after` of them: it opens a page (the Tunings page from a Tuning
+/// row's help, tunings step T6), and a tap gives `Tab(CARD_LINK)`.
 pub struct Card {
     pub title: String,
     pub heading: String,
     pub lines: Vec<(String, Tone)>,
     pub buttons: Vec<String>,
+    pub link: Option<CardLink>,
 }
+
+/// A [`Card`]'s link: its title, a dim line under it, and a chevron at
+/// the right ("Tunings" over "The song's tuning and every instrument's").
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CardLink {
+    pub title: String,
+    pub sub: String,
+    /// It sits after this many of the card's lines.
+    pub after: usize,
+}
+
+/// The event a tap on a [`Card`]'s link gives: `Tab(CARD_LINK)`.
+pub const CARD_LINK: usize = usize::MAX - 1;
 
 const BUTTON_W: i32 = 200;
 const BUTTON_H: i32 = 54;
+/// A card's line, and its link's height with the room around it.
+const CARD_LINE_H: i32 = 30;
+const CARD_LINK_H: i32 = 62;
+const CARD_LINK_GAP: i32 = 14;
 
 impl Card {
     pub fn new(title: &str) -> Card {
@@ -1259,7 +1318,29 @@ impl Card {
             heading: String::new(),
             lines: Vec::new(),
             buttons: Vec::new(),
+            link: None,
         }
+    }
+
+    /// Where the lines start: under the title and the heading.
+    fn lines_top(r: Rect) -> Rect {
+        // Matches PaintCx::titled_panel with the default theme's padding.
+        let body = r.inset(14).take_top(26).1;
+        body.take_top(52).1.take_top(8).1
+    }
+
+    /// The link's rectangle, when the card has one: after its first
+    /// `after` lines (as many as there are), with a gap above.
+    pub fn link_rect(&self, r: Rect) -> Option<Rect> {
+        let link = self.link.as_ref()?;
+        let top = Card::lines_top(r);
+        let n = link.after.min(self.lines.len()) as i32;
+        Some(Rect::new(
+            top.x,
+            top.y + n * CARD_LINE_H + CARD_LINK_GAP / 2,
+            top.w,
+            CARD_LINK_H,
+        ))
     }
 
     pub fn button_rect(&self, r: Rect, i: usize) -> Rect {
@@ -1270,6 +1351,41 @@ impl Card {
             BUTTON_W,
             BUTTON_H,
         )
+    }
+
+    /// The link: raised and outlined, its title over its line, a chevron
+    /// at the right.
+    fn paint_link(&self, cx: &mut PaintCx, l: &CardLink, lr: Rect) {
+        let t = cx.theme.clone();
+        cx.canvas.fill_round_rect(lr, t.round(10), t.raised);
+        cx.canvas.stroke_round_rect(lr, t.round(10), 1, t.outline);
+        let (chevron, words) = lr.inset_xy(16, 0).take_right(28);
+        let words = Rect::new(words.x, lr.y, (words.w - 8).max(0), lr.h);
+        let (title, sub) = words.take_top(lr.h * 11 / 20);
+        cx.text(
+            FontId::Bold,
+            t.size_body,
+            Rect::new(title.x, title.y + 6, title.w, title.h - 6),
+            Align::Left,
+            t.text,
+            &l.title,
+        );
+        cx.text(
+            FontId::Sans,
+            t.size_small - 1.0,
+            sub.take_top(lr.h * 7 / 20).0,
+            Align::Left,
+            t.text_dim,
+            &l.sub,
+        );
+        cx.text(
+            FontId::Bold,
+            t.size_title + 4.0,
+            chevron,
+            Align::Center,
+            t.text_dim,
+            "›",
+        );
     }
 }
 
@@ -1285,8 +1401,13 @@ impl Widget for Card {
         } else {
             self.button_rect(r, 0).y - 8
         };
-        for (line, tone) in &self.lines {
-            let (row, after) = rest.take_top(30);
+        let link = self.link.as_ref().zip(self.link_rect(r));
+        for (i, (line, tone)) in self.lines.iter().enumerate() {
+            if let Some((l, lr)) = link.filter(|(l, _)| l.after == i) {
+                self.paint_link(cx, l, lr);
+                rest = rest.take_top(CARD_LINK_H + CARD_LINK_GAP).1;
+            }
+            let (row, after) = rest.take_top(CARD_LINE_H);
             if row.bottom() > limit || row.h < 24 {
                 break;
             }
@@ -1300,6 +1421,9 @@ impl Widget for Card {
             );
             rest = after;
         }
+        if let Some((l, lr)) = link.filter(|(l, _)| l.after >= self.lines.len()) {
+            self.paint_link(cx, l, lr);
+        }
         for (i, label) in self.buttons.iter().enumerate() {
             let b = self.button_rect(r, i);
             cx.canvas.fill_round_rect(b, t.round(12), t.raised);
@@ -1308,14 +1432,23 @@ impl Widget for Card {
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
+        let link = self
+            .link
+            .as_ref()
+            .zip(self.link_rect(r))
+            .map(|(l, lr)| Target::tap("link", CARD_LINK, l.title.clone(), lr));
         (0..self.buttons.len())
             .map(|i| Target::tap("button", i, self.buttons[i].clone(), self.button_rect(r, i)))
+            .chain(link)
             .collect()
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
+        }
+        if self.link_rect(r).is_some_and(|lr| lr.contains(x, y)) {
+            return Some(EventKind::Tab(CARD_LINK));
         }
         (0..self.buttons.len())
             .find(|&i| self.button_rect(r, i).contains(x, y))
@@ -1329,6 +1462,40 @@ impl Widget for Card {
 pub struct OptionRow {
     pub name: String,
     pub value: String,
+    /// A small outlined chip after the name, in the second accent ("OWN":
+    /// an instrument on a tuning of its own, tunings step T6). Empty: none.
+    pub tag: String,
+    /// A second, smaller line under the name, dim ("Tracks 3 and 4").
+    /// Empty: the name sits in the middle of the row.
+    pub sub: String,
+    /// The value can't be changed here: drawn in the warn colour with no
+    /// arrows, and a tap on it picks the row but steps nothing ("12-TET
+    /// (can't follow)", a plugin that takes only MIDI notes).
+    pub fixed: bool,
+    /// A section heading over the rows after it, in small dim capitals
+    /// ("THE SONG'S TUNING"): no value, and a tap picks nothing.
+    pub heading: bool,
+}
+
+impl OptionRow {
+    /// A row with a name and a value, as most are.
+    pub fn new(name: &str, value: &str) -> OptionRow {
+        OptionRow {
+            name: name.to_string(),
+            value: value.to_string(),
+            ..OptionRow::default()
+        }
+    }
+
+    /// Whether a tap or the wheel can pick the row (not a heading).
+    pub fn pickable(&self) -> bool {
+        !self.heading
+    }
+
+    /// Whether its arrows step its value (neither fixed nor a heading).
+    pub fn steps(&self) -> bool {
+        !self.fixed && !self.heading
+    }
 }
 
 /// A titled list of settings, each with a value and arrows to step it. A tap
@@ -1362,6 +1529,11 @@ pub struct OptionRow {
 ///
 /// With a `note`, two lines sit between the rows and the buttons (an
 /// audio clip's made-at line over Fit to tempo, layout spec 4j).
+///
+/// A row can be more than a name and a value ([`OptionRow`], tunings step
+/// T6): a section heading over the rows after it (no value, and a tap
+/// picks nothing), a tag chip after its name, a line under its name, or a
+/// fixed value, drawn in amber with no arrows, that a tap doesn't step.
 pub struct OptionList {
     pub title: String,
     pub right: String,
@@ -1728,6 +1900,21 @@ impl Widget for OptionList {
             let Some((row, value)) = self.row_rects(r, k) else {
                 continue;
             };
+            let it = &self.rows[k];
+            if it.heading {
+                // A section heading: small dim capitals at the foot of its
+                // slot, over the rows it heads.
+                let line = Rect::new(row.x + 16, row.bottom() - 24, row.w - 16, 22);
+                cx.text(
+                    FontId::Bold,
+                    t.size_small - 1.0,
+                    line,
+                    Align::Left,
+                    t.text_dim,
+                    &it.name.to_uppercase(),
+                );
+                continue;
+            }
             let on = k == self.selected;
             let narrow = OptionList::narrow(row);
             if on {
@@ -1741,20 +1928,78 @@ impl Widget for OptionList {
                 (t.size_body, ARROW_W, 24)
             };
             let name = Rect::new(row.x + 16, row.y, (value.x - row.x - gap).max(0), row.h);
-            cx.text(
+            // With a line under it, the name moves up to make room.
+            let (name, sub) = if it.sub.is_empty() {
+                (name, None)
+            } else {
+                let (top, under) = name.take_top(row.h * 11 / 20);
+                (
+                    Rect::new(top.x, top.y + 4, top.w, top.h - 4),
+                    Some(under.take_top(row.h * 7 / 20).0),
+                )
+            };
+            let drawn = cx.text(
                 if on { FontId::Bold } else { FontId::Sans },
                 px,
                 name,
                 Align::Left,
                 t.text,
-                &self.rows[k].name,
+                &it.name,
             );
+            if let Some(sub) = sub {
+                cx.text(
+                    FontId::Sans,
+                    t.size_small - 1.0,
+                    sub,
+                    Align::Left,
+                    t.text_dim,
+                    &it.sub,
+                );
+            }
+            if !it.tag.is_empty() {
+                // The chip after the name, as far as the name's room goes.
+                let w = it.tag.chars().count() as i32 * 8 + 16;
+                let x = name.x + drawn + 10;
+                if x + w <= name.right() {
+                    let chip = Rect::new(x, name.y + (name.h - 20) / 2, w, 20);
+                    // In the second accent, moved only as far as it must
+                    // to read on the row (AbleTown's orange on its grey
+                    // selected row would not).
+                    let ink = t.readable(t.accent2, if on { t.raised } else { t.surface });
+                    cx.canvas.stroke_round_rect(chip, 10, 1, ink);
+                    cx.text(
+                        FontId::Bold,
+                        t.size_small - 3.0,
+                        chip,
+                        Align::Center,
+                        ink,
+                        &it.tag.to_uppercase(),
+                    );
+                }
+            }
             let boxr = value.inset_xy(0, 7);
-            let open = on && self.editing;
+            let open = on && self.editing && !it.fixed;
             cx.canvas
                 .fill_round_rect(boxr, t.round(10), if on { t.surface } else { t.raised });
             if open {
                 cx.canvas.stroke_round_rect(boxr, t.round(10), 2, t.accent);
+            }
+            if it.fixed {
+                // Can't be changed here: no arrows, the value in amber.
+                let vpx = if cx.measure(FontId::Bold, px, &it.value) > boxr.w - 16 {
+                    t.size_small.min(px)
+                } else {
+                    px
+                };
+                cx.text(
+                    FontId::Bold,
+                    vpx,
+                    boxr.inset_xy(8, 0),
+                    Align::Center,
+                    t.warn,
+                    &it.value,
+                );
+                continue;
             }
             let (left, mid) = boxr.take_left(arrow);
             let (right, mid) = mid.take_right(arrow);
@@ -1775,13 +2020,20 @@ impl Widget for OptionList {
                 arrows,
                 "›",
             );
+            // A value too long for its box drops to the small size before
+            // it is cut ("Song's: Just (5-limit) on D").
+            let vpx = if cx.measure(FontId::Bold, px, &it.value) > mid.w {
+                t.size_small.min(px)
+            } else {
+                px
+            };
             cx.text(
                 FontId::Bold,
-                px,
+                vpx,
                 mid,
                 Align::Center,
                 if on { t.accent } else { t.text },
-                &self.rows[k].value,
+                &it.value,
             );
         }
         if let Some((track, thumb)) = self.scroll_bar(r) {
@@ -1874,8 +2126,17 @@ impl Widget for OptionList {
             let Some((row, value)) = self.row_rects(r, k) else {
                 continue;
             };
+            let it = &self.rows[k];
+            if it.heading {
+                continue;
+            }
             let reach = OptionList::arrow_reach(row, value);
-            let name = &self.rows[k].name;
+            let name = &it.name;
+            if it.fixed {
+                // No arrows: the whole row picks it.
+                out.push(Target::tap("row", k, name.clone(), row).disabled_if(k == self.selected));
+                continue;
+            }
             let pick = Rect::new(row.x, row.y, value.x - row.x, row.h);
             // The row picked already: a tap picks nothing new.
             out.push(Target::tap("row", k, name.clone(), pick).disabled_if(k == self.selected));
@@ -1900,13 +2161,16 @@ impl Widget for OptionList {
             self.row_rects(r, k)
                 .is_some_and(|(row, _)| row.contains(x, y))
         })?;
+        if !self.rows[k].steps() {
+            return None;
+        }
         let (row, _) = self.row_rects(r, k)?;
         Some(Target::tap("row", k, self.rows[k].name.clone(), row))
     }
 
     /// The held row's value, a step a detent, as its arrows step it.
     fn held_step(&mut self, t: &Target, delta: i32, _fine: bool, _r: Rect) -> Option<EventKind> {
-        if t.index >= self.rows.len() || delta == 0 {
+        if t.index >= self.rows.len() || delta == 0 || !self.rows[t.index].steps() {
             return None;
         }
         self.selected = t.index;
@@ -1965,15 +2229,19 @@ impl Widget for OptionList {
             self.row_rects(r, k)
                 .is_some_and(|(row, _)| row.contains(x, y))
         })?;
+        if self.rows[k].heading {
+            return None;
+        }
         let (row, value) = self.row_rects(r, k)?;
         let reach = OptionList::arrow_reach(row, value);
-        if value.contains(x, y) && x < value.x + reach {
+        let steps = self.rows[k].steps();
+        if steps && value.contains(x, y) && x < value.x + reach {
             self.selected = k;
             Some(EventKind::Step {
                 index: k,
                 delta: -1,
             })
-        } else if value.contains(x, y) && x >= value.right() - reach {
+        } else if steps && value.contains(x, y) && x >= value.right() - reach {
             self.selected = k;
             Some(EventKind::Step { index: k, delta: 1 })
         } else {
@@ -2179,6 +2447,7 @@ mod tests {
             .map(|i| OptionRow {
                 name: format!("option {i}"),
                 value: "a".into(),
+                ..OptionRow::default()
             })
             .collect();
         let r = Rect::new(0, 0, 800, 14 * 2 + 34 + OPTION_H * 6);
@@ -2220,6 +2489,7 @@ mod tests {
             .map(|i| OptionRow {
                 name: format!("option {i}"),
                 value: "a".into(),
+                ..OptionRow::default()
             })
             .collect();
         let r = Rect::new(0, 0, 800, 14 * 2 + 34 + OPTION_H * 6);
@@ -2291,6 +2561,7 @@ mod tests {
         o.rows = vec![OptionRow {
             name: "Armed".into(),
             value: "Bass".into(),
+            ..OptionRow::default()
         }];
         let r = Rect::new(0, 0, 250, 14 * 2 + 34 + OPTION_H * 3);
         let (a, b) = (o.tab_rect(r, 0).unwrap(), o.tab_rect(r, 1).unwrap());
@@ -2336,6 +2607,7 @@ mod tests {
             .map(|i| OptionRow {
                 name: format!("Row {i}"),
                 value: "1".into(),
+                ..OptionRow::default()
             })
             .collect();
         let r = Rect::new(0, 0, 250, 14 * 2 + 34 + OPTION_H * 4);
@@ -2383,6 +2655,7 @@ mod tests {
             .map(|i| OptionRow {
                 name: format!("Row {i}"),
                 value: "1".into(),
+                ..OptionRow::default()
             })
             .collect();
         let r = Rect::new(0, 0, 250, 14 * 2 + 34 + OPTION_H * 4 + OPTION_BUTTON_H + 8);
@@ -2425,6 +2698,7 @@ mod tests {
             .map(|i| OptionRow {
                 name: format!("option {i}"),
                 value: "a".into(),
+                ..OptionRow::default()
             })
             .collect();
         // Arrange's Record panel beside the Q-Link column: 250 px.
@@ -2485,6 +2759,118 @@ mod tests {
             Some(EventKind::Tab(1))
         );
         assert_eq!(c.touch(1, Touch::Down, 300, 100, r), None);
+    }
+
+    /// A Tuning row's help (tunings step T6): the link sits after the
+    /// facts, pushes the lines after it down, and a tap on it gives
+    /// `Tab(CARD_LINK)`; the buttons still give their index.
+    #[test]
+    fn a_card_link_sits_after_its_lines_and_taps() {
+        let mut c = Card::new("About this setting");
+        c.lines = vec![
+            ("Poly plays the song's tuning".into(), Tone::Normal),
+            ("The song: 12-TET".into(), Tone::Warn),
+            ("Help".into(), Tone::Dim),
+        ];
+        let r = Rect::new(0, 0, 460, 660);
+        assert_eq!(c.link_rect(r), None);
+        c.link = Some(CardLink {
+            title: "Tunings".into(),
+            sub: "The song's tuning and every instrument's".into(),
+            after: 2,
+        });
+        let lr = c.link_rect(r).unwrap();
+        let first = Card::lines_top(r);
+        assert_eq!(lr.y, first.y + 2 * CARD_LINE_H + CARD_LINK_GAP / 2);
+        assert_eq!((lr.x, lr.w), (first.x, first.w));
+        assert_eq!(
+            c.touch(1, Touch::Down, lr.x + 10, lr.y + 10, r),
+            Some(EventKind::Tab(CARD_LINK))
+        );
+        assert_eq!(
+            c.touch(1, Touch::Down, lr.x + 10, lr.bottom() + 40, r),
+            None
+        );
+        let t = c.targets(r);
+        assert!(t
+            .iter()
+            .any(|t| t.index == CARD_LINK && t.label == "Tunings"));
+        // The third line is drawn under the link.
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 460, 660);
+        ui.add("card", c);
+        ui.add_full_page("p", "card").unwrap();
+        let mut canvas = SoftCanvas::new(460, 660);
+        ui.paint(&mut canvas);
+        let bg = canvas.pixel(lr.right() - 2, lr.bottom() + 20);
+        let line = lr.bottom() + CARD_LINK_GAP / 2..lr.bottom() + CARD_LINK_GAP / 2 + CARD_LINE_H;
+        let inked = line
+            .flat_map(|y| (lr.x..lr.x + 60).map(move |x| (x, y)))
+            .any(|(x, y)| canvas.pixel(x, y) != bg);
+        assert!(inked, "the line after the link is drawn under it");
+    }
+
+    /// The Tunings page's rows (tunings step T6): a heading is never
+    /// picked or stepped, a fixed value has no arrows (a tap on it picks
+    /// the row), and a tagged row with a line under its name steps as
+    /// any other.
+    #[test]
+    fn heading_and_fixed_rows_pick_and_step_only_as_they_should() {
+        let mut o = OptionList::new("Tunings");
+        o.rows = vec![
+            OptionRow {
+                name: "The song's tuning".into(),
+                heading: true,
+                ..OptionRow::default()
+            },
+            OptionRow {
+                name: "FM · Track 3".into(),
+                value: "Meantone".into(),
+                tag: "own".into(),
+                sub: "Tracks 3 and 4".into(),
+                ..OptionRow::default()
+            },
+            OptionRow {
+                name: "Bassline · Track 6".into(),
+                value: "12-TET (can't follow)".into(),
+                fixed: true,
+                ..OptionRow::default()
+            },
+        ];
+        o.selected = 1;
+        let r = Rect::new(0, 0, 800, 14 * 2 + 34 + OPTION_H * 6);
+        let (head, head_value) = o.row_rects(r, 0).unwrap();
+        assert_eq!(o.touch(1, Touch::Down, head.x + 20, head.y + 10, r), None);
+        assert_eq!(o.touch(1, Touch::Up, head.x + 20, head.y + 10, r), None);
+        assert_eq!(
+            o.touch(1, Touch::Down, head_value.x + 5, head_value.y + 10, r),
+            None
+        );
+        assert!(o.held(head.x + 20, head.y + 10, r).is_none());
+        let (_, value) = o.row_rects(r, 1).unwrap();
+        assert_eq!(
+            o.touch(1, Touch::Down, value.right() - 5, value.y + 10, r),
+            Some(EventKind::Step { index: 1, delta: 1 })
+        );
+        let (fixed, fixed_value) = o.row_rects(r, 2).unwrap();
+        assert_eq!(
+            o.touch(1, Touch::Down, fixed_value.x + 5, fixed_value.y + 10, r),
+            None
+        );
+        assert_eq!(
+            o.touch(1, Touch::Up, fixed_value.x + 5, fixed_value.y + 10, r),
+            Some(EventKind::Select(2))
+        );
+        assert!(o.held(fixed.x + 20, fixed.y + 10, r).is_none());
+        let t = o.targets(r);
+        assert!(!t.iter().any(|t| t.index == 0));
+        assert!(!t.iter().any(|t| t.index == 2 && t.id != "row"));
+        assert!(t.iter().any(|t| t.index == 1 && t.id == "row-more"));
+        // All three paint inside the list.
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 800, r.h);
+        ui.add("o", o);
+        ui.add_full_page("p", "o").unwrap();
+        let mut canvas = SoftCanvas::new(800, r.h);
+        ui.paint(&mut canvas);
     }
 
     #[test]
@@ -2548,6 +2934,7 @@ mod tests {
         opts.rows.push(OptionRow {
             name: "Velocity curve".into(),
             value: "Linear".into(),
+            ..OptionRow::default()
         });
         ui.add("opts", opts);
         ui.add_page("p", "col(header:60, row(pads:*, col(kits, level:90, stats, log), col(card, opts)):*, hint:24)")
@@ -2613,6 +3000,104 @@ mod tests {
         assert_eq!((cpu1, ram1), (cpu100, ram100));
         // A chip with no room is as wide as its text.
         assert!(Chip::new("CPU 1 %", Tone::Good).room.is_none());
+    }
+
+    /// A chip too long for the bar is left out, with the chips after it.
+    /// One with a short form says that instead, cut to the room left if
+    /// that is too long as well, and stays where a tap finds it; and it
+    /// says its short form before a chip after it is left out.
+    #[test]
+    fn a_chip_with_a_short_form_keeps_its_place() {
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        let mut h = Header::app("Play");
+        h.folder_icon = Some(false);
+        ui.add("header", h);
+        ui.add_full_page("p", "col(header:60)").unwrap();
+        let bar = ui.rect_of("header").unwrap();
+        let limit = ui
+            .get::<Header>("header")
+            .unwrap()
+            .tab_rect(bar, APP_TABS.len())
+            .x;
+        let size = ui.theme.size_small;
+        let status = || Chip::new("CPU 24 %  RAM 38 %", Tone::Good).room("CPU 100 %  RAM 100 %");
+        let long = "Phrase: Six eight ostinato, latched · 120 BPM";
+        let drawn = |ui: &mut Ui, chips: Vec<Chip>| -> Vec<Option<Rect>> {
+            let n = chips.len();
+            ui.get_mut::<Header>("header").unwrap().chips = chips;
+            let mut c = SoftCanvas::new(1280, 800);
+            ui.paint(&mut c);
+            let h = ui.get::<Header>("header").unwrap();
+            (0..n).map(|i| h.chip_rect(i)).collect()
+        };
+        // As it was: no room, no chip, and none after it.
+        let got = drawn(
+            &mut ui,
+            vec![
+                status(),
+                Chip::new(long, Tone::Warn),
+                Chip::new("MAKE", Tone::Dim),
+            ],
+        );
+        assert!(got[0].is_some() && got[1].is_none() && got[2].is_none());
+        // Its short form fits: all of it, as wide as its words.
+        let short = "Six eight ostinato";
+        let got = drawn(
+            &mut ui,
+            vec![status(), Chip::new(long, Tone::Warn).short(short)],
+        );
+        let r = got[1].expect("the short form shows");
+        assert_eq!(r.w, ui.fonts.measure(FontId::Sans, size, short) + 40);
+        assert!(r.x >= limit);
+        assert_eq!(
+            ui.touch(1, Touch::Down, r.x + 5, 30).map(|e| e.kind),
+            Some(EventKind::Select(1)),
+            "a tap finds it"
+        );
+        ui.touch(1, Touch::Up, r.x + 5, 30);
+        // A short form too long as well is cut to the room: the chip
+        // reaches from the chip before it to where the tabs end.
+        let got = drawn(
+            &mut ui,
+            vec![status(), Chip::new(long, Tone::Warn).short(long)],
+        );
+        let cut = got[1].expect("cut, not left out");
+        assert_eq!(cut.x, limit);
+        assert_eq!(cut.right(), got[0].unwrap().x - 8);
+        // A chip that fits says all of it, short form or not.
+        let got = drawn(
+            &mut ui,
+            vec![status(), Chip::new("Arp off", Tone::Dim).short("Off")],
+        );
+        let fits = got[1].unwrap();
+        assert_eq!(fits.w, ui.fonts.measure(FontId::Sans, size, "Arp off") + 40);
+        // A chip that fits alone, but leaves no room for the chip after
+        // it, gives up its extra words first: both show.
+        let (all, name) = ("Phrase: Offbeat pump · 120 BPM", "Phrase: Offbeat pump");
+        let make = || Chip::new("MAKE", Tone::Dim);
+        let got = drawn(&mut ui, vec![status(), Chip::new(all, Tone::Warn), make()]);
+        assert!(got[1].is_some() && got[2].is_none(), "as it was: {got:?}");
+        let got = drawn(
+            &mut ui,
+            vec![status(), Chip::new(all, Tone::Warn).short(name), make()],
+        );
+        assert_eq!(
+            got[1].unwrap().w,
+            ui.fonts.measure(FontId::Sans, size, name) + 40
+        );
+        let last = got[2].expect("the chip after it keeps its place");
+        assert!(last.x >= limit);
+        assert_eq!(last.right(), got[1].unwrap().x - 8);
+        // With next to no room left even the short form is left out.
+        let got = drawn(
+            &mut ui,
+            vec![
+                status(),
+                Chip::new("Arp: Up 1/16, latched · 120 BPM", Tone::Warn),
+                Chip::new(long, Tone::Warn).short(short),
+            ],
+        );
+        assert!(got[1].is_some() && got[2].is_none());
     }
 
     #[test]

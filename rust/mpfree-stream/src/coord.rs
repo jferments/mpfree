@@ -46,7 +46,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io;
-use std::os::unix::fs::FileExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
@@ -148,11 +147,25 @@ pub trait Device: Send {
     fn poll(&mut self) -> Option<ReadReply>;
 }
 
+/// One positional read: `pread` on Unix, `ReadFile` with an offset on
+/// Windows. The layer only runs on Linux; the Windows arm is here so the
+/// USB creator, which reaches this crate through the grain engine's 8-point
+/// read, still builds for Windows.
+#[cfg(unix)]
+fn read_once(file: &File, buf: &mut [u8], at: u64) -> io::Result<usize> {
+    std::os::unix::fs::FileExt::read_at(file, buf, at)
+}
+
+#[cfg(windows)]
+fn read_once(file: &File, buf: &mut [u8], at: u64) -> io::Result<usize> {
+    std::os::windows::fs::FileExt::seek_read(file, buf, at)
+}
+
 /// Read `len` bytes at `at`, or as many as the file has.
 pub fn read_at(file: &File, at: u64, buf: &mut [u8]) -> io::Result<usize> {
     let mut got = 0;
     while got < buf.len() {
-        match file.read_at(&mut buf[got..], at + got as u64) {
+        match read_once(file, &mut buf[got..], at + got as u64) {
             Ok(0) => break,
             Ok(k) => got += k,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}

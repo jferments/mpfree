@@ -94,6 +94,7 @@
 pub mod clips;
 pub mod files;
 pub mod host;
+pub mod loop_play;
 mod pool;
 pub mod retime;
 pub mod save;
@@ -101,9 +102,15 @@ pub mod streaming;
 pub mod stretch;
 
 pub use clips::{
-    Answer, Change, ClipPlay, ClipRegion, Plays, DECLICK, MAX_CHANGES, MAX_CLIP_REGIONS, VOICES,
+    Answer, Change, ClipPlay, ClipRegion, LoopPlay, Plays, DECLICK, MAX_CHANGES, MAX_CLIP_REGIONS,
+    VOICES,
 };
 use clips::{Glide, Lane, Mode, Shape, Window, NO_TAKE_ID};
+pub use loop_play::{LoopPlayer, LoopRun, LOOP_VOICES};
+
+/// Each loop's buffer for the period, by its id
+/// ([`AudioTracks::process_with_loops`]).
+type LoopSource<'a, 's> = &'a dyn Fn(u128) -> Option<&'s [f32]>;
 use pool::Pool;
 pub use pool::CHUNK;
 pub use retime::{Piece, Retime};
@@ -1048,7 +1055,7 @@ pub fn tick_after(map: &TempoMap, a: f64, frames: f64, rate: u32) -> f64 {
 
 /// Equal-power fade-in over [`FADE`] frames: `xfade_in(j)` for frame `j`
 /// of the fade; the matching fade-out is `xfade_in(FADE - j)`.
-fn fade_table() -> [f32; FADE + 1] {
+pub(crate) fn fade_table() -> [f32; FADE + 1] {
     let mut t = [0.0; FADE + 1];
     for (j, v) in t.iter_mut().enumerate() {
         *v = ((j as f64 / FADE as f64) * std::f64::consts::FRAC_PI_2).sin() as f32;
@@ -2988,6 +2995,38 @@ impl AudioTracks {
         out: &mut [f32],
         answers: &[Answer],
     ) {
+        self.process_inner(block, map, input, out, answers, None);
+    }
+
+    /// [`AudioTracks::process_with`], with the tracks' loops (phase 4,
+    /// [`loop_play`]): `loops` planned on the same block and answers
+    /// ([`LoopPlayer::plan`]), and `src` each loop's buffer for the period
+    /// by its id (the looper's slot buffer, rendered from `loops`' runs).
+    /// Each track's loops go into its sound before its level, pan, mute and
+    /// solo, so they act on a loop as on its regions. Real-time safe.
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_with_loops<'s>(
+        &mut self,
+        block: &Block,
+        map: &TempoMap,
+        input: &[f32],
+        out: &mut [f32],
+        answers: &[Answer],
+        loops: &LoopPlayer,
+        src: &dyn Fn(u128) -> Option<&'s [f32]>,
+    ) {
+        self.process_inner(block, map, input, out, answers, Some((loops, src)));
+    }
+
+    fn process_inner<'s>(
+        &mut self,
+        block: &Block,
+        map: &TempoMap,
+        input: &[f32],
+        out: &mut [f32],
+        answers: &[Answer],
+        loops: Option<(&LoopPlayer, LoopSource<'_, 's>)>,
+    ) {
         let n = (block.frames as usize)
             .min(input.len() / 2)
             .min(out.len() / 2)
@@ -3066,6 +3105,12 @@ impl AudioTracks {
         while m < markers.len() {
             self.marker(map, markers[m].mark, markers[m].frame);
             m += 1;
+        }
+        // Each track's loops, before its level (phase 4).
+        if let Some((loops, src)) = loops {
+            for (t, tr) in self.tracks.iter_mut().enumerate() {
+                loops.mix_into(t, src, &mut tr.buf[..2 * n]);
+            }
         }
         self.mix(n, out);
         // Where the tracks play next, for the player, and the takes that
@@ -3821,6 +3866,8 @@ impl AudioTracks {
     /// period's start: as it is if nothing played before; else carried
     /// on, a new stamp taken in, or switched to as a change.
     fn begin(&mut self, t: usize, plays: &Plays, muted: bool, f: u64, tick: f64, map: &TempoMap) {
+        // A loop is the looper's (`loop_play`): nothing of the regions'.
+        let plays = &plays.for_regions();
         let heard = if muted { 0.0 } else { 1.0 };
         let mode = self.tracks[t].lane.mode;
         match (mode, plays) {
@@ -3841,6 +3888,8 @@ impl AudioTracks {
                         clip: c.clip,
                         voice: self.start_voice(t, c, f, tick),
                     },
+                    // Made nothing above (`for_regions`).
+                    Plays::Loop(_) => Mode::Nothing,
                 };
                 self.tracks[t].lane.mode = mode;
             }
@@ -3871,6 +3920,11 @@ impl AudioTracks {
     /// side, where lines fall between frames, and which pass or region a
     /// voice is in at a line can't hang on that.
     fn change(&mut self, t: usize, c: &Change, f: u64, map: &TempoMap) {
+        // A loop is the looper's (`loop_play`): nothing of the regions'.
+        let c = &Change {
+            plays: c.plays.for_regions(),
+            ..*c
+        };
         let tick = c.tick;
         let rate = self.rate;
         // A ring from before ends with the usual fade.
@@ -3904,6 +3958,8 @@ impl AudioTracks {
                 clip: nc.clip,
                 voice: self.start_voice(t, nc, f, tick),
             },
+            // Made nothing above (`for_regions`).
+            Plays::Loop(_) => Mode::Nothing,
         };
         let takes = &self.takes;
         let lane = &mut self.tracks[t].lane;

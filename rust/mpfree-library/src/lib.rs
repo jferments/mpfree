@@ -25,6 +25,10 @@
 //!   can be put back ([`Library::restore`]) until the Trash is emptied.
 //! - **Off the UI and audio threads:** [`Worker`] runs every operation on
 //!   one thread named `mpfree-library` and hands back what happened.
+//! - **The SD card is read only** ([`Place::Card`]): while the pad player
+//!   has the card open ([`Library::set_card`]), its folders are listed and
+//!   its files read and copied out like a place's, and nothing on it is
+//!   ever written, renamed, moved or deleted.
 
 #![forbid(unsafe_code)]
 
@@ -51,6 +55,7 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The folder inside the data folder.
@@ -88,6 +93,10 @@ pub enum Place {
     Patterns,
     Recordings,
     Trash,
+    /// The SD card, while it is open (the hardware page's step S1: the
+    /// card mounted read only). Not in `library/`: [`Library::set_card`]
+    /// gives its folder, and it is never written.
+    Card,
 }
 
 impl Place {
@@ -114,12 +123,15 @@ impl Place {
             Place::Patterns => "Patterns",
             Place::Recordings => "Recordings",
             Place::Trash => TRASH,
+            // Not a folder of the library's: never joined to its root.
+            Place::Card => "",
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
             Place::Trash => "Trash",
+            Place::Card => "SD card",
             p => p.folder(),
         }
     }
@@ -373,7 +385,14 @@ fn is_real_dir(p: &Path) -> bool {
 #[derive(Clone, Debug)]
 pub struct Library {
     root: PathBuf,
+    /// The SD card's folder while it is open, shared by every clone (the
+    /// worker's and the browser's).
+    card: Arc<RwLock<Option<PathBuf>>>,
 }
+
+/// Folders the computers a card has been in leave at its top, never the
+/// musician's own: not listed there.
+const CARD_SYSTEM: [&str; 2] = ["System Volume Information", "$RECYCLE.BIN"];
 
 impl Library {
     /// The library in `data` (the folder given with `--data`): makes
@@ -388,7 +407,10 @@ impl Library {
         }
         let root = data.join(LIBRARY);
         Self::ensure_dir(&root)?;
-        let lib = Library { root };
+        let lib = Library {
+            root,
+            card: Arc::default(),
+        };
         for p in Place::ALL.into_iter().chain([Place::Trash]) {
             Self::ensure_dir(&lib.root.join(p.folder()))?;
         }
@@ -418,10 +440,27 @@ impl Library {
         &self.root
     }
 
+    /// Gives the SD card's folder once the pad player has it open (read
+    /// only: the card is mounted so), or `None` once it is closed. Every
+    /// clone of this library sees it.
+    pub fn set_card(&self, folder: Option<PathBuf>) {
+        *self.card.write().unwrap_or_else(|e| e.into_inner()) = folder;
+    }
+
+    /// The SD card's folder, while it is open.
+    pub fn card(&self) -> Option<PathBuf> {
+        self.card.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     /// The path of `loc`. Every folder on the way must be a real folder;
     /// the last part may be anything, or nothing yet.
     fn path(&self, loc: &Loc) -> io::Result<PathBuf> {
-        let mut p = self.root.join(loc.place.folder());
+        let mut p = if loc.place == Place::Card {
+            self.card()
+                .ok_or_else(|| err(io::ErrorKind::NotFound, "the SD card isn't open".into()))?
+        } else {
+            self.root.join(loc.place.folder())
+        };
         if !is_real_dir(&p) {
             return Err(err(
                 io::ErrorKind::NotFound,
@@ -492,6 +531,12 @@ impl Library {
                 continue;
             };
             if !valid_name(&name) {
+                continue;
+            }
+            if folder.place == Place::Card
+                && folder.is_top()
+                && CARD_SYSTEM.contains(&name.as_str())
+            {
                 continue;
             }
             let Ok(ft) = e.file_type() else { continue };
@@ -1110,11 +1155,21 @@ impl Library {
     }
 
     /// Bytes used by a place (the Trash included), counted on the disk.
+    /// The SD card isn't counted: it isn't the library's.
     pub fn bytes_in(&self, place: Place) -> u64 {
+        if place == Place::Card {
+            return 0;
+        }
         tree_bytes(&self.root.join(place.folder()), 0)
     }
 
     fn check_writable(&self, loc: &Loc) -> io::Result<()> {
+        if loc.place == Place::Card {
+            return Err(err(
+                io::ErrorKind::PermissionDenied,
+                "the SD card is read only: copy from it into the library to change it".into(),
+            ));
+        }
         if loc.place == Place::Trash {
             return Err(err(
                 io::ErrorKind::PermissionDenied,
@@ -1243,6 +1298,128 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// Every file and folder under `d`, with its bytes (folders empty).
+    fn tree(d: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut stack = vec![d.to_path_buf()];
+        while let Some(p) = stack.pop() {
+            for e in fs::read_dir(&p).unwrap().flatten() {
+                let m = fs::symlink_metadata(e.path()).unwrap();
+                if m.is_dir() {
+                    stack.push(e.path());
+                }
+                let bytes = if m.is_file() {
+                    fs::read(e.path()).unwrap()
+                } else {
+                    Vec::new()
+                };
+                out.push((e.path(), bytes));
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn the_sd_card_reads_like_a_place_and_nothing_on_it_is_ever_changed() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let card = d.join("card");
+        fs::create_dir_all(card.join("Drums")).unwrap();
+        fs::create_dir_all(card.join("System Volume Information")).unwrap();
+        fs::write(card.join("Break 92.wav"), b"riff").unwrap();
+        fs::write(card.join("Drums/Kick.wav"), b"kick").unwrap();
+        fs::write(card.join("Drums/.Hidden.wav"), b"x").unwrap();
+        std::os::unix::fs::symlink(d.join("library"), card.join("library link")).unwrap();
+        let top = Loc::top(Place::Card);
+        let brk = top.join("Break 92.wav").unwrap();
+        // Not open: nothing to read.
+        assert_eq!(lib.list(&top).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert!(lib.card().is_none());
+        // Open: every clone sees it.
+        let other = lib.clone();
+        lib.set_card(Some(card.clone()));
+        assert_eq!(other.card(), Some(card.clone()));
+        let names = |l: &Loc| -> Vec<String> {
+            other.list(l).unwrap().into_iter().map(|e| e.name).collect()
+        };
+        // The computers' own folder and links are left out, as hidden files are.
+        assert_eq!(names(&top), ["Drums", "Break 92.wav"]);
+        assert_eq!(names(&top.join("Drums").unwrap()), ["Kick.wav"]);
+        assert_eq!(other.read(&brk, 100).unwrap(), b"riff");
+        assert!(other.file_path(&brk).unwrap().starts_with(&card));
+        assert!(other.list(&top.join("library link").unwrap()).is_err());
+        assert_eq!(Place::Card.label(), "SD card");
+        assert_eq!(top.display(), "SD card");
+        let before = tree(&card);
+        // Nothing on it is written, renamed, moved or deleted.
+        let samples = Loc::top(Place::Samples);
+        let x = lib.write_new(&samples, "x.wav", b"mine").unwrap();
+        let denied = |r: io::Result<()>, what: &str| {
+            let e = r.expect_err(what);
+            assert_eq!(e.kind(), io::ErrorKind::PermissionDenied, "{what}: {e}");
+            assert!(
+                e.to_string().contains("SD card is read only"),
+                "{what}: {e}"
+            );
+        };
+        denied(lib.new_folder(&top, "New").map(drop), "new folder");
+        denied(
+            lib.new_folder_unsynced(&top, "New").map(drop),
+            "new folder, unsynced",
+        );
+        denied(lib.write_new(&top, "y.wav", b"y").map(drop), "write");
+        denied(
+            lib.write_new_unsynced(&top, "y.wav", b"y").map(drop),
+            "write, unsynced",
+        );
+        denied(lib.rename(&brk, "Other.wav").map(drop), "rename");
+        denied(lib.delete(&brk).map(drop), "delete");
+        denied(lib.move_to(&brk, &samples).map(drop), "move out");
+        denied(lib.move_to(&x, &top).map(drop), "move in");
+        denied(lib.copy(&x, &top).map(drop), "copy in");
+        denied(
+            lib.move_file_unsynced(&brk, &samples, "b.wav").map(drop),
+            "move a file out",
+        );
+        denied(
+            lib.link_file_unsynced(&brk, &samples, "b.wav").map(drop),
+            "link out",
+        );
+        denied(
+            lib.link_file_unsynced(&x, &top, "b.wav").map(drop),
+            "link in",
+        );
+        denied(
+            lib.save_kit(&top, "Kit", "mpfree-kit 1\n", &[]).map(drop),
+            "save a kit",
+        );
+        assert_eq!(lib.bytes_in(Place::Card), 0);
+        assert_eq!(tree(&card), before);
+        // Copied out, it is the library's.
+        let got = lib.copy(&brk, &samples).unwrap();
+        assert_eq!(got.place, Place::Samples);
+        assert_eq!(lib.read(&got, 100).unwrap(), b"riff");
+        let kit = lib.copy(&top.join("Drums").unwrap(), &samples).unwrap();
+        assert_eq!(names(&kit), ["Kick.wav"]);
+        assert_eq!(tree(&card), before);
+        // Search stays in the library.
+        assert!(lib
+            .search("break", 10)
+            .unwrap()
+            .iter()
+            .all(|(l, _)| l.place != Place::Card));
+        // A card place is never read back from a saved list.
+        assert_eq!(Loc::from_line(&brk.to_line()), None);
+        // Closed: nothing to read again.
+        lib.set_card(None);
+        assert_eq!(
+            other.read(&brk, 100).unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

@@ -45,6 +45,9 @@ pub struct LoopOuts {
     /// The loop Listen played in the period. Without one, the listen
     /// buffer is all zero.
     listen_of: Option<usize>,
+    /// The loops on audio tracks in the period (`Looper::play`): their
+    /// track plays them, so they are not in the looper's mix.
+    tracked: u32,
 }
 
 impl LoopOuts {
@@ -58,6 +61,7 @@ impl LoopOuts {
             sounded: 0,
             resampling: 0,
             listen_of: None,
+            tracked: 0,
         }
     }
 
@@ -104,7 +108,8 @@ impl LoopOuts {
     /// as both have) as the looper's mix: what Listen played first, then
     /// each frame's loops summed in the looper's order, the loops not
     /// resampling by number and then the ones resampling by number. The
-    /// same bits as [`crate::Looper::process`] adds.
+    /// same bits as [`crate::Looper::process`] adds. A loop on an audio
+    /// track ([`LoopOuts::on_track`]) is its track's, so it isn't in it.
     pub fn mix_into(&self, out: &mut [f32]) {
         let n = 2 * self.frames.min(out.len() / 2);
         let out = &mut out[..n];
@@ -117,7 +122,7 @@ impl LoopOuts {
         let mut m = 0;
         for last in [false, true] {
             for k in 0..MAX_LOOPS {
-                if self.sounded(k) && self.resampled(k) == last {
+                if self.sounded(k) && !self.on_track(k) && self.resampled(k) == last {
                     order[m] = k;
                     m += 1;
                 }
@@ -175,11 +180,24 @@ impl LoopOuts {
         self.frames = frames.min(self.cap);
         self.sounded = 0;
         self.resampling = 0;
+        self.tracked = 0;
     }
 
     /// The loops resampling in this period.
     pub(crate) fn set_resampling(&mut self, mask: u32) {
         self.resampling = mask;
+    }
+
+    /// The loops on audio tracks in this period.
+    pub(crate) fn set_on_track(&mut self, mask: u32) {
+        self.tracked = mask;
+    }
+
+    /// Loop `k` was on an audio track in the last period
+    /// ([`crate::Looper::play`]): its buffer is for its track, and the
+    /// looper's mix ([`LoopOuts::mix_into`]) leaves it out.
+    pub fn on_track(&self, k: usize) -> bool {
+        k < MAX_LOOPS && self.tracked & (1 << k) != 0
     }
 
     /// Loop `k`'s `frames` frames from frame `off`, for its run to add to
@@ -194,10 +212,10 @@ impl LoopOuts {
 
     /// Add the frames from `off` of the loops in `mask` that sounded, by
     /// number, to `to` (interleaved, as long as it is): what a loop
-    /// resampling hears.
+    /// resampling hears (the looper's mix: not the loops on tracks).
     pub(crate) fn sum_into(&self, mask: u32, off: usize, to: &mut [f32]) {
         for k in 0..MAX_LOOPS {
-            if mask & self.sounded & (1 << k) != 0 {
+            if mask & self.sounded & !self.tracked & (1 << k) != 0 {
                 let b = &self.bufs[k * 2 * self.cap + 2 * off..][..to.len()];
                 for (t, v) in to.iter_mut().zip(b) {
                     *t += v;

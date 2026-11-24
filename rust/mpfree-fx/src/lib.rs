@@ -142,9 +142,9 @@ pub use grains::Granulator;
 pub use lofi::{LoFi, PRESETS as LOFI_PRESETS};
 pub use master::{MasterSafety, MasterStats};
 pub use mixer::{
-    param_applies as mixer_param_applies, strip_params, CapturePoint, Edit, FreezeState, Mixer,
-    MixerConfig, MixerStats, StripId, BUSES, CAPTURES, FREEZE_FADE_MS, MAX_INPUTS, MAX_PADS,
-    MAX_SLOTS, MAX_TRACKS, RETURNS, SILENT_DB,
+    param_applies as mixer_param_applies, strip_params, CaptureFrom, CapturePoint, CaptureRefusal,
+    Edit, FreezeState, Mixer, MixerConfig, MixerStats, StripId, BUSES, CAPTURES, FREEZE_FADE_MS,
+    MAX_INPUTS, MAX_PADS, MAX_SLOTS, MAX_TRACKS, RETURNS, SILENT_DB,
 };
 pub use modfx::{Chorus, Flanger, Phaser};
 pub use motion::{AutoPan, RingMod, Rotary, Tremolo};

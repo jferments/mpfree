@@ -62,7 +62,7 @@ in ─ Gate ─ up 4x ─ Boost ─ tightening high-pass ─ stage 1 (ADAA) ─ 
 
 **The gate** (Gate 0 is off; 1 to 10 put the threshold at -80 to -35 dBFS) runs at the base rate on the input. It opens over half a millisecond the frame a peak passes the threshold, holds 30 ms after the level falls 6 dB under it (the hysteresis stops chatter), then fades 80 dB over Release. It sits before everything, so hiss is shut before the gain lifts it.
 
-**4x oversampling** between polyphase IIR half-bands (Drive's Eco design, two stages of five and four all-pass sections) carries everything from the boost to the power stage, so the clipping and the filters between the stages run at 176.4 kHz.
+**4x oversampling** between polyphase IIR half-bands (Drive's Eco design, two stages of five and four all-pass sections) carries everything from the boost to the power stage, so the clipping and the filters between the stages run at 176.4 kHz. Each stage's up-sampler and down-sampler are one unrolled `oversample::IirPair`, whose states are flushed of what is too small to hear every 32 frames counted from the stream's start, as Drive's Eco does (DSP quality step 2.3B: the same output to the bit as the list-based `IirUp2` and `IirDown2` with a flush after every section, for about a tenth fewer instructions).
 
 **Boost** (Off, Tight, Treble). **Tight** is a Tube Screamer style branch: a 720 Hz one-pole high-pass, 21.6 dB and soft clipping, added to the input, the sum cut under 120 Hz and rolled off at 3 kHz, +3 dB: the mid hump with the drive low and the level up, as metal players use it. **Treble** is a treble booster: a 1.5 kHz one-pole high-pass into 20 dB and a curve biased by 0.3, so one side clips first. Both are crossfaded on a change.
 
@@ -151,7 +151,7 @@ Listening: the Amp PR's blind, loudness-matched A/B page (main against the PR, s
 
 ## 8. Cost
 
-The instruction gate (rustc 1.97.0, a 128-frame stereo block at 44.1 kHz): Amp (Crunch) 319.6k instructions (206.6k before the Amp PR, 1.55 times), Amp (Lead, Gain 10) 341.6k (232.8k, 1.47 times). The gate, the boost and Depth cost nothing while off; Sag's follower runs once a frame. The device round measures the real share (amp-device-checks.md in project files). The lever if it is too dear: the tone stack back at the base rate, at a few dB of alias at Gain 10.
+The instruction gate (rustc 1.97.0, a 128-frame stereo block at 44.1 kHz): Amp (Crunch) 319.6k instructions (206.6k before the Amp PR, 1.55 times), Amp (Lead, Gain 10) 341.6k (232.8k, 1.47 times). The unrolled half-bands of DSP quality step 2.3B took 10.3 % and 9.6 % off those ([DSP quality](dsp-quality.md#step-23b-part-1-the-half-bands-bookkeeping)). The gate, the boost and Depth cost nothing while off; Sag's follower runs once a frame. The device round measures the real share (amp-device-checks.md in project files). The lever if it is too dear: the tone stack back at the base rate, at a few dB of alias at Gain 10.
 
 ## 9. Pitfalls and tests
 

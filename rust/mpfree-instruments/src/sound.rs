@@ -674,6 +674,10 @@ impl<E: Node + ?Sized> Node for Sound<E> {
         self.engine.set_tuning(tuning);
     }
 
+    fn follows_tuning(&self) -> bool {
+        self.engine.follows_tuning()
+    }
+
     fn hears(&self, ctl: Ctl) -> bool {
         self.engine.hears(ctl)
     }

@@ -367,6 +367,7 @@ impl Widget for RecList {
                     what: what.clone(),
                     add: false,
                     pinned: false,
+                    alert: crate::play_widgets::RecAlert::None,
                 },
             );
             cx.text(

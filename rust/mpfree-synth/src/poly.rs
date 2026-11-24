@@ -46,6 +46,7 @@ use crate::dsp::*;
 use crate::expr::{expr_coef, NoteExprs, VoiceExpr};
 use crate::osc::{self, Classic, Shape, Super, SAWS};
 use crate::params::*;
+use crate::poly_filter::{PolyDesign, PolyFilter, PolyGlide};
 use crate::pressure::{lfo_gate, swell_gain, Depths, Slot, MAX_TARGETS};
 use crate::table_osc::{self, Restart, Run, Warp, WARP_FM};
 use crate::voice::{
@@ -125,9 +126,12 @@ struct Voice {
     fenv: Adsr,
     /// The filter's coefficients, moving across each control step; a
     /// fresh note jumps to its own (`fsnap`).
-    coefs: FilterGlide,
+    coefs: PolyGlide,
     fsnap: bool,
-    filt: [Filter; 2],
+    filt: [PolyFilter; 2],
+    /// Works the coefficients out (keeps LP 24's shape for the last
+    /// resonance).
+    design: PolyDesign,
     /// Gain from velocity, the LFO and pressure, ramped across each control
     /// step by `gain_inc` a frame.
     gain: f32,
@@ -174,11 +178,11 @@ struct Voice {
     tsnap: bool,
     kill_gain: f32,
     kill_step: f32,
-    /// The inputs the phase increments and the filter coefficients were
-    /// last worked out from (bit patterns), so a control step whose inputs
-    /// have not moved skips the work: the numbers would come out the same.
+    /// The inputs the phase increments were last worked out from (bit
+    /// patterns), so a control step whose inputs have not moved skips the
+    /// work: the numbers would come out the same. (The filter's are kept
+    /// in `design`.)
     pitch_key: [u32; 8],
-    coef_key: [u32; 3],
 }
 
 /// A key no real input matches (a NaN pattern arithmetic never makes).
@@ -212,9 +216,10 @@ impl Voice {
             pw2: 0.5,
             amp: Adsr::analog_release(),
             fenv: Adsr::analog_release(),
-            coefs: FilterGlide::default(),
+            coefs: PolyGlide::default(),
             fsnap: true,
-            filt: [Filter::default(); 2],
+            filt: [PolyFilter::default(); 2],
+            design: PolyDesign::default(),
             gain: 0.0,
             gain_inc: 0.0,
             drive_gain: 1.0,
@@ -243,7 +248,6 @@ impl Voice {
             kill_gain: 1.0,
             kill_step: 0.0,
             pitch_key: [NO_KEY; 8],
-            coef_key: [NO_KEY; 3],
         }
     }
 
@@ -1014,7 +1018,7 @@ impl Poly {
         v.ph_sub = 0.0;
         v.amp.clear();
         v.fenv.clear();
-        v.filt = [Filter::default(); 2];
+        v.filt = [PolyFilter::default(); 2];
         v.fsnap = true;
         v.press.clear();
         v.pv = 0.0;
@@ -1392,6 +1396,7 @@ impl Poly {
     fn voice_control_as<const MORE: bool>(&mut self, i: usize) {
         let rate = self.rate as f32;
         let lfo = self.sh.lfo;
+        let fmode = self.sh.mode;
         let unison = (self.values[UNISON as usize] as usize).clamp(1, UNISON_MAX);
         let detune = self.v(UNISON_DETUNE) / 100.0;
         let spread = self.v(UNISON_SPREAD) / 100.0;
@@ -1612,13 +1617,11 @@ impl Poly {
             res += m.res;
         }
         let res = res.clamp(0.0, 1.0);
-        let coef_key = [oct.to_bits(), res.to_bits(), rate_bits];
-        let next = if same_key(&v.coef_key, &coef_key) {
-            None
-        } else {
-            v.coef_key = coef_key;
-            Some(FilterCoefs::new(exp2(oct), res, rate))
-        };
+        // Worked out again only when something moved (above the matched
+        // designs' switch, by at least `poly_filter::HOLD_OCT`).
+        let next = v
+            .design
+            .step(FilterMode::from_index(f32::from(fmode)), oct, res, rate);
         match (v.fsnap, next) {
             (true, Some(c)) => v.coefs.snap(c),
             _ => v.coefs.step(next, CTRL as u32),

@@ -33,7 +33,7 @@
 //! wraps, the engine finds on the period's spans
 //! (`mpfree_transport::Span::offset_of`), as the player places notes.
 
-use mpfree_seq::{ClipId, ClipRegion, MAX_TRACKS};
+use mpfree_seq::{ClipId, ClipRegion, LoopId, MAX_TRACKS};
 use mpfree_transport::time::Tick;
 
 use crate::view::{pass_into, ClipView, PlayView};
@@ -64,6 +64,21 @@ pub enum AudioPlays<'a> {
         clip: ClipId,
         /// Changes with any edit to what it plays (its regions, gain,
         /// last frame, length), not with where it plays.
+        stamp: u64,
+    },
+    /// A loop cell (phase 4, step 4b, docs/dev/design/loops-on-audio-tracks.md):
+    /// the track player has the looper play loop `id` from the place the
+    /// song position has counted from `origin`, the song tick its pass 0
+    /// starts on, by the same rules as a take clip's (a launch's line, a
+    /// legato switch's old origin, a block's start less its offset). The
+    /// looper holds its audio, so nothing else is lent.
+    Loop {
+        id: LoopId,
+        origin: f64,
+        /// The clip's length, its loop's: one pass.
+        len: Tick,
+        clip: ClipId,
+        /// The clip's, as for a take clip.
         stamp: u64,
     },
 }
@@ -258,8 +273,18 @@ fn plays(view: &PlayView, i: usize, what: What) -> AudioPlays<'_> {
                     clip: a.id,
                     stamp: c.stamp,
                 },
-                // A note clip has nothing for the audio engine.
-                None => AudioPlays::Nothing,
+                None => match c.looped {
+                    // A loop cell: the looper plays it.
+                    Some(l) => AudioPlays::Loop {
+                        id: l.id(),
+                        origin: origin as f64,
+                        len: c.length,
+                        clip: l.clip,
+                        stamp: c.stamp,
+                    },
+                    // A note clip has nothing for the audio engine.
+                    None => AudioPlays::Nothing,
+                },
             },
             None => AudioPlays::Nothing,
         },
@@ -339,7 +364,9 @@ mod tests {
         let (mut player, mut block) = (Player::new(), Block::new());
         let mut out = vec![];
         let origin = |p: AudioPlays| match p {
-            AudioPlays::Clip { origin, .. } => Some(origin as Tick),
+            AudioPlays::Clip { origin, .. } | AudioPlays::Loop { origin, .. } => {
+                Some(origin as Tick)
+            }
             _ => None,
         };
         while t.frame() < frames {
@@ -456,6 +483,76 @@ mod tests {
                     (at(2 * BAR), None, false),
                     (at(3 * BAR), Some(BAR), false),
                     (at(4 * BAR), None, false),
+                ],
+                "period {period}"
+            );
+        }
+    }
+
+    /// Phase 4, step 4b: a loop cell on an audio track is a loop for the
+    /// engine, counted from its launch's line; a block of it from its
+    /// start less its offset, on the block's frames.
+    #[test]
+    fn a_loop_cell_plays_its_loop_from_its_clips_origin() {
+        let id = mpfree_seq::LoopId(0xfeed_0001);
+        let mut p = Project::new();
+        p.tracks.push(Track::new_audio("vocal", 1));
+        let mut c = Clip::new_audio_loop(id, "Vox", 2 * BAR);
+        c.id = ClipId(6);
+        p.tracks[0].slots[0] = Some(c.clone());
+        p.check().unwrap();
+        let launch = crate::Launch {
+            track: 0,
+            slot: 0,
+            origin: 0,
+            start: 0,
+        };
+        let v = PlayView::compile(&p, &[launch]).unwrap();
+        assert_eq!(v.audio, 1);
+        let mut t = Transport::new(48_000, 120.0).unwrap();
+        assert!(t.command(0, Command::Play));
+        let (mut player, mut block) = (Player::new(), Block::new());
+        assert!(t.process(512, &mut block));
+        player.process(&v, &block, &mut Quiet);
+        let a = player.audio(&v, 0);
+        let stamp = v.tracks[0].clip.as_ref().unwrap().stamp;
+        assert_eq!(
+            a.start,
+            AudioPlays::Loop {
+                id,
+                origin: 0.0,
+                len: 2 * BAR,
+                clip: ClipId(6),
+                stamp,
+            }
+        );
+        // Another loop is another stamp.
+        let mut other = c.clone();
+        other.loop_clip = Some(mpfree_seq::LoopClip {
+            id: mpfree_seq::LoopId(0xfeed_0002),
+        });
+        let o = view_of(&other, None, None, 0, 0, 0);
+        assert_ne!(o.stamp, stamp);
+        // A block on bar 2 starting half a bar into the loop: its passes
+        // count from bar 2 less half a bar.
+        let mut v = PlayView::compile(&p, &[]).unwrap();
+        v.song = true;
+        v.song_clips = vec![view_of(&c, None, None, ROWS + 4, 0, 0)];
+        v.tracks[0].regions = vec![RegionView {
+            start: BAR,
+            end: 3 * BAR,
+            origin: BAR - BAR / 2,
+            clip: 0,
+        }];
+        let at = |t: Tick| t as u64 * TICK;
+        for period in [1, 128, 1000] {
+            let (s, _) = story(&v, at(4 * BAR), period, &[Command::Play]);
+            assert_eq!(
+                s,
+                [
+                    (0, None, false),
+                    (at(BAR), Some(BAR / 2), false),
+                    (at(3 * BAR), None, false),
                 ],
                 "period {period}"
             );

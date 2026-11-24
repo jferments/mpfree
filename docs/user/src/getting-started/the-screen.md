@@ -38,10 +38,12 @@ A ninth tab, **Dev**, shows only when **Show developer tools** is on in [Prefs](
 | **Pads: Perform B** | The pads are a page of the Perform set (throws, mutes, scenes). | Gives the pads back. See [The Perform set](../making-music/looping.md#more-pages-the-perform-set). |
 | **16 Levels · tune** | **16 LEVEL** has spread one sound over the pads. | Says how to turn it off. See [16 Levels](../making-music/playing-live.md#16-levels). |
 | **Controller → Juno-X · ch 3 · A** | Controller mode is on: the pads and Q-Links play your outside gear, not the kit. | Turns controller mode off. See [Controller mode](../making-music/midi-and-cv.md#controller-mode-the-pads-and-q-links-play-your-gear). |
-| **Arp · Up · 1/16** | The arpeggiator, Note Repeat's latch or a pattern is on. | Opens the Arp panel. See [Note Repeat, Latch and the arpeggiator](../making-music/note-repeat-and-arp.md). |
+| **Arp: Up 1/16 · 120 BPM** | The arpeggiator, Note Repeat's latch, a pattern or a phrase is on: what it plays, and the tempo. | Opens the Arp panel. See [Note Repeat, Latch and the arpeggiator](../making-music/note-repeat-and-arp.md). |
 | **120.0 from MIDI In** | The tempo follows a clock from another device (with a green dot). | Opens the I/O view at Sync. |
 | **READY → Track 1** | On a page with no transport bar: REC is ready or recording, and what it records. | Says what it shows. |
 | **CPU 21 %  RAM 40 %** | The status chip, always there at the right end: how much of the processor the sound uses and how much memory is in use. Green when everything is working, yellow or red when something isn't, with a number past its line in that colour too. It keeps its size as the numbers change, so the chips beside it stay put. | Opens System status, which says what is wrong and what to try. See [When something goes wrong](../reference/when-something-goes-wrong.md). |
+
+When the bar has no room for every chip, the arp chip says less: first without the tempo, which the transport bar shows, then with the end of its name cut short. Only when that isn't enough do chips drop out, from the left end: **MAKE** or **PERFORM** first (**SHIFT + MAIN** still switches).
 
 When a red problem starts, such as the sound dropping out, the hint line says so briefly in red. When memory runs so short that new sounds can't load, the hint line says so too (see [The Pads tab](../making-music/pads.md)).
 

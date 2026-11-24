@@ -125,6 +125,15 @@ pub struct Channel {
     pub foot: String,
     /// Soloed: the S beside the speaker lit.
     pub solo: bool,
+    /// A loop on an audio track (phase 4, board 5): its name under its
+    /// place ("Vox loop" under "Vocal · row 2"), both small on the name
+    /// line; empty for the one-line name.
+    pub sub: String,
+    /// Whose M and S these are: "VOCAL'S TRACK" over them, and they show
+    /// the track's mute and solo; empty for the loop's own.
+    pub track: String,
+    pub track_mute: bool,
+    pub track_solo: bool,
 }
 
 impl Default for Channel {
@@ -142,6 +151,10 @@ impl Default for Channel {
             meter: 0.0,
             foot: String::new(),
             solo: false,
+            sub: String::new(),
+            track: String::new(),
+            track_mute: false,
+            track_solo: false,
         }
     }
 }
@@ -169,6 +182,12 @@ pub struct DeckHead {
     /// Capture, for Play's loop row (the Looper tab has it on What you
     /// played, over the bars it takes).
     pub capture: CaptureButton,
+    /// Loops in audio cells (phase 4, board 5): the loops' gauge in the
+    /// header's "LOOPS" place ("LOOPS 6 OF 8"); empty for "LOOPS".
+    pub gauge: String,
+    /// The input pill says where the next loop goes ("Records into Vocal
+    /// · row 3 · Line L"), not what every loop records from.
+    pub into: bool,
 }
 
 /// The header's Capture button: the last bars heard become a loop.
@@ -503,8 +522,13 @@ impl LoopDeck {
         cx.canvas
             .fill_rect(Rect::new(h.x + 8, h.y + 6, h.w - 16, h.h - 8), t.surface);
         let line = Rect::new(h.x + 16, h.y + 10, h.w - 32, 24);
-        cx.text(FontId::Bold, 12.0, line, Align::Left, t.text_dim, "LOOPS");
-        let mut x = line.x + 68;
+        let label = if self.head.gauge.is_empty() {
+            "LOOPS"
+        } else {
+            self.head.gauge.as_str()
+        };
+        cx.text(FontId::Bold, 12.0, line, Align::Left, t.text_dim, label);
+        let mut x = line.x + 68.max(cx.measure(FontId::Bold, 12.0, label) + 14);
         if let Some((beat, beats)) = self.head.beat {
             for b in 0..beats.min(8) {
                 let c = if b == beat {
@@ -590,6 +614,7 @@ impl LoopDeck {
                 let fits = cx.measure(FontId::Bold, 10.5, &both) <= pill.w - 24;
                 (if fits { both } else { "THIS TAKE".to_string() }, true)
             }
+            None if self.head.into => ("Records into".to_string(), false),
             None => ("Records from".to_string(), false),
         };
         let cw = cx.measure(FontId::Sans, 12.0, &cap);
@@ -703,9 +728,17 @@ impl LoopDeck {
         } else {
             t.text
         };
-        let line = Rect::new(p.name.x + 23, p.name.y + 5, p.name.w - 30, 20);
-        cx.text(FontId::Bold, 15.0, line, Align::Left, ink, &ch.name);
-        if p.card.w >= 110 {
+        if !ch.sub.is_empty() {
+            // A loop on an audio track: its place, and its name under it.
+            let top = Rect::new(p.name.x + 23, p.name.y + 2, p.name.w - 30, 14);
+            cx.text(FontId::Bold, 12.5, top, Align::Left, ink, &ch.name);
+            let under = Rect::new(p.name.x + 23, p.name.y + 15, p.name.w - 30, 13);
+            cx.text(FontId::Sans, 11.0, under, Align::Left, t.text_dim, &ch.sub);
+        } else {
+            let line = Rect::new(p.name.x + 23, p.name.y + 5, p.name.w - 30, 20);
+            cx.text(FontId::Bold, 15.0, line, Align::Left, ink, &ch.name);
+        }
+        if p.card.w >= 110 && ch.sub.is_empty() {
             let line = Rect::new(p.name.x, p.name.y + 6, p.name.w - 10, 20);
             cx.text(
                 FontId::Sans,
@@ -736,24 +769,68 @@ impl LoopDeck {
             let y = p.level.bottom() - (p.level.h as f32 * level_frac(ch.level)) as i32;
             cx.canvas
                 .fill_round_rect(Rect::new(p.level.x - 3, y - 2, 13, 4), 2, t.text);
-            // The speaker.
-            let muted = ch.state == RingState::Muted;
+            // The speaker: the loop's, or its track's (phase 4, board 5),
+            // with whose over it.
+            let (muted, soloed, by) = if ch.track.is_empty() {
+                (ch.state == RingState::Muted, ch.solo, 0)
+            } else {
+                (ch.track_mute, ch.track_solo, 5)
+            };
             let b = if muted {
                 t.bad.mix(t.bg, 0.72)
             } else {
                 t.raised
             };
             cx.canvas.fill_round_rect(p.mute, t.round(10), b);
-            let (sx, sy) = (p.mute.x + p.mute.w / 2, p.mute.y + p.mute.h / 2);
+            let (sx, sy) = (p.mute.x + p.mute.w / 2, p.mute.y + p.mute.h / 2 + by);
             speaker_on(cx, sx, sy, if muted { t.bad } else { t.text }, muted, b);
-            // The solo: lit while this loop is soloed.
-            let (fill, ink) = if ch.solo {
+            // The solo: lit while this loop (its track) is soloed.
+            let (fill, ink) = if soloed {
                 (t.picked(), t.on_picked())
             } else {
                 (t.raised, t.text_dim)
             };
             cx.canvas.fill_round_rect(p.solo, t.round(10), fill);
-            cx.text(FontId::Bold, 15.0, p.solo, Align::Center, ink, "S");
+            cx.text(
+                FontId::Bold,
+                15.0,
+                Rect::new(p.solo.x, p.solo.y + by, p.solo.w, p.solo.h),
+                Align::Center,
+                ink,
+                "S",
+            );
+            if !ch.track.is_empty() {
+                let cap = Rect::new(
+                    p.mute.x + 6,
+                    p.mute.y + 2,
+                    p.solo.right() - p.mute.x - 12,
+                    12,
+                );
+                cx.text(
+                    FontId::Bold,
+                    9.5,
+                    cap,
+                    Align::Left,
+                    t.readable(t.text_dim, b),
+                    &ch.track,
+                );
+            }
+        } else if cx.measure(FontId::Sans, 12.0, &ch.foot) > 2 * (p.mute.w - 8) {
+            // A long foot ("REC into an empty audio cell fills it"):
+            // wrapped, in as many lines as it takes.
+            let lines = wrap_words(cx, &ch.foot, 12.0, p.card.w - 16);
+            let lh = 15;
+            let top = p.mute.y + (p.mute.h - lh * lines.len() as i32) / 2;
+            for (i, line) in lines.iter().enumerate() {
+                cx.text(
+                    FontId::Sans,
+                    12.0,
+                    Rect::new(p.card.x + 8, top + i as i32 * lh, p.card.w - 16, lh),
+                    Align::Center,
+                    t.text_dim,
+                    line,
+                );
+            }
         } else {
             // What it records from, on two lines when it doesn't fit on
             // one ("Pads' / instrument").
@@ -787,6 +864,21 @@ impl LoopDeck {
             }
         }
     }
+}
+
+/// `text` in lines no wider than `w` at `size`, broken between words.
+fn wrap_words(cx: &mut PaintCx, text: &str, size: f32, w: i32) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split(' ') {
+        match lines.last_mut() {
+            Some(l) if cx.measure(FontId::Sans, size, &format!("{l} {word}")) <= w => {
+                l.push(' ');
+                l.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    lines
 }
 
 /// The deck's area below its header (the channels' backdrop).

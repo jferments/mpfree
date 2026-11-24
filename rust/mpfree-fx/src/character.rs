@@ -9,13 +9,17 @@
 //!
 //! Quiet signals come out at the level they went in, in every mode, so
 //! Amount changes the colour and how hard the peaks are held, not the
-//! level of quiet parts. Every mode runs at twice the rate (polyphase IIR
-//! half-bands, Drive's Eco design) with antiderivative antialiasing on the
-//! curves (FX quality round 2, G1): a loud high sine through Console or
-//! Tape made aliases 34 to 41 dB under it at the base rate. The dry side
+//! level of quiet parts. Console, Tape and Soften run at twice the rate
+//! (polyphase IIR half-bands, Drive's Eco design) with antiderivative
+//! antialiasing on the curves (FX quality round 2, G1): a loud high sine
+//! through Console or Tape made aliases 34 to 41 dB under it at the base
+//! rate. Iron's curve only meets its low band (under 120 Hz), so it runs
+//! at the base rate with ADAA on that band and leaves the rest untouched
+//! (DSP quality step 2.3C: the same sound to a few hundredths of a dB, its
+//! aliases 89 dB down at worst, for about half the CPU). The dry side
 //! takes the half-bands' phase (an all-pass) and the same delay, so any
-//! Mix adds the two in phase; the latency is 4 frames. A change of mode
-//! crossfades over 10 ms.
+//! Mix adds the two in phase; the latency is 4 frames in every mode. A
+//! change of mode crossfades over 10 ms.
 
 use std::f32::consts::{FRAC_PI_2, PI};
 
@@ -168,26 +172,32 @@ const OS_SECTIONS: usize = 5;
 /// What the oversampling and ADAA delay the sound by, in frames.
 const LATENCY: u32 = (OS_DELAY + ADAA_DELAY) as u32;
 const OS_TBW: f64 = 0.06;
+/// Iron, as Mode's index.
+const IRON: usize = 2;
+/// The frames of input kept to bring the half-bands back in after Iron ran
+/// alone: their slowest section (0.90) forgets to -100 dB in 110 frames.
+const WARM: usize = 128;
 
-/// The per-channel state of every mode, at twice the rate.
+/// The per-channel state of every mode: at twice the rate, and Iron's at
+/// the base rate.
 #[derive(Clone, Copy, Debug, Default)]
 struct Chan {
     /// Tape's top-end loss (one pole).
     top: f32,
-    /// Iron's low band (one pole).
-    low: f32,
-    /// Iron's high band and Soften's output one step back: what doesn't
-    /// pass a curve is averaged over the step as ADAA averages what does,
-    /// so every part of the sound is the same half step late.
-    high1: f32,
+    /// Soften's output one step back: what doesn't pass a curve is
+    /// averaged over the step as ADAA averages what does, so every part of
+    /// the sound is the same half step late.
     soft1: f32,
     /// Soften's last output.
     last: f32,
-    /// ADAA for Console and Tape (the drive's input), and Iron (its low
-    /// band).
-    adaa: [Adaa; 3],
+    /// ADAA for Console and Tape (the drive's input).
+    adaa: [Adaa; 2],
     /// The last input at twice the rate, for seeding a curve coming in.
     u1: f32,
+    /// Iron's low band (one pole, at the base rate) and the ADAA on its
+    /// curve.
+    low: f32,
+    iron: Adaa,
 }
 
 /// One channel's oversampling and dry side.
@@ -197,6 +207,8 @@ struct Os {
     iir: IirPair<OS_SECTIONS>,
     flat: Flat2x,
     dry_pad: FixedDelay,
+    /// The last [`WARM`] inputs, oldest at [`Character`]'s `at`.
+    hist: [f32; WARM],
 }
 
 impl Os {
@@ -205,12 +217,14 @@ impl Os {
             iir: IirPair::new(OS_TBW),
             flat: Flat2x::default(),
             dry_pad: FixedDelay::new(ADAA_DELAY),
+            hist: [0.0; WARM],
         }
     }
     fn reset(&mut self) {
         self.iir.reset();
         self.flat.reset();
         self.dry_pad.reset();
+        self.hist = [0.0; WARM];
     }
 }
 
@@ -233,6 +247,11 @@ pub struct Character {
     bump: Svf,
     /// Takes off the DC of Iron's even harmonic (and only that).
     iron_dc: [DcBlock; 2],
+    /// The frames Iron has run alone since the half-bands last ran (up to
+    /// [`WARM`] matter), and where the next input goes in each [`Os`]'s
+    /// history.
+    idle: usize,
+    at: usize,
     /// Coefficients that follow Amount, and the Amount they were worked
     /// out for.
     top_c: f32,
@@ -267,6 +286,8 @@ impl Character {
             os: [Os::new(), Os::new()],
             bump: Svf::default(),
             iron_dc: [DcBlock::new(), DcBlock::new()],
+            idle: 0,
+            at: 0,
             top_c: 1.0,
             soften_d: 1.0,
             soften_inv: 1.0,
@@ -317,10 +338,9 @@ impl Character {
                     ch.top = 0.0;
                     ch.adaa[1].seed(g * ch.u1, soft_big);
                 }
-                2 => {
+                IRON => {
                     ch.low = 0.0;
-                    ch.high1 = 0.0;
-                    ch.adaa[2].seed(0.0, console_big);
+                    ch.iron.seed(0.0, console_big);
                 }
                 _ => {
                     ch.last = 0.0;
@@ -330,7 +350,7 @@ impl Character {
         }
         match m {
             1 => self.bump.reset(),
-            2 => {
+            IRON => {
                 for d in &mut self.iron_dc {
                     d.reset();
                 }
@@ -372,11 +392,12 @@ impl Character {
         self.coef_at = a;
     }
 
-    /// One sample of channel `c` at twice the rate through mode `m`, at
-    /// drive `g` (and its reciprocal `ig`, one divide a frame instead of
-    /// one a sample).
+    /// One sample of channel `c` at twice the rate through mode `m` (not
+    /// Iron), at drive `g` (and its reciprocal `ig`, one divide a frame
+    /// instead of one a sample).
     #[inline(always)]
-    fn shape(&mut self, m: usize, c: usize, x: f32, g: f32, ig: f32, a: f32) -> f32 {
+    fn shape(&mut self, m: usize, c: usize, x: f32, g: f32, ig: f32) -> f32 {
+        debug_assert_ne!(m, IRON);
         match m {
             0 => {
                 let ch = &mut self.ch[c];
@@ -390,18 +411,6 @@ impl Character {
                 ch.top = flush(ch.top + self.top_c * (s - ch.top));
                 ch.top
             }
-            2 => {
-                let ch = &mut self.ch[c];
-                ch.low = flush(ch.low + self.low_c * (x - ch.low));
-                let high = x - ch.low;
-                let high_mean = 0.5 * (high + ch.high1);
-                ch.high1 = high;
-                // The even harmonic grows with how hard the low band is
-                // driven, as a transformer's core fills; only it makes DC.
-                let u = ch.adaa[2].run(g * IRON_LOW * ch.low, console, console_big);
-                let even = self.iron_dc[c].run(IRON_EVEN * a * u * u);
-                (u + even) * (ig * (1.0 / IRON_LOW)) + high_mean
-            }
             _ => {
                 let ch = &mut self.ch[c];
                 let d = self.soften_d;
@@ -413,56 +422,207 @@ impl Character {
         }
     }
 
-    /// One sample at twice the rate through the mode heard, and while a
-    /// change fades, the one going out.
+    /// One sample of channel `c` through Iron, at the base rate: `x` is the
+    /// dry side (the half-bands' phase and delay), so Iron lines up with it
+    /// and with the other modes. ADAA of a straight line is the mean of its
+    /// two ends, so taking the low band's mean off what its curve gives
+    /// leaves only what the curve adds, half a frame late (at 120 Hz, a
+    /// quarter of a degree); the rest of the sound passes untouched.
+    #[inline(always)]
+    fn iron(&mut self, c: usize, x: f32, g: f32, ig: f32, a: f32) -> f32 {
+        let ch = &mut self.ch[c];
+        let before = ch.low;
+        ch.low = flush(ch.low + self.low_c * (x - ch.low));
+        let mean = 0.5 * (ch.low + before);
+        // The even harmonic grows with how hard the low band is driven, as
+        // a transformer's core fills; only it makes DC.
+        let u = ch.iron.run(g * IRON_LOW * ch.low, console, console_big);
+        let even = self.iron_dc[c].run(IRON_EVEN * a * u * u);
+        x + ((u + even) * (ig * (1.0 / IRON_LOW)) - mean)
+    }
+
+    /// Which of the mode heard and, while a change fades, the one going
+    /// out run at twice the rate (all but Iron).
     #[inline]
-    fn both(&mut self, c: usize, u: f32, g: f32, ig: f32, a: f32) -> f32 {
-        let mut w = self.shape(self.mode, c, u, g, ig, a);
-        if self.fade > 0 {
-            let old = self.shape(self.from, c, u, g, ig, a);
-            let t = self.fade as f32 / self.fade_len as f32;
-            w = lerp(w, old, t);
+    fn at_2x(&self) -> (bool, bool) {
+        (self.mode != IRON, self.fade > 0 && self.from != IRON)
+    }
+
+    /// One sample at twice the rate through the modes that run there: the
+    /// mode heard (`new`) and, while a change fades, the one going out
+    /// (`old`), crossfaded when both do.
+    #[inline]
+    fn both(&mut self, c: usize, u: f32, g: f32, ig: f32, new: bool, old: bool) -> f32 {
+        let mut w = 0.0;
+        if new {
+            w = self.shape(self.mode, c, u, g, ig);
+        }
+        if old {
+            let o = self.shape(self.from, c, u, g, ig);
+            w = if new {
+                let t = self.fade as f32 / self.fade_len as f32;
+                lerp(w, o, t)
+            } else {
+                o
+            };
         }
         self.ch[c].u1 = u;
         w
     }
 
-    fn run(&mut self, left: &mut [f32], right: &mut [f32]) {
-        for i in 0..left.len() {
-            if self.grid == 0 {
-                // Once every GRID frames from the stream's start, so the
-                // output is the same in any block size.
-                for os in &mut self.os {
-                    os.iir.settle();
-                }
-                if self.amount.value != self.coef_at {
-                    self.coefs(self.amount.value);
-                }
+    /// One frame of channel `c` up to twice the rate, through the modes
+    /// that run there, and back down.
+    #[inline]
+    fn twice(&mut self, c: usize, x: f32, g: f32, ig: f32, new: bool, old: bool) -> f32 {
+        let [u0, u1] = self.os[c].iir.up(x);
+        let w0 = self.both(c, u0, g, ig, new, old);
+        let w0 = self.os[c].flat.run(w0);
+        let w1 = self.both(c, u1, g, ig, new, old);
+        let w1 = self.os[c].flat.run(w1);
+        self.os[c].iir.down([w0, w1])
+    }
+
+    /// Brings the half-bands back in after Iron ran alone for `idle`
+    /// frames (they sat still meanwhile): runs those frames, kept in the
+    /// history, through the modes at twice the rate now, so they carry on
+    /// as if they had kept running. After [`WARM`] frames or more they are
+    /// cleared first and the last [`WARM`] run through (their slowest
+    /// section forgets to -100 dB in 110). Once a change of mode out of
+    /// Iron.
+    #[cold]
+    fn warm(&mut self, g: f32, ig: f32, new: bool, old: bool) {
+        let k = self.idle.min(WARM);
+        for c in 0..2 {
+            if self.idle >= WARM {
+                self.os[c].iir.reset_resampling();
+                self.os[c].flat.reset();
             }
-            self.grid = if self.grid + 1 == GRID {
-                0
+            for j in 0..k {
+                let x = self.os[c].hist[(self.at + WARM - k + j) % WARM];
+                self.twice(c, x, g, ig, new, old);
+            }
+        }
+        self.idle = 0;
+    }
+
+    /// The start of every frame: what follows Amount, on its grid, then
+    /// Amount, the drive and its reciprocal, Output and Mix.
+    #[inline(always)]
+    fn controls(&mut self) -> [f32; 5] {
+        if self.grid == 0 {
+            // Once every GRID frames from the stream's start, so the
+            // output is the same in any block size.
+            for os in &mut self.os {
+                os.iir.settle();
+            }
+            if self.amount.value != self.coef_at {
+                self.coefs(self.amount.value);
+            }
+        }
+        self.grid = if self.grid + 1 == GRID {
+            0
+        } else {
+            self.grid + 1
+        };
+        let a = self.amount.next();
+        let g = self.drive.next();
+        [a, g, 1.0 / g, self.out.next(), self.mix.next()]
+    }
+
+    fn run(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let len = left.len().min(right.len());
+        let mut i = 0;
+        while i < len {
+            // A stretch run one way: a fade, Iron alone, or a mode at twice
+            // the rate.
+            let n = if self.fade > 0 {
+                (self.fade as usize).min(len - i)
             } else {
-                self.grid + 1
+                len - i
             };
-            let a = self.amount.next();
-            let g = self.drive.next();
-            let ig = 1.0 / g;
-            let out = self.out.next();
-            let mix = self.mix.next();
+            let (l, r) = (&mut left[i..i + n], &mut right[i..i + n]);
+            if self.fade > 0 {
+                self.run_fade(l, r);
+            } else if self.mode == IRON {
+                self.run_iron(l, r);
+            } else {
+                self.run_2x(l, r);
+            }
+            i += n;
+        }
+    }
+
+    /// Iron alone, at the base rate. The half-bands sit still, and the
+    /// input is kept for bringing them back.
+    fn run_iron(&mut self, left: &mut [f32], right: &mut [f32]) {
+        for i in 0..left.len() {
+            let [a, g, ig, out, mix] = self.controls();
             let x = [left[i], right[i]];
             let mut y = [0.0f32; 2];
             for c in 0..2 {
-                let [u0, u1] = self.os[c].iir.up(x[c]);
-                let w0 = self.both(c, u0, g, ig, a);
-                let w0 = self.os[c].flat.run(w0);
-                let w1 = self.both(c, u1, g, ig, a);
-                let w1 = self.os[c].flat.run(w1);
                 let os = &mut self.os[c];
-                let w = os.iir.down([w0, w1]);
+                os.hist[self.at] = x[c];
+                let dry = os.dry_pad.run(os.iir.phase(x[c]));
+                let w = self.iron(c, dry, g, ig, a);
+                y[c] = lerp(dry, w, mix) * out;
+            }
+            self.at = if self.at + 1 == WARM { 0 } else { self.at + 1 };
+            self.idle = self.idle.saturating_add(1);
+            left[i] = y[0];
+            right[i] = y[1];
+        }
+    }
+
+    /// Console, Tape or Soften, at twice the rate.
+    fn run_2x(&mut self, left: &mut [f32], right: &mut [f32]) {
+        if self.idle > 0 {
+            let g = self.drive.value;
+            self.warm(g, 1.0 / g, true, false);
+        }
+        for i in 0..left.len() {
+            let [_, g, ig, out, mix] = self.controls();
+            let x = [left[i], right[i]];
+            let mut y = [0.0f32; 2];
+            for c in 0..2 {
+                let w = self.twice(c, x[c], g, ig, true, false);
+                let os = &mut self.os[c];
                 let dry = os.dry_pad.run(os.iir.phase(x[c]));
                 y[c] = lerp(dry, w, mix) * out;
             }
-            self.fade = self.fade.saturating_sub(1);
+            left[i] = y[0];
+            right[i] = y[1];
+        }
+    }
+
+    /// A change of mode fading: at least one of the two runs at twice the
+    /// rate, and Iron, if it is the other, at the base rate beside it.
+    fn run_fade(&mut self, left: &mut [f32], right: &mut [f32]) {
+        let (new, old) = self.at_2x();
+        debug_assert!(new || old);
+        let iron = !new || !old;
+        if self.idle > 0 {
+            let g = self.drive.value;
+            self.warm(g, 1.0 / g, new, old);
+        }
+        for i in 0..left.len() {
+            let [a, g, ig, out, mix] = self.controls();
+            let x = [left[i], right[i]];
+            let mut y = [0.0f32; 2];
+            let t = self.fade as f32 / self.fade_len as f32;
+            for c in 0..2 {
+                let w2 = self.twice(c, x[c], g, ig, new, old);
+                let os = &mut self.os[c];
+                let dry = os.dry_pad.run(os.iir.phase(x[c]));
+                let w = if !iron {
+                    w2
+                } else if new {
+                    lerp(w2, self.iron(c, dry, g, ig, a), t)
+                } else {
+                    lerp(self.iron(c, dry, g, ig, a), w2, t)
+                };
+                y[c] = lerp(dry, w, mix) * out;
+            }
+            self.fade -= 1;
             left[i] = y[0];
             right[i] = y[1];
         }
@@ -541,9 +701,9 @@ impl Node for Character {
             s.set_time(self.rate, 20.0);
         }
         self.fade_len = ((FADE_MS * 0.001 * self.rate as f32) as u32).max(1);
-        self.low_c = 1.0 - (-2.0 * PI * IRON_HZ / (2 * self.rate) as f32).exp();
+        self.low_c = 1.0 - (-2.0 * PI * IRON_HZ / self.rate as f32).exp();
         for d in &mut self.iron_dc {
-            d.set(10.0, 2 * self.rate);
+            d.set(10.0, self.rate);
         }
         self.coefs(self.amount.value);
     }
@@ -566,6 +726,10 @@ impl Node for Character {
         for d in &mut self.iron_dc {
             d.reset();
         }
+        // Cleared half-bands are what silence leaves, and so is the
+        // cleared history.
+        self.idle = 0;
+        self.at = 0;
         self.grid = 0;
         self.coefs(self.amount.value);
     }

@@ -38,6 +38,20 @@
 //!   turns the other off. With Layer off a tap plays the synth alone, the
 //!   layers given up. The list opens with Layer on while the pads have
 //!   layers ([`App::synth_pick_layer`]).
+//! - **Synths and Kits** (sampler step 15e; the canvas "Pads and kits:
+//!   step 15e", boards 1 and 2, Jay's "Build as drawn, with your picks" of
+//!   23 Nov 16:11Z): the list's Kits side puts a whole kit on the pads,
+//!   for every bank or the bank they are on, with no track changed
+//!   ([`App::pick_pads_kit`]): the map's base, or the bank's own entry.
+//!   Its first tile gives them back: Follow track for every bank, Follow
+//!   base for one (the bank plays the base again). A bank's own kit plays
+//!   the bank of it the row above the tiles picks ([`App::pick_kit_from`]:
+//!   bank B playing Big Kit's bank C); PAD BANK still picks the bank you
+//!   play. An empty kit goes on the pads too, playing nothing, and the
+//!   hint says to load sounds on the Sample page, which then lands there
+//!   (question 3). With Layer on, a kit tapped is added as a layer or
+//!   taken off (step 15f's kit layers). The list opens on the Kits side
+//!   while a kit is what the bank plays ([`App::synth_pick_side`]).
 
 use super::pad_layers::{MORE, PAD_LAYERS};
 use super::{App, BankEntry, Effect, PadFocus, PadMap, View};
@@ -68,6 +82,29 @@ pub struct SynthPickView {
     pub layer: bool,
     /// The choices the pads play as layers beyond `now`, each outlined.
     pub layers: Vec<usize>,
+    /// The Kits side shows (sampler step 15e).
+    pub kits: bool,
+    /// What the Kits side outlines now, and when the list opened.
+    pub kit_now: KitOn,
+    pub kit_had: KitOn,
+    /// The kits the pads play as layers, by kit place.
+    pub kit_layers: Vec<usize>,
+    /// With Bank B only and a kit there: the bank of it bank B plays
+    /// (None: the same bank).
+    pub from: Option<u8>,
+}
+
+/// What the list's Kits side outlines (sampler step 15e).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum KitOn {
+    /// Its first tile: the pads follow the track (every bank), or the
+    /// bank plays the base (Bank B only).
+    Follow,
+    /// The kit in this kit place.
+    Kit(usize),
+    /// A synth (no kit tile).
+    #[default]
+    Other,
 }
 
 /// The list while it is open: what the pads played when it opened, for
@@ -88,6 +125,16 @@ pub(super) struct SynthPick {
     /// Layer (step 11b): a tap adds a synth to what the pads play or
     /// takes it off.
     layer: bool,
+    /// The Kits side shows (sampler step 15e).
+    kits: bool,
+    /// What the Kits side outlined then.
+    had_kit: KitOn,
+    /// The bank "Bank B only" means: one the panel What the pads play
+    /// opened the list for (sampler step 15e), else the bank the pads are
+    /// on.
+    pub(super) for_bank: Option<usize>,
+    /// What the pads play opened it: it closes back to the panel.
+    pub(super) from_map: bool,
 }
 
 /// What each built-in synth is good for, in musicians' words (the manual's
@@ -187,10 +234,19 @@ impl App {
     }
 
     /// The bank a tap in the list gives the synth alone (step 6c): the one
-    /// the pads are on, with "Bank B only" on a kit's pages.
+    /// the pads are on (or the one What the pads play opened the list
+    /// for), with "Bank B only" on a kit's pages.
     fn pick_bank(&self) -> Option<usize> {
         let only = self.synth_pick.is_some_and(|p| p.bank_only);
-        (only && self.banks_apply()).then_some(self.pad_page)
+        (only && self.banks_apply()).then_some(self.pick_page())
+    }
+
+    /// The bank "Bank B only" names: the one What the pads play opened the
+    /// list for (sampler step 15e), else the one the pads are on.
+    fn pick_page(&self) -> usize {
+        self.synth_pick
+            .and_then(|p| p.for_bank)
+            .unwrap_or(self.pad_page)
     }
 
     /// "All banks" (`only` false) or "Bank B only" at the top of the open
@@ -273,9 +329,10 @@ impl App {
                 )
             }))
             .collect();
-        // What the pads play now, on the bank they are on: a place waiting
-        // for its id first.
-        let page = self.pad_page;
+        // What the pads play now, on the bank they are on (or the one What
+        // the pads play opened the list for): a place waiting for its id
+        // first.
+        let page = self.pick_page();
         let own = self.banks_apply()
             && (self.bank_to[page].is_some() || self.pad_map.banks[page].is_some());
         let waiting = if own {
@@ -301,6 +358,13 @@ impl App {
         } else {
             Vec::new()
         };
+        let kit_layers = if self.layers_apply() {
+            self.pad_layers()
+                .filter_map(|id| self.kit_place(id))
+                .collect()
+        } else {
+            Vec::new()
+        };
         Some(SynthPickView {
             track,
             choices,
@@ -311,7 +375,210 @@ impl App {
                 .then(|| (super::bank_letter(page), pick.bank_only)),
             layer: pick.layer,
             layers,
+            kits: pick.kits,
+            kit_now: self.kit_on(&self.pad_map, bank),
+            kit_had: pick.had_kit,
+            kit_layers,
+            from: bank
+                .and_then(|b| self.pad_map.banks[b])
+                .and_then(|e| e.from),
         })
+    }
+
+    /// The kit place of instrument `id`, if it is a kit of the list.
+    fn kit_place(&self, id: InstrumentId) -> Option<usize> {
+        match self.instrument_list.kind(id)? {
+            crate::instrument_list::Kind::Kit { kit } => Some(kit),
+            _ => None,
+        }
+    }
+
+    /// What the Kits side outlines for `map`: for bank `bank` alone, its
+    /// own entry (none: Follow base), else the base (the track: Follow
+    /// track); a synth waiting for its place is a synth's.
+    fn kit_on(&self, map: &PadMap, bank: Option<usize>) -> KitOn {
+        let waiting = match bank {
+            Some(b) => self.bank_to[b].is_some(),
+            None => self.pads_to.is_some(),
+        };
+        let play = match bank {
+            Some(b) => match map.banks[b] {
+                None => return if waiting { KitOn::Other } else { KitOn::Follow },
+                Some(e) => e.play,
+            },
+            None => map.base,
+        };
+        match play {
+            _ if waiting => KitOn::Other,
+            PadFocus::Track if bank.is_none() => KitOn::Follow,
+            PadFocus::Instrument(id) => self.kit_place(id).map_or(KitOn::Other, KitOn::Kit),
+            PadFocus::Track => KitOn::Other,
+        }
+    }
+
+    /// Synths (`kits` false) or Kits, the switch at the start of the open
+    /// list's row (sampler step 15e).
+    pub fn synth_pick_side(&mut self, kits: bool) -> Vec<Effect> {
+        let Some(p) = self.synth_pick.as_mut() else {
+            return Vec::new();
+        };
+        if p.kits == kits {
+            return Vec::new();
+        }
+        p.kits = kits;
+        vec![Effect::SynthPick(self.synth_pick_view())]
+    }
+
+    /// A tap on the open list's Kits side (sampler step 15e): kit place
+    /// `kit` (`name`, "Big Kit" or "Kit 9" for an empty one; `banks`, a
+    /// bit for each bank of it that holds sounds) goes on the pads, for
+    /// every bank or the bank they are on, or as a layer with Layer on;
+    /// None, the first tile, gives them back (Follow track, or Follow
+    /// base for the bank alone). No track changes.
+    pub fn pick_pads_kit(
+        &mut self,
+        kit: Option<usize>,
+        name: &str,
+        empty: bool,
+        banks: u8,
+    ) -> Vec<Effect> {
+        if self.synth_pick.is_none() {
+            return Vec::new();
+        }
+        let bank = self.pick_bank();
+        let layer = self.synth_pick.is_some_and(|p| p.layer) && bank.is_none();
+        let mut fx = match (kit, bank) {
+            (None, None) if layer => vec![Effect::Tell(
+                "Layer: tap a kit to add it to the pads or take it off".to_string(),
+            )],
+            (None, None) => self.pads_follow_track(),
+            (None, Some(b)) => self.bank_follows_base(b),
+            (Some(k), _) => match self.instrument_list.of_kit(k) {
+                None => vec![Effect::Tell(format!("{name} isn't in this project's list"))],
+                Some(id) if layer => self.toggle_pad_layer(id),
+                Some(id) => self.pads_kit_on(id, name, bank, banks),
+            },
+        };
+        if empty && kit.is_some() && !layer {
+            fx.push(Effect::Tell(format!(
+                "{name} is empty: load sounds on the Sample page"
+            )));
+        }
+        fx.push(Effect::SynthPick(self.synth_pick_view()));
+        fx
+    }
+
+    /// Kit `id` (`name`) on the pads: the map's base for every bank (a
+    /// bank's own and the layers given up, as a synth tapped gives them
+    /// up), or bank `bank`'s own, playing the same bank of the kit if it
+    /// holds sounds (`banks`), else its first that does. Said; nothing
+    /// when it plays there already.
+    fn pads_kit_on(
+        &mut self,
+        id: InstrumentId,
+        name: &str,
+        bank: Option<usize>,
+        banks: u8,
+    ) -> Vec<Effect> {
+        let was = self.pads_focus();
+        match bank {
+            None => {
+                let alone = self.pad_map.banks.iter().all(Option::is_none)
+                    && self.bank_to.iter().all(Option::is_none)
+                    && !self.has_layers();
+                if self.pad_map.base == PadFocus::Instrument(id) && self.pads_to.is_none() && alone
+                {
+                    return Vec::new();
+                }
+                self.pad_map.base = PadFocus::Instrument(id);
+                self.pads_to = None;
+                self.pad_map.banks = [None; super::KIT_PAGES];
+                self.bank_to = [None; super::KIT_PAGES];
+                self.clear_layers();
+            }
+            Some(b) => {
+                if self.pad_map.banks[b].is_some_and(|e| e.play == PadFocus::Instrument(id))
+                    && self.bank_to[b].is_none()
+                {
+                    return Vec::new();
+                }
+                let from =
+                    (banks >> b & 1 == 0 && banks != 0).then(|| banks.trailing_zeros() as u8);
+                self.pad_map.banks[b] = Some(BankEntry {
+                    play: PadFocus::Instrument(id),
+                    from,
+                });
+                self.bank_to[b] = None;
+            }
+        }
+        self.project_edit = true;
+        let said = match bank {
+            None => format!(
+                "The pads play {name} on every track · Track {} keeps what it plays · REC records it on a free track",
+                self.track + 1
+            ),
+            Some(b) => format!(
+                "Bank {} plays {name} · the other banks play as they did · REC records it on a free track",
+                super::bank_letter(b)
+            ),
+        };
+        let mut fx = Vec::new();
+        if self.pads_focus() != was || bank.is_some() {
+            fx.push(Effect::PadsFocus(self.pads_focus()));
+        }
+        fx.push(Effect::Note(said));
+        fx
+    }
+
+    /// The Kits side's first tile with "Bank B only": bank `b` plays the
+    /// base again, its own entry given up. Nothing when it has none.
+    fn bank_follows_base(&mut self, b: usize) -> Vec<Effect> {
+        if self.pad_map.banks[b].is_none() && self.bank_to[b].is_none() {
+            return Vec::new();
+        }
+        self.pad_map.banks[b] = None;
+        self.bank_to[b] = None;
+        self.project_edit = true;
+        vec![
+            Effect::PadsFocus(self.pads_focus()),
+            Effect::Note(format!(
+                "Bank {} plays what every bank plays again",
+                super::bank_letter(b)
+            )),
+        ]
+    }
+
+    /// A bank of the source bank row (sampler step 15e, board 2): the
+    /// bank the pads are on plays bank `from` of its own kit (bank B
+    /// playing Big Kit's bank C). Nothing without a kit of its own there.
+    pub fn pick_kit_from(&mut self, from: u8) -> Vec<Effect> {
+        let Some(b) = self.pick_bank() else {
+            return Vec::new();
+        };
+        let Some(e) = self.pad_map.banks[b] else {
+            return Vec::new();
+        };
+        let PadFocus::Instrument(id) = e.play else {
+            return Vec::new();
+        };
+        if self.kit_place(id).is_none() || usize::from(from) >= super::KIT_PAGES {
+            return Vec::new();
+        }
+        let to = (usize::from(from) != b).then_some(from);
+        if e.from == to {
+            return Vec::new();
+        }
+        self.pad_map.banks[b] = Some(BankEntry { from: to, ..e });
+        self.project_edit = true;
+        vec![
+            Effect::PadsFocus(self.pads_focus()),
+            Effect::Note(format!(
+                "Bank {} plays its kit's bank {}: PAD BANK still picks the bank you play",
+                super::bank_letter(b),
+                super::bank_letter(usize::from(from))
+            )),
+            Effect::SynthPick(self.synth_pick_view()),
+        ]
     }
 
     /// A tap on the instrument card: the list of synths opens over the
@@ -323,6 +590,20 @@ impl App {
         if self.synth_pick.is_some() {
             return self.close_synth_pick(true);
         }
+        let mut fx = Vec::new();
+        if self.map_panel {
+            fx.extend(self.close_pad_map());
+        }
+        let bank_only = self.pads_bank().is_some();
+        let layer = self.has_layers() && !bank_only;
+        fx.extend(self.open_synth_pick_for(bank_only.then_some(self.pad_page), layer));
+        fx
+    }
+
+    /// The list opens for bank `bank` alone (None: every bank), with Layer
+    /// on or off: the card's tap, or a row of What the pads play (sampler
+    /// step 15e).
+    pub(super) fn open_synth_pick_for(&mut self, bank: Option<usize>, layer: bool) -> Vec<Effect> {
         let kept = (0..FREE)
             .filter(|&n| self.track_sound(free(n)).is_some())
             .fold(0u16, |m, n| m | 1 << n);
@@ -331,13 +612,20 @@ impl App {
             kept,
             had_choice: None,
             // On a bank with its own, the next tap changes that bank.
-            bank_only: self.pads_bank().is_some(),
+            bank_only: bank.is_some(),
             // With layers, the next tap adds or takes off one (step 11b).
-            layer: self.has_layers() && self.pads_bank().is_none(),
+            layer: layer && bank.is_none(),
+            kits: false,
+            had_kit: KitOn::Other,
+            for_bank: bank,
+            from_map: false,
         });
         let view = self.synth_pick_view();
         if let (Some(p), Some(v)) = (self.synth_pick.as_mut(), view.as_ref()) {
             p.had_choice = v.now;
+            p.had_kit = v.kit_now;
+            // On the Kits side while a kit is what the bank plays.
+            p.kits = matches!(v.kit_now, KitOn::Kit(_));
         }
         vec![Effect::SynthPick(self.synth_pick_view())]
     }
@@ -604,7 +892,13 @@ impl App {
             self.project_edit = true;
             fx.push(Effect::PadsFocus(self.pads_focus()));
         }
+        // Kept, one step of What the pads play's history (sampler step
+        // 15e); opened there, the panel again.
+        if keep && moved {
+            self.map_step(pick.had);
+        }
         fx.push(Effect::SynthPick(None));
+        fx.extend(self.back_to_map(&pick));
         fx
     }
 }

@@ -78,6 +78,9 @@ pub struct EngineShared {
     /// The period's parts outside the engines and the control side's
     /// counts (parts.rs).
     pub parts: crate::parts::PartsShared,
+    /// Each track's share of the period (track_costs.rs): System status's
+    /// "tracks using the most".
+    pub tracks: crate::track_costs::TrackShared,
 }
 
 /// The audio loop's probes. Made before the stream starts (it allocates);

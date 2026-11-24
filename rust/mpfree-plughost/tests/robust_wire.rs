@@ -43,6 +43,7 @@ fn to_host() -> Vec<Vec<u8>> {
             spec("On", 0.0, 1.0, 1.0, CurveSpec::Toggle),
             spec("Steps", -4.0, 4.0, 0.0, CurveSpec::Stepped),
         ],
+        follows_tuning: true,
     };
     [
         ToHost::Hello(hello),

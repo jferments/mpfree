@@ -6,7 +6,7 @@
 
 use crate::export::{ExportInput, ExportSetup};
 use crate::sets::{RigThing, SetButton, SetInput};
-use crate::state::{Browser, Button, Filter, Input, Key, Pick, SOURCES};
+use crate::state::{Browser, Button, CardState, Filter, Input, Key, Pick, SOURCES};
 use crate::view::BrowserView;
 use crate::{BROWSER, BROWSER_HINT, BROWSER_PAGE, PICKER_HINT};
 use mpfree_library::audio::{tone_aiff, tone_wav, wav_bytes};
@@ -42,6 +42,41 @@ const RATE: u32 = 44_100;
 const BOOM_BAP_KIT: &str = "mpfree-sampler 1\nkits = 1\nkit = 0\nkit.0.name = Boom bap\n\
 kit.0.sources = 1\nkit.0.source.0.file = Kick.wav\nkit.0.source.0.name = Kick\n\
 kit.0.pad.0.name = Kick\nkit.0.pad.0.layers = 1\nkit.0.pad.0.layer.0.source = 0\n";
+
+/// A stand-in SD card at `at`, from sounds [`fill`] put in `lib`: a sound
+/// at the top, Breaks, Drum hits and an empty Vinyl rips. Its folder. Made
+/// as a library of its own whose Samples place is the card's top folder, so
+/// the previews write only through the library.
+pub fn fill_card(lib: &Library, at: &Path) -> Result<std::path::PathBuf, String> {
+    std::fs::create_dir_all(at).map_err(|e| e.to_string())?;
+    let card = Library::at(at).map_err(|e| e.to_string())?;
+    let e = |e: std::io::Error| e.to_string();
+    let top = Loc::top(Place::Samples);
+    for (folder, files) in [
+        ("", &["Rhodes chord.wav"][..]),
+        ("Breaks", &["Break 92 bpm.wav", "Kick 01.wav"][..]),
+        (
+            "Drum hits",
+            &["Clap.wav", "Snare tight.wav", "Hat open.wav"][..],
+        ),
+        ("Vinyl rips", &[][..]),
+    ] {
+        let to = match folder {
+            "" => top.clone(),
+            f => card.new_folder_unsynced(&top, f).map_err(e)?,
+        };
+        for f in files {
+            let from = ["", "Drums", "Loops"]
+                .iter()
+                .map(|d| lib.root().join("Samples").join(d).join(f))
+                .find(|p| p.is_file())
+                .ok_or_else(|| format!("no {f} in the samples"))?;
+            let bytes = std::fs::read(&from).map_err(|e| e.to_string())?;
+            card.write_new_unsynced(&to, f, &bytes).map_err(e)?;
+        }
+    }
+    Ok(card.root().join(Place::Samples.folder()))
+}
 
 pub fn fill(data: &Path) -> Result<Library, String> {
     let lib = Library::at(data).map_err(|e| e.to_string())?;
@@ -465,6 +500,67 @@ pub fn samples(fonts: impl Fn() -> Fonts, data: &Path) -> Result<Vec<Sample>, St
             b.dial(3);
         },
     )?;
+    // The SD card place: a stand-in card beside the library, opened read
+    // only as the app opens the real one (step S1 of the SD card plan).
+    let card = fill_card(&lib, &data.join("sd-card-stand-in"))?;
+    let open = |b: &mut Browser, dirty: bool| {
+        b.go_source(source("SD card"));
+        b.library().set_card(Some(card.clone()));
+        b.set_card(CardState::Open {
+            about: "exFAT, 63.9 GB".into(),
+            dirty,
+        });
+    };
+    shot(
+        "24-sd-card-opening",
+        "The SD card place, just tapped: the MPC opens the card read only (a few seconds)",
+        Theme::dark(),
+        &|b| {
+            b.library().set_card(None);
+            b.go_source(source("SD card"));
+        },
+    )?;
+    shot(
+        "25-sd-card-open",
+        "The SD card open, read only: its folders and sounds as a place's, what it is at the top; a sound has Load on A5, Next pad hit, Audition and Copy (Copy, then Paste in a place, puts it in the library)",
+        Theme::dark(),
+        &|b| {
+            b.set_pad_target(Some("A5".into()));
+            open(b, false);
+            select(b, "Rhodes chord.wav");
+        },
+    )?;
+    shot(
+        "26-sd-card-folder",
+        "A folder on the card, a sound selected and copied: Copied shows under the list, ready to Paste in Samples",
+        Theme::dark(),
+        &|b| {
+            b.set_pad_target(Some("A5".into()));
+            open(b, false);
+            crate::sample::open(b, "Breaks");
+            select(b, "Break 92 bpm.wav");
+            b.input(Input::Button(Button::Copy));
+        },
+    )?;
+    shot(
+        "27-sd-card-not-safely-removed",
+        "A card that wasn't safely removed last time (its in-use mark still set): it opens read only all the same, and says to check it on a computer",
+        Theme::dark(),
+        &|b| open(b, true),
+    )?;
+    shot(
+        "28-sd-card-no-card",
+        "No card in the slot: the place says so, and a tap on SD card tries again",
+        Theme::dark(),
+        &|b| {
+            b.library().set_card(None);
+            b.go_source(source("SD card"));
+            b.set_card(CardState::NotOpened(
+                "There is no card in the SD slot.".into(),
+            ));
+        },
+    )?;
+    lib.set_card(None);
     Ok(out)
 }
 
