@@ -74,6 +74,14 @@
 //! the text; `EXPLAIN=1` prints the notes each one played. It writes the
 //! WAVs, report.txt and phrases.json (for the listening page).
 //!
+//! `--ideas` is the blind listen for the composer's phrases (P2,
+//! `examples/listen/ideas.rs`): twelve pairs, every kind of phrase in
+//! every style, each pair one request made two ways, the composer's idea
+//! and the simple way of its kind, heard as `--phrases` plays a phrase,
+//! in one setting, shuffled into A and B. Every pair takes `--seed` as it
+//! is, so none is picked. It writes the WAVs, report.txt and answers.json
+//! (which is which, each phrase's text and what its checks found).
+//!
 //! It never touches any device: it reads only the MIDI or library file
 //! given and writes only into its one new folder.
 #![forbid(unsafe_code)]
@@ -2894,7 +2902,7 @@ fn show(p: &Phrase, what: &str, c: &Continued, gestures: &[mpfree_compose::sketc
 
 const USAGE: &str = "usage: listen --demo | --midi FILE [--track N] [--from BAR] [--bars N] [--all-notes] \
 [--style minimal|groove|jazzish] [--bpm N] [--swing 1/8:58] [--role melody|bass] [--sounds a|b|now|round2|plain] [--seed N] [--gate | --parts] [--out DIR] | --critic N (--demo | --midi FILE) \
-| --phrases | --phrases-from FILE [--only TEXT] [--out DIR]";
+| --phrases | --phrases-from FILE [--only TEXT] [--out DIR] | --ideas [--seed N] [--out DIR]";
 
 fn run(args: &[String]) -> Result<(), String> {
     let mut demo = false;
@@ -2914,6 +2922,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut parts = false;
     let mut phrases = false;
     let mut phrases_from: Option<PathBuf> = None;
+    let mut ideas = false;
     let mut only: Option<String> = None;
     let mut i = 0;
     let value = |i: &mut usize| -> Result<String, String> {
@@ -2929,6 +2938,7 @@ fn run(args: &[String]) -> Result<(), String> {
             "--parts" => parts = true,
             "--phrases" => phrases = true,
             "--phrases-from" => phrases_from = Some(PathBuf::from(value(&mut i)?)),
+            "--ideas" => ideas = true,
             "--only" => only = Some(value(&mut i)?),
             "--critic" => {
                 critic = Some(
@@ -3022,6 +3032,14 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         Ok(dir)
     };
+    if ideas {
+        if demo || midi.is_some() || phrases || phrases_from.is_some() {
+            return Err(format!(
+                "give one of --demo, --midi FILE, --phrases, --phrases-from FILE or --ideas\n{USAGE}"
+            ));
+        }
+        return phrases::ideas::run(seed, &new_dir("ideas-listen")?);
+    }
     if phrases || phrases_from.is_some() {
         if demo || midi.is_some() || (phrases && phrases_from.is_some()) {
             return Err(format!(
