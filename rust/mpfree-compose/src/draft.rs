@@ -38,8 +38,21 @@ use crate::settings::Settings;
 use crate::sketch::{borrowed, sketch, Anchor, AnchorKind, Gesture, Sketch, Surprise};
 use crate::style::Feel;
 
-/// Whole drafts made for one request (eight bars or fewer; two for more).
-pub const DRAFTS: u16 = 4;
+/// Whole drafts made for one request of eight bars or fewer (S4: up to
+/// 12, the critic picking the best and repairing it).
+pub const DRAFTS: u16 = 12;
+/// Drafts made for a request of more than eight bars.
+pub const DRAFTS_LONG: u16 = 4;
+/// The runner-up kept second differs from the best in at least this share
+/// of its new notes (S4: finalists kept different).
+pub const DIFFER: f32 = 0.3;
+/// Fresh fillings tried on each bar while repairing.
+const REPAIR_ATTEMPTS: u16 = 3;
+/// At most this many repairs on the picked draft.
+const REPAIRS: usize = 2;
+/// Repair's dice start well past Try again's, so a repair is never one of
+/// your tries.
+const REPAIR_DICE: u16 = 512;
 
 /// One draft, judged.
 #[derive(Clone, Debug)]
@@ -88,7 +101,7 @@ pub fn drafts_keeping(
     keeping: Option<(&Continued, &[usize])>,
 ) -> Result<Vec<Draft>, Refused> {
     let n = usize::from(req.settings.bars.max(1));
-    let count = if n > 8 { 2 } else { DRAFTS };
+    let count = if n > 8 { DRAFTS_LONG } else { DRAFTS };
     let mut out: Vec<Draft> = Vec::new();
     let mut first_err: Option<Refused> = None;
     for d in 0..count {
@@ -109,7 +122,149 @@ pub fn drafts_keeping(
             .then(b.verdict.score().total_cmp(&a.verdict.score()))
             .then(a.number.cmp(&b.number))
     });
+    let yours = your_bars(req);
+    let from = yours as i32 * phrasing(req, &ChordTimeline::default()).grid.bar;
+    finalists(&mut out, from);
+    let kept = kept_bars(keeping, yours, yours + n);
+    if let Some(best) = out.first_mut() {
+        repair(req, best, &kept);
+    }
     Ok(out)
+}
+
+/// How far two results' new notes (from step `from`) differ: the share of
+/// the larger set of notes, by place and pitch, the other doesn't have.
+pub fn difference(a: &Continued, b: &Continued, from: i32) -> f32 {
+    let notes = |c: &Continued| -> Vec<(i32, i32, i8)> {
+        let mut v: Vec<(i32, i32, i8)> = c
+            .line
+            .notes
+            .iter()
+            .filter(|m| m.on >= from)
+            .map(|m| (m.on, m.pos, m.alt))
+            .collect();
+        v.sort_unstable();
+        v
+    };
+    let (x, y) = (notes(a), notes(b));
+    let most = x.len().max(y.len());
+    if most == 0 {
+        return 0.0;
+    }
+    let shared = x.iter().filter(|n| y.binary_search(n).is_ok()).count();
+    1.0 - shared as f32 / most as f32
+}
+
+/// The best draft stays first; the best of the rest that differs from it
+/// by [`DIFFER`] or more comes second, so a runner-up is a real choice.
+fn finalists(out: &mut Vec<Draft>, from: i32) {
+    if out.len() < 3 {
+        return;
+    }
+    if let Some(j) =
+        (1..out.len()).find(|&j| difference(&out[0].made, &out[j].made, from) >= DIFFER)
+    {
+        if j != 1 {
+            let d = out.remove(j);
+            out.insert(1, d);
+        }
+    }
+}
+
+/// The critic's verdict on a result made from `sk` (a draft, or a draft
+/// with bars made again): its anchors' notes as the landings.
+pub(crate) fn verdict_for(req: &Continue, made: &Continued, sk: &Sketch) -> Verdict {
+    let s = req.settings;
+    let ph = phrasing(req, &made.chords);
+    let landings: Vec<Landing> = sk
+        .anchors
+        .iter()
+        .filter_map(|a| {
+            let m = made.line.notes.iter().find(|m| m.on == a.on)?;
+            Some(Landing {
+                on: a.on,
+                pos: m.pos,
+                alt: m.alt,
+            })
+        })
+        .collect();
+    judge(&Heard {
+        notes: &made.line.notes,
+        your_bars: your_bars(req),
+        bars: your_bars(req) + usize::from(s.bars.max(1)),
+        grid: ph.grid,
+        key: ph.key,
+        chords: &made.chords,
+        ending: s.ending,
+        copy_bars: copy_bars(&s.style),
+        landings: &landings,
+        rests: if s.keeps.rhythm { &[] } else { &sk.rests },
+    })
+}
+
+/// A check's name as the critic's words say it was put right.
+fn fixed_words(check: &str) -> &'static str {
+    match check {
+        "goes somewhere" => "it goes somewhere",
+        "lands" => "it lands",
+        "breathes" => "it breathes",
+        "yours" => "your idea is heard",
+        "not too repetitive" => "it no longer repeats",
+        _ => "it flows",
+    }
+}
+
+/// Repair the picked draft in place (S4): where a check fails, each new
+/// bar but those you locked is made again a few ways around its anchor
+/// ([`try_bars_s1`]), and the one that puts most right is kept, so long as
+/// every check that passed still passes. At most [`REPAIRS`] repairs, each
+/// said in words on the result ([`Continued::critic`]).
+fn repair(req: &Continue, d: &mut Draft, kept: &[usize]) {
+    let yours = your_bars(req);
+    let total = yours + usize::from(req.settings.bars.max(1));
+    for _ in 0..REPAIRS {
+        let was: Vec<bool> = d.verdict.checks().iter().map(|(_, c)| c.pass).collect();
+        if was.iter().all(|&p| p) {
+            return;
+        }
+        let mut found: Option<(usize, Continued, Verdict)> = None;
+        for b in (yours..total).filter(|b| !kept.contains(b)) {
+            for k in 0..REPAIR_ATTEMPTS {
+                let dice = REPAIR_DICE + (b as u16) * REPAIR_ATTEMPTS + k;
+                let Ok(c) = try_bars_s1(req, &d.made, &d.sketch, &[b], dice) else {
+                    continue;
+                };
+                let v = verdict_for(req, &c, &d.sketch);
+                let now: Vec<bool> = v.checks().iter().map(|(_, c)| c.pass).collect();
+                let keeps = was.iter().zip(&now).all(|(&a, &b)| !a || b);
+                let best = found.as_ref().map_or(&d.verdict, |f| &f.2);
+                let more = v.passed() > best.passed()
+                    || (found.is_some() && v.passed() == best.passed() && v.score() > best.score());
+                if keeps && v.passed() > d.verdict.passed() && more {
+                    found = Some((b, c, v));
+                }
+            }
+        }
+        let Some((b, mut c, v)) = found else {
+            return;
+        };
+        let put_right: Vec<&str> = d
+            .verdict
+            .checks()
+            .iter()
+            .zip(v.checks().iter())
+            .filter(|((_, a), (_, b))| !a.pass && b.pass)
+            .map(|((name, _), _)| fixed_words(name))
+            .collect();
+        c.critic = d.made.critic.clone();
+        c.critic.push(format!(
+            "bar {} made again so {}",
+            b + 1,
+            put_right.join(" and ")
+        ));
+        d.made = c;
+        d.verdict = v;
+    }
 }
 
 /// The ceiling for the notes of every bar but the high point's: a step
@@ -849,6 +1004,7 @@ pub fn draft_keeping(
             notes: clip,
             to,
             sketch: Some(sk.clone()),
+            critic: Vec::new(),
         },
         sketch: sk,
         verdict,
@@ -982,6 +1138,7 @@ pub fn try_bars_s1(
         notes: clip,
         to: before.to,
         sketch: Some(sk.clone()),
+        critic: Vec::new(),
     })
 }
 
@@ -1093,7 +1250,7 @@ mod tests {
                 let req = ask(&notes, &ctx, &s);
                 let all = drafts(&req).unwrap();
                 assert_eq!(all.len(), usize::from(DRAFTS));
-                for d in &all {
+                for d in all.iter().filter(|d| d.made.critic.is_empty()) {
                     let again = draft(&req, d.number).unwrap();
                     assert_eq!(
                         again.made, d.made,
@@ -1189,12 +1346,82 @@ mod tests {
             let s = settings(GROOVE, bars, 5);
             let req = ask(&notes, &ctx, &s);
             let all = drafts(&req).unwrap();
-            assert_eq!(all.len(), if bars > 8 { 2 } else { 4 }, "{bars} bars");
+            assert_eq!(
+                all.len(),
+                usize::from(if bars > 8 { DRAFTS_LONG } else { DRAFTS }),
+                "{bars} bars"
+            );
             let made = continue_s1(&req).unwrap();
             assert_eq!(made, all[0].made);
             assert_eq!(made.to, (2 + Tick::from(bars)) * BAR);
             assert!(!made.notes.is_empty(), "{bars} bars");
         }
+    }
+
+    /// S4: the second draft is a real choice, and a draft that fails a
+    /// check is repaired in place: a bar made again, the check put right,
+    /// nothing that passed broken, your locked bars untouched, and the
+    /// repair said in words.
+    #[test]
+    fn the_runner_up_differs_and_a_weak_draft_is_repaired() {
+        let notes = riff();
+        let ctx = context(&notes);
+        let from = 2 * 16;
+        let (mut tried, mut repaired) = (0, 0);
+        for style in [MINIMAL, GROOVE, JAZZISH] {
+            for seed in 1..=6 {
+                let s = settings(style, 8, seed);
+                let req = ask(&notes, &ctx, &s);
+                let all = drafts(&req).unwrap();
+                if (1..all.len()).any(|j| difference(&all[0].made, &all[j].made, from) >= DIFFER) {
+                    assert!(
+                        difference(&all[0].made, &all[1].made, from) >= DIFFER,
+                        "{} seed {seed}: the runner-up is a real choice",
+                        style.name
+                    );
+                }
+                for d in all.iter().filter(|d| d.verdict.passed() < 6) {
+                    tried += 1;
+                    let mut fixed = d.clone();
+                    let locked = [7];
+                    repair(&req, &mut fixed, &locked);
+                    if fixed.made.critic.is_empty() {
+                        assert_eq!(fixed.made, d.made, "no repair: nothing changes");
+                        continue;
+                    }
+                    repaired += 1;
+                    assert!(fixed.verdict.passed() > d.verdict.passed());
+                    for ((name, a), (_, b)) in
+                        d.verdict.checks().iter().zip(fixed.verdict.checks().iter())
+                    {
+                        assert!(!a.pass || b.pass, "{name} passed and still does");
+                    }
+                    assert_eq!(fixed.verdict, verdict_for(&req, &fixed.made, &fixed.sketch));
+                    let bar = |b: usize| -> Vec<(i32, i32, i8)> {
+                        let r = (b as i32 * 16)..((b as i32 + 1) * 16);
+                        let pick = |c: &Continued| {
+                            c.line
+                                .notes
+                                .iter()
+                                .filter(|m| r.contains(&m.on))
+                                .map(|m| (m.on, m.pos, m.alt))
+                                .collect::<Vec<_>>()
+                        };
+                        assert_eq!(pick(&fixed.made), pick(&d.made), "bar {} is locked", b + 1);
+                        pick(&d.made)
+                    };
+                    let _ = bar(7);
+                    for w in &fixed.made.critic {
+                        assert!(
+                            w.starts_with("bar ") && w.contains(" made again so "),
+                            "{w}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(tried > 0, "some draft fails a check");
+        assert!(repaired > 0, "a repair was found ({tried} weak drafts)");
     }
 
     /// Events and chords inside bar `b`.

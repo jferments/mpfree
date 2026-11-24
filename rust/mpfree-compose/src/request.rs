@@ -80,6 +80,10 @@ pub struct Continued {
     /// The phrase plan the new bars follow (`None` from the first
     /// engine): Try again on picked bars works from it.
     pub sketch: Option<Sketch>,
+    /// What the critic changed in the draft it picked, in words, one line
+    /// a repair ("bar 6 made again so it lands"; S4). Empty when nothing
+    /// was repaired.
+    pub critic: Vec<String>,
 }
 
 /// The sound moves for a result of `req` at `level` ([`crate::sound`]):
@@ -365,6 +369,7 @@ pub fn first_engine_keeping(
         notes,
         to,
         sketch: None,
+        critic: Vec::new(),
     })
 }
 
@@ -455,6 +460,7 @@ pub fn try_bars(
         notes,
         to: before.to,
         sketch: before.sketch.clone(),
+        critic: Vec::new(),
     })
 }
 
@@ -534,6 +540,7 @@ pub fn try_notes(
         notes,
         to: before.to,
         sketch: before.sketch.clone(),
+        critic: Vec::new(),
     })
 }
 

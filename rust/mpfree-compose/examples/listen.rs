@@ -3111,6 +3111,7 @@ fn critic_table(phrases: &[Phrase], seeds: u64) -> Result<(), String> {
         "{:28} {:>10} {:>6} {:>9} {:>6} {:>8} {:>6} {:>7}",
         "phrase / way", "somewhere", "lands", "breathes", "yours", "repeats", "flows", "all 6"
     );
+    let mut repaired = 0u64;
     for p in phrases {
         let clip = clip_of(&p.notes, p.bars, p.meter);
         let mut tally: Vec<(&str, [u64; 7], Option<Verdict>)> = vec![
@@ -3125,6 +3126,12 @@ fn critic_table(phrases: &[Phrase], seeds: u64) -> Result<(), String> {
             let made = first_engine(&req).map_err(|e| e.words())?;
             let s1 = drafts(&req).map_err(|e| e.words())?;
             let best = &s1[0];
+            if !best.made.critic.is_empty() {
+                repaired += 1;
+                if repaired <= 3 {
+                    println!("  {} seed {seed}: {}", p.slug, best.made.critic.join("; "));
+                }
+            }
             if seed == 1 {
                 println!(
                     "  {} seed 1, S1 draft {} of {}: {} | {}",
@@ -3185,7 +3192,11 @@ fn critic_table(phrases: &[Phrase], seeds: u64) -> Result<(), String> {
             }
         }
     }
-    println!("(out of {seeds} seeds each; checks: {})", NAMES.join(", "));
+    println!(
+        "(out of {seeds} seeds each; checks: {}; the critic repaired {repaired} of {} picks)",
+        NAMES.join(", "),
+        seeds * phrases.len() as u64
+    );
     Ok(())
 }
 

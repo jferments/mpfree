@@ -441,6 +441,7 @@ impl Drummed {
             notes: self.notes,
             to: self.to,
             sketch: None,
+            critic: Vec::new(),
         }
     }
 }
