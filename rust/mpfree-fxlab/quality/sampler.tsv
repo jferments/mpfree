@@ -5,18 +5,18 @@ sampler/comb[220 Hz, resonance 1, pink noise]/level_db	-2.2325
 sampler/comb[220 Hz, resonance 1, white noise]/level_db	-3.9048
 sampler/comb[220 Hz, resonance 1]/pitch_error_cents	0.0496
 sampler/comb[3300 Hz, resonance 1]/pitch_error_cents	0.3023
-sampler/drive[ladder open, 12 dB, 2.5 kHz at 0 dBFS]/alias_worst_db	-98.2502
-sampler/drive[ladder open, 12 dB, 5 kHz at 0 dBFS]/alias_worst_db	-74.0617
-sampler/drive[ladder open, 24 dB, 2.5 kHz at 0 dBFS]/alias_worst_db	-58.6118
-sampler/drive[ladder open, 24 dB, 5 kHz at 0 dBFS]/alias_worst_db	-45.8244
+sampler/drive[ladder open, 12 dB, 2.5 kHz at 0 dBFS]/alias_worst_db	-99.1084
+sampler/drive[ladder open, 12 dB, 5 kHz at 0 dBFS]/alias_worst_db	-78.0432
+sampler/drive[ladder open, 24 dB, 2.5 kHz at 0 dBFS]/alias_worst_db	-57.8619
+sampler/drive[ladder open, 24 dB, 5 kHz at 0 dBFS]/alias_worst_db	-45.2418
 sampler/filter[band-pass 2-pole, resonance 0.5, 1 kHz]/error_db	1.0312
 sampler/filter[band-pass 8-pole, resonance 0.5, 1 kHz]/error_db	0.3354
 sampler/filter[comb, resonance 0.5, 1 kHz]/error_db	0.0481
 sampler/filter[comb, resonance 0.9, 1 kHz]/error_db	0.3362
 sampler/filter[high-pass 2-pole, 1 kHz]/error_db	0.0313
 sampler/filter[high-pass 6-pole, 1 kHz]/error_db	0.0662
-sampler/filter[ladder, 1 kHz]/error_db	0.1355
-sampler/filter[ladder, resonance 0.5, 1 kHz]/error_db	0.2804
+sampler/filter[ladder, 1 kHz]/error_db	0.1774
+sampler/filter[ladder, resonance 0.5, 1 kHz]/error_db	0.075
 sampler/filter[low-pass 1-pole, resonance 0.5, 1 kHz]/error_db	1.0151
 sampler/filter[low-pass 2-pole, 1 kHz]/error_db	0.7239
 sampler/filter[low-pass 2-pole, resonance 0.9, 1 kHz]/error_db	0.7438
@@ -76,14 +76,14 @@ sampler/pad filter[high-pass 8-pole, 2 kHz, resonance 0.3, 1.8 kHz sawtooth at 0
 sampler/pad filter[high-pass 8-pole, 2 kHz, resonance 1, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-140
 sampler/pad filter[high-pass 8-pole, 4000 Hz]/slope_db_per_octave	48.5149
 sampler/pad filter[high-pass 8-pole, resonance 0]/cutoff_error_pct	0.0002
-sampler/pad filter[ladder at 10 kHz, resonance 0.9, 12 dB, 7 kHz at 0 dBFS]/alias_worst_db	-70.7848
-sampler/pad filter[ladder at 5 kHz, resonance 0.9, 12 dB, 2.5 kHz at 0 dBFS]/alias_worst_db	-102.9257
-sampler/pad filter[ladder at 8 kHz, resonance 0.7, 12 dB, 5 kHz at 0 dBFS]/alias_worst_db	-85.8954
-sampler/pad filter[ladder, 1 kHz, resonance 0.9, -40 dBFS sine]/ring_up_db	21.4376
-sampler/pad filter[ladder, 2 kHz, resonance 0.5, 0 dB, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-50.776
-sampler/pad filter[ladder, 2 kHz, resonance 0.5, 12 dB, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-46.869
-sampler/pad filter[ladder, swept 100 Hz to 10 kHz, resonance 0.75, pink at -18 dBFS]/peak_dbfs	-6.2025
-sampler/pad filter[ladder, swept 100 Hz to 10 kHz, resonance 1, pink at -18 dBFS]/peak_dbfs	-2.1306
+sampler/pad filter[ladder at 10 kHz, resonance 0.9, 12 dB, 7 kHz at 0 dBFS]/alias_worst_db	-60.7407
+sampler/pad filter[ladder at 5 kHz, resonance 0.9, 12 dB, 2.5 kHz at 0 dBFS]/alias_worst_db	-102.7463
+sampler/pad filter[ladder at 8 kHz, resonance 0.7, 12 dB, 5 kHz at 0 dBFS]/alias_worst_db	-80.3913
+sampler/pad filter[ladder, 1 kHz, resonance 0.9, -40 dBFS sine]/ring_up_db	21.0436
+sampler/pad filter[ladder, 2 kHz, resonance 0.5, 0 dB, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-103.3727
+sampler/pad filter[ladder, 2 kHz, resonance 0.5, 12 dB, 1.8 kHz sawtooth at 0 dBFS]/dc_dbfs	-113.0499
+sampler/pad filter[ladder, swept 100 Hz to 10 kHz, resonance 0.75, pink at -18 dBFS]/peak_dbfs	-7.3216
+sampler/pad filter[ladder, swept 100 Hz to 10 kHz, resonance 1, pink at -18 dBFS]/peak_dbfs	-2.7015
 sampler/pad filter[low-pass 1-pole, 1 kHz, resonance 0.5, -40 dBFS sine at the cutoff]/against_2_pole_db	0.004
 sampler/pad filter[low-pass 1-pole, 1 kHz, resonance 0.5]/passband_100hz_db	0.0431
 sampler/pad filter[low-pass 1-pole, 1 kHz, resonance 0]/passband_100hz_db	-0.0433
