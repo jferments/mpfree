@@ -1063,6 +1063,9 @@ struct Strip {
     /// block): volume times balance per side, and each send's level.
     vol_bal: [f32; 2],
     send_g: [f32; RETURNS],
+    /// A performance offset on each send, as a gain added to the send's
+    /// own ([`Mixer::set_send_add`]): 0 at rest. Never stored or saved.
+    send_add: [f32; RETURNS],
     source: u8,
     monitor: u8,
     arm: bool,
@@ -1132,6 +1135,7 @@ impl Strip {
             send_pre: [false; RETURNS],
             vol_bal: [1.0; 2],
             send_g: [0.0; RETURNS],
+            send_add: [0.0; RETURNS],
             source: ids::source::STEREO as u8,
             monitor: ids::monitor::AUTO as u8,
             arm: false,
@@ -1240,11 +1244,23 @@ impl Strip {
         }
         if self.role.has_sends() {
             for r in 0..RETURNS {
-                let g = self.send_g[r];
+                let g = self.send_level(r);
                 let pre = self.send_pre[r];
                 self.send[r][0].target = if pre { g } else { 0.0 };
                 self.send[r][1].target = if pre { 0.0 } else { g };
             }
+        }
+    }
+
+    /// Send `r`'s gain as it plays: its own level, and a performance
+    /// offset on top ([`Mixer::set_send_add`]), at most +6 dB.
+    fn send_level(&self, r: usize) -> f32 {
+        let own = self.send_g[r];
+        let add = self.send_add[r];
+        if add == 0.0 {
+            own
+        } else {
+            (own + add).min(SEND_ADD_MAX)
         }
     }
 
@@ -1299,6 +1315,10 @@ fn duck_next(duck: &mut Duck, g: &mut f32, step: f32) -> f32 {
     }
     *g
 }
+
+/// The most a send plays at with a performance offset on it: +6 dB, the
+/// top of its range.
+const SEND_ADD_MAX: f32 = 1.995_262_3;
 
 /// Gain for a level in dB, with the bottom of the range silent.
 fn level(db: f32) -> f32 {
@@ -1567,6 +1587,43 @@ impl Mixer {
         let at = q.partition_point(|e| e.offset <= t.offset);
         q.insert(at, t);
         true
+    }
+
+    /// A performance offset on strip `s`'s send `r` (0 to 3, A to D): a
+    /// gain added to the send's own level as it plays, up to +6 dB, with
+    /// the send's glide. The send's own value ([`Mixer::param`]) is
+    /// untouched, so 0 puts it back exactly as it was; nothing stores or
+    /// saves the offset. The Play page's Loop group adds its Delay to an
+    /// audio track's Send A this way while the track plays a loop. False
+    /// for a strip with no sends (or not there). Allocates nothing.
+    pub fn set_send_add(&mut self, s: StripId, r: usize, gain: f32) -> bool {
+        let Some(k) = self.plan.topo.order(s) else {
+            return false;
+        };
+        if r >= RETURNS || !self.strips[k].role.has_sends() {
+            return false;
+        }
+        let g = if gain.is_finite() {
+            gain.clamp(0.0, SEND_ADD_MAX)
+        } else {
+            0.0
+        };
+        if self.strips[k].send_add[r] != g {
+            self.strips[k].send_add[r] = g;
+            let heard = self.aud.get(k);
+            let plan = &self.plan;
+            self.strips[k].targets(plan, k, heard);
+        }
+        true
+    }
+
+    /// The performance offset on strip `s`'s send `r` ([`Mixer::set_send_add`]).
+    pub fn send_add(&self, s: StripId, r: usize) -> f32 {
+        self.plan
+            .topo
+            .order(s)
+            .and_then(|k| self.strips[k].send_add.get(r).copied())
+            .unwrap_or(0.0)
     }
 
     /// Sets a strip parameter from the start of the next block (with a glide).
@@ -2072,7 +2129,7 @@ impl Mixer {
         if topo.role(t).0.has_sends() {
             for r in 0..RETURNS {
                 let j = topo.ret(r);
-                if self.strips[t].send_g[r] > 0.0 && (j == s || self.reach(j).get(s)) {
+                if self.strips[t].send_level(r) > 0.0 && (j == s || self.reach(j).get(s)) {
                     return Err(No::Sends(r));
                 }
             }
@@ -2111,7 +2168,7 @@ impl Mixer {
             }
             if topo.role(j).0.has_sends() {
                 for r in 0..RETURNS {
-                    if self.strips[j].send_g[r] > 0.0 {
+                    if self.strips[j].send_level(r) > 0.0 {
                         seen.set(topo.ret(r), true);
                     }
                 }

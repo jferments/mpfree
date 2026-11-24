@@ -429,6 +429,17 @@ fn mixer_never_allocates(lane: bool, pipe: bool) {
         let rec = tracks[rng.next() as usize % tracks.len()];
         let from = m.capture_for((StripId::Master, CapturePoint::BeforeInserts), rec);
         m.set_capture_from(9, from.ok());
+        // The Loop group's Delay (audio tracks 4e.1): an offset on a
+        // track's Send A, coming and going.
+        if rng.next().is_multiple_of(10) {
+            let t = tracks[rng.next() as usize % tracks.len()];
+            let add = if rng.next().is_multiple_of(3) {
+                0.0
+            } else {
+                rng.unit()
+            };
+            m.set_send_add(t, 0, add);
+        }
         let ctx = Ctx {
             bpm: 90.0,
             ..Ctx::new(rate, frame)
