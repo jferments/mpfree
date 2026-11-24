@@ -5190,13 +5190,12 @@ fn record_learned(
 }
 
 /// Whether a learned control's move on `addr` records as a lock
-/// ([`record_learned`]): a parameter on a track that a clip's lock plays.
-/// A layer's grain setting has no step lock yet (sampler refactor step 17
-/// brings them in its second part), so it records nothing.
+/// ([`record_learned`]): a parameter on a track that a clip's lock plays,
+/// a layer's grain setting among a pad's (sampler refactor step 17b).
 fn learn_records(addr: mpfree_play::mpfree_param::ParamAddr) -> bool {
-    use mpfree_play::mpfree_param::{pad, Owner, Strip};
+    use mpfree_play::mpfree_param::{Owner, Strip};
     match addr.owner {
-        Owner::Pad(..) => pad::layer_of(addr.param).is_none(),
+        Owner::Pad(..) => sampler::PadParam::of(addr.param).is_some(),
         Owner::Inst(_)
         | Owner::Strip(Strip::Track(_))
         | Owner::Insert(Strip::Track(_), _)
@@ -7703,9 +7702,9 @@ impl time::Pads for SeqPads<'_> {
                 if !self.own.plays(usize::from(t)) && !self.kits.plays_synth(usize::from(t)) =>
             {
                 let kit = self.kit_of(u16::from(t));
-                sampler::pad_field(addr.param).is_some_and(|f| {
+                sampler::PadParam::of(addr.param).is_some_and(|p| {
                     self.player
-                        .pad_lock(kit, usize::from(pad), f, value, offset)
+                        .pad_param_lock(kit, usize::from(pad), p, value, offset)
                 })
             }
             _ => false,
@@ -10566,6 +10565,8 @@ fn player_session(
     }
     let loops_on = app.settings.loops_on;
     time.set_loops_on(loops_on);
+    // Layers as recordings (phase 4c.2) come with the same switch.
+    looper.set_recordings(loops_on);
     // With takes streaming, a cue that launches audio waits until the
     // start of its audio is in memory (the audio tracks rethink's phase
     // 2): the needs go to the tracks whenever they change.
@@ -15690,6 +15691,11 @@ fn player_session(
             tracks.loops_moving(&looper.moving_ids());
             tracks.plan_loops(time.block(), &|p| time.audio(p));
             looper.give_loop_id(|| tracks.fresh_loop_id());
+            looper.give_layer_recs(|| tracks.fresh_recording_id());
+            // Closed layers to their files soon after they close (4c.3).
+            if let Some(line) = looper.write_layers(&mut tracks, time.block().frames as usize) {
+                out.note(&line);
+            }
             looper.tell_tracks(time.project(), tracks.loop_player());
         }
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
@@ -20949,6 +20955,55 @@ mod tests {
         assert_eq!(locks(&h), vec![(cutoff, 0.6)]);
     }
 
+    /// Sampler refactor step 17b: a learned move on a layer's grain
+    /// setting records as a lock on the kit pad's note, as a pad's own
+    /// setting does, and a clip plays it through the kit (`lock_at`,
+    /// [`sampler::Player::pad_param_lock`]).
+    #[test]
+    fn a_learned_layer_grain_setting_records_as_a_lock() {
+        use mpfree_play::mpfree_param::{pad, OnTrack, RelAddr};
+        use mpfree_play::Event;
+        use mpfree_sampler::grain_field::GrainField;
+        struct Quiet;
+        impl time::Pads for Quiet {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        let run = |h: &mut time::TimeHost, periods: usize| {
+            for _ in 0..periods {
+                h.period(PERIOD as u32, &mut Quiet);
+            }
+        };
+        let mut h = time::TimeHost::new(44_100, 120.0).unwrap();
+        h.act(TimeAction::NewClip { track: 2, slot: 0 }).unwrap();
+        run(&mut h, 12);
+        assert_eq!(h.info().state, mpfree_transport::State::Recording);
+        h.pad(
+            0,
+            Event::NoteOn {
+                note: 4,
+                velocity: 100,
+            },
+        );
+        run(&mut h, 2);
+        let size = pad::layer(1, GrainField::Size as u8).unwrap();
+        let at = RelAddr::new(OnTrack::Pad(4), size);
+        record_learned(&mut h, at.on(2), 320.0, true);
+        run(&mut h, 2);
+        h.pad(0, Event::NoteOff { note: 4 });
+        run(&mut h, 2 * 88_200 / PERIOD);
+        let locks: Vec<(RelAddr, f32)> = h.project().tracks[2]
+            .slots
+            .clips()
+            .flat_map(|c| c.locks.iter().map(|l| (l.addr, l.value)))
+            .collect();
+        assert_eq!(locks, vec![(at, 320.0)]);
+    }
+
     /// The Clips grid's learned controls (sequencer S5) are named by
     /// where they are, and a track's mute and solo read from the bits the
     /// time engine gives.
@@ -21503,8 +21558,13 @@ mod tests {
             "no sound"
         );
         // While recording, a pad's own setting goes to the recorder as a
-        // lock would; a layer's grain setting doesn't yet.
-        assert!(!learn_records(at(0, GrainField::Size)));
+        // lock would, and so does a layer's grain setting (step 17b); a
+        // number that names no setting doesn't.
+        assert!(learn_records(at(0, GrainField::Size)));
+        assert!(!learn_records(ParamAddr::new(
+            Owner::Pad(0, 4),
+            pad::LAYER_BASE + 63
+        )));
         let own = ParamAddr::new(
             Owner::Pad(0, 4),
             mpfree_sampler::engine::PadField::Tune as u16,

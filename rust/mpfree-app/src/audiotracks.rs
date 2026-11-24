@@ -1219,6 +1219,12 @@ impl TrackHost {
         self.host.tracks.fresh_rec().0
     }
 
+    /// A new recording's id for a loop's layer (phase 4c.2), from the same
+    /// id maker as takes': never 0, never given twice.
+    pub fn fresh_recording_id(&mut self) -> u128 {
+        self.host.tracks.fresh_rec().0
+    }
+
     /// [`TrackHost::period`] with the tracks' loops (phase 4b, behind
     /// Dev's switch): planned before the looper ran
     /// ([`TrackHost::plan_loops`]), and each loop's sound in the period by
@@ -3626,6 +3632,38 @@ fn drive_room(dir: &std::path::Path) -> Option<mpfree_audiotracks::files::Room> 
         free,
         total,
     })
+}
+
+/// Loops' closed layers' files (phase 4c.3) go through the audio tracks'
+/// worker, to the folder takes record into.
+impl crate::loops_on_tracks::LayerFiles for TrackHost {
+    fn can_write(&self) -> bool {
+        self.host.layer_files()
+    }
+
+    fn begin(&mut self, rec: u128, frames: usize) -> bool {
+        self.host.layer_begin(RecordingId(rec), frames, 2)
+    }
+
+    fn buffer(&mut self) -> Option<Vec<f32>> {
+        self.host.layer_buffer()
+    }
+
+    fn piece(&mut self, rec: u128, buf: Vec<f32>, len: usize) {
+        self.host.layer_piece(RecordingId(rec), buf, len);
+    }
+
+    fn end(&mut self, rec: u128) {
+        self.host.layer_end(RecordingId(rec));
+    }
+
+    fn drop_layer(&mut self, rec: u128) {
+        self.host.layer_drop(RecordingId(rec));
+    }
+
+    fn written(&mut self) -> Option<(u128, Option<String>)> {
+        self.host.layer_written().map(|(r, why)| (r.0, why))
+    }
 }
 
 #[cfg(test)]

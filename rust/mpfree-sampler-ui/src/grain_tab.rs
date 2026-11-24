@@ -39,8 +39,8 @@ use mpfree_sampler::grain_field::GrainField;
 use mpfree_sampler::grain_presets;
 use mpfree_sampler::model::{
     GrainFilter, GrainFilterKind, GrainMode, GrainParams, GrainQuality, GrainSprayShape,
-    GrainWindow, LfoShape, MotionTarget, PlayMode, Region, TempoSync, GRAIN_CUTOFF_MAX_HZ,
-    GRAIN_CUTOFF_MIN_HZ, GRAIN_FILTER_SPRAY_OCTAVES,
+    GrainWindow, LfoShape, MotionTarget, PlayMode, Region, RouteFrom, TempoSync,
+    GRAIN_CUTOFF_MAX_HZ, GRAIN_CUTOFF_MIN_HZ, GRAIN_FILTER_SPRAY_OCTAVES, GRAIN_ROUTES,
 };
 
 use crate::panel::{Control, Look};
@@ -210,6 +210,15 @@ pub enum Row {
     EnvAttack,
     EnvDecay,
     EnvSustain,
+    /// The Grain tool's Mod part (sampler refactor step 17c): what moves
+    /// the route outlined, and what it moves ([`crate::grain_tool`]).
+    RouteFrom,
+    RouteTo,
+    /// Routes 1 to 4's depths.
+    Route1,
+    Route2,
+    Route3,
+    Route4,
 }
 
 /// The movement rows, in the Movement panel's order.
@@ -270,7 +279,13 @@ impl Row {
             | Row::LfoTo
             | Row::LfoShape
             | Row::LfoSync
-            | Row::EnvTo => return None,
+            | Row::EnvTo
+            | Row::RouteFrom
+            | Row::RouteTo
+            | Row::Route1
+            | Row::Route2
+            | Row::Route3
+            | Row::Route4 => return None,
         })
     }
 
@@ -339,7 +354,21 @@ impl Row {
             Row::EnvAttack => "Env attack",
             Row::EnvDecay => "Env decay",
             Row::EnvSustain => "Env sustain",
+            Row::RouteFrom => "Route from",
+            Row::RouteTo => "Route to",
+            Row::Route1 => "Route 1",
+            Row::Route2 => "Route 2",
+            Row::Route3 => "Route 3",
+            Row::Route4 => "Route 4",
         }
+    }
+
+    /// The Mod part's depth knobs, routes 1 to 4.
+    pub const ROUTES: [Row; GRAIN_ROUTES] = [Row::Route1, Row::Route2, Row::Route3, Row::Route4];
+
+    /// The route whose depth the row turns (from 0).
+    pub fn route(self) -> Option<usize> {
+        Row::ROUTES.iter().position(|r| *r == self)
     }
 
     /// Its name on the screen (over its knob, on its Q-Link card, in the
@@ -691,6 +720,12 @@ pub fn control_of(r: &Region, row: Row) -> Control {
     };
     let cutoff_octaves = (GRAIN_CUTOFF_MAX_HZ / GRAIN_CUTOFF_MIN_HZ).log2();
     match &row {
+        Row::RouteFrom | Row::RouteTo => Control::new(Look::Chip),
+        Row::Route1 | Row::Route2 | Row::Route3 | Row::Route4 => {
+            let route = r.grain_routes.0[row.route().unwrap_or(0)];
+            knob((route.depth + 1.0) / 2.0, ROUTE_STEPS, true)
+                .faint_because(route.from == RouteFrom::Off, ROUTE_OFF_WHY)
+        }
         Row::Scan => knob(
             (g.scan + SCAN_LIMIT) / (2.0 * SCAN_LIMIT),
             SCANS.len() as u32 - 1,
@@ -804,11 +839,16 @@ pub fn stepped(r: &Region, row: Row, delta: i32, bpm: f64) -> Region {
         };
         return grain_presets::apply(r, i);
     }
+    if matches!(row, Row::RouteFrom | Row::RouteTo) || row.route().is_some() {
+        return route_stepped(r, row, 0, delta);
+    }
     let mut r = r.clone();
     let g = &mut r.grain;
     let d = delta as f32;
     let (dsync, ssync) = synced(g);
     match row {
+        // Stepped above.
+        Row::RouteFrom | Row::RouteTo | Row::Route1 | Row::Route2 | Row::Route3 | Row::Route4 => {}
         Row::Sync => {
             let i = SYNCS
                 .iter()
@@ -1204,6 +1244,130 @@ const SPRAY_SHAPES: [(&str, GrainSprayShape); 2] = [
     ("Peaked", GrainSprayShape::Peaked),
 ];
 
+// ------------------------------------------------------------ routes (17c)
+
+/// A route's depth knob: 5 % a step, from -100 % to +100 %.
+const ROUTE_STEPS: u32 = 40;
+/// What a tap on a route's knob says while its From is Off.
+pub const ROUTE_OFF_WHY: &str = "Pick what moves it first (Route from)";
+
+/// What moves a route, as its picker names it.
+pub fn route_from_name(f: RouteFrom) -> &'static str {
+    match f {
+        RouteFrom::Off => "Off",
+        RouteFrom::Velocity => "Velocity",
+        RouteFrom::Pressure => "Pressure",
+        RouteFrom::Key => "Key",
+    }
+}
+
+/// A grain setting as a route's To picker names it: the Grain tool's
+/// own words, without "Grain" (every one here is the grains').
+pub fn route_to_name(f: GrainField) -> &'static str {
+    match f {
+        GrainField::Position => "Position",
+        GrainField::Spray => "Spray",
+        GrainField::Size => "Size",
+        GrainField::Density => "Density",
+        GrainField::Pitch => "Pitch",
+        GrainField::PitchSpray => "Pitch spray",
+        GrainField::Scan => "Scan",
+        GrainField::Reverse => "Reverse",
+        GrainField::Spread => "Stereo",
+        GrainField::Level => "Level",
+        GrainField::Timing => "Timing",
+        GrainField::SizeSpray => "Size spray",
+        GrainField::LevelSpray => "Level spray",
+        GrainField::Cutoff => "Cutoff",
+        GrainField::Resonance => "Resonance",
+        GrainField::FilterSpray => "Filter spray",
+        GrainField::LfoRate => "LFO rate",
+        GrainField::LfoDepth => "LFO depth",
+        GrainField::EnvDepth => "Env depth",
+        GrainField::EnvAttack => "Env attack",
+        GrainField::EnvDecay => "Env decay",
+        GrainField::EnvSustain => "Env sustain",
+    }
+}
+
+/// Route `k`'s knob's name: by what it routes ("Vel → size", as the Play
+/// page names its own), or "Route 4" while it is off.
+pub fn route_name(r: &Region, k: usize) -> String {
+    let route = r.grain_routes.0[k];
+    let from = match route.from {
+        RouteFrom::Off => return format!("Route {}", k + 1),
+        RouteFrom::Velocity => "Vel",
+        RouteFrom::Pressure => "Press",
+        RouteFrom::Key => "Key",
+    };
+    let to = route_to_name(route.to);
+    // Lower case after the arrow, but for a word in capitals (LFO).
+    let to = if to.starts_with("LFO") {
+        to.to_string()
+    } else {
+        to.to_lowercase()
+    };
+    format!("{from} → {to}")
+}
+
+/// A Mod part row's value, with route `outlined` (from 0) the one the
+/// pickers edit: its From and To, or a route's depth ("+40 %"; the key's
+/// a semitone's worth an octave, "+25 %/oct"; "Off" while it is off).
+pub fn route_text(r: &Region, row: Row, outlined: usize) -> String {
+    let outlined = outlined.min(GRAIN_ROUTES - 1);
+    match row {
+        Row::RouteFrom => route_from_name(r.grain_routes.0[outlined].from).into(),
+        Row::RouteTo => route_to_name(r.grain_routes.0[outlined].to).into(),
+        _ => {
+            let Some(k) = row.route() else {
+                return String::new();
+            };
+            let route = r.grain_routes.0[k];
+            let pct = percent(route.depth);
+            let sign = if pct > 0 { "+" } else { "" };
+            match route.from {
+                RouteFrom::Off => "Off".into(),
+                RouteFrom::Key => format!("{sign}{pct} %/oct"),
+                _ => format!("{sign}{pct} %"),
+            }
+        }
+    }
+}
+
+/// `r` with a Mod part row stepped `delta` steps, route `outlined` the
+/// one the pickers edit: its From through Off, Velocity, Pressure and
+/// Key, its To through the 22 grain settings (position first), or
+/// a route's depth 5 % a step (nothing while its From is Off).
+pub fn route_stepped(r: &Region, row: Row, outlined: usize, delta: i32) -> Region {
+    let mut r = r.clone();
+    let outlined = outlined.min(GRAIN_ROUTES - 1);
+    match row {
+        Row::RouteFrom => {
+            let route = &mut r.grain_routes.0[outlined];
+            let i = RouteFrom::ALL
+                .iter()
+                .position(|f| *f == route.from)
+                .unwrap_or(0);
+            route.from = RouteFrom::ALL[shift(i, delta, RouteFrom::ALL.len())];
+        }
+        Row::RouteTo => {
+            let route = &mut r.grain_routes.0[outlined];
+            let i = route.to as usize;
+            route.to = GrainField::ALL[shift(i, delta, GrainField::COUNT)];
+        }
+        _ => {
+            if let Some(k) = row.route() {
+                let route = &mut r.grain_routes.0[k];
+                if route.from != RouteFrom::Off {
+                    let steps = (route.depth * 20.0).round() as i32 + delta;
+                    route.depth = (steps.clamp(-20, 20) as f32) / 20.0;
+                }
+            }
+        }
+    }
+    r
+}
+
 fn shift(i: usize, delta: i32, len: usize) -> usize {
     (i as i32 + delta).clamp(0, len as i32 - 1) as usize
 }
@@ -1287,8 +1451,15 @@ pub fn panel_text(r: &Region, row: Row) -> String {
 
 /// A row's value as the list shows it.
 pub fn value_text(r: &Region, row: Row) -> String {
+    if matches!(row, Row::RouteFrom | Row::RouteTo) || row.route().is_some() {
+        return route_text(r, row, 0);
+    }
     let g = &r.grain;
     match row {
+        // Written above.
+        Row::RouteFrom | Row::RouteTo | Row::Route1 | Row::Route2 | Row::Route3 | Row::Route4 => {
+            String::new()
+        }
         Row::Mode => mode_label(r.mode).into(),
         Row::GrainMode => GRAIN_MODES
             .iter()
@@ -1506,12 +1677,27 @@ pub fn split_unit(text: &str) -> (String, String) {
 /// the log: "size 80 ms -> 120 ms, scan 0.25× -> Frozen". Empty if nothing
 /// did.
 pub fn describe(a: &Region, b: &Region) -> String {
+    // A route as the log says it: "off", or "velocity size +40 %".
+    let route = |r: &Region, k: usize| {
+        let x = r.grain_routes.0[k];
+        if x.from == RouteFrom::Off {
+            return "off".to_string();
+        }
+        let from = route_from_name(x.from).to_lowercase();
+        let to = route_to_name(x.to).to_lowercase();
+        format!("{from} {to} {}", route_text(r, Row::ROUTES[k], k))
+    };
     LOG_ORDER
         .iter()
         .filter_map(|&row| {
             let (x, y) = (value_text(a, row), value_text(b, row));
             (x != y).then(|| format!("{} {x} -> {y}", row.label().to_lowercase()))
         })
+        .chain((0..GRAIN_ROUTES).filter_map(|k| {
+            let (x, y) = (route(a, k), route(b, k));
+            (a.grain_routes.0[k] != b.grain_routes.0[k])
+                .then(|| format!("route {} {x} -> {y}", k + 1))
+        }))
         .collect::<Vec<_>>()
         .join(", ")
 }

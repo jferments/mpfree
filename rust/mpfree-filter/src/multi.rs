@@ -150,6 +150,269 @@ impl Stages {
     }
 }
 
+/// How high the Filter effect's cutoff goes: 45 % of the rate, as
+/// [`SvfCoefs::bilinear`] keeps it.
+pub const EFFECT_TOP: f32 = 0.45;
+
+/// Which of a [`SlopeStages`]' stages run: the one-pole, how many plain
+/// stages, and whether the last two are both in ([`Stages::cascaded`]).
+pub type Layout = (bool, u8, bool);
+
+/// The Filter effect's stages at any slope (the filter gap plan's F4b):
+/// an odd slope's one-pole, a steep slope's plain stages, then the last
+/// one or two ([`Stages`], the ones that take the resonance), set from the
+/// pads' [`plan`], so a slope is the same filter on a pad and in the
+/// effect (the effect holds a loud ring back by its Soft bend or Hard clip
+/// where the pads have their guard). The 12 and 24 dB filters are the
+/// stages [`set_stages`] sets, bit for bit, the 24 dB band-pass's two
+/// resonant ones too (its centre rings up twice the 12 dB's in dB, as it
+/// always has; the pads' 24 dB band-pass rings as their 12 dB); the bell
+/// and shelves are one stage, as there. Stereo, a
+/// channel at a time, so a frame or a block runs as [`Stages`] does.
+#[derive(Clone, Copy, Debug)]
+pub struct SlopeStages {
+    pub st: Stages,
+    one: OnePole,
+    one_on: bool,
+    pre: [Svf; 2],
+    pre_n: u8,
+    /// What the bend's knee and room and the clip's ceiling are scaled by
+    /// for the last stages: 1, or for a 6 dB slope's resonance (a boost at
+    /// the cutoff) 1 over √2, as the pads' guard holds a bell
+    /// ([`GUARD_KNEE_BELL`]): a bell adds its band-pass state to the sound
+    /// times up to √2, where a low-pass rings at its output as that state
+    /// does.
+    hold: f32,
+}
+
+impl Default for SlopeStages {
+    fn default() -> SlopeStages {
+        SlopeStages {
+            st: Stages {
+                a: Svf::default(),
+                b: Svf::default(),
+                cascaded: false,
+                bend_a: false,
+                bend_b: false,
+            },
+            one: OnePole::default(),
+            one_on: false,
+            pre: [Svf::default(); 2],
+            pre_n: 0,
+            hold: 1.0,
+        }
+    }
+}
+
+impl SlopeStages {
+    /// Sets `mode` at `poles` ([`slope`]: 1, 2, 3, 4, 6 or 8 for a
+    /// low-pass or high-pass), cutoff `hz`, Resonance `res` (0 to 1) and,
+    /// for the bell and shelves, `gain` dB, at `rate`. The stages that
+    /// run keep their states; one that comes in carries whatever it last
+    /// held until [`SlopeStages::clear_new`] clears it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set(&mut self, mode: SvfMode, poles: u8, hz: f32, res: f32, gain: f32, rate: u32) {
+        let poles = slope(mode, poles);
+        // The 12 and 24 dB filters as they always were (and the bell and
+        // shelves): [`set_stages`] itself, so a moving cutoff costs what it
+        // did. The 24 dB band-pass keeps its two resonant stages, the
+        // effect's extra-peaky one (Jay's pick, 24 Nov), where the pads'
+        // 24 dB band-pass rings as its 12 dB does.
+        let old = match mode {
+            SvfMode::Bell | SvfMode::LowShelf | SvfMode::HighShelf => Some(false),
+            _ => match poles {
+                2 => Some(false),
+                4 => Some(true),
+                _ => None,
+            },
+        };
+        if let Some(cascaded) = old {
+            set_stages(
+                &mut self.st.a,
+                &mut self.st.b,
+                mode,
+                cascaded,
+                hz,
+                res,
+                gain,
+                rate,
+            );
+            self.st.cascaded = cascaded;
+            (self.st.bend_a, self.st.bend_b) = bends(mode, cascaded);
+            self.one_on = false;
+            self.pre_n = 0;
+            self.hold = 1.0;
+            return;
+        }
+        let p = plan(mode, poles, res);
+        let t = corner(hz, rate, EFFECT_TOP);
+        self.one_on = p.one.is_some();
+        if let Some(hp) = p.one {
+            self.one.set(OnePole::gain_for(t), hp);
+        }
+        let s = p.stages();
+        let (pre, last) = s.split_at(s.len().saturating_sub(2));
+        for (svf, stage) in self.pre.iter_mut().zip(pre) {
+            svf.set_coefs(stage.coefs(t));
+        }
+        self.pre_n = pre.len() as u8;
+        self.st.a.set_coefs(last[0].coefs(t));
+        self.st.bend_a = last[0].resonant;
+        self.hold = if last[0].mode == SvfMode::Bell {
+            std::f32::consts::FRAC_1_SQRT_2
+        } else {
+            1.0
+        };
+        self.st.cascaded = last.len() == 2;
+        if let Some(b) = last.get(1) {
+            self.st.b.set_coefs(b.coefs(t));
+            self.st.bend_b = b.resonant;
+        } else {
+            self.st.bend_b = false;
+        }
+    }
+
+    /// Whether only the last one or two stages run (no one-pole or plain
+    /// stages before them), so a host can run [`SlopeStages::st`] alone, at
+    /// the knee or ceiling times [`SlopeStages::hold`].
+    #[inline]
+    pub fn last_only(&self) -> bool {
+        !self.one_on && self.pre_n == 0
+    }
+
+    /// What the bend's knee and room and the clip's ceiling are scaled by
+    /// for the last stages (1, or 1 over √2 for a 6 dB slope's boost).
+    #[inline]
+    pub fn hold(&self) -> f32 {
+        self.hold
+    }
+
+    /// Which stages run now.
+    #[inline]
+    pub fn layout(&self) -> Layout {
+        (self.one_on, self.pre_n, self.st.cascaded)
+    }
+
+    /// Starts each stage that runs now but didn't in `was` (a slope or
+    /// type change): a one-pole or plain stage that comes in at the front
+    /// takes up the low part of the sound the filter was hearing (the
+    /// first stage's low-pass state, [`Svf::start_from`]), so the stages
+    /// after it hear no dip; a second resonant stage starts from silence.
+    pub fn clear_new(&mut self, was: Layout) {
+        let low = if was.0 {
+            self.one.low_state()
+        } else if was.1 > 0 {
+            self.pre[0].low_state()
+        } else {
+            self.st.a.low_state()
+        };
+        if self.one_on && !was.0 {
+            self.one.start_from(low);
+        }
+        for s in self
+            .pre
+            .iter_mut()
+            .take(usize::from(self.pre_n))
+            .skip(usize::from(was.1))
+        {
+            s.start_from(low);
+        }
+        if self.st.cascaded && !was.2 {
+            self.st.b.reset();
+        }
+    }
+
+    /// The one-pole and plain stages for one sample of channel `ch`.
+    #[inline(always)]
+    fn front(&mut self, ch: usize, mut x: f32) -> f32 {
+        if self.one_on {
+            x = self.one.run(ch, x);
+        }
+        for s in &mut self.pre[..usize::from(self.pre_n)] {
+            x = s.run(ch, x);
+        }
+        x
+    }
+
+    /// One sample of channel `ch`, the resonant stages bending past
+    /// `knee` ([`Stages::run`]).
+    #[inline]
+    pub fn run(&mut self, ch: usize, x: f32, knee: f32, room: f32) -> f32 {
+        let x = self.front(ch, x);
+        let h = self.hold;
+        self.st.run(ch, x, knee * h, room * h)
+    }
+
+    /// One sample of channel `ch`, the resonant stages clipped at `lim`
+    /// ([`Stages::run_clip`]).
+    #[inline]
+    pub fn run_clip(&mut self, ch: usize, x: f32, lim: f32) -> f32 {
+        let x = self.front(ch, x);
+        self.st.run_clip(ch, x, lim * self.hold)
+    }
+
+    /// [`SlopeStages::run`] over a block of channel `ch`, in place, a stage
+    /// at a time: the same numbers as frame by frame.
+    pub fn run_block(&mut self, ch: usize, x: &mut [f32], knee: f32, room: f32) {
+        if self.one_on {
+            for v in x.iter_mut() {
+                *v = self.one.run(ch, *v);
+            }
+        }
+        for s in &mut self.pre[..usize::from(self.pre_n)] {
+            s.run_slice(ch, x);
+        }
+        let h = self.hold;
+        self.st.run_block(ch, x, knee * h, room * h);
+    }
+
+    /// Carries on from `from`, the same filter at another rate
+    /// ([`Stages::take_states`]); a stage `from` doesn't run starts from
+    /// silence.
+    pub fn take_states(&mut self, from: &SlopeStages) {
+        self.st.take_states(&from.st);
+        if from.one_on {
+            self.one.copy_states(&from.one);
+        } else {
+            self.one.reset();
+        }
+        for (i, s) in self.pre.iter_mut().enumerate() {
+            if i < usize::from(from.pre_n) {
+                s.copy_states(&from.pre[i]);
+            } else {
+                s.reset();
+            }
+        }
+    }
+
+    /// Every stage from silence.
+    pub fn reset(&mut self) {
+        self.one.reset();
+        for s in &mut self.pre {
+            s.reset();
+        }
+        self.st.a.reset();
+        self.st.b.reset();
+    }
+
+    /// The steady-state response at `hz` as a complex gain `(re, im)`: the
+    /// stages that run, exactly.
+    pub fn response(&self, hz: f32, rate: u32) -> (f64, f64) {
+        let mul = |a: (f64, f64), b: (f64, f64)| (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0);
+        let mut h = self.st.a.response(hz, rate);
+        if self.st.cascaded {
+            h = mul(h, self.st.b.response(hz, rate));
+        }
+        for s in &self.pre[..usize::from(self.pre_n)] {
+            h = mul(h, s.response(hz, rate));
+        }
+        if self.one_on {
+            h = mul(h, self.one.response(hz, rate));
+        }
+        h
+    }
+}
+
 /// The bend's knee and room for Resonance `res` (0 to 1): [`BEND_KNEE`] and
 /// [`BEND_ROOM`] from Resonance [`BEND_FULL_RES`] up, rising as one over
 /// the Resonance below it, and nothing bending at 0 (an infinite knee).
@@ -1027,6 +1290,147 @@ impl Multi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A noise-like test signal: deterministic, full of every frequency.
+    fn noise(n: usize) -> Vec<f32> {
+        let mut x = 0x1234_5678u32;
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                (x as f32 / u32::MAX as f32) * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_effects_12_and_24_db_are_its_old_stages_bit_for_bit() {
+        // Every mode at 12 dB, and the low-pass, high-pass, band-pass and
+        // notch at 24: the same coefficients, the same bends, the same
+        // numbers out.
+        let x = noise(4096);
+        for (mode, poles) in [
+            (SvfMode::LowPass, 2),
+            (SvfMode::HighPass, 2),
+            (SvfMode::BandPass, 2),
+            (SvfMode::Notch, 2),
+            (SvfMode::Bell, 2),
+            (SvfMode::LowShelf, 2),
+            (SvfMode::HighShelf, 2),
+            (SvfMode::LowPass, 4),
+            (SvfMode::HighPass, 4),
+            (SvfMode::BandPass, 4),
+            (SvfMode::Notch, 4),
+            (SvfMode::Bell, 4),
+        ] {
+            for res in [0.0, 0.37, 1.0] {
+                let cascaded = poles == 4 && !matches!(mode, SvfMode::Bell);
+                let mut old = SlopeStages::default().st;
+                set_stages(
+                    &mut old.a, &mut old.b, mode, cascaded, 1234.0, res, 5.0, 48_000,
+                );
+                old.cascaded = cascaded;
+                (old.bend_a, old.bend_b) = bends(mode, cascaded);
+                let mut new = SlopeStages::default();
+                new.set(mode, poles, 1234.0, res, 5.0, 48_000);
+                assert_eq!(new.layout(), (false, 0, cascaded), "{mode:?} {poles}");
+                assert_eq!(
+                    (new.st.bend_a, new.st.bend_b),
+                    (old.bend_a, old.bend_b),
+                    "{mode:?} {poles}"
+                );
+                let (knee, room) = bend_for(res);
+                for &v in &x {
+                    let a = old.run(0, v * 3.0, knee, room);
+                    let b = new.run(0, v * 3.0, knee, room);
+                    assert_eq!(a.to_bits(), b.to_bits(), "{mode:?} {poles} {res}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_effects_slopes_are_the_pads_and_run_as_drawn() {
+        // At a cutoff well under 45 % of the rate the effect's stages are
+        // the pads' plan (but the 24 dB band-pass, the effect's own); a
+        // block runs as frame by frame does; and the linear stages are
+        // heard as drawn.
+        let rate = 48_000;
+        let x = noise(8192);
+        for mode in [
+            SvfMode::LowPass,
+            SvfMode::HighPass,
+            SvfMode::BandPass,
+            SvfMode::Notch,
+        ] {
+            for poles in [1, 2, 3, 4, 6, 8] {
+                let mut st = SlopeStages::default();
+                st.set(mode, poles, 900.0, 0.4, 0.0, rate);
+                for hz in [100.0, 450.0, 900.0, 1800.0, 7000.0] {
+                    if mode == SvfMode::BandPass && poles == 4 {
+                        break;
+                    }
+                    let h = st.response(hz, rate);
+                    let drawn = 10.0 * (h.0 * h.0 + h.1 * h.1).log10();
+                    let pads = response_db(mode, poles, 900.0, 0.4, hz, rate);
+                    assert!(
+                        (drawn as f32 - pads).abs() < 1e-3,
+                        "{mode:?} {poles} at {hz}: {drawn} against the pads' {pads}"
+                    );
+                }
+                let mut frame = st;
+                let mut block = st;
+                let mut y = x.clone();
+                block.run_block(1, &mut y, f32::INFINITY, 1.0);
+                for (i, &v) in x.iter().enumerate() {
+                    let f = frame.run(1, v, f32::INFINITY, 1.0);
+                    assert_eq!(f.to_bits(), y[i].to_bits(), "{mode:?} {poles} {i}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_stage_that_comes_in_takes_up_the_sound() {
+        // A low tone through a 24 dB low-pass, then 48 dB: the two stages
+        // that come in at the front start from what the first one heard,
+        // so the output carries on near the tone, not from a dip.
+        let rate = 48_000;
+        let mut st = SlopeStages::default();
+        st.set(SvfMode::LowPass, 4, 2000.0, 0.0, 0.0, rate);
+        let tone = |i: usize| (std::f32::consts::TAU * 50.0 * i as f32 / rate as f32).cos();
+        let mut last = 0.0;
+        for i in 0..4800 {
+            last = st.run(0, tone(i), f32::INFINITY, 1.0);
+        }
+        let was = st.layout();
+        st.set(SvfMode::LowPass, 8, 2000.0, 0.0, 0.0, rate);
+        let mut cold = st;
+        st.clear_new(was);
+        assert_eq!(st.layout(), (false, 2, true));
+        // Against the 48 dB filter run from the start, over the next 5 ms;
+        // and the same switch with the new stages at rest instead.
+        let mut steady = SlopeStages::default();
+        steady.set(SvfMode::LowPass, 8, 2000.0, 0.0, 0.0, rate);
+        for i in 0..4800 {
+            steady.run(0, tone(i), f32::INFINITY, 1.0);
+        }
+        for s in &mut cold.pre {
+            s.reset();
+        }
+        let (mut warm_off, mut cold_off) = (0.0f32, 0.0f32);
+        for i in 4800..5040 {
+            let want = steady.run(0, tone(i), f32::INFINITY, 1.0);
+            warm_off = warm_off.max((st.run(0, tone(i), f32::INFINITY, 1.0) - want).abs());
+            cold_off = cold_off.max((cold.run(0, tone(i), f32::INFINITY, 1.0) - want).abs());
+        }
+        assert!(last.abs() > 0.1);
+        assert!(
+            warm_off < 0.1 * cold_off,
+            "taken up {warm_off}, at rest {cold_off}"
+        );
+    }
 
     /// A plan's stages designed at `hz` (under 45 % of the rate, where the
     /// effect's stages stop).

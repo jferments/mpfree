@@ -3,6 +3,7 @@
 //! pads' live values and locks.
 
 use super::*;
+pub use crate::grain_field::GrainField;
 
 /// Events that can wait for the next render. A let-go is never refused:
 /// past this it waits aside ([`Engine::schedule_for`]).
@@ -120,6 +121,42 @@ pub enum Event {
         value: f32,
         over: bool,
     },
+    /// Changes grain setting `field` of pad `pad`'s layer `layer` (its
+    /// place on the pad) while it plays (sampler refactor step 17b), as
+    /// [`Event::PadLive`] does a pad's own setting: `value` (in the units
+    /// [`GrainField::info`] shows) replaces the layer's own until the next
+    /// change (NaN gives its own back) or a new view. New voices start
+    /// with it and the layer's playing grain voices follow it from their
+    /// next grain, as they follow an edit of the Grain tool. Out of range
+    /// is clamped. A kit holds [`LAYER_VALUES`] layer settings live or
+    /// locked at once; one past that is refused and counted
+    /// ([`Stats::refused_layer_values`]).
+    LayerLive {
+        pad: u8,
+        layer: u8,
+        field: GrainField,
+        value: f32,
+    },
+    /// A step's parameter lock on grain setting `field` of pad `pad`'s
+    /// layer `layer`, as [`Event::PadLock`] is on a pad's own setting:
+    /// under a live value ([`Event::LayerLive`]), kept through a new view,
+    /// ended by NaN. Playing grain voices follow it, so a lock with no
+    /// note moves the cloud still playing.
+    LayerLock {
+        pad: u8,
+        layer: u8,
+        field: GrainField,
+        value: f32,
+    },
+    /// Changes one of the kit's master effect's settings (its Grains FX
+    /// over everything the kit plays: the mix, or a grain setting) while
+    /// it plays: `value` replaces the view's until the next change (NaN
+    /// gives it back) or a new view. Heard while the kit is the one the
+    /// master effect follows ([`Engine::set_master_kit`]).
+    MasterLive {
+        field: MasterField,
+        value: f32,
+    },
     /// Moves every pad at once by an offset on its own setting (or on its
     /// live one): see [`ProgramField`]. 0 or NaN is no offset. New voices
     /// start with it and playing voices follow every field. It stays when
@@ -196,13 +233,21 @@ impl Event {
     /// What a pressure or live value sets (kind, pad, setting), where a
     /// newer value for the same takes its place when the queue is full.
     /// None for every other event.
-    pub(super) fn value_key(&self) -> Option<(u8, u8, u8)> {
+    pub(super) fn value_key(&self) -> Option<(u8, u8, u16)> {
+        let layer = |layer: u8, field: GrainField| u16::from(layer) << 8 | field as u16;
         match *self {
             Event::Pressure { pad, .. } => Some((0, pad, 0)),
-            Event::PadLive { pad, field, .. } => Some((1, pad, field as u8)),
-            Event::ProgramLive { field, .. } => Some((2, 0, field as u8)),
+            Event::PadLive { pad, field, .. } => Some((1, pad, field as u16)),
+            Event::ProgramLive { field, .. } => Some((2, 0, field as u16)),
             Event::Bend { .. } => Some((3, 0, 0)),
-            Event::PadHand { pad, field, .. } => Some((4, pad, field as u8)),
+            Event::PadHand { pad, field, .. } => Some((4, pad, field as u16)),
+            Event::LayerLive {
+                pad,
+                layer: l,
+                field,
+                ..
+            } => Some((5, pad, layer(l, field))),
+            Event::MasterLive { field, .. } => Some((6, 0, field.key())),
             _ => None,
         }
     }
@@ -308,6 +353,51 @@ impl PadField {
     }
 }
 
+/// A setting of a kit's master effect that [`Event::MasterLive`] changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MasterField {
+    /// Its mix, 0 (only the kit) to 1 (only grains).
+    Mix,
+    /// One of its grain settings, in the units [`GrainField::info`] shows.
+    Grain(GrainField),
+}
+
+impl MasterField {
+    /// Its key among the queue's values: the grain setting's number, the
+    /// mix after them.
+    fn key(self) -> u16 {
+        match self {
+            MasterField::Grain(f) => f as u16,
+            MasterField::Mix => GrainField::COUNT as u16,
+        }
+    }
+}
+
+/// How many layer grain settings a kit holds live or locked at once
+/// ([`Event::LayerLive`], [`Event::LayerLock`]): a fixed table, so the
+/// audio thread never allocates.
+pub const LAYER_VALUES: usize = 64;
+
+/// One layer grain setting live or locked: whose, and the two values (NaN
+/// where none is set).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct LayerValue {
+    pad: u8,
+    layer: u8,
+    field: GrainField,
+    live: f32,
+    lock: f32,
+}
+
+/// `value` within grain setting `field`'s range (NaN stays NaN).
+fn grain_clamp(field: GrainField, value: f32) -> f32 {
+    if value.is_nan() {
+        return value;
+    }
+    let i = field.info();
+    value.clamp(i.min, i.max)
+}
+
 /// An offset on every pad's own setting, from [`Event::ProgramLive`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ProgramField {
@@ -358,6 +448,14 @@ pub(super) struct Live {
     pub(super) program: [f32; ProgramField::COUNT],
     /// Cents the keygroups' notes move by ([`Event::Bend`]).
     pub(super) bend: f32,
+    /// The layers' grain settings live or locked ([`Event::LayerLive`],
+    /// [`Event::LayerLock`]), and how many places are taken.
+    pub(super) layers: [Option<LayerValue>; LAYER_VALUES],
+    pub(super) layers_used: u8,
+    /// The master effect's settings live ([`Event::MasterLive`]): its
+    /// grain settings by number, then its mix (NaN where the view's
+    /// applies).
+    pub(super) master: [f32; GrainField::COUNT + 1],
 }
 
 impl Live {
@@ -372,7 +470,134 @@ impl Live {
             over: [[false; PadField::COUNT]; PADS],
             program: [0.0; ProgramField::COUNT],
             bend: 0.0,
+            layers: [None; LAYER_VALUES],
+            layers_used: 0,
+            master: [f32::NAN; GrainField::COUNT + 1],
         }
+    }
+
+    /// Sets pad `pad`'s layer `layer`'s live value (`live`) or lock of
+    /// `field` to `value` (NaN ends it): its place in the table, freed when
+    /// neither is set. False when a new one finds the table full.
+    pub(super) fn set_layer(
+        &mut self,
+        pad: u8,
+        layer: u8,
+        field: GrainField,
+        live: bool,
+        value: f32,
+    ) -> bool {
+        let value = grain_clamp(field, value);
+        let same = |e: &&mut Option<LayerValue>| {
+            e.is_some_and(|e| e.pad == pad && e.layer == layer && e.field == field)
+        };
+        if let Some(slot) = self.layers.iter_mut().find(same) {
+            if let Some(e) = slot {
+                if live {
+                    e.live = value;
+                } else {
+                    e.lock = value;
+                }
+                if e.live.is_nan() && e.lock.is_nan() {
+                    *slot = None;
+                    self.layers_used -= 1;
+                }
+            }
+            return true;
+        }
+        if value.is_nan() {
+            return true;
+        }
+        let Some(slot) = self.layers.iter_mut().find(|e| e.is_none()) else {
+            return false;
+        };
+        let (l, k) = if live {
+            (value, f32::NAN)
+        } else {
+            (f32::NAN, value)
+        };
+        *slot = Some(LayerValue {
+            pad,
+            layer,
+            field,
+            live: l,
+            lock: k,
+        });
+        self.layers_used += 1;
+        true
+    }
+
+    /// Every layer's live values go (a new view), their locks stay.
+    pub(super) fn clear_layer_lives(&mut self) {
+        if self.layers_used == 0 {
+            return;
+        }
+        for slot in self.layers.iter_mut() {
+            if let Some(e) = slot {
+                e.live = f32::NAN;
+                if e.lock.is_nan() {
+                    *slot = None;
+                    self.layers_used -= 1;
+                }
+            }
+        }
+    }
+
+    /// Pad `pad`'s layer `layer`'s live value (`live`) or lock of `field`.
+    pub(super) fn layer_value(&self, pad: u8, layer: u8, field: GrainField, live: bool) -> f32 {
+        self.layers
+            .iter()
+            .flatten()
+            .find(|e| e.pad == pad && e.layer == layer && e.field == field)
+            .map_or(f32::NAN, |e| if live { e.live } else { e.lock })
+    }
+
+    /// Whether pad `pad`'s layer `layer` has a grain setting live or
+    /// locked.
+    pub(super) fn layer_moved(&self, pad: usize, layer: u8) -> bool {
+        self.layers_used > 0
+            && self
+                .layers
+                .iter()
+                .flatten()
+                .any(|e| usize::from(e.pad) == pad && e.layer == layer)
+    }
+
+    /// The grain settings layer `l` of pad `pad` plays with: its view's,
+    /// or, with a setting live or locked, its own as edited with those in
+    /// place (a live value over a lock), and then the layer's tune, its
+    /// tempo for a stretch and its reverse, as the view puts them in.
+    pub(super) fn layer_grain(&self, pad: usize, l: &ViewLayer) -> mpfree_grain::Params {
+        if !self.layer_moved(pad, l.place) {
+            return l.grain;
+        }
+        let mut own = l.own_grain;
+        for e in self.layers.iter().flatten() {
+            if usize::from(e.pad) == pad && e.layer == l.place {
+                let v = if e.live.is_nan() { e.lock } else { e.live };
+                e.field.set(&mut own, v);
+            }
+        }
+        let mut g = pitched_grain(own, l.semis, l.follow);
+        g.scan_tempo = l.grain.scan_tempo;
+        if l.reverse {
+            g.reverse = 1.0;
+        }
+        g
+    }
+
+    /// The master effect's grain settings and mix: the view's, with the
+    /// live ones in place.
+    pub(super) fn master_with(
+        &self,
+        mut grain: mpfree_grain::Params,
+        mix: f32,
+    ) -> (mpfree_grain::Params, f32) {
+        for (f, &v) in GrainField::ALL.iter().zip(self.master.iter()) {
+            f.set(&mut grain, v);
+        }
+        let live_mix = self.master[GrainField::COUNT];
+        (grain, if live_mix.is_nan() { mix } else { live_mix })
     }
 
     /// The program's offsets as a voice playing `note` hears them: a
@@ -504,7 +729,7 @@ impl Engine {
     pub(super) fn merge_value(
         &mut self,
         kit: usize,
-        key: (u8, u8, u8),
+        key: (u8, u8, u16),
         offset: u32,
         ev: Event,
     ) -> bool {
@@ -683,6 +908,19 @@ impl Engine {
                 over,
             } => self.pad_hand(pad, field, value, over),
             Event::ProgramLive { field, value } => self.program_live(field, value),
+            Event::LayerLive {
+                pad,
+                layer,
+                field,
+                value,
+            } => self.layer_set(pad, layer, field, true, value),
+            Event::LayerLock {
+                pad,
+                layer,
+                field,
+                value,
+            } => self.layer_set(pad, layer, field, false, value),
+            Event::MasterLive { field, value } => self.master_live(field, value),
             Event::Bend { cents } => self.bend(cents),
             Event::LiveChop { pad } => {
                 if let (None, Some(was)) = (pad, self.chop_pad) {
@@ -798,6 +1036,113 @@ impl Engine {
                 }
             }
         }
+    }
+
+    /// [`Event::LayerLive`] (`live`) and [`Event::LayerLock`]: the table,
+    /// then the layer's playing grain voices.
+    pub(super) fn layer_set(
+        &mut self,
+        pad: u8,
+        layer: u8,
+        field: GrainField,
+        live: bool,
+        value: f32,
+    ) {
+        if usize::from(pad) >= PADS || layer >= crate::model::MAX_LAYERS as u8 {
+            return;
+        }
+        let at = self.at;
+        if !self.lives[at].set_layer(pad, layer, field, live, value) {
+            self.stats.refused_layer_values += 1;
+            return;
+        }
+        let Engine {
+            pool,
+            views,
+            lives,
+            edit_lane,
+            ..
+        } = self;
+        let (Some(vp), live) = (views[at].pad_or_take(usize::from(pad)), &lives[at]) else {
+            return;
+        };
+        for (v, g) in pool.iter_mut() {
+            if !(v.active && v.granular && v.kill_left == 0 && !v.audition)
+                || usize::from(v.kit) != at
+                || v.pad != pad
+            {
+                continue;
+            }
+            let Some(l) = vp.layers.get(usize::from(v.layer)) else {
+                continue;
+            };
+            if l.place == layer && l.mode == PlayMode::Granular {
+                follow_grain(v, g, live.layer_grain(usize::from(pad), l), l);
+            }
+        }
+        // Split: the lane's share is away; its voices follow when it is
+        // back, as they do an edit.
+        if pool.split && pool.b.is_none() {
+            edit_lane[at] = true;
+        }
+    }
+
+    /// [`Event::MasterLive`]: the table, then the master effect if it
+    /// follows this kit.
+    pub(super) fn master_live(&mut self, field: MasterField, value: f32) {
+        let at = self.at;
+        let (i, value) = match field {
+            MasterField::Grain(f) => (f as usize, grain_clamp(f, value)),
+            MasterField::Mix => (
+                GrainField::COUNT,
+                if value.is_nan() {
+                    value
+                } else {
+                    value.clamp(0.0, 1.0)
+                },
+            ),
+        };
+        self.lives[at].master[i] = value;
+        if at == self.master_kit {
+            self.apply_master();
+        }
+    }
+
+    /// Kit `kit`'s pad `pad`'s layer `layer`'s live value of grain setting
+    /// `field` ([`Event::LayerLive`]), if one is set.
+    pub fn kit_layer_live_value(
+        &self,
+        kit: usize,
+        pad: u8,
+        layer: u8,
+        field: GrainField,
+    ) -> Option<f32> {
+        let x = self.lives.get(kit)?.layer_value(pad, layer, field, true);
+        (!x.is_nan()).then_some(x)
+    }
+
+    /// Kit `kit`'s pad `pad`'s layer `layer`'s lock on grain setting
+    /// `field` ([`Event::LayerLock`]), if one holds.
+    pub fn kit_layer_lock_value(
+        &self,
+        kit: usize,
+        pad: u8,
+        layer: u8,
+        field: GrainField,
+    ) -> Option<f32> {
+        let x = self.lives.get(kit)?.layer_value(pad, layer, field, false);
+        (!x.is_nan()).then_some(x)
+    }
+
+    /// Kit `kit`'s master effect's live `field` ([`Event::MasterLive`]),
+    /// if one is set.
+    pub fn kit_master_live_value(&self, kit: usize, field: MasterField) -> Option<f32> {
+        let i = match field {
+            MasterField::Grain(f) => f as usize,
+            MasterField::Mix => GrainField::COUNT,
+        };
+        let x = *self.lives.get(kit)?.master.get(i)?;
+        (!x.is_nan()).then_some(x)
     }
 
     /// [`Event::ProgramLive`]: the offset, then every playing voice.

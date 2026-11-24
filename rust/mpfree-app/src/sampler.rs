@@ -1285,6 +1285,37 @@ impl Player {
             )
     }
 
+    /// A clip's lock (`Some`) or its end (`None`) on kit `kit`'s pad
+    /// `pad`'s parameter `p`, `offset` frames into the next render: a pad's
+    /// own setting ([`Player::pad_lock`]) or one of a layer's grain
+    /// settings (sampler refactor step 17b, `Event::LayerLock`), which the
+    /// layer's playing clouds follow. False for no such pad.
+    pub fn pad_param_lock(
+        &mut self,
+        kit: usize,
+        pad: usize,
+        p: PadParam,
+        value: Option<f32>,
+        offset: u32,
+    ) -> bool {
+        match p {
+            PadParam::Own(field) => self.pad_lock(kit, pad, field, value, offset),
+            PadParam::Grain { layer, field } => {
+                pad < PADS
+                    && self.engine.schedule_for(
+                        kit,
+                        offset,
+                        Event::LayerLock {
+                            pad: pad as u8,
+                            layer,
+                            field,
+                            value: value.unwrap_or(f32::NAN),
+                        },
+                    )
+            }
+        }
+    }
+
     /// The XY pad's hand on kit `kit`'s pad `pad`'s `field` (`Some`: a
     /// layout of yours plays it by Set, `xy_own.rs`), or its let-go
     /// (`None`), before the next render: over the pad's own, its live
@@ -1858,6 +1889,38 @@ mod tests {
         assert_eq!(p.playing(), 1);
         run(&mut p, 8);
         assert_eq!(p.playing(), 0);
+    }
+
+    /// A clip's lock on a layer's grain setting (sampler refactor step
+    /// 17b) goes to the engine on its frame, as a pad's own setting's
+    /// does, and its end gives the layer's own back.
+    #[test]
+    fn a_lock_on_a_layers_grain_setting_reaches_the_engine_and_ends() {
+        use mpfree_sampler::grain_field::GrainField;
+        let mut ks = kits();
+        let mut p = Player::new(&mut ks, &NOTES, 44_100).unwrap();
+        let size = PadParam::Grain {
+            layer: 0,
+            field: GrainField::Size,
+        };
+        let held = |p: &Player| p.engine.kit_layer_lock_value(0, 0, 0, GrainField::Size);
+        assert!(p.pad_param_lock(0, 0, size, Some(300.0), 40));
+        run(&mut p, 1);
+        assert_eq!(held(&p), Some(300.0));
+        let tune = PadParam::Own(PadField::Tune);
+        assert!(p.pad_param_lock(0, 0, tune, Some(700.0), 0));
+        run(&mut p, 1);
+        assert_eq!(
+            p.engine.kit_pad_lock_value(0, 0, PadField::Tune),
+            Some(700.0)
+        );
+        assert!(p.pad_param_lock(0, 0, size, None, 0));
+        run(&mut p, 1);
+        assert_eq!(held(&p), None, "its end gives the layer's own back");
+        assert!(
+            !p.pad_param_lock(0, PADS, size, Some(1.0), 0),
+            "no such pad"
+        );
     }
 
     #[test]

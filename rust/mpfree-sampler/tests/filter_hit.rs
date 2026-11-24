@@ -267,3 +267,32 @@ fn a_live_envelope_depth_and_drive_reach_the_note_playing() {
         "clean {clean} driven {driven}"
     );
 }
+
+/// A bypassed filter (Edit pad's On, F5) plays the pad as if it were off,
+/// at the next hit: the same samples as no filter at all, and On again
+/// brings the filter back as it was.
+#[test]
+fn a_bypassed_filter_plays_as_off_and_on_brings_it_back() {
+    let s = sine(2000.0, 0.5);
+    let render = |shape: &dyn Fn(&mut Pad)| {
+        let mut e = engine(&project(&s, false, |p| shape(p)));
+        hit(&mut e, 100);
+        run(&mut e, 0.3)
+    };
+    let off = render(&|_| {});
+    let dark = render(&|p| p.filter = low_pass(200.0));
+    let bypassed = render(&|p| {
+        p.filter = low_pass(200.0);
+        p.filter_bypass = true;
+    });
+    assert_eq!(bypassed, off, "bypassed is the sound as it is");
+    assert!(
+        db(rms(&dark[4410..])) < db(rms(&off[4410..])) - 12.0,
+        "the low-pass at 200 Hz takes the 2 kHz sine down"
+    );
+    let on_again = render(&|p| {
+        p.filter = low_pass(200.0);
+        p.filter_bypass = false;
+    });
+    assert_eq!(on_again, dark, "On brings the filter back as it was");
+}

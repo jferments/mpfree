@@ -705,9 +705,12 @@ fn the_filter_per_hit_settings_save_and_open() {
     pd.vel_to_attack = 0.5;
     pd.cutoff_random = 0.125;
     pd.res_random = 1.0;
+    // Bypassed (F5): saved, every setting kept.
+    pd.filter_bypass = true;
     p.set_pad(3, Some(pd), None).unwrap();
     let (text, files) = save(&[("Keys", &p)], 0);
     for line in [
+        "kit.0.pad.3.filter_bypass = yes",
         "kit.0.pad.3.vel_to_cutoff = -0.5",
         "kit.0.pad.3.key_track = 0.75",
         "kit.0.pad.3.vel_to_env = 0.25",
@@ -726,6 +729,7 @@ fn the_filter_per_hit_settings_save_and_open() {
     };
     assert_same(&read(&text), &p);
     let new = [
+        "filter_bypass",
         "key_track",
         "vel_to_env",
         "vel_to_attack",
@@ -739,6 +743,7 @@ fn the_filter_per_hit_settings_save_and_open() {
         .collect();
     let back = read(&old);
     let b = back.pad(3).unwrap();
+    assert!(!b.filter_bypass, "an older kit opens with the filter on");
     assert_eq!(
         (
             b.key_track,

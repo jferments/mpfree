@@ -54,6 +54,17 @@ pub const FORMAT: &str = "mpfree-sampler 1";
 /// filtered pads may sound different.
 pub const FILTERS_VERSION: u32 = 3;
 
+/// Whether the sampler's part `text` has a layer with grain routes (step
+/// 17c): what the app's `grain-routes` need is written for, since an
+/// older build would play the layer without them and drop them at its
+/// next save.
+pub fn has_grain_routes(text: &str) -> bool {
+    text.lines().any(|l| {
+        l.split_once('=')
+            .is_some_and(|(k, _)| k.contains(".grain_route.") && k.trim_end().ends_with(".from"))
+    })
+}
+
 /// What [`from_text`] gives back.
 #[derive(Debug, Default)]
 pub struct Opened {
@@ -514,6 +525,8 @@ trait Fields {
         inner: impl FnOnce(&mut Self, &mut T),
     );
     fn scope(&mut self, k: &str, inner: impl FnOnce(&mut Self));
+    /// Reading a text (else writing one).
+    fn reading(&self) -> bool;
 }
 
 struct Writer {
@@ -529,6 +542,9 @@ impl Writer {
 }
 
 impl Fields for Writer {
+    fn reading(&self) -> bool {
+        false
+    }
     fn num<T: Value>(&mut self, k: &str, v: &mut T) {
         self.line(k, *v);
     }
@@ -591,6 +607,9 @@ impl Reader<'_> {
 }
 
 impl Fields for Reader<'_> {
+    fn reading(&self) -> bool {
+        true
+    }
     fn num<T: Value>(&mut self, k: &str, v: &mut T) {
         if let Some(x) = self.get(k) {
             *v = x;
@@ -673,6 +692,12 @@ const GRAIN_MODES: &[(&str, GrainMode)] = &[
     ("stretch", GrainMode::Stretch),
     ("repeat", GrainMode::Repeat),
     ("tone", GrainMode::Tone),
+];
+const ROUTE_FROMS: &[(&str, RouteFrom)] = &[
+    ("off", RouteFrom::Off),
+    ("velocity", RouteFrom::Velocity),
+    ("pressure", RouteFrom::Pressure),
+    ("key", RouteFrom::Key),
 ];
 const PLAY_MODES: &[(&str, PlayMode)] = &[
     ("one-shot", PlayMode::OneShot),
@@ -985,6 +1010,7 @@ fn visit_region<F: Fields>(f: &mut F, r: &mut Region) {
         grain_mode,
         grain_keys,
         grain_glide_ms,
+        grain_routes,
         warp,
         slices,
         slice_sets,
@@ -1031,6 +1057,22 @@ fn visit_region<F: Fields>(f: &mut F, r: &mut Region) {
         f.flag("scan", scan);
     });
     f.num("grain_glide_ms", grain_glide_ms);
+    // Step 17c: the grain routes, written only when one is set (so a kit
+    // without them saves as before); a project with them needs
+    // `grain-routes` ([`has_grain_routes`]), so an older build refuses it.
+    if f.reading() || !grain_routes.is_off() {
+        for (i, route) in grain_routes.0.iter_mut().enumerate() {
+            f.scope(&format!("grain_route.{i}"), |f| {
+                let GrainRoute { from, to, depth } = route;
+                f.word("from", from, ROUTE_FROMS);
+                let mut n = *to as u8;
+                f.num("to", &mut n);
+                *to = GrainField::of(n).unwrap_or(*to);
+                f.num("depth", depth);
+                *depth = depth.clamp(*ROUTE_DEPTH.start(), *ROUTE_DEPTH.end());
+            });
+        }
+    }
     f.opt("warp", warp, Warp::new(120.0), |f, w| {
         let Warp { bpm, method, pins } = w;
         f.num("bpm", bpm);
@@ -1149,6 +1191,7 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
         latch,
         amp,
         filter,
+        filter_bypass,
         filter_env,
         vel_to_level,
         vel_to_start,
@@ -1200,6 +1243,8 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
         f.num("drive_db", drive_db);
     });
     f.scope("filter_env", |f| visit_envelope(f, filter_env));
+    // Saves before the filter gap plan's F5 open with the filter on.
+    f.flag("filter_bypass", filter_bypass);
     f.num("vel_to_level", vel_to_level);
     f.num("vel_to_start", vel_to_start);
     f.num("level_db", level_db);

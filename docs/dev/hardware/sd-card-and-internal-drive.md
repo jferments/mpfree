@@ -142,6 +142,12 @@ Tests: `mpfree-library`'s `the_sd_card_reads_like_a_place_and_nothing_on_it_is_e
 
 **On the MPC:** the device check `sd-card` ([device checks](device-checks.md), `collect-over-ssh.sh --app` with `MPFREE_APP_CHECKS=sd-card`) is S1's pass: the musician opens the place, loads a sound from the card onto a pad and plays it, and closes the browser; the check reads the app's log for the card opened read-only, the load, and the window's closing word, which it gives only after the card's write and discard counters were found unchanged. The boot-area hashes before and after come from the round's boot maps.
 
+**First run on the MPC (2026-11-24, the owner's card: exFAT, 63.9 GB, carrying the not-safely-removed mark; a stick made from `010e338b`):**
+
+- **Read-only held.** The card opened read-only 2.5 s after the ask (`sd card: open, read-only: exFAT, 63.9 GB on mmcblk1, at /run/mpfree-sd (it wasn't safely removed last time)`). A sound from it loaded on pad A1 and played. 30 s after the browser closed, the card was put away, and the window said "Closed. Nothing was written to the card." The eMMC's partitions 1 to 6 and both boot areas hashed the same before and after, with no sectors written to them (the boot maps). The check's six log lines were all seen.
+- **Folders stayed on "Reading…" until the next touch.** It happened at the top and in every folder opened. The browser was drawn again only on a touch, and the card's listings came back after the finger had lifted. Fixed: the browser is now drawn whenever what it shows changes ([browser.md](../design/browser.md#for-the-app-hello-mpc-thread-wires-it)). No listing took 1.5 s or more, because the browser logs any that does.
+- **The card stays open while the browser shows the place.** The owner showed it again at the end of the check, and it stayed open, as designed. So session 3's read test, which needs no card open, refused twice and changed nothing. A run's later blocks close the browser first.
+
 ## Step S2: saving to the card (design, not built)
 
 What the kernel does when MPFree writes to a FAT or exFAT card, from Linux 6.18's own code (Akai's kernel is `6.18.44-az01`), and the rules that follow. Not built: S2 changes the [storage spec](../design/storage-spec.md)'s rule zero ("the SD card is never written"), so it is merged only on the owner's go, and only after S1 has run on the MPC.

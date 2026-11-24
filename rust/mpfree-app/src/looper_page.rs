@@ -1254,6 +1254,7 @@ impl LooperPage {
                         foot.clone()
                     },
                     solo: l.solo,
+                    unsaved: v.unsaved[n],
                     ..Channel::default()
                 }
             })
@@ -2102,6 +2103,8 @@ mod tests {
             recording: false,
             faded: 1.0,
             replace: false,
+            born: u64::from(id) + 1,
+            closed: true,
         }
     }
 
@@ -2397,6 +2400,19 @@ mod tests {
         assert!(lanes.iter().all(|(_, r)| r.h >= 60), "{lanes:?}");
     }
 
+    /// Audio tracks phase 4c.3: a loop holding a layer not yet on the
+    /// stick has its ring's dot.
+    #[test]
+    fn a_loop_with_a_layer_not_on_the_stick_has_its_dot() {
+        let (mut ui, mut page) = page();
+        let mut v = two_loops();
+        v.unsaved[1] = true;
+        page.update(&mut ui, &v, &Settings::default());
+        let d = ui.get::<LoopDeck>(DECK).unwrap();
+        let dots: Vec<bool> = d.channels.iter().map(|c| c.unsaved).collect();
+        assert_eq!(dots[..3], [false, true, false]);
+    }
+
     #[test]
     fn the_deck_shows_every_loop_and_the_picked_loops_lanes() {
         let (mut ui, mut page) = page();
@@ -2417,6 +2433,7 @@ mod tests {
         assert_eq!(d.channels[2].centre.0, "+");
         assert_eq!(d.channels[2].foot, "Pads", "what an empty one records");
         assert_eq!(d.picked, 0);
+        assert!(d.channels.iter().all(|c| !c.unsaved));
         assert_eq!(d.head.memory.0, "16 s of 1 min");
         assert!((d.head.memory.1 - 16.0 / 60.0).abs() < 1e-4);
         assert_eq!(d.head.clock, "Stopped");

@@ -127,27 +127,32 @@ pub fn step(ui: &mut Ui, browser: &mut Browser) -> Vec<BrowseAction> {
     } else {
         browser.set_visible(rows);
     }
-    let changed = !inputs.is_empty();
     for i in inputs {
         browser.input(i);
     }
-    let polled = browser.poll();
+    browser.poll();
     let actions = browser.take_actions();
-    if changed || polled || !actions.is_empty() || needs_show(ui, browser) {
-        show(ui, browser);
-    }
+    // Drawn again only if what it shows changed ([`show`] compares).
+    show(ui, browser);
     actions
 }
 
-fn needs_show(ui: &Ui, browser: &Browser) -> bool {
-    ui.get::<BrowserView>(BROWSER)
-        .is_some_and(|v| *v.screen() != browser.screen())
-}
-
-/// Shows the browser's screen now (after a hardware press).
+/// Shows the browser's screen now (after a hardware press, or an answer
+/// from the worker): the widget is drawn again at the next paint when what
+/// it shows changed, and only then. Until 24 Nov this reached the widget
+/// quietly, so only a touch on it drew it again: a listing that came back
+/// after the finger lifted (any folder on the SD card), a wheel turn or a
+/// card that opened stayed off the screen until the next touch.
 pub fn show(ui: &mut Ui, browser: &Browser) {
-    if let Some(v) = ui.get_mut_quiet::<BrowserView>(BROWSER) {
-        v.show(browser.screen());
+    let screen = browser.screen();
+    if !ui
+        .get::<BrowserView>(BROWSER)
+        .is_some_and(|v| *v.screen() != screen)
+    {
+        return;
+    }
+    if let Some(v) = ui.get_mut::<BrowserView>(BROWSER) {
+        v.show(screen);
     }
 }
 

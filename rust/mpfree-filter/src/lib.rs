@@ -10,7 +10,8 @@
 //!   with the resonance on the last stage, the resonant stages bending),
 //!   the Filter effect's Multi model and the pads' state-variable types,
 //!   with a per-frame glide for a voice ([`multi::Multi`]), at 6 to 48 dB
-//!   on the pads ([`multi::plan`]).
+//!   on the pads ([`multi::plan`]) and in the effect
+//!   ([`multi::SlopeStages`]).
 //! - [`onepole`]: the one-pole stage (6 dB an octave) an odd slope starts
 //!   with.
 //!

@@ -1106,6 +1106,9 @@ const DRUMS_ENGINE: &str = "mpfree.drums";
 
 /// A tap on the Looper tab's Records into, loops in audio cells (phase 4,
 /// board 5): a loop records from its track's input.
+/// Projects' samples folders kept for loop layers' files ([`Player::keep_layer_dir`]).
+const LAYER_DIRS: usize = 8;
+
 pub const ON_TRACKS_INPUT: &str = "A loop records from its track's input: tap the input under an audio track's name on Clips to change it";
 
 /// The loops as the Loop tracks' cells show them, from the Looper's view:
@@ -1124,6 +1127,8 @@ fn loops_info(v: &crate::looping::LooperView) -> mpfree_time_ui::view::LoopsInfo
         f.overdubbing = s.phase == Phase::Overdubbing;
         f.copying = v.copy_into == Some(n) || s.copying.is_some();
         f.wave = *w;
+        // A closed layer not on the stick yet (4c.3): the cell's amber dot.
+        f.writing = v.unsaved[n];
     }
     info.in_use = v.loops.iter().filter(|s| s.phase != Phase::Empty).count();
     info.waiting = v.loops.iter().any(|s| s.phase == Phase::Armed);
@@ -2681,6 +2686,11 @@ pub struct Player {
     audio_load: Option<std::sync::mpsc::Receiver<AudioRead>>,
     /// The audio tracks' recovery at start, on its own thread: their work
     /// folder and the lines it says ([`Player::recover_audio_files`]).
+    /// The samples folders of the projects this run opened or saved
+    /// into, oldest first: where a loop layer's synced file may be once
+    /// the work folder's copy has gone (phase 4c.4,
+    /// [`crate::project::find_layer_file`]). A few at most.
+    layer_dirs: Vec<std::path::PathBuf>,
     #[allow(clippy::type_complexity)]
     audio_recover: Option<
         std::sync::mpsc::Receiver<(
@@ -3418,6 +3428,7 @@ impl Player {
             loops_load: None,
             file_saves: Vec::new(),
             audio_load: None,
+            layer_dirs: Vec::new(),
             audio_recover: None,
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
@@ -9264,6 +9275,11 @@ impl Player {
                     format!("Tap a hit: pin it to the grid   ·   Q-Links 1-4: pin, its beat, warp tempo, scroll   ·   \
                      {ROWS_HINT}   ·   SHIFT + - / +: zoom")
                 }
+                // Its Mod part (sampler step 17c): the routes.
+                View::Sample if self.sample.grain_mod_part() => {
+                    format!("Touch a route's knob, then pick its From and To   ·   hit the pad to hear it   ·   \
+                     From Off: the route does nothing   ·   {ROWS_HINT}")
+                }
                 View::Sample if self.sample.grain_tool() => {
                     format!("Drag GRAIN: where grains start, SIZE: how long   ·   Q-Links 1-4: position, size, \
                      density, pitch (SHIFT: sprays, finer)   ·   {ROWS_HINT}   ·   SHIFT + - / +: zoom")
@@ -9302,6 +9318,11 @@ impl Player {
                 // The kit's Tuning picked (tunings step T6).
                 View::Pads if self.sample.play_row(&self.ui) == Some(mpfree_sampler_ui::play_tab::Row::KitTuning) => {
                     mpfree_sampler_ui::play_tab::TUNING_HINT.to_string()
+                }
+                // The Filter section's types, or what moves the filter (F5).
+                View::Pads if self.sample.play_view_hint().is_some() => {
+                    format!("{}   ·   Q-Links 1-4: {}", self.sample.play_view_hint().unwrap_or_default(),
+                     self.sample.play_qlinks_text())
                 }
                 View::Pads if self.sample.page() == sample_page::PLAY_PAGE && self.sample.play_keys_shown() => {
                     format!("Press keys to hear the kit   ·   drag the zone edges and root   ·   \
@@ -13112,10 +13133,12 @@ impl Player {
         }
         // What the Q-Links turn: Edit pad's section's, and the Pads tab's
         // for the type of the pad picked (a tap on the map picks another).
+        // The Filter section's types or moves opened or closed: their hint.
         let qlinks = format!(
-            "{} | {}",
+            "{} | {} | {:?}",
             self.sample.play_qlinks_text(),
-            self.sample.pads_qlinks_text()
+            self.sample.pads_qlinks_text(),
+            self.sample.play_view_hint()
         );
         let live = self.sample.chop_live_method();
         if keys != self.sample_keys || live != self.sample_live || qlinks != self.sample_qlinks {
@@ -13552,12 +13575,14 @@ impl Player {
             A::ProjectSaved { loc } => {
                 self.say(format!("project: saved {}", loc.name()));
                 // The audio tracks' takes copied into it are kept from
-                // there now; their copies in the work folder go.
+                // there now; their copies in the work folder go. So do
+                // the loop layers' (4c.3), found there from now on.
                 if let Some(dir) = self
                     .browser
                     .as_ref()
                     .and_then(|b| b.library().samples_dir(&loc).ok())
                 {
+                    self.keep_layer_dir(dir.clone());
                     self.outbox.push(FromUi::AudioSavedInto(dir));
                 }
                 if let Some((at, sounds, parts)) = self.save_sent.take() {
@@ -14116,6 +14141,16 @@ impl Player {
 
     /// Whether the project can be saved now: Err says why not, in a few
     /// words ("the loops are still opening (try again in a moment)").
+    /// A project's samples folder where loop layers' files may be from
+    /// now on (opened or saved into, phase 4c.4): newest last, a few kept.
+    fn keep_layer_dir(&mut self, dir: std::path::PathBuf) {
+        self.layer_dirs.retain(|d| *d != dir);
+        self.layer_dirs.push(dir);
+        if self.layer_dirs.len() > LAYER_DIRS {
+            self.layer_dirs.remove(0);
+        }
+    }
+
     fn save_ready(&self) -> Result<(), String> {
         if self.browser.is_none() {
             return Err("there is no library (the app was started without --data)".into());
@@ -14193,7 +14228,7 @@ impl Player {
         // The loops: their part, and a WAV a layer.
         if let Some(loops) = c.loops.take() {
             let rate = loops.rate;
-            let (text, files) = crate::project::loops_part(loops);
+            let (text, files, copies) = crate::project::loops_part(loops);
             extra.push((crate::project::LOOPER.to_string(), text));
             samples.extend(files.into_iter().map(|(file, audio)| {
                 mpfree_library::NewSample::new(
@@ -14202,6 +14237,25 @@ impl Player {
                         w.write_all(&mpfree_looper::save::wav(&audio, rate))
                     }),
                 )
+            }));
+            // Layers in their recordings' synced files (4c.4): each copied
+            // whole. One that can't be found fails the save, unless the
+            // project has it already (then it isn't written).
+            let lib = self.browser.as_ref().map(|b| b.library());
+            let work = lib.and_then(|l| l.work_dir(crate::project::AUDIOTRACKS).ok());
+            samples.extend(copies.into_iter().map(|file| {
+                match crate::project::find_layer_file(&file, work.as_deref(), &self.layer_dirs) {
+                    Some(from) => mpfree_library::NewSample::file(file, from),
+                    None => {
+                        let why = format!("loop layer {file}'s file is missing");
+                        mpfree_library::NewSample::new(
+                            file,
+                            std::sync::Arc::new(move |_: &mut dyn std::io::Write| {
+                                Err(std::io::Error::other(why.clone()))
+                            }),
+                        )
+                    }
+                }
             }));
         }
         // The audio tracks: their part, and a take's file copied whole
@@ -14341,6 +14395,10 @@ impl Player {
             snap.part(crate::project::LOOPER),
             self.browser.as_ref().map(|b| b.library().clone()),
         ) {
+            // Its layers' files stay there for later saves to copy (4c.4).
+            if let Ok(dir) = lib.samples_dir(loc) {
+                self.keep_layer_dir(dir);
+            }
             let (text, loc) = (text.to_string(), loc.clone());
             let (tx, rx) = std::sync::mpsc::channel();
             let read = std::thread::Builder::new()
@@ -24982,13 +25040,13 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         widget: mpfree_sampler_ui::play_tab::SECTIONS.into(),
         kind: EventKind::Tab(2),
     });
-    // Off, LP 1-pole, LP 2-pole.
+    // Off to Low-pass (12 dB, the pad's slope).
     let filter = mpfree_sampler_ui::play_tab::Row::Filter.place();
     play.on_event(UiEvent {
         widget: mpfree_sampler_ui::play_tab::LIST.into(),
         kind: EventKind::Step {
             index: filter,
-            delta: 2,
+            delta: 1,
         },
     });
     play.on_event(UiEvent {
@@ -25058,32 +25116,53 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // cloud 1.5 s after a hit, as the audio thread sends it. Then its
     // other parts, tapped on the Grain section's switch: LFO, with an LFO
     // and the envelope moving the cloud; Filter, a sprayed band pass;
-    // Shape, with Quality Tape; and Presets, with one put on the pad.
+    // Shape, with Quality Tape; Presets, with one put on the pad; and Mod,
+    // with three routes.
     {
         use mpfree_sampler_ui::grain_tab::View as GrainView;
         use mpfree_sampler_ui::grain_tool::{GrainPart, PARTS_ROW};
+        use mpfree_sampler_ui::sample::{grain_mod_project, grain_section_project};
         use mpfree_sampler_ui::wave_tab::Tool;
-        for (name, section, part) in [
-            ("sample-grain", GrainView::Grains, GrainPart::Grains),
-            ("sample-grain-movement", GrainView::Movement, GrainPart::Lfo),
+        type Made = Result<
+            (
+                mpfree_sampler::model::Project,
+                std::sync::Arc<mpfree_sampler_ui::source::SourceView>,
+            ),
+            String,
+        >;
+        type Screen = (&'static str, fn() -> Made, GrainPart);
+        let screens: [Screen; 6] = [
+            (
+                "sample-grain",
+                || grain_section_project(GrainView::Grains),
+                GrainPart::Grains,
+            ),
+            (
+                "sample-grain-movement",
+                || grain_section_project(GrainView::Movement),
+                GrainPart::Lfo,
+            ),
             (
                 "sample-grain-filter",
-                GrainView::FilterKeys,
+                || grain_section_project(GrainView::FilterKeys),
                 GrainPart::Filter,
             ),
             (
                 "sample-grain-shape",
-                GrainView::FilterKeys,
+                || grain_section_project(GrainView::FilterKeys),
                 GrainPart::Shape,
             ),
             (
                 "sample-grain-presets",
-                GrainView::Presets,
+                || grain_section_project(GrainView::Presets),
                 GrainPart::Presets,
             ),
-        ] {
+            // Mod (sampler step 17c): three routes, route 1 outlined.
+            ("sample-grain-mod", grain_mod_project, GrainPart::Mod),
+        ];
+        for (name, make, part) in screens {
             let mut grain = sample_sampler(fonts());
-            let Ok((project, _)) = mpfree_sampler_ui::sample::grain_section_project(section) else {
+            let Ok((project, _)) = make() else {
                 continue;
             };
             let (grains, head, live) = mpfree_sampler_ui::sample::grains_after(&project, 1.5);
@@ -25568,14 +25647,14 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         out.push(("pads-edit-mono", mono));
     }
     // The Filter section's Ladder, resonant and driven 12 dB (sampler
-    // R5.6): Filter steps Off, LP 1 to 8-pole (six), HP the same, BP 2 to
-    // 8-pole (four), Notch2, Notch4, Peak, Ladder.
+    // R5.6): Type steps Off, Low-pass, High-pass, Band-pass, Notch, Peak,
+    // Ladder (the filter gap plan's F5).
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST};
         let mut ladder = sample_sampler(fonts());
         edit_pad(&mut ladder);
         for (row, delta) in [
-            (Row::Filter, 20),
+            (Row::Filter, 6),
             (Row::Cutoff, -3),
             (Row::Resonance, 14),
             (Row::Drive, 4),
@@ -25589,6 +25668,64 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         ladder.take_actions();
         out.push(("pads-edit-ladder", ladder));
+    }
+    // The pad filter screen (the filter gap plan's F5): the types over the
+    // Filter section's pictures, a 24 dB low-pass picked; then what moves
+    // the filter, with the envelope, velocity, key track and random set.
+    {
+        use mpfree_sampler_ui::play_tab::{Row, LIST, TYPES_VIEW};
+        let mut types = sample_sampler(fonts());
+        edit_pad(&mut types);
+        let index = play_row(&mut types, Row::Filter);
+        types.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Select(index),
+        });
+        for i in [1, mpfree_sampler_ui::play_widgets::SLOPE_BASE + 3] {
+            types.on_event(UiEvent {
+                widget: TYPES_VIEW.into(),
+                kind: EventKind::Tab(i),
+            });
+            types.apply(ToUi::SampleLift);
+        }
+        types.take_actions();
+        out.push(("pads-edit-filter-types", types));
+        let filter = |fonts: Fonts| {
+            let mut p = sample_sampler(fonts);
+            edit_pad(&mut p);
+            for (row, delta) in [
+                (Row::Filter, 1),
+                (Row::Slope, 2),
+                (Row::Cutoff, -2),
+                (Row::Resonance, 7),
+                (Row::FilterEnv, 8),
+                (Row::EnvDecay, 6),
+                (Row::EnvSustain, -10),
+            ] {
+                let index = play_row(&mut p, row);
+                p.on_event(UiEvent {
+                    widget: LIST.into(),
+                    kind: EventKind::Step { index, delta },
+                });
+                p.apply(ToUi::SampleLift);
+            }
+            p
+        };
+        // The Filter section with its envelope on the graph and in Hz.
+        let mut main = filter(fonts());
+        main.take_actions();
+        out.push(("pads-edit-filter", main));
+        let mut moves = filter(fonts());
+        moves.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Tab(Row::Moves.place()),
+        });
+        for (k, delta) in [(0, 50), (1, 50), (2, 25)] {
+            moves.apply(ToUi::SampleQLink(k, delta));
+            moves.apply(ToUi::SampleLift);
+        }
+        moves.take_actions();
+        out.push(("pads-edit-filter-moves", moves));
     }
     // 16 LEVEL on Play: the 16 Levels panel, by tune, pad 12 held.
     {
@@ -33780,6 +33917,22 @@ mod tests {
         assert_eq!(p.rec_chip().alert, RecAlert::None);
     }
 
+    /// The audio tracks rethink's phase 4c.3 and board 2: a loop holding a
+    /// closed layer not yet on the stick gives its cells the writing dot;
+    /// the others don't.
+    #[test]
+    fn a_loop_with_a_layer_not_on_the_stick_gives_its_cells_the_writing_dot() {
+        let mut v = crate::looping::LooperView::default();
+        v.unsaved[2] = true;
+        let info = loops_info(&v);
+        assert!(info.loops[2].writing);
+        assert!(info
+            .loops
+            .iter()
+            .enumerate()
+            .all(|(n, f)| f.writing == (n == 2)));
+    }
+
     /// The audio tracks rethink's phase 4, board 6: with Dev's "Loops on
     /// audio tracks" on, an audio track's strip says its input and, while
     /// it plays one, what ("loop · row 2" over the clip's name, or a take
@@ -36397,10 +36550,13 @@ mod tests {
                         faded: 1.0,
                         file: String::new(),
                         audio: layer.clone(),
+                        raw: None,
                     }],
+                    raw: None,
                 },
             )],
             free_clock: None,
+            kept: Vec::new(),
         };
         // Audio 2 with a region of a mono take, as the tracks' save gives it.
         let take: Vec<f32> = (0..4410).map(|k| (k % 89) as f32 / 300.0).collect();
@@ -37862,7 +38018,18 @@ mod tests {
         p.browser.as_mut().unwrap().go_source(source("SD card"));
         assert_eq!(state(&p), CardState::Opening);
         p.step_browser();
+        // Drawn now: the card opens without a touch, and the place showing
+        // it is drawn again then (Jay's SD card run, 24 Nov).
+        let mut canvas = SoftCanvas::new(SCREEN.0, SCREEN.1);
+        let area = p.ui.rect_of(mpfree_browser_ui::BROWSER).unwrap();
+        p.ui.paint(&mut canvas);
         until(&mut p, &|p| matches!(state(p), CardState::Open { .. }));
+        assert!(
+            p.ui.paint(&mut canvas)
+                .iter()
+                .any(|d| !d.intersect(area).is_empty()),
+            "the open card is drawn without a touch"
+        );
         assert_eq!(
             state(&p),
             CardState::Open {
@@ -37893,6 +38060,99 @@ mod tests {
         p.apply(ToUi::Show(View::Browser));
         until(&mut p, &|p| matches!(state(p), CardState::Open { .. }));
         assert!(p.browser.as_ref().unwrap().library().card().is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The browser is drawn again whenever what it shows changes, touched
+    /// or not, and not on frames where nothing changed. Jay's SD card run
+    /// (24 Nov): each folder on the card stayed on "Reading…" until the
+    /// next touch, because its listing came back after the finger lifted
+    /// and only a touch drew the browser again. Here the worker is a thread,
+    /// as on the MPC, and every frame is ticked and painted as the MPC's
+    /// loop does: what the browser shows after each frame is what was drawn.
+    #[test]
+    fn the_browser_draws_what_changes_without_a_touch() {
+        use crate::app::BrowseKey;
+        use mpfree_browser_ui::sample::{fill, source};
+        use mpfree_browser_ui::{BrowserView, Screen, BROWSER};
+        use std::time::Duration;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "mpfree-browser-drawn-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = fill(&dir).unwrap();
+        let mut p = sample_sampler(Fonts::embedded());
+        p.set_browser(mpfree_browser_ui::Browser::new(lib), "");
+        sample_kit_tracks(&mut p);
+        open_pads(&mut p);
+        p.apply(ToUi::Show(View::Browser));
+        // The screen, the browser's place on it, and what was last drawn
+        // there.
+        struct Frames {
+            canvas: SoftCanvas,
+            area: mpfree_ui::Rect,
+            drawn: Screen,
+        }
+        fn shown(p: &Player) -> Screen {
+            p.ui.get::<BrowserView>(BROWSER).unwrap().screen().clone()
+        }
+        // One frame as the MPC's loop runs it: the tick, then the paint.
+        // What the browser shows afterwards must be what was drawn. True
+        // if it drew the browser.
+        fn frame(p: &mut Player, f: &mut Frames) -> bool {
+            p.tick(0.01);
+            let now = shown(p);
+            let area = f.area;
+            let damage = p.ui.paint(&mut f.canvas);
+            let drew = damage.iter().any(|d| !d.intersect(area).is_empty());
+            if drew {
+                f.drawn = now;
+            }
+            assert_eq!(
+                f.drawn,
+                p.browser.as_ref().unwrap().screen(),
+                "what the browser shows is on the screen"
+            );
+            drew
+        }
+        // Frames until the worker has answered everything, and one more.
+        fn settle(p: &mut Player, f: &mut Frames) {
+            let end = Instant::now() + Duration::from_secs(5);
+            while p.browser.as_ref().unwrap().busy() {
+                assert!(Instant::now() < end, "the worker never answered");
+                frame(p, f);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            frame(p, f);
+        }
+        let mut f = Frames {
+            canvas: SoftCanvas::new(SCREEN.0, SCREEN.1),
+            area: p.ui.rect_of(BROWSER).unwrap(),
+            drawn: shown(&p),
+        };
+        p.ui.paint(&mut f.canvas);
+        // A place opened without a touch: its listing comes from the
+        // worker frames later.
+        p.browser.as_mut().unwrap().go_source(source("Samples"));
+        p.step_browser();
+        settle(&mut p, &mut f);
+        assert!(!f.drawn.rows.is_empty(), "the listing is drawn");
+        // The wheel: the selection moves, and the sound's facts come from
+        // the worker after it.
+        let before = f.drawn.selected;
+        p.apply(ToUi::Browse(BrowseKey::Wheel(1)));
+        assert!(frame(&mut p, &mut f), "the wheel's turn is drawn");
+        assert_ne!(f.drawn.selected, before);
+        settle(&mut p, &mut f);
+        // Nothing new: nothing drawn.
+        for _ in 0..5 {
+            assert!(!frame(&mut p, &mut f), "drawn again with nothing new");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -168,6 +168,11 @@ impl Tool {
 pub const GRAIN_HINT: &str = "Drag GRAIN to move where grains start, SIZE for their length · tap the wave: \
                               grains start there · hit the pad to hear the cloud · SHIFT + Q-Link 1 / 4: the sprays";
 
+/// The hint line with the Grain tool's Mod part open (step 17c).
+pub const MOD_HINT: &str =
+    "Touch a route's knob, then pick its From and To · hit the pad to hear it · \
+                            From Off: the route does nothing";
+
 /// The hint line with the Warp tool.
 pub const WARP_HINT: &str =
     "Tap a hit to pin it to the grid · drag a pin's tab along the beats · Pin hits pins \
@@ -714,6 +719,9 @@ pub struct WaveTab {
     tool: Tool,
     /// The Grain tool's part open.
     grain_part: GrainPart,
+    /// The Grain section's Mod part's route outlined (from 0): the one its
+    /// pickers edit (sampler step 17c).
+    grain_route: usize,
     /// What the engine last said of the cloud playing, and how many grains.
     cloud: (CloudNow, usize),
     /// Those grains: where each reads, 0 to 1 across the region, and its
@@ -776,6 +784,7 @@ impl WaveTab {
             rec: RecorderView::default(),
             tool: Tool::default(),
             grain_part: GrainPart::default(),
+            grain_route: 0,
             cloud: (CloudNow::default(), 0),
             grain_marks: Vec::new(),
             live: None,
@@ -948,6 +957,9 @@ impl WaveTab {
 
     /// The hint line for the tool in use.
     pub fn hint(&self) -> &'static str {
+        if self.tool == Tool::Grain && self.grain_part == GrainPart::Mod {
+            return MOD_HINT;
+        }
         self.tool.hint()
     }
 
@@ -1560,6 +1572,9 @@ impl WaveTab {
         if r.mode != PlayMode::Granular {
             return format!("{}: {GRAIN_AGAIN}", plays_as(r.mode));
         }
+        if self.grain_part == GrainPart::Mod {
+            return grain_tool::route_note(r, self.grain_route);
+        }
         if let Some(note) = grain_tool::part_note(r, self.grain_part) {
             return note.to_string();
         }
@@ -1635,8 +1650,12 @@ impl WaveTab {
             return;
         }
         if self.tool == Tool::Grain {
-            let (rows, controls, panel) =
-                grain_tool::section(&st.region, self.grain_part, &self.grain_note(st));
+            let (rows, controls, panel) = grain_tool::section(
+                &st.region,
+                self.grain_part,
+                &self.grain_note(st),
+                self.grain_route,
+            );
             let n = rows.len();
             if let Some(list) = ui.get_mut::<SettingList>(REGION) {
                 list.right = "grains".to_string();
@@ -1927,7 +1946,14 @@ impl WaveTab {
             (REGION, EventKind::Step { index, delta }) if self.tool == Tool::Grain => {
                 self.grain_step(ui, st, *index, *delta)
             }
-            (REGION, EventKind::Select(_)) if self.tool == Tool::Grain => {
+            (REGION, EventKind::Select(index)) if self.tool == Tool::Grain => {
+                // A touch on a route's knob outlines it (step 17c).
+                if let Some(k) = self.grain_route_at(st, *index) {
+                    if k != self.grain_route {
+                        self.grain_route = k;
+                        self.show_list(ui, st);
+                    }
+                }
                 self.show_grain_cards(ui, st);
                 None
             }
@@ -2318,7 +2344,13 @@ impl WaveTab {
         }
         let row = *self.grain_part.rows(&st.region).get(index - 1)?;
         let r = &st.region;
+        if let Some(k) = row.route() {
+            self.grain_route = k;
+        }
         let after = match row {
+            G::RouteFrom | G::RouteTo | G::Route1 | G::Route2 | G::Route3 | G::Route4 => {
+                grain_tab::route_stepped(r, row, self.grain_route, delta)
+            }
             G::Preset | G::PresetMore => {
                 let first = if row == G::Preset {
                     0
@@ -2344,6 +2376,14 @@ impl WaveTab {
             row
         };
         self.edit(st, Key::Grain(key), after)
+    }
+
+    /// The route whose knob is row `index` of the Grain section, if one is.
+    fn grain_route_at(&self, st: &WaveState, index: usize) -> Option<usize> {
+        self.grain_part
+            .rows(&st.region)
+            .get(index.checked_sub(1)?)?
+            .route()
     }
 
     /// Puts the Grain section's highlight on `row` if the part open shows
