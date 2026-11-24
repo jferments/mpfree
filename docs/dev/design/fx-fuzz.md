@@ -44,7 +44,7 @@ Before this effect, MPFree's fuzz was Drive's Fuzz mode: one exponential curve w
 
 ## 4. Our engine
 
-Stereo: each side runs on its own, at 4x between the Amp's polyphase IIR half-bands (two stages, of five and four all-pass sections), with a 12 kHz guard low-pass before the down-sampler:
+Stereo: each side runs on its own, at 4x between the Amp's polyphase IIR half-bands (two stages, of five and four all-pass sections, each stage one unrolled `IirPair` flushed every 32 frames from the stream's start), with a 12 kHz guard low-pass before the down-sampler:
 
 ```
 in ─ up 4x ─ model (Face, Muff or Octave) × trim ─ 12 kHz guard ─ down ─ high-pass at the crossover ─┐
@@ -119,7 +119,7 @@ Listening: a blind, loudness-matched page (the new Fuzz against what MPFree had 
 
 ## 8. Cost
 
-The instruction gate's `Fuzz` case (the default Face at Fuzz 60; rustc 1.97.0, a 128-frame stereo block at 44.1 kHz): 386.5k instructions. It runs in stereo (the Amp is mono), each side at 4x with ADAA on its first curve, so it costs a little less than Drive HQ (430.3k) and more than the Amp (320k to 342k). The device round measures its real share (fuzz-device-checks.md in project files); if it is over about 4 % of a period, the lever is a 2x path as Drive's Eco, at some alias on the Octave.
+The instruction gate's `Fuzz` case (the default Face at Fuzz 60; rustc 1.97.0, a 128-frame stereo block at 44.1 kHz): 386.5k instructions. It runs in stereo (the Amp is mono), each side at 4x with ADAA on its first curve, so it costs a little less than Drive HQ (430.3k) and more than the Amp (320k to 342k). The unrolled half-bands of DSP quality step 2.3B took 17 % off it (386.5k to 320.7k on the same machine; [DSP quality](dsp-quality.md#step-23b-part-1-the-half-bands-bookkeeping)): before, the half-bands were a third of the effect. The device round measures its real share (fuzz-device-checks.md in project files); if it is over about 4 % of a period, the lever is a 2x path as Drive's Eco, at some alias on the Octave.
 
 ## 9. Pitfalls and tests
 
