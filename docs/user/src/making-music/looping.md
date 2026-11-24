@@ -215,6 +215,8 @@ Tap the chip's words (not its button) and the loop point view opens in the lanes
 
 When nothing was found and the only question is a close call, the view shows your press and your tap, **Keep my tap** and **Read as**.
 
+When loop memory was full as the loop closed, it kept nothing after your tap, so its end can move earlier but not later. The line says so instead: "Loop memory was full when it closed, so nothing after your tap was kept: the end can move earlier, not later." An end found before a late tap is still on offer. One found after an early tap can't be, and Suggest says why: "Kept your tap: loop memory was full, so nothing after it was kept." Free some memory (clear a loop you don't need) before you record if you want the room.
+
 ##### When a snap would move recorded audio
 
 A snap changes the song's tempo. If the audio tracks hold recordings, they would play out of step at the new tempo, so the hint line asks first ("Loop 1: that changes the tempo under the audio tracks' recordings. Snap anyway?"), with **Snap anyway** and **Not now** at its right end. **Snap anyway** goes ahead on the next downbeat (Read as, Undo and Redo say **Do it anyway**); **Not now** leaves everything as it is.

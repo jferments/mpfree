@@ -2085,6 +2085,9 @@ pub(crate) fn point_look(v: &LooperView) -> Option<PointLook> {
     let ms = |f: i64| f as f64 * 1000.0 / f64::from(rate.max(1));
     let tap_side = s.offer.is_some();
     let snap_side = !tap_side && !moved.is_none();
+    // Loop memory was full as the pass closed: nothing after the tap was
+    // kept, so the end can move earlier, not later.
+    let short = s.bounds.is_some_and(|b| b.short);
     let offer = s.offer.unwrap_or(Shift::NONE);
     let frames = s.frames as i64;
     let bars = bars_of(s.ticks, v.bar_ticks) as u32;
@@ -2162,6 +2165,20 @@ pub(crate) fn point_look(v: &LooperView) -> Option<PointLook> {
                 ("Keep the snap".to_string(), Side::Snap, true),
                 ("Keep my tap".to_string(), Side::Tap, true),
             ],
+        )
+    } else if short && !snap_side {
+        (
+            "Loop memory was full when it closed, so nothing after your tap was kept: \
+             the end can move earlier, not later."
+                .to_string(),
+            if tap_side {
+                vec![
+                    ("Snap".to_string(), Side::Snap, false),
+                    ("Keep my tap".to_string(), Side::Tap, true),
+                ]
+            } else {
+                vec![("Keep my tap".to_string(), Side::Tap, true)]
+            },
         )
     } else if tap_side {
         let bpm = bpm_of(s.ticks, frames + offer.longer(), rate);
@@ -2682,6 +2699,69 @@ mod tests {
         assert_eq!(p.ab, None);
         assert_eq!(p.pick, vec![("Keep my tap".into(), Side::Tap, true)]);
         assert!(p.read_as.iter().any(|r| r.1 == 8));
+    }
+
+    /// Loop memory full as the pass closed: the line says the end can
+    /// move earlier, not later, in place of what Snap would make or
+    /// "nothing to snap"; a snap made says the way back as before.
+    #[test]
+    fn the_loop_point_view_says_when_loop_memory_was_full() {
+        let point = crate::looping::LoopPoint {
+            start: [10; crate::looping::POINT_BARS],
+            end: [20; crate::looping::POINT_BARS],
+        };
+        let short = |v: &mut LooperView| {
+            let end = 8_192 + v.status.frames as i64;
+            v.status.bounds = Some(mpfree_looper::Bounds {
+                src: 8_192,
+                start: 8_192,
+                captured: (8_192, end),
+                kept: end,
+                short: true,
+            });
+        };
+        let full = "Loop memory was full when it closed, so nothing after your tap was kept: \
+                    the end can move earlier, not later.";
+        // The end found before a late tap: Snap still offers it.
+        let mut v = found_late();
+        v.smart.point = Some(point);
+        short(&mut v);
+        let p = point_look(&v).unwrap();
+        assert_eq!(p.line, full);
+        assert_eq!(
+            p.pick,
+            vec![
+                ("Snap".into(), Side::Snap, false),
+                ("Keep my tap".into(), Side::Tap, true),
+            ]
+        );
+        // A close call alone: nothing to snap.
+        let mut v = two_loops();
+        v.smart.close_call = Some(8);
+        v.smart.point = Some(point);
+        short(&mut v);
+        let p = point_look(&v).unwrap();
+        assert_eq!(p.line, full);
+        assert_eq!(p.pick, vec![("Keep my tap".into(), Side::Tap, true)]);
+        // Snapped: the way back, as with room to spare; A/B as it was.
+        let mut v = found_late();
+        v.smart.point = Some(point);
+        short(&mut v);
+        v.status.offer = None;
+        v.status.moved = Some(Shift {
+            start: 0,
+            end: -2117,
+        });
+        let p = point_look(&v).unwrap();
+        assert!(p.line.starts_with("Use my tap puts it back"), "{}", p.line);
+        v.smart.ab = true;
+        assert!(point_look(&v).unwrap().line.starts_with("A/B: "));
+        // Not full: as before.
+        let mut v = found_late();
+        v.smart.point = Some(point);
+        short(&mut v);
+        v.status.bounds.as_mut().unwrap().short = false;
+        assert!(point_look(&v).unwrap().line.starts_with("Snap makes it"));
     }
 
     #[test]

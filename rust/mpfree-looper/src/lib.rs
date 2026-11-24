@@ -537,6 +537,11 @@ pub struct Bounds {
     pub captured: (i64, i64),
     /// Frames kept: the boundaries move within 0 to this.
     pub kept: i64,
+    /// Loop memory was full when the pass closed ([`Stats::kept_short`]):
+    /// nothing after its end was kept, so the end can move earlier, not
+    /// later ([`MEMORY_FULL`]). Not saved: a loop opened from a save says
+    /// false.
+    pub short: bool,
 }
 
 /// What one layer's controls ask for ([`Looper::layer_command`]). Each
@@ -1009,6 +1014,11 @@ pub enum SmartOutcome {
 /// Why Suggest kept a tap when Then: Overdub started the overdub on it
 /// ([`SmartOutcome::Kept`]): Suggest can't wait for you there.
 pub const OVERDUB_AT_ONCE: &str = "the overdub started at once";
+
+/// Why Suggest kept a tap, or a snap was refused, when the end it would
+/// move to is later than the loop kept because loop memory was full as
+/// the pass closed ([`Bounds::short`]).
+pub const MEMORY_FULL: &str = "loop memory was full, so nothing after it was kept";
 
 /// The smallest move Suggest offers, in milliseconds: anything nearer the
 /// tap can't be heard.
@@ -2201,6 +2211,9 @@ struct Loop {
     /// Its writer keeps what it hears after the loop's end, up to
     /// [`KEEP_AFTER`] frames, while the loop plays.
     tail: bool,
+    /// Its first pass closed with loop memory full: nothing after its end
+    /// was kept ([`Bounds::short`]).
+    short: bool,
     /// What was heard before the first pass, copying in as its first
     /// [`KEEP_BEFORE`] frames: the frame heard that is the pass's first,
     /// and the frames copied.
@@ -2568,6 +2581,7 @@ impl Loop {
         fade_old: 1.0,
         first_open: false,
         tail: false,
+        short: false,
         before: None,
         rec_latency: 0,
         ring: [0.0; 2 * FADE],
@@ -3436,6 +3450,7 @@ impl Looper {
                 start: start as i64,
                 captured: (l.captured.0 as i64, l.captured.1 as i64),
                 kept: l.slots[0].valid.1 as i64,
+                short: l.short,
             }),
             closing: l.closing,
             offer: l
@@ -4590,6 +4605,9 @@ impl Looper {
             Snap::Found | Snap::Tap | Snap::Press => l.shifted(by).is_some(),
             Snap::Bars(_) | Snap::Undo | Snap::Redo => true,
         };
+        if !fits && l.short && by.end > 0 {
+            return Err(MEMORY_FULL);
+        }
         if !fits || len <= 0 || ticks <= 0 || l.len_ticks <= 0 {
             return Err("that end is outside what the loop kept");
         }
@@ -5235,9 +5253,12 @@ impl Looper {
             let outcome = match d.verdict {
                 Verdict::Moved if !reads => SmartOutcome::Kept("too short a loop"),
                 Verdict::Moved if end == 0 => SmartOutcome::Close(by),
-                Verdict::Moved if found.end == 0 => {
-                    SmartOutcome::Kept("that end is outside what the loop kept")
-                }
+                // (Later than the loop kept: memory was full, or else.)
+                Verdict::Moved if found.end == 0 => SmartOutcome::Kept(if l.short && end > 0 {
+                    MEMORY_FULL
+                } else {
+                    "that end is outside what the loop kept"
+                }),
                 Verdict::Moved => SmartOutcome::Offered(found.end),
                 v => SmartOutcome::Kept(v.why_by(self.by_ear)),
             };
@@ -7909,6 +7930,7 @@ impl Loop {
         self.then_overdub = false;
         self.first_open = false;
         self.tail = false;
+        self.short = false;
         self.before = None;
         self.region = None;
         self.captured = (0, 0);
@@ -8498,6 +8520,7 @@ impl Loop {
         if after && !tail {
             stats.kept_short += 1;
         }
+        self.short = after && !tail;
         // A pass cut back to a bar line it had recorded past gives back
         // the blocks after it.
         store.shrink(

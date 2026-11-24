@@ -15,7 +15,7 @@ use mpfree_looper::close::{Bars, Boundary, Confidence, Start, Tempo};
 use mpfree_looper::{
     read_bars, After, Command as L, Edit, Looper, NoteStart, Phase, Reading, Shift, SmartEnd,
     SmartOutcome, Snap, SnapPlan, Starts, Step, Sure, TempoHint, TempoKind, FADE, KEEP_AFTER,
-    KEEP_BEFORE, LOOP_MAX_BPM,
+    KEEP_BEFORE, LOOP_MAX_BPM, MEMORY_FULL,
 };
 use mpfree_transport::time::PPQ;
 use mpfree_transport::{Block, Command as T, Meter, State, Transport};
@@ -53,9 +53,14 @@ struct Rig {
 impl Rig {
     /// Stopped at 100 BPM, tempo from the loop on, loop 1 on Free length.
     fn new(period: usize) -> Rig {
+        Rig::with_memory(period, 30)
+    }
+
+    /// As [`Rig::new`], with `seconds` of loop memory.
+    fn with_memory(period: usize, seconds: u32) -> Rig {
         let mut r = Rig {
             t: Transport::new(RATE, 100.0).unwrap(),
-            l: Looper::new(RATE, 30),
+            l: Looper::new(RATE, seconds),
             b: Block::new(),
             period,
             frame: 0,
@@ -637,7 +642,12 @@ fn pads_beat(from: u64, beats: u64) -> Vec<NoteStart> {
 /// the pass started on, and the tap: the frame it would close on without
 /// smart loop end.
 fn late_tap(mode: SmartEnd, notes: bool) -> (Rig, u64, u64) {
-    let mut r = Rig::new(256);
+    late_tap_in(mode, notes, 30)
+}
+
+/// As [`late_tap`], with `seconds` of loop memory.
+fn late_tap_in(mode: SmartEnd, notes: bool, seconds: u32) -> (Rig, u64, u64) {
+    let mut r = Rig::with_memory(256, seconds);
     r.cmd(L::SetSmartEnd(mode));
     r.run(10_000);
     r.cmd(L::Record);
@@ -1184,4 +1194,84 @@ fn with_no_note_near_the_tap_auto_keeps_it() {
     // round since.
     let into = (at - tap) as f64 * s.ticks as f64 / s.frames as f64;
     assert_eq!(r.into, into.round() as i64);
+}
+
+/// Two bars at 120 BPM on the pads from Record, and Record again up to
+/// 60 ms before the downbeat that ends them, with `seconds` of loop
+/// memory: the end found is after the tap.
+fn early_tap(mode: SmartEnd, seconds: u32) -> (Rig, u64, u64) {
+    let mut r = Rig::with_memory(256, seconds);
+    r.cmd(L::SetSmartEnd(mode));
+    r.run(10_000);
+    r.cmd(L::Record);
+    let rec_from = r.frame;
+    r.notes = pads_beat(rec_from, 8);
+    r.run(rec_from + 88_200 - 1_323);
+    r.cmd(L::Record);
+    let f = r.frame + 256;
+    r.run(f);
+    (r, rec_from, f)
+}
+
+/// Loop memory full as the pass closes (four seconds: the two bars and
+/// what came before them, not what follows): nothing after the tap is
+/// kept ([`mpfree_looper::Bounds::short`]), so Suggest can't offer the end
+/// after it, and says why; the end before a late tap it still offers.
+#[test]
+fn with_loop_memory_full_suggest_says_why_it_keeps_a_tap_before_the_end() {
+    // Room to spare: the end after the tap is on offer.
+    let (mut r, rec_from, tap) = early_tap(SmartEnd::Suggest, 30);
+    assert!(tap < rec_from + 88_200);
+    r.until_playing(512);
+    r.run(tap + 2_205 + 256);
+    let s = r.l.status();
+    assert!(!s.bounds.expect("bounds").short);
+    let by = (rec_from + 88_200) as i64 - tap as i64;
+    assert_eq!(s.offer.map(|o| o.end), Some(by));
+    assert_eq!(r.l.take_smart().unwrap().outcome, SmartOutcome::Offered(by));
+    assert_eq!(r.l.stats().kept_short, 0);
+    // Memory full: the tap stands, and the word on it says why.
+    let (mut r, _, tap) = early_tap(SmartEnd::Suggest, 4);
+    r.until_playing(512);
+    r.run(tap + 2_205 + 256);
+    let s = r.l.status();
+    let b = s.bounds.expect("bounds");
+    assert!(b.short);
+    assert_eq!(b.kept, b.captured.1, "nothing after the tap");
+    assert_eq!(s.offer, None);
+    assert_eq!(
+        r.l.take_smart().unwrap().outcome,
+        SmartOutcome::Kept(MEMORY_FULL)
+    );
+    assert_eq!(r.l.stats().kept_short, 1);
+    // A late tap: the end found is before it, inside what was kept.
+    let (mut r, rec_from, tap) = late_tap_in(SmartEnd::Suggest, true, 4);
+    r.until_playing(512);
+    r.run(tap + 2_205 + 256);
+    let s = r.l.status();
+    assert!(s.bounds.expect("bounds").short);
+    let by = (rec_from + 88_200) as i64 - tap as i64;
+    assert_eq!(s.offer.map(|o| o.end), Some(by));
+    assert!(r.l.snap_plan(0, Snap::Found, r.frame).is_ok());
+}
+
+/// Auto with loop memory full: it closes on the downbeat before a late
+/// tap, and nothing after that is kept, so Use my tap is out of reach and
+/// says why.
+#[test]
+fn with_loop_memory_full_your_tap_after_autos_end_is_out_of_reach() {
+    let (mut r, ..) = late_tap_in(SmartEnd::Auto, true, 4);
+    r.until_playing(2_205 + 512);
+    // (The song plays from the next period.)
+    r.run(r.frame + 512);
+    let s = r.l.status();
+    assert_eq!(s.frames, 88_200);
+    assert!(s.bounds.expect("bounds").short);
+    assert_eq!(r.l.snap_plan(0, Snap::Tap, r.frame), Err(MEMORY_FULL));
+    // With room, it goes back to the tap.
+    let (mut r, ..) = late_tap(SmartEnd::Auto, true);
+    r.until_playing(2_205 + 512);
+    r.run(r.frame + 512);
+    assert!(!r.l.status().bounds.expect("bounds").short);
+    assert!(r.l.snap_plan(0, Snap::Tap, r.frame).is_ok());
 }

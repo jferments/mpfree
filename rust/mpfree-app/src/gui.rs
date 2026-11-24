@@ -21794,7 +21794,7 @@ fn sample_free_loops(fonts: &impl Fn() -> Fonts, out: &mut Vec<(&'static str, Pl
 /// with peaks as a hit round the press and one 48 ms before the tap.
 fn sample_smart_loop_end(p: &mut Player, name: &str, open: bool) {
     use crate::looping::{LoopPoint, POINT_BARS, POINT_END_FROM_MS, POINT_MS, POINT_START_FROM_MS};
-    use mpfree_looper::{Shift, Snap};
+    use mpfree_looper::{Bounds, Shift, Snap, KEEP_BEFORE};
     let rate = p.looper.rate;
     let ms = |m: f64| (m * f64::from(rate) / 1000.0).round() as i64;
     let mut v = p.looper.clone();
@@ -21821,6 +21821,18 @@ fn sample_smart_loop_end(p: &mut Player, name: &str, open: bool) {
                 end: ms(-48.0),
             })
         }
+    }
+    // Loop memory was full as the pass closed: nothing kept after the
+    // tap.
+    if name == "looper-smart-point-memory-full" {
+        let (kb, end) = (KEEP_BEFORE as i64, (KEEP_BEFORE + s.frames) as i64);
+        s.bounds = Some(Bounds {
+            src: kb,
+            start: kb,
+            captured: (kb, end),
+            kept: end,
+            short: true,
+        });
     }
     if name == "looper-smart-ask" {
         v.smart.asking = Some((Snap::Found, false));
@@ -25056,6 +25068,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         ("looper-smart-point", true),
         ("looper-smart-snapped", false),
         ("looper-smart-point-snapped", true),
+        ("looper-smart-point-memory-full", true),
         ("looper-smart-start", false),
         ("looper-smart-close-call", false),
         ("looper-smart-ask", false),

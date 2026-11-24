@@ -6068,6 +6068,14 @@ mod tests {
             line,
             "looper: Loop 1: smart loop end kept your tap: no note near it"
         );
+        // Loop memory was full: the screen says why the end after the tap
+        // couldn't be offered.
+        note.outcome = SmartOutcome::Kept(mpfree_looper::MEMORY_FULL);
+        let (_, words) = smart_words(&note, SmartEnd::Suggest, 44_100);
+        assert_eq!(
+            words.as_deref(),
+            Some("Kept your tap: loop memory was full, so nothing after it was kept.")
+        );
     }
 
     /// Length's bars are final (the looper refactor's Finding C): 1 bar
