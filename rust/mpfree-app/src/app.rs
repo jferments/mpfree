@@ -764,7 +764,7 @@ pub struct Settings {
     pub loop_latency_set: bool,
     pub loop_level_db: f32,
     /// The looper's options "Tempo from the first loop": with the song
-    /// stopped, a first loop recorded on Free length sets the tempo (and
+    /// stopped, a first loop recorded on Until tap sets the tempo (and
     /// starts the song) when it closes. Off by default; kept in Prefs.
     pub loop_tempo: bool,
     /// The looper's options "Smart loop end": when tempo from the first
@@ -2313,6 +2313,7 @@ impl App {
         match id {
             show::PANIC => {
                 let mut fx = self.stop();
+                fx.push(Effect::Looper(LoopAction::StopFree));
                 fx.push(Effect::Time(TimeAction::Transport(Command::StopAndRewind)));
                 fx.push(Effect::Tell(
                     "Panic: stopped, every sound silenced".to_string(),
@@ -3713,9 +3714,11 @@ impl App {
                 fx.push(Effect::Quit);
             } else if shift {
                 // The MPC's SHIFT + STOP: stop, silence everything and go
-                // back to bar 1 (Jay, 20:40Z). The Console has a chord of
-                // its own: SHIFT + ERASE + TAP TEMPO.
+                // back to bar 1 (Jay, 20:40Z), the free loops too (his
+                // looper review of 23 Nov, 5.4). The Console has a chord
+                // of its own: SHIFT + ERASE + TAP TEMPO.
                 fx.extend(self.stop());
+                fx.push(Effect::Looper(LoopAction::StopFree));
                 fx.push(Effect::Time(TimeAction::Transport(Command::StopAndRewind)));
                 fx.push(Effect::Note(
                     "SHIFT + STOP: stopped, back to bar 1".to_string(),
@@ -5671,7 +5674,7 @@ impl App {
                 "On: with the song stopped, the first loop",
                 "records in your own time and its length sets",
                 "the tempo: Length's bars at the tempo you play,",
-                "or on Free the likeliest bars (a close call",
+                "or on Until tap the likeliest bars (a close call",
                 "says so). The song starts as the loop comes",
                 "round. Not while another device's clock leads,",
                 "the song has more than one tempo, or exporting.",
@@ -7440,6 +7443,10 @@ mod tests {
         assert_ne!(app.settings.metronome, click);
         let fx = app.show_press(show::PANIC).unwrap();
         assert!(fx.contains(&Effect::Time(TimeAction::Transport(Command::StopAndRewind))));
+        assert!(
+            fx.contains(&Effect::Looper(LoopAction::StopFree)),
+            "free loops too"
+        );
         assert!(app.show_press(show::GO).is_none());
         assert!(app.show_press(show::NEXT_SONG).is_none());
     }
@@ -13468,6 +13475,10 @@ mod tests {
         let fx = held(&mut app, SHIFT, |a| press(a, button::STOP));
         assert!(fx.contains(&Effect::Time(TimeAction::Transport(Command::StopAndRewind))));
         assert!(fx.contains(&Effect::StopSounds));
+        assert!(
+            fx.contains(&Effect::Looper(LoopAction::StopFree)),
+            "free loops too"
+        );
         assert!(!fx.contains(&Effect::Show(View::Console)));
         // SHIFT + REC (90 here): Capture of notes; on the Looper tab, of
         // what the looper heard.

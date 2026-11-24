@@ -8770,6 +8770,10 @@ fn looper_action(
             out.note(&looper.select(n));
             Vec::new()
         }
+        looping::LoopAction::SelectForCell(n) => {
+            out.note(&looper.select_for_cell(n));
+            Vec::new()
+        }
         looping::LoopAction::ToggleMute(n) => {
             out.note(&looper.toggle_mute(n));
             Vec::new()
@@ -8801,6 +8805,12 @@ fn looper_action(
         looping::LoopAction::Listen(what) => vec![app::Effect::Tell(looper.listen(what))],
         looping::LoopAction::StopWaiting => {
             if let Some(line) = looper.stop_waiting() {
+                out.note(&line);
+            }
+            Vec::new()
+        }
+        looping::LoopAction::StopFree => {
+            if let Some(line) = looper.stop_free() {
                 out.note(&line);
             }
             Vec::new()

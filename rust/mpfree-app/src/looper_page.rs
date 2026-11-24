@@ -25,8 +25,8 @@ use crate::looping::{
     POINT_START_FROM_MS,
 };
 use mpfree_looper::{
-    After, Command, Edit, History, LayerCommand, LayerInfo, Overdubs, Phase, Shift, Snap, Starts,
-    Status, Step, LOOP_MAX_BPM, LOOP_MIN_BPM, MAX_LAYERS, MAX_LOOPS, MAX_SEAM,
+    After, Clock, Command, Edit, History, LayerCommand, LayerInfo, Overdubs, Phase, Shift, Snap,
+    Starts, Status, Step, LOOP_MAX_BPM, LOOP_MIN_BPM, MAX_LAYERS, MAX_LOOPS, MAX_SEAM,
 };
 use mpfree_time_ui::view::{LoopPlace, TransportInfo};
 use mpfree_transport::State;
@@ -167,6 +167,12 @@ pub fn seam_text(frames: usize, rate: u32) -> String {
     }
 }
 
+/// Whether the picked loop takes Sync now: it is empty, with nothing
+/// coming in (the looper refuses a clock for a loop with sound).
+fn takes_sync(s: &Status) -> bool {
+    s.phase == Phase::Empty && s.loading.is_none() && s.copying.is_none() && s.capturing.is_none()
+}
+
 /// Whether the picked loop takes edits now: it plays (not recording or
 /// overdubbing) and no merge is rendering.
 fn editable(s: &Status) -> bool {
@@ -188,6 +194,14 @@ pub fn strip_command(c: Ctl, s: &Status) -> Option<Command> {
             Starts::Bar
         } else {
             Starts::Play
+        })),
+        // Sync: taken by the loop while it is empty, and by every empty
+        // loop after it (LoopHost::clock). Once it records it keeps its
+        // own, and Sync shows it, fixed (Jay's review, 23 Nov, 5.2).
+        Ctl::Sync(i) if takes_sync(s) => Some(Command::SetClock(if i == 0 {
+            Clock::Song
+        } else {
+            Clock::Free
         })),
         Ctl::Then(i) => Some(Command::SetAfter(if i == 0 {
             After::Play
@@ -230,6 +244,10 @@ pub fn why_faint(c: Ctl, s: &Status) -> &'static str {
         Ctl::Starts(_) => {
             "Recording the other loops starts on the bar: When I play is for the pads and the line input"
         }
+        Ctl::Sync(_) if s.clock == Clock::Free => {
+            "This loop is free and stays so: pick an empty loop to set Sync"
+        }
+        Ctl::Sync(_) => "This loop keeps time with the song and stays so: pick an empty loop to set Sync",
         _ => phase,
     }
 }
@@ -1074,11 +1092,18 @@ impl LooperPage {
         let head = DeckHead {
             beat: running.then_some((beat, beats)),
             clock: match t.state {
+                // With a free group about, whose stop it is (Jay's
+                // review, 23 Nov, 5.1).
+                State::Stopped if v.free.is_some() => "Song stopped".to_string(),
                 State::Stopped => "Stopped".to_string(),
                 State::CountIn => "Count-in".to_string(),
                 _ => format!("Bar {} · beat {}", bar + 1, beat + 1),
             },
             tempo: format!("{:.0} BPM", t.bpm),
+            free_tempo: v
+                .free
+                .map(|c| format!("Free {} BPM", free_bpm_words(c.bpm))),
+            free_plays: v.free_runs(),
             memory: memory(v),
             pads: self.pads_keys,
             input: (self.input_words(v).0, input_frac(self.hold)),
@@ -1100,18 +1125,42 @@ impl LooperPage {
         // An armed loop starts on the next bar line (on the bar PLAY
         // starts while stopped).
         let next_bar = running.then_some(bar + 2);
+        // A free loop counts on the free clock: its bars from its bar 1,
+        // while it runs.
+        let free_runs = v.free_runs();
+        let free_bar = v.free.map(|c| (c.meter.bar_ticks().max(1), c.top));
+        let free_pos = |c: (i64, i64)| (v.free_now as i64 - c.1).max(0);
+        let free_next = free_bar
+            .filter(|_| free_runs)
+            .map(|c| free_pos(c) / c.0 + 2);
         let foot = self.source_word(v);
+        // An empty loop records on the clock Sync was last set to (an armed
+        // one, or one recording its first pass, on its own).
+        let empty_free = |l: &Status| match l.phase {
+            Phase::Empty => v.clock == Clock::Free,
+            _ => l.clock == Clock::Free,
+        };
         let bar_frames = v.frames_per_beat * f64::from(v.beats_per_bar.max(1));
         let channels: Vec<Channel> = (0..MAX_LOOPS)
             .map(|n| {
                 let l = &v.loops[n];
-                let bars = bars_of(l.ticks, v.bar_ticks);
+                let free = l.clock == Clock::Free;
+                let bars = bars_of(l.ticks, v.bar_ticks_of(l));
                 let length = if bars == 0 || l.phase == Phase::Empty {
                     String::new()
+                } else if free {
+                    "free".to_string()
                 } else {
                     bars_word(bars)
                 };
-                let state = RingState::of(l, next_bar);
+                // An armed free loop starts on the free clock's bar line
+                // while it runs (its `starts_on` is on that clock), else on
+                // the song's.
+                let (running, pos, bar_ticks, next_bar, top) = match free_bar {
+                    Some(c) if free && free_runs => (true, free_pos(c), c.0, free_next, c.1),
+                    _ => (running, pos, bar_ticks, next_bar, 0),
+                };
+                let state = RingState::of_free(l, next_bar, (free_runs, v.free_cued));
                 let level = self.level_of(n, l);
                 let (position, ring_bars, centre) = match state {
                     RingState::Empty => (0.0, 0, ("+".to_string(), String::new())),
@@ -1139,7 +1188,7 @@ impl LooperPage {
                     RingState::Waiting(b) => (
                         0.0,
                         0,
-                        match (l.starts_on.filter(|_| running), b) {
+                        match (l.starts_on.filter(|_| running).map(|at| at - top), b) {
                             (Some(at), _) => {
                                 let ppq = mpfree_transport::time::PPQ as i64;
                                 let ppq = ppq.max(1);
@@ -1201,6 +1250,16 @@ impl LooperPage {
                             ),
                         }
                     }
+                    // A free loop while the free loops are stopped: where
+                    // it waits, and ▶ (a tap plays them).
+                    RingState::Stopped(cued) => (
+                        l.position,
+                        bars,
+                        (
+                            "▶".to_string(),
+                            if cued { "on the bar" } else { "stopped" }.to_string(),
+                        ),
+                    ),
                     RingState::Off => (
                         l.position,
                         bars,
@@ -1250,11 +1309,18 @@ impl LooperPage {
                     } else if l.kept && state == RingState::Empty {
                         // Cleared: UNDO on it brings it back.
                         "Cleared · UNDO".to_string()
+                    } else if empty_free(l) {
+                        format!("{foot} · free")
                     } else {
                         foot.clone()
                     },
                     solo: l.solo,
                     unsaved: v.unsaved[n],
+                    free: if state.has_sound() {
+                        free
+                    } else {
+                        empty_free(l)
+                    },
                     ..Channel::default()
                 }
             })
@@ -1298,6 +1364,17 @@ impl LooperPage {
             _ => format!("Loop {}", n + 1),
         };
         let source = self.source_word(v);
+        // A free loop (Sync: Free; an empty loop records on the Sync set
+        // last).
+        let free = match s.phase {
+            Phase::Empty => v.clock == Clock::Free,
+            _ => s.clock == Clock::Free,
+        };
+        let song_plays = matches!(self.transport.state, State::Playing | State::Recording);
+        let first_note = match now_source(v).line() {
+            false => "the first pad you play",
+            true => "the line input's first note",
+        };
         let records = match (v.resample, now_source(v)) {
             (true, _) => "records the other loops".to_string(),
             (false, LoopSource::Pads) => "records the pads".to_string(),
@@ -1308,24 +1385,52 @@ impl LooperPage {
             (false, LoopSource::Mix(m)) => format!("records {}", self.mix_name(m)),
             (false, LoopSource::Track(_)) => "records its audio track's input".to_string(),
         };
+        // "records the pads, free": what a free loop records, as its header
+        // and the line over the strip say it (its own time: "free" goes
+        // with the length instead).
+        let records_as = if free {
+            format!("{records}, free")
+        } else {
+            records.clone()
+        };
         let sub = {
             let mut parts = Vec::new();
             if let Some(p) = self.place(n) {
                 parts.push(format!("{} · {}", p.track_name, p.row));
             }
             match s.phase {
-                Phase::Empty => parts.push(format!("empty · {records}")),
+                Phase::Empty => parts.push(format!("empty · {records_as}")),
                 Phase::Armed if s.listening => {
-                    parts.push(format!("waits for you to play · {records}"))
+                    parts.push(format!("waits for you to play · {records_as}"))
                 }
-                Phase::Armed => parts.push(format!("waits for the bar line · {records}")),
+                Phase::Armed if free && v.free_runs() => {
+                    parts.push(format!("waits for the free loops' bar line · {records_as}"))
+                }
+                Phase::Armed => parts.push(format!("waits for the bar line · {records_as}")),
+                // With a Length the closing tap says when its bars are
+                // done (nothing can count them yet: Jay's review, 5.5).
+                Phase::Recording if s.free && free => parts.push(match s.bars {
+                    Some(n) if n > 0 => format!(
+                        "recording {} free · tap when {} done",
+                        bars_word(n as usize),
+                        if n == 1 { "it is" } else { "they are" }
+                    ),
+                    _ => "recording free · its length sets its own tempo; the song stays stopped"
+                        .to_string(),
+                }),
+                Phase::Recording if free => {
+                    parts.push("recording the first pass · free".to_string())
+                }
                 Phase::Recording if s.free => parts.push(format!(
                     "recording {} · its length sets the tempo",
                     crate::looping::free_words(s.bars)
                 )),
                 Phase::Recording => parts.push("recording the first pass".to_string()),
                 _ => {
-                    let bars = bars_of(s.ticks, v.bar_ticks);
+                    if free {
+                        parts.push("free".to_string());
+                    }
+                    let bars = bars_of(s.ticks, v.bar_ticks_of(s));
                     if bars > 0 {
                         parts.push(bars_word(bars));
                     }
@@ -1334,6 +1439,10 @@ impl LooperPage {
                         s.layers,
                         if s.layers == 1 { "" } else { "s" }
                     ));
+                    // Stopped with the free clock (muted or not).
+                    if free && s.phase == Phase::Playing && !v.free_runs() {
+                        parts.push("stopped".to_string());
+                    }
                 }
             }
             parts.join(" · ")
@@ -1342,10 +1451,19 @@ impl LooperPage {
         let running = matches!(self.transport.state, State::Playing | State::Recording)
             || self.transport.state == State::CountIn;
         let listening = v.listening.filter(|&(m, _, _)| m == n);
+        // A free loop's layers listen alone only while the free loops are
+        // stopped too: everything is.
         let listen = (
-            has_sound && !running && s.phase == Phase::Playing && s.merging.is_none(),
+            has_sound
+                && !running
+                && !(free && v.free_runs())
+                && s.phase == Phase::Playing
+                && s.merging.is_none(),
             listening.is_some_and(|(_, l, _)| l.is_none()),
         );
+        // A free loop with sound: the free loops' Stop or Play in Listen's
+        // place.
+        let free_go = (free && has_sound).then_some((v.free_runs(), v.free_cued));
         let names: Vec<String> = (0..s.layers)
             .map(|k| self.names[n].get(k).cloned().unwrap_or_default())
             .collect();
@@ -1460,6 +1578,14 @@ impl LooperPage {
         } else {
             Strip::Records {
                 source: u8::try_from(self.source_index(v)).unwrap_or(u8::MAX),
+                // Sync as last set while the loop is empty: it takes it,
+                // and so does every empty loop after it. Once it records,
+                // its own clock, fixed (Jay's review, 23 Nov, 5.2).
+                sync: if takes_sync(s) {
+                    (u8::from(v.clock == Clock::Free), true)
+                } else {
+                    (u8::from(s.clock == Clock::Free), false)
+                },
                 monitor: (!v.resample && v.source == LoopSource::Line && v.line_on)
                     .then_some(v.monitor),
                 // Length: Pattern is the app's choice; the looper only
@@ -1493,6 +1619,18 @@ impl LooperPage {
                     "Capture: Loop {} plays once what you played is in (Capture again: stop)",
                     n + 1
                 ),
+                Phase::Recording if s.free && s.ending && free => format!(
+                    "Loop {} closes once it is {} at {:.0} BPM: then its length sets the free \
+                     loops' tempo",
+                    n + 1,
+                    crate::looping::shortest_words(s.bars),
+                    mpfree_looper::LOOP_MAX_BPM
+                ),
+                Phase::Recording if s.free && free => format!(
+                    "Loop {} records {}: REC again closes it, and it plays on at its own tempo",
+                    n + 1,
+                    crate::looping::free_words(s.bars)
+                ),
                 Phase::Recording if s.free && s.ending => format!(
                     "Loop {} closes once it is {} at {:.0} BPM: then its length sets the tempo",
                     n + 1,
@@ -1504,6 +1642,22 @@ impl LooperPage {
                      and starts the song",
                     n + 1,
                     crate::looping::free_words(s.bars)
+                ),
+                Phase::Armed if s.listening && s.free && free => format!(
+                    "Loop {} records free when you play: {first_note} starts it, and REC \
+                     again closes it at its own tempo",
+                    n + 1,
+                ),
+                Phase::Armed if s.listening && free => format!(
+                    "Loop {} records when you play: {first_note} starts it {}",
+                    n + 1,
+                    if v.free_runs() {
+                        "on the free loops' nearest bar line"
+                    } else if song_plays {
+                        "on the song's nearest bar line"
+                    } else {
+                        "and the stopped free loops with it"
+                    }
                 ),
                 Phase::Armed if s.listening && s.free => format!(
                     "Loop {} records free when you play: {} starts it, and REC again sets \
@@ -1526,10 +1680,33 @@ impl LooperPage {
                         _ => "and the song with it",
                     }
                 ),
+                Phase::Armed if free && v.free_runs() => {
+                    format!("Loop {} records from the free loops' next bar line", n + 1)
+                }
                 Phase::Armed => format!("Loop {} records from the next bar line", n + 1),
                 _ if s.kept => format!(
                     "Loop {} cleared: UNDO brings it back, or tap its ring to record",
                     n + 1
+                ),
+                // A free loop in your own time: nothing plays, no free
+                // clock yet.
+                Phase::Empty if free && s.free && !v.resample => format!(
+                    "Tap Loop {}'s ring or press REC: it {records} {}, in your own time: REC \
+                     again closes it, and it plays on at its own tempo",
+                    n + 1,
+                    crate::looping::free_words(s.bars)
+                ),
+                Phase::Empty if free => format!(
+                    "Tap Loop {}'s ring or press REC: it {records_as}, {}",
+                    n + 1,
+                    match (v.free_runs(), song_plays, v.free.is_some()) {
+                        (true, _, _) => "from the free loops' next bar line",
+                        (false, true, true) => {
+                            "from the song's next bar line, and the stopped free loops start with it"
+                        }
+                        (false, true, false) => "from the song's next bar line",
+                        (false, false, _) => "from now, and the stopped free loops start with it",
+                    }
                 ),
                 Phase::Empty if s.free && !v.resample => format!(
                     "Tap Loop {}'s ring or press REC: it {records} {}, and its length sets \
@@ -1544,8 +1721,14 @@ impl LooperPage {
                     Some(b) if b > 1 => format!("Closing at {b} bars"),
                     _ => "Closing at 1 bar".to_string(),
                 }),
+                Phase::Recording if s.free && free => Some("REC again closes it".to_string()),
                 Phase::Recording if s.free => Some("REC again sets the tempo".to_string()),
                 Phase::Armed if s.listening => Some("REC starts when you play".to_string()),
+                // On the free clock's bar line, counted from its bar 1.
+                Phase::Armed if free && v.free_runs() => v.free.map(|c| {
+                    let bar = (v.free_now as i64 - c.top).max(0) / c.meter.bar_ticks().max(1);
+                    format!("REC starts on bar {}", bar + 2)
+                }),
                 Phase::Armed => Some(match self.transport.state {
                     State::Playing | State::Recording => {
                         let bar = self.transport.position.max(0)
@@ -1607,6 +1790,7 @@ impl LooperPage {
                 || e.sub != sub
                 || e.colour != colour
                 || e.listen != listen
+                || e.free != free_go
                 || e.has_sound != has_sound
                 || e.layers != layers
                 || e.empty != empty_look
@@ -1622,6 +1806,7 @@ impl LooperPage {
                 e.sub = sub;
                 e.colour = colour;
                 e.listen = listen;
+                e.free = free_go;
                 e.has_sound = has_sound;
                 e.layers = layers;
                 e.empty = empty_look;
@@ -1728,6 +1913,17 @@ impl LooperPage {
 /// "1 bar", "4 bars".
 fn bars_word(bars: usize) -> String {
     format!("{bars} bar{}", if bars == 1 { "" } else { "s" })
+}
+
+/// The free clock's tempo as the screen says it, to a tenth of a BPM:
+/// "93.4", or "92" when it is that.
+pub(crate) fn free_bpm_words(bpm: f64) -> String {
+    let tenth = (bpm * 10.0).round() / 10.0;
+    if tenth.fract() == 0.0 {
+        format!("{tenth:.0}")
+    } else {
+        format!("{tenth:.1}")
+    }
 }
 
 /// The memory every loop shares: "37 s of 5 min", and how full, 0 to 1.
@@ -2142,6 +2338,152 @@ mod tests {
             capacity: 60 * 44_100,
         };
         v
+    }
+
+    /// Free loops (step F2, the design's mockups 1 to 3): a free loop's
+    /// card says "free" where a song loop says its bars, and the deck's
+    /// head adds "free" and the free clock's tempo. With Sync on Free an
+    /// empty loop says "Pads · free" and records "the pads, free"; Sync's
+    /// lit segment is Sync as last set. The header has Stop in Listen's
+    /// place while the free loops play, and Play while they are stopped,
+    /// when their rings rest with ▶ ("on the bar" while a Play waits).
+    #[test]
+    fn free_loops_say_free_and_rest_with_play_while_stopped() {
+        use mpfree_looper::{Clock, FreeClock};
+        let (mut ui, mut page) = page();
+        let mut v = two_loops();
+        v.loops[0].clock = Clock::Free;
+        v.status = v.loops[0];
+        v.clock = Clock::Free;
+        let mut c = FreeClock::stopped(93.4, v.rate, mpfree_transport::time::Meter::default(), 0);
+        c.running = true;
+        v.free = Some(c);
+        page.update(&mut ui, &v, &Settings::default());
+        let d = ui.get::<LoopDeck>(DECK).unwrap();
+        assert_eq!(
+            (d.channels[0].length.as_str(), d.channels[0].free),
+            ("free", true)
+        );
+        assert_eq!(
+            (d.channels[1].length.as_str(), d.channels[1].free),
+            ("2 bars", false)
+        );
+        assert_eq!(d.head.free_tempo.as_deref(), Some("Free 93.4 BPM"));
+        // Both groups named over the deck: whose stop it is, and the
+        // free group's own state (Jay's review, 5.1).
+        assert_eq!(d.head.clock, "Song stopped");
+        assert!(d.head.free_plays);
+        assert_eq!(d.channels[2].foot, "Pads · free");
+        assert_eq!(d.channels[0].state, RingState::Playing);
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert_eq!(e.sub, "free · 4 bars · 3 layers");
+        assert_eq!(e.free, Some((true, false)), "Stop in Listen's place");
+        // Stopped: at rest with ▶, Play in Listen's place.
+        c.running = false;
+        v.free = Some(c);
+        page.update(&mut ui, &v, &Settings::default());
+        let d = ui.get::<LoopDeck>(DECK).unwrap();
+        assert_eq!(d.channels[0].state, RingState::Stopped(false));
+        assert_eq!(
+            d.channels[0].centre,
+            ("▶".to_string(), "stopped".to_string())
+        );
+        assert_eq!(
+            d.channels[1].state,
+            RingState::Muted,
+            "a song loop as it was"
+        );
+        assert!(!d.head.free_plays, "■ over the deck");
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert_eq!(e.sub, "free · 4 bars · 3 layers · stopped");
+        assert_eq!(e.free, Some((false, false)));
+        // A Play waiting for the song's bar line.
+        v.free_cued = true;
+        page.update(&mut ui, &v, &Settings::default());
+        let d = ui.get::<LoopDeck>(DECK).unwrap();
+        assert_eq!(d.channels[0].state, RingState::Stopped(true));
+        assert_eq!(d.channels[0].centre.1, "on the bar");
+        assert_eq!(
+            ui.get::<LoopEditor>(EDITOR).unwrap().free,
+            Some((false, true))
+        );
+        // An empty loop picked: Sync as last set, and how it records.
+        v.selected = 2;
+        v.status = v.loops[2];
+        page.update(&mut ui, &v, &Settings::default());
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert!(
+            matches!(
+                e.strip,
+                Strip::Records {
+                    sync: (1, true),
+                    ..
+                }
+            ),
+            "{:?}",
+            e.strip
+        );
+        assert_eq!(e.sub, "empty · records the pads, free");
+        assert_eq!(e.free, None, "Listen's place keeps Listen");
+        v.clock = Clock::Song;
+        page.update(&mut ui, &v, &Settings::default());
+        let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+        assert!(
+            matches!(
+                e.strip,
+                Strip::Records {
+                    sync: (0, true),
+                    ..
+                }
+            ),
+            "{:?}",
+            e.strip
+        );
+        assert_eq!(ui.get::<LoopDeck>(DECK).unwrap().channels[2].foot, "Pads");
+        // A free first pass in your own time: Sync is its own, fixed; with
+        // a Length the closing tap says when its bars are done (Jay's
+        // review, 5.5).
+        let words = |ui: &mut Ui, page: &mut LooperPage, v: &mut LooperView, bars| {
+            let l = &mut v.loops[2];
+            (l.phase, l.clock, l.free, l.bars) = (Phase::Recording, Clock::Free, true, bars);
+            v.status = v.loops[2];
+            page.update(ui, v, &Settings::default());
+            let e = ui.get::<LoopEditor>(EDITOR).unwrap();
+            assert!(
+                matches!(
+                    e.strip,
+                    Strip::Records {
+                        sync: (1, false),
+                        ..
+                    }
+                ),
+                "{:?}",
+                e.strip
+            );
+            e.sub.clone()
+        };
+        assert_eq!(
+            words(&mut ui, &mut page, &mut v, Some(4)),
+            "recording 4 bars free · tap when they are done"
+        );
+        assert_eq!(
+            words(&mut ui, &mut page, &mut v, Some(1)),
+            "recording 1 bar free · tap when it is done"
+        );
+        assert_eq!(
+            words(&mut ui, &mut page, &mut v, None),
+            "recording free · its length sets its own tempo; the song stays stopped"
+        );
+        ui.paint(&mut SoftCanvas::new(1280, 800));
+    }
+
+    /// The free clock's tempo as the deck's head says it: to a tenth, and
+    /// whole tempos without one.
+    #[test]
+    fn the_free_clocks_tempo_reads_to_a_tenth() {
+        assert_eq!(free_bpm_words(92.0), "92");
+        assert_eq!(free_bpm_words(93.44), "93.4");
+        assert_eq!(free_bpm_words(119.96), "120");
     }
 
     /// The audio tracks rethink's phase 4, board 5: with Dev's "Loops on
@@ -2634,12 +2976,14 @@ mod tests {
             e.strip,
             Strip::Records {
                 source: 1,
+                sync: (0, false),
                 monitor: Some(false),
                 bars: 3,
                 starts: (0, true),
                 then: 0
             },
-            "the line in shows its monitor; 2 bars is the fourth length (after Pattern)"
+            "the line in shows its monitor; 2 bars is the fourth length (after Pattern); \
+             armed, its Sync is its own"
         );
         // Records from the loops.
         v.resample = true;

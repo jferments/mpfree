@@ -2859,6 +2859,9 @@ pub struct Player {
     // moved by value often enough (sample_screens) that its size matters.
     looper_page: Box<LooperPage>,
     pub looper: LooperView,
+    /// What the hint line last said STOP does ([`Player::stop_words`]):
+    /// it changes with the song and the free loops.
+    stop_said: &'static str,
     /// The Play page: its view (the screen's own choice, kept while other
     /// tabs show), pattern, throws, timing and Q-Links.
     pub play: PlayPage,
@@ -3521,6 +3524,7 @@ impl Player {
             status_chip: None,
             looper_page,
             looper: LooperView::default(),
+            stop_said: "STOP: silence",
             play: PlayPage::default(),
             chain_page: Box::default(),
             cpu_at: 0.0,
@@ -8670,6 +8674,14 @@ impl Player {
                     } else if l.is_some_and(|l| l.capturing.is_some()) {
                         // Capturing: the tap calls it off.
                         out.push(FromUi::LoopCapture);
+                    } else if self.looper.free_stopped(n) {
+                        // A stopped free loop: its ring plays the free
+                        // loops (again while one waits: calls it off).
+                        out.push(FromUi::LoopCommand(if self.looper.free_cued {
+                            C::FreeStop
+                        } else {
+                            C::FreePlay
+                        }));
                     } else {
                         out.push(FromUi::Looper(crate::looper_page::B_RECORD));
                     }
@@ -8725,6 +8737,16 @@ impl Player {
                 }
                 LoopAct::Strip(Ctl::Source(i)) => self.loop_source(i, &mut out),
                 LoopAct::Strip(Ctl::Listen) => out.push(FromUi::LoopListen(Some(None))),
+                // A free loop's Stop or Play: the free loops stop at their
+                // tops, or start (on the song's next bar line while it
+                // plays; again before then: called off).
+                LoopAct::Strip(Ctl::FreeGo) => out.push(FromUi::LoopCommand(
+                    if self.looper.free_runs() || self.looper.free_cued {
+                        C::FreeStop
+                    } else {
+                        C::FreePlay
+                    },
+                )),
                 LoopAct::LayerListen(k) => {
                     if let Some(l) = self.looper_page.layer_info(k) {
                         out.push(FromUi::LoopListen(Some(Some(l.id))));
@@ -9195,12 +9217,33 @@ impl Player {
         }
     }
 
-    fn refresh_hint(&mut self) {
-        let stop = if self.timed {
-            "STOP: end"
-        } else {
-            "STOP: silence"
+    /// What STOP does now, as the hint line says it: "STOP: silence"; with
+    /// free loops (a free loop holds audio), "STOP: the song" while it
+    /// plays, "STOP: free loops" once it has stopped, and "PLAY: song and
+    /// free loops" once they have stopped too; "STOP: end" in a timed run.
+    fn stop_words(&self) -> &'static str {
+        if self.timed {
+            return "STOP: end";
+        }
+        let Some(c) = self.looper.free else {
+            return "STOP: silence";
         };
+        let song = matches!(
+            self.time.transport.state,
+            mpfree_transport::State::Playing
+                | mpfree_transport::State::Recording
+                | mpfree_transport::State::CountIn
+        );
+        match (song, c.running) {
+            (true, _) => "STOP: the song",
+            (false, true) => "STOP: free loops",
+            (false, false) => "PLAY: song and free loops",
+        }
+    }
+
+    fn refresh_hint(&mut self) {
+        let stop = self.stop_words();
+        self.stop_said = stop;
         let mode = self.arp.settings.mode;
         // The wheel and Q-Link 1 follow the tab: the mode the pads play
         // through, or Phrase while the panel shows that tab on a kit.
@@ -9410,11 +9453,17 @@ impl Player {
         } else {
             match self.view {
                 // The All view: the armed track's pads as rows (the Play,
-                // Pads and Sequencer redesign's board 1).
+                // Pads and Sequencer redesign's board 1). With free loops,
+                // what STOP does too: it isn't only silence any more.
                 View::Play if self.play.on_play_rows() => format!(
                     "Tap a step: in or out   ·   a name: mute   ·   \
-                     A–H: the bank   ·   swipe: the 16 pads   ·   ‹ {} ›: next track   ·   a loop's ring: its next step",
-                    self.play.track.name
+                     A–H: the bank   ·   swipe: the 16 pads   ·   ‹ {} ›: next track   ·   a loop's ring: its next step{}",
+                    self.play.track.name,
+                    if self.looper.free.is_some() {
+                        format!("   ·   {stop}")
+                    } else {
+                        String::new()
+                    }
                 ),
                 View::Play => format!("Tap a loop's ring: its next step, held: clear   ·   {WHEEL_HINT}   ·   PAD BANK: bank   ·   \
                                        NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
@@ -12057,8 +12106,9 @@ impl Player {
                 if matches!(self.view, View::Looper | View::Play) {
                     self.refresh_looper();
                 }
-                // A snap asks, or was answered: the hint line says so.
-                if asked != self.looper.smart.asking {
+                // A snap asks, or was answered, or STOP's words changed
+                // (free loops): the hint line says so.
+                if asked != self.looper.smart.asking || self.stop_words() != self.stop_said {
                     self.refresh_hint();
                 }
                 // The Loop tracks' cells follow the loops.
@@ -12982,6 +13032,10 @@ impl Player {
                 self.time.transport = info;
                 if self.view == View::Looper {
                     self.looper_page.set_transport(&mut self.ui, info);
+                }
+                // With free loops, STOP's words follow the song.
+                if self.stop_words() != self.stop_said {
+                    self.refresh_hint();
                 }
                 self.sample.set_tempo(info.bpm);
                 self.time_page.update(&mut self.ui, &self.time);
@@ -21556,6 +21610,114 @@ fn looper_screen(fonts: Fonts, picked: usize, jam: bool) -> Result<Player, Strin
     Ok(p)
 }
 
+/// Loops `free` of `v` made free loops (Sync: Free) on a free clock at
+/// `bpm`, running or stopped, its bar 1 on tick 0; Sync set to Free.
+fn free_loops_view(v: &mut LooperView, free: &[usize], bpm: f64, running: bool) {
+    use mpfree_looper::{Clock, FreeClock};
+    for &n in free {
+        v.loops[n].clock = Clock::Free;
+    }
+    v.status = v.loops[v.selected];
+    v.clock = Clock::Free;
+    let mut c = FreeClock::stopped(bpm, v.rate, mpfree_transport::time::Meter::default(), 0);
+    c.running = running;
+    v.free = Some(c);
+    v.free_now = 0.0;
+}
+
+/// The free loops' screens (the free loop mode's design, mockups 1 to 5):
+/// an empty loop set to Free while a free loop plays and the song is
+/// stopped; a free loop picked while the song plays (Stop in Listen's
+/// place); the free loops stopped (Play there, the rings at rest with ▶);
+/// a free loop recorded in your own time; and Play's loop row with the
+/// song stopped and a free loop playing on.
+fn sample_free_loops(fonts: &impl Fn() -> Fonts, out: &mut Vec<(&'static str, Player)>) {
+    use mpfree_looper::{Clock, Phase};
+    let stopped = TransportInfo {
+        state: mpfree_transport::State::Stopped,
+        bpm: 120.0,
+        ..TransportInfo::default()
+    };
+    // 1: Loop 5 picked, empty, Sync: Free; Loop 1 a free loop playing on
+    // at 93.4 BPM, the song stopped at 120.
+    match sample_looper_picking(fonts(), 4) {
+        Ok(mut p) => {
+            let mut v = p.looper.clone();
+            free_loops_view(&mut v, &[0], 93.4, true);
+            p.apply(ToUi::Transport(stopped));
+            p.apply(ToUi::Looper(Box::new(v)));
+            out.push(("looper-free-empty", p));
+        }
+        Err(e) => eprintln!("looper-free-empty sample: {e}"),
+    }
+    // 2: the jam with Loops 1 and 3 free, Loop 1 picked, the song playing
+    // (the free clock copied from it, 92 BPM): Stop in Listen's place.
+    match sample_looper_jam(fonts()) {
+        Ok(mut p) => {
+            let mut v = p.looper.clone();
+            free_loops_view(&mut v, &[0, 2], 92.0, true);
+            p.apply(ToUi::Looper(Box::new(v)));
+            out.push(("looper-free-picked", p));
+        }
+        Err(e) => eprintln!("looper-free-picked sample: {e}"),
+    }
+    // 3: after STOP, STOP: the song and the free loops stopped, the free
+    // loops' rings at rest where they start again, Play in Listen's place.
+    match sample_looper_jam(fonts()) {
+        Ok(mut p) => {
+            let mut v = p.looper.clone();
+            free_loops_view(&mut v, &[0, 2], 92.0, false);
+            for n in [0, 2] {
+                v.loops[n].position = 0.0;
+            }
+            v.status = v.loops[v.selected];
+            p.apply(ToUi::Transport(TransportInfo {
+                bpm: 92.0,
+                ..stopped
+            }));
+            p.apply(ToUi::Looper(Box::new(v)));
+            out.push(("looper-free-stopped", p));
+        }
+        Err(e) => eprintln!("looper-free-stopped sample: {e}"),
+    }
+    // 4: Loop 1 recording free in your own time, 2.4 s in, the song
+    // stopped and no free clock yet.
+    {
+        let mut p = sample_player(fonts());
+        p.apply(ToUi::Show(View::Looper));
+        p.take_actions();
+        let mut v = crate::looping::LooperView {
+            clock: Clock::Free,
+            ..Default::default()
+        };
+        let l = &mut v.loops[0];
+        l.phase = Phase::Recording;
+        l.clock = Clock::Free;
+        l.bars = None;
+        l.free = true;
+        l.recorded = 105_840;
+        v.status = v.loops[0];
+        p.apply(ToUi::Looper(Box::new(v)));
+        out.push(("looper-free-own-time", p));
+    }
+    // 5: Play's loop row, the song stopped: Loop 1 a free loop playing
+    // on, every empty loop records free.
+    {
+        let mut p = sample_play(fonts(), PlayView::All);
+        let mut v = p.looper.clone();
+        for n in 1..mpfree_looper::MAX_LOOPS {
+            v.loops[n] = mpfree_looper::Looper::new(v.rate, 0).status();
+        }
+        free_loops_view(&mut v, &[0], 92.0, true);
+        p.apply(ToUi::Transport(TransportInfo {
+            bpm: 92.0,
+            ..stopped
+        }));
+        p.apply(ToUi::Looper(Box::new(v)));
+        out.push(("play-free-loops", p));
+    }
+}
+
 /// Smart loop end on [`sample_looper`]'s loop 1 for screen `name`: 48 ms
 /// found before your tap (the chip, Snap), snapped there (Use my tap),
 /// started on your first hit (Use my press), a close call (Read as), or a
@@ -24948,6 +25110,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         p.apply(ToUi::Looper(Box::new(v)));
         out.push(("looper-free", p));
     }
+    // Free loops (Sync: Free), as the design's mockups drew them.
+    sample_free_loops(&fonts, &mut out);
     // The same with the undo history open: the bass and the chop overdubs.
     match sample_looper(fonts()) {
         Ok(mut p) => {

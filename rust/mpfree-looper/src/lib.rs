@@ -287,9 +287,9 @@ pub enum Command {
     /// (with Length set, that many bars), once it is. Its length then
     /// sets the tempo ([`read_bars`]): the bars Length set
     /// ([`Command::SetBars`]), "this many bars at the tempo I play", or
-    /// on Free length the bars the reading picks, from the start of the
-    /// bar the song stopped in. The host starts the song there, on the
-    /// frame the loop comes round, at that tempo
+    /// on Until tap (no bars set) the bars the reading picks, from the
+    /// start of the bar the song stopped in. The host starts the song
+    /// there, on the frame the loop comes round, at that tempo
     /// ([`Looper::take_tempo`]). The song starting under a free pass
     /// (PLAY, or a count-in) throws the pass away (counted). The host
     /// turns this off while the song can't take a tempo from a loop
@@ -1208,7 +1208,8 @@ pub struct Status {
     pub origin: Tick,
     /// Where the loop is, 0 to 1.
     pub position: f32,
-    /// Free length: Record was pressed again, the pass ends on the next bar.
+    /// Until tap (no bars set): Record was pressed again, the pass ends on
+    /// the next bar.
     pub ending: bool,
     /// An overdub starts when the first pass ends: Overdub was pressed
     /// during it, or the loop is set to ([`After::Overdub`]).
@@ -4735,6 +4736,20 @@ impl Looper {
     /// tempo, meter and bar 1, and whether it runs. None otherwise.
     pub fn free_clock(&self) -> Option<FreeClock> {
         self.free_time.clock
+    }
+
+    /// Where the free clock is at the period now (its tick, with the
+    /// fraction; its bar 1 while it is stopped), for the screen's bar
+    /// counts. None with no free clock.
+    pub fn free_now(&self) -> Option<f64> {
+        self.free_time.clock.map(|c| c.tick_at(self.now))
+    }
+
+    /// A Play for the stopped free loops waits for the song's next bar
+    /// line ([`Command::FreePlay`] while the song plays); Stop calls it
+    /// off.
+    pub fn free_cued(&self) -> bool {
+        self.free_time.cue.is_some()
     }
 
     /// Clock `clock` as it is now ([`ClockStamp`]): what a snap or a

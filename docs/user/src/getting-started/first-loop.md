@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looping.rs rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/loop_row.rs rust/mpfree-app/src/play_page.rs
-checked: 2026-11-24 53e9902b
+checked: 2026-11-24 459299e3
 -->
 
 # Your first loop
@@ -49,7 +49,7 @@ The looper can record the **INPUTS** on the back of the MPC instead: a synth, a 
 The **Looper** tab (**SHIFT + SAMPLER**) is where a loop is shaped: the same eight rings across the top, and the picked loop laid out underneath with a lane per layer, its level and pan, and its recording settings. Press **SHIFT + SAMPLER** again there and the pads play the loops instead of the kit. See [Recording loops](../making-music/looping.md).
 
 > [!MPC]
-> On the MPC the Looper is a separate screen with one loop, its length set in bars before you record. With Sync off it records and plays while the sequencer is stopped, and only then can it start when the input passes a threshold. In MPFree loops follow the song's tempo and bar lines, sit on the Play page next to your pattern, and can record MPFree's own pads and synth as well as the inputs. A loop can also wait for your first note, or for the first sound on the line input. Up to eight loops can play at once.
+> On the MPC the Looper is a separate screen with one loop, its length set in bars before you record. With Sync off it records and plays while the sequencer is stopped, and only then can it start when the input passes a threshold. In MPFree loops follow the song's tempo and bar lines, or, with **Sync: Free**, keep their own time and play on with the song stopped, as with Sync off ([Free loops](../making-music/looping.md#free-loops)). They sit on the Play page next to your pattern, and can record MPFree's own pads and synth as well as the inputs. A loop can also wait for your first note, or for the first sound on the line input. Up to eight loops can play at once.
 
 > [!TIP]
 > Line input is off every time MPFree starts, so you never hear a noisy input you forgot was plugged in.

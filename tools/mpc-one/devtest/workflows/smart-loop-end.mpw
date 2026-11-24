@@ -18,7 +18,7 @@ button -
 button +
 button MENU
 wait 0.5
-tap leditor bars Free
+tap leditor bars Until tap
 wait 0.5
 mark suggest
 button REC
