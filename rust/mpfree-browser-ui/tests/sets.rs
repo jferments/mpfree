@@ -626,6 +626,13 @@ fn soundcheck_asks_runs_and_says_how_it_went() {
     assert_eq!(d.checks[1].mark, CheckMark::Now);
     assert_eq!(d.meter, Some((48.0, 63.0)));
     assert_eq!(d.buttons, [SetButton::StopSoundcheck, SetButton::SkipSong]);
+    // A song row tapped while it runs: the song being checked stays shown.
+    tap(&mut b, SetInput::Row(1));
+    assert_eq!(
+        b.screen().status.unwrap().0,
+        "Soundcheck is running: Stop soundcheck first"
+    );
+    assert!(sets(&b).rows[4].lit);
     // While it runs, Play set and another Soundcheck wait.
     b.input(Input::Back);
     let _ = b.take_actions();

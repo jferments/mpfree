@@ -941,6 +941,11 @@ impl Browser {
     }
 
     fn sets_row(&mut self, r: usize) {
+        if self.sets.running.is_some() && self.sets.viewing.is_some() {
+            // The song being soundchecked stays shown until it's over.
+            self.status = Some(("Soundcheck is running: Stop soundcheck first".into(), false));
+            return;
+        }
         if let Some(v) = self.sets.viewing.as_mut() {
             if v.songs.as_ref().is_some_and(|s| r < s.len()) {
                 v.picked = Some(r);

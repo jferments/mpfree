@@ -14112,12 +14112,16 @@ impl Player {
                 if let Some(sc) = self.soundcheck.as_mut() {
                     let fx = sc.stop(self.sound.ms());
                     self.soundcheck_do(fx);
+                } else {
+                    self.soundcheck_gone();
                 }
             }
             A::SkipSoundcheckSong => {
                 if let Some(sc) = self.soundcheck.as_mut() {
                     let fx = sc.skip(self.sound.ms());
                     self.soundcheck_do(fx);
+                } else {
+                    self.soundcheck_gone();
                 }
             }
             A::SetSongOpened { loc } => {
@@ -15255,6 +15259,17 @@ impl Player {
 
     /// Soundcheck stops because of something else (another project opened
     /// from BROWSE): what it measured is kept, and nothing opens over it.
+    /// The browser shows Soundcheck running but the app has none (it ended
+    /// without the browser hearing): Stop soundcheck and Skip this song
+    /// put the set's check view back instead of doing nothing.
+    fn soundcheck_gone(&mut self) {
+        if let Some(b) = self.browser.as_mut() {
+            b.set_soundcheck(None);
+            mpfree_browser_ui::show(&mut self.ui, b);
+        }
+        self.say("show: no soundcheck is running".into());
+    }
+
     fn soundcheck_abandon(&mut self, why: &str) {
         use crate::soundcheck::Do;
         let ms = self.sound.ms();
@@ -27589,6 +27604,26 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
 }
 
 /// The sample screens of the Arp panel's Phrase tab ([`sample_phrase`]).
+/// The Sets place's sample screens (live shows B1, B2a, B2b), for a test
+/// that sweeps them without building every screen.
+pub const SETS_SAMPLES: [&str; 4] = [
+    "browser-sets",
+    "browser-set-song",
+    "browser-sets-check",
+    "browser-sets-soundcheck",
+];
+
+/// Sample screen `name` of [`SETS_SAMPLES`], as `sample_screens` draws it.
+pub fn sample_sets(name: &str, fonts: Fonts) -> Result<Player, String> {
+    match name {
+        "browser-sets" => browser_sets(fonts, false),
+        "browser-set-song" => browser_sets(fonts, true),
+        "browser-sets-check" => browser_set_check(fonts),
+        "browser-sets-soundcheck" => browser_set_soundcheck(fonts),
+        _ => Err(format!("{name}: not a Sets sample screen")),
+    }
+}
+
 pub const PHRASE_SAMPLES: [&str; 4] = [
     "arp-phrase",
     "arp-phrase-next-bar",
