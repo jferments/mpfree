@@ -672,6 +672,7 @@ impl App {
             help_link,
             help,
             help_buttons: Vec::new(),
+            prefs: None,
         }
     }
 
