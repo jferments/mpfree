@@ -283,12 +283,27 @@ impl Composing {
                 }
             }
             (Scope::Notes(ticks), Some((before, seed, new_from, clip))) => {
-                // Each picked tick's new note, out of locked bars.
+                // Each picked tick's new note, out of locked bars: a note's
+                // bar is where it falls on the grid, before the groove and
+                // the playing move it a few ms (S3 plays a downbeat a
+                // little early on the climb).
+                let at = |n: &mpfree_seq::Note| {
+                    before
+                        .events
+                        .iter()
+                        .find(|e| {
+                            e.pitch == n.note
+                                && mpfree_compose::timing::written(
+                                    e.at, e.timing, ask.bpm, before.to,
+                                ) == n.tick
+                        })
+                        .map_or(n.tick, |e| e.at)
+                };
                 let notes: Vec<(Tick, u8)> = clip
                     .notes
                     .iter()
-                    .filter(|n| n.on && n.tick >= new_from && ticks.contains(&n.tick))
-                    .filter(|n| !locked.contains(&u16::try_from(n.tick / bar).unwrap_or(u16::MAX)))
+                    .filter(|n| n.on && at(n) >= new_from && ticks.contains(&n.tick))
+                    .filter(|n| !locked.contains(&u16::try_from(at(n) / bar).unwrap_or(u16::MAX)))
                     .map(|n| (n.tick, n.note))
                     .collect();
                 if notes.is_empty() {

@@ -810,7 +810,7 @@ pub fn draft_keeping(
         gave_way,
         tried,
     };
-    let (mut part, mut events) = perform_with(req, &ph, &sk.plan, &chords, &line, false);
+    let (mut part, mut events) = perform_with(req, &ph, &sk.plan, &chords, &line, false, Some(&sk));
     if let Some(o) = old {
         // The kept bars as they were played, exactly.
         let free = |at: Tick| !is_kept(at.div_euclid(bar_ticks) as usize);
@@ -959,7 +959,15 @@ pub fn try_bars_s1(
         gave_way,
         tried,
     };
-    let (mut part, events) = perform_with(req, &ph, &before.plan, &before.chords, &line, false);
+    let (mut part, events) = perform_with(
+        req,
+        &ph,
+        &before.plan,
+        &before.chords,
+        &line,
+        false,
+        Some(sk),
+    );
     let bt = req.meter.bar_ticks().max(1);
     let inside = |at: Tick| tried_bars.contains(&(at.div_euclid(bt) as usize));
     let (ds, events) = splice(before, &part, &events, &inside);

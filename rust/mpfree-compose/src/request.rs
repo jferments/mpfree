@@ -167,12 +167,13 @@ pub(crate) fn perform(
     chords: &ChordTimeline,
     line: &Line,
 ) -> (Part, Vec<Event>) {
-    perform_with(req, ph, plan, chords, line, true)
+    perform_with(req, ph, plan, chords, line, true, None)
 }
 
 /// [`perform`], with the style's slow drift (`drift`) or without it (the
 /// music-first engine, whose feel comes from the groove and the playing
-/// rules).
+/// rules), and with the sketch's phrases played as S3 plays them
+/// ([`crate::perform::shape`]) where there is one.
 pub(crate) fn perform_with(
     req: &Continue,
     ph: &Phrasing,
@@ -180,6 +181,7 @@ pub(crate) fn perform_with(
     chords: &ChordTimeline,
     line: &Line,
     drift: bool,
+    sketch: Option<&crate::sketch::Sketch>,
 ) -> (Part, Vec<Event>) {
     let s = req.settings;
     let mut style = s.style;
@@ -219,6 +221,20 @@ pub(crate) fn perform_with(
         s.seed,
         req.bpm,
     );
+    if let Some(sk) = sketch {
+        crate::perform::shape(
+            &mut part,
+            &heard,
+            &style,
+            &crate::perform::Shaping {
+                sketch: sk,
+                yours: your_bars(req),
+                meter: req.meter,
+                bpm: req.bpm,
+                keep_accents: s.keeps.accents,
+            },
+        );
+    }
     let events = realize(&part, &fit);
     (part, events)
 }
@@ -854,8 +870,25 @@ mod tests {
         assert!(free.part.decisions.iter().any(|d| d.timing.play != 0.0));
         let on_grid = free.notes.iter().filter(|n| n.tick % STEP == 0).count();
         assert!(on_grid < free.notes.len(), "the drift moves notes");
+        // Its only playing offsets are the phrase's (S3), a few ms, and
+        // none with the style's gesture off.
         let plain = continue_notes(&ask(&notes, &ctx, &s)).unwrap();
-        assert!(plain.part.decisions.iter().all(|d| d.timing.play == 0.0));
+        let few = crate::timing::ms_to_ticks(30.0, 200.0) as f32;
+        assert!(plain
+            .part
+            .decisions
+            .iter()
+            .all(|d| d.timing.play.abs() < few));
+        assert!(plain.part.decisions.iter().any(|d| d.timing.play != 0.0));
+        let mut flat = s;
+        flat.style.playing.gesture = 0.0;
+        let typed = continue_notes(&ask(&notes, &ctx, &flat)).unwrap();
+        assert!(typed.part.decisions.iter().all(|d| d.timing.play == 0.0));
+        assert_eq!(
+            typed.notes.iter().map(|n| n.note).collect::<Vec<_>>(),
+            plain.notes.iter().map(|n| n.note).collect::<Vec<_>>(),
+            "the same notes, played or typed"
+        );
         // With drums read, the drummer's groove and no drift.
         ctx.groove = Some(mpfree_context::groove::GrooveTemplate::read(
             &[mpfree_context::groove::Hit {
@@ -866,7 +899,7 @@ mod tests {
             16,
             Swing::default(),
         ));
-        let grooved = continue_notes(&ask(&notes, &ctx, &s)).unwrap();
+        let grooved = continue_notes(&ask(&notes, &ctx, &flat)).unwrap();
         assert!(grooved.part.decisions.iter().all(|d| d.timing.play == 0.0));
         for (d, n) in grooved.part.decisions.iter().zip(&grooved.events) {
             assert_eq!(d.at, n.at);

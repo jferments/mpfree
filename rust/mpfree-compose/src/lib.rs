@@ -87,6 +87,13 @@
 //!   (together, no clash, room, lands, returns, flows); the best of four
 //!   drafts, and the same rhythm re-fitted when a chord changes.
 //!
+//! Revision 3, S3, playing and sound that move:
+//!
+//! - [`perform`]: the same notes played, not typed: loudness leaning to
+//!   each phrase's high point and easing off, timing that breathes with
+//!   the phrase, slurs, held-back bars and rolled, voiced chords, by an
+//!   instrument profile ([`perform::Expression`]).
+//!
 //! Phrases, P2, new ideas for the arp's phrase player:
 //!
 //! - [`idea`]: a bass line, a riff, chord stabs or an arp line of one,
@@ -114,6 +121,7 @@ pub mod keep;
 pub mod make_phrase;
 pub mod motif;
 pub mod parts;
+pub mod perform;
 pub mod phrase;
 pub mod phrase_part;
 pub mod plan;

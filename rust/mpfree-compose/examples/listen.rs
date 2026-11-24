@@ -1148,6 +1148,103 @@ fn gate_cases(p: &Phrase, seed: u64) -> Made {
     Made { cases, notes }
 }
 
+// ------------------------------------------------------------ S3: playing
+
+/// The S3 gate: the same new bars (the same notes, places and chords)
+/// played with the phrase and the instrument ([`mpfree_compose::perform`])
+/// and played as before, the style's gesture at 0. Two cases per phrase,
+/// on two seeds, so the pairs are not all one tune.
+fn gestures_cases(p: &Phrase, seed: u64) -> Made {
+    const NEW: u8 = 8;
+    let clip = clip_of(&p.notes, p.bars, p.meter);
+    let yours = yours_as_notes(&p.notes);
+    let mut notes = String::new();
+    let to_bar = p.bars + usize::from(NEW);
+    let mut cases = Vec::new();
+    for k in 0..2u64 {
+        let sd = seed + k;
+        let _ = writeln!(
+            notes,
+            "{}: {} bars of {} at {:.0} BPM; read as {}; style {}; seed {sd}",
+            p.name,
+            p.bars,
+            meter_words(p.meter),
+            p.bpm,
+            clip.context.key.words(),
+            style_words(&p.style)
+        );
+        let played = settings(p.style, NEW, sd);
+        let mut flat_style = p.style;
+        flat_style.playing.gesture = 0.0;
+        let typed = settings(flat_style, NEW, sd);
+        let made = (|| -> Result<Case, String> {
+            let a = continue_notes(&request(p, &clip, &played)).map_err(|e| e.words())?;
+            let b = continue_notes(&request(p, &clip, &typed)).map_err(|e| e.words())?;
+            let same = a.notes.len() == b.notes.len()
+                && a.notes.iter().zip(&b.notes).all(|(x, y)| x.note == y.note);
+            if !same {
+                return Err("the two ways made different notes".into());
+            }
+            let moved = |c: &Continued| {
+                c.part
+                    .decisions
+                    .iter()
+                    .map(|d| f64::from(d.timing.play).abs())
+                    .fold(0.0, f64::max)
+            };
+            let spread = |c: &Continued| {
+                let v: Vec<f64> = c.notes.iter().map(|n| f64::from(n.velocity)).collect();
+                let m = v.iter().sum::<f64>() / v.len().max(1) as f64;
+                (v.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / v.len().max(1) as f64).sqrt()
+            };
+            let _ = writeln!(
+                notes,
+                "  {} notes; played: loudness spread {:.1}, timing moved up to {:.1} ms; as before: spread {:.1}",
+                a.notes.len(),
+                spread(&a),
+                moved(&a) * 60_000.0 / (p.bpm * f64::from(PPQ)),
+                spread(&b),
+            );
+            let take = |what: &str, new: &[Note], pad: ChordTimeline| Take {
+                what: what.to_string(),
+                mpfree: true,
+                notes: whole(&yours, new),
+                from_bar: 0,
+                to_bar,
+                pad: Some(pad),
+                extra: Vec::new(),
+                drummer: true,
+            };
+            Ok(Case {
+                id: format!("{}-gestures-{}", p.slug, k + 1),
+                phrase: p.name.clone(),
+                test: "gestures",
+                question: "Which would you keep?",
+                about: format!(
+                    "your {} bars, then the same 8 new bars in {}, played two ways",
+                    p.bars,
+                    style_words(&p.style)
+                ),
+                takes: vec![
+                    take("played with the phrase (S3)", &a.notes, a.chords.clone()),
+                    take("played as before", &b.notes, b.chords.clone()),
+                ],
+                labels: Vec::new(),
+            })
+        })();
+        // One of each phrase's two pairs has the new playing first, the
+        // other second, which one by the seed.
+        let first = order(2, seed, &p.slug)[0] as u64 == k;
+        match made {
+            Ok(c) => cases.push(finish_in(c, if first { &[0, 1] } else { &[1, 0] })),
+            Err(e) => {
+                let _ = writeln!(notes, "  gestures: left out, {e}");
+            }
+        }
+    }
+    Made { cases, notes }
+}
+
 // ------------------------------------------------------------ S2: parts
 
 /// A row for the parts gate: a phrase looped to four bars or more, with
@@ -2901,7 +2998,7 @@ fn show(p: &Phrase, what: &str, c: &Continued, gestures: &[mpfree_compose::sketc
 }
 
 const USAGE: &str = "usage: listen --demo | --midi FILE [--track N] [--from BAR] [--bars N] [--all-notes] \
-[--style minimal|groove|jazzish] [--bpm N] [--swing 1/8:58] [--role melody|bass] [--sounds a|b|now|round2|plain] [--seed N] [--gate | --parts] [--out DIR] | --critic N (--demo | --midi FILE) \
+[--style minimal|groove|jazzish] [--bpm N] [--swing 1/8:58] [--role melody|bass] [--sounds a|b|now|round2|plain] [--seed N] [--gate | --parts | --gestures] [--out DIR] | --critic N (--demo | --midi FILE) \
 | --phrases | --phrases-from FILE [--only TEXT] [--out DIR] | --ideas [--seed N] [--out DIR]";
 
 fn run(args: &[String]) -> Result<(), String> {
@@ -2919,6 +3016,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut role = PartRole::Melody;
     let mut critic: Option<u64> = None;
     let mut gate = false;
+    let mut gestures = false;
     let mut parts = false;
     let mut phrases = false;
     let mut phrases_from: Option<PathBuf> = None;
@@ -2935,6 +3033,7 @@ fn run(args: &[String]) -> Result<(), String> {
         match args[i].as_str() {
             "--demo" => demo = true,
             "--gate" => gate = true,
+            "--gestures" => gestures = true,
             "--parts" => parts = true,
             "--phrases" => phrases = true,
             "--phrases-from" => phrases_from = Some(PathBuf::from(value(&mut i)?)),
@@ -3135,7 +3234,9 @@ fn run(args: &[String]) -> Result<(), String> {
     let made: Vec<(Phrase, Made)> = phrases
         .into_iter()
         .map(|p| {
-            let m = if gate {
+            let m = if gestures {
+                gestures_cases(&p, seed)
+            } else if gate {
                 gate_cases(&p, seed)
             } else {
                 cases(&p, seed)
