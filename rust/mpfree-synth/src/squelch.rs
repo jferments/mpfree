@@ -102,6 +102,10 @@ const DRIVE_BIAS: f32 = 0.25;
 const HB_EVEN: [f32; 3] = [0.060_297_39, 0.412_590_7, 0.772_715_6];
 const HB_ODD: [f32; 3] = [0.215_971_44, 0.604_358_6, 0.923_886_1];
 
+/// Where the ladder's gain is prewarped with no resonance, in cutoffs
+/// (see [`cutoff_g`]).
+const WARP_AT_0: f32 = 0.8;
+
 /// The square: the saw (-1 to 1) through the limited-gain shaper. For the
 /// Synth tab's picture of one cycle.
 pub fn square_of(saw: f32) -> f32 {
@@ -393,11 +397,21 @@ fn oversampling(rate: u32) -> usize {
 }
 
 /// The ladder's prewarped gain for a cutoff of `fc` Hz at the inner rate
-/// `fs`, held between 20 Hz and 0.3 of `fs` or 20 kHz.
+/// `fs` and **Resonance** `r` (0 to 1), the cutoff held between 20 Hz and
+/// 0.3 of `fs` or 20 kHz. The ladder's own frequency is `fc / √2`; the
+/// trapezoidal integrators squeeze the frequencies under Nyquist, so `g`
+/// is prewarped at `c fc` (`tan(π c fc / fs) / (c √2)`), the point that
+/// matters most: the resonant peak, at `fc`, as the resonance rises, and
+/// lower without it, where the curve bends well below the cutoff (`c`
+/// from 0.8 at no resonance to 1, as the square root of `r`). Prewarped at
+/// `fc / √2` as before, the peak sat 35 cents flat at 10 kHz and 16.5 dB
+/// off the drawn curve at 15 kHz (DSP quality step 2.2d); under 2 kHz the
+/// two differ by under a cent.
 #[inline]
-fn cutoff_g(fc: f32, fs: f32) -> f32 {
+fn cutoff_g(fc: f32, fs: f32, r: f32) -> f32 {
     let fc = fc.clamp(20.0, (fs * 0.3).min(20_000.0));
-    (PI * fc / SQRT_2 / fs).tan()
+    let c = WARP_AT_0 + (1.0 - WARP_AT_0) * r.clamp(0.0, 1.0).sqrt();
+    (PI * c * fc / fs).tan() / (c * SQRT_2)
 }
 
 /// The feedback high-pass's `1 / (1 + g)` at the inner rate `fs`.
@@ -462,7 +476,7 @@ impl FilterProbe {
     /// **Cutoff** `cutoff` (Hz) and **Resonance** `resonance` (0 to 100).
     /// The state carries on.
     pub fn set(&mut self, cutoff: f32, resonance: f32) {
-        self.g = cutoff_g(cutoff, self.fs);
+        self.g = cutoff_g(cutoff, self.fs, resonance / 100.0);
         self.k = K_MAX * (resonance / 100.0);
         self.comp = (1.0 + self.k).sqrt();
         (self.g_to, self.dg, self.comp_to, self.dcomp) = (self.g, 0.0, self.comp, 0.0);
@@ -478,7 +492,7 @@ impl FilterProbe {
         // Last step's ramps have arrived: land exactly.
         self.g = self.g_to;
         self.comp = self.comp_to;
-        self.g_to = cutoff_g(cutoff, self.fs);
+        self.g_to = cutoff_g(cutoff, self.fs, resonance / 100.0);
         self.dg = (self.g_to - self.g) / per;
         self.k = K_MAX * (resonance / 100.0);
         self.comp_to = (1.0 + self.k).sqrt();
@@ -968,7 +982,7 @@ impl Squelch {
             + a * ACCENT_OCT * ((1.0 - r) * acc + r * SWEEP_WEIGHT * self.sweep)
             + self.v(KEY_TRACK) / 100.0 * (self.pitch - 48.0) / 12.0;
         let fs = self.fs();
-        self.g_to = cutoff_g(oct.exp2(), fs);
+        self.g_to = cutoff_g(oct.exp2(), fs, r);
         self.dg = (self.g_to - self.g) / CTRL as f32;
         self.k = K_MAX * r;
 

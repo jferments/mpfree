@@ -1399,3 +1399,144 @@ fn random_presses_on_free_loops_leave_the_song_loops_as_they_would_be() {
          captures {free_captures}"
     );
 }
+
+/// A snap belongs to the free loops' run it was worked out on: stopped and
+/// started again before its downbeat, the loop is back at its top on
+/// another frame, so the old downbeat's frame is no downbeat of it. The
+/// snap doesn't land, the free clock keeps its tempo and its bar 1 on the
+/// frame Play started it, and the loop plays from its top as recorded.
+#[test]
+fn a_free_snap_doesnt_land_once_the_free_loops_stop_and_start_again() {
+    let mut r = Rig::new(256);
+    let (rec_from, tap) = free_late_tap(&mut r, SmartEnd::Off);
+    r.run(tap + 5_000, &noise);
+    let bpm = r.l.free_clock().unwrap().bpm;
+    let p = r.l.snap_plan(0, Snap::Bars(4), r.frame).unwrap();
+    assert!(r.l.snap_at(p));
+    // Stop and Play, both before its downbeat.
+    r.cmd(L::FreeStop);
+    r.run(r.frame + 2 * 256, &noise);
+    r.cmd(L::FreePlay);
+    let play = r.frame;
+    assert!(play + 1_000 < p.at, "Play comes before the downbeat");
+    r.run(p.at + 1_000, &noise);
+    assert_eq!(r.l.take_snap().map(|d| d.landed), Some(false));
+    let c = r.l.free_clock().unwrap();
+    assert_eq!((c.bpm, c.anchor_frame, c.running), (bpm, play, true));
+    assert_eq!(r.status(0).ticks, 2 * BAR_TICKS, "nothing moved");
+    for j in [FADE as u64 + 10, 5_000, p.at - play + 500] {
+        assert!(close(r.out_at(play + j), noise(rec_from + j)), "frame {j}");
+    }
+}
+
+/// A snap on a free loop re-anchors the free clock at another tempo on its
+/// downbeat: bars heard before it were at the old tempo, so Capture into
+/// another free loop takes only bars since the snap landed. Right after
+/// it there is no whole bar yet; a bar on (at the new tempo) there is
+/// one, starting on the snap's frame.
+#[test]
+fn a_free_capture_takes_only_bars_since_a_snap_changed_the_free_clocks_tempo() {
+    let mut r = Rig::new(256);
+    let (_, tap) = free_late_tap(&mut r, SmartEnd::Off);
+    r.run(tap + 5_000, &noise);
+    let p = r.l.snap_plan(0, Snap::Bars(4), r.frame).unwrap();
+    assert!(r.l.snap_at(p));
+    r.run(p.at + 2_000, &noise);
+    assert_eq!(r.l.take_snap().map(|d| d.landed), Some(true));
+    assert_eq!(
+        r.l.capture_take(Clock::Free, 1),
+        None,
+        "no bar since the snap"
+    );
+    let c = r.l.free_clock().unwrap();
+    let bar = c.frame_of(p.tick + BAR_TICKS).unwrap() - p.at;
+    r.run(p.at + bar + bar / 2, &noise);
+    let t = r.l.capture_take(Clock::Free, 4).expect("one bar");
+    assert_eq!((t.bars, t.start, t.origin), (1, p.at, p.tick));
+}
+
+/// Records loop 0 in your own time with Length at `bars`, for `frames`
+/// frames of noise; returns the frame it closed on.
+fn record_own_time_with_length(r: &mut Rig, clock: Clock, bars: u32, frames: u64) -> u64 {
+    r.select(0);
+    r.cmd(L::SetClock(clock));
+    r.cmd(L::SetBars(Some(bars)));
+    r.cmd(L::TempoFromLoop(true));
+    let f = r.frame + r.period as u64;
+    r.run(f, &quiet);
+    assert!(r.status(0).free, "it records in your own time");
+    r.cmd(L::Record);
+    let from = r.frame;
+    r.run(from + frames, &noise);
+    r.cmd(L::Record);
+    while r.status(0).phase == Phase::Recording {
+        let f = r.frame + r.period as u64;
+        r.run(f, &noise);
+    }
+    r.frame
+}
+
+/// Length's bars are final (the looper refactor's Finding C): 1 bar in
+/// 10 s would be 24 BPM, slower than the looper goes, so the pass closes
+/// on the bars it reads and waits, silent, with the free clock stopped,
+/// until Use reading starts it from its top at the tempo it read.
+#[test]
+fn a_length_too_slow_to_keep_waits_silent_until_you_use_the_reading() {
+    let mut r = Rig::new(128);
+    let closed = record_own_time_with_length(&mut r, Clock::Free, 1, 10 * BAR);
+    let s = r.status(0);
+    assert_eq!(s.phase, Phase::Playing);
+    let asks = s.asks.expect("it asks");
+    assert_eq!(asks.said, Some(1));
+    assert!(asks.bars > 1 && asks.bpm >= 30.0, "{asks:?}");
+    assert_eq!(s.ticks, i64::from(asks.bars) * BAR_TICKS);
+    assert!(r.l.free_clock().is_some_and(|c| !c.running));
+    r.run(closed + 3 * BAR, &quiet);
+    assert!(
+        r.silent(closed, closed + 3 * BAR),
+        "nothing plays while it asks"
+    );
+    assert_eq!(r.status(0).asks, Some(asks));
+    r.cmd(L::UseReading);
+    let yes = r.frame;
+    r.run(yes + 2 * BAR, &quiet);
+    assert_eq!(r.status(0).asks, None);
+    let c = r.l.free_clock().expect("a free clock");
+    assert!(c.running && (c.bpm - asks.bpm).abs() < 1e-9, "{c:?}");
+    assert!(!r.silent(yes, yes + 2 * BAR), "it plays once you say");
+    // Nothing waits now: a second Use reading is refused.
+    assert!(r.l.command(L::UseReading));
+    let refused = r.l.stats().refused;
+    r.run(r.frame + r.period as u64, &quiet);
+    assert_eq!(r.l.stats().refused, refused + 1);
+}
+
+/// A song loop waiting on its Length sets no tempo until Use reading,
+/// and Clear throws the pass away with nothing set.
+#[test]
+fn a_song_loop_waiting_on_its_length_sets_the_tempo_only_once_you_say() {
+    let mut r = Rig::new(128);
+    let closed = record_own_time_with_length(&mut r, Clock::Song, 1, 10 * BAR);
+    let asks = r.status(0).asks.expect("it asks");
+    r.run(closed + BAR, &quiet);
+    assert_eq!(
+        r.l.take_tempo().map(|t| t.0),
+        None,
+        "no tempo while it asks"
+    );
+    assert!(r.silent(closed, closed + BAR));
+    r.cmd(L::UseReading);
+    r.run(r.frame + r.period as u64, &quiet);
+    let (n, reading, _, into) = r.l.take_tempo().expect("the tempo, once you say");
+    assert_eq!((n, reading, into), (0, asks, 0));
+    assert_eq!(r.status(0).asks, None);
+
+    let mut r = Rig::new(128);
+    let closed = record_own_time_with_length(&mut r, Clock::Song, 1, 10 * BAR);
+    assert!(r.status(0).asks.is_some());
+    r.cmd(L::Clear);
+    r.run(closed + BAR, &quiet);
+    assert_eq!(r.status(0).phase, Phase::Empty);
+    assert_eq!(r.status(0).asks, None);
+    assert_eq!(r.l.take_tempo().map(|t| t.0), None);
+}

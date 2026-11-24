@@ -5062,8 +5062,8 @@ fn track_name(project: &mpfree_seq::Project, t: u8) -> String {
 
 /// A Clips grid parameter named as the Learn section and the hint line
 /// show it: "Launch Bass · row 2", "Scene 3 · Verse", "Stop Bass", "Mute
-/// Bass", "Solo Bass", "Arm Bass", "Stop all", "Back to song". A track
-/// past the project's is named by its number.
+/// Bass", "Solo Bass", "Arm Bass", "Stop all", "Back to song", "Capture
+/// scene". A track past the project's is named by its number.
 fn clips_label(project: &mpfree_seq::Project, id: u16) -> String {
     use mpfree_play::mpfree_param::clips::{self, Clips};
     let track = |t: u8| track_name(project, t);
@@ -5071,6 +5071,7 @@ fn clips_label(project: &mpfree_seq::Project, id: u16) -> String {
         None => "?".to_string(),
         Some(Clips::StopAll) => "Stop all".to_string(),
         Some(Clips::BackToSong) => "Back to song".to_string(),
+        Some(Clips::CaptureScene) => "Capture scene".to_string(),
         Some(Clips::Scene(r)) => match project.scenes.get(usize::from(r)).map(|s| &s.name) {
             Some(name) if !name.is_empty() => format!("Scene {} · {name}", u16::from(r) + 1),
             _ => format!("Scene {}", u16::from(r) + 1),
@@ -8683,10 +8684,12 @@ fn looper_action(
             vec![app::Effect::Tell(line)]
         }
         looping::LoopAction::Answer(anyway) => {
-            let line = if anyway {
-                looper.snap_anyway()
-            } else {
-                looper.snap_not_now()
+            // A first pass waiting on its Length is asked before a snap.
+            let line = match (looper.length_asking().is_some(), anyway) {
+                (true, true) => looper.use_reading(),
+                (true, false) => looper.discard_waiting(),
+                (false, true) => looper.snap_anyway(),
+                (false, false) => looper.snap_not_now(),
             };
             line.map(|l| {
                 out.note(&l);
@@ -10582,7 +10585,11 @@ fn player_session(
     // waits while the time engine records.
     let mut fit_done: Option<audiotracks::ClipFitDone> = None;
     let mut cell_done: Option<Result<(usize, mpfree_seq::Clip), String>> = None;
-    out.show(gui::ToUi::Time(Box::new(time_state(&time, &tracks))));
+    let st = time_state(&time, &tracks);
+    // What the Perform pads' clip windows and scene pads light by, kept
+    // from each state the screen gets (the Arrange refactor's 5.5).
+    let mut pad_grid = perform_pads::Grid::of(&st);
+    out.show(gui::ToUi::Time(Box::new(st)));
     let (mut shown_transport, mut transport_shown_at) = (time.info(), Instant::now());
     let mut periods = app.settings.periods;
     // Where the sound runs (Prefs "Sound cores" as saved, or --sound-cores
@@ -15285,6 +15292,7 @@ fn player_session(
                 needs_rev = st.audio_waits.needs_rev;
                 tracks.hold_waits(&time.audio_needs());
             }
+            pad_grid = perform_pads::Grid::of(&st);
             out.show(gui::ToUi::Time(Box::new(st)));
             (shown_transport, transport_shown_at) = (time.info(), Instant::now());
         } else {
@@ -15432,6 +15440,7 @@ fn player_session(
                 muted: (0..time.project().tracks.len().min(128))
                     .filter(|&t| time.muted(t) == Some(true))
                     .fold(0u128, |m, t| m | 1 << t),
+                grid: pad_grid.lights(app.perform_page(), time.info().position),
             };
             let want = perform_pads::colours(
                 app.perform_page(),
@@ -15706,6 +15715,9 @@ fn player_session(
         let (said, tempo) = loop_sets_tempo(&mut looper, &mut time, take, export.running());
         out.loop_start(said);
         out.smart_end(looper.take_smart());
+        // Or it waits on its Length: the hint line asks (after what smart
+        // loop end said, so the question is what stays).
+        out.loop_start(looper.take_asks());
         // A snap landed: the song's tempo changed with the loop.
         let (said, snapped) = looper.take_snap();
         out.loop_start(said);
@@ -20983,6 +20995,7 @@ mod tests {
         );
         assert_eq!(name(&time, clips::STOP_ALL), "Stop all");
         assert_eq!(name(&time, clips::BACK_TO_SONG), "Back to song");
+        assert_eq!(name(&time, clips::CAPTURE_SCENE), "Capture scene");
         assert_eq!(name(&time, clips::scene(2)), "Scene 3");
         time.act(TimeAction::SceneSettings {
             row: 2,

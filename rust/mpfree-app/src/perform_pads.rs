@@ -178,6 +178,72 @@ pub enum PadAction {
     /// `value` (0 to 100 %) while the pad is, then back where it was: one
     /// pad moves every knob on the macro.
     Macro { card: u8, value: u8 },
+    /// The Clips grid's cell of track `track`, row `row` (0 is Track 1,
+    /// row 1): a hit is a tap on the cell. Only a clip window's pad is one
+    /// ([`PageKind::Clips`]).
+    Clip { track: u8, row: u8 },
+}
+
+/// What a page of the set is (the Arrange refactor's 5.5): pads of its
+/// own, or the Clips grid's cells or scenes, which the page's pads play
+/// as their buttons on the grid.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PageKind {
+    /// Each pad its own action ([`PerformPage::pads`]).
+    #[default]
+    Pads,
+    /// A 4 x 4 window of the grid: four tracks from `track` across and
+    /// four rows from `row` down (0 is Track 1, row 1), the top row of
+    /// pads the window's first row, as the grid reads.
+    Clips { track: u8, row: u8 },
+    /// Bank `bank`'s 16 scenes (0 is A, rows 1 to 16), the first on pad
+    /// 13 (top left) and on along each row of pads, as text reads.
+    Scenes { bank: u8 },
+}
+
+/// A clip window's tracks and rows: four of each.
+pub const WINDOW: usize = 4;
+/// The scene banks a scenes page can be: A to D, as the grid's.
+pub const BANKS: usize = mpfree_seq::ROWS / mpfree_seq::SLOTS;
+
+impl PageKind {
+    /// What pad `pad` (0 is pad 1, bottom left) plays on a page of this
+    /// kind; None on a page of its own pads.
+    pub fn action(self, pad: usize) -> Option<PadAction> {
+        if pad >= PADS {
+            return None;
+        }
+        let (across, down) = (pad % WINDOW, WINDOW - 1 - pad / WINDOW);
+        match self {
+            PageKind::Pads => None,
+            PageKind::Clips { track, row } => Some(PadAction::Clip {
+                track: track.saturating_add(across as u8),
+                row: row.saturating_add(down as u8),
+            }),
+            PageKind::Scenes { bank } => Some(PadAction::Scene(
+                (usize::from(bank) * mpfree_seq::SLOTS + down * WINDOW + across) as u8,
+            )),
+        }
+    }
+
+    /// Its words for the screen and the log: "Clips · Tracks 1–4 · rows
+    /// 5–8", "Scenes · bank B"; None for a page of pads.
+    pub fn words(self) -> Option<String> {
+        match self {
+            PageKind::Pads => None,
+            PageKind::Clips { track, row } => Some(format!(
+                "Clips · Tracks {}–{} · rows {}–{}",
+                u16::from(track) + 1,
+                u16::from(track) + WINDOW as u16,
+                u16::from(row) + 1,
+                u16::from(row) + WINDOW as u16
+            )),
+            PageKind::Scenes { bank } => Some(format!(
+                "Scenes · bank {}",
+                (b'A' + bank.min(BANKS as u8 - 1)) as char
+            )),
+        }
+    }
 }
 
 /// A page of Perform pads: its name, and what each pad does, pad 1 (bottom
@@ -186,6 +252,9 @@ pub enum PadAction {
 pub struct PerformPage {
     pub name: String,
     pub pads: [PadAction; PADS],
+    /// Pads of its own, a clip window or a bank of scenes. A window page
+    /// keeps its own pads, for when it is made pads again.
+    pub kind: PageKind,
 }
 
 impl PerformPage {
@@ -205,6 +274,7 @@ impl PerformPage {
         PerformPage {
             name: "Loop keys".to_string(),
             pads,
+            kind: PageKind::Pads,
         }
     }
 
@@ -218,6 +288,7 @@ impl PerformPage {
         PerformPage {
             name: "Throws".to_string(),
             pads,
+            kind: PageKind::Pads,
         }
     }
 
@@ -226,12 +297,17 @@ impl PerformPage {
         PerformPage {
             name: String::new(),
             pads: [PadAction::None; PADS],
+            kind: PageKind::Pads,
         }
     }
 
-    /// Pad `pad`'s action (0 is pad 1); None past the page.
+    /// Pad `pad`'s action (0 is pad 1); None past the page. On a clip
+    /// window or a scenes page, the cell or the scene the pad plays.
     pub fn action(&self, pad: usize) -> PadAction {
-        self.pads.get(pad).copied().unwrap_or_default()
+        self.kind
+            .action(pad)
+            .or_else(|| self.pads.get(pad).copied())
+            .unwrap_or_default()
     }
 
     /// The pad that is loop `n`'s key, if the page has one.
@@ -275,10 +351,10 @@ impl PerformSet {
     pub fn page_name(&self, page: usize) -> String {
         let p = page.min(PAGES - 1);
         let name = &self.pages[p].name;
-        if name.is_empty() {
-            format!("Page {}", (b'A' + p as u8) as char)
-        } else {
-            format!("Page {} · {name}", (b'A' + p as u8) as char)
+        match self.pages[p].kind.words() {
+            _ if !name.is_empty() => format!("Page {} · {name}", (b'A' + p as u8) as char),
+            Some(what) => format!("Page {} · {what}", (b'A' + p as u8) as char),
+            None => format!("Page {}", (b'A' + p as u8) as char),
         }
     }
 
@@ -325,7 +401,13 @@ impl PerformSet {
     /// pad B7 = macro 3 value=100
     /// pad C1 = mute 3
     /// pad C5 = scene 2
+    /// clips D = 5 17
+    /// scenes E = B
     /// ```
+    ///
+    /// A clip window's page says where its window is (`clips D = 5 17`:
+    /// Tracks 5 to 8, rows 17 to 20), and a scenes page its bank; their
+    /// own pads are kept too.
     pub fn text(&self) -> String {
         let mut out = format!("{FORMAT}\n");
         for (k, page) in self.pages.iter().enumerate() {
@@ -335,6 +417,18 @@ impl PerformSet {
                     (b'A' + k as u8) as char,
                     page.name
                 ));
+            }
+            let letter = (b'A' + k as u8) as char;
+            match page.kind {
+                PageKind::Pads => {}
+                PageKind::Clips { track, row } => out.push_str(&format!(
+                    "clips {letter} = {} {}\n",
+                    u16::from(track) + 1,
+                    u16::from(row) + 1
+                )),
+                PageKind::Scenes { bank } => {
+                    out.push_str(&format!("scenes {letter} = {}\n", (b'A' + bank) as char))
+                }
             }
             for (i, a) in page.pads.iter().enumerate() {
                 let what = match *a {
@@ -369,6 +463,8 @@ impl PerformSet {
                     PadAction::Macro { card, value } => {
                         format!("macro {} value={value}", u16::from(card) + 1)
                     }
+                    // A window's, never a pad's own.
+                    PadAction::Clip { .. } => continue,
                 };
                 out.push_str(&format!("pad {} = {what}\n", pad_label(k, i)));
             }
@@ -414,6 +510,28 @@ fn parse_line(set: &mut PerformSet, line: &str) -> Option<()> {
         ("page", letter) => {
             let (page, _) = parse_label(&format!("{letter}1"))?;
             set.pages[page].name = value.to_string();
+        }
+        ("clips", letter) => {
+            let (page, _) = parse_label(&format!("{letter}1"))?;
+            let mut words = value.split_whitespace();
+            let mut number = |most: usize| -> Option<u8> {
+                let n: usize = words.next()?.parse().ok()?;
+                (1..=most).contains(&n).then(|| (n - 1) as u8)
+            };
+            let track = number(mpfree_seq::MAX_TRACKS)?;
+            let row = number(mpfree_seq::ROWS)?;
+            if words.next().is_some() {
+                return None;
+            }
+            set.pages[page].kind = PageKind::Clips { track, row };
+        }
+        ("scenes", letter) => {
+            let (page, _) = parse_label(&format!("{letter}1"))?;
+            let bank = match value.as_bytes() {
+                [b] if b.is_ascii_uppercase() && usize::from(b - b'A') < BANKS => b - b'A',
+                _ => return None,
+            };
+            set.pages[page].kind = PageKind::Scenes { bank };
         }
         ("pad", label) => {
             let (page, pad) = parse_label(label)?;
@@ -673,16 +791,144 @@ fn pad_rgb(c: [u8; 3], f: f32) -> [u8; 3] {
 
 /// What the pads that aren't loop keys light by: the throws playing
 /// (held or latched, each with its strip), the tracks muted (a bit each,
-/// Track 1 the lowest) and the macros a pad holds (a bit each, Macro 1
-/// the lowest).
+/// Track 1 the lowest), the macros a pad holds (a bit each, Macro 1
+/// the lowest), and each pad's cell or scene on the grid ([`Grid::lights`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Lit<'a> {
     pub throws: &'a [Playing],
     pub muted: u128,
     pub macros: u8,
+    pub grid: [GridLight; PADS],
 }
 
-/// A scene pad's green, dim: a hit launches the row.
+/// A clip pad's or a scene pad's light, from the Clips grid: as the
+/// grid's cell or row button shows it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GridLight {
+    /// No clip (a row: no clip on any track), or not a cell or a scene.
+    #[default]
+    Empty,
+    /// A clip (a row with clips), not playing.
+    Clip,
+    /// Waiting for its line.
+    Queued,
+    Playing,
+    /// Playing, and the transport records into it.
+    Recording,
+    /// An empty Loop cell armed: the next loop lands there.
+    Armed,
+}
+
+/// What the pads' lights need of the Clips grid, kept from the screen's
+/// state each time it changes ([`Grid::of`]), so lighting a clip window
+/// costs no copy of the whole state: each track's clips (a bit a row),
+/// what plays and waits, and the scenes playing and waiting.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Grid {
+    /// A bit a row (row 1 the lowest) for each track; none for an audio
+    /// track, which has no clips in the grid.
+    filled: Vec<u64>,
+    launches: Vec<(usize, usize, mpfree_transport::time::Tick)>,
+    cues: Vec<(usize, Option<usize>)>,
+    scene_playing: Option<usize>,
+    scene_cued: Option<usize>,
+    loop_cell: Option<(usize, usize)>,
+    /// The track armed, while the transport records.
+    recording: Option<usize>,
+}
+
+impl Grid {
+    /// From the screen's state.
+    pub fn of(st: &mpfree_time_ui::TimeState) -> Grid {
+        let filled = st
+            .tracks
+            .iter()
+            .map(|t| {
+                if t.audio {
+                    return 0;
+                }
+                t.slots
+                    .iter()
+                    .take(64)
+                    .enumerate()
+                    .filter(|(_, c)| c.is_some())
+                    .fold(0u64, |m, (r, _)| m | 1 << r)
+            })
+            .collect();
+        let recording = (st.transport.state == mpfree_transport::State::Recording)
+            .then_some(st.armed)
+            .flatten();
+        Grid {
+            filled,
+            launches: st
+                .launches
+                .iter()
+                .map(|l| (l.track, l.slot, l.origin))
+                .collect(),
+            cues: st.cues.iter().map(|c| (c.track, c.slot)).collect(),
+            scene_playing: st.scene_playing,
+            scene_cued: st.scene_cued,
+            loop_cell: st.loop_cell,
+            recording,
+        }
+    }
+
+    fn filled(&self, track: usize, row: usize) -> bool {
+        row < 64 && self.filled.get(track).is_some_and(|m| m & 1 << row != 0)
+    }
+
+    /// Track `track`'s cell in row `row`, with the playhead at `now`.
+    pub fn cell(&self, track: usize, row: usize, now: mpfree_transport::time::Tick) -> GridLight {
+        if !self.filled(track, row) {
+            return if self.loop_cell == Some((track, row)) {
+                GridLight::Armed
+            } else {
+                GridLight::Empty
+            };
+        }
+        let cue = self.cues.iter().find(|c| c.0 == track);
+        if cue.is_some_and(|c| c.1 == Some(row)) {
+            return GridLight::Queued;
+        }
+        match self.launches.iter().find(|l| l.0 == track && l.1 == row) {
+            None => GridLight::Clip,
+            Some(l) if l.2 > now => GridLight::Queued,
+            Some(_) if self.recording == Some(track) => GridLight::Recording,
+            Some(_) => GridLight::Playing,
+        }
+    }
+
+    /// Scene row `row`: empty with no clip in the row, playing, waiting
+    /// for its line, or a row of clips.
+    pub fn scene(&self, row: usize) -> GridLight {
+        if self.scene_playing == Some(row) {
+            GridLight::Playing
+        } else if self.scene_cued == Some(row) {
+            GridLight::Queued
+        } else if (0..self.filled.len()).any(|t| self.filled(t, row)) {
+            GridLight::Clip
+        } else {
+            GridLight::Empty
+        }
+    }
+
+    /// Each pad's light on `page`, with the playhead at `now`: its cell
+    /// for a clip pad, its row for a scene pad, Empty for the rest.
+    pub fn lights(
+        &self,
+        page: &PerformPage,
+        now: mpfree_transport::time::Tick,
+    ) -> [GridLight; PADS] {
+        std::array::from_fn(|pad| match page.action(pad) {
+            PadAction::Clip { track, row } => self.cell(usize::from(track), usize::from(row), now),
+            PadAction::Scene(n) => self.scene(usize::from(n)),
+            _ => GridLight::Empty,
+        })
+    }
+}
+
+/// A scene pad's and a clip pad's green: dim with clips, full while
+/// playing, blinking while it waits for its line.
 const SCENE: [u8; 3] = [0x30, 0xD0, 0x60];
 /// A macro pad's violet: dim, full while held.
 const MACRO: [u8; 3] = [0xB0, 0x80, 0xF0];
@@ -698,7 +944,10 @@ const TRACK: [u8; 3] = [0xE0, 0xE0, 0xE0];
 /// muted, blue while soloed, its colour dim while it plays. `blink`: the
 /// half of the blink that is lit. A throw: its card's colour, dim, full
 /// while it plays. A track mute: red while the track is muted, dim white
-/// while it plays. A scene: dim green.
+/// while it plays. A scene or a clip (the grid's lights, [`Lit::grid`]):
+/// dark with no clip, dim green with clips, green blinking while it
+/// waits for its line, green playing, red recording; an armed empty Loop
+/// cell blinks red.
 pub fn colours(page: &PerformPage, loops: &[LoopLight], lit: &Lit, blink: bool) -> [[u8; 3]; PADS] {
     std::array::from_fn(|pad| {
         let light = |n: u8| loops.get(usize::from(n)).copied().unwrap_or_default();
@@ -740,7 +989,16 @@ pub fn colours(page: &PerformPage, loops: &[LoopLight], lit: &Lit, blink: bool) 
             }
             PadAction::Mute(t) if lit.muted & (1u128 << (t & 127)) != 0 => RED,
             PadAction::Mute(_) => pad_rgb(TRACK, 0.12),
-            PadAction::Scene(_) => pad_rgb(SCENE, 0.2),
+            PadAction::Scene(_) | PadAction::Clip { .. } => match lit.grid[pad] {
+                GridLight::Empty => DARK,
+                GridLight::Clip => pad_rgb(SCENE, 0.2),
+                GridLight::Queued if blink => pad_rgb(SCENE, 1.0),
+                GridLight::Queued => DARK,
+                GridLight::Playing => pad_rgb(SCENE, 1.0),
+                GridLight::Recording => RED,
+                GridLight::Armed if blink => RED,
+                GridLight::Armed => DARK,
+            },
             PadAction::Macro { card, .. } if lit.macros & (1 << (card & 7)) != 0 => {
                 pad_rgb(MACRO, 1.0)
             }
@@ -1130,10 +1388,13 @@ mod tests {
         page.pads[8] = PadAction::Mute(0);
         page.pads[9] = PadAction::Mute(1);
         page.pads[10] = PadAction::Scene(0);
+        let mut grid = [GridLight::Empty; PADS];
+        grid[10] = GridLight::Clip;
         let lit = Lit {
             throws: &[(1, StripId::Master)],
             muted: 0b10,
             macros: 0,
+            grid,
         };
         let c = colours(&page, &[], &lit, true);
         // Reverb wash plays: its card's colour full; Delay throw dim.
@@ -1148,7 +1409,7 @@ mod tests {
         assert_eq!(c[9], RED);
         assert_eq!(c[8], pad_rgb(TRACK, 0.12));
         assert_ne!(c[8], DARK);
-        // A scene: dim green. An empty pad: dark.
+        // A scene with clips in its row: dim green. An empty pad: dark.
         assert_eq!(c[10], pad_rgb(SCENE, 0.2));
         assert_eq!(c[11], DARK);
         assert!(c.iter().flatten().all(|&v| v <= 0x7F));
@@ -1202,5 +1463,111 @@ mod tests {
         assert_eq!(h.release_action(1), Some(reverb));
         assert_eq!(h.release_action(1), None);
         assert_eq!(h.action(1), None);
+    }
+
+    /// The Arrange refactor's 5.5: a clip window's pads are four tracks
+    /// by four rows of the grid, its first row on the top row of pads; a
+    /// scenes page's are a bank's 16 rows, the first top left. Both are
+    /// saved with where they are, and keep the page's own pads.
+    #[test]
+    fn a_clip_window_and_a_scenes_page_play_the_grid_and_are_saved() {
+        let mut set = PerformSet::default();
+        set.pages[2].kind = PageKind::Clips { track: 4, row: 16 };
+        set.pages[2].pads[0] = PadAction::Mute(2);
+        set.pages[3].kind = PageKind::Scenes { bank: 1 };
+        let clips = set.page(2);
+        let cell = |track, row| PadAction::Clip { track, row };
+        assert_eq!(clips.action(12), cell(4, 16), "pad 13: top left");
+        assert_eq!(clips.action(15), cell(7, 16));
+        assert_eq!(clips.action(8), cell(4, 17));
+        assert_eq!(clips.action(0), cell(4, 19), "pad 1: bottom left");
+        assert_eq!(clips.action(3), cell(7, 19));
+        assert_eq!(clips.action(16), PadAction::None);
+        let scenes = set.page(3);
+        assert_eq!(scenes.action(12), PadAction::Scene(16), "row 17");
+        assert_eq!(scenes.action(15), PadAction::Scene(19));
+        assert_eq!(scenes.action(8), PadAction::Scene(20));
+        assert_eq!(scenes.action(3), PadAction::Scene(31), "row 32");
+        assert_eq!(set.page_name(2), "Page C · Clips · Tracks 5–8 · rows 17–20");
+        assert_eq!(set.page_name(3), "Page D · Scenes · bank B");
+        let text = set.text();
+        assert!(text.contains("clips C = 5 17\n"), "{text}");
+        assert!(text.contains("scenes D = B\n"), "{text}");
+        assert!(text.contains("pad C1 = mute 3\n"), "its own pads kept");
+        assert!(!text.contains("pad D"), "{text}");
+        let (read, skipped) = PerformSet::parse(&text);
+        assert_eq!(read, set);
+        assert!(skipped.is_empty(), "{skipped:?}");
+        // A window past the grid or a bank past D is skipped and said.
+        let (read, skipped) =
+            PerformSet::parse("mpfree-perform 1\nclips C = 129 1\nclips D = 1 65\nscenes E = E\n");
+        assert_eq!(skipped.len(), 3, "{skipped:?}");
+        assert!(read.pages.iter().all(|p| p.kind == PageKind::Pads));
+    }
+
+    /// The grid lights a clip window's pads and a scene pad as its cell
+    /// and its row button show: dark empty, dim green with a clip, green
+    /// playing, blinking while it waits, red recording, an armed Loop
+    /// cell blinking red.
+    #[test]
+    fn clip_and_scene_pads_light_as_the_grid_shows_them() {
+        let mut page = PerformPage::empty();
+        page.kind = PageKind::Clips { track: 0, row: 0 };
+        let grid = Grid {
+            // Track 1: rows 1, 2 and 3; Track 2: row 1; Track 3 audio.
+            filled: vec![0b111, 0b1, 0],
+            launches: vec![(0, 0, 0), (1, 0, 3840)],
+            cues: vec![(0, Some(1))],
+            scene_playing: None,
+            scene_cued: None,
+            loop_cell: Some((3, 3)),
+            recording: None,
+        };
+        let now = 960;
+        let l = grid.lights(&page, now);
+        // The top row of pads is row 1.
+        assert_eq!(l[12], GridLight::Playing, "Track 1 row 1 plays");
+        assert_eq!(l[13], GridLight::Queued, "Track 2 starts on bar 2");
+        assert_eq!(l[14], GridLight::Empty, "an audio track");
+        assert_eq!(l[8], GridLight::Queued, "Track 1 row 2 waits");
+        assert_eq!(l[4], GridLight::Clip, "Track 1 row 3");
+        assert_eq!(l[3], GridLight::Armed, "Track 4's armed Loop cell");
+        assert_eq!(l[0], GridLight::Empty);
+        let recording = Grid {
+            recording: Some(0),
+            ..grid.clone()
+        };
+        assert_eq!(recording.lights(&page, now)[12], GridLight::Recording);
+        let lit = |blink| {
+            let lit = Lit {
+                grid: l,
+                ..Lit::default()
+            };
+            colours(&page, &[], &lit, blink)
+        };
+        assert_eq!(lit(true)[12], pad_rgb(SCENE, 1.0));
+        assert_eq!(lit(true)[4], pad_rgb(SCENE, 0.2));
+        assert_eq!(lit(true)[8], pad_rgb(SCENE, 1.0), "blinking: lit");
+        assert_eq!(lit(false)[8], DARK, "blinking: dark");
+        assert_eq!(lit(true)[3], RED);
+        assert_eq!(lit(false)[0], DARK);
+        // Scenes: row 1 plays, row 2 waits, row 3 has a clip, row 4 none.
+        let scenes = Grid {
+            scene_playing: Some(0),
+            scene_cued: Some(1),
+            ..grid
+        };
+        let mut page = PerformPage::empty();
+        page.kind = PageKind::Scenes { bank: 0 };
+        let l = scenes.lights(&page, now);
+        assert_eq!(
+            [l[12], l[13], l[14], l[15]],
+            [
+                GridLight::Playing,
+                GridLight::Queued,
+                GridLight::Clip,
+                GridLight::Empty
+            ]
+        );
     }
 }

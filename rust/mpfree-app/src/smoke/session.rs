@@ -2180,6 +2180,7 @@ impl Session {
             crate::loop_sets_tempo(&mut self.looper, &mut self.time, take, exporting);
         self.out.loop_start(said);
         self.out.smart_end(self.looper.take_smart());
+        self.out.loop_start(self.looper.take_asks());
         let (said, snapped) = self.looper.take_snap();
         self.out.loop_start(said);
         self.loop_tempo = tempo.or(snapped).or(self.loop_tempo);

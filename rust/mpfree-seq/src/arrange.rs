@@ -74,7 +74,7 @@ use crate::scenes::{SongList, MAX_TIMES};
 use crate::time_edit::{Refused, TimeEdit};
 use crate::{
     AudioClip, Clip, ClipId, ClipRegion, Cond, Direction, Follow, FollowAction, Join, ModelError,
-    Project, Scene, Track, TrackId, MAX_CLIP_REGIONS, MAX_TRACKS, SCENES, SLOTS,
+    Project, Scene, Track, TrackId, MAX_CLIP_REGIONS, MAX_TRACKS, ROWS, SCENES, SLOTS,
 };
 use mpfree_transport::time::{
     valid_bpm, MapError, Segment, TempoMap, Tick, MAX_SEGMENTS, MIN_SPAN_TICKS,
@@ -1799,8 +1799,12 @@ pub fn song_to_scenes(
         return Ok(ToScenes::default());
     }
     let n = parts.len();
-    // A run of empty rows on the grid: the rows it shows ([`SLOTS`]).
-    let first = (0..(SLOTS + 1).saturating_sub(n))
+    // A run of empty rows within one bank of [`SLOTS`] (scene banks, the
+    // Arrange refactor's 5.6), the first there is from bank A on: the
+    // rows chain by Next, which goes round within a bank.
+    let first = (0..ROWS)
+        .step_by(SLOTS)
+        .flat_map(|bank| bank..(bank + SLOTS + 1).saturating_sub(n))
         .find(|&r| (r..r + n).all(|k| project.row_empty(k)))
         .ok_or(ModelError::NoRoom)?;
     let mut differences = song_differences(project, &parts, bar);
@@ -3178,9 +3182,22 @@ mod tests {
             song_to_scenes(&mut p, BAR, &quiet()).map(|c| c.rows),
             Ok(vec![5, 6, 7])
         );
+        // No run of 3 left in bank A: bank B's first rows (scene banks,
+        // 5.6), and never a run across two banks, since Next goes round
+        // within one.
         let mut q = before;
         q.tracks[0].slots[6] = Some(Clip::new("x", BAR));
         q.tracks[0].slots[11] = Some(Clip::new("x", BAR));
+        q.tracks[0].slots[17] = Some(Clip::new("x", BAR));
+        let mut b = q.clone();
+        assert_eq!(
+            song_to_scenes(&mut b, BAR, &quiet()).map(|c| c.rows),
+            Ok(vec![18, 19, 20])
+        );
+        // Every bank with no run of 3: no room.
+        for row in (16..ROWS).step_by(2) {
+            q.tracks[0].slots[row] = Some(Clip::new("x", BAR));
+        }
         let again = q.clone();
         assert_eq!(
             song_to_scenes(&mut q, BAR, &quiet()).map(|c| c.rows),

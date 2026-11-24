@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/loop_row.rs rust/mpfree-app/src/looper_deck.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs rust/mpfree-seq/src/loops.rs
-checked: 2026-11-23 4cc9c0ec
+checked: 2026-11-24 459299e3
 -->
 
 # Recording loops
@@ -164,7 +164,7 @@ How many bars the loop is depends on its **Length**:
 
 - **The tempo is exact,** to many decimal places, so the loop never drifts against the song; the project keeps it exactly when you save. The tempo chip shows it rounded.
 - **Closed too soon** (shorter than a bar at 300 BPM, 0.8 s in 4/4, or than your Length's bars at 300 BPM), the loop keeps recording and closes as soon as it is that long. The ring says **closing**.
-- **Too long for its Length** (2 bars set, but so long that 2 bars would be slower than 30 BPM), MPFree works out the bars instead and the screen says so.
+- **Too long for its Length** (2 bars set, but so long that 2 bars would be slower than 30 BPM), the loop closes and waits, silent, with nothing started, and the Looper tab's bottom line asks: "Loop 1: Length's 2 bars would be 24 BPM, slower than 30. Read it as 4 bars at 48 BPM?" **Read as 4 bars** plays it at that tempo from its top; **Discard** throws the take away (UNDO brings it back). Your Length is never changed without asking. PLAY instead plays the loop at the song's tempo.
 - **PLAY while it records** throws the free loop away (the screen counts it), since the music would start at the old tempo. Close the loop with its ring or REC instead.
 - It is off while another device's clock leads, the song has more than one tempo, or an export is running. A second loop, or a loop recorded with the music playing, keeps to the bars as usual.
 - If the music still can't start at the new tempo, the screen says why, and the loop plays at the song's tempo when the music starts.
@@ -191,7 +191,7 @@ Closing a loop exactly on the beat is hard. Tap a little late and the loop is a 
 
 The start gets the same care. If you started the loop a moment before your first hit (pressed REC, then played), that gap would otherwise sit at the start of every pass. With **Auto** the loop starts on your first hit instead, and the chip says so ("Started on your first hit, 80 ms after REC") with **Use my press** to put the start back; with **Suggest** the chip says the loop could ("first hit 80 ms after REC"), and Snap does it. Your first hit counts as the start only when it comes within a tenth of a second of your start; later than that, the loop starts where you started it.
 
-It only looks near your tap: within a tenth of a second, or a 1/16 note at very fast tempos. A hit wins when it sounds like the loop's first hit (the same pad or note, about as hard), fits the beat of what you played, and what follows it sounds like the start of the loop again. Once you've played a beat, a hit must also fit it, and a hit near the edge of that reach must fit it well: at fast tempos a pickup an 8th before the downbeat can sound just like your first hit. If no hit is clearly the one, your tap stands and the screen says why: "Kept your tap: no clear match near it."
+It only looks near your tap: within a tenth of a second, or a 1/16 note at very fast tempos. A hit wins when it sounds like the loop's first hit (the same pad or note, about as hard), fits the beat of what you played, and what follows it sounds like the start of the loop again. Once you've played a beat, a hit must also fit it, and a hit near the edge of that reach must fit it well: at fast tempos a pickup an 8th before the downbeat can sound just like your first hit. When the loop could be heard as two different bar counts (say 2 bars or 4), the hit must win under both, so a fill's last kick just before your tap isn't taken for the downbeat. If no hit is clearly the one, your tap stands and the screen says why: "Kept your tap: no clear match near it."
 
 When the Looper records the line input or a mix (**Records from**), Smart loop end listens to the sound itself. It hears each hit, a drum, a pluck or a strummed chord, and looks for the one that sounds like the loop's first: about as loud, with the same tone. It starts the loop on your first hit's first sound over -40 dB, and ends it where the sound coming round lines up with that start, to the sample, so both ends are measured the same way. Hearing takes a moment longer than notes: Auto waits up to 30 ms more for the answer, and if it doesn't come in time it keeps your tap and says so ("Kept your tap: it couldn't listen in time"). A sound without clear hits, such as a held pad or a drone, keeps your tap too: "Kept your tap: no hit near it."
 

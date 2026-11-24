@@ -2126,6 +2126,13 @@ pub enum FromUi {
         page: usize,
         name: String,
     },
+    /// Page `page` of the Perform set is `kind` now: pads of its own, a
+    /// clip window or a bank of scenes (the Arrange refactor's 5.5), from
+    /// the Perform view's page chips, its window's places, its UNDO too.
+    PerformKind {
+        page: usize,
+        kind: crate::perform_pads::PageKind,
+    },
     /// A Q-Link on the Perform view turned a throw's setting on its
     /// strip's Perform FX (`ThrowKnobs::addr`), or its UNDO put it back:
     /// set as the chain editor's knobs set theirs, so a turn while the
@@ -3631,7 +3638,24 @@ impl Player {
                 })
                 .unwrap_or_default(),
             strips: self.throw_strips.clone(),
+            cells: self.perform_cells(),
         }
+    }
+
+    /// The clips of the Perform view's page, when it is a clip window
+    /// (the Arrange refactor's 5.5): each cell's track, row and name.
+    fn perform_cells(&self) -> Vec<(usize, usize, String)> {
+        let page = self.perform.set.page(self.perform.page);
+        (0..crate::perform_pads::PADS)
+            .filter_map(|pad| match page.action(pad) {
+                crate::perform_pads::PadAction::Clip { track, row } => {
+                    let (t, r) = (usize::from(track), usize::from(row));
+                    let clip = self.time.tracks.get(t)?.slots.get(r)?.as_ref()?;
+                    Some((t, r, clip.name.clone()))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// The Pads tab's Perform view built and filled; false when it can't
@@ -3649,6 +3673,20 @@ impl Player {
 
     /// The Perform view again, when it shows.
     fn refresh_perform(&mut self) {
+        // A clip window on the pads is outlined on the grid (the Arrange
+        // refactor's 5.5).
+        let window = match self.perform.set.page(self.perform.page).kind {
+            crate::perform_pads::PageKind::Clips { track, row } if self.perform.on => {
+                Some((usize::from(track), usize::from(row)))
+            }
+            _ => None,
+        };
+        if self.time_page.pad_window != window {
+            self.time_page.pad_window = window;
+            if self.ready {
+                self.time_page.update(&mut self.ui, &self.time);
+            }
+        }
         if self.perform_showing() && self.ready {
             let names = self.perform_names();
             self.perform.show(&mut self.ui, &names);
@@ -3719,7 +3757,12 @@ impl Player {
         for a in acts {
             match a {
                 Act::Send(f) => {
-                    if matches!(f, FromUi::PerformPad { .. } | FromUi::PerformName { .. }) {
+                    if matches!(
+                        f,
+                        FromUi::PerformPad { .. }
+                            | FromUi::PerformName { .. }
+                            | FromUi::PerformKind { .. }
+                    ) {
                         self.mark_unsaved();
                     }
                     self.outbox.push(f);
@@ -8065,15 +8108,21 @@ impl Player {
         self.looper_page
             .update(&mut self.ui, &self.looper, &self.settings);
         // Snap anyway and Not now at the hint line's end while a snap
-        // asks (the hint line says what).
-        let asking = self.looper.smart.asking;
+        // asks, or Read as and Discard while the picked loop's first pass
+        // waits on its Length (the hint line says what).
+        let asking = match (self.looper.smart.length, self.looper.smart.asking) {
+            (Some(r), _) => Some((crate::looping::length_ask_button(&r), "Discard")),
+            (None, Some((snap, _))) => {
+                Some((crate::looping::ask_button(snap).to_string(), "Not now"))
+            }
+            (None, None) => None,
+        };
         // (Reached only when its words change: a reach redraws it.)
-        if let Some((snap, _)) = asking {
-            let yes = crate::looping::ask_button(snap);
+        if let Some((yes, no)) = &asking {
             let differs = self
                 .ui
                 .get::<crate::looper_tab::AskButtons>(crate::looper_tab::ASK)
-                .is_some_and(|b| b.yes != yes);
+                .is_some_and(|b| b.yes != *yes || b.no != *no);
             if let Some(b) = differs
                 .then(|| {
                     self.ui
@@ -8081,7 +8130,8 @@ impl Player {
                 })
                 .flatten()
             {
-                b.yes = yes.to_string();
+                b.yes = yes.clone();
+                b.no = no.to_string();
             }
         }
         let (w, h) = self.ui.size();
@@ -8218,7 +8268,7 @@ impl Player {
                 }))))
             }
             (time_view::CLIPS, EventKind::Select(i)) => {
-                let slots = mpfree_seq::SLOTS;
+                let slots = mpfree_seq::ROWS;
                 let (track, slot) = (i / slots, i % slots);
                 if self.time.clip(track, slot).is_some() {
                     Some(Some(FromUi::Time(TimeAction::DeleteClip { track, slot })))
@@ -8265,7 +8315,7 @@ impl Player {
         let (time_view::CLIPS, EventKind::Select(i)) = (ev.widget.as_str(), &ev.kind) else {
             return None;
         };
-        let slots = mpfree_seq::SLOTS;
+        let slots = mpfree_seq::ROWS;
         let (track, slot) = (i / slots, i % slots);
         if track >= self.time.tracks.len() {
             return None;
@@ -9168,6 +9218,14 @@ impl Player {
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.clip_card => time_view::clip_card_hint(&self.time),
                 View::Arrange => CLIPS_HINT.to_string(),
+                // A first pass waits on its Length: Read as and Discard
+                // float at this line's end.
+                View::Looper if self.looper.smart.length.is_some() => self
+                    .looper
+                    .smart
+                    .length
+                    .map(|r| crate::looping::length_ask_words(self.looper.selected, &r))
+                    .unwrap_or_default(),
                 // A snap over recorded audio asks: Snap anyway and Not
                 // now float at this line's end.
                 View::Looper if self.looper.smart.asking.is_some() => self
@@ -9274,7 +9332,10 @@ impl Player {
                 }
                 View::Pads if self.perform.shown && self.ui.page() == crate::perform_tab::PAGE => {
                     let names = self.perform_names();
-                    crate::perform_tab::hint(self.perform.qlink_hint(&names))
+                    crate::perform_tab::hint(
+                        self.perform.qlink_hint(&names),
+                        self.perform.set.page(self.perform.page).kind,
+                    )
                 }
                 View::Pads if self.sample.page() == sample_page::PADS_PAGE => {
                     format!("Hit or tap a pad to pick it, again to hear it   ·   A-H: the kit's banks   ·   \
@@ -16655,12 +16716,12 @@ impl Player {
     /// (the Arrange refactor's 5.4, decision 4). An empty Loop cell only
     /// arms for the next loop, so it stays a tap.
     fn empty_cell(&self, widget: &str, t: &mpfree_ui::Target) -> bool {
-        use mpfree_seq::SLOTS;
+        use mpfree_seq::ROWS;
         use mpfree_time_ui::view::CLIPS;
         if widget != CLIPS || t.id != "slot" {
             return false;
         }
-        let (track, slot) = (t.index / SLOTS, t.index % SLOTS);
+        let (track, slot) = (t.index / ROWS, t.index % ROWS);
         self.time
             .tracks
             .get(track)
@@ -17918,7 +17979,7 @@ impl Player {
             // Show on the Clips grid's, the Song view's and the song list's
             // title lines, while a set is open.
             (time_view::CLIPS, EventKind::Toggle(k))
-                if k == mpfree_seq::SLOTS + mpfree_time_ui::widgets::SHOW_VIEW =>
+                if k == mpfree_seq::ROWS + mpfree_time_ui::widgets::SHOW_VIEW =>
             {
                 self.arrange_lens(ArrangeLens::Show);
                 None
@@ -18104,7 +18165,7 @@ impl Player {
                     (ev.widget.as_str(), &ev.kind)
                 {
                     // An audio cell's word, said in full (layout spec 4f).
-                    let (track, slot) = (i / mpfree_seq::SLOTS, i % mpfree_seq::SLOTS);
+                    let (track, slot) = (i / mpfree_seq::ROWS, i % mpfree_seq::ROWS);
                     if let Some(h) = time_view::audio_cell_hint(&self.time, track, slot) {
                         self.tell(&h);
                     }
@@ -18115,7 +18176,7 @@ impl Player {
                 // "+ Track" itself (the chooser's rows are what they say).
                 let plus = match (ev.widget.as_str(), &ev.kind) {
                     (time_view::CLIPS, EventKind::Toggle(k)) => {
-                        *k == mpfree_seq::SLOTS + mpfree_time_ui::widgets::ADD_TRACK
+                        *k == mpfree_seq::ROWS + mpfree_time_ui::widgets::ADD_TRACK
                     }
                     (time_view::SONG, EventKind::Tab(k)) => *k == mpfree_time_ui::song::ADD_TRACK,
                     _ => false,
@@ -20611,6 +20672,38 @@ fn pads_perform(fonts: Fonts) -> Player {
     p.on_event(UiEvent {
         widget: crate::perform_tab::MAP.into(),
         kind: EventKind::Select(1),
+    });
+    let _ = p.take_actions();
+    p
+}
+
+/// The Perform view on a clip window or a scenes page (the Arrange
+/// refactor's 5.5): `kind` on page C of the sample set, with the playing
+/// sample's grid (its clips and scenes named), pad `pad` picked and the
+/// set on the pads at page C.
+fn pads_perform_window(fonts: Fonts, kind: crate::perform_pads::PageKind, pad: usize) -> Player {
+    let mut p = pads_perform(fonts);
+    if let Ok(sample) = mpfree_time_ui::sample::playing() {
+        let mut st = sample.state();
+        st.scenes = ["Intro", "Verse", "Break", "Drop"]
+            .iter()
+            .map(|n| n.to_string())
+            .collect();
+        p.apply(ToUi::Time(Box::new(st)));
+    }
+    let mut set = p.perform.set.clone();
+    set.pages[2].kind = kind;
+    p.apply(ToUi::PerformSet {
+        set: Box::new(set),
+        opened: false,
+    });
+    let mut s = p.status.clone();
+    s.perform_bank = 2;
+    s.perform = Some(p.perform.set.page_name(2));
+    p.apply(ToUi::Status(s));
+    p.on_event(UiEvent {
+        widget: crate::perform_tab::MAP.into(),
+        kind: EventKind::Select(pad),
     });
     let _ = p.take_actions();
     p
@@ -23381,6 +23474,67 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("clips-perform sample: {e}"),
     }
+    // Perform's Capture scene (the Arrange refactor's 5.3) with a set
+    // open: Show left of it, and nothing playing, so it is faint.
+    match mpfree_time_ui::sample::playing() {
+        Ok(s) => {
+            let mut p = quiet_player(fonts());
+            let mut st = s.state();
+            st.perform = true;
+            st.launches.clear();
+            st.cues.clear();
+            st.transport.state = mpfree_transport::State::Stopped;
+            // A set really open, so Show takes the grid to the Show view.
+            let (sp, _) = crate::set_play::SetPlay::new(
+                mpfree_library::Loc::top(mpfree_library::Place::Sets)
+                    .join("Friday at the Lantern.set")
+                    .expect("a set's name"),
+                sample_set(),
+            );
+            p.set_play = Some(sp);
+            p.time_page.set_open = true;
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("clips-perform-capture", p));
+        }
+        Err(e) => eprintln!("clips-perform-capture sample: {e}"),
+    }
+    // Scene banks (the Arrange refactor's 5.6): in Make, the grid
+    // scrolled to rows 13 to 20, a second set in bank B's first rows
+    // under a line, its letter by row 17 and lit on the bank chip.
+    match mpfree_time_ui::sample::playing() {
+        Ok(s) => {
+            let mut p = quiet_player(fonts());
+            let mut st = s.state();
+            st.scenes = vec![String::new(); 19];
+            for (k, name) in ["Intro", "Verse", "Break", "Drop"].iter().enumerate() {
+                st.scenes[k] = name.to_string();
+            }
+            for (k, name) in ["Set 2 open", "Set 2 groove", "Set 2 peak"]
+                .iter()
+                .enumerate()
+            {
+                st.scenes[16 + k] = name.to_string();
+            }
+            for (t, track) in st.tracks.iter_mut().enumerate() {
+                let Some(c) = track.slots.iter().flatten().next().cloned() else {
+                    continue;
+                };
+                for k in 0..3 {
+                    if (t + k) % 3 != 2 {
+                        let mut c = c.clone();
+                        c.name = format!("{} {}", c.name, ["B1", "B2", "B3"][k]);
+                        track.slots[16 + k] = Some(c);
+                    }
+                }
+            }
+            p.time_page.first_row = 12;
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("clips-bank-b", p));
+        }
+        Err(e) => eprintln!("clips-bank-b sample: {e}"),
+    }
     // The scene card (the Arrange refactor's 5.2), row 2's number held:
     // Verse moves on to the next scene after 4 bars four times in five,
     // sets 95 BPM on its line, mutes Hats and sends Stab's gear program
@@ -24871,6 +25025,24 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // (board 7).
     out.push(("pads-perform", pads_perform(fonts())));
     out.push(("pads-perform-knobs", pads_perform_knobs(fonts())));
+    // The Arrange refactor's 5.5: page C a clip window over Tracks 1 to 4
+    // and rows 1 to 4, pad 9 (Track 1, row 2) picked; then page C bank
+    // A's scenes, pad 14 (row 2) picked; and the grid with the window
+    // outlined while it is on the pads.
+    use crate::perform_pads::PageKind;
+    out.push((
+        "pads-perform-clips",
+        pads_perform_window(fonts(), PageKind::Clips { track: 0, row: 0 }, 8),
+    ));
+    out.push((
+        "pads-perform-scenes",
+        pads_perform_window(fonts(), PageKind::Scenes { bank: 0 }, 13),
+    ));
+    {
+        let mut p = pads_perform_window(fonts(), PageKind::Clips { track: 0, row: 0 }, 8);
+        p.apply(ToUi::Show(View::Arrange));
+        out.push(("clips-pad-window", p));
+    }
     // The browser from the Pads tab's Browse for A5, over a scratch
     // library: Samples / Drums with Kick 01 selected, Load on A5.
     match browser_samples(fonts()) {
@@ -26620,7 +26792,7 @@ mod tests {
                 .find(|t| {
                     t.widget == time_view::CLIPS
                         && t.target.id == "slot"
-                        && t.target.index == track * mpfree_seq::SLOTS + slot
+                        && t.target.index == track * mpfree_seq::ROWS + slot
                 })
                 .expect("the empty cell")
                 .target
@@ -26648,7 +26820,7 @@ mod tests {
                 .find(|t| {
                     t.widget == time_view::CLIPS
                         && t.target.id == "slot"
-                        && t.target.index == track * mpfree_seq::SLOTS + 1
+                        && t.target.index == track * mpfree_seq::ROWS + 1
                 })
                 .unwrap()
                 .target
@@ -26670,7 +26842,7 @@ mod tests {
                 .find(|t| {
                     t.widget == time_view::CLIPS
                         && t.target.id == "slot"
-                        && t.target.index == track * mpfree_seq::SLOTS + slot
+                        && t.target.index == track * mpfree_seq::ROWS + slot
                 })
                 .unwrap()
                 .target
@@ -27295,7 +27467,7 @@ mod tests {
         });
         assert_eq!(
             p.ui.get::<ClipGrid>(time_view::CLIPS).unwrap().title,
-            "Slots 2–9 of 16"
+            "Rows 2–9"
         );
         assert!(p.take_actions().is_empty());
         // The Record panel's Clip tab: the clip settings card for the

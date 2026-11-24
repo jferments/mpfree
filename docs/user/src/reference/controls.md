@@ -77,6 +77,26 @@ Every button works as soon as MPFree starts, with nothing to learn: the develope
 | **SHIFT + data wheel** | Scrolls the clip grid or the song. | Works |
 | **Q-Link knobs 1-4** | The same knobs as on the Play page, as the cards on the right show; Q-LINK steps to the macro banks. See [Clips and patterns](../making-music/clips.md#the-q-links-on-arrange). | Works |
 
+## Arrange tab: the Show view
+
+While a [set](../making-music/set-lists.md) plays, the Show view takes these. Changing song is two steps, arm then Go, so nothing changes by accident.
+
+| Control | What it does | When |
+|---|---|---|
+| **Data wheel**, **–** and **+** | Arm the song after or before the one armed. | Works (new: needs a device check) |
+| **Push the data wheel** | Go: change to the armed song (during Let it finish, go now). | Works (new: needs a device check) |
+| **MAIN** | Show, Clips, Song, List and round; from another page in Perform, the Show view. | Works (new: needs a device check) |
+| **MENU** | Open the Set editor, Check the set, or Close the set. | Works (new: needs a device check) |
+
+## Footswitches and controllers
+
+A footswitch or a button on a MIDI controller can take a job you'd otherwise press on the screen, learned in the mixer's I/O view, **Learn** section (see [MIDI Learn](../making-music/midi-and-cv.md#midi-learn)):
+
+- **The looper:** a loop's key and mute, Next loop, Undo, Redo, Capture, Clear, and the closed loop's **Snap** and **Use my tap** (see [Playing the looper from a footswitch](../making-music/midi-and-cv.md#playing-the-looper-from-a-footswitch)).
+- **A set:** Next song, Previous song, Go, Cancel next, Back to the set order, Panic (stops and silences everything) and Click (see [Footswitches for a set](../making-music/midi-and-cv.md#footswitches-for-a-set)).
+- **Patches:** Next patch and Previous patch (see [Switching from a footswitch](../making-music/patches.md#switching-from-a-footswitch)).
+- **Play:** Swing, Filter, the XY pad across and up, its Hold and the next or previous layout (see [Play's swing, filter and XY pad from your controller](../making-music/midi-and-cv.md#plays-swing-filter-and-xy-pad-from-your-controller)).
+
 ## Sequencer tab: the piano roll
 
 These are the controls of the note editor, the Sequencer tab's **Notes** view (its piano roll, list and tracker). See [Editing notes in the piano roll](../making-music/editing-notes.md). None of them has run on the MPC yet, so each still needs a device check.

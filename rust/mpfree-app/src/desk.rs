@@ -696,6 +696,7 @@ impl Desk<'_> {
             gui::FromUi::PerformName { page, name } => {
                 fx.extend(app.set_perform_name(page, &name))
             }
+            gui::FromUi::PerformKind { page, kind } => fx.extend(app.set_perform_kind(page, kind)),
             gui::FromUi::LoopCapture => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Capture))
             }
@@ -1698,6 +1699,29 @@ pub fn perform_pad_on(
                 usize::from(n),
             )));
             format!("perform: Scene {}", u16::from(n) + 1)
+        }
+        PadAction::Clip { track, row } => {
+            // A tap on the cell (the Arrange refactor's 5.5), but never a
+            // clip made: an empty cell's pad does nothing.
+            use mpfree_time_ui::TimeAction;
+            let st = time.state();
+            let (t, r) = (usize::from(track), usize::from(row));
+            let Some(name) = st.tracks.get(t).map(|x| x.name.clone()) else {
+                return (fx, format!("perform: no Track {} for this pad", t + 1));
+            };
+            match mpfree_time_ui::view::cell_tap(&st, t, r) {
+                None => format!("perform: {name} has no clips in the grid"),
+                Some(TimeAction::NewClip { .. }) => {
+                    format!(
+                        "perform: {name} · row {} is empty (make a clip on the grid)",
+                        r + 1
+                    )
+                }
+                Some(a) => {
+                    fx.push(app::Effect::Time(a));
+                    format!("perform: {name} · row {}", r + 1)
+                }
+            }
         }
         PadAction::LoopKey(n) => {
             let n = usize::from(n);
