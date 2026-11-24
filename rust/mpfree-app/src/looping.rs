@@ -1405,6 +1405,10 @@ pub struct LooperView {
     /// The pattern's length in bars as last told
     /// ([`LoopHost::set_pattern_bars`]); None: no pattern plays.
     pub pattern_bars: Option<u32>,
+    /// Loops on audio tracks: each slot's loop's lasting id (0: none
+    /// yet), so the grid's loop cells find their loops
+    /// ([`LoopHost::loop_ids`]).
+    pub ids: [u128; MAX_LOOPS],
 }
 
 impl Default for LooperView {
@@ -1438,6 +1442,7 @@ impl Default for LooperView {
             free_tempo: false,
             match_pattern: false,
             pattern_bars: None,
+            ids: [0; MAX_LOOPS],
             listening: None,
         }
     }
@@ -1473,6 +1478,9 @@ pub struct LoopHost {
     pads: Option<Instrument>,
     /// What the pads play now ([`LoopHost::follow_pads`]).
     pads_now: Option<Instrument>,
+    /// Where it sounds in the mixer ([`LoopHost::set_pads_strip`]), for an
+    /// audio track's input list's Pads (phase 4, board 4).
+    pads_strip: Option<mpfree_fx::StripId>,
     /// The source a take held back, as the log was told (once).
     held_said: Option<(LoopSource, Option<Instrument>)>,
     /// Takes that recorded silence for a while: their source was lost
@@ -2074,6 +2082,7 @@ impl LoopHost {
             pads_dry: None,
             pads: None,
             pads_now: None,
+            pads_strip: None,
             held_said: None,
             dropouts: 0,
             latency_set: 0,
@@ -3271,6 +3280,20 @@ impl LoopHost {
         self.settle()
     }
 
+    /// Where what the pads play sounds in the mixer
+    /// ([`crate::mixing::MixHost::instrument_strip`]; None on MIDI out),
+    /// told each period with [`LoopHost::follow_pads`].
+    pub fn set_pads_strip(&mut self, s: Option<mpfree_fx::StripId>) {
+        self.pads_strip = s;
+    }
+
+    /// What the pads play now and where it sounds in the mixer: an audio
+    /// track's input list's Pads (phase 4, board 4). None before the pads
+    /// were first told.
+    pub fn pads_play(&self) -> Option<(Instrument, Option<mpfree_fx::StripId>)> {
+        Some((self.pads_now?, self.pads_strip))
+    }
+
     /// Records from picked (the Looper tab, Prefs): this take keeps its
     /// source, so it records from the next one, or at once if none
     /// records now ([`LoopHost::settle`]).
@@ -4053,6 +4076,7 @@ impl LoopHost {
             match_pattern: self.match_pattern,
             pattern_bars: self.pattern_bars,
             listening: self.looper.listening(),
+            ids: self.on_tracks.ids(),
         }
     }
 

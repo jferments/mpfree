@@ -8754,6 +8754,7 @@ impl TimeControl {
             self.armed,
             &self.takes,
         );
+        st.loops_on = self.loops_on;
         st.track_pick = self.track_pick;
         st.clip_pick = self.clip_picked();
         st.continuing = self.compose.screen();

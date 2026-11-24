@@ -295,6 +295,19 @@ pub fn pan_text(p: f32) -> String {
 /// The strips' colours, from the theme (one per track number).
 /// A small wave mark in `r`, four bars of different heights: an audio
 /// track's, as on the Clips grid and the Song view.
+/// A small play mark (the ▶ the fonts don't have) filling `r`, a row of
+/// pixels at a time.
+fn play_mark(cx: &mut PaintCx, r: Rect, color: Color) {
+    let h = r.h.max(2);
+    for y in 0..h {
+        let half = (h - 1) as f32 / 2.0;
+        let w = ((1.0 - (y as f32 - half).abs() / (half + 0.5)) * r.w as f32).round() as i32;
+        if w > 0 {
+            cx.canvas.fill_rect(Rect::new(r.x, r.y + y, w, 1), color);
+        }
+    }
+}
+
 fn wave_mark(cx: &mut PaintCx, r: Rect, color: Color) {
     for (k, h) in [5, 12, 8, 3].iter().enumerate() {
         let x = r.x + k as i32 * 4;
@@ -518,8 +531,21 @@ struct Parts {
 }
 
 fn parts(s: Rect) -> Parts {
+    parts_with(s, 0)
+}
+
+/// A strip's tag under its name (phase 4, board 6): two lines.
+const TAG_H: i32 = 34;
+
+/// The parts of strip `v` at `s`: a tagged strip's name block is taller,
+/// its fader shorter.
+fn parts_of(s: Rect, v: &StripView) -> Parts {
+    parts_with(s, if v.tag.is_some() { TAG_H } else { 0 })
+}
+
+fn parts_with(s: Rect, tag: i32) -> Parts {
     let inner = s.inset_xy(6, 6);
-    let (name, rest) = inner.take_top(30);
+    let (name, rest) = inner.take_top(30 + tag);
     let rest = rest.take_top(6).1;
     let (ins, rest) = rest.take_top(4 * 24);
     let rest = rest.take_top(6).1;
@@ -1156,10 +1182,10 @@ impl MixerView {
         let Some((id, sr)) = hits.into_iter().find(|(_, sr)| sr.contains(x, y)) else {
             return;
         };
-        let p = parts(sr);
         let Some(s) = self.state.strip(id).cloned() else {
             return;
         };
+        let p = parts_of(sr, &s);
         if p.name.contains(x, y) {
             if self.state.selected == Some(id) {
                 if self.state.takes {
@@ -1800,7 +1826,7 @@ impl MixerView {
 
     fn paint_strip(&self, cx: &mut PaintCx, s: &StripView, sr: Rect) {
         let t = cx.theme.clone();
-        let p = parts(sr);
+        let p = parts_of(sr, s);
         let master = s.id == StripId::Master;
         let selected = self.state.selected == Some(s.id);
         cx.canvas.fill_round_rect(sr, t.round(12), t.surface);
@@ -1820,6 +1846,31 @@ impl MixerView {
             },
         );
         let mut label = p.name.take_top(6).1;
+        if let Some((what, name)) = &s.tag {
+            // What the track plays now (phase 4, board 6), under its name.
+            let (top, tag) = label.take_top(24);
+            label = top;
+            let tag = Rect::new(tag.x, tag.y + 2, tag.w, tag.h - 4);
+            cx.canvas.fill_round_rect(tag, t.round(6), t.raised);
+            let line = Rect::new(tag.x + 6, tag.y + 1, tag.w - 10, 14);
+            play_mark(cx, Rect::new(line.x, line.y + 3, 7, 8), color);
+            cx.text(
+                FontId::Bold,
+                t.size_small - 3.0,
+                Rect::new(line.x + 11, line.y, line.w - 11, line.h),
+                Align::Left,
+                t.readable(color, t.raised),
+                what,
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small - 3.0,
+                Rect::new(line.x, line.y + 14, line.w, 14),
+                Align::Left,
+                t.text_dim,
+                name,
+            );
+        }
         // An audio track's input at the right of the name, after a wave
         // mark (layout spec 3a): "∿ ST".
         if let Some(input) = &s.audio {
@@ -2858,7 +2909,7 @@ impl MixerView {
         let profiling = self.state.cost_pct.is_some();
         let mut v: Vec<Rect> = Vec::new();
         let mut add = |sr: Rect, master: bool, s: &StripView| {
-            let p = parts(sr);
+            let p = parts_of(sr, s);
             v.push(fader_columns(p.fader, master).2);
             if s.take.is_some() {
                 // A take's progress.
@@ -3733,7 +3784,7 @@ impl Widget for MixerView {
             .collect();
         strips.push((&self.state.master, l.master));
         for (k, (s, sr)) in strips.into_iter().enumerate() {
-            let p = parts(sr);
+            let p = parts_of(sr, s);
             let name = &s.name;
             // The selected strip's name opens its menu only with takes.
             let picked = self.state.selected == Some(s.id);
