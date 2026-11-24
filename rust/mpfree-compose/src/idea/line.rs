@@ -398,6 +398,7 @@ pub(super) fn judge_line(row: &Row, style: &Style, events: &[Event]) -> IdeaVerd
         copy_bars: copy_bars(style),
         landings: &[],
         rests: &[],
+        lead_to: None,
     });
     // The critic's high point, late and above the opening, is the plan's
     // lift heard. One bar has no plan and may fall from its first note.
