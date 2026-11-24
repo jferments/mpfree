@@ -13,6 +13,7 @@ resuming with --from, the hands-off round's variables, the clean power-off reque
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -126,13 +127,18 @@ class Mpc:
         self.akai, self.stick = free_port(), free_port()
         self.mode = "prepare"
         self.mpfree_boots = True
+        # Seconds after the power-off before the owner switches it on into Akai's system (nothing answers).
+        self.back_after = 0
         self.sockets = {}
         self.on = True
         self.thread = threading.Thread(target=self.loop, daemon=True)
         self.thread.start()
 
     def want(self):
-        off = os.path.exists(os.path.join(self.fake_dir, "power-off.done"))
+        done = os.path.join(self.fake_dir, "power-off.done")
+        off = os.path.exists(done)
+        if off and time.time() - os.path.getmtime(done) < self.back_after:
+            return set()
         if self.mode == "prepare" or off:
             return {self.akai}
         # A stick that doesn't start leaves Akai's system to come up instead.
@@ -508,8 +514,10 @@ class RoundTests(unittest.TestCase):
         self.assertEqual(self.step("stream-app")["env"]["MPFREE_ACCEPT_STREAMTEST"], "YES")
         self.assertTrue(all(s["env"].get("MPFREE_ROUND") == "1" for s in self.steps()[:5]))
         self.assertEqual(self.step("power-off")["cmd"][1:], [TOOL, "power-off"])
-        for text in ("Put the MPFree stick in its USB port (the SD card stays in its slot)", "the MPC is off",
-                     "Take the stick out of the MPC (the SD card stays in)", "mmcblk0p1     same",
+        for text in ("YOUR TURN: switch the MPC off. Put the MPFree stick in its USB port (the SD card stays in its "
+                     "slot)", "the MPC is off",
+                     "YOUR TURN, whenever you're back (no hurry: it waits as long as it takes): take the stick out "
+                     "of the MPC (the SD card stays in)", "mmcblk0p1     same",
                      "boot map: every boot-critical hash as before", "sd-card: ran", "heat: ran", "ROUND-OK",
                      "UPLOAD THIS ONE FILE"):
             self.assertIn(text, res.stdout)
@@ -556,6 +564,51 @@ class RoundTests(unittest.TestCase):
         self.assertIn("MPFree didn't answer: nothing was run on the MPC.", res.stdout)
         self.assertIn("mpfree: did not answer", res.stdout)
         self.assertEqual(self.names(), ["boot-map-after"])
+
+    def test_the_waits_for_the_owners_hands_have_no_time_limit(self):
+        # The owner, 24 Nov 20:06Z: "you shouldn't be having things like waiting for me to boot the MPC on a
+        # timer. I'll get to that when I come back to the computer."
+        self.prepared()
+        self.mpc.back_after = 2
+        env = dict(self.env, MPFREE_ROUND_REMIND="0.5")
+        del env["MPFREE_ROUND_BOOT_WAIT"]
+        res = subprocess.run([sys.executable, "-I", TOOL, "run", "--sd-only"], env=env, text=True,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120, input="")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn(f"waiting for MPFree's system on the stick (127.0.0.1 port {self.mpc.stick}), as long as it "
+                      "takes...", res.stdout)
+        self.assertIn(f"waiting for Akai's system with developer mode on (127.0.0.1 port {self.mpc.akai}), as long "
+                      "as it takes...", res.stdout)
+        self.assertRegex(res.stdout, r"still waiting \(\d+ s\); is developer mode on \(SHIFT \+ MENU, then "
+                                     r"Developer\)\?")
+        self.assertNotIn("up to 15 minutes", res.stdout)
+        self.assertNotIn("no change within", res.stdout)
+        self.assertIn("ROUND-OK", res.stdout)
+        # Only the switching off, which the MPC does by itself, has a limit.
+        self.assertIn("waiting for the MPC to switch off (127.0.0.1 port", res.stdout)
+        self.assertIn("up to 1 minute", res.stdout)
+
+    def test_ctrl_c_while_waiting_for_akais_system_still_packs_the_zip(self):
+        self.prepared()
+        self.mpc.back_after = 1000
+        env = dict(self.env)
+        del env["MPFREE_ROUND_BOOT_WAIT"]
+        proc = subprocess.Popen([sys.executable, "-I", TOOL, "run", "--sd-only"], env=env, text=True,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        out = []
+        for line in proc.stdout:
+            out.append(line)
+            if "waiting for Akai's system" in line:
+                break
+        time.sleep(0.3)
+        proc.send_signal(signal.SIGINT)
+        rest, _ = proc.communicate(timeout=60)
+        text = "".join(out) + rest
+        self.assertEqual(proc.returncode, 1, text)
+        for want in ("boot map: not taken: stopped with Ctrl-C before the boot map was taken", "sd-card: ran",
+                     "ROUND-NOT-OK", "UPLOAD THIS ONE FILE"):
+            self.assertIn(want, text)
+        self.assertEqual(len([n for n in os.listdir(self.results) if n.endswith(".zip")]), 1)
 
     def test_the_card_in_the_mpc_for_both_boot_maps_is_as_it_should_be(self):
         self.given("boot-map-before", report=boot_map(card=True))
