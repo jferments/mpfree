@@ -7,7 +7,7 @@
 //! 22.05 kHz at 240 BPM in 4/4 makes a bar exactly 22 050 frames (1 s).
 
 use mpfree_audiotracks::{
-    AudioTracks, Command as A, Input, Piece, Retime, RetimeRefused, SongStep, HISTORY,
+    AudioTracks, Command as A, Input, OwnStep, Piece, Retime, RetimeRefused, SongStep, HISTORY,
 };
 use mpfree_transport::TransactionId;
 use mpfree_transport::{Block, Command as T, Transport};
@@ -165,6 +165,74 @@ fn a_song_edit_moves_every_track_as_one_step_only_the_song_takes_back() {
     r.run_to(r.frame + 1);
     assert_eq!(r.a.song_step(TransactionId(7), false), SongStep::Gone);
     assert!(!r.a.has_song_steps());
+}
+
+/// The history's own steps by their transactions (audio tracks phase
+/// 4d), for the one UNDO across the engines: a new step takes a later
+/// one, Undo and Redo keep it, a song edit's step is the song's and left
+/// out, and a full history says the newest step it let go of.
+#[test]
+fn own_steps_keep_their_transactions_and_leave_a_song_edits_out() {
+    let mut r = two_tracks();
+    let (mut done, mut redo) = (Vec::new(), Vec::new());
+    let txns = |v: &[OwnStep]| v.iter().map(|o| o.txn).collect::<Vec<_>>();
+    assert_eq!(r.a.own_steps(&mut done, &mut redo), TransactionId::NONE);
+    let recorded = txns(&done);
+    assert!(!recorded.is_empty() && recorded.iter().all(|t| t.is_some()));
+    assert!(redo.is_empty());
+    // A song edit over both tracks: the song's step, not theirs.
+    r.cmd(A::Retime {
+        song: TransactionId(9),
+        retime: insert_bar(0),
+    });
+    r.run_to(r.frame + 1);
+    r.a.own_steps(&mut done, &mut redo);
+    assert_eq!(txns(&done), recorded);
+    // A gain on track 1: a step of its own, later than the recordings.
+    r.cmd(A::SetGain {
+        track: 1,
+        at: BAR_TICKS + 10,
+        gain: 0.5,
+    });
+    r.run_to(r.frame + 1);
+    r.a.own_steps(&mut done, &mut redo);
+    let gain = *done.last().unwrap();
+    assert_eq!((gain.track, gain.tracks), (1, 1));
+    assert!(recorded.iter().all(|&t| t < gain.txn));
+    r.cmd(A::Undo);
+    r.run_to(r.frame + 1);
+    r.a.own_steps(&mut done, &mut redo);
+    assert_eq!(
+        (txns(&done), txns(&redo)),
+        (recorded.clone(), vec![gain.txn])
+    );
+    r.cmd(A::Redo);
+    r.run_to(r.frame + 1);
+    r.a.own_steps(&mut done, &mut redo);
+    assert_eq!(done.last(), Some(&gain));
+    assert!(redo.is_empty());
+    // Gains until the history is full: then each new one lets the oldest
+    // go, and says so.
+    while r.a.history().0 < HISTORY {
+        r.cmd(A::SetGain {
+            track: 0,
+            at: BAR_TICKS,
+            gain: 0.25,
+        });
+        r.run_to(r.frame + 1);
+    }
+    let before = r.a.own_steps(&mut done, &mut redo);
+    let full = txns(&done);
+    r.cmd(A::SetGain {
+        track: 0,
+        at: BAR_TICKS,
+        gain: 0.75,
+    });
+    r.run_to(r.frame + 1);
+    let let_go = r.a.own_steps(&mut done, &mut redo);
+    assert!(let_go > before);
+    assert_eq!(let_go, full[0]);
+    assert_eq!(txns(&done)[..full.len() - 1], full[1..]);
 }
 
 #[test]

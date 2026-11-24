@@ -108,7 +108,7 @@ pub fn speed_text(speed: i8) -> &'static str {
 
 /// A step as the undo history names it: layers by their place in the
 /// loop now ("Layer 3"), when they are in it.
-fn step_text(s: Step, layers: &[Option<LayerInfo>], rate: u32) -> String {
+pub fn step_text(s: Step, layers: &[Option<LayerInfo>], rate: u32) -> String {
     let name = |id: u8| {
         layers
             .iter()

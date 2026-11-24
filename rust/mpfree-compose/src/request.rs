@@ -80,6 +80,37 @@ pub struct Continued {
     /// The phrase plan the new bars follow (`None` from the first
     /// engine): Try again on picked bars works from it.
     pub sketch: Option<Sketch>,
+    /// What the critic changed in the draft it picked, in words, one line
+    /// a repair ("bar 6 made again so it lands"; S4). Empty when nothing
+    /// was repaired.
+    pub critic: Vec<String>,
+}
+
+/// The sound moves for a result of `req` at `level` ([`crate::sound`]):
+/// the sound following each new phrase, on the safe controls of the
+/// preset that plays it. Empty at Off, on drums, or for a result with no
+/// phrase plan.
+pub fn sound_of(
+    req: &Continue,
+    made: &Continued,
+    level: crate::sound::SoundLevel,
+) -> Vec<crate::sound::SoundMove> {
+    let Some(sk) = made.sketch.as_ref() else {
+        return Vec::new();
+    };
+    crate::sound::sound_moves(
+        &made.part,
+        &made.events,
+        &req.settings.style,
+        &crate::perform::Shaping {
+            sketch: sk,
+            yours: your_bars(req),
+            meter: req.meter,
+            bpm: req.bpm,
+            keep_accents: req.settings.keeps.accents,
+        },
+        level,
+    )
 }
 
 /// Why Continue made nothing.
@@ -95,6 +126,8 @@ pub enum Refused {
     Keep(KeepError),
     /// Try again on notes with none of the new notes among them.
     NoNewNotes,
+    /// A beat carried on made nothing ([`crate::beat`]).
+    Drums(crate::beat::DrumsRefused),
 }
 
 impl Refused {
@@ -107,6 +140,7 @@ impl Refused {
             Refused::NoNewNotes => {
                 "Pick some of the new notes to try them again: your own never change.".to_string()
             }
+            Refused::Drums(d) => d.words(),
         }
     }
 }
@@ -164,12 +198,13 @@ pub(crate) fn perform(
     chords: &ChordTimeline,
     line: &Line,
 ) -> (Part, Vec<Event>) {
-    perform_with(req, ph, plan, chords, line, true)
+    perform_with(req, ph, plan, chords, line, true, None)
 }
 
 /// [`perform`], with the style's slow drift (`drift`) or without it (the
 /// music-first engine, whose feel comes from the groove and the playing
-/// rules).
+/// rules), and with the sketch's phrases played as S3 plays them
+/// ([`crate::perform::shape`]) where there is one.
 pub(crate) fn perform_with(
     req: &Continue,
     ph: &Phrasing,
@@ -177,6 +212,7 @@ pub(crate) fn perform_with(
     chords: &ChordTimeline,
     line: &Line,
     drift: bool,
+    sketch: Option<&crate::sketch::Sketch>,
 ) -> (Part, Vec<Event>) {
     let s = req.settings;
     let mut style = s.style;
@@ -216,6 +252,20 @@ pub(crate) fn perform_with(
         s.seed,
         req.bpm,
     );
+    if let Some(sk) = sketch {
+        crate::perform::shape(
+            &mut part,
+            &heard,
+            &style,
+            &crate::perform::Shaping {
+                sketch: sk,
+                yours: your_bars(req),
+                meter: req.meter,
+                bpm: req.bpm,
+                keep_accents: s.keeps.accents,
+            },
+        );
+    }
     let events = realize(&part, &fit);
     (part, events)
 }
@@ -319,6 +369,7 @@ pub fn first_engine_keeping(
         notes,
         to,
         sketch: None,
+        critic: Vec::new(),
     })
 }
 
@@ -409,7 +460,31 @@ pub fn try_bars(
         notes,
         to: before.to,
         sketch: before.sketch.clone(),
+        critic: Vec::new(),
     })
+}
+
+/// An aimed try (S5): the new bars `bars` (every new bar when empty) tried
+/// again changing one thing, the rest kept ([`crate::draft::try_aimed`]).
+/// A result with no phrase plan (a beat's) gets a fresh try of the same
+/// bars.
+pub fn try_aimed(
+    req: &Continue,
+    before: &Continued,
+    aim: crate::settings::Aim,
+    bars: &[usize],
+    attempt: u16,
+) -> Result<Continued, Refused> {
+    if let Some(sk) = &before.sketch {
+        return crate::draft::try_aimed(req, before, sk, aim, bars, attempt);
+    }
+    let all: Vec<usize> = (your_bars(req)..before.plan.len()).collect();
+    try_bars(
+        req,
+        before,
+        if bars.is_empty() { &all } else { bars },
+        attempt,
+    )
 }
 
 /// Try the picked new notes again: `picked` are notes of the clip as it is
@@ -488,6 +563,7 @@ pub fn try_notes(
         notes,
         to: before.to,
         sketch: before.sketch.clone(),
+        critic: Vec::new(),
     })
 }
 
@@ -589,6 +665,13 @@ pub fn continue_clip_how(
     let Some(clip) = on.project.clip(on.track, on.slot) else {
         return (Err(Refused::NoClip), 0);
     };
+    if clip.holds == Holds::Hits && on.role == PartRole::Drums {
+        // A beat is carried on from itself: the row isn't read.
+        return (
+            crate::beat::continue_drum_clip_how(on, settings, kind, how),
+            0,
+        );
+    }
     if clip.holds != Holds::Notes {
         return (Err(Refused::PadHits), 0);
     }
@@ -844,8 +927,25 @@ mod tests {
         assert!(free.part.decisions.iter().any(|d| d.timing.play != 0.0));
         let on_grid = free.notes.iter().filter(|n| n.tick % STEP == 0).count();
         assert!(on_grid < free.notes.len(), "the drift moves notes");
+        // Its only playing offsets are the phrase's (S3), a few ms, and
+        // none with the style's gesture off.
         let plain = continue_notes(&ask(&notes, &ctx, &s)).unwrap();
-        assert!(plain.part.decisions.iter().all(|d| d.timing.play == 0.0));
+        let few = crate::timing::ms_to_ticks(30.0, 200.0) as f32;
+        assert!(plain
+            .part
+            .decisions
+            .iter()
+            .all(|d| d.timing.play.abs() < few));
+        assert!(plain.part.decisions.iter().any(|d| d.timing.play != 0.0));
+        let mut flat = s;
+        flat.style.playing.gesture = 0.0;
+        let typed = continue_notes(&ask(&notes, &ctx, &flat)).unwrap();
+        assert!(typed.part.decisions.iter().all(|d| d.timing.play == 0.0));
+        assert_eq!(
+            typed.notes.iter().map(|n| n.note).collect::<Vec<_>>(),
+            plain.notes.iter().map(|n| n.note).collect::<Vec<_>>(),
+            "the same notes, played or typed"
+        );
         // With drums read, the drummer's groove and no drift.
         ctx.groove = Some(mpfree_context::groove::GrooveTemplate::read(
             &[mpfree_context::groove::Hit {
@@ -856,7 +956,7 @@ mod tests {
             16,
             Swing::default(),
         ));
-        let grooved = continue_notes(&ask(&notes, &ctx, &s)).unwrap();
+        let grooved = continue_notes(&ask(&notes, &ctx, &flat)).unwrap();
         assert!(grooved.part.decisions.iter().all(|d| d.timing.play == 0.0));
         for (d, n) in grooved.part.decisions.iter().zip(&grooved.events) {
             assert_eq!(d.at, n.at);

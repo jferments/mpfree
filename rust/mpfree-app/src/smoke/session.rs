@@ -181,6 +181,9 @@ pub struct Session {
     pub time: time::TimeHost,
     pub panels: modpanels::Panels,
     pub looper: looping::LoopHost,
+    /// The one history across the engines (Dev's "Loops on audio
+    /// tracks"; these sessions run with it off, so it stays empty).
+    one_undo: crate::one_undo::OneUndo,
     /// The tempo a free first loop set, for the app at the next period
     /// (main.rs's `loop_tempo`).
     loop_tempo: Option<f64>,
@@ -353,6 +356,9 @@ pub struct Session {
     /// A set's song ending (live shows B1), as main.rs's audio loop runs
     /// it: its fade, and silence once over.
     song_end: crate::song_end::SongEnd,
+    /// Soundcheck's Muted (live shows B2b), as main.rs keeps it: nothing
+    /// heard once the period is measured.
+    muted: bool,
     /// The library the browser saves projects into (`with_library`).
     pub library: Option<mpfree_library::Library>,
     /// A save asked for (SHIFT + BROWSE, Save in the browser), and the
@@ -421,6 +427,7 @@ impl Session {
             // one more Redo can bring back, and what each first pass keeps
             // around it, with one more layer to move.
             looper: looping::LoopHost::new(RATE, 22),
+            one_undo: crate::one_undo::OneUndo::default(),
             tracks: audiotracks::TrackHost::new(RATE, 2),
             recorded_audio: None,
             music,
@@ -501,6 +508,7 @@ impl Session {
             xy_rec: crate::xy_rec::XyRec::new(),
             play_moves: crate::remote::PlayMoves::default(),
             song_end: crate::song_end::SongEnd::new(RATE),
+            muted: false,
             synth_turns: undo::Turns::default(),
             presets: crate::presets::TrackPresets::default(),
             mix_turns: undo::Turns::default(),
@@ -627,6 +635,7 @@ impl Session {
                 level_db: &mut self.level_db,
                 max_db: MAX_DB,
                 card: 0,
+                undo: &self.one_undo,
             },
             &mut self.out,
         )
@@ -2042,6 +2051,8 @@ impl Session {
             .period_arps(PERIOD as u32, &mut self.hits, &mut self.app.arps);
         // The pads' arp (sampler step 15c), as main.rs: on the clips' arps'
         // period, where the pads play on their own.
+        let synth = matches!(self.pads_preview(), Some(crate::PadsPreview::Synth));
+        self.app.set_pads_own(synth, self.pads_arp.phrase_at());
         let (mode, own_swing) = (self.app.pads_own_mode(), self.app.arp_own_swing());
         self.pads_arp
             .follow(self.app.arps.engine_at(self.app.track()), mode, own_swing);
@@ -2288,6 +2299,11 @@ impl Session {
             if let Some(n) = self.song_end.period(peak, &mut l, &mut r) {
                 self.out.show(ToUi::SongEnd(n));
             }
+        }
+        // Soundcheck's Muted, as main.rs: nothing leaves the outputs.
+        if self.muted {
+            l.fill(0.0);
+            r.fill(0.0);
         }
         // The kit's pads whose mute or solo came due, as main.rs lands them.
         if let Some(h) = self.heard.as_mut() {
@@ -2808,6 +2824,7 @@ impl Session {
                 self.out.note(&format!("show: the song ends: {end:?}"));
             }
             FromUi::SongEndReset => self.song_end.reset(),
+            FromUi::Muted(m) => self.muted = m,
             FromUi::OpenLoops(l) => self.looper.open(*l),
             FromUi::OpenAudio(a) => self.tracks.open(*a),
             FromUi::AudioFiles(dir) => self.tracks.record_to(dir),

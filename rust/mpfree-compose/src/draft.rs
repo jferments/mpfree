@@ -19,7 +19,7 @@
 //! ([`draft_keeping`]); Try again on picked bars fills them again from the
 //! result's plan, each keeping its anchor's note ([`try_bars_s1`]).
 
-use mpfree_context::chord::{ChordSpan, ChordTimeline, Heard as ChordHeard};
+use mpfree_context::chord::{Chord, ChordAnswer, ChordSpan, ChordTimeline, Heard as ChordHeard};
 use mpfree_context::groove::STEP;
 use mpfree_transport::time::Tick;
 
@@ -28,18 +28,33 @@ use crate::dice::{Dice, Job};
 use crate::keep::clip_notes;
 use crate::motif::{bar_of, motifs, transform, GridNote, Transform};
 use crate::phrase::{fit, BarOut, Line, NoteAs, Phrasing, Planned};
+use crate::plan::BarJob;
 use crate::plan::BarPlan;
+use crate::progression::diatonic;
 use crate::progression::{progression_led, Need};
 use crate::request::{
     chords_in_bar, perform_with, phrasing, splice, your_bars, Continue, Continued, Refused,
 };
 use crate::rhythm::{density_to, feel, rhythm_of, vary, Grid, Onset};
-use crate::settings::Settings;
+use crate::settings::{Aim, Ending, Settings};
 use crate::sketch::{borrowed, sketch, Anchor, AnchorKind, Gesture, Sketch, Surprise};
 use crate::style::Feel;
 
-/// Whole drafts made for one request (eight bars or fewer; two for more).
-pub const DRAFTS: u16 = 4;
+/// Whole drafts made for one request of eight bars or fewer (S4: up to
+/// 12, the critic picking the best and repairing it).
+pub const DRAFTS: u16 = 12;
+/// Drafts made for a request of more than eight bars.
+pub const DRAFTS_LONG: u16 = 4;
+/// The runner-up kept second differs from the best in at least this share
+/// of its new notes (S4: finalists kept different).
+pub const DIFFER: f32 = 0.3;
+/// Fresh fillings tried on each bar while repairing.
+const REPAIR_ATTEMPTS: u16 = 3;
+/// At most this many repairs on the picked draft.
+const REPAIRS: usize = 2;
+/// Repair's dice start well past Try again's, so a repair is never one of
+/// your tries.
+const REPAIR_DICE: u16 = 512;
 
 /// One draft, judged.
 #[derive(Clone, Debug)]
@@ -87,12 +102,22 @@ pub fn drafts_keeping(
     req: &Continue,
     keeping: Option<(&Continued, &[usize])>,
 ) -> Result<Vec<Draft>, Refused> {
+    drafts_with(req, keeping, None)
+}
+
+/// [`drafts_keeping`], leading into another clip's opening when `into`
+/// says (a Bridge, [`crate::bridge`]; not repaired).
+pub(crate) fn drafts_with(
+    req: &Continue,
+    keeping: Option<(&Continued, &[usize])>,
+    into: Option<&Into>,
+) -> Result<Vec<Draft>, Refused> {
     let n = usize::from(req.settings.bars.max(1));
-    let count = if n > 8 { 2 } else { DRAFTS };
+    let count = if n > 8 { DRAFTS_LONG } else { DRAFTS };
     let mut out: Vec<Draft> = Vec::new();
     let mut first_err: Option<Refused> = None;
     for d in 0..count {
-        match draft_keeping(req, d, keeping) {
+        match draft_with(req, d, keeping, into) {
             Ok(x) => out.push(x),
             Err(e) => {
                 first_err.get_or_insert(e);
@@ -109,7 +134,161 @@ pub fn drafts_keeping(
             .then(b.verdict.score().total_cmp(&a.verdict.score()))
             .then(a.number.cmp(&b.number))
     });
+    let yours = your_bars(req);
+    let from = yours as i32 * phrasing(req, &ChordTimeline::default()).grid.bar;
+    finalists(&mut out, from);
+    let kept = kept_bars(keeping, yours, yours + n);
+    if let (Some(best), None) = (out.first_mut(), into) {
+        repair(req, best, &kept);
+    }
     Ok(out)
+}
+
+/// Where a Bridge leads ([`crate::bridge`]): the next clip's first note,
+/// as a scale place in this clip's key, the chord degrees that lead into
+/// its first chord, and its bars (from each bar's start), which the
+/// second half of the new bars grow from.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Into {
+    pub pos: i32,
+    pub chords: Vec<u8>,
+    pub bars: Vec<Vec<GridNote>>,
+}
+
+/// How far two results' new notes (from step `from`) differ: the share of
+/// the larger set of notes, by place and pitch, the other doesn't have.
+pub fn difference(a: &Continued, b: &Continued, from: i32) -> f32 {
+    let notes = |c: &Continued| -> Vec<(i32, i32, i8)> {
+        let mut v: Vec<(i32, i32, i8)> = c
+            .line
+            .notes
+            .iter()
+            .filter(|m| m.on >= from)
+            .map(|m| (m.on, m.pos, m.alt))
+            .collect();
+        v.sort_unstable();
+        v
+    };
+    let (x, y) = (notes(a), notes(b));
+    let most = x.len().max(y.len());
+    if most == 0 {
+        return 0.0;
+    }
+    let shared = x.iter().filter(|n| y.binary_search(n).is_ok()).count();
+    1.0 - shared as f32 / most as f32
+}
+
+/// The best draft stays first; the best of the rest that differs from it
+/// by [`DIFFER`] or more comes second, so a runner-up is a real choice.
+fn finalists(out: &mut Vec<Draft>, from: i32) {
+    if out.len() < 3 {
+        return;
+    }
+    if let Some(j) =
+        (1..out.len()).find(|&j| difference(&out[0].made, &out[j].made, from) >= DIFFER)
+    {
+        if j != 1 {
+            let d = out.remove(j);
+            out.insert(1, d);
+        }
+    }
+}
+
+/// The critic's verdict on a result made from `sk` (a draft, or a draft
+/// with bars made again): its anchors' notes as the landings.
+pub(crate) fn verdict_for(req: &Continue, made: &Continued, sk: &Sketch) -> Verdict {
+    let s = req.settings;
+    let ph = phrasing(req, &made.chords);
+    let landings: Vec<Landing> = sk
+        .anchors
+        .iter()
+        .filter_map(|a| {
+            let m = made.line.notes.iter().find(|m| m.on == a.on)?;
+            Some(Landing {
+                on: a.on,
+                pos: m.pos,
+                alt: m.alt,
+            })
+        })
+        .collect();
+    judge(&Heard {
+        notes: &made.line.notes,
+        your_bars: your_bars(req),
+        bars: your_bars(req) + usize::from(s.bars.max(1)),
+        grid: ph.grid,
+        key: ph.key,
+        chords: &made.chords,
+        ending: s.ending,
+        copy_bars: copy_bars(&s.style),
+        landings: &landings,
+        rests: if s.keeps.rhythm { &[] } else { &sk.rests },
+        lead_to: None,
+    })
+}
+
+/// A check's name as the critic's words say it was put right.
+fn fixed_words(check: &str) -> &'static str {
+    match check {
+        "goes somewhere" => "it goes somewhere",
+        "lands" => "it lands",
+        "breathes" => "it breathes",
+        "yours" => "your idea is heard",
+        "not too repetitive" => "it no longer repeats",
+        _ => "it flows",
+    }
+}
+
+/// Repair the picked draft in place (S4): where a check fails, each new
+/// bar but those you locked is made again a few ways around its anchor
+/// ([`try_bars_s1`]), and the one that puts most right is kept, so long as
+/// every check that passed still passes. At most [`REPAIRS`] repairs, each
+/// said in words on the result ([`Continued::critic`]).
+fn repair(req: &Continue, d: &mut Draft, kept: &[usize]) {
+    let yours = your_bars(req);
+    let total = yours + usize::from(req.settings.bars.max(1));
+    for _ in 0..REPAIRS {
+        let was: Vec<bool> = d.verdict.checks().iter().map(|(_, c)| c.pass).collect();
+        if was.iter().all(|&p| p) {
+            return;
+        }
+        let mut found: Option<(usize, Continued, Verdict)> = None;
+        for b in (yours..total).filter(|b| !kept.contains(b)) {
+            for k in 0..REPAIR_ATTEMPTS {
+                let dice = REPAIR_DICE + (b as u16) * REPAIR_ATTEMPTS + k;
+                let Ok(c) = try_bars_s1(req, &d.made, &d.sketch, &[b], dice) else {
+                    continue;
+                };
+                let v = verdict_for(req, &c, &d.sketch);
+                let now: Vec<bool> = v.checks().iter().map(|(_, c)| c.pass).collect();
+                let keeps = was.iter().zip(&now).all(|(&a, &b)| !a || b);
+                let best = found.as_ref().map_or(&d.verdict, |f| &f.2);
+                let more = v.passed() > best.passed()
+                    || (found.is_some() && v.passed() == best.passed() && v.score() > best.score());
+                if keeps && v.passed() > d.verdict.passed() && more {
+                    found = Some((b, c, v));
+                }
+            }
+        }
+        let Some((b, mut c, v)) = found else {
+            return;
+        };
+        let put_right: Vec<&str> = d
+            .verdict
+            .checks()
+            .iter()
+            .zip(v.checks().iter())
+            .filter(|((_, a), (_, b))| !a.pass && b.pass)
+            .map(|((name, _), _)| fixed_words(name))
+            .collect();
+        c.critic = d.made.critic.clone();
+        c.critic.push(format!(
+            "bar {} made again so {}",
+            b + 1,
+            put_right.join(" and ")
+        ));
+        d.made = c;
+        d.verdict = v;
+    }
 }
 
 /// The ceiling for the notes of every bar but the high point's: a step
@@ -258,7 +437,42 @@ fn material(
     let velocity = src
         .first()
         .map_or(ph.style.playing.velocity, |m| m.velocity);
+    // Keep yours: Rhythm holds your rhythm exactly, so a fixed note takes
+    // the onset of yours nearest it (a close takes the bar's last) with its
+    // length, and the rest of your bar plays round it.
+    let anchor = match anchor {
+        Some(a) if settings.keeps.rhythm => {
+            let r = rhythm_of(src, grid);
+            let pick = if a.kind == AnchorKind::Close {
+                r.last()
+            } else {
+                r.iter().min_by_key(|o| ((o.on - a.on).abs(), o.on))
+            };
+            Some(pick.map_or(a, |o| Fixed {
+                on: o.on,
+                len: o.len,
+                ..a
+            }))
+        }
+        a => a,
+    };
     let mut planned: Vec<Planned> = match (g, anchor) {
+        (_, Some(a)) if settings.keeps.rhythm => {
+            // Your tune moved so its note there is the fixed one.
+            let r = rhythm_of(src, grid);
+            let at = src
+                .iter()
+                .rev()
+                .find(|m| m.on <= a.on)
+                .or(src.first())
+                .map_or(a.pos, |m| m.pos);
+            let tune = transform(src, Transform::Move(a.pos - at));
+            let mut v = aimed(&r, &tune);
+            for p in v.iter_mut().filter(|p| p.on == a.on) {
+                p.target = Some(note(a.on, a.len, a.pos, a.alt, velocity));
+            }
+            v
+        }
         (_, Some(a)) => {
             // Your bar's rhythm up to the anchor, your tune moved so it
             // arrives a step away (from below rising to a landing or the
@@ -350,7 +564,10 @@ fn material(
             let near = tune.last().map_or(ph.centre, |m| m.pos);
             let below = (near - degree).rem_euclid(7);
             let end = near - below + if below > 3 { 7 } else { 0 };
-            let tune = transform(&tune, Transform::EndOn(end));
+            let mut tune = transform(&tune, Transform::EndOn(end));
+            if settings.character.brief().turns {
+                turn(&mut tune, dice);
+            }
             let r = reshaped(ph, bp, settings, src, 0.5, true, dice);
             aimed(&r, &tune)
         }
@@ -370,7 +587,9 @@ fn material(
             let mut tune = a;
             tune.extend(b);
             tune.retain(|m| m.on < grid.bar);
-            let r = reshaped(ph, bp, settings, &tune, 0.4, true, dice);
+            // Keep yours: Rhythm plays the developed tune in your rhythm.
+            let from = if settings.keeps.rhythm { src } else { &tune };
+            let r = reshaped(ph, bp, settings, from, 0.4, true, dice);
             aimed(&r, &tune)
         }
         (Gesture::HoldBack, None) => {
@@ -381,11 +600,15 @@ fn material(
                 .filter(|m| m.on < grid.half())
                 .take(3)
                 .collect();
-            let mut r = rhythm_of(&tune, grid);
-            if let Some(l) = r.last_mut() {
-                l.len = (grid.bar - beat - l.on).max(l.len);
+            if settings.keeps.rhythm {
+                aimed(&rhythm_of(src, grid), &tune)
+            } else {
+                let mut r = rhythm_of(&tune, grid);
+                if let Some(l) = r.last_mut() {
+                    l.len = (grid.bar - beat - l.on).max(l.len);
+                }
+                aimed(&r, &tune)
             }
-            aimed(&r, &tune)
         }
         (_, None) => {
             // A set-up: your tune climbing, its rhythm reshaped.
@@ -411,6 +634,16 @@ fn material(
         let next = planned.get(i + 1).map_or(grid.bar, |p| p.on);
         planned[i].len = planned[i].len.min(next - planned[i].on).max(1);
     }
+    // A character's short notes (Playful, Urgent): every note but the
+    // anchor, down to a step.
+    let length = settings.character.brief().length;
+    if length < 1.0 {
+        for p in planned.iter_mut() {
+            if anchor.is_none_or(|a| p.on != a.on) && p.len >= 2 {
+                p.len = ((p.len as f32 * length).round() as i32).max(1);
+            }
+        }
+    }
     let mut notes_as: Vec<NoteAs> = planned
         .iter()
         .map(|p| match anchor {
@@ -435,6 +668,20 @@ fn material(
         }
     }
     (planned, notes_as)
+}
+
+/// One jump that turns back (Playful): a note of the tune's middle leaps
+/// a fourth above the one before it and the next steps back down.
+fn turn(tune: &mut [GridNote], dice: &mut Dice) {
+    if tune.len() < 4 {
+        return;
+    }
+    let j = 1 + dice.below(tune.len() - 3);
+    let top = tune[j - 1].pos + 3;
+    tune[j].pos = top;
+    tune[j].alt = 0;
+    tune[j + 1].pos = top - 1;
+    tune[j + 1].alt = 0;
 }
 
 /// The plan's rests in bar `b`: planned notes starting in one go (never a
@@ -484,9 +731,20 @@ struct Frame<'a, 'b> {
     under: Option<u8>,
     your_bars: &'b [Vec<GridNote>],
     head: &'b [GridNote],
+    /// From this bar on, the bars grow from these instead of yours (a
+    /// Bridge's second half, from the next clip's bars).
+    late: Option<(usize, &'b [Vec<GridNote>])>,
 }
 
 impl Frame<'_, '_> {
+    /// The bar new bar `b` grows from.
+    fn src(&self, b: usize) -> &[GridNote] {
+        match self.late {
+            Some((from, bars)) if b >= from && !bars.is_empty() => &bars[(b - from) % bars.len()],
+            _ => &self.your_bars[b % self.your_bars.len()],
+        }
+    }
+
     /// The next bar's anchor, when it falls on that bar's downbeat.
     fn anchor_after(&self, b: usize) -> Option<i32> {
         let at = (b as i32 + 1) * self.ph.grid.bar;
@@ -516,7 +774,7 @@ impl Frame<'_, '_> {
         let bp = self.sketch.plan[b];
         let mut rd = ph.dice(s, Job::Rhythm, b, attempt);
         let mut pd = ph.dice(s, Job::Pitch, b, attempt);
-        let src = &self.your_bars[b % self.your_bars.len()];
+        let src = self.src(b);
         let anchor = self.fixed.iter().find(|f| f.bar == b).map(|f| Fixed {
             on: f.on - off,
             ..*f
@@ -588,6 +846,16 @@ pub fn draft_keeping(
     d: u16,
     keeping: Option<(&Continued, &[usize])>,
 ) -> Result<Draft, Refused> {
+    draft_with(req, d, keeping, None)
+}
+
+/// [`draft_keeping`], leading into `into` when given.
+pub(crate) fn draft_with(
+    req: &Continue,
+    d: u16,
+    keeping: Option<(&Continued, &[usize])>,
+    into: Option<&Into>,
+) -> Result<Draft, Refused> {
     let s = req.settings;
     let yours = your_bars(req);
     let total = yours + usize::from(s.bars.max(1));
@@ -601,7 +869,16 @@ pub fn draft_keeping(
     let ph0 = phrasing(req, &empty);
     let grid: Grid = ph0.grid;
     let gb = grid.bar;
-    let sk = sketch(&ph0, s, total, d);
+    let mut sk = sketch(&ph0, s, total, d);
+    if let Some(i) = into {
+        // The last note leads into the next clip's first, over a chord
+        // leading into its first chord.
+        if let Some(c) = sk.anchors.iter_mut().find(|a| a.kind == AnchorKind::Close) {
+            c.aim = i.pos;
+            c.notes = vec![i.pos.rem_euclid(7), 4];
+            c.chords = i.chords.clone();
+        }
+    }
     let kept = kept_bars(keeping, yours, total);
     let is_kept = |b: usize| kept.contains(&b);
     let old = keeping.map(|(before, _)| before);
@@ -650,6 +927,20 @@ pub fn draft_keeping(
             }
         })
         .collect();
+    // Tense: the last bar starts on the five chord, its landing held off,
+    // where the style's chords may change inside a bar.
+    let half_bar_chords = i32::from(s.style.harmony.window_steps) * 2 <= gb;
+    if s.character.brief().pull && half_bar_chords {
+        if let Some(c) = sk.anchors.iter().find(|a| a.kind == AnchorKind::Close) {
+            let start = c.bar as i32 * gb;
+            if !fixed(c.bar) && c.on > start {
+                needs.push(Need::Degrees {
+                    at: Tick::from(start) * STEP,
+                    degrees: vec![4],
+                });
+            }
+        }
+    }
     if let (Some(Surprise::Borrowed { bar }), Some(k)) = (sk.surprise, key) {
         if !fixed(bar) {
             let at = (bar as i32 * gb + grid.half()) as Tick * STEP;
@@ -757,6 +1048,7 @@ pub fn draft_keeping(
         under,
         your_bars: &your_bars,
         head: &head,
+        late: into.map(|x| (yours + (total - yours) / 2, x.bars.as_slice())),
     };
     let mut notes: Vec<GridNote> = ph
         .yours
@@ -786,6 +1078,7 @@ pub fn draft_keeping(
                     })
                     .flatten()
             })
+            .or_else(|| (b + 1 == total).then(|| into.map(|x| x.pos)).flatten())
             .or_else(|| {
                 (b + 1 == total && req.loops)
                     .then(|| ph.yours.first().map(|m| m.pos))
@@ -810,7 +1103,7 @@ pub fn draft_keeping(
         gave_way,
         tried,
     };
-    let (mut part, mut events) = perform_with(req, &ph, &sk.plan, &chords, &line, false);
+    let (mut part, mut events) = perform_with(req, &ph, &sk.plan, &chords, &line, false, Some(&sk));
     if let Some(o) = old {
         // The kept bars as they were played, exactly.
         let free = |at: Tick| !is_kept(at.div_euclid(bar_ticks) as usize);
@@ -837,6 +1130,7 @@ pub fn draft_keeping(
         copy_bars: copy_bars(&s.style),
         landings: &landings,
         rests: if s.keeps.rhythm { &[] } else { &sk.rests },
+        lead_to: into.map(|i| i.pos),
     });
     Ok(Draft {
         number: d,
@@ -849,6 +1143,7 @@ pub fn draft_keeping(
             notes: clip,
             to,
             sketch: Some(sk.clone()),
+            critic: Vec::new(),
         },
         sketch: sk,
         verdict,
@@ -867,10 +1162,47 @@ pub fn try_bars_s1(
     bars: &[usize],
     attempt: u16,
 ) -> Result<Continued, Refused> {
+    refill(
+        req,
+        before,
+        sk,
+        bars,
+        TRY_ATTEMPTS + attempt,
+        Refill {
+            steer_off: true,
+            ..Refill::default()
+        },
+    )
+}
+
+/// How [`refill`] fills its bars again.
+#[derive(Clone, Copy, Default)]
+struct Refill<'c> {
+    /// Free notes steer off the notes the bar had (Try again); an aimed
+    /// try keeps near them.
+    steer_off: bool,
+    /// The chords in place of the result's (Land it's home chord).
+    chords: Option<&'c ChordTimeline>,
+    /// The refilled bars' anchors take a note afresh from the plan, in
+    /// place of the note they had (Land it's new last note).
+    fresh_anchors: bool,
+}
+
+/// Fill the new bars `bars` of `before` again from the plan `sk` with
+/// dice `attempt`; see [`try_bars_s1`] and [`try_aimed`].
+fn refill(
+    req: &Continue,
+    before: &Continued,
+    sk: &Sketch,
+    bars: &[usize],
+    attempt: u16,
+    how: Refill,
+) -> Result<Continued, Refused> {
     let s = req.settings;
     let yours = your_bars(req);
     let total = before.plan.len().min(yours + sk.gestures.len());
-    let mut ph = phrasing(req, &before.chords);
+    let chords = how.chords.unwrap_or(&before.chords);
+    let mut ph = phrasing(req, chords);
     ph.music_first = true;
     let gb = ph.grid.bar;
     let mut tried_bars: Vec<usize> = bars
@@ -880,10 +1212,13 @@ pub fn try_bars_s1(
         .collect();
     tried_bars.sort_unstable();
     tried_bars.dedup();
-    // The anchors with the notes they have now.
-    let fixed: Vec<Fixed> = sk
+    // The anchors with the notes they have now (or, refilled afresh, the
+    // note the plan asks under the high point).
+    let fresh = |a: &Anchor| how.fresh_anchors && tried_bars.contains(&a.bar);
+    let mut fixed: Vec<Fixed> = sk
         .anchors
         .iter()
+        .filter(|a| !fresh(a))
         .filter_map(|a| {
             let m = before.line.notes.iter().find(|m| m.on == a.on)?;
             Some(Fixed {
@@ -900,6 +1235,18 @@ pub fn try_bars_s1(
         .iter()
         .find(|f| f.kind == AnchorKind::Peak)
         .map(|f| ph.key.pitch_at(f.pos, f.alt).saturating_sub(1));
+    for a in sk.anchors.iter().filter(|a| fresh(a)) {
+        if let Some((pos, alt)) = resolve(&ph, s, a, under, None) {
+            fixed.push(Fixed {
+                kind: a.kind,
+                bar: a.bar,
+                on: a.on,
+                len: a.len,
+                pos,
+                alt,
+            });
+        }
+    }
     let (your_bars, head) = yours_for(&ph);
     let frame = Frame {
         ph: &ph,
@@ -909,6 +1256,7 @@ pub fn try_bars_s1(
         under,
         your_bars: &your_bars,
         head: &head,
+        late: None,
     };
     let mut notes = before.line.notes.clone();
     let mut sims = before.line.similarity.clone();
@@ -938,7 +1286,8 @@ pub fn try_bars_s1(
                     .then(|| ph.yours.first().map(|m| m.pos))
                     .flatten()
             });
-        match frame.bar(b, &prior, next_first, TRY_ATTEMPTS + attempt, &was)? {
+        let avoid: &[GridNote] = if how.steer_off { &was } else { &[] };
+        match frame.bar(b, &prior, next_first, attempt, avoid)? {
             Some(out) => {
                 tried += out.tried;
                 gave_way.extend(out.gave_way.iter().map(|&r| (b as u16 + 1, r)));
@@ -959,21 +1308,22 @@ pub fn try_bars_s1(
         gave_way,
         tried,
     };
-    let (mut part, events) = perform_with(req, &ph, &before.plan, &before.chords, &line, false);
+    let (mut part, events) = perform_with(req, &ph, &sk.plan, chords, &line, false, Some(sk));
     let bt = req.meter.bar_ticks().max(1);
     let inside = |at: Tick| tried_bars.contains(&(at.div_euclid(bt) as usize));
     let (ds, events) = splice(before, &part, &events, &inside);
     part.decisions = ds;
     let clip = clip_notes(&events, req.bpm, before.to)?;
     Ok(Continued {
-        plan: before.plan.clone(),
-        chords: before.chords.clone(),
+        plan: sk.plan.clone(),
+        chords: chords.clone(),
         line,
         part,
         events,
         notes: clip,
         to: before.to,
         sketch: Some(sk.clone()),
+        critic: Vec::new(),
     })
 }
 
@@ -981,12 +1331,262 @@ pub fn try_bars_s1(
 /// same as another draft's.
 const TRY_ATTEMPTS: u16 = 64;
 
+/// Aimed tries' dice start past Try again's and repair's.
+const AIM_ATTEMPTS: u16 = 768;
+/// Busier and Calmer: times the tried bars' activity.
+const BUSIER: f32 = 1.6;
+const CALMER: f32 = 0.6;
+/// Less bright and Brighter: how far the sound's brightness moves (with
+/// Sound on), and the loudness, times.
+const TONE: f32 = 0.35;
+const SOFTER: f64 = 0.88;
+const HARDER: f64 = 1.1;
+
+/// An aimed try (S5): `before`'s new bars `bars` (every new bar when
+/// empty) tried again changing one thing, the rest kept. Busier and Calmer
+/// fill the bars again from the same plan, more or less busy, each anchor
+/// keeping its note and free notes keeping near the ones they had; Land
+/// it makes the last bar land home on its downbeat over the home chord;
+/// Less bright and Brighter move the same notes a third lower or higher
+/// (a step when a third leaves the range or undoes a passing check, else
+/// none), softer or harder, and the sound darker or opener with Sound on
+/// ([`Sketch::tone`]). Different dice give a different try of the same
+/// aim.
+pub fn try_aimed(
+    req: &Continue,
+    before: &Continued,
+    sk: &Sketch,
+    aim: Aim,
+    bars: &[usize],
+    attempt: u16,
+) -> Result<Continued, Refused> {
+    let yours = your_bars(req);
+    let total = before.plan.len().min(yours + sk.gestures.len());
+    let mut tried: Vec<usize> = if bars.is_empty() {
+        (yours..total).collect()
+    } else {
+        bars.iter()
+            .copied()
+            .filter(|&b| b >= yours && b < total)
+            .collect()
+    };
+    tried.sort_unstable();
+    tried.dedup();
+    if tried.is_empty() {
+        return Err(Refused::NoNewNotes);
+    }
+    let dice = AIM_ATTEMPTS + attempt;
+    let mut sk = sk.clone();
+    match aim {
+        Aim::Busier | Aim::Calmer => {
+            let k = if aim == Aim::Busier { BUSIER } else { CALMER };
+            for &b in &tried {
+                if let Some(bp) = sk.plan.get_mut(b) {
+                    bp.activity *= k;
+                }
+            }
+            refill(req, before, &sk, &tried, dice, Refill::default())
+        }
+        Aim::LandIt => {
+            let last = total - 1;
+            let ph = phrasing(req, &before.chords);
+            let gb = ph.grid.bar;
+            let start = last as i32 * gb;
+            let home = {
+                let h = ph.centre - ph.centre.rem_euclid(7);
+                if ph.centre - h > 4 {
+                    h + 7
+                } else {
+                    h
+                }
+            };
+            sk.anchors.retain(|a| a.bar != last);
+            sk.anchors.push(Anchor {
+                kind: AnchorKind::Close,
+                bar: last,
+                on: start,
+                len: gb,
+                aim: home,
+                notes: vec![0, 2, 4],
+                chords: vec![0],
+            });
+            sk.anchors.sort_by_key(|a| a.on);
+            sk.rests.retain(|&(f, t)| t <= start || f >= start + gb);
+            if let Some(g) = sk.gestures.get_mut(last - yours) {
+                *g = Gesture::Close(Ending::Home);
+            }
+            if let Some(bp) = sk.plan.get_mut(last) {
+                bp.job = BarJob::Land(Ending::Home);
+            }
+            let chords = ph.clear.then(|| {
+                home_under(
+                    &before.chords,
+                    diatonic(ph.key, 0, false),
+                    last,
+                    req.meter.bar_ticks().max(1),
+                )
+            });
+            refill(
+                req,
+                before,
+                &sk,
+                &[last],
+                dice,
+                Refill {
+                    steer_off: false,
+                    chords: chords.as_ref(),
+                    fresh_anchors: true,
+                },
+            )
+        }
+        Aim::LessBright | Aim::Brighter => register(req, before, sk, &tried, aim),
+    }
+}
+
+/// `chords` with bar `b` on `home` alone.
+fn home_under(chords: &ChordTimeline, home: Chord, b: usize, bar: Tick) -> ChordTimeline {
+    let (from, to) = (b as Tick * bar, (b as Tick + 1) * bar);
+    let mut spans: Vec<ChordSpan> = Vec::new();
+    for s in chords.spans() {
+        if s.start < from {
+            spans.push(ChordSpan {
+                len: s.end().min(from) - s.start,
+                ..*s
+            });
+        }
+    }
+    let at = spans.last().map_or(0, |s| s.end());
+    if at < from {
+        spans.push(ChordSpan::new(
+            at,
+            from - at,
+            ChordAnswer::NoClearChord,
+            ChordHeard::Suggested,
+        ));
+    }
+    spans.push(ChordSpan::new(
+        from,
+        bar,
+        ChordAnswer::Chord(home),
+        ChordHeard::Suggested,
+    ));
+    for s in chords.spans() {
+        if s.end() > to {
+            let a = s.start.max(to);
+            spans.push(ChordSpan {
+                start: a,
+                len: s.end() - a,
+                ..*s
+            });
+        }
+    }
+    spans.retain(|s| s.len > 0);
+    ChordTimeline::new(spans).unwrap_or_else(|_| chords.clone())
+}
+
+/// Less bright and Brighter (see [`try_aimed`]).
+fn register(
+    req: &Continue,
+    before: &Continued,
+    mut sk: Sketch,
+    tried: &[usize],
+    aim: Aim,
+) -> Result<Continued, Refused> {
+    let dir = if aim == Aim::LessBright { -1 } else { 1 };
+    sk.tone = (sk.tone + dir as f32 * TONE).clamp(-1.0, 1.0);
+    let mut ph = phrasing(req, &before.chords);
+    ph.music_first = true;
+    let gb = ph.grid.bar;
+    let (lo, hi) = ph.pitches(req.settings.range).unwrap_or((0, 127));
+    let inside = |on: i32| tried.contains(&(on.div_euclid(gb) as usize));
+    let was = verdict_for(req, before, &sk);
+    let loud = if dir < 0 { SOFTER } else { HARDER };
+    let bt = req.meter.bar_ticks().max(1);
+    let in_tried = |at: Tick| tried.contains(&(at.div_euclid(bt) as usize));
+    let mut last_err = None;
+    for steps in [2, 1, 0] {
+        let mut line = before.line.clone();
+        let mut fits = true;
+        let moved = line.notes.iter_mut().filter(|m| steps > 0 && inside(m.on));
+        for m in moved {
+            let chord = ph
+                .chords
+                .span_at(Tick::from(m.on) * STEP)
+                .and_then(|s| s.answer.chord());
+            let tone = |pos: i32| {
+                chord.is_none_or(|c| c.tone_of(i32::from(ph.key.pitch_at(pos, 0))).is_some())
+            };
+            let on_chord = tone(m.pos) && m.alt == 0;
+            let mut pos = m.pos + dir * steps;
+            if on_chord && !tone(pos) {
+                // A chord note stays a chord note: one more step, else
+                // one back.
+                pos = if tone(pos + dir) {
+                    pos + dir
+                } else {
+                    pos - dir
+                };
+            }
+            let pitch = ph.key.pitch_at(pos, 0);
+            if pitch < lo || pitch > hi {
+                fits = false;
+                break;
+            }
+            m.pos = pos;
+            m.alt = 0;
+        }
+        if !fits {
+            continue;
+        }
+        let (mut part, mut events) =
+            perform_with(req, &ph, &sk.plan, &before.chords, &line, false, Some(&sk));
+        for (d, e) in part.decisions.iter_mut().zip(events.iter_mut()) {
+            if in_tried(d.at) {
+                d.velocity = (f64::from(d.velocity) * loud).round().clamp(20.0, 127.0) as u8;
+                e.velocity = d.velocity;
+            }
+        }
+        let (ds, events) = splice(before, &part, &events, &in_tried);
+        part.decisions = ds;
+        let clip = match clip_notes(&events, req.bpm, before.to) {
+            Ok(c) => c,
+            Err(e) => {
+                last_err = Some(e.into());
+                continue;
+            }
+        };
+        let made = Continued {
+            plan: sk.plan.clone(),
+            chords: before.chords.clone(),
+            line,
+            part,
+            events,
+            notes: clip,
+            to: before.to,
+            sketch: Some(sk.clone()),
+            critic: Vec::new(),
+        };
+        let now = verdict_for(req, &made, &sk);
+        let kept = was
+            .checks()
+            .iter()
+            .zip(now.checks().iter())
+            .all(|((_, a), (_, b))| !a.pass || b.pass);
+        if kept || steps == 0 {
+            return Ok(made);
+        }
+    }
+    Err(last_err.unwrap_or(Refused::NoNewNotes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::event::Source;
     use crate::profile::InstrumentKind;
+    use crate::settings::Character;
     use crate::style::{Style, GROOVE, JAZZISH, MINIMAL};
+    use crate::timing::ms_to_ticks;
     use crate::PlainNote;
     use mpfree_context::listen::{listen, Played};
     use mpfree_context::{MusicalContext, PartRole, ReadBudget};
@@ -1076,6 +1676,51 @@ mod tests {
     }
 
     #[test]
+    fn keep_yours_rhythm_holds_your_rhythm_in_every_new_bar() {
+        let notes = riff();
+        let ctx = context(&notes);
+        let yours = |b: i32| -> Vec<i32> {
+            let mut v: Vec<i32> = notes
+                .iter()
+                .map(|(n, _)| (n.at / STEP) as i32)
+                .filter(|&on| on / 16 == b)
+                .map(|on| on % 16)
+                .collect();
+            v.dedup();
+            v
+        };
+        let mine = [yours(0), yours(1)];
+        for style in [MINIMAL, GROOVE, JAZZISH] {
+            for ending in [Ending::Home, Ending::Open, Ending::LoopsBack] {
+                for seed in 1..=3 {
+                    let mut s = settings(style, 8, seed);
+                    s.keeps.rhythm = true;
+                    s.ending = ending;
+                    let req = ask(&notes, &ctx, &s);
+                    let best = drafts(&req).unwrap().remove(0);
+                    for b in 2..10 {
+                        let mut ons: Vec<i32> = best
+                            .made
+                            .line
+                            .notes
+                            .iter()
+                            .filter(|g| g.on / 16 == b)
+                            .map(|g| g.on % 16)
+                            .collect();
+                        ons.dedup();
+                        assert!(
+                            mine.contains(&ons),
+                            "{} {ending:?} seed {seed}: bar {} plays {ons:?}, not your rhythm",
+                            style.name,
+                            b + 1
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn every_draft_plays_its_plan_the_same_way_twice() {
         let notes = riff();
         let ctx = context(&notes);
@@ -1085,7 +1730,7 @@ mod tests {
                 let req = ask(&notes, &ctx, &s);
                 let all = drafts(&req).unwrap();
                 assert_eq!(all.len(), usize::from(DRAFTS));
-                for d in &all {
+                for d in all.iter().filter(|d| d.made.critic.is_empty()) {
                     let again = draft(&req, d.number).unwrap();
                     assert_eq!(
                         again.made, d.made,
@@ -1181,12 +1826,82 @@ mod tests {
             let s = settings(GROOVE, bars, 5);
             let req = ask(&notes, &ctx, &s);
             let all = drafts(&req).unwrap();
-            assert_eq!(all.len(), if bars > 8 { 2 } else { 4 }, "{bars} bars");
+            assert_eq!(
+                all.len(),
+                usize::from(if bars > 8 { DRAFTS_LONG } else { DRAFTS }),
+                "{bars} bars"
+            );
             let made = continue_s1(&req).unwrap();
             assert_eq!(made, all[0].made);
             assert_eq!(made.to, (2 + Tick::from(bars)) * BAR);
             assert!(!made.notes.is_empty(), "{bars} bars");
         }
+    }
+
+    /// S4: the second draft is a real choice, and a draft that fails a
+    /// check is repaired in place: a bar made again, the check put right,
+    /// nothing that passed broken, your locked bars untouched, and the
+    /// repair said in words.
+    #[test]
+    fn the_runner_up_differs_and_a_weak_draft_is_repaired() {
+        let notes = riff();
+        let ctx = context(&notes);
+        let from = 2 * 16;
+        let (mut tried, mut repaired) = (0, 0);
+        for style in [MINIMAL, GROOVE, JAZZISH] {
+            for seed in 1..=6 {
+                let s = settings(style, 8, seed);
+                let req = ask(&notes, &ctx, &s);
+                let all = drafts(&req).unwrap();
+                if (1..all.len()).any(|j| difference(&all[0].made, &all[j].made, from) >= DIFFER) {
+                    assert!(
+                        difference(&all[0].made, &all[1].made, from) >= DIFFER,
+                        "{} seed {seed}: the runner-up is a real choice",
+                        style.name
+                    );
+                }
+                for d in all.iter().filter(|d| d.verdict.passed() < 6) {
+                    tried += 1;
+                    let mut fixed = d.clone();
+                    let locked = [7];
+                    repair(&req, &mut fixed, &locked);
+                    if fixed.made.critic.is_empty() {
+                        assert_eq!(fixed.made, d.made, "no repair: nothing changes");
+                        continue;
+                    }
+                    repaired += 1;
+                    assert!(fixed.verdict.passed() > d.verdict.passed());
+                    for ((name, a), (_, b)) in
+                        d.verdict.checks().iter().zip(fixed.verdict.checks().iter())
+                    {
+                        assert!(!a.pass || b.pass, "{name} passed and still does");
+                    }
+                    assert_eq!(fixed.verdict, verdict_for(&req, &fixed.made, &fixed.sketch));
+                    let bar = |b: usize| -> Vec<(i32, i32, i8)> {
+                        let r = (b as i32 * 16)..((b as i32 + 1) * 16);
+                        let pick = |c: &Continued| {
+                            c.line
+                                .notes
+                                .iter()
+                                .filter(|m| r.contains(&m.on))
+                                .map(|m| (m.on, m.pos, m.alt))
+                                .collect::<Vec<_>>()
+                        };
+                        assert_eq!(pick(&fixed.made), pick(&d.made), "bar {} is locked", b + 1);
+                        pick(&d.made)
+                    };
+                    let _ = bar(7);
+                    for w in &fixed.made.critic {
+                        assert!(
+                            w.starts_with("bar ") && w.contains(" made again so "),
+                            "{w}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(tried > 0, "some draft fails a check");
+        assert!(repaired > 0, "a repair was found ({tried} weak drafts)");
     }
 
     /// Events and chords inside bar `b`.
@@ -1269,6 +1984,417 @@ mod tests {
                 differs |= in_bar(&after, landing.bar).0 != in_bar(&before, landing.bar).0;
             }
             assert!(differs, "{}: Try again changes the bar", style.name);
+        }
+    }
+
+    /// What a pick of `req` does, for the characters' test.
+    #[derive(Clone, Copy, Debug, Default)]
+    struct Measure {
+        notes: f64,
+        top: f64,
+        top_at: f64,
+        length: f64,
+        turns: f64,
+        close_mid: f64,
+        last_ms: f64,
+        mean_ms: f64,
+        five_under_close: f64,
+        five_cases: f64,
+        passed: f64,
+    }
+
+    impl std::ops::AddAssign for Measure {
+        fn add_assign(&mut self, o: Measure) {
+            self.notes += o.notes;
+            self.top += o.top;
+            self.top_at += o.top_at;
+            self.length += o.length;
+            self.turns += o.turns;
+            self.close_mid += o.close_mid;
+            self.last_ms += o.last_ms;
+            self.mean_ms += o.mean_ms;
+            self.five_under_close += o.five_under_close;
+            self.five_cases += o.five_cases;
+            self.passed += o.passed;
+        }
+    }
+
+    impl Measure {
+        fn mean(self, n: f64) -> Measure {
+            Measure {
+                notes: self.notes / n,
+                top: self.top / n,
+                top_at: self.top_at / n,
+                length: self.length / n,
+                turns: self.turns / n,
+                close_mid: self.close_mid / n,
+                last_ms: self.last_ms / n,
+                mean_ms: self.mean_ms / n,
+                five_under_close: self.five_under_close / self.five_cases.max(1.0),
+                five_cases: self.five_cases,
+                passed: self.passed / n,
+            }
+        }
+    }
+
+    fn measure(req: &Continue, d: &Draft) -> Measure {
+        let made = &d.made;
+        let ph = phrasing(req, &made.chords);
+        let gb = ph.grid.bar;
+        let yours = your_bars(req);
+        let total = made.plan.len();
+        let from = yours as i32 * gb;
+        let new: Vec<&GridNote> = made.line.notes.iter().filter(|m| m.on >= from).collect();
+        let pitch = |m: &GridNote| i32::from(ph.key.pitch_at(m.pos, m.alt));
+        let top = new.iter().map(|m| pitch(m)).max().unwrap_or(0);
+        let top_on = new.iter().find(|m| pitch(m) == top).map_or(0, |m| m.on);
+        let p: Vec<i32> = new.iter().map(|m| pitch(m)).collect();
+        let turns = p
+            .windows(3)
+            .filter(|w| w[1] - w[0] >= 4 && (1..=2).contains(&(w[1] - w[2])))
+            .count();
+        let last = new.last().map_or(0, |m| m.on);
+        let last_bar = (total as i32 - 1) * gb;
+        let ms = ms_to_ticks(1.0, req.bpm);
+        let bt = req.meter.bar_ticks();
+        let fresh: Vec<&crate::event::NoteDecision> = made
+            .part
+            .decisions
+            .iter()
+            .filter(|x| x.at >= yours as Tick * bt)
+            .collect();
+        let last_d = fresh.iter().max_by_key(|x| x.at);
+        let five = (ph.key.tonic + 7) % 12;
+        let can = i32::from(req.settings.style.harmony.window_steps) * 2 <= gb;
+        let under = can
+            && made
+                .chords
+                .span_at(Tick::from(last_bar) * STEP)
+                .and_then(|s| s.answer.chord())
+                .is_some_and(|c| c.root == five);
+        Measure {
+            notes: new.len() as f64,
+            top: f64::from(top),
+            top_at: f64::from(top_on - from) / f64::from((total - yours) as i32 * gb),
+            length: new.iter().map(|m| f64::from(m.len)).sum::<f64>() / new.len().max(1) as f64,
+            turns: turns as f64,
+            close_mid: f64::from(u8::from(last > last_bar)),
+            last_ms: last_d.map_or(0.0, |x| f64::from(x.timing.play) / ms),
+            mean_ms: fresh
+                .iter()
+                .map(|x| f64::from(x.timing.play) / ms)
+                .sum::<f64>()
+                / fresh.len().max(1) as f64,
+            five_under_close: f64::from(u8::from(under)),
+            five_cases: f64::from(u8::from(can)),
+            passed: d.verdict.passed() as f64,
+        }
+    }
+
+    fn characters() -> Vec<(Character, Measure, f64)> {
+        let notes = riff();
+        let ctx = context(&notes);
+        Character::ALL
+            .iter()
+            .map(|&c| {
+                let mut sum = Measure::default();
+                let mut weak = 0.0;
+                let mut n = 0.0;
+                for style in [MINIMAL, GROOVE, JAZZISH] {
+                    for seed in 1..=8 {
+                        let s = Settings {
+                            character: c,
+                            ..settings(style, 8, seed)
+                        };
+                        let req = ask(&notes, &ctx, &s);
+                        let best = drafts(&req).unwrap().remove(0);
+                        let m = measure(&req, &best);
+                        if std::env::var("CHARACTER_WORDS").is_ok() && m.passed < 6.0 {
+                            for (name, ch) in best.verdict.checks() {
+                                if !ch.pass {
+                                    println!(
+                                        "{} {} {seed}: {name}: {}",
+                                        c.words(),
+                                        style.name,
+                                        ch.words
+                                    );
+                                }
+                            }
+                        }
+                        if m.passed < 5.0 {
+                            weak += 1.0;
+                        }
+                        sum += m;
+                        n += 1.0;
+                    }
+                }
+                (c, sum.mean(n), weak / n)
+            })
+            .collect()
+    }
+
+    #[test]
+    #[ignore = "prints the characters' table: -- --ignored --nocapture"]
+    fn print_characters() {
+        for (c, m, weak) in characters() {
+            println!("{:<13} {m:.2?} weak {weak:.2}", c.words());
+        }
+    }
+
+    #[test]
+    fn every_character_does_what_it_says() {
+        let all = characters();
+        let of = |c: Character| all.iter().find(|x| x.0 == c).map(|x| x.1).unwrap();
+        let plain = of(Character::AsStyle);
+        for (c, m, weak) in &all {
+            assert!(
+                m.passed >= 5.6 && *weak <= 0.1,
+                "{}: {m:?}, weak {weak}",
+                c.words()
+            );
+        }
+        let r = of(Character::Restrained);
+        assert!(
+            r.notes < plain.notes * 0.85,
+            "Restrained: fewer notes {r:?}"
+        );
+        assert!(r.top <= plain.top, "Restrained: a small high point {r:?}");
+        assert!(
+            r.close_mid == 0.0 && r.last_ms.abs() < 1.0,
+            "Restrained: lands on time {r:?}"
+        );
+        let y = of(Character::Yearning);
+        assert!(y.top > plain.top + 1.0, "Yearning: reaches up {y:?}");
+        assert!(y.top_at >= plain.top_at, "Yearning: never sooner {y:?}");
+        assert!(
+            y.last_ms > plain.last_ms + 3.0,
+            "Yearning: lands late {y:?}"
+        );
+        let p = of(Character::Playful);
+        assert!(p.length < plain.length * 0.8, "Playful: short notes {p:?}");
+        assert!(p.turns > plain.turns, "Playful: jumps that turn back {p:?}");
+        let t = of(Character::Tense);
+        assert!(t.close_mid == 1.0, "Tense: the landing held off {t:?}");
+        assert!(
+            t.five_cases > 0.0 && t.five_under_close > 0.8,
+            "Tense: the last bar starts on the five chord where chords change in a bar {t:?}"
+        );
+        let u = of(Character::Urgent);
+        assert!(u.notes > plain.notes * 1.1, "Urgent: busier {u:?}");
+        assert!(u.top_at < plain.top_at, "Urgent: climbs fast {u:?}");
+        assert!(
+            u.mean_ms < plain.mean_ms - 2.0,
+            "Urgent: pushes ahead {u:?}"
+        );
+    }
+
+    #[test]
+    fn every_aimed_try_changes_its_one_thing_and_keeps_the_rest() {
+        let notes = riff();
+        let ctx = context(&notes);
+        let mut count = [0.0f64; 2];
+        let mut len = [0.0f64; 2];
+        let mut cases = 0;
+        let mut moved = 0;
+        for style in [MINIMAL, GROOVE, JAZZISH] {
+            for seed in 1..=6 {
+                let s = settings(style, 8, seed);
+                let req = ask(&notes, &ctx, &s);
+                let base = continue_s1(&req).unwrap();
+                let sk = base.sketch.clone().unwrap();
+                let ph = phrasing(&req, &base.chords);
+                let gb = ph.grid.bar;
+                let from = 2 * gb;
+                let what = format!("{} seed {seed}", style.name);
+                let new = |c: &Continued| -> Vec<GridNote> {
+                    c.line
+                        .notes
+                        .iter()
+                        .filter(|m| m.on >= from)
+                        .copied()
+                        .collect()
+                };
+                let at = |c: &Continued, on: i32| c.line.notes.iter().find(|m| m.on == on).copied();
+                let was = verdict_for(&req, &base, &sk);
+                cases += 1;
+                for aim in Aim::ALL {
+                    let got = try_aimed(&req, &base, &sk, aim, &[], 0).unwrap();
+                    let again = try_aimed(&req, &base, &sk, aim, &[], 0).unwrap();
+                    assert_eq!(got, again, "{what} {aim:?}: the same try twice");
+                    assert_eq!(got.to, base.to);
+                    assert!(got.notes.len() == got.events.len());
+                    // Your bars never change.
+                    assert!(base
+                        .line
+                        .notes
+                        .iter()
+                        .filter(|m| m.on < from)
+                        .all(|m| got.line.notes.contains(m)));
+                    match aim {
+                        Aim::Busier | Aim::Calmer => {
+                            // The plan's anchors keep their notes.
+                            for a in &sk.anchors {
+                                assert_eq!(
+                                    at(&got, a.on).map(|m| (m.pos, m.alt)),
+                                    at(&base, a.on).map(|m| (m.pos, m.alt)),
+                                    "{what} {aim:?}: the anchor at {}",
+                                    a.on
+                                );
+                            }
+                            let i = usize::from(aim == Aim::Calmer);
+                            count[i] += new(&got).len() as f64 / new(&base).len() as f64;
+                            let mean = |v: &[GridNote]| {
+                                v.iter().map(|m| f64::from(m.len)).sum::<f64>() / v.len() as f64
+                            };
+                            len[i] += mean(&new(&got)) / mean(&new(&base));
+                        }
+                        Aim::LandIt => {
+                            let last = new(&got).last().copied().unwrap();
+                            let start = 9 * gb;
+                            assert_eq!(last.on, start, "{what}: on the last bar's downbeat");
+                            assert_eq!(last.pos.rem_euclid(7), 0, "{what}: home");
+                            let chord = got
+                                .chords
+                                .span_at(Tick::from(start) * STEP)
+                                .and_then(|s| s.answer.chord());
+                            assert_eq!(chord, Some(diatonic(ph.key, 0, false)), "{what}");
+                            assert!(
+                                verdict_for(&req, &got, got.sketch.as_ref().unwrap())
+                                    .lands
+                                    .pass
+                            );
+                            assert!(base
+                                .line
+                                .notes
+                                .iter()
+                                .filter(|m| m.on < start)
+                                .all(|m| got.line.notes.contains(m)));
+                        }
+                        Aim::LessBright | Aim::Brighter => {
+                            let dir = if aim == Aim::LessBright { -1 } else { 1 };
+                            let pitch = |m: &GridNote| i32::from(ph.key.pitch_at(m.pos, m.alt));
+                            let (a, b) = (new(&base), new(&got));
+                            assert_eq!(a.len(), b.len(), "{what} {aim:?}: the same notes");
+                            assert!(a
+                                .iter()
+                                .zip(&b)
+                                .all(|(x, y)| x.on == y.on && x.len == y.len));
+                            let shift: i32 =
+                                a.iter().zip(&b).map(|(x, y)| pitch(y) - pitch(x)).sum();
+                            assert!(shift * dir >= 0, "{what} {aim:?}: {shift}");
+                            if shift != 0 {
+                                moved += 1;
+                            }
+                            let now = verdict_for(&req, &got, got.sketch.as_ref().unwrap());
+                            for ((n, x), (_, y)) in was.checks().iter().zip(now.checks().iter()) {
+                                assert!(!x.pass || y.pass, "{what} {aim:?}: {n}");
+                            }
+                            let tone = got.sketch.as_ref().unwrap().tone;
+                            assert!(tone * dir as f32 > 0.3, "{what}: the tone {tone}");
+                            let loud = |c: &Continued| {
+                                c.part
+                                    .decisions
+                                    .iter()
+                                    .filter(|d| d.at >= 2 * BAR)
+                                    .map(|d| f64::from(d.velocity))
+                                    .sum::<f64>()
+                            };
+                            assert!(
+                                (loud(&got) - loud(&base)) * f64::from(dir) > 0.0,
+                                "{what} {aim:?}: loudness"
+                            );
+                        }
+                    }
+                }
+                // Picked bars: only those change.
+                let got = try_aimed(&req, &base, &sk, Aim::Busier, &[5], 0).unwrap();
+                assert!(
+                    base.line
+                        .notes
+                        .iter()
+                        .filter(|m| m.on.div_euclid(gb) != 5)
+                        .all(|m| got.line.notes.contains(m)),
+                    "{what}: picked bar 6 only"
+                );
+            }
+        }
+        let n = f64::from(cases);
+        println!(
+            "aimed: busier {:.2}x notes, calmer {:.2}x notes {:.2}x length, moved {moved} of {}",
+            count[0] / n,
+            count[1] / n,
+            len[1] / n,
+            cases * 2
+        );
+        assert!(count[0] / n > 1.2, "Busier: more notes {}", count[0] / n);
+        assert!(count[1] / n < 0.85, "Calmer: fewer notes {}", count[1] / n);
+        assert!(len[1] / n > 1.1, "Calmer: longer notes {}", len[1] / n);
+        assert!(
+            moved * 2 >= cases * 2,
+            "Less bright and Brighter mostly move: {moved} of {}",
+            cases * 2
+        );
+    }
+
+    #[test]
+    fn a_style_made_from_a_clip_carries_on_with_the_clips_feel() {
+        use crate::clip_style::{ClipStyle, Read, Subdivision};
+        let notes = riff();
+        let ctx = context(&notes);
+        let mut accent = [-6i8; 16];
+        for s in [0, 4, 8, 11] {
+            accent[s] = 14;
+        }
+        let read = Read {
+            grid: Subdivision::Sixteenths,
+            swing: 56,
+            busy: 12.0,
+            syncopation: 0.6,
+            rest: 0.0,
+            accent,
+            accents: vec![0, 4, 8, 11],
+            bar_steps: 16,
+            steps_per_beat: 4,
+            loudness: (62, 112),
+            velocity: 84,
+            ghosts: 0.0,
+            lean_ms: 10.0,
+        };
+        let cs = ClipStyle::new("Clip 1", read, Meter::default());
+        let ms = ms_to_ticks(1.0, 120.0);
+        for seed in 1..=4 {
+            let mut s = settings(cs.style(), 8, seed);
+            let req = ask(&notes, &ctx, &s);
+            let best = drafts(&req).unwrap().remove(0);
+            assert!(
+                best.verdict.passed() >= 5,
+                "seed {seed}: {}",
+                best.verdict.words()
+            );
+            let fresh: Vec<f64> = best
+                .made
+                .part
+                .decisions
+                .iter()
+                .filter(|d| d.at >= 2 * BAR)
+                .map(|d| f64::from(d.timing.play) / ms)
+                .collect();
+            let mean = fresh.iter().sum::<f64>() / fresh.len() as f64;
+            s.style.playing.lean_ms = 0.0;
+            let plain = drafts(&ask(&notes, &ctx, &s)).unwrap().remove(0);
+            let was: Vec<f64> = plain
+                .made
+                .part
+                .decisions
+                .iter()
+                .filter(|d| d.at >= 2 * BAR)
+                .map(|d| f64::from(d.timing.play) / ms)
+                .collect();
+            let plain_mean = was.iter().sum::<f64>() / was.len() as f64;
+            assert!(
+                (mean - plain_mean - 10.0).abs() < 1.5,
+                "seed {seed}: leans {mean:.1} ms against {plain_mean:.1}"
+            );
         }
     }
 }

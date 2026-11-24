@@ -1,6 +1,7 @@
 //! The XY pad's hand on the arp (the XY controller, phase 2): a layout of
-//! yours holds the rate, the gate, the swing, the octaves or the
-//! Modifier's push where the pad puts them, until it lets go.
+//! yours holds the rate, the gate, the swing, the octaves, the
+//! Modifier's push or a phrase's speed where the pad puts them, until it
+//! lets go.
 //!
 //! - **The settings as set never change while it holds**
 //!   ([`crate::Engine::settings`]): the steps play the held ones, and the
@@ -20,6 +21,7 @@
 //! Design: `docs/dev/design/xy.md`, "The arp on the pad".
 
 use crate::engine::{Rate, Settings};
+use crate::phrase::Speed;
 
 /// What the pad's hand can hold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,16 +36,20 @@ pub enum HandOn {
     Octaves,
     /// The Modifier's push, 0 to 1.
     Modifier,
+    /// A phrase's speed, as its place in [`Speed::ALL`] (0 is half).
+    Speed,
 }
 
 impl HandOn {
-    /// Every one, in the Q-Links' order and the Modifier last.
-    pub const ALL: [HandOn; 5] = [
+    /// Every one, in the Q-Links' order, then the Modifier and a
+    /// phrase's speed.
+    pub const ALL: [HandOn; 6] = [
         HandOn::Rate,
         HandOn::Gate,
         HandOn::Swing,
         HandOn::Octaves,
         HandOn::Modifier,
+        HandOn::Speed,
     ];
 
     fn at(self) -> usize {
@@ -59,6 +65,7 @@ impl HandOn {
             HandOn::Swing => v.round().clamp(50.0, 75.0),
             HandOn::Octaves => v.round().clamp(1.0, 4.0),
             HandOn::Modifier => v.clamp(0.0, 1.0),
+            HandOn::Speed => v.round().clamp(0.0, (Speed::ALL.len() - 1) as f32),
         }
     }
 
@@ -70,6 +77,7 @@ impl HandOn {
             HandOn::Swing => f32::from(s.swing),
             HandOn::Octaves => f32::from(s.octaves),
             HandOn::Modifier => 0.0,
+            HandOn::Speed => Speed::ALL.iter().position(|v| *v == s.speed).unwrap_or(1) as f32,
         }
     }
 }
@@ -88,7 +96,7 @@ enum Slot {
 /// Where the pad's hand holds the arp. See the module docs.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Hand {
-    s: [Slot; 5],
+    s: [Slot; 6],
 }
 
 impl Hand {
@@ -136,6 +144,9 @@ impl Hand {
         if let Some(v) = self.held(HandOn::Octaves) {
             s.octaves = v as u8;
         }
+        if let Some(v) = self.held(HandOn::Speed) {
+            s.speed = Speed::ALL[v as usize];
+        }
         s
     }
 
@@ -179,6 +190,9 @@ mod tests {
         assert!(!h.hold(HandOn::Gate, Some(90.0)), "kept until it lets go");
         assert_eq!(h.over(&turned).gate, 30);
         assert_eq!(h.over(&turned).rate, *Rate::ALL.last().unwrap());
+        // A phrase's speed held: double, kept to the speeds.
+        assert!(h.hold(HandOn::Speed, Some(7.0)));
+        assert_eq!(h.over(&turned).speed, Speed::Double);
         // Let go, and the pad can hold it again.
         assert!(h.hold(HandOn::Gate, None));
         assert!(h.hold(HandOn::Gate, Some(90.0)));

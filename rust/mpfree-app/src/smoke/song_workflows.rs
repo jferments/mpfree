@@ -2904,6 +2904,53 @@ mod tests {
         });
     }
 
+    /// The synth chosen for the pads (Pads: Poly) plays the track's phrase
+    /// on its own, beside a kit track: a held pad plays the phrase there
+    /// from the pad's note, through the pads' arp, while track 1's own arp
+    /// plays its kit's pads as pressed; let go, the phrase stops.
+    #[test]
+    fn the_synth_the_pads_play_on_their_own_plays_the_tracks_phrase() {
+        use crate::PadsPreview;
+        use mpfree_arp::Mode;
+        use mpfree_arp_ui::view::ArpAction;
+        on_big_stack(|| {
+            let mut session = Session::new();
+            let s = &mut session;
+            s.make_sounds();
+            s.run_periods(2);
+            s.press("header", "tab", "Synth");
+            s.press("synth-pads-head", "play", "").settle();
+            assert!(s.app.pads_chose_synth(), "{}", s.hint());
+            let fx = s.app.toggle_panel();
+            s.fx.extend(fx);
+            let fx = s.app.arp_action(ArpAction::Mode(Mode::Phrase));
+            s.fx.extend(fx);
+            s.run_periods(4);
+            let track = |s: &Session| s.app.arps.engine_at(s.app.track()).settings().mode;
+            assert!(!s.app.phrases_play(), "track 1 plays a kit");
+            assert_eq!(track(s), Mode::Direct, "its pads as pressed");
+            assert_eq!(s.app.pads_own_mode(), Mode::Phrase, "the pads' synth");
+            s.arp_played.clear();
+            s.pad_edge(0, 100, true);
+            s.run_for(2.0);
+            let on_synth: Vec<u8> = s
+                .arp_played
+                .iter()
+                .filter(|&&(to, _, _)| to == PadsPreview::Synth)
+                .map(|&(_, n, _)| n)
+                .collect();
+            assert!(on_synth.len() >= 4, "the phrase plays: {:?}", s.arp_played);
+            assert_eq!(on_synth.len(), s.arp_played.len(), "only on the synth");
+            assert_eq!(track(s), Mode::Direct);
+            s.pad_edge(0, 0, false);
+            s.run_for(0.5);
+            let n = s.arp_played.len();
+            s.run_for(1.0);
+            assert_eq!(s.arp_played.len(), n, "let go: the phrase stops");
+            assert_eq!(s.pads_arp_sounding(), 0);
+        });
+    }
+
     /// REC records what is heard (sampler step 15c's second part): every
     /// sound of the pad map on a track of its own, in one take. The pads
     /// play kit 2 on their own and bank B the synth, while Track 1 keeps

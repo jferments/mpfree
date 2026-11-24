@@ -36,6 +36,7 @@ pub mod audio;
 pub mod kit;
 pub mod manifest;
 pub mod name;
+pub mod preflight;
 pub mod preset;
 pub mod project;
 pub mod sets;
@@ -47,7 +48,9 @@ pub use manifest::{Check, Manifest, ManifestDone, MANIFEST_FILE};
 pub use name::{clean_name, natural_cmp, unique_folder_name, unique_name, valid_name};
 pub use preset::{preset_name, PresetSave, MAX_PRESET_TEXT, PRESET_EXT};
 pub use project::{Meta, NewSample, Part, SampleData, Saved, Snapshot, Version};
-pub use sets::{Ends, Found, Need, Set, SetSong, SongCheck, Starts, SET_EXT};
+pub use sets::{
+    Ends, Found, Need, Set, SetSong, ShowMedia, SongCheck, Soundcheck, Starts, SET_EXT,
+};
 pub use worker::{Done, Job, Outcome, Worker};
 
 use std::fs::{self, DirBuilder, File, OpenOptions};

@@ -74,6 +74,9 @@ OPEN_AT = re.compile(r"(in the audio loop|kits|loops|takes) at (\d+\.\d+) s")
 OPEN_FILES = re.compile(r"(\d+) sound files? \((\d+\.\d) MB\) read in (\d+\.\d+) s")
 OPEN_MEMORY = re.compile(r"memory (\d+) MB in use(?: \(peak (\d+) MB\))?(?:, (\d+) MB free)?")
 SONG_IN = re.compile(r"^show: (.+?) is in \((\w+)\), (\d+\.\d+) s after (Go|Play set)$")
+# What Soundcheck kept for each song, and how it went (gui.rs, live shows B2b).
+SOUNDCHECK_KEPT = re.compile(r"^show: soundcheck kept song (\d+) \((.*?)\): (.*)$")
+SOUNDCHECK_OVER = re.compile(r"^show: soundcheck of (.+?) (done|stopped): (.*)$")
 NEON_MARGIN = 0.02
 
 
@@ -330,6 +333,28 @@ def opens_section(runs, out):
         out.append("")
 
 
+def soundcheck_section(runs, out):
+    """What Soundcheck measured for each song on this MPC, and how each Soundcheck went (live shows B2b)."""
+    kept = [(run, m.groups()) for run in runs for ln in run.lines for m in [SOUNDCHECK_KEPT.match(ln)] if m]
+    over = [(run, m.groups()) for run in runs for ln in run.lines for m in [SOUNDCHECK_OVER.match(ln)] if m]
+    if not kept and not over:
+        return
+    out.append("## Soundcheck\n")
+    out.append("Each song as Soundcheck kept it in the set: its cold open, its memory at its peak, the CPU at its "
+               "worst in its busiest part, the longest a clip waited for its audio, misses, xruns, and the change "
+               "into the next song (its ending, then the next song's cold open).\n")
+    if kept:
+        out.append("| workflow | song | what it measured |")
+        out.append("|---|---|---|")
+        for run, (k, name, line) in kept:
+            out.append(f"| {run.label()} | {k} {name} | {line} |")
+        out.append("")
+    for run, (set_name, how, words) in over:
+        out.append(f"{run.label()}: {set_name} {how}: {words}.")
+    if over:
+        out.append("")
+
+
 def cores_section(found, out):
     heavy = [(run, a) for run, a in found if run.workflow == "heavy-load" and run.cores != "default"]
     if not heavy:
@@ -469,6 +494,7 @@ def main(argv):
     if runs:
         found, bad = workflow_section(runs, out, answer)
         opens_section(runs, out)
+        soundcheck_section(runs, out)
         cores_section(found, out)
     verdict = neon_section(reports, out)
     afford_section(lines, out)
