@@ -966,6 +966,10 @@ every sample screen for three idle seconds and fails if any page draws,
 except the ones that show something live (the touch test's fading trails;
 the Rec tab's meters falling back after the input stops were the other,
 until the one Sample page's step 2f, part 4 took the Rec tab away).
+The browser's `show` had gone quiet too, which went too far: the
+worker's answers, the wheel and a card opening were drawn only at the next
+touch (found on the SD card, 24 Nov). Now `show` marks the widget changed
+only when its screen differs ([browser.md](browser.md#for-the-app-hello-mpc-thread-wires-it)).
 
 **The pages' clock and the loop's sleep** (fixed 13 Nov, `pace.rs`,
 `touch_bell.rs`). The screen loop woke every 4 ms to look at the

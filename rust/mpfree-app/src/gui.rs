@@ -37847,7 +37847,18 @@ mod tests {
         p.browser.as_mut().unwrap().go_source(source("SD card"));
         assert_eq!(state(&p), CardState::Opening);
         p.step_browser();
+        // Drawn now: the card opens without a touch, and the place showing
+        // it is drawn again then (Jay's SD card run, 24 Nov).
+        let mut canvas = SoftCanvas::new(SCREEN.0, SCREEN.1);
+        let area = p.ui.rect_of(mpfree_browser_ui::BROWSER).unwrap();
+        p.ui.paint(&mut canvas);
         until(&mut p, &|p| matches!(state(p), CardState::Open { .. }));
+        assert!(
+            p.ui.paint(&mut canvas)
+                .iter()
+                .any(|d| !d.intersect(area).is_empty()),
+            "the open card is drawn without a touch"
+        );
         assert_eq!(
             state(&p),
             CardState::Open {
@@ -37878,6 +37889,99 @@ mod tests {
         p.apply(ToUi::Show(View::Browser));
         until(&mut p, &|p| matches!(state(p), CardState::Open { .. }));
         assert!(p.browser.as_ref().unwrap().library().card().is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The browser is drawn again whenever what it shows changes, touched
+    /// or not, and not on frames where nothing changed. Jay's SD card run
+    /// (24 Nov): each folder on the card stayed on "Reading…" until the
+    /// next touch, because its listing came back after the finger lifted
+    /// and only a touch drew the browser again. Here the worker is a thread,
+    /// as on the MPC, and every frame is ticked and painted as the MPC's
+    /// loop does: what the browser shows after each frame is what was drawn.
+    #[test]
+    fn the_browser_draws_what_changes_without_a_touch() {
+        use crate::app::BrowseKey;
+        use mpfree_browser_ui::sample::{fill, source};
+        use mpfree_browser_ui::{BrowserView, Screen, BROWSER};
+        use std::time::Duration;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "mpfree-browser-drawn-{}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = fill(&dir).unwrap();
+        let mut p = sample_sampler(Fonts::embedded());
+        p.set_browser(mpfree_browser_ui::Browser::new(lib), "");
+        sample_kit_tracks(&mut p);
+        open_pads(&mut p);
+        p.apply(ToUi::Show(View::Browser));
+        // The screen, the browser's place on it, and what was last drawn
+        // there.
+        struct Frames {
+            canvas: SoftCanvas,
+            area: mpfree_ui::Rect,
+            drawn: Screen,
+        }
+        fn shown(p: &Player) -> Screen {
+            p.ui.get::<BrowserView>(BROWSER).unwrap().screen().clone()
+        }
+        // One frame as the MPC's loop runs it: the tick, then the paint.
+        // What the browser shows afterwards must be what was drawn. True
+        // if it drew the browser.
+        fn frame(p: &mut Player, f: &mut Frames) -> bool {
+            p.tick(0.01);
+            let now = shown(p);
+            let area = f.area;
+            let damage = p.ui.paint(&mut f.canvas);
+            let drew = damage.iter().any(|d| !d.intersect(area).is_empty());
+            if drew {
+                f.drawn = now;
+            }
+            assert_eq!(
+                f.drawn,
+                p.browser.as_ref().unwrap().screen(),
+                "what the browser shows is on the screen"
+            );
+            drew
+        }
+        // Frames until the worker has answered everything, and one more.
+        fn settle(p: &mut Player, f: &mut Frames) {
+            let end = Instant::now() + Duration::from_secs(5);
+            while p.browser.as_ref().unwrap().busy() {
+                assert!(Instant::now() < end, "the worker never answered");
+                frame(p, f);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            frame(p, f);
+        }
+        let mut f = Frames {
+            canvas: SoftCanvas::new(SCREEN.0, SCREEN.1),
+            area: p.ui.rect_of(BROWSER).unwrap(),
+            drawn: shown(&p),
+        };
+        p.ui.paint(&mut f.canvas);
+        // A place opened without a touch: its listing comes from the
+        // worker frames later.
+        p.browser.as_mut().unwrap().go_source(source("Samples"));
+        p.step_browser();
+        settle(&mut p, &mut f);
+        assert!(!f.drawn.rows.is_empty(), "the listing is drawn");
+        // The wheel: the selection moves, and the sound's facts come from
+        // the worker after it.
+        let before = f.drawn.selected;
+        p.apply(ToUi::Browse(BrowseKey::Wheel(1)));
+        assert!(frame(&mut p, &mut f), "the wheel's turn is drawn");
+        assert_ne!(f.drawn.selected, before);
+        settle(&mut p, &mut f);
+        // Nothing new: nothing drawn.
+        for _ in 0..5 {
+            assert!(!frame(&mut p, &mut f), "drawn again with nothing new");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
