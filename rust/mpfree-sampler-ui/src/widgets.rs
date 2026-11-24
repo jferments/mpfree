@@ -65,10 +65,26 @@ pub struct PadBar {
     /// kit"), left of the bar's right side: raised; a tap gives
     /// [`EventKind::Tab`]`(`[`TRACK_KIT`]`)`.
     pub track_kit: Option<String>,
+    /// The last hit played kit layers too (sampler step 15e's follow-up,
+    /// board 1 of the canvas "Kit layers and routes"): a chip for each
+    /// sound it played, the pads' own kit first ("Big Kit C1", "Lo-Fi A1 ·
+    /// layer"), under the title in the subtitle's place, with the kit note
+    /// beside the title. A tap on chip `i` gives
+    /// [`EventKind::Tab`]`(`[`LAYER_CHIP`]` + i)`.
+    pub layers: Vec<String>,
+    /// The chip the page shows, in `layers`.
+    pub layer_on: usize,
 }
 
 /// The tab number a tap on [`PadBar::track_kit`] gives.
 pub const TRACK_KIT: usize = 99;
+
+/// The tab number a tap on the first of [`PadBar::layers`] gives; the
+/// next ones follow it.
+pub const LAYER_CHIP: usize = 100;
+
+const LAYER_CHIP_H: i32 = 22;
+const LAYER_CHIP_GAP: i32 = 6;
 
 const SEG_H: i32 = 40;
 const SEG_PAD: i32 = 4;
@@ -100,7 +116,41 @@ impl PadBar {
             back: None,
             kit_note: None,
             track_kit: None,
+            layers: Vec::new(),
+            layer_on: 0,
         }
+    }
+
+    /// The title and subtitle's room: right of the swatch, up to the
+    /// first thing at the right.
+    fn text_rect(&self, r: Rect) -> Rect {
+        let sq = 36.min(r.h - 16).max(8);
+        let left = r.x + mpfree_ui::sizes::PAD + sq + 14;
+        Rect::new(
+            left,
+            r.y + 6,
+            (self.words_end(r) - left - 10).max(0),
+            r.h - 12,
+        )
+    }
+
+    /// Each layer chip's place ([`PadBar::layers`]), in the subtitle's
+    /// line; the ones that don't fit are left out.
+    pub fn layer_rects(&self, r: Rect) -> Vec<Rect> {
+        let text = self.text_rect(r);
+        let (_, bottom) = text.take_top(text.h / 2 + 2);
+        let y = bottom.y + (bottom.h - LAYER_CHIP_H) / 2;
+        let mut x = bottom.x;
+        let mut out = Vec::new();
+        for label in &self.layers {
+            let w = (label.chars().count() as i32 * 8 + 20).clamp(72, 220);
+            if x + w > bottom.right() {
+                break;
+            }
+            out.push(Rect::new(x, y, w, LAYER_CHIP_H));
+            x += w + LAYER_CHIP_GAP;
+        }
+        out
     }
 
     /// The part a tap names the pad in: the swatch, title and subtitle.
@@ -115,6 +165,45 @@ impl PadBar {
             .or_else(|| self.kit_rect(r))
             .unwrap_or_else(|| self.tabs_rect(r))
             .x
+    }
+
+    /// The line under the title: the kit shown first, in the text colour
+    /// (board 4 of step 15e), then the subtitle.
+    fn paint_subtitle(&self, cx: &mut PaintCx, bottom: Rect) {
+        let t = cx.theme.clone();
+        match &self.kit_note {
+            Some(note) => {
+                let w = cx.text(
+                    FontId::Bold,
+                    t.size_small,
+                    bottom,
+                    Align::Left,
+                    t.text,
+                    note,
+                );
+                let rest = Rect::new(bottom.x + w, bottom.y, (bottom.w - w).max(0), bottom.h);
+                if !self.subtitle.is_empty() {
+                    cx.text(
+                        FontId::Sans,
+                        t.size_small,
+                        rest,
+                        Align::Left,
+                        t.text_dim,
+                        &format!(" · {}", self.subtitle),
+                    );
+                }
+            }
+            None => {
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    bottom,
+                    Align::Left,
+                    t.text_dim,
+                    &self.subtitle,
+                );
+            }
+        }
     }
 
     /// The track's kit chip, when it has one: left of the kit's button,
@@ -216,39 +305,34 @@ impl Widget for PadBar {
                 x += 8;
             }
         }
-        match &self.kit_note {
-            // The kit shown, first, in the text colour (board 4).
-            Some(note) => {
-                let w = cx.text(
-                    FontId::Bold,
+        let chips = self.layer_rects(r);
+        if !chips.is_empty() {
+            // The hit played kit layers too: the kit note beside the
+            // title, the chips in the subtitle's place.
+            if let Some(note) = &self.kit_note {
+                let w = cx.measure(FontId::Bold, t.size_title + 1.0, &self.title);
+                let beside = Rect::new(top.x + w + 12, top.y, (top.w - w - 12).max(0), top.h);
+                cx.text(
+                    FontId::Sans,
                     t.size_small,
-                    bottom,
+                    beside,
                     Align::Left,
                     t.text,
                     note,
                 );
-                let rest = Rect::new(bottom.x + w, bottom.y, (bottom.w - w).max(0), bottom.h);
-                if !self.subtitle.is_empty() {
-                    cx.text(
-                        FontId::Sans,
-                        t.size_small,
-                        rest,
-                        Align::Left,
-                        t.text_dim,
-                        &format!(" · {}", self.subtitle),
-                    );
+            }
+            for (i, (c, label)) in chips.iter().zip(&self.layers).enumerate() {
+                let on = i == self.layer_on;
+                if on {
+                    cx.canvas.fill_round_rect(*c, t.round(6), t.accent);
+                } else {
+                    cx.canvas.fill_round_rect(*c, t.round(6), t.raised);
                 }
+                let ink = if on { t.on_accent } else { t.text };
+                cx.text(FontId::Sans, t.size_small, *c, Align::Center, ink, label);
             }
-            None => {
-                cx.text(
-                    FontId::Sans,
-                    t.size_small,
-                    bottom,
-                    Align::Left,
-                    t.text_dim,
-                    &self.subtitle,
-                );
-            }
+        } else {
+            self.paint_subtitle(cx, bottom);
         }
         if let (Some(k), Some(label)) = (self.track_kit_rect(r), self.track_kit.as_ref()) {
             // The track's kit chip: raised, the label centred.
@@ -386,6 +470,14 @@ impl Widget for PadBar {
         if let (Some(k), Some(label)) = (self.track_kit_rect(r), self.track_kit.as_ref()) {
             out.push(Target::tap("track-kit", TRACK_KIT, label.clone(), k));
         }
+        for (i, (c, label)) in self
+            .layer_rects(r)
+            .into_iter()
+            .zip(&self.layers)
+            .enumerate()
+        {
+            out.push(Target::tap("layer-chip", LAYER_CHIP + i, label.clone(), c));
+        }
         out
     }
 
@@ -395,6 +487,9 @@ impl Widget for PadBar {
         }
         if self.track_kit_rect(r).is_some_and(|k| k.contains(x, y)) {
             return Some(EventKind::Tab(TRACK_KIT));
+        }
+        if let Some(i) = self.layer_rects(r).iter().position(|c| c.contains(x, y)) {
+            return Some(EventKind::Tab(LAYER_CHIP + i));
         }
         if self.nameable && self.name_rect(r).contains(x, y) {
             return Some(EventKind::Type(0));
@@ -2150,6 +2245,33 @@ mod tests {
     /// Sampler step 15e, board 4: with a kit other than the track's shown,
     /// the bar's track's kit chip sits left of what is at its right, the
     /// words end before it, and a tap on it gives its tab number.
+    #[test]
+    fn the_layer_chips_sit_under_the_title_and_take_their_taps() {
+        let r = Rect::new(0, 0, 913, 60);
+        let mut bar = PadBar::new(&[]);
+        bar.back = Some("‹ Pads".into());
+        bar.title = "Pad C1 · Snare 3".into();
+        bar.subtitle = "Source 91ac…02 · mono".into();
+        bar.kit_note = Some("Big Kit, from pad B1".into());
+        bar.track_kit = Some("Track 1's kit".into());
+        assert!(bar.layer_rects(r).is_empty());
+        bar.layers = vec!["Big Kit C1".into(), "Lo-Fi A1 · layer".into()];
+        let chips = bar.layer_rects(r);
+        assert_eq!(chips.len(), 2);
+        let k = bar.track_kit_rect(r).unwrap();
+        assert!(chips[1].right() <= k.x, "{chips:?} before {k:?}");
+        assert!(chips[0].y > r.y + r.h / 2 - 4, "under the title: {chips:?}");
+        let c = chips[1];
+        assert_eq!(
+            bar.touch(0, Touch::Down, c.x + c.w / 2, c.y + c.h / 2, r),
+            Some(EventKind::Tab(LAYER_CHIP + 1))
+        );
+        assert!(bar
+            .targets(r)
+            .iter()
+            .any(|t| t.id == "layer-chip" && t.label == "Lo-Fi A1 · layer"));
+    }
+
     #[test]
     fn the_track_kit_chip_sits_before_the_right_side_and_takes_its_tap() {
         let r = Rect::new(0, 0, 1000, 64);

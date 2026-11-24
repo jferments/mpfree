@@ -394,6 +394,18 @@ pub enum Command {
     /// The input is another source now: Capture forgets what it heard
     /// before. For every loop.
     NewInput,
+    /// Forget every step Redo could bring back, in every loop (a loop
+    /// cleared and kept for Undo too): a new step elsewhere took their
+    /// place in the one UNDO across the engines (audio tracks phase 4d.3).
+    /// Their memory goes back.
+    ForgetRedo,
+    /// Let go of every step Undo could take back made at or before this
+    /// transaction, from each loop's oldest, and of a loop kept for Undo
+    /// cleared at or before it: another engine let go of a step that old
+    /// (audio tracks phase 4d.3). Each loop stays as it is; the memory only
+    /// those steps held goes back. A loop busy (a merge, a fit, a load, a
+    /// copy, a bounce) is passed over, to be asked again.
+    RetireThrough(TransactionId),
 }
 
 /// A loop rendered out ([`Looper::bounce`]), for a pad or a WAV file.
@@ -6172,6 +6184,38 @@ impl Looper {
                 }
             }
             Queued::Loop(Command::NewInput) => self.heard.forget(),
+            Queued::Loop(Command::ForgetRedo) => {
+                for k in 0..MAX_LOOPS {
+                    if !self.loops[k].settled() {
+                        continue;
+                    }
+                    self.loops[k].n_undone = 0;
+                    self.store.kept[k].n_undone = 0;
+                    self.loops[k].reclaim(&mut self.store, k);
+                }
+            }
+            Queued::Loop(Command::RetireThrough(t)) => {
+                for k in 0..MAX_LOOPS {
+                    let l = &mut self.loops[k];
+                    if !l.settled() {
+                        continue;
+                    }
+                    while l.n_done > 0 && l.done[0].txn <= t {
+                        l.let_go = l.let_go.max(l.take_done(0).txn);
+                    }
+                    if self.store.has_kept(k) {
+                        if self.store.kept_txn[k] <= t {
+                            self.store.drop_kept(k);
+                        } else {
+                            let kept = &mut self.store.kept[k];
+                            while kept.n_done > 0 && kept.done[0].txn <= t {
+                                kept.let_go = kept.let_go.max(kept.take_done(0).txn);
+                            }
+                        }
+                    }
+                    self.loops[k].reclaim(&mut self.store, k);
+                }
+            }
             Queued::Loop(Command::Played(f)) => {
                 for l in &mut self.loops {
                     if l.listening() && !l.by_ear {
@@ -6962,6 +7006,14 @@ impl Loop {
 
     /// Merging, fitting, being bounced out or copying a layer in or out:
     /// the layers must not change.
+    /// Nothing under way that its steps or their memory are part of (a
+    /// merge, a fit or its swap, a bounce, a load, a copy, a Clear, a
+    /// capture): its history can be cut down now ([`Command::ForgetRedo`],
+    /// [`Command::RetireThrough`]).
+    fn settled(&self) -> bool {
+        !self.busy() && !self.loading && !self.clearing && self.capture.is_none()
+    }
+
     fn busy(&self) -> bool {
         self.snap.is_some()
             || self.merging
@@ -7144,6 +7196,8 @@ impl Loop {
                 | Command::Merge
                 | Command::Fit
                 | Command::NewInput
+                | Command::ForgetRedo
+                | Command::RetireThrough(_)
         ) {
             self.touch();
         }
@@ -7276,7 +7330,9 @@ impl Loop {
             | Command::Fit
             | Command::Capture(_)
             | Command::CaptureTo(..)
-            | Command::NewInput => {}
+            | Command::NewInput
+            | Command::ForgetRedo
+            | Command::RetireThrough(_) => {}
             Command::Resample => match self.phase {
                 Phase::Empty => {
                     self.apply(store, stats, me, Command::Record);

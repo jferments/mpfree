@@ -301,6 +301,9 @@ pub struct Session {
     /// The source bank the screen was last told the pads play (sampler
     /// step 15e), as main.rs.
     kit_source: Option<usize>,
+    /// The pads' kit layers the screen was last told of (step 15e's
+    /// follow-up), as main.rs.
+    layer_kits: Option<[Option<(u8, u8)>; crate::instruments::PAD_LAYERS - 1]>,
     waits_full: u64,
     stop_dropped: usize,
     waiting_shown: u16,
@@ -482,6 +485,7 @@ impl Session {
             previewed: Vec::new(),
             awaiting: [false; 16],
             kit_source: None,
+            layer_kits: None,
             waits_full: 0,
             stop_dropped: 0,
             waiting_shown: 0,
@@ -3345,6 +3349,11 @@ impl Session {
         if source_now != self.kit_source {
             self.kit_source = source_now;
             self.out.show(ToUi::KitSource(source_now));
+        }
+        let layer_kits = self.app.pads_layer_kits();
+        if self.layer_kits != Some(layer_kits) {
+            self.layer_kits = Some(layer_kits);
+            self.out.show(ToUi::PadsLayerKits(layer_kits));
         }
         // The pads' arp's notes end where they played as the pads move on
         // (sampler step 15c), as main.rs.

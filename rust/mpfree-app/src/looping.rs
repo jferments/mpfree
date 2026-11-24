@@ -3081,6 +3081,10 @@ impl LoopHost {
                 bars_words_n(b)
             ),
             (Command::NewInput, _) => "Capture forgets what it heard before".to_string(),
+            (Command::ForgetRedo, _) => "every loop forgets what Redo could bring back".into(),
+            (Command::RetireThrough(t), _) => {
+                format!("every loop lets go of its steps up to transaction {}", t.0)
+            }
             (Command::AbSeam(true), _) => "A/B on the seam".to_string(),
             (Command::AbSeam(false), _) => "A/B off".to_string(),
         };

@@ -12,8 +12,8 @@
 //! step in the order it was made:
 //!
 //! - a transaction new on an engine's done side is a new step on top, and
-//!   the steps the one history could redo go (the engines keep theirs for
-//!   now, out of its reach);
+//!   the steps the one history could redo go (the engines are asked to
+//!   forget theirs, below);
 //! - one that moved to its engine's redo side was undone, by the one UNDO
 //!   or by the engine's own; one back on the done side was redone;
 //! - one gone from both sides is hidden where it is (a loop's steps while
@@ -23,6 +23,14 @@
 //! - an engine that let go of steps from its oldest end (full) retires
 //!   them and every older step in every engine at once: UNDO stops there
 //!   and says older steps were let go.
+//!
+//! What the one history can no longer reach, the engines are asked to
+//! forget ([`OneUndo::tend`], phase 4d.3): with nothing left to redo, the
+//! steps each engine's own Redo could bring back (a new step took their
+//! place), and the steps made at or before the newest retired, in every
+//! engine (`RetireThrough`), so their memory goes back. Asked a period
+//! after the step that made them unreachable, and again while an engine
+//! still holds them (a busy loop passes the ask over).
 //!
 //! UNDO sends the newest step back to its own engine ([`press`]): the time
 //! engine's UNDO (a song edit's region steps go with it, as
@@ -72,6 +80,10 @@ fn part_at(i: usize) -> Part {
 
 /// Steps the one history keeps at most; past that the oldest retire.
 pub const MOST: usize = 512;
+
+/// Periods before an engine is asked again to forget what it still holds
+/// ([`OneUndo::tend`]).
+const ASK_AGAIN: u16 = 32;
 
 /// One step: its transaction, its part, and its words for the screen
 /// ("Overdub · Layer 2 · Vocal / 1").
@@ -261,6 +273,25 @@ pub struct OneUndo {
     audio_done: Vec<OwnStep>,
     audio_redo: Vec<OwnStep>,
     shown: UndoNext,
+    /// Periods until each engine (the takes, the audio tracks, the
+    /// looper) may be asked again to forget ([`OneUndo::tend`]).
+    wait: [u16; 3],
+}
+
+/// What [`OneUndo::tend`] asks one engine to forget.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Forget {
+    /// The steps its Redo could bring back.
+    pub redo: bool,
+    /// The steps its Undo could take back made at or before this
+    /// transaction (none: nothing).
+    pub through: TransactionId,
+}
+
+impl Forget {
+    fn any(&self) -> bool {
+        self.redo || self.through.is_some()
+    }
 }
 
 impl OneUndo {
@@ -329,6 +360,84 @@ impl OneUndo {
     /// The step UNDO takes back next (`redo` false), or REDO brings back.
     pub fn next(&self, redo: bool) -> Option<&Entry> {
         self.ledger.next(redo)
+    }
+
+    /// What each engine (the takes, the audio tracks, the looper) holds
+    /// that the one history can no longer reach, as last followed: with
+    /// nothing to redo, its redo steps; its steps at or under the newest
+    /// retired.
+    pub fn to_forget(&self) -> [Forget; 3] {
+        let mut f = [Forget::default(); 3];
+        if self.last.len() < PARTS {
+            return f;
+        }
+        let (nothing_to_redo, floor) = (self.ledger.redo.is_empty(), self.ledger.floor);
+        for (i, s) in self.last.iter().enumerate() {
+            let e = &mut f[i.min(2)];
+            e.redo |= nothing_to_redo && !s.redo.is_empty();
+            if floor.is_some() && s.done.first().is_some_and(|&t| t <= floor) {
+                e.through = floor;
+            }
+        }
+        f
+    }
+
+    /// Ask the engines to forget what the one history can no longer reach
+    /// ([`OneUndo::to_forget`]; audio tracks phase 4d.3). Once a period,
+    /// after [`OneUndo::follow`]; an engine still holding it is asked
+    /// again [`ASK_AGAIN`] periods later. The looper's and the audio
+    /// tracks' forget from their next period.
+    pub fn tend(
+        &mut self,
+        out: &mut Out,
+        time: &mut TimeHost,
+        tracks: &mut TrackHost,
+        looper: &mut LoopHost,
+    ) {
+        let asks = self.to_forget();
+        for (e, f) in asks.iter().enumerate() {
+            if self.wait[e] > 0 {
+                self.wait[e] -= 1;
+                continue;
+            }
+            if !f.any() {
+                continue;
+            }
+            self.wait[e] = ASK_AGAIN;
+            for redo in [true, false] {
+                if (redo && !f.redo) || (!redo && !f.through.is_some()) {
+                    continue;
+                }
+                let what = if redo {
+                    "what REDO could bring back".to_string()
+                } else {
+                    format!("steps up to transaction {}", f.through.0)
+                };
+                match e {
+                    0 => {
+                        if time.forget_takes(redo, f.through) {
+                            out.note(&format!("one undo: the takes forget {what}"));
+                        }
+                    }
+                    1 => match tracks.forget_steps(redo, f.through) {
+                        Ok(()) => out.note(&format!("one undo: the audio tracks forget {what}")),
+                        Err(why) => out.note(&format!("one undo: audio tracks: {why}")),
+                    },
+                    _ => {
+                        let c = if redo {
+                            mpfree_looper::Command::ForgetRedo
+                        } else {
+                            mpfree_looper::Command::RetireThrough(f.through)
+                        };
+                        if looper.looper.command(c) {
+                            out.note(&format!("one undo: the loops forget {what}"));
+                        } else {
+                            out.note("one undo: the looper's queue is full");
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -527,6 +636,65 @@ mod tests {
         );
         assert_eq!(next(&l, true), None);
         assert_eq!(next(&l, false), Some((Part::Loop(2), 5)));
+    }
+
+    /// What the engines are asked to forget (phase 4d.3): nothing while
+    /// the one history can still redo; once a new step leaves nothing to
+    /// redo, every engine's redo steps; once a step is let go, every step
+    /// at or under it, in every engine, the loops as one looper.
+    #[test]
+    fn the_engines_forget_what_the_one_history_can_no_longer_reach() {
+        let follow = |one: &mut OneUndo, now: Vec<Seen>| {
+            one.ledger.follow(&now, named);
+            one.last = now;
+        };
+        let mut one = OneUndo::default();
+        assert_eq!(one.to_forget(), [Forget::default(); 3], "nothing seen yet");
+        follow(&mut one, parts((&[1], &[]), (&[2], &[]), &[(3, &[3], &[])]));
+        assert_eq!(one.to_forget(), [Forget::default(); 3]);
+        // Two UNDOs: redo can still bring them back, so nothing goes.
+        follow(&mut one, parts((&[1], &[]), (&[], &[2]), &[(3, &[], &[3])]));
+        assert_eq!(one.to_forget(), [Forget::default(); 3]);
+        // A new take: nothing left to redo, so the audio tracks' and the
+        // loop's redo steps go; the takes have none.
+        follow(
+            &mut one,
+            parts((&[1, 4], &[]), (&[], &[2]), &[(3, &[], &[3])]),
+        );
+        let redo = Forget {
+            redo: true,
+            through: TransactionId::NONE,
+        };
+        assert_eq!(one.to_forget(), [Forget::default(), redo, redo]);
+        follow(&mut one, parts((&[1, 4], &[]), (&[], &[]), &[]));
+        assert_eq!(one.to_forget(), [Forget::default(); 3]);
+        // Steps 5 and 6 in a loop and the audio tracks; the takes let go
+        // of take 4 (full): 1 and 5 are older steps of other engines.
+        follow(
+            &mut one,
+            parts((&[1, 4], &[]), (&[6], &[]), &[(0, &[5], &[])]),
+        );
+        let mut let_go = parts((&[7], &[]), (&[6], &[]), &[(0, &[5], &[])]);
+        let_go[0].let_go = TransactionId(4);
+        follow(&mut one, let_go);
+        assert_eq!(one.ledger.floor, TransactionId(4));
+        assert_eq!(
+            one.to_forget(),
+            [Forget::default(); 3],
+            "none at or under 4"
+        );
+        let mut let_go = parts((&[7], &[]), (&[], &[]), &[(0, &[5], &[])]);
+        let_go[1].let_go = TransactionId(6);
+        follow(&mut one, let_go);
+        let through = |t| Forget {
+            redo: false,
+            through: TransactionId(t),
+        };
+        assert_eq!(
+            one.to_forget(),
+            [Forget::default(), Forget::default(), through(6)],
+            "the loop's 5 is older than the 6 let go"
+        );
     }
 
     /// An engine that refuses changes nothing: the step stays the next to
