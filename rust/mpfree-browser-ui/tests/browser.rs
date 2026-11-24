@@ -4,9 +4,9 @@
 use mpfree_browser_ui::sample::{fill, samples, FACTORY};
 use mpfree_browser_ui::state::{when, Key, Modal, SOURCES};
 use mpfree_browser_ui::{
-    step, BrowseAction, Browser, BrowserView, Button, ExportBits, ExportChoice, ExportFormat,
-    ExportInput, ExportPhase, ExportRange, ExportSetup, Filter, Input, Pick, Sort, StemsBy,
-    BROWSER,
+    step, BrowseAction, Browser, BrowserView, Button, CardState, ExportBits, ExportChoice,
+    ExportFormat, ExportInput, ExportPhase, ExportRange, ExportSetup, Filter, Input, Pick, Sort,
+    StemsBy, BROWSER,
 };
 use mpfree_library::{Library, Loc, Meta, Place, Snapshot};
 use mpfree_ui::{Fonts, SoftCanvas, Touch};
@@ -748,18 +748,27 @@ fn taps_and_drags_on_the_widget() {
     tap(&mut ui, x, y0 + 52);
     step(&mut ui, &mut b);
     assert_eq!(b.screen().path, "Samples / Field recordings");
-    // Tap Trash in the places (the rows close up to fit them all).
+    // Tap Trash in the places (the rows close up to fit them all: with the
+    // SD card's, 13 places and New project, 36 px each).
     let trash = ui
         .targets()
         .into_iter()
         .find(|t| t.target.id == "place" && t.target.label == "Trash")
         .unwrap()
         .target;
-    assert!(trash.rect.h >= 40, "{:?}", trash.rect);
+    assert!(trash.rect.h >= 36, "{:?}", trash.rect);
     let (tx, ty) = trash.centre();
     tap(&mut ui, tx, ty);
     step(&mut ui, &mut b);
     assert_eq!(b.screen().path, "Trash");
+    let (cx, cy) = BrowserView::place_point(r, &b.screen(), src("SD card")).unwrap();
+    // The SD card's row is as tall as the others, and New project stays
+    // under Trash.
+    let (_, ny) = BrowserView::new_project_point(r, &b.screen()).unwrap();
+    assert!(ty - cy >= 40 + 14 && ny > ty, "{cy} {ty} {ny}");
+    tap(&mut ui, cx, cy);
+    assert_eq!(step(&mut ui, &mut b), [BrowseAction::OpenCard]);
+    assert_eq!(b.screen().detail.kind, "Opening the SD card, read only…");
     // Draw it, every sample screen too, without a panic.
     let mut c = SoftCanvas::new(1280, 800);
     ui.paint(&mut c);
@@ -929,7 +938,7 @@ fn the_sample_picker_loads_one_sound_for_the_pad() {
     assert_eq!(b.screen().title, "Load a sound");
     assert_eq!(
         place_labels(&b),
-        ["Samples", "Recordings", "Recent", "Favourites"]
+        ["Samples", "Recordings", "Recent", "Favourites", "SD card"]
     );
     b.go_source(src("Kits"));
     assert_eq!(b.screen().path, "Samples");
@@ -1971,4 +1980,229 @@ fn save_preset_names_the_sound_and_asks_before_replacing_one_of_yours() {
     // The app couldn't give the sound: said, nothing written.
     b.preset_not_saved("the synth is busy");
     assert!(b.screen().status.unwrap().1);
+}
+
+/// A stand-in SD card beside the library: a sound at its top, a folder
+/// with another, and the folder a computer leaves there.
+fn card_beside(lib: &Library) -> PathBuf {
+    let card = lib.root().parent().unwrap().join("card");
+    std::fs::create_dir_all(card.join("Breaks")).unwrap();
+    std::fs::create_dir_all(card.join("System Volume Information")).unwrap();
+    let rhodes = lib.root().join("Samples/Rhodes chord.wav");
+    std::fs::copy(&rhodes, card.join("Rhodes chord.wav")).unwrap();
+    std::fs::copy(&rhodes, card.join("Breaks/Amen.wav")).unwrap();
+    card
+}
+
+/// Everything under `d`, with its bytes.
+fn tree(d: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![d.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        for e in std::fs::read_dir(&p).unwrap().flatten() {
+            let m = std::fs::symlink_metadata(e.path()).unwrap();
+            if m.is_dir() {
+                stack.push(e.path());
+            }
+            let bytes = if m.is_file() {
+                std::fs::read(e.path()).unwrap()
+            } else {
+                Vec::new()
+            };
+            out.push((e.path(), bytes));
+        }
+    }
+    out.sort();
+    out
+}
+
+fn open_card(b: &mut Browser, lib: &Library, card: &std::path::Path, dirty: bool) {
+    b.go_source(src("SD card"));
+    assert!(b.take_actions().contains(&BrowseAction::OpenCard));
+    lib.set_card(Some(card.to_path_buf()));
+    b.set_card(CardState::Open {
+        about: "exFAT, 63.9 GB".into(),
+        dirty,
+    });
+}
+
+#[test]
+fn the_sd_card_opens_when_its_place_shows_and_is_read_like_a_place() {
+    let (mut b, lib) = browser();
+    let card = card_beside(&lib);
+    let before = tree(&card);
+    // Shown: the app is asked to open it, and the place says so meanwhile.
+    b.go_source(src("SD card"));
+    assert_eq!(b.take_actions(), [BrowseAction::OpenCard]);
+    assert_eq!(b.card(), &CardState::Opening);
+    let s = b.screen();
+    assert!(s.rows.is_empty());
+    assert_eq!(s.detail.kind, "Opening the SD card, read only…");
+    assert!(s.list_buttons.is_empty());
+    // Open: listed as a place, the computer's own folder left out.
+    lib.set_card(Some(card.clone()));
+    b.set_card(CardState::Open {
+        about: "exFAT, 63.9 GB".into(),
+        dirty: false,
+    });
+    assert_eq!(names(&b), ["Breaks", "Rhodes chord.wav"]);
+    let s = b.screen();
+    assert_eq!(s.path, "SD card \u{b7} exFAT, 63.9 GB \u{b7} read only");
+    assert!(s.list_buttons.is_empty(), "no New folder or Paste");
+    assert_eq!(s.status, None);
+    // A sound: heard, loaded and copied, nothing else.
+    select(&mut b, "Rhodes chord.wav");
+    let d = b.screen().detail;
+    assert_eq!(
+        d.buttons,
+        [
+            Button::Load,
+            Button::LoadToPad,
+            Button::Audition,
+            Button::Copy
+        ]
+    );
+    assert!(d
+        .lines
+        .iter()
+        .any(|(k, v)| k == "Read only" && v.contains("Paste")));
+    b.take_actions();
+    b.input(Input::Button(Button::Load));
+    let a = b.take_actions();
+    assert!(
+        matches!(&a[..], [BrowseAction::LoadSample { loc, path }] if loc.place == Place::Card && path.starts_with(&card)),
+        "{a:?}"
+    );
+    // What is on the card isn't kept in Recent, and isn't starred.
+    let i = b.screen().selected.unwrap();
+    b.input(Input::Star(i));
+    assert!(!b.screen().rows[i].favourite);
+    assert!(b.screen().status.unwrap().0.contains("can't be starred"));
+    // ERASE, Rename and Cut change nothing.
+    for (what, how) in [("erase", 0), ("rename", 1), ("cut", 2)] {
+        match how {
+            0 => b.erase(),
+            1 => b.input(Input::Button(Button::Rename)),
+            _ => b.input(Input::Button(Button::Cut)),
+        }
+        let s = b.screen();
+        assert!(matches!(s.modal, Modal::None), "{what}");
+        assert!(s.clipboard.is_none(), "{what}");
+        assert!(s.status.unwrap().0.contains("read only"), "{what}");
+    }
+    // A folder opens, and - comes back out.
+    b.input(Input::Row(0));
+    assert_eq!(b.screen().path, "SD card / Breaks");
+    assert_eq!(names(&b), ["Amen.wav"]);
+    assert!(b.screen().can_go_back);
+    b.back();
+    assert_eq!(
+        b.screen().path,
+        "SD card \u{b7} exFAT, 63.9 GB \u{b7} read only"
+    );
+    // Copy, then Paste in Samples: the library has its own copy.
+    select(&mut b, "Rhodes chord.wav");
+    b.input(Input::Button(Button::Copy));
+    assert_eq!(
+        b.screen().clipboard.as_deref(),
+        Some("Copied: Rhodes chord.wav")
+    );
+    b.go_source(src("Samples"));
+    assert!(b.screen().list_buttons.contains(&Button::Paste));
+    b.input(Input::Button(Button::Paste));
+    assert!(names(&b).contains(&"Rhodes chord 2.wav".to_string()));
+    assert_eq!(
+        std::fs::read(lib.root().join("Samples/Rhodes chord 2.wav")).unwrap(),
+        std::fs::read(card.join("Rhodes chord.wav")).unwrap()
+    );
+    // Showing the card again doesn't ask again while it is open.
+    b.go_source(src("SD card"));
+    assert!(!b.take_actions().contains(&BrowseAction::OpenCard));
+    b.go_source(src("Recent"));
+    assert!(
+        names(&b).iter().all(|n| n != "Rhodes chord.wav"),
+        "{:?}",
+        names(&b)
+    );
+    assert_eq!(tree(&card), before, "nothing on the card changed");
+}
+
+#[test]
+fn a_card_that_doesnt_open_says_why_and_a_tap_tries_again() {
+    let (mut b, _lib) = browser();
+    b.go_source(src("SD card"));
+    assert_eq!(b.take_actions(), [BrowseAction::OpenCard]);
+    b.set_card(CardState::NotOpened("No card is in the slot.".into()));
+    let s = b.screen();
+    assert_eq!(
+        s.detail.kind,
+        "No card is in the slot. Tap SD card to try again."
+    );
+    assert_eq!(
+        s.status,
+        Some((
+            "The SD card didn't open: No card is in the slot.".into(),
+            true
+        ))
+    );
+    b.go_source(src("SD card"));
+    assert_eq!(b.take_actions(), [BrowseAction::OpenCard]);
+    assert_eq!(b.card(), &CardState::Opening);
+}
+
+#[test]
+fn a_card_not_safely_removed_opens_read_only_and_says_so() {
+    let (mut b, lib) = browser();
+    let card = card_beside(&lib);
+    open_card(&mut b, &lib, &card, true);
+    let (line, warn) = b.screen().status.unwrap();
+    assert!(warn);
+    assert!(line.contains("wasn't safely removed last time"), "{line}");
+    assert_eq!(names(&b), ["Breaks", "Rhodes chord.wav"]);
+}
+
+#[test]
+fn once_the_card_closes_its_place_is_empty_and_a_copy_from_it_is_dropped() {
+    let (mut b, lib) = browser();
+    let card = card_beside(&lib);
+    open_card(&mut b, &lib, &card, false);
+    b.input(Input::Row(0));
+    select(&mut b, "Amen.wav");
+    b.input(Input::Button(Button::Copy));
+    assert!(b.screen().clipboard.is_some());
+    lib.set_card(None);
+    b.set_card(CardState::Closed);
+    let s = b.screen();
+    assert!(s.rows.is_empty());
+    assert_eq!(s.path, "SD card");
+    assert_eq!(s.detail.kind, "Tap SD card to open it");
+    assert!(s.clipboard.is_none());
+    // The browser shown again on the card place asks for the card again.
+    b.shown_again();
+    assert_eq!(b.take_actions(), [BrowseAction::OpenCard]);
+    assert_eq!(b.card(), &CardState::Opening);
+    b.set_card(CardState::NotOpened(
+        "There is no card in the SD slot.".into(),
+    ));
+    b.shown_again();
+    assert!(
+        b.take_actions().is_empty(),
+        "a card that didn't open waits for a tap"
+    );
+    b.go_source(src("Samples"));
+    assert!(!b.screen().list_buttons.contains(&Button::Paste));
+}
+
+#[test]
+fn the_sound_picker_offers_the_sd_card() {
+    let (mut b, lib) = browser();
+    let card = card_beside(&lib);
+    b.open_picker(Pick::Sample);
+    let card_at = src("SD card");
+    assert!(b.screen().sources.contains(&card_at));
+    open_card(&mut b, &lib, &card, false);
+    assert_eq!(names(&b), ["Breaks", "Rhodes chord.wav"]);
+    select(&mut b, "Rhodes chord.wav");
+    assert!(b.screen().detail.buttons.contains(&Button::Load));
+    assert!(!b.screen().detail.buttons.contains(&Button::Copy));
 }

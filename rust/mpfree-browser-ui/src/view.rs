@@ -820,6 +820,14 @@ impl BrowserView {
             .map(|b| (b.x + b.w / 2, b.y + b.h / 2))
     }
 
+    /// The middle of the places column's row for `SOURCES[i]`, in a
+    /// browser drawn in `r` showing `s` (None: that place isn't shown).
+    pub fn place_point(r: Rect, s: &Screen, i: usize) -> Option<(i32, i32)> {
+        let k = s.sources.iter().position(|&x| x == i)?;
+        let p = *Geo::new(r, s).place_rows.get(k)?;
+        Some((p.x + p.w / 2, p.y + p.h / 2))
+    }
+
     /// The rows that fit in the Plugins place's list in a browser drawn
     /// in `r`.
     pub fn plugin_rows_in(r: Rect) -> usize {
@@ -1183,7 +1191,10 @@ const STAR_W: i32 = 44;
 
 /// Whether a row has a star to tap (it points at something in the library).
 fn starrable(row: &Row) -> bool {
-    row.loc.is_some() && row.trash_id.is_none() && row.version.is_none()
+    // What is on the SD card comes and goes with the card: never starred.
+    row.loc.as_ref().is_some_and(|l| l.place != Place::Card)
+        && row.trash_id.is_none()
+        && row.version.is_none()
 }
 
 /// The tap target of a row's star (the row's right end).
@@ -1396,6 +1407,22 @@ fn source_icon(cx: &mut PaintCx, r: Rect, s: Source, c: Color) {
             cx.canvas.fill_rect(Rect::new(x - 1, y - 1, 6, 2), c);
         }
         Source::Favourites => star_shape(cx, r.x + r.w / 2, r.y + r.h / 2, 11, c),
+        Source::Place(Place::Card) => {
+            // An SD card: its outline, the top right corner cut, and its
+            // contacts along the top.
+            let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+            cx.canvas
+                .stroke_round_rect(Rect::new(x - 8, y - 11, 16, 22), 2, 2, c);
+            for k in 0..3 {
+                cx.canvas
+                    .fill_rect(Rect::new(x - 5 + 3 * k, y - 8, 2, 5), c);
+            }
+            // The cut corner: steps a pixel wide, as the font's lines are.
+            for k in 0..5 {
+                cx.canvas
+                    .fill_rect(Rect::new(x + 3 + k, y - 11 + k, 2, 2), c);
+            }
+        }
         Source::Plugins => {
             // A plug: two prongs, the body, the cable.
             let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
@@ -1492,6 +1519,9 @@ fn paint_files(cx: &mut PaintCx, g: &Geo, s: &Screen) {
     if s.rows.is_empty() {
         let msg = if s.busy {
             "Reading…"
+        } else if SOURCES.get(s.source) == Some(&Source::Place(Place::Card)) {
+            // Opening, why it didn't open, or an empty card.
+            s.detail.kind.as_str()
         } else {
             "Nothing here yet"
         };
@@ -1523,6 +1553,7 @@ fn paint_files(cx: &mut PaintCx, g: &Geo, s: &Screen) {
     chip(cx, g.search, "Search", s.path.starts_with("Search: "));
     chip(cx, g.sort, s.sort.label(), s.sort == Sort::Newest);
     let clip = s.clipboard.as_deref().unwrap_or("");
+    let mut status_at = g.status.inset_xy(4, 0);
     if !clip.is_empty() {
         cx.text(
             FontId::Sans,
@@ -1532,12 +1563,15 @@ fn paint_files(cx: &mut PaintCx, g: &Geo, s: &Screen) {
             t.text_dim,
             clip,
         );
+        // The status line stops short of what was copied, never over it.
+        let w = cx.measure(FontId::Sans, t.size_small, clip) + 24;
+        status_at = status_at.take_left((status_at.w - w).max(0)).0;
     }
     if let Some((msg, bad)) = &s.status {
         cx.text(
             FontId::Sans,
             t.size_small,
-            g.status.inset_xy(4, 0),
+            status_at,
             Align::Left,
             if *bad { t.bad } else { t.text_dim },
             msg,
@@ -1558,13 +1592,15 @@ fn paint_files(cx: &mut PaintCx, g: &Geo, s: &Screen) {
         &d.title,
     );
     let (kind, rest) = rest.take_top(28);
-    // With the pad map, the facts go on the kind's line, as one.
+    // With the pad map, the facts go on the kind's line, as one. Where it
+    // is and the SD card's "Read only" line are left out: the path above
+    // says both.
     let summary = g.map.is_some().then(|| {
         std::iter::once(d.kind.as_str())
             .chain(
                 d.lines
                     .iter()
-                    .filter(|(l, _)| l != "In")
+                    .filter(|(l, _)| l != "In" && l != "Read only")
                     .map(|(_, v)| v.as_str()),
             )
             .collect::<Vec<_>>()

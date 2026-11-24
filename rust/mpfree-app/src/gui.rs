@@ -2528,10 +2528,13 @@ pub struct Player {
     /// BROWSE's Plugins place: the Open MPC catalog, installed plugins and
     /// zips on the stick (plugin_page.rs).
     plugin_page: crate::plugin_page::PluginPage,
-    /// The hint line shows the Plugins place's.
     /// The browser place's own hint line last shown (Plugins, Sets, a set
     /// being edited), or "".
     plugins_hinted: &'static str,
+    /// BROWSE's SD card place: the card in the slot, opened read-only
+    /// when the place asks and put away once the browser has been hidden
+    /// for a while (sd_card.rs).
+    pub(crate) sd_card: crate::sd_card::Slot,
     /// What each track plays ([`ToUi::TrackSounds`]), written under its
     /// name on Arrange.
     track_sounds: TrackSounds,
@@ -3306,6 +3309,7 @@ impl Player {
             crash_why: None,
             plugin_page: crate::plugin_page::PluginPage::new(),
             plugins_hinted: "",
+            sd_card: crate::sd_card::Slot::on_the_mpc(std::path::Path::new(crate::REPORT_DIR)),
             track_sounds: [None; crate::instruments::HOLDERS],
             track_sends: [None; crate::instruments::TRACKS],
             track_kits: crate::sampler::TrackKits::default(),
@@ -12602,6 +12606,9 @@ impl Player {
             }
             A::SaveKitRequested => self.save_kit(),
             A::Note(line) => self.say(line),
+            // BROWSE's SD card place shows: the card is asked for, in a
+            // thread; sd_card_tick gives the browser its answer.
+            A::OpenCard => self.sd_card.open(),
             // Projects (project.rs).
             A::SaveRequested => self.ask_save(),
             A::NewProject => {
@@ -12722,6 +12729,46 @@ impl Player {
                     _ => "a project",
                 }
             )),
+        }
+    }
+
+    /// The SD card place's card, once a frame: what the slot heard goes to
+    /// the library (where the card's files are) and the browser (what the
+    /// place says). The card is in use while the browser shows or its
+    /// worker has jobs (a copy from the card, say).
+    fn sd_card_tick(&mut self) {
+        let using = self.browsing() || self.browser.as_ref().is_some_and(|b| b.busy());
+        for h in self.sd_card.tick(using) {
+            use crate::sd_card::Heard;
+            use mpfree_browser_ui::CardState;
+            let (mount, state) = match h {
+                Heard::Say(line) => {
+                    self.say(line);
+                    continue;
+                }
+                Heard::Open(card) => (
+                    Some(card.mount.clone()),
+                    CardState::Open {
+                        about: card.describe(),
+                        dirty: card.dirty,
+                    },
+                ),
+                Heard::NotOpened(why) => {
+                    self.say(format!("sd card: not opened: {why}"));
+                    (None, CardState::NotOpened(why))
+                }
+                Heard::Closed(line) => {
+                    self.say(line);
+                    (None, CardState::Closed)
+                }
+            };
+            if let Some(b) = self.browser.as_mut() {
+                b.library().set_card(mount);
+                b.set_card(state);
+                if self.view == View::Browser {
+                    mpfree_browser_ui::show(&mut self.ui, b);
+                }
+            }
         }
     }
 
@@ -14923,6 +14970,9 @@ impl Player {
                         b.take_actions();
                     }
                     self.preset_picker.opened(b);
+                    // The SD card place asks again for a card put away
+                    // while the browser was hidden.
+                    b.shown_again();
                     if std::mem::take(&mut self.xy_browse.pending) {
                         b.open_picker(mpfree_browser_ui::Pick::XyLayout);
                         self.xy_browse.open = true;
@@ -17379,6 +17429,7 @@ impl Player {
         // Monitor's switch and level, turned on the recorder's Q-Link 4.
         let monitor = self.sample.take_monitor();
         self.outbox.extend(monitor);
+        self.sd_card_tick();
         // The browser: its touches and the worker's answers (a save's too,
         // made from another page); a preview's file and an opened
         // project's loops once read.
@@ -20587,6 +20638,43 @@ fn browser_sets(fonts: Fonts, edit: bool) -> Result<Player, String> {
     built
 }
 
+/// The whole browser (BROWSE) on its SD card place: a stand-in card beside
+/// a scratch library, open read only as the pad player opens the real one
+/// (nothing is asked of the stick), Rhodes chord picked. Removed again once
+/// the browser has read what it shows. For the manual's Saving chapter.
+fn browser_sd_card(fonts: Fonts) -> Result<Player, String> {
+    use mpfree_browser_ui::sample::{fill, fill_card, select, source};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("mpfree-sd-card-{}-{nanos}", std::process::id()));
+    let built = (|| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let lib = fill(&dir)?;
+        let card = fill_card(&lib, &dir.join("card"))?;
+        let mut p = sample_sampler(fonts);
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        p.take_actions();
+        p.apply(ToUi::Show(View::Browser));
+        let b = p.browser.as_mut().ok_or("no browser")?;
+        b.go_source(source("SD card"));
+        // OpenCard: the stand-in is opened here, not asked of the stick.
+        b.take_actions();
+        b.library().set_card(Some(card));
+        b.set_card(mpfree_browser_ui::CardState::Open {
+            about: "exFAT, 63.9 GB".into(),
+            dirty: false,
+        });
+        select(b, "Rhodes chord.wav");
+        p.step_browser();
+        p.take_actions();
+        Ok(p)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    built
+}
+
 /// The whole browser (BROWSE) in its Plugins place: a made-up catalog
 /// with two plugins installed and a zip on the stick, Mono Bass picked
 /// (installed, an update out), its own screen drawn from the test skin. Nothing is fetched or written. For
@@ -23686,6 +23774,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     match browser_projects(fonts()) {
         Ok(browser) => out.push(("browser", browser)),
         Err(e) => eprintln!("browser: not drawn ({e})"),
+    }
+    // The browser's SD card place, a stand-in card open read only.
+    match browser_sd_card(fonts()) {
+        Ok(card) => out.push(("browser-sd-card", card)),
+        Err(e) => eprintln!("browser-sd-card: not drawn ({e})"),
     }
     // The browser's Plugins place over a made-up catalog.
     match browser_plugins(fonts()) {
@@ -36176,6 +36269,105 @@ mod tests {
         p.tick(0.033);
         assert_eq!(load_on(&p).as_deref(), Some("A2"));
         assert_eq!(p.page(), mpfree_browser_ui::BROWSER_PAGE, "it stays open");
+    }
+
+    /// BROWSE's SD card place: showing it asks for the card (a window
+    /// opened before is taken over here, as after a restart), and what the
+    /// slot hears goes to the library and the place: the card's files,
+    /// what it is, and that it wasn't safely removed. With the browser
+    /// hidden for the put-away time, the card is put away and the place
+    /// says so.
+    #[test]
+    fn the_sd_card_place_opens_the_card_and_puts_it_away_once_hidden() {
+        use crate::sd_card::{Paths, Slot, Timing};
+        use mpfree_browser_ui::sample::source;
+        use mpfree_browser_ui::CardState;
+        use std::time::Duration;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("mpfree-sd-place-{}-{nanos}", std::process::id()));
+        let card = dir.join("card");
+        std::fs::create_dir_all(card.join("Breaks")).unwrap();
+        std::fs::create_dir_all(dir.join("run")).unwrap();
+        std::fs::write(dir.join("setup-sd-card.sh"), "# service\n").unwrap();
+        std::fs::write(
+            dir.join("mounts"),
+            format!("card {} exfat ro 0 0\n", card.display()),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("run/sd-card-status"),
+            format!(
+                "state=open\nmessage=The SD card is open, read-only.\nask=00cc\ncard=mmcblk1\nfs=exfat\nsectors=124735488\nmount={}\ndirty=yes\n",
+                card.display()
+            ),
+        )
+        .unwrap();
+        let mut p = browser_samples(Fonts::embedded()).unwrap();
+        p.sd_card = Slot::new(
+            Paths {
+                service: dir.join("setup-sd-card.sh"),
+                status: dir.join("run/sd-card-status"),
+                request: dir.join("run/sd-card.request"),
+                close: dir.join("run/sd-card.close"),
+                alive: dir.join("run/sd-card.alive"),
+                mounts: dir.join("mounts"),
+            },
+            Timing {
+                poll: Duration::from_millis(5),
+                answer: Duration::from_millis(500),
+                close: Duration::from_millis(50),
+                beat: Duration::from_millis(10),
+            },
+            Duration::from_millis(100),
+        );
+        let state = |p: &Player| p.browser.as_ref().unwrap().card().clone();
+        let until = |p: &mut Player, done: &dyn Fn(&Player) -> bool| {
+            let end = Instant::now() + Duration::from_secs(3);
+            while !done(p) {
+                assert!(Instant::now() < end, "not yet: {:?}", state(p));
+                p.tick(0.01);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
+        p.browser.as_mut().unwrap().go_source(source("SD card"));
+        assert_eq!(state(&p), CardState::Opening);
+        p.step_browser();
+        until(&mut p, &|p| matches!(state(p), CardState::Open { .. }));
+        assert_eq!(
+            state(&p),
+            CardState::Open {
+                about: "exFAT, 63.9 GB".into(),
+                dirty: true
+            }
+        );
+        let b = p.browser.as_ref().unwrap();
+        assert!(b.screen().rows.iter().any(|r| r.name == "Breaks"));
+        assert!(b
+            .status_line()
+            .is_some_and(|(t, bad)| bad && t.contains("wasn't safely removed")));
+        assert!(
+            !dir.join("run/sd-card.request").exists(),
+            "taken over, not asked again"
+        );
+        // In use while the browser shows.
+        std::thread::sleep(Duration::from_millis(150));
+        p.tick(0.01);
+        assert!(matches!(state(&p), CardState::Open { .. }));
+        // Hidden: put away, and asked to close (by the close's own thread).
+        p.apply(ToUi::Show(View::Play));
+        let close = dir.join("run/sd-card.close");
+        until(&mut p, &|p| state(p) == CardState::Closed && close.exists());
+        assert!(p.browser.as_ref().unwrap().library().card().is_none());
+        // Shown again on the card place: asked for again (here the window
+        // is still open, so it is taken over).
+        p.apply(ToUi::Show(View::Browser));
+        until(&mut p, &|p| matches!(state(p), CardState::Open { .. }));
+        assert!(p.browser.as_ref().unwrap().library().card().is_some());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The browser's pad map (the redesign's board 8): under a sound, the

@@ -487,6 +487,24 @@ class JudgeTests(unittest.TestCase):
             "Latch on", "Latch off", "sample: nothing captured: no empty pad in this bank"))))
         self.assertFalse(got["Grains 1 landed on a pad of bank B"])
 
+    def test_sd_card_needs_the_card_opened_and_closed_with_nothing_written(self):
+        """The SD card place's lines as sd_card.rs and setup-sd-card.sh write them: the close is judged on the
+        window's own last word, which it gives only after the card's write counters were checked."""
+        opened = "sd card: open, read-only: exFAT, 63.9 GB on mmcblk1, at /run/mpfree-sd (it wasn't safely removed last time)"
+        loaded = "sample: loaded: Kick, 0.4 s mono on pad A1"
+        closed = "sd card: closed: Closed. Nothing was written to the card."
+        got = dict((what, ok) for ok, what in self.judge("sd-card", checks.Window(lines(
+            "sd card: asked for the card (00ff)", opened, loaded, midi("pad 1 down, velocity 90"),
+            "sd card: putting it away: nothing used it for 30 s", closed))))
+        self.assertTrue(all(got.values()), got)
+        got = dict((what, ok) for ok, what in self.judge("sd-card", checks.Window(lines(
+            "sd card: not opened: There's no card in the SD slot."))))
+        self.assertFalse(got["the card opened read-only"])
+        self.assertFalse(got["it never failed to open"])
+        failed = "sd card: closed: the card's write or discard counters moved while it was open"
+        got = dict((what, ok) for ok, what in self.judge("sd-card", checks.Window(lines(opened, loaded, failed))))
+        self.assertFalse(got["the card closed with nothing written to it"])
+
     def test_sample_names_needs_the_pad_and_its_sound_named(self):
         got = dict((what, ok) for ok, what in self.judge("sample-names", checks.Window(lines(
             "sample: pad A5 named Ox", "sample: pad A5's sound named Loop", midi("button 67 pressed")))))
