@@ -1401,3 +1401,163 @@ fn ab_on_the_seam_from_the_snap_plays_your_taps_last_beat() {
     );
     assert_eq!(r.t.bpm(), bpm);
 }
+
+/// Move start / Move end: a move of your own lands as a snap does, on
+/// the loop's next downbeat with the tempo its bars make of the new
+/// length, and is a step Undo takes back. The start moves too; Use my
+/// tap then puts only the end back. A move past what the first pass kept,
+/// or to where the loop already is, is refused.
+#[test]
+fn a_move_of_your_own_lands_as_a_snap_with_the_tempo() {
+    let (mut r, rec_from, tap) = late_tap(SmartEnd::Suggest, true);
+    r.until_playing(512);
+    r.run(tap + 2_205 + 256);
+    let found = r.l.status().offer.expect("the end found, on offer");
+    let len = (tap - rec_from) as i64;
+    // 20 ms before what was found.
+    let to = Shift {
+        start: 0,
+        end: found.end - 441,
+    };
+    let p = r.l.snap_plan(0, Snap::To(to), r.frame).unwrap();
+    let s = r.l.status();
+    assert_eq!((p.by, p.ticks), (to, 2 * BAR_TICKS));
+    let bpm =
+        60.0 * f64::from(RATE) * (2 * BAR_TICKS) as f64 / (f64::from(PPQ) * (len + to.end) as f64);
+    assert!((p.bpm - bpm).abs() < 1e-9, "{} {bpm}", p.bpm);
+    assert_eq!((p.tick - s.origin).rem_euclid(s.ticks), 0, "a downbeat");
+    r.snap = Some(p);
+    r.run(p.at + 60_000);
+    assert_eq!(r.l.take_snap().map(|d| d.landed), Some(true));
+    let s = r.l.status();
+    assert_eq!(s.frames as i64, len + to.end);
+    assert_eq!((s.moved, s.offer), (Some(to), Some(found - to)));
+    assert_eq!(r.t.bpm(), p.bpm);
+    assert_eq!(r.l.history().done().last(), Some(&Step::Snap(to)));
+    for j in [FADE as u64 + 10, 5_000, 59_000] {
+        assert!(close(r.out_at(p.at + j), sound(rec_from + j)), "frame {j}");
+    }
+    // Where it is already: refused, as Snap is.
+    assert_eq!(
+        r.l.snap_plan(0, Snap::To(to), r.frame),
+        Err("the loop is already there")
+    );
+    // Past what was kept after the tap, or before the press.
+    let far = Shift {
+        start: 0,
+        end: 3 * KEEP_BEFORE as i64,
+    };
+    assert_eq!(
+        r.l.snap_plan(0, Snap::To(far), r.frame),
+        Err("that end is outside what the loop kept")
+    );
+    let early = Shift {
+        start: -(KEEP_BEFORE as i64) - 10,
+        end: to.end,
+    };
+    assert_eq!(
+        r.l.snap_plan(0, Snap::To(early), r.frame),
+        Err("that end is outside what the loop kept")
+    );
+    // The start 10 ms later as well: from the downbeat, the loop plays
+    // from there.
+    let both = Shift {
+        start: 220,
+        end: to.end,
+    };
+    let q = r.l.snap_plan(0, Snap::To(both), r.frame).unwrap();
+    assert_eq!(q.by, Shift { start: 220, end: 0 });
+    r.snap = Some(q);
+    r.run(q.at + 30_000);
+    assert!(r.l.take_snap().unwrap().landed);
+    assert_eq!(r.l.status().moved, Some(both));
+    for j in [FADE as u64 + 10, 5_000, 29_000] {
+        assert!(
+            close(r.out_at(q.at + j), sound(rec_from + 220 + j)),
+            "frame {j}"
+        );
+    }
+    // Use my tap: the end back on the tap, the start stays.
+    let t = r.l.snap_plan(0, Snap::Tap, r.frame).unwrap();
+    r.snap = Some(t);
+    r.run(t.at + 1_000);
+    assert!(r.l.take_snap().unwrap().landed);
+    assert_eq!(r.l.status().moved, Some(Shift { start: 220, end: 0 }));
+    // Undo twice: back to the first move, then before it.
+    for want in [Some(both), Some(to), None] {
+        let u = r.l.snap_plan(0, Snap::Undo, r.frame).unwrap();
+        r.snap = Some(u);
+        r.run(u.at + 1_000);
+        assert!(r.l.take_snap().unwrap().landed);
+        assert_eq!(r.l.status().moved, want);
+    }
+    assert_eq!(r.l.status().frames as i64, len);
+}
+
+/// A/B against a move of your own: the other side's last beat is the
+/// move's; a new move while it runs plays from the next half way (never
+/// mid-round), then the loop's own as before; nothing else changes.
+#[test]
+fn ab_against_a_move_plays_the_moves_last_beat() {
+    let (mut r, rec_from, tap) = late_tap(SmartEnd::Suggest, true);
+    r.until_playing(512);
+    let (_, bpm, at) = r.tempo.expect("a tempo");
+    r.run(tap + 2_205 + 256);
+    let s0 = r.l.status();
+    let found = s0.offer.expect("on offer");
+    let len = s0.frames as u64;
+    let beat = len / 8;
+    let seam = s0.seam as u64;
+    let down = |k: u64| at + k * len;
+    assert!(r.frame < down(0) + len / 2, "before the first half way");
+    let move_beat = |r: &Rig, k: u64, end: i64| {
+        (len - beat + seam + 10..len - seam - 10)
+            .step_by(97)
+            .all(|p| {
+                close(
+                    r.out_at(down(k) + p),
+                    sound(rec_from + (p as i64 + end) as u64),
+                )
+            })
+    };
+    let first = Shift {
+        start: 0,
+        end: found.end - 2_000,
+    };
+    r.cmd(L::AbMove(first));
+    r.run(r.frame + 256);
+    assert_eq!(r.l.status().ab, Some(false), "its own side till half way");
+    r.run(down(1) + 256);
+    assert!(move_beat(&r, 0, first.end), "the move's last beat");
+    assert!(!move_beat(&r, 0, found.end), "not the snap's");
+    // Moved again in round 1's first half: from its half way, the new
+    // move's; then the loop's own; then the new move's again.
+    let second = Shift {
+        start: 0,
+        end: found.end + 1_000,
+    };
+    r.cmd(L::AbMove(second));
+    r.run(down(2) + 256);
+    assert!(move_beat(&r, 1, second.end), "the new move's");
+    assert!(!move_beat(&r, 1, first.end));
+    r.run(down(3) + 256);
+    assert!(move_beat(&r, 2, 0), "its own side");
+    r.run(down(4) + 256);
+    assert!(move_beat(&r, 3, second.end), "the new move's again");
+    let s = r.l.status();
+    assert_eq!(
+        (s.frames as u64, s.offer, s.moved),
+        (len, Some(found), None)
+    );
+    assert_eq!(s.version, s0.version);
+    assert_eq!(r.t.bpm(), bpm);
+    // Off, and where the loop is: refused, counted.
+    r.cmd(L::AbSeam(false));
+    r.run(down(6) + 256);
+    assert_eq!(r.l.status().ab, None);
+    let refused = r.l.stats().refused;
+    r.cmd(L::AbMove(Shift::NONE));
+    r.run(r.frame + 256);
+    assert_eq!(r.l.status().ab, None);
+    assert_eq!(r.l.stats().refused, refused + 1);
+}

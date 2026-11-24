@@ -217,6 +217,22 @@ When nothing was found and the only question is a close call, the view shows you
 
 When loop memory was full as the loop closed, it kept nothing after your tap, so its end can move earlier but not later. The line says so instead: "Loop memory was full when it closed, so nothing after your tap was kept: the end can move earlier, not later." An end found before a late tap is still on offer. One found after an early tap can't be, and Suggest says why: "Kept your tap: loop memory was full, so nothing after it was kept." Free some memory (clear a loop you don't need) before you record if you want the room.
 
+##### Move the start or end yourself
+
+When neither your tap nor the snap is quite right, move the loop's start or end yourself in the loop point view, hear it, and keep it or put it away.
+
+- **STEP**, at the top right of the view, sets how far each move goes: **1/16** (a sixteenth note at the loop's tempo, the first choice), **1 ms**, or **Hit** (to the next or the previous hit you can see in that window). The hits are the short marks under the sound. STEP stays as you left it.
+- **◀** and **▶**, after Start and End, move that edge earlier or later by one step.
+- **Drag on a window** to put that edge where your finger is. A finger within a few pixels of a hit puts it exactly on the hit.
+- Your move is a white line with a grip, labelled "your move" and how far it is from your press or your tap ("−65 ms"). Each window follows the edge you move, so you can keep going past what it showed.
+- Nothing changes until you decide. The line says what your move would make of the loop ("Your move makes it 4 bars at 92.58 BPM, from the loop's next downbeat."), and the buttons are **Move** and **Cancel**. A move can't go past the other edge, or outside what the first pass recorded.
+- **A/B** while a move is set up plays the loop as it is, then as your move would, one time round each, with nothing else changing. Move an edge again during A/B and you hear the new move the next time round.
+- **Move** lands it on the loop's next downbeat with the tempo it makes, as a snap does, and UNDO takes it back. **Cancel** puts the move away and leaves the loop as it is.
+
+After a move, the chip says how far you moved it ("Moved 65 ms earlier") with **Use my tap**, and the view offers **Use my tap** and **Keep it**. The log notes each move you keep, with what smart loop end had found, so future versions can learn from the loops you correct.
+
+{{shot: looper-move | The loop point view with a move set up: STEP on Hit, the end moved to the hit before the one found, 65 ms before your tap, with Move, Cancel and A/B.}}
+
 ##### When a snap would move recorded audio
 
 A snap changes the song's tempo. If the audio tracks hold recordings, they would play out of step at the new tempo, so the hint line asks first ("Loop 1: that changes the tempo under the audio tracks' recordings. Snap anyway?"), with **Snap anyway** and **Not now** at its right end. **Snap anyway** goes ahead on the next downbeat (Read as, Undo and Redo say **Do it anyway**); **Not now** leaves everything as it is.

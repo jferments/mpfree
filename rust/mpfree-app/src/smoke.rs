@@ -437,6 +437,49 @@ mod tests {
         }
     }
 
+    /// Move start / Move end's screens, swept on their own: every control
+    /// in the loop point view does something, STEP's choices, the arrows
+    /// and the windows among them, and each is in the catalogue.
+    #[test]
+    fn the_loop_point_views_move_controls_do_something_and_are_in_the_catalogue() {
+        let rows = on_big_stack(|| {
+            let mut rows = Vec::new();
+            for name in gui::MOVE_SAMPLES {
+                let make = || gui::sample_move(name, Fonts::embedded());
+                let mut p = make();
+                let mut fresh = make;
+                rows.extend(sweep(name, &mut p, &mut fresh));
+            }
+            rows
+        });
+        let ours: Vec<&Row> = rows
+            .iter()
+            .filter(|r| r.widget == crate::looper_tab::EDITOR && r.target.id.starts_with("point-"))
+            .collect();
+        for id in ["point-step", "point-nudge", "point-window", "point-pick"] {
+            let n = ours
+                .iter()
+                .filter(|r| r.target.id == id && matches!(r.outcome, Outcome::Acted(_)))
+                .count();
+            assert!(n >= 2, "{id}: {n} acted");
+        }
+        let dead: Vec<String> = ours
+            .iter()
+            .filter(|r| r.outcome == Outcome::Dead)
+            .map(|r| format!("{} #{} on {}", r.key(), r.target.index, r.screen))
+            .collect();
+        assert!(dead.is_empty(), "dead: {dead:?}");
+        let text = std::fs::read_to_string(catalogue::PATH).expect("docs/dev/guides/controls.md");
+        let listed = catalogue::keys(&text);
+        for r in ours {
+            assert!(
+                listed.contains(&r.key()),
+                "{} not in the catalogue",
+                r.key()
+            );
+        }
+    }
+
     /// The Arp panel's Phrase tab, swept on its own: every control on its
     /// screens does something, its own are all pressed, and each is
     /// in the catalogue.

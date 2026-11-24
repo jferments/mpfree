@@ -2271,6 +2271,9 @@ pub enum FromUi {
     LoopSide(crate::looping::Side, bool),
     /// The loop point view's A/B.
     LoopAb(bool),
+    /// The loop point view's Move start / Move end
+    /// ([`crate::looping::LoopAction::Move`]).
+    LoopMove(crate::looping::MoveAct),
     /// The hint line's Snap anyway (true) or Not now.
     LoopAnswer(bool),
     /// The loop point view opened (true) or closed: its audio is wanted.
@@ -9005,6 +9008,7 @@ impl Player {
                 }
                 LoopAct::Side(side, keep) => out.push(FromUi::LoopSide(side, keep)),
                 LoopAct::Ab(on) => out.push(FromUi::LoopAb(on)),
+                LoopAct::Move(a) => out.push(FromUi::LoopMove(a)),
                 LoopAct::PointView(open) => out.push(FromUi::LoopPointView(open)),
                 LoopAct::Answer(anyway) => out.push(FromUi::LoopAnswer(anyway)),
             }
@@ -22749,11 +22753,49 @@ fn sample_smart_loop_end(p: &mut Player, name: &str, open: bool) {
             })
         }
         "looper-smart-close-call" => v.smart.close_call = Some(8),
+        // Moved by hand to a quieter hit 65 ms before the tap.
+        "looper-moved" => {
+            s.moved = Some(Shift {
+                start: 0,
+                end: ms(-65.0),
+            });
+            s.offer = Some(Shift {
+                start: 0,
+                end: ms(17.0),
+            });
+        }
         _ => {
             s.offer = Some(Shift {
                 start: 0,
                 end: ms(-48.0),
             })
+        }
+    }
+    // What it found: the snap's place, or what is on offer.
+    s.found = s.offer.or(s.moved);
+    let move_screen = name.starts_with("looper-move");
+    if move_screen {
+        s.found = Some(Shift {
+            start: 0,
+            end: ms(-48.0),
+        });
+    }
+    // Move start / Move end: a move set up on the end, on a quieter hit
+    // 65 ms before the tap, by the Hit step; with A/B, the round that
+    // plays the move's end.
+    if name == "looper-move" || name == "looper-move-ab" {
+        let to = Shift {
+            start: 0,
+            end: ms(-65.0),
+        };
+        let ppq = f64::from(mpfree_transport::time::PPQ);
+        let bpm =
+            60.0 * f64::from(rate) * s.ticks as f64 / (ppq * (s.frames as i64 + to.end) as f64);
+        v.smart.moving = Some(crate::looping::Moving { to, makes: Ok(bpm) });
+        v.smart.move_step = crate::looping::MoveStep::Hit;
+        if name == "looper-move-ab" {
+            v.smart.ab = true;
+            s.ab = Some(true);
         }
     }
     // Loop memory was full as the pass closed: nothing kept after the
@@ -22794,10 +22836,22 @@ fn sample_smart_loop_end(p: &mut Player, name: &str, open: bool) {
         out
     };
     if open {
-        v.smart.point = Some(LoopPoint {
-            start: hits(POINT_START_FROM_MS, 3.0, 0.02),
-            end: hits(POINT_END_FROM_MS, -48.0, 0.05),
-        });
+        let mut end = hits(POINT_END_FROM_MS, -48.0, 0.05);
+        let mut point = LoopPoint::new(hits(POINT_START_FROM_MS, 3.0, 0.02), end, rate);
+        point.hits[0][0] = ms(3.0);
+        point.hits[1][0] = ms(-48.0);
+        point.n_hits = [1, 1];
+        if move_screen {
+            // A quieter hit 17 ms before the loud one.
+            let quiet = hits(POINT_END_FROM_MS, -65.0, 0.0);
+            for (e, q) in end.iter_mut().zip(quiet) {
+                *e = (*e).max((f32::from(q) * 0.4) as u8);
+            }
+            point.end = end;
+            point.hits[1][..2].copy_from_slice(&[ms(-65.0), ms(-48.0)]);
+            point.n_hits = [1, 2];
+        }
+        v.smart.point = Some(point);
     }
     p.apply(ToUi::Looper(Box::new(v)));
     if open {
@@ -26335,6 +26389,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         ("looper-smart-start", false),
         ("looper-smart-close-call", false),
         ("looper-smart-ask", false),
+        // Move start / Move end (the looper refactor's R2).
+        ("looper-move", true),
+        ("looper-move-ab", true),
+        ("looper-moved", true),
     ] {
         match sample_looper_picking(fonts(), 0) {
             Ok(mut p) => {
@@ -28270,6 +28328,20 @@ pub fn sample_sets(name: &str, fonts: Fonts) -> Result<Player, String> {
         "browser-sets-soundcheck" => browser_set_soundcheck(fonts),
         _ => Err(format!("{name}: not a Sets sample screen")),
     }
+}
+
+/// Move start / Move end's sample screens (the looper refactor's R2):
+/// a move set up, A/B against it, and a loop moved by hand.
+#[cfg_attr(not(test), allow(dead_code))]
+pub const MOVE_SAMPLES: [&str; 3] = ["looper-move", "looper-move-ab", "looper-moved"];
+
+/// One of [`MOVE_SAMPLES`], with the loop point view open, on its own so
+/// that a test can sweep it without building every screen.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn sample_move(name: &str, fonts: Fonts) -> Player {
+    let mut p = sample_looper_picking(fonts, 0).expect("the looper sample");
+    sample_smart_loop_end(&mut p, name, true);
+    p
 }
 
 pub const PHRASE_SAMPLES: [&str; 8] = [
