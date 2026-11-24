@@ -10208,6 +10208,9 @@ fn player_session(
     // The source bank the screen was last told the pads play (sampler
     // step 15e), while it isn't the bank shown.
     let mut kit_source: Option<usize> = None;
+    // The pads' kit layers the screen was last told of (sampler step 15e's
+    // follow-up).
+    let mut layer_kits_shown = None;
     // The name of the instrument the host's pads player plays, as the
     // screen last heard it (step 6).
     let mut pads_host_shown: Option<&'static str> = None;
@@ -14733,6 +14736,13 @@ fn player_session(
             kit_source = source_now;
             out.show(gui::ToUi::KitSource(source_now));
         }
+        // The pads' kit layers: the Sample page's bar names them after a
+        // hit (sampler step 15e's follow-up).
+        let layer_kits = app.pads_layer_kits();
+        if layer_kits_shown != Some(layer_kits) {
+            layer_kits_shown = Some(layer_kits);
+            out.show(gui::ToUi::PadsLayerKits(layer_kits));
+        }
         // The PAD BANK buttons found so far: the bank playing is lit, or
         // TRACK MUTE's bank while the pads mute tracks.
         if bank_lights && ((app.pads_are_steps() && app.main_held().is_none()) || controller.on()) {
@@ -16220,11 +16230,13 @@ fn player_session(
         if let Some(end) = looper.copy_ended() {
             fx.extend(desk::copy_ended(&mut time, end));
         }
-        // The one UNDO follows each engine's steps (phase 4d.1).
+        // The one UNDO follows each engine's steps (phase 4d.1), and asks
+        // them to forget what it can no longer reach (4d.3).
         if loops_on {
             if let Some(next) = one_undo.follow(&time, &tracks, &looper) {
                 out.show(gui::ToUi::OneUndo(next));
             }
+            one_undo.tend(out, &mut time, &mut tracks, &mut looper);
         }
         if let Some(wave) = loop_wave {
             out.show(gui::ToUi::LoopWave(wave));
@@ -20143,6 +20155,7 @@ mod tests {
                 let (mut left, mut right) = ([0.0; PERIOD], [0.0; PERIOD]);
                 r.looper.run(r.time.block(), &mut left, &mut right);
                 one.follow(&r.time, &r.tracks, &r.looper);
+                one.tend(&mut r.out, &mut r.time, &mut r.tracks, &mut r.looper);
             }
         };
         run(&mut r, &mut one, 2, false);
@@ -20236,6 +20249,26 @@ mod tests {
         assert_eq!((b_at(&r), r.audio()), (3 * bar, 3 * bar));
         assert_eq!(gain_steps(&r).1, 0, "the song edit's regions with it");
         assert_eq!(next(&one, true), None);
+        assert_eq!(press(&mut r, &mut one, true), "Nothing to redo");
+
+        // Two UNDOs (the song edit with its regions, the region edit),
+        // then a new step on the loop: nothing is left to redo, and every
+        // engine forgets its own redo steps (phase 4d.3).
+        press(&mut r, &mut one, false);
+        press(&mut r, &mut one, false);
+        let take_redo = |r: &SongRig| {
+            let (mut done, mut redo) = (Vec::new(), Vec::new());
+            r.time.take_steps(&mut done, &mut redo);
+            redo.len()
+        };
+        assert_eq!(take_redo(&r), 1);
+        assert!(gain_steps(&r).1 >= 2, "the region edit and the song's");
+        r.looper.command(L::Edit(mpfree_looper::Edit::Reverse));
+        run(&mut r, &mut one, 10, false);
+        assert_eq!(next(&one, false), Some(Part::Loop(0)));
+        assert_eq!(next(&one, true), None);
+        assert_eq!((take_redo(&r), gain_steps(&r).1), (0, 0));
+        assert_eq!((b_at(&r), r.audio()), (2 * bar, 2 * bar), "nothing moved");
         assert_eq!(press(&mut r, &mut one, true), "Nothing to redo");
     }
 

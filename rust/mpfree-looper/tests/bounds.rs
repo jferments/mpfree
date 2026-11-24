@@ -321,6 +321,8 @@ fn stop_keeps_nothing_after_it() {
         (b.captured, b.kept),
         ((KB, KB + 2 * BAR as i64), KB + BAR as i64 + 5_000)
     );
+    // (Not for want of memory.)
+    assert!(!b.short);
     assert_eq!(r.l.stats().kept_short, 0);
 }
 
@@ -329,7 +331,7 @@ fn with_no_memory_for_what_follows_the_loop_keeps_nothing_after_it() {
     // 1 second: the bar and what came before it, but not what follows.
     let mut r = recorded(1);
     let b = r.bounds().unwrap();
-    assert_eq!(b.kept, KB + BAR as i64);
+    assert_eq!((b.kept, b.short), (KB + BAR as i64, true));
     assert_eq!((r.l.stats().kept_short, r.l.stats().aborted), (1, 0));
     // Its end can only move earlier.
     let before = r.refused();

@@ -3212,6 +3212,23 @@ impl TrackHost {
         })
     }
 
+    /// Forget the steps Redo could bring back (`redo`), else let go of
+    /// those Undo could take back made at or before `through`, for the
+    /// one UNDO across the engines (audio tracks phase 4d.3,
+    /// [`Command::ForgetRedo`], [`Command::RetireThrough`]): from the next
+    /// period. Says why not (the queue is full).
+    pub fn forget_steps(
+        &mut self,
+        redo: bool,
+        through: mpfree_transport::TransactionId,
+    ) -> Result<(), String> {
+        self.send(if redo {
+            Command::ForgetRedo
+        } else {
+            Command::RetireThrough(through)
+        })
+    }
+
     fn send(&mut self, c: Command) -> Result<(), String> {
         if self.host.command(c) {
             Ok(())
