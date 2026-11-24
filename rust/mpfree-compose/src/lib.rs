@@ -110,6 +110,7 @@
 //! idle-priority background job (phase 0C onwards).
 #![forbid(unsafe_code)]
 
+pub mod answer;
 pub mod baseline;
 pub mod beat;
 pub mod bind;
@@ -148,6 +149,7 @@ pub mod sound;
 pub mod style;
 pub mod timing;
 
+pub use answer::{answer, Answered, Call, Reply};
 pub use beat::{continue_drums, Drummed, DrumsAsk, DrumsRefused, Hit as BeatHit};
 pub use bind::{audition, revision, revision_in, Binding, Stale};
 pub use clip_style::{read_clip, ClipStyle, Read as ClipRead, Subdivision};

@@ -437,7 +437,42 @@ fn material(
     let velocity = src
         .first()
         .map_or(ph.style.playing.velocity, |m| m.velocity);
+    // Keep yours: Rhythm holds your rhythm exactly, so a fixed note takes
+    // the onset of yours nearest it (a close takes the bar's last) with its
+    // length, and the rest of your bar plays round it.
+    let anchor = match anchor {
+        Some(a) if settings.keeps.rhythm => {
+            let r = rhythm_of(src, grid);
+            let pick = if a.kind == AnchorKind::Close {
+                r.last()
+            } else {
+                r.iter().min_by_key(|o| ((o.on - a.on).abs(), o.on))
+            };
+            Some(pick.map_or(a, |o| Fixed {
+                on: o.on,
+                len: o.len,
+                ..a
+            }))
+        }
+        a => a,
+    };
     let mut planned: Vec<Planned> = match (g, anchor) {
+        (_, Some(a)) if settings.keeps.rhythm => {
+            // Your tune moved so its note there is the fixed one.
+            let r = rhythm_of(src, grid);
+            let at = src
+                .iter()
+                .rev()
+                .find(|m| m.on <= a.on)
+                .or(src.first())
+                .map_or(a.pos, |m| m.pos);
+            let tune = transform(src, Transform::Move(a.pos - at));
+            let mut v = aimed(&r, &tune);
+            for p in v.iter_mut().filter(|p| p.on == a.on) {
+                p.target = Some(note(a.on, a.len, a.pos, a.alt, velocity));
+            }
+            v
+        }
         (_, Some(a)) => {
             // Your bar's rhythm up to the anchor, your tune moved so it
             // arrives a step away (from below rising to a landing or the
@@ -552,7 +587,9 @@ fn material(
             let mut tune = a;
             tune.extend(b);
             tune.retain(|m| m.on < grid.bar);
-            let r = reshaped(ph, bp, settings, &tune, 0.4, true, dice);
+            // Keep yours: Rhythm plays the developed tune in your rhythm.
+            let from = if settings.keeps.rhythm { src } else { &tune };
+            let r = reshaped(ph, bp, settings, from, 0.4, true, dice);
             aimed(&r, &tune)
         }
         (Gesture::HoldBack, None) => {
@@ -563,11 +600,15 @@ fn material(
                 .filter(|m| m.on < grid.half())
                 .take(3)
                 .collect();
-            let mut r = rhythm_of(&tune, grid);
-            if let Some(l) = r.last_mut() {
-                l.len = (grid.bar - beat - l.on).max(l.len);
+            if settings.keeps.rhythm {
+                aimed(&rhythm_of(src, grid), &tune)
+            } else {
+                let mut r = rhythm_of(&tune, grid);
+                if let Some(l) = r.last_mut() {
+                    l.len = (grid.bar - beat - l.on).max(l.len);
+                }
+                aimed(&r, &tune)
             }
-            aimed(&r, &tune)
         }
         (_, None) => {
             // A set-up: your tune climbing, its rhythm reshaped.
@@ -1631,6 +1672,51 @@ mod tests {
             bars,
             seed,
             ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn keep_yours_rhythm_holds_your_rhythm_in_every_new_bar() {
+        let notes = riff();
+        let ctx = context(&notes);
+        let yours = |b: i32| -> Vec<i32> {
+            let mut v: Vec<i32> = notes
+                .iter()
+                .map(|(n, _)| (n.at / STEP) as i32)
+                .filter(|&on| on / 16 == b)
+                .map(|on| on % 16)
+                .collect();
+            v.dedup();
+            v
+        };
+        let mine = [yours(0), yours(1)];
+        for style in [MINIMAL, GROOVE, JAZZISH] {
+            for ending in [Ending::Home, Ending::Open, Ending::LoopsBack] {
+                for seed in 1..=3 {
+                    let mut s = settings(style, 8, seed);
+                    s.keeps.rhythm = true;
+                    s.ending = ending;
+                    let req = ask(&notes, &ctx, &s);
+                    let best = drafts(&req).unwrap().remove(0);
+                    for b in 2..10 {
+                        let mut ons: Vec<i32> = best
+                            .made
+                            .line
+                            .notes
+                            .iter()
+                            .filter(|g| g.on / 16 == b)
+                            .map(|g| g.on % 16)
+                            .collect();
+                        ons.dedup();
+                        assert!(
+                            mine.contains(&ons),
+                            "{} {ending:?} seed {seed}: bar {} plays {ons:?}, not your rhythm",
+                            style.name,
+                            b + 1
+                        );
+                    }
+                }
+            }
         }
     }
 
