@@ -90,7 +90,7 @@ use mpfree_compose::baseline::{
     motif_repeated, regroove, simpler, try_bar_one_sided, Feel, Simpler,
 };
 use mpfree_compose::critic::{judge_continue, Verdict};
-use mpfree_compose::draft::drafts;
+use mpfree_compose::draft::{draft, drafts};
 use mpfree_compose::style::{BassLine, DrumMap};
 use mpfree_compose::{
     add_part, continue_notes, first_engine, safe_controls, sound_of, try_bar, AddPart, Added,
@@ -1165,6 +1165,98 @@ fn gate_cases(p: &Phrase, seed: u64) -> Made {
             Vec::new()
         }
     };
+    Made { cases, notes }
+}
+
+// ------------------------------------------------------------ S4: the critic
+
+/// The S4 gate: the same request carried on twice, once as the critic
+/// offers it (the best of twelve drafts, a weak bar repaired) and once as
+/// the first draft comes, unjudged. Two cases per phrase; a seed whose
+/// first draft is the critic's pick is passed over for the next, up to
+/// four.
+fn critic_cases(p: &Phrase, seed: u64) -> Made {
+    const NEW: u8 = 8;
+    let clip = clip_of(&p.notes, p.bars, p.meter);
+    let yours = yours_as_notes(&p.notes);
+    let mut notes = String::new();
+    let to_bar = p.bars + usize::from(NEW);
+    let mut cases = Vec::new();
+    let mut sd = seed;
+    for k in 0..2u64 {
+        let made = (|| -> Result<Case, String> {
+            for _ in 0..4 {
+                let set = settings(p.style, NEW, sd);
+                sd += 1;
+                let req = request(p, &clip, &set);
+                let all = drafts(&req).map_err(|e| e.words())?;
+                let best = &all[0];
+                let first = draft(&req, 0).map_err(|e| e.words())?;
+                if best.number == 0 && best.made.critic.is_empty() {
+                    continue;
+                }
+                let _ = writeln!(
+                    notes,
+                    "{}: {} bars of {} at {:.0} BPM; read as {}; style {}; seed {}",
+                    p.name,
+                    p.bars,
+                    meter_words(p.meter),
+                    p.bpm,
+                    clip.context.key.words(),
+                    style_words(&p.style),
+                    sd - 1
+                );
+                let _ = writeln!(
+                    notes,
+                    "  the critic: draft {} of {}, passes {}{}; the first draft unjudged passes {}",
+                    best.number + 1,
+                    all.len(),
+                    best.verdict.passed(),
+                    if best.made.critic.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", best.made.critic.join("; "))
+                    },
+                    first.verdict.passed()
+                );
+                let take = |what: &str, c: &Continued| Take {
+                    what: what.to_string(),
+                    mpfree: true,
+                    notes: whole(&yours, &c.notes),
+                    from_bar: 0,
+                    to_bar,
+                    pad: Some(c.chords.clone()),
+                    extra: Vec::new(),
+                    drummer: true,
+                    moves: Vec::new(),
+                };
+                return Ok(Case {
+                    id: format!("{}-critic-{}", p.slug, k + 1),
+                    phrase: p.name.clone(),
+                    test: "critic",
+                    question: "Which would you keep?",
+                    about: format!(
+                        "your {} bars, then 8 new bars in {}, two ways",
+                        p.bars,
+                        style_words(&p.style)
+                    ),
+                    takes: vec![
+                        take("the critic's pick (S4)", &best.made),
+                        take("the first draft, unjudged", &first.made),
+                    ],
+                    labels: Vec::new(),
+                });
+            }
+            Err("the first draft was the critic's pick on four seeds".into())
+        })();
+        let first = order(2, seed, &p.slug)[0] as u64 == k;
+        match made {
+            Ok(c) => cases.push(finish_in(c, if first { &[0, 1] } else { &[1, 0] })),
+            Err(e) => {
+                let _ = writeln!(notes, "{}: critic: left out, {e}", p.name);
+            }
+        }
+    }
     Made { cases, notes }
 }
 
@@ -3250,7 +3342,7 @@ fn show(p: &Phrase, what: &str, c: &Continued, gestures: &[mpfree_compose::sketc
 }
 
 const USAGE: &str = "usage: listen --demo | --midi FILE [--track N] [--from BAR] [--bars N] [--all-notes] \
-[--style minimal|groove|jazzish] [--bpm N] [--swing 1/8:58] [--role melody|bass] [--sounds a|b|now|round2|plain] [--seed N] [--gate | --parts | --gestures | --sound [--lead NAME]] [--out DIR] | --critic N (--demo | --midi FILE) \
+[--style minimal|groove|jazzish] [--bpm N] [--swing 1/8:58] [--role melody|bass] [--sounds a|b|now|round2|plain] [--seed N] [--gate | --parts | --gestures | --sound [--lead NAME] | --critic-gate] [--out DIR] | --critic N (--demo | --midi FILE) \
 | --phrases | --phrases-from FILE [--only TEXT] [--out DIR] | --ideas [--seed N] [--out DIR]";
 
 fn run(args: &[String]) -> Result<(), String> {
@@ -3270,6 +3362,7 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut gate = false;
     let mut gestures = false;
     let mut sound = false;
+    let mut critic_gate = false;
     let mut parts = false;
     let mut phrases = false;
     let mut phrases_from: Option<PathBuf> = None;
@@ -3287,6 +3380,7 @@ fn run(args: &[String]) -> Result<(), String> {
             "--demo" => demo = true,
             "--gate" => gate = true,
             "--gestures" => gestures = true,
+            "--critic-gate" => critic_gate = true,
             "--sound" => sound = true,
             "--parts" => parts = true,
             "--phrases" => phrases = true,
@@ -3495,7 +3589,9 @@ fn run(args: &[String]) -> Result<(), String> {
     let made: Vec<(Phrase, Made)> = phrases
         .into_iter()
         .map(|p| {
-            let m = if sound {
+            let m = if critic_gate {
+                critic_cases(&p, seed)
+            } else if sound {
                 sound_cases(&p, seed)
             } else if gestures {
                 gestures_cases(&p, seed)

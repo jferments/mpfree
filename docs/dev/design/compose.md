@@ -352,6 +352,8 @@ S1's critic picked the best of four drafts and offered it as it was; S4 makes mo
 
 **What it does.** Over 20 seeds of 8 bars every built-in phrase's pick passes all six checks (80 of 80; with four drafts it was 19, 20, 20 and 19 of 20), so the critic repairs none of them (`listen --demo --critic 20` prints how many it repaired). Repair is reached on weaker requests: `the_runner_up_differs_and_a_weak_draft_is_repaired` asks it of drafts that fail a check over a riff, three styles and five seeds with a locked bar, and checks that it never undoes a passing check and never touches the locked bar. Twelve drafts and a repair take about 6 ms a request on a desktop; the MPC One isn't timed yet (the next device round's bench). The checks are the same six, so this is the critic doing more of what S1 set out to do; whether it sounds better is a listen's question.
 
+**The gate.** `listen --demo --critic-gate --seed 4 --sounds a` carries each built-in phrase on twice, as the critic offers it and as the first draft came, unjudged (a seed whose first draft is the critic's own pick is passed over for the next). On the eight pairs the critic's pick passes all six checks, and the first draft five in five of them and six in three. The blind page, "The same request, with the critic and without" (https://claude.ai/artifact/6ezqFqJDQtDs5dmkUTFJrQ; builder and answer key in mpfree-claude `composing-tools/project-files/s4-listen/`), asks which you'd keep. The MPC One's budget is the next device round's.
+
 ### Character and aimed tries (S5, first part)
 
 S5 puts the brief in the musician's hands, in words (`settings.rs`, `sketch.rs`, `draft.rs`, `perform.rs`, `sound.rs`; 24 Nov 2026). Neither is guessed from your notes, and neither is shown as a number.
