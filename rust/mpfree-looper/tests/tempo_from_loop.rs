@@ -11,6 +11,7 @@
 //! 17 640 frames (0.8 s), at 160 BPM 33 075 (1.5 s), at 80 BPM 66 150
 //! (3 s).
 
+use mpfree_looper::close::{Bars, Boundary, Confidence, Start, Tempo};
 use mpfree_looper::{
     read_bars, After, Command as L, Edit, Looper, NoteStart, Phase, Reading, Shift, SmartEnd,
     SmartOutcome, Snap, SnapPlan, Starts, Step, Sure, TempoHint, TempoKind, FADE, KEEP_AFTER,
@@ -674,6 +675,14 @@ fn auto_closes_on_the_downbeat_you_played_and_starts_the_song_that_far_in() {
     let note = r.l.take_smart().expect("a word on the tap");
     let down = rec_from + 88_200;
     assert_eq!(note.outcome, SmartOutcome::Moved(down as i64 - tap as i64));
+    // How sure, four ways: the end clear, the tempo from the beat played
+    // into it, the start on the beat's first hit (on the press).
+    let sure = note.sure.expect("how sure");
+    assert_eq!(
+        (sure.boundary, sure.tempo, sure.start),
+        (Boundary::Clear, Tempo::FromTheBeat, Start::FirstHit)
+    );
+    assert_eq!(sure.bars, Bars::of(&r.reading.unwrap()));
     assert_eq!(r.l.stats().ends_moved, 1);
     // The song starts as far into the loop as the loop came round since
     // the downbeat, and the loop plays from there.
@@ -773,6 +782,23 @@ fn suggest_closes_on_the_tap_then_offers_the_end_it_found() {
     assert_eq!(r.l.status().offer, Some(by));
     let note = r.l.take_smart().unwrap();
     assert_eq!(note.outcome, SmartOutcome::Offered(by.end));
+    // Suggest: the end found is clear; the loop is as tapped until Snap,
+    // and its reading says the rest.
+    let sure = note.sure.expect("how sure");
+    assert_eq!(
+        (sure.boundary, sure.start),
+        (Boundary::Clear, Start::FirstHit)
+    );
+    let read = r.reading.expect("the tap's reading");
+    assert_eq!(
+        sure,
+        Confidence {
+            boundary: Boundary::Clear,
+            bars: Bars::of(&read),
+            tempo: Tempo::of(&read),
+            start: Start::FirstHit,
+        }
+    );
     assert_eq!(r.l.stats().ends_offered, 1);
 }
 
@@ -1000,6 +1026,7 @@ fn auto_starts_a_loop_begun_with_rec_on_your_first_hit() {
         (note.outcome, note.start),
         (SmartOutcome::Moved(by), early as i64)
     );
+    assert_eq!(note.sure.map(|c| c.start), Some(Start::FirstHit));
     assert_eq!(r.l.stats().starts_found, 1);
     let moved = Shift {
         start: early as i64,
@@ -1096,6 +1123,7 @@ fn a_first_hit_after_the_reach_leaves_the_start_on_the_press() {
     r.until_playing(2_205 + 512);
     let note = r.l.take_smart().unwrap();
     assert_eq!(note.start, 0);
+    assert_eq!(note.sure.map(|c| c.start), Some(Start::Press));
     let b = r.l.status().bounds.unwrap();
     assert_eq!(b.start, b.captured.0);
     assert_eq!(r.l.stats().starts_found, 0);

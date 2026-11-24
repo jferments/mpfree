@@ -100,6 +100,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod close;
 pub mod ends;
 pub mod find;
 pub mod heard;
@@ -111,6 +112,7 @@ pub mod reading;
 pub mod save;
 mod view;
 
+pub use close::Confidence;
 pub use ends::{Candidate, Event, EventLog, InnerBeat, NoteStart, Verdict};
 pub use heard::{Take, HEARD_SECONDS};
 pub use on_track::{PlayRun, MAX_PLAY_RUNS};
@@ -983,6 +985,10 @@ pub struct SmartNote {
     /// The best end and the runner-up (the tap, when it was), scored.
     pub best: Option<Candidate>,
     pub second: Option<Candidate>,
+    /// How sure it was of the end, the bars, the tempo and the start
+    /// ([`close`]), with the reading the loop has now. None when it
+    /// decided nothing (an overdub started on the tap).
+    pub sure: Option<Confidence>,
 }
 
 /// What became of the tap, in frames from it (negative: the end is
@@ -5014,7 +5020,7 @@ impl Looper {
                         }
                     }
                 };
-                auto = Some((outcome, d.best, d.second));
+                auto = Some((outcome, d));
                 (len, reading, lead as usize)
             } else {
                 (len, heard(len).unwrap_or(reading), 0)
@@ -5071,7 +5077,7 @@ impl Looper {
             // what you played since begins the overdub.
             let into = end.saturating_sub(rec_from + (start + len) as u64);
             let into = (into as f64 * ticks as f64 / len.max(1) as f64).round() as Tick;
-            if let Some((outcome, best, second)) = auto {
+            if let Some((outcome, d)) = auto {
                 l.od_handoff = l.od_open;
                 let found = Shift {
                     start: start as i64,
@@ -5086,7 +5092,7 @@ impl Looper {
                     SmartOutcome::Moved(_) => SmartOutcome::Moved(found.end),
                     o => o,
                 };
-                self.smart_said(k, tap, outcome, start as i64, best, second);
+                self.smart_said(k, tap, outcome, start as i64, Some((&d, &reading)));
             }
             let into = into.clamp(0, ticks - 1);
             if asks {
@@ -5170,7 +5176,7 @@ impl Looper {
             };
             if self.loops[k].od_open {
                 self.loops[k].smart_wait = None;
-                self.smart_said(k, w.tap, SmartOutcome::Kept(OVERDUB_AT_ONCE), 0, None, None);
+                self.smart_said(k, w.tap, SmartOutcome::Kept(OVERDUB_AT_ONCE), 0, None);
                 continue;
             }
             // (And for the writer, a latency behind, to have it.)
@@ -5240,7 +5246,7 @@ impl Looper {
                 l.moved = Shift::NONE;
                 l.smart_version = l.version;
             }
-            self.smart_said(k, w.tap, outcome, found.start, d.best, d.second);
+            self.smart_said(k, w.tap, outcome, found.start, Some((&d, &w.reading)));
         }
     }
 
@@ -5394,8 +5400,7 @@ impl Looper {
         tap: u64,
         outcome: SmartOutcome,
         start: i64,
-        best: Option<Candidate>,
-        second: Option<Candidate>,
+        decided: Option<(&ends::Decision, &Reading)>,
     ) {
         match outcome {
             SmartOutcome::Moved(_) => self.stats.ends_moved += 1,
@@ -5411,8 +5416,9 @@ impl Looper {
             outcome,
             start,
             tap,
-            best,
-            second,
+            best: decided.and_then(|(d, _)| d.best),
+            second: decided.and_then(|(d, _)| d.second),
+            sure: decided.map(|(d, r)| Confidence::of(d, r)),
         });
     }
 

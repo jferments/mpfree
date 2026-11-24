@@ -493,6 +493,10 @@ pub struct Decision {
     /// `start + lead..end`, and from the press, as long, `start..end -
     /// lead`.
     pub lead: u64,
+    /// An opening hit came within the reach of the start (at the press
+    /// itself, `lead` is 0): the loop's start is a hit you played, not
+    /// only your press ([`crate::close::Start`]).
+    pub opened: bool,
 }
 
 impl Decision {
@@ -524,6 +528,7 @@ pub fn decide<E: Event>(
     // The loop is measured from it (a loop started on REC a moment before
     // your first hit starts on the hit): an end is where it comes round.
     let lead = opening.map_or(0, |o| notes[o.0].frame() - ask.start);
+    let opened = opening.is_some();
     let lo = ask.tap.saturating_sub(ask.reach).max(ask.start + lead + 1);
     let hi = (ask.tap + ask.reach).min(ask.heard_to);
     let ctx = Ctx {
@@ -544,6 +549,7 @@ pub fn decide<E: Event>(
             second: None,
             tap,
             lead,
+            opened,
         };
     }
     // Candidates: each hit within the reach (the first note of each group
@@ -565,6 +571,7 @@ pub fn decide<E: Event>(
             second: None,
             tap,
             lead,
+            opened,
         };
     }
     // The best, and the best of the rest with the tap.
@@ -603,6 +610,7 @@ pub fn decide<E: Event>(
         second: Some(second),
         tap,
         lead,
+        opened,
     }
 }
 
