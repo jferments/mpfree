@@ -667,7 +667,8 @@ pub fn row_bars(st: &TimeState, row: usize) -> u32 {
 }
 
 /// The row's chords the screens show: the ones picked on the panel and
-/// not kept yet, else the row's as heard (`TimeState::row_chords`).
+/// not kept yet, else the row's as heard (`TimeState::row_chords`, else
+/// the Song view's `TimeState::song_chords`).
 pub fn shown_line(st: &TimeState, row: usize) -> Option<ChordTimeline> {
     if let Some(a) = st.adding.as_ref().filter(|a| a.row == row) {
         if let Some(p) = &a.picked {
@@ -677,6 +678,7 @@ pub fn shown_line(st: &TimeState, row: usize) -> Option<ChordTimeline> {
     st.row_chords
         .as_ref()
         .filter(|(r, _)| *r == row)
+        .or_else(|| st.song_chords.iter().find(|(r, _)| *r == row))
         .map(|(_, c)| c.line.clone())
 }
 
@@ -1039,10 +1041,12 @@ pub fn line_action(st: &TimeState, row: usize, line: ChordTimeline) -> TimeActio
     if st.adding.as_ref().is_some_and(|a| a.row == row) {
         return TimeAction::Add(AddAction::Line(line));
     }
+    // The line as shown: the strip's row, or the Song view's Chords lane.
     let shown = st
         .row_chords
         .as_ref()
         .filter(|(r, _)| *r == row)
+        .or_else(|| st.song_chords.iter().find(|(r, _)| *r == row))
         .map(|(_, c)| c.line.clone())
         .unwrap_or_default();
     TimeAction::Chords(ChordsAction::Set { row, line, shown })

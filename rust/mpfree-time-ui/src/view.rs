@@ -1294,6 +1294,10 @@ pub struct TimeState {
     /// scene with more than one (the Arrange refactor's 4b.4: on a linked
     /// song, "×N" after its name and a line where each pass starts).
     pub passes: Vec<Option<(u16, Tick)>>,
+    /// The song's sections that play a scene, in order: where each starts
+    /// and ends, and the scene's row, for the Song view's Chords lane
+    /// (composing step 6, board C; `mpfree_seq::arrange::scene_sections`).
+    pub scene_sections: Vec<(Tick, Tick, usize)>,
     /// The placement selected on the Song view. The app sets it.
     pub selected: Option<usize>,
     /// The blocks picked together on the Song view (6.5), in order: two
@@ -1360,6 +1364,10 @@ pub struct TimeState {
     /// chords as it plays: its line heard again with its clips, or what
     /// they say when it has none. None until heard.
     pub row_chords: Option<(usize, Arc<mpfree_compose::RowChords>)>,
+    /// Each row the song's sections play and its chords as it plays, heard
+    /// while the Song view shows, for its Chords lane (composing step 6,
+    /// board C); rows not heard yet are missing.
+    pub song_chords: Arc<[(usize, Arc<mpfree_compose::RowChords>)]>,
     /// The project's styles made from clips (composing step 6), read from
     /// its lines: every Style row runs on into them after the built-in
     /// ones.
@@ -1678,6 +1686,10 @@ impl TimeState {
                         .map(|f| (m.passes, f.pass))
                 })
                 .collect(),
+            scene_sections: mpfree_seq::arrange::scene_sections(
+                project,
+                transport.meter.bar_ticks(),
+            ),
             selected: None,
             picks: Vec::new(),
             section: None,
@@ -1706,6 +1718,7 @@ impl TimeState {
             adding: None,
             unfit: Arc::from(Vec::new()),
             row_chords: None,
+            song_chords: Arc::from(Vec::new()),
             styles: Arc::from(Vec::new()),
             style_sheet: None,
         }
@@ -6760,12 +6773,82 @@ fn song_lanes_with(
         tempo: st.tempo_points.clone(),
         tempo_base: st.tempo_base,
         tempo_pick: st.tempo_pick.filter(|&k| k < st.tempo_points.len()),
+        chords: song_chord_lane(st),
         report: st
             .report
             .clone()
             .map(|r| ReportCard::new(r, &report_tracks(st))),
         over: st.lanes_over(),
         ..SongLanes::default()
+    }
+}
+
+/// Row `row`'s chords as its clips alone say (the picker's As heard): the
+/// strip's row, else the Song view's.
+fn heard_line(st: &TimeState, row: usize) -> Option<mpfree_context::chord::ChordTimeline> {
+    st.row_chords
+        .as_ref()
+        .filter(|(r, _)| *r == row)
+        .or_else(|| st.song_chords.iter().find(|(r, _)| *r == row))
+        .map(|(_, c)| c.heard.clone())
+}
+
+/// The Song view's Chords lane (composing step 6, board C): for each
+/// section made from a scene, the scene's chords as heard
+/// ([`crate::add_view::shown_line`]), laid end to end from the section's
+/// start and cut at its end. The picker is the page's.
+pub fn song_chord_lane(st: &TimeState) -> crate::song::SongChordLane {
+    use crate::chord_strip::ChipLook;
+    use mpfree_context::chord::{ChordAnswer, Heard};
+    let mut chips = Vec::new();
+    let mut missing = false;
+    for &(start, end, row) in &st.scene_sections {
+        let Some(line) = shown_line(st, row) else {
+            missing = true;
+            continue;
+        };
+        let len = line.len();
+        if len <= 0 {
+            continue;
+        }
+        let mut at = start;
+        while at < end && chips.len() < crate::song::CHORD_CHIPS {
+            for (k, s) in line.spans().iter().enumerate() {
+                let from = at + s.start;
+                if from >= end {
+                    break;
+                }
+                let (name, root) = match s.answer {
+                    ChordAnswer::Chord(c) => (
+                        c.name(),
+                        mpfree_context::key::PC_NAMES[usize::from(c.root) % 12].to_string(),
+                    ),
+                    ChordAnswer::NoClearChord => ("–".to_string(), "–".to_string()),
+                };
+                let look = match s.heard {
+                    Heard::Set => ChipLook::Yours,
+                    Heard::Suggested => ChipLook::Suggested,
+                    Heard::Heard if s.answer.chord().is_none() => ChipLook::Suggested,
+                    Heard::Heard => ChipLook::Heard,
+                };
+                chips.push(crate::song::SongChip {
+                    from,
+                    to: (at + s.end()).min(end),
+                    name,
+                    root,
+                    look,
+                    row,
+                    chip: k,
+                });
+            }
+            at += len;
+        }
+    }
+    crate::song::SongChordLane {
+        hearing: missing && chips.is_empty(),
+        chips,
+        open: None,
+        picker: None,
     }
 }
 
@@ -7264,6 +7347,9 @@ pub struct TimePage {
     /// The clip the clip settings card showed last: another starts at the
     /// card's top.
     card_focus: Option<(usize, usize)>,
+    /// The Song view's Chords lane chip the chord picker is open on
+    /// (composing step 6, board C): an index into its chips.
+    pub song_chord: Option<usize>,
 }
 
 impl TimePage {
@@ -7699,6 +7785,10 @@ impl TimePage {
                 *k == ROWS + ADD_PART || (ROWS + STRIP_CHIP..ROWS + PICKER + 64).contains(k)
             }
             (ADD_PANEL, _) => true,
+            // The Song view's Chords lane and its picker.
+            (SONG, EventKind::Tab(k)) => (crate::song::CHORD_CHIP
+                ..crate::song::CHORD_PICK + crate::chord_strip::PICKS + 1)
+                .contains(k),
             (CHORDS_CARD, EventKind::Tab(_)) => false,
             (CHORDS_CARD, _) => true,
             _ => false,
@@ -7789,6 +7879,32 @@ impl TimePage {
             }
             (CLIPS, EventKind::Toggle(k)) if (ROWS + PICKER..ROWS + PICKER + 64).contains(k) => {
                 self.pick_chord(st, k - SLOTS - PICKER, bar);
+                Ok(())
+            }
+            // The Song view's Chords lane: a chip opens the picker on the
+            // scene's chord there (again: closes it).
+            (SONG, EventKind::Tab(k)) if *k >= crate::song::CHORD_PICK => {
+                self.pick_chord(st, k - crate::song::CHORD_PICK, bar);
+                if self.chord_pick.is_none() {
+                    self.song_chord = None;
+                }
+                Ok(())
+            }
+            (SONG, EventKind::Tab(k)) => {
+                let i = k - crate::song::CHORD_CHIP;
+                if self.song_chord == Some(i) && self.chord_pick.is_some() {
+                    self.chord_pick = None;
+                    self.song_chord = None;
+                    return Ok(());
+                }
+                let lane = song_chord_lane(st);
+                let Some(c) = lane.chips.get(i) else {
+                    return Ok(());
+                };
+                let line =
+                    shown_line(st, c.row).ok_or("The scene's chords are still being heard")?;
+                self.chord_pick = ChordPick::open(c.row, &line, c.chip);
+                self.song_chord = self.chord_pick.map(|_| i);
                 Ok(())
             }
             (CLIPS, EventKind::Toggle(k)) if (ROWS + STRIP_BAR..ROWS + PICKER).contains(k) => {
@@ -7957,11 +8073,7 @@ impl TimePage {
                 None => return,
             }
         };
-        let heard = st
-            .row_chords
-            .as_ref()
-            .filter(|(r, _)| *r == p.row)
-            .map(|(_, c)| c.heard.clone());
+        let heard = heard_line(st, p.row);
         let picked = match hit {
             h if (PICK_ROOT..PICK_ROOT + 12).contains(&h) => {
                 p.root = Some(h - PICK_ROOT);
@@ -8002,6 +8114,9 @@ impl TimePage {
     /// The hint line for Add a part's panel, the chord picker and the
     /// Chords tab, when one shows.
     pub fn compose_hint(&self, st: &TimeState) -> Option<String> {
+        if self.song_chord.is_some() && self.chord_pick.is_some() && st.song_view {
+            return Some("A root, then a kind   ·   Use: the scene's chords, one UNDO   ·   Split: two chords in the bar   ·   As heard: the scene's own again".to_string());
+        }
         let grid = st.edit.is_none() && !st.song_view && !st.list_view;
         if self.chord_pick.is_some() && grid {
             return Some(match self.add {
@@ -8078,7 +8193,12 @@ impl TimePage {
             self.asks
                 .push(TimeAction::Chords(ChordsAction::Hear { row: chords_row }));
         }
-        if self.chord_pick.is_some_and(|p| Some(p.row) != chords_row) {
+        // The Song view's picker goes with the Song view.
+        if self.song_chord.is_some() && (!st.song_view || self.chord_pick.is_none()) {
+            self.song_chord = None;
+            self.chord_pick = None;
+        }
+        if self.song_chord.is_none() && self.chord_pick.is_some_and(|p| Some(p.row) != chords_row) {
             self.chord_pick = None;
         }
         self.untick.retain(|&(r, t)| {
@@ -8404,6 +8524,15 @@ impl TimePage {
         let mut lanes = song_lanes_with(st, self.first_bar, self.bars_shown(), blocks);
         lanes.show_button = self.set_open;
         lanes.adding = self.adding;
+        // The Chords lane's picker, open on a chip.
+        if let (Some(k), Some(p)) = (self.song_chord, self.chord_pick) {
+            let bar_t = st.transport.meter.bar_ticks().max(1);
+            lanes.chords.open = Some(k);
+            lanes.chords.picker = shown_line(st, p.row).map(|line| {
+                let heard = heard_line(st, p.row);
+                p.view(&line, heard.as_ref(), bar_t)
+            });
+        }
         let (same, same_waves, only_playhead) =
             ui.get::<SongLanes>(SONG).map_or((true, true, false), |l| {
                 let waves = crate::song::same_waves(&l.waves, &st.waves);
@@ -9250,6 +9379,138 @@ mod tests {
             widget: widget.to_string(),
             kind,
         }
+    }
+
+    /// Two scenes' chords for the Song view's Chords lane: row 0 two bars
+    /// (C, then G7), row 2 one chord of Am you set, two bars long.
+    fn song_chords_state() -> (TimeState, mpfree_context::chord::ChordTimeline) {
+        use mpfree_context::chord::{Chord, ChordTimeline, Heard, Quality};
+        let mut st = state();
+        st.song_view = true;
+        let bar = st.transport.meter.bar_ticks();
+        st.scene_sections = vec![(0, 4 * bar, 0), (4 * bar, 7 * bar, 2)];
+        let two = ChordTimeline::of(
+            &[
+                (Chord::new(0, Quality::Major), bar),
+                (Chord::new(7, Quality::Dominant7), bar),
+            ],
+            Heard::Heard,
+        );
+        let am = ChordTimeline::of(&[(Chord::new(9, Quality::Minor), 2 * bar)], Heard::Set);
+        st.song_chords = vec![
+            (
+                0,
+                Arc::new(mpfree_compose::RowChords {
+                    line: two.clone(),
+                    heard: two.clone(),
+                }),
+            ),
+            (
+                2,
+                Arc::new(mpfree_compose::RowChords {
+                    line: am.clone(),
+                    heard: am,
+                }),
+            ),
+        ]
+        .into();
+        (st, two)
+    }
+
+    /// The Song view's Chords lane (composing step 6, board C): each
+    /// section made from a scene shows the scene's chords end to end from
+    /// its start, cut at its end; until a scene is heard its section is
+    /// empty, and with none heard the lane says it is hearing.
+    #[test]
+    fn the_chords_lane_lays_each_scenes_chords_along_its_section() {
+        use crate::chord_strip::ChipLook;
+        let (mut st, _) = song_chords_state();
+        let bar = st.transport.meter.bar_ticks();
+        let lane = song_chord_lane(&st);
+        assert!(!lane.hearing);
+        let chips: Vec<(Tick, Tick, &str, &str, usize, usize)> = lane
+            .chips
+            .iter()
+            .map(|c| {
+                (
+                    c.from / bar,
+                    c.to / bar,
+                    c.name.as_str(),
+                    c.root.as_str(),
+                    c.row,
+                    c.chip,
+                )
+            })
+            .collect();
+        assert_eq!(
+            chips,
+            [
+                (0, 1, "C", "C", 0, 0),
+                (1, 2, "G7", "G", 0, 1),
+                (2, 3, "C", "C", 0, 0),
+                (3, 4, "G7", "G", 0, 1),
+                (4, 6, "Am", "A", 2, 0),
+                (6, 7, "Am", "A", 2, 0),
+            ]
+        );
+        assert_eq!(lane.chips[0].look, ChipLook::Heard);
+        assert_eq!(lane.chips[4].look, ChipLook::Yours);
+        // Row 2 not heard yet: its section is empty, row 0's still shows.
+        st.song_chords = st.song_chords[..1].to_vec().into();
+        let lane = song_chord_lane(&st);
+        assert_eq!((lane.chips.len(), lane.hearing), (4, false));
+        st.song_chords = Arc::from(Vec::new());
+        let lane = song_chord_lane(&st);
+        assert!(lane.chips.is_empty() && lane.hearing, "hearing the scenes");
+        st.scene_sections.clear();
+        assert!(
+            !song_chord_lane(&st).hearing,
+            "no sections made from scenes"
+        );
+    }
+
+    /// A chip on the Chords lane opens the chord picker on the scene's
+    /// chord there; a root, a kind and Use set the scene's chords as one
+    /// take (`ChordsAction::Set`, the line as shown before it); the chip
+    /// tapped again closes the picker.
+    #[test]
+    fn a_chip_on_the_chords_lane_opens_the_picker_and_use_sets_the_scenes_chords() {
+        let (st, two) = song_chords_state();
+        let mut page = TimePage::default();
+        let chip = ev(SONG, EventKind::Tab(crate::song::CHORD_CHIP + 3));
+        assert!(page.owns(&chip));
+        page.compose(&chip, &st).unwrap();
+        let p = page.chord_pick.expect("the picker opens");
+        assert_eq!((p.row, p.chip, p.root, p.kind), (0, 1, Some(7), Some(2)));
+        assert_eq!(page.song_chord, Some(3));
+        assert!(page
+            .compose_hint(&st)
+            .is_some_and(|h| h.contains("Use: the scene's chords")));
+        let pick = |k| ev(SONG, EventKind::Tab(crate::song::CHORD_PICK + k));
+        assert!(page.owns(&pick(PICK_USE)));
+        page.compose(&pick(PICK_ROOT + 8), &st).unwrap();
+        page.compose(&pick(PICK_KIND + 2), &st).unwrap();
+        assert!(page.take_asks().is_empty(), "nothing until Use");
+        page.compose(&pick(PICK_USE), &st).unwrap();
+        match &page.take_asks()[..] {
+            [TimeAction::Chords(ChordsAction::Set { row, line, shown })] => {
+                assert_eq!(*row, 0);
+                assert_eq!(line.names(), "C Ab7");
+                assert_eq!(shown, &two, "the line as the lane showed it");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!((page.chord_pick, page.song_chord), (None, None));
+        // Again, then the same chip: closed with nothing asked.
+        page.compose(&chip, &st).unwrap();
+        assert!(page.chord_pick.is_some());
+        page.compose(&chip, &st).unwrap();
+        assert_eq!((page.chord_pick, page.song_chord), (None, None));
+        // × closes it too.
+        page.compose(&chip, &st).unwrap();
+        page.compose(&pick(PICK_CLOSE), &st).unwrap();
+        assert_eq!((page.chord_pick, page.song_chord), (None, None));
+        assert!(page.take_asks().is_empty());
     }
 
     #[test]

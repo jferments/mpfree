@@ -88,7 +88,7 @@ impl TimeControl {
             hits: clip.notes.iter().map(|n| (n.tick, n.velocity)).collect(),
             length: clip.length,
             bar,
-            row: PLAN_ROW,
+            row: NAME_ROW,
         }));
         self.changed = true;
         Ok(line)

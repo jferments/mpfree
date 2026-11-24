@@ -857,7 +857,12 @@ pub fn song_state() -> Result<TimeState, String> {
 /// song, named as a song's parts, song mode on and Rec song armed, the
 /// Keys' second block picked; playing at 5.3.
 pub fn busy_song_state() -> Result<TimeState, String> {
-    let mut s = Session::new(busy_project(), Vec::new(), Some(0))?;
+    busy_song(busy_project()).map(|(_, state)| state)
+}
+
+/// [`busy_song_state`] from `project`, with the session it was played in.
+fn busy_song(project: Project) -> Result<(Session, TimeState), String> {
+    let mut s = Session::new(project, Vec::new(), Some(0))?;
     let rows: Vec<(usize, Tick)> = (0..7)
         .filter(|&r| s.project.row_filled(r))
         .map(|r| (r, scene_length(&s.project, r, BAR)))
@@ -880,6 +885,68 @@ pub fn busy_song_state() -> Result<TimeState, String> {
     state.song_on = true;
     state.song_rec = true;
     state.selected = Some(4);
+    Ok((s, state))
+}
+
+/// The Song view's Chords lane (composing step 6, board C): the busy song
+/// with Row 5's tune on the Lead in its first three rows (the Verse's a
+/// fourth up, the Build's a tone down), each scene the song plays heard as
+/// the time engine hears it (one `AddPartJob::hear` a row), and the
+/// Verse's second chord set to Ab7, yours. Nothing picked.
+pub fn song_chords_state() -> Result<TimeState, String> {
+    use mpfree_compose::{AddAsk, AddPartJob, InstrumentKind, Relation, Settings};
+    let mut p = busy_project();
+    for (row, up) in [(0usize, 0i16), (1, 5), (2, -2)] {
+        let mut tune = solo_tune();
+        for n in &mut tune.notes {
+            n.note = (i16::from(n.note) + up).clamp(0, 127) as u8;
+        }
+        tune.name = ["Tune", "Tune up", "Tune down"][row].into();
+        p.tracks[4].slots[row] = Some(tune);
+    }
+    let (s, mut state) = busy_song(p)?;
+    state.selected = None;
+    let t = state.transport;
+    let mut rows: Vec<usize> = state.scene_sections.iter().map(|x| x.2).collect();
+    rows.sort_unstable();
+    rows.dedup();
+    let mut heard = Vec::new();
+    for row in rows {
+        let ask = AddAsk {
+            row,
+            parts: row_reads(&s.project, row, usize::MAX),
+            lanes: Default::default(),
+            part: mpfree_context::PartRole::Melody,
+            relation: Relation::Support,
+            kind: InstrumentKind::OneNote,
+            pads: [None; 4],
+            swing: t.swing,
+            transport_swing: t.swing,
+            meter: t.meter,
+            bpm: t.bpm,
+            budget: mpfree_context::ReadBudget::default(),
+            settings: Settings::default(),
+            bars: None,
+            attempt: 0,
+            phrase: None,
+        };
+        heard.push((
+            row,
+            std::sync::Arc::new(AddPartJob::new(&s.project, ask).hear()),
+        ));
+    }
+    // The Verse (the song's second section) with its second chord yours.
+    let verse = state.scene_sections.get(1).map(|x| x.2).ok_or("no Verse")?;
+    if let Some((_, c)) = heard.iter_mut().find(|(r, _)| *r == verse) {
+        let ab7 = mpfree_context::chord::Chord::new(8, crate::add_view::KIND_QUALITIES[2]);
+        let chip = 1.min(c.line.spans().len().saturating_sub(1));
+        let line = crate::add_view::use_chord(&c.line, chip, ab7).ok_or("no chord to set")?;
+        *c = std::sync::Arc::new(mpfree_compose::RowChords {
+            line,
+            heard: c.heard.clone(),
+        });
+    }
+    state.song_chords = heard.into();
     Ok(state)
 }
 
@@ -2532,7 +2599,7 @@ pub fn style_sheet_sample() -> crate::style_sheet::StyleSheet {
         hits: notes.iter().map(|n| (n.at, n.velocity)).collect(),
         length: 2 * bar,
         bar,
-        row: crate::style_sheet::PLAN_ROW,
+        row: crate::style_sheet::NAME_ROW,
     }
 }
 

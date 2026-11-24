@@ -213,6 +213,16 @@ Points are at least a 1/16 apart, and a song has up to 31.
 
 *Example:* tap the lane at bar 9, push the wheel and turn it to 140, then tap the lane at bar 5 and tap **Ramp**. With Song on, bars 1 to 4 play the project's tempo, bars 5 to 8 speed up to 140, and from bar 9 the song plays at 140.
 
+### The song's chords
+
+The **Chords** lane, under Tempo, shows the chords each scene plays, bar by bar, along the song: the same chips as the row's chords on Clips. Chords heard in your clips are solid, suggested ones are dashed, and chords you set are blue. A section that plays a scene shows that scene's chords from its start, over and over until the section ends; a section of the song's own clips shows none. When there are many bars a chip shows only its chord's root.
+
+{{shot: arrange-song-chords | The Chords lane under Tempo: each scene's chords through its section, the Verse's second chord set to Ab7 (blue).}}
+
+Tap a chip to change the chord. The same picker as on Clips opens under it: tap a root, then a kind, then **Use**. The change is the scene's, so every place the scene plays in the song shows it, and it is one **UNDO** ("row 2's chords"). Clips that no longer fit are marked, never rewritten, and the **Chords** tab fits them (see [Clips that don't fit the new chords](#clips-that-dont-fit-the-new-chords)). **×**, or a tap anywhere else, closes the picker with nothing changed.
+
+{{shot: arrange-song-chord-picker | The chord picker open on the Verse's Ab7 from the Chords lane.}}
+
 ### Audio in the song
 
 Audio you record from the INPUTS goes on **audio tracks**, with lanes of their own under the clip lanes, on the same timeline. They play whenever the song plays, unless an audio clip launched on the grid plays in its place. Recording them, editing their regions and picking the best parts of several takes is in [Recording audio tracks](audio-tracks.md).

@@ -1478,6 +1478,38 @@ pub fn song_sections(project: &Project, bar: Tick) -> Vec<SongSection> {
     project.arrangement.parts(bar)
 }
 
+/// The song's sections that play a scene, for the Song view's Chords lane
+/// (composing step 6, board C): where each starts and ends, and the
+/// scene's row. A section made from a scene names it; one Scenes → song
+/// made is known by its blocks: every block that starts in it plays a
+/// clip of the same row's cells (linked by id). A section of the song's
+/// own clips, or of clips from several rows, plays no one scene.
+pub fn scene_sections(project: &Project, bar: Tick) -> Vec<(Tick, Tick, usize)> {
+    let song = &project.arrangement;
+    song.parts(bar)
+        .iter()
+        .filter_map(|s| {
+            if let Some(f) = &s.scene {
+                return Some((s.start, s.end, f.row));
+            }
+            let mut row = None;
+            for p in song
+                .placements
+                .iter()
+                .filter(|p| p.start >= s.start && p.start < s.end)
+            {
+                match project.find_clip(p.clip) {
+                    Some(crate::ClipAt::Cell { row: r, .. }) if row.is_none_or(|w| w == r) => {
+                        row = Some(r)
+                    }
+                    _ => return None,
+                }
+            }
+            Some((s.start, s.end, row?))
+        })
+        .collect()
+}
+
 /// What a section that follows its scene holds ([`Arrangement::mark_changed`]):
 /// its scene and passes, how far it reaches, and the blocks that play in
 /// it, from its start.
@@ -3552,6 +3584,38 @@ mod tests {
             .map(|b| (b.start, b.length))
             .collect();
         assert_eq!(drums, [(0, 2 * BAR), (2 * BAR, BAR)]);
+    }
+
+    /// The sections that play a scene (the Song view's Chords lane): one
+    /// Scenes → song made is known by its blocks, the row's clips; one
+    /// made from a scene names it; one with a clip of the song's own plays
+    /// no one scene.
+    #[test]
+    fn scene_sections_name_the_row_a_section_plays() {
+        let mut p = project();
+        p.arrangement = scenes_to_song(&p, &[(0, BAR), (1, 2 * BAR), (0, BAR)], 0)
+            .unwrap()
+            .song;
+        assert_eq!(
+            scene_sections(&p, BAR),
+            [(0, BAR, 0), (BAR, 3 * BAR, 1), (3 * BAR, 4 * BAR, 0)]
+        );
+        // Bar 2's blocks made the song's own: that section plays no scene,
+        // until it is linked to one.
+        let k = p
+            .arrangement
+            .placements
+            .iter()
+            .position(|b| b.start == BAR)
+            .unwrap();
+        let own = p.new_clip_id();
+        p.arrangement.placements[k].clip = own;
+        assert_eq!(
+            scene_sections(&p, BAR),
+            [(0, BAR, 0), (3 * BAR, 4 * BAR, 0)]
+        );
+        p.arrangement.markers[1].scene = Some(FromScene::following(1, 2 * BAR));
+        assert_eq!(scene_sections(&p, BAR)[1], (BAR, 3 * BAR, 1));
     }
 
     /// Song → scenes takes only truly empty rows (`Project::row_empty`):

@@ -73,6 +73,7 @@ mod follow;
 pub mod link;
 mod offline;
 mod pad_wait;
+mod song_chords;
 pub mod strips;
 mod timing;
 
@@ -17178,7 +17179,7 @@ mod tests {
         assert_eq!(sheet.made.name, "riff groove");
         assert_eq!(sheet.from, "From riff · Track 1 · 1 bar");
         assert_eq!(sheet.hits.len(), 8);
-        assert_eq!(sheet.row, PLAN_ROW);
+        assert_eq!(sheet.row, NAME_ROW, "the wheel on Name, as drawn");
         // Plan steps among the built-in styles and stops at its ends.
         let plan = sheet.made.plan;
         let at = STYLES.iter().position(|s| s.name == plan).unwrap();
@@ -17874,6 +17875,65 @@ mod tests {
         // UNDO the chords: nothing marked.
         h.act(TimeAction::Undo).unwrap();
         assert!(h.state().unfit.is_empty());
+    }
+
+    /// The Song view's Chords lane (composing step 6, board C): while the
+    /// Song view shows, each row the song's sections play is heard on a
+    /// thread of its own into the state, and heard again when its chords
+    /// change. Hearing writes nothing, and the grid hears no song.
+    #[test]
+    fn the_song_view_hears_each_scene_its_sections_play() {
+        use mpfree_context::chord::{Chord, ChordAnswer, ChordTimeline, Heard, Quality};
+        use mpfree_seq::arrange::{FromScene, Placement};
+        const B: Tick = 3840;
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        let p = &mut h.control.project;
+        let song = &mut p.arrangement;
+        song.place(Placement::of(&p.tracks, 0, 0, 0, B)).unwrap();
+        song.mark(0, "Riff").unwrap();
+        song.markers[0].scene = Some(FromScene::following(0, 2 * B));
+        let before = h.project().clone();
+        run(&mut h, &mut pads, BAR, &[]);
+        assert!(h.state().song_chords.is_empty(), "not while the grid shows");
+        h.act(TimeAction::SongView(true)).unwrap();
+        let st = h.state();
+        assert_eq!(st.scene_sections.first().map(|s| (s.0, s.2)), Some((0, 0)));
+        until(&mut h, &mut pads, |h| !h.state().song_chords.is_empty());
+        let st = h.state();
+        let (row, chords) = &st.song_chords[0];
+        assert_eq!((*row, st.song_chords.len()), (0, 1));
+        assert!(!chords.line.is_empty(), "the riff gives chords");
+        assert!(chords.line.spans().iter().all(|s| s.heard != Heard::Set));
+        assert_eq!(h.project().scenes, before.scenes, "hearing writes nothing");
+        assert_eq!(h.project().arrangement, before.arrangement);
+        // The scene's chords set (the lane's Use): heard again, set.
+        let set = ChordTimeline::whole(
+            3840,
+            ChordAnswer::Chord(Chord::new(6, Quality::Minor)),
+            Heard::Set,
+        );
+        h.act(TimeAction::Chords(ChordsAction::Set {
+            row: 0,
+            line: set,
+            shown: chords.line.clone(),
+        }))
+        .unwrap();
+        until(&mut h, &mut pads, |h| {
+            h.state()
+                .song_chords
+                .first()
+                .is_some_and(|(_, c)| c.line.span_at(0).is_some_and(|s| s.heard == Heard::Set))
+        });
+        let st = h.state();
+        assert_eq!(
+            st.song_chords[0].1.line.span_at(0).unwrap().answer,
+            ChordAnswer::Chord(Chord::new(6, Quality::Minor))
+        );
+        assert_eq!(
+            st.song_chords[0].1.heard, chords.heard,
+            "what the clips say stays"
+        );
     }
 
     /// The Chords tab hears its row without a try: the row's chords come

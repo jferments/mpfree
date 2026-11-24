@@ -19445,10 +19445,12 @@ impl Player {
                 None
             }
             // Add a part, the row's chords under its row, the chord picker
-            // and the Chords tab (composing tools S2.6, layout spec 4r):
+            // and the Chords tab (composing tools S2.6, layout spec 4r),
+            // and the Song view's Chords lane (composing step 6, board C):
             // the page's own; what they ask of the time engine goes at
             // once, and why not is said in place.
             (time_view::CLIPS, EventKind::Toggle(_))
+            | (time_view::SONG, EventKind::Tab(_))
             | (time_view::ADD_PANEL | time_view::CHORDS_CARD, _)
                 if self.time_page.owns(&ev) =>
             {
@@ -26152,6 +26154,39 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song-tempo sample: {e}"),
     }
+    // The Chords lane under Tempo (composing step 6, board C): what each
+    // scene the busy song plays gives, bar by bar, the Verse's second chord
+    // yours (Ab7); then the chord picker open on it.
+    match mpfree_time_ui::sample::song_chords_state() {
+        Ok(state) => {
+            use mpfree_time_ui::add_view::{shown_line, ChordPick};
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.apply(ToUi::Time(Box::new(state.clone())));
+            p.apply(ToUi::Show(View::Arrange));
+            p.refresh_hint();
+            out.push(("arrange-song-chords", p));
+            let lane = mpfree_time_ui::view::song_chord_lane(&state);
+            let verse = state.scene_sections.get(1).map(|s| s.2);
+            let open = lane
+                .chips
+                .iter()
+                .position(|c| Some(c.row) == verse && c.chip == 1);
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            if let (Some(k), Some(row)) = (open, verse) {
+                if let Some(line) = shown_line(&state, row) {
+                    p.time_page.chord_pick = ChordPick::open(row, &line, 1);
+                    p.time_page.song_chord = Some(k);
+                }
+            }
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.refresh_hint();
+            out.push(("arrange-song-chord-picker", p));
+        }
+        Err(e) => eprintln!("arrange-song-chords sample: {e}"),
+    }
     // The same with two audio lanes under the song (layout spec 4c): a
     // vocal punched in over bars 5-8 and that region picked, a guitar
     // armed. Real takes from the audio tracks engine.
@@ -29693,6 +29728,65 @@ mod tests {
         );
     }
 
+    /// The Song view's Chords lane through the screen (composing step 6,
+    /// board C): a chip opens the chord picker under it with its hint, and
+    /// a root, a kind and Use ask the time engine to set the scene's chords
+    /// (one take); the picker closes.
+    #[test]
+    fn the_chords_lane_opens_the_picker_and_use_sets_the_scenes_chords() {
+        use mpfree_time_ui::adding::ChordsAction;
+        use mpfree_time_ui::song::SongLanes;
+        use mpfree_ui::Rect;
+        let state = mpfree_time_ui::sample::song_chords_state().unwrap();
+        let verse = state.scene_sections[1].2;
+        let mut p = quiet_player(Fonts::embedded());
+        p.apply(ToUi::Time(Box::new(state)));
+        p.apply(ToUi::Show(View::Arrange));
+        let tap = |p: &mut Player, r: Rect| {
+            let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let lanes = |p: &Player| {
+            p.ui.get::<SongLanes>(time_view::SONG)
+                .unwrap()
+                .clone_without_waves()
+        };
+        let r = p.ui.rect_of(time_view::SONG).unwrap();
+        let l = lanes(&p);
+        let (k, chip) = l
+            .chord_chip_rects(r)
+            .into_iter()
+            .find(|(k, _)| l.chords.chips[*k].row == verse && l.chords.chips[*k].chip == 0)
+            .expect("the Verse's first chord shows");
+        assert_eq!(tap(&mut p, chip), None);
+        assert_eq!(p.time_page.song_chord, Some(k));
+        let pick = p.time_page.chord_pick.expect("the picker opens");
+        assert_eq!((pick.row, pick.chip), (verse, 0));
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.starts_with("A root, then a kind"), "{hint}");
+        let g = lanes(&p).chord_picker_geo(r).expect("the picker shows");
+        tap(&mut p, g.roots[8]);
+        tap(&mut p, g.kinds[2]);
+        p.outbox.clear();
+        tap(&mut p, g.buttons[3]);
+        let asked: Vec<_> = std::mem::take(&mut p.outbox)
+            .into_iter()
+            .filter_map(|a| match a {
+                FromUi::Time(TimeAction::Chords(ChordsAction::Set { row, line, .. })) => {
+                    Some((row, line.spans()[0].answer.name()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(asked, [(verse, "Ab7".to_string())]);
+        assert_eq!(
+            (p.time_page.chord_pick, p.time_page.song_chord),
+            (None, None)
+        );
+        assert!(lanes(&p).chords.picker.is_none(), "the picker closes");
+    }
+
     /// The scene card (the Arrange refactor's 5.2): a row's number held
     /// opens it; a tap on Mutes' value takes the mutes as they are, a tap
     /// on the name types the scene's name on the text keyboard, and a tap
@@ -29775,13 +29869,17 @@ mod tests {
         );
         assert_eq!(tap(&mut p, g.buttons[0]), style(StyleAction::Back));
         assert_eq!(tap(&mut p, g.buttons[1]), style(StyleAction::Keep));
-        // The wheel picks Name; - / + there open the keyboard, on Plan step it.
+        // The wheel picks Plan (the sheet opens on Name, as drawn); - / +
+        // step Plan there, and on Name open the keyboard.
         p.take_actions();
-        p.apply(ToUi::Rows(RowKey::Pick(-1)));
+        p.apply(ToUi::Rows(RowKey::Pick(1)));
         assert_eq!(
             p.take_actions(),
-            [FromUi::Time(TimeAction::Style(StyleAction::Pick(NAME_ROW)))]
+            [FromUi::Time(TimeAction::Style(StyleAction::Pick(PLAN_ROW)))]
         );
+        let mut st = p.time.clone();
+        st.style_sheet.as_mut().unwrap().row = PLAN_ROW;
+        p.apply(ToUi::Time(Box::new(st)));
         p.apply(ToUi::Rows(RowKey::Step(1)));
         assert_eq!(
             p.take_actions(),
