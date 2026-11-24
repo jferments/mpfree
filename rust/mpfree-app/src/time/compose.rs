@@ -115,16 +115,17 @@ struct Made {
 }
 
 /// A composer's thread: jobs out, answers back, each with its request's
-/// number. Continue and Add a part each have one.
-pub(super) struct Worker<J, D> {
-    pub(super) jobs: Sender<(u32, Box<J>)>,
-    pub(super) done: Receiver<(u32, Option<Box<D>>)>,
+/// number. Continue, Add a part and Answer (the Phrase tab's When I stop)
+/// each have one.
+pub(crate) struct Worker<J, D> {
+    pub(crate) jobs: Sender<(u32, Box<J>)>,
+    pub(crate) done: Receiver<(u32, Option<Box<D>>)>,
 }
 
 impl<J: Send + 'static, D: Send + 'static> Worker<J, D> {
     /// Start the thread: `run` makes each job's answer. `what` names the
     /// tool in the words of a refusal ("continue", "add a part").
-    pub(super) fn start(what: &str, run: fn(&J) -> D) -> Result<Worker<J, D>, String> {
+    pub(crate) fn start(what: &str, run: fn(&J) -> D) -> Result<Worker<J, D>, String> {
         let (jobs, rx) = mpsc::channel::<(u32, Box<J>)>();
         let (tx, done) = mpsc::channel();
         std::thread::Builder::new()

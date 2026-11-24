@@ -110,11 +110,9 @@ impl App {
     pub(super) fn improvise_action(&mut self, a: ImproviseAction) -> Vec<Effect> {
         self.arp_dirty = true;
         match a {
-            // Answer comes with its own step: When I stop waits for it.
-            ImproviseAction::Plays(PlaysWhen::WhenIStop) => Vec::new(),
             ImproviseAction::Plays(w) => {
                 self.improvise.when = w;
-                Vec::new()
+                vec![Effect::Note(format!("improvise: plays {}", w.label()))]
             }
             ImproviseAction::Hold => {
                 self.improvise.evolve = false;
@@ -306,7 +304,8 @@ impl App {
                 .engine_at(self.track)
                 .chord_held()
                 .map(|c| chord_name(&c)),
-            answers: false,
+            answers: true,
+            answer: self.answer_view(),
         }
     }
 }
@@ -474,6 +473,6 @@ mod tests {
         app.arp_action(ArpAction::Improvise(ImproviseAction::Plays(
             PlaysWhen::WhenIStop,
         )));
-        assert_eq!(app.improvise_view().when, PlaysWhen::WhileIHold);
+        assert_eq!(app.improvise_view().when, PlaysWhen::WhenIStop);
     }
 }

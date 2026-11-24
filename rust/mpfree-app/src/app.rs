@@ -1914,6 +1914,8 @@ pub struct App {
     /// Improvise on the Phrase tab: the Plays row and Evolve
     /// (`app/arp/improvise.rs`).
     improvise: arp::Improvise,
+    /// The Phrase tab's When I stop: Answer (`app/arp/answer.rs`).
+    answer: arp::Answer,
     /// The pads play the shared synth on their own (main.rs
     /// `PadsPreview::Synth`), whose pads press notes, so the pads' arp
     /// plays the armed track's phrase there ([`App::set_pads_own`]).
@@ -2222,6 +2224,7 @@ impl App {
             maker_set: arp::MakerSet::default(),
             maker_seed: 0,
             improvise: arp::Improvise::default(),
+            answer: arp::Answer::default(),
             pads_own_notes: false,
             pads_phrase_at: None,
             pattern,

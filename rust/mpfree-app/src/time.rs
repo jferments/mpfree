@@ -67,7 +67,7 @@ mod adding;
 mod apart;
 mod audio;
 mod audio_wait;
-mod compose;
+pub(crate) mod compose;
 mod control;
 mod follow;
 pub mod link;

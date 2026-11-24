@@ -61,8 +61,10 @@ pub struct ArpView {
     pub pads_key: Option<Scale>,
     /// What the Phrase tab shows of the phrase as it plays.
     pub phrase: PhraseView,
-    /// The Phrase tab's Plays row and Evolve (`arp/improvise.rs`).
-    pub improvise: mpfree_arp_ui::view::ImproviseNow,
+    /// The Phrase tab's Plays row, Evolve and When I stop
+    /// (`arp/improvise.rs`, `arp/answer.rs`); boxed, as it is large and
+    /// travels in the app's effects.
+    pub improvise: Box<mpfree_arp_ui::view::ImproviseNow>,
     /// New idea or More like this, while open (`arp/maker.rs`). Boxed: it
     /// holds two phrases, and the view travels in every [`Effect::Arp`].
     pub maker: Option<Box<mpfree_arp_ui::maker::MakerView>>,
@@ -158,12 +160,14 @@ impl LibraryFile {
 /// and octaves: the first and the last have few values, so they need a
 /// longer turn.
 const QLINK_UNITS: [i32; 4] = [3, 1, 1, 4];
+mod answer;
 mod improvise;
 mod make;
 mod maker;
 mod part;
 mod phrases;
 
+pub(super) use answer::Answer;
 pub(super) use improvise::Improvise;
 pub use make::MakeFrom;
 pub(super) use make::Sheet;
@@ -477,7 +481,7 @@ impl App {
             phrase_index: self.phrase_index,
             pads_key: self.arps.engine_at(self.track).key(),
             phrase: self.phrase_view(),
-            improvise: self.improvise_view(),
+            improvise: Box::new(self.improvise_view()),
             maker: self.maker_view().map(Box::new),
             sheet: self.sheet_view().map(Box::new),
             notes: self.arps.engine_at(self.track).active().as_slice().to_vec(),
@@ -521,6 +525,7 @@ impl App {
     /// the notes or a setting changed since they last heard, or, while the
     /// panel shows, a phrase's cursor moved.
     pub fn arp_poll(&mut self) -> Option<Effect> {
+        self.answer_poll();
         self.improvise_poll();
         let e = self.arps.engine_at(self.track);
         let step = e.step();
@@ -683,6 +688,7 @@ impl App {
             ArpAction::Maker(a) => self.maker_action(a),
             ArpAction::Sheet(a) => self.sheet_action(a),
             ArpAction::Improvise(a) => self.improvise_action(a),
+            ArpAction::Answer(a) => self.answer_action(a),
         }
     }
 

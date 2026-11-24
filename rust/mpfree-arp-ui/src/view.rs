@@ -349,6 +349,8 @@ pub enum ArpAction {
     Sheet(crate::make_sheet::SheetAction),
     /// The Phrase tab's Plays row and moves (composing tools S5).
     Improvise(ImproviseAction),
+    /// The When I stop panel: how Answer replies (S5, board B).
+    Answer(AnswerAction),
 }
 
 /// When the Phrase tab's phrase plays (composing tools S5): While I hold, a
@@ -409,6 +411,91 @@ pub struct ImproviseNow {
     pub chord: Option<String>,
     /// When I stop can be picked: Answer is there to play.
     pub answers: bool,
+    /// The When I stop panel, while Plays is When I stop.
+    pub answer: AnswerNow,
+}
+
+/// How Answer replies: the When I stop panel's Mode row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AnswerMode {
+    /// Your phrase back, a little changed.
+    Echo,
+    /// Your rhythm, its own notes, a new ending.
+    #[default]
+    Answer,
+    /// Turns of 1, 2 or 4 bars, answered as Answer.
+    Trade,
+}
+
+impl AnswerMode {
+    pub const ALL: [AnswerMode; 3] = [AnswerMode::Echo, AnswerMode::Answer, AnswerMode::Trade];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            AnswerMode::Echo => "Echo",
+            AnswerMode::Answer => "Answer",
+            AnswerMode::Trade => "Trade",
+        }
+    }
+
+    /// What it does, in a line beside the row.
+    pub const fn says(self) -> &'static str {
+        match self {
+            AnswerMode::Echo => "your phrase back, a little changed",
+            AnswerMode::Answer => "your rhythm, its notes, a new ending",
+            AnswerMode::Trade => "turns: you, then it, as long",
+        }
+    }
+}
+
+/// The Answers for row: Like mine (None), or 1, 2 or 4 bars. In Trade it
+/// is how long each turn is (Like mine: 2 bars).
+pub const ANSWERS_FOR: [Option<u8>; 4] = [None, Some(1), Some(2), Some(4)];
+
+/// A touch on the When I stop panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnswerAction {
+    Mode(AnswerMode),
+    /// Answers for: Like mine (None) or 1, 2 or 4 bars.
+    For(Option<u8>),
+    /// The call is over: the answer plays from the next beat.
+    Now,
+    /// Your call and its answer kept as one clip (CAPTURE).
+    Capture,
+}
+
+/// A note in the Call and answer picture: start and length in ticks from
+/// the call's bar line, and its pitch.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HeardNote {
+    pub at: i64,
+    pub len: i64,
+    pub pitch: u8,
+}
+
+/// What the When I stop panel shows (board B), from the app.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AnswerNow {
+    pub mode: AnswerMode,
+    pub bars: Option<u8>,
+    /// The turn light: None until Answer is on.
+    pub light: Option<mpfree_arp::Light>,
+    /// The call, as played.
+    pub call: Vec<HeardNote>,
+    /// The answer, from where it plays (after the call).
+    pub answer: Vec<HeardNote>,
+    /// Ticks in a bar, and the call's and the answer's whole bars.
+    pub bar_ticks: i64,
+    pub call_bars: u32,
+    pub answer_bars: u32,
+    /// Where the answer has got to, in ticks from the call's bar line.
+    pub playhead: Option<i64>,
+    /// The key the call was read in ("C minor"), and how the answer ends
+    /// ("home", "open").
+    pub key: Option<String>,
+    pub ends: Option<&'static str>,
+    /// Why nothing was answered, when the composer refused.
+    pub refused: Option<String>,
 }
 
 /// A touch on the New idea or More like this panel ([`crate::maker`]).

@@ -13038,7 +13038,7 @@ impl Player {
                 a.phrase_index = v.phrase_index;
                 a.pads_key = v.pads_key;
                 a.maker = v.maker.map(|m| *m);
-                a.improvise = v.improvise;
+                a.improvise = *v.improvise;
                 let sheet = v.sheet.map(|s| *s);
                 a.sheet_name = sheet
                     .as_ref()
