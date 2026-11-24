@@ -82,6 +82,33 @@ pub struct Continued {
     pub sketch: Option<Sketch>,
 }
 
+/// The sound moves for a result of `req` at `level` ([`crate::sound`]):
+/// the sound following each new phrase, on the safe controls of the
+/// preset that plays it. Empty at Off, on drums, or for a result with no
+/// phrase plan.
+pub fn sound_of(
+    req: &Continue,
+    made: &Continued,
+    level: crate::sound::SoundLevel,
+) -> Vec<crate::sound::SoundMove> {
+    let Some(sk) = made.sketch.as_ref() else {
+        return Vec::new();
+    };
+    crate::sound::sound_moves(
+        &made.part,
+        &made.events,
+        &req.settings.style,
+        &crate::perform::Shaping {
+            sketch: sk,
+            yours: your_bars(req),
+            meter: req.meter,
+            bpm: req.bpm,
+            keep_accents: req.settings.keeps.accents,
+        },
+        level,
+    )
+}
+
 /// Why Continue made nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refused {

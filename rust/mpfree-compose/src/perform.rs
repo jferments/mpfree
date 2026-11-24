@@ -131,59 +131,37 @@ pub struct Shaping<'a> {
 
 /// One phrase of the new notes: its onsets, in order, and the one it
 /// leans to.
-struct Phrase {
-    onsets: Vec<Tick>,
-    climax: Tick,
+pub(crate) struct Phrase {
+    pub onsets: Vec<Tick>,
+    pub climax: Tick,
     /// It holds the plan's high point.
-    peak: bool,
+    pub peak: bool,
 }
 
-/// Where a note of the phrase is: -0.5 at its start, +0.5 at its high
-/// point, -0.6 at its end; and how far along the climb (0 to 1) or the
-/// fall (0 to 1) it is.
-fn arch(p: &Phrase, t: Tick) -> (f64, f64, f64) {
-    let (s, e, c) = (p.onsets[0], *p.onsets.last().unwrap_or(&t), p.climax);
-    if e <= s {
-        return (0.0, 1.0, 0.0);
-    }
-    if t <= c {
-        let x = if c > s {
-            (t - s) as f64 / (c - s) as f64
-        } else {
-            1.0
-        };
-        (-0.5 + x, x, 0.0)
-    } else {
-        let y = if e > c {
-            (t - c) as f64 / (e - c) as f64
-        } else {
-            1.0
-        };
-        (0.5 - 1.1 * y, 1.0, y)
-    }
+/// The new notes cut into phrases: the indexes of the new notes in time
+/// order (low to high on one tick), the phrases, and whether the last bar
+/// lands home.
+pub(crate) struct Phrasing {
+    pub order: Vec<usize>,
+    pub phrases: Vec<Phrase>,
+    pub home: bool,
 }
 
-/// The new notes of `part` (decisions and the same notes realised, in the
-/// same order) played with the phrase and the instrument; see the module.
-pub fn shape(part: &mut Part, events: &[Event], style: &Style, sh: &Shaping) {
-    let depth = f64::from(style.playing.gesture);
-    let ex = part.kind.expression();
+/// The new notes of `part` (after your bars) cut into phrases: up to each
+/// landing of the plan, then up to the last note. Each phrase leans to the
+/// plan's high point where it holds it, else to its highest note. None
+/// when there are no new notes.
+pub(crate) fn phrasing(part: &Part, events: &[Event], sh: &Shaping) -> Option<Phrasing> {
     let n = part.decisions.len().min(events.len());
-    if depth <= 0.0 || n == 0 || ex == Expression::NONE {
-        return;
-    }
     let sk = sh.sketch;
     let bar = sh.meter.bar_ticks().max(1);
-    let beat = sh.meter.beat_ticks().max(1);
     let from = sh.yours as Tick * bar;
-    let k = f64::from(part.kind.profile().velocity_response);
-    let range = f64::from(style.playing.velocity_range);
     let mut order: Vec<usize> = (0..n).filter(|&i| part.decisions[i].at >= from).collect();
     order.sort_by_key(|&i| (part.decisions[i].at, events[i].pitch));
     let mut onsets: Vec<Tick> = order.iter().map(|&i| part.decisions[i].at).collect();
     onsets.dedup();
     if onsets.is_empty() {
-        return;
+        return None;
     }
     let top = |t: Tick| {
         order
@@ -193,8 +171,6 @@ pub fn shape(part: &mut Part, events: &[Event], style: &Style, sh: &Shaping) {
             .max()
             .unwrap_or(0)
     };
-
-    // The phrases: up to each landing, then up to the last note.
     let tol = STEP / 2;
     let mut ends: Vec<Tick> = sk
         .anchors
@@ -240,6 +216,60 @@ pub fn shape(part: &mut Part, events: &[Event], style: &Style, sh: &Shaping) {
         };
     }
     let home = matches!(sk.gestures.last(), Some(Gesture::Close(Ending::Home)));
+    Some(Phrasing {
+        order,
+        phrases,
+        home,
+    })
+}
+
+/// Where a note of the phrase is: -0.5 at its start, +0.5 at its high
+/// point, -0.6 at its end; and how far along the climb (0 to 1) or the
+/// fall (0 to 1) it is.
+pub(crate) fn arch(p: &Phrase, t: Tick) -> (f64, f64, f64) {
+    let (s, e, c) = (p.onsets[0], *p.onsets.last().unwrap_or(&t), p.climax);
+    if e <= s {
+        return (0.0, 1.0, 0.0);
+    }
+    if t <= c {
+        let x = if c > s {
+            (t - s) as f64 / (c - s) as f64
+        } else {
+            1.0
+        };
+        (-0.5 + x, x, 0.0)
+    } else {
+        let y = if e > c {
+            (t - c) as f64 / (e - c) as f64
+        } else {
+            1.0
+        };
+        (0.5 - 1.1 * y, 1.0, y)
+    }
+}
+
+/// The new notes of `part` (decisions and the same notes realised, in the
+/// same order) played with the phrase and the instrument; see the module.
+pub fn shape(part: &mut Part, events: &[Event], style: &Style, sh: &Shaping) {
+    let depth = f64::from(style.playing.gesture);
+    let ex = part.kind.expression();
+    let n = part.decisions.len().min(events.len());
+    if depth <= 0.0 || n == 0 || ex == Expression::NONE {
+        return;
+    }
+    let sk = sh.sketch;
+    let bar = sh.meter.bar_ticks().max(1);
+    let beat = sh.meter.beat_ticks().max(1);
+    let k = f64::from(part.kind.profile().velocity_response);
+    let range = f64::from(style.playing.velocity_range);
+    let Some(Phrasing {
+        order,
+        phrases,
+        home,
+    }) = phrasing(part, events, sh)
+    else {
+        return;
+    };
     let gesture_of = |t: Tick| {
         let b = (t / bar) as usize;
         b.checked_sub(sh.yours)
@@ -366,7 +396,7 @@ pub fn shape(part: &mut Part, events: &[Event], style: &Style, sh: &Shaping) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::event::{Motion, NoteDecision, PartId, Role, Source};
     use crate::sketch::Anchor;
@@ -375,7 +405,7 @@ mod tests {
     use mpfree_context::PartRole;
 
     const FOUR: Meter = Meter { beats: 4, unit: 4 };
-    const BAR: Tick = 16 * STEP;
+    pub(crate) const BAR: Tick = 16 * STEP;
 
     fn anchor(kind: AnchorKind, bar: usize, step: i32) -> Anchor {
         Anchor {
@@ -391,7 +421,7 @@ mod tests {
 
     /// One bar of yours, then four new bars: up to a landing on bar 2's
     /// third beat, the high point on bar 4, home on bar 5's first beat.
-    fn sketch() -> Sketch {
+    pub(crate) fn sketch() -> Sketch {
         Sketch {
             gestures: vec![
                 Gesture::Answer,
@@ -411,7 +441,7 @@ mod tests {
     }
 
     /// Eighth notes climbing by step to each anchor, all at velocity 90.
-    fn line(kind: InstrumentKind) -> (Part, Vec<Event>) {
+    pub(crate) fn line(kind: InstrumentKind) -> (Part, Vec<Event>) {
         let mut notes: Vec<(Tick, u8)> = Vec::new();
         // Bar 2 up to the landing on its third beat.
         for (j, p) in [60u8, 62, 64, 65, 67].iter().enumerate() {
@@ -453,7 +483,7 @@ mod tests {
         )
     }
 
-    fn shaping(sk: &Sketch, keep_accents: bool) -> Shaping<'_> {
+    pub(crate) fn shaping(sk: &Sketch, keep_accents: bool) -> Shaping<'_> {
         Shaping {
             sketch: sk,
             yours: 1,

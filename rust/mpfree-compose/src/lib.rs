@@ -93,6 +93,10 @@
 //!   each phrase's high point and easing off, timing that breathes with
 //!   the phrase, slurs, held-back bars and rolled, voiced chords, by an
 //!   instrument profile ([`perform::Expression`]).
+//! - [`sound`]: the sound following the phrase without changing the
+//!   patch: brightness opening to the high point, the last notes ringing
+//!   on and thrown into the echo, on each preset's safe controls
+//!   ([`sound::safe_controls`]), at Off, Subtle or Bold ([`sound_of`]).
 //!
 //! Phrases, P2, new ideas for the arp's phrase player:
 //!
@@ -138,6 +142,7 @@ pub mod row;
 pub mod rules;
 pub mod settings;
 pub mod sketch;
+pub mod sound;
 pub mod style;
 pub mod timing;
 
@@ -171,12 +176,13 @@ pub use realize::{decisions_of, realize, Fit, PlainNote};
 pub use refit::{action, effect, misfits, Action, Aspects, Change, Effect, How, Target};
 pub use request::{
     continue_clip, continue_clip_how, continue_clip_read, continue_notes, continue_notes_keeping,
-    first_engine, first_engine_keeping, try_bar, try_bars, try_notes, Continue, Continued, Making,
-    OnClip, Refused,
+    first_engine, first_engine_keeping, sound_of, try_bar, try_bars, try_notes, Continue,
+    Continued, Making, OnClip, Refused,
 };
 pub use rhythm::{Grid, Onset};
 pub use row::{DrumHit, Heard, Row, RowPart, RowPlan, ToHear};
 pub use rules::{RangeSetting, Rule, RuleKind, Suggestion, Unmet, Weights};
 pub use settings::{Ending, Keeps, Settings};
+pub use sound::{safe_controls, Control, Knob, Safe, SafeControls, SoundLevel, SoundMove, Swing};
 pub use style::{Component, PlanShape, Style, GROOVE, JAZZISH, MINIMAL, STYLES};
 pub use timing::{check, heard, heard_tick, written, Playback, Timing, TimingNote};

@@ -317,7 +317,29 @@ The same notes, played rather than typed (`perform.rs`, 24 Nov 2026). The phase 
 
 The instrument profiles (`InstrumentKind::expression`): a one-note lead moves furthest in time (8 ms, its last note 14 ms) and slurs; keys 6 ms and a 10 ms roll; a bass 3 ms (it sits on the kick) and 0.6 of the dynamics; pads 4 ms and a 14 ms roll; drums nothing. The style's `PlayingStyle::gesture` scales it all: Minimal 0.7, Groove 1.0, Jazz-ish 1.2, and 0 plays as phase 0C did. Keep Accents leaves the loudness alone. Only loudness, length and timing change, so the notes, their places, the chords and the critic's choice are the same with and without (`request::tests::the_new_notes_drift_together_or_sit_on_the_drummer` checks it end to end).
 
-**The gate.** `listen --demo --gestures --seed 2 --sounds a` renders each built-in phrase carried on twice (seeds 2 and 3), the same 8 new bars played with the phrase and with `gesture` at 0, one of each phrase's pairs with the new playing first; the blind page is "The same notes, played two ways" (https://claude.ai/artifact/39ce4DTo36EWRUQJjMjKAs; builder and answer key in mpfree-claude `composing-tools/project-files/s3-listen/`). S3 keeps its playing if it is picked over the old on most pairs with no glitches heard; a rule that loses is turned off for its style. Sound moves (filter, envelope and effects written with the notes on a lane of their own) are S3's second part and come with their screen.
+**The gate.** `listen --demo --gestures --seed 2 --sounds a` renders each built-in phrase carried on twice (seeds 2 and 3), the same 8 new bars played with the phrase and with `gesture` at 0, one of each phrase's pairs with the new playing first; the blind page is "The same notes, played two ways" (https://claude.ai/artifact/39ce4DTo36EWRUQJjMjKAs; builder and answer key in mpfree-claude `composing-tools/project-files/s3-listen/`). S3 keeps its playing if it is picked over the old on most pairs with no glitches heard; a rule that loses is turned off for its style. Sound moves are S3's second part, below.
+
+### Sound moves (S3, second part)
+
+The sound follows the phrase as a player's touch does, without changing the patch (`sound.rs`, 24 Nov 2026). `sound::sound_moves` reads the same phrases as `perform::shape` (`perform::phrasing`: cut at the sketch's landings and close, each leaning to its high point) and gives a list of moves, each an amount from -1 to 1 of one control's safe swing on one new note's step (`SoundMove`); `request::sound_of` gives them for a Continue result, apart from the notes, so changing the level never makes a new try:
+
+- **Brightness**, on every new note of a phrase of two or more: `(a + 0.5)` of the phrase's arch (0 at its start, 1 at its high point, -0.1 at its end), at full weight in the phrase with the plan's peak and 0.7 in the others.
+- **Length**: a phrase's last note before a breath of a beat or more rings on, 1.0 at a Home ending's last phrase and 0.6 at a landing; the notes of a held-back bar get -0.5.
+- **Space**: a phrase's last note before a rest of two beats or more goes into the echo, 1.0 in the last phrase and 0.7 at a landing.
+
+How far: `SoundLevel` (Off 0, Subtle 0.5, Bold 1.0) times the style's `gesture` (at most 1.2) times the instrument's `Reach` (a lead 1.0 / 0.8 / 1.0 for brightness, length and space; keys 0.8 / 0.8 / 0.7; pads 0.6 / 0.6 / 0.5; a bass 0.5 / 0.3 / 0 so it keeps out of the echo; drums nothing). Moves smaller than 0.04 are left out.
+
+**Safe controls, per preset.** `sound::safe_controls` takes a preset's knobs (name, section, range, curve and the preset's value: `Knob`) and says which knob Brightness and Length turn and how far (`Safe`, `Swing`):
+
+- **Brightness** is the Cutoff (a log knob, in a section named Filter where there is one, else anywhere, for an acid synth), an octave each way at a full move, half that when its section's Resonance is past 60 % of its travel. A cutoff past 90 % of its travel has no room to open, and the knob named Brightness or Tone is used instead, 30 % of its travel each way; else none.
+- **Length** is the Release outside the filter's sections (the amp's first), three times or a third as long at a full move, capped at 3 s, and left alone when the preset's is 1.5 s or more.
+- **Space** is the track's first send, not the instrument's.
+
+A move goes from the preset's value and stays inside the knob's range; no move is the preset's own sound. `examples/safe_controls.rs` lists every factory preset: of the 255 on MPFree's twelve synths, 239 have a Brightness knob and 151 a Length knob; FM's 10 have neither (an FM sound's brightness is spread over its operators) and move on Space only. Plugins and sampled sounds move on Space only until their knobs are listed.
+
+**The gate.** `listen --demo --sound --seed 4 --sounds a` and `listen --demo --sound --seed 8 --sounds a --lead "Singing Lead"` render each built-in phrase at Subtle and at Bold, the same notes and playing with the moves (set as `NodeEvent::Param` just before each note, the knob going back to the preset's value at the next note without a move; Space as a gliding echo send) and without. The blind page, "The same bars, the sound two ways" (https://claude.ai/artifact/PpmiALBMVHHs5h4LhG1Ms2; builder and answer key in mpfree-claude `composing-tools/project-files/s3-sound-listen/`), takes eight: each phrase once on its own sound (the tone knob of a clav, electric piano, sax or clarinet, at Bold) and once on a filtered synth lead. The moved and unmoved files have the same transient peaks (no clicks).
+
+**In the app (waits on the owner's boards, https://claude.ai/artifact/PQt3J264VYZFwzphfxJEXM).** A Sound row after Ending (Off, Subtle, Bold); Done writes the moves as a lane of Continue's own per knob, an amount from the knob rather than a value, under the clip's own locks (a lock on the same setting and step wins), with On and Remove.
 
 ## Continue in the time engine (phase 1)
 
