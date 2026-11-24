@@ -236,6 +236,7 @@ pub fn child_main(args: impl IntoIterator<Item = OsString>) -> i32 {
             .iter()
             .map(ParamSpec::from_info)
             .collect(),
+        follows_tuning: node.node().follows_tuning(),
     };
     if wire::send_to_host(&mut sock, &ToHost::Hello(hello)).is_err() {
         return 2;
@@ -526,6 +527,9 @@ fn audio_loop(map: &Mapping, node: &Mutex<Plug>, nparams: usize, quit: &AtomicBo
     // restart the host sets `done` to `req` before starting us, writing
     // off a request the old process never answered.)
     let mut seen = shm::load(done);
+    // The tuning taken last (0: none yet, so a restarted process takes the
+    // one the host handed the process before it).
+    let mut tuning = 0u32;
     loop {
         if quit.load(Ordering::Acquire) {
             return;
@@ -538,7 +542,7 @@ fn audio_loop(map: &Mapping, node: &Mutex<Plug>, nparams: usize, quit: &AtomicBo
         seen = r;
         // SAFETY: the host posted request r and won't touch the block
         // until we post done == r.
-        unsafe { run_block(map.ptr, node, &mut events, nparams) };
+        unsafe { run_block(map.ptr, node, &mut events, &mut tuning, nparams) };
         shm::post(done, r);
     }
 }
@@ -579,12 +583,20 @@ fn event_of(e: &shm::ShmEvent) -> Option<NodeEvent> {
     })
 }
 
-/// Runs one block from the shared request into the shared answer.
+/// Runs one block from the shared request into the shared answer, the
+/// plugin first taking a tuning whose number (`tuning_gen`) isn't
+/// `tuning`'s.
 ///
 /// # Safety
 /// `p` is the mapped block, and this side owns the request and answer
 /// fields (between the host's `req` and our `done`).
-unsafe fn run_block(p: *mut shm::Shm, node: &Mutex<Plug>, events: &mut Vec<Timed>, nparams: usize) {
+unsafe fn run_block(
+    p: *mut shm::Shm,
+    node: &Mutex<Plug>,
+    events: &mut Vec<Timed>,
+    tuning: &mut u32,
+    nparams: usize,
+) {
     let n = ((*p).frames as usize).min(MAX_BLOCK);
     let ctx = Ctx {
         rate: (*p).rate,
@@ -612,6 +624,15 @@ unsafe fn run_block(p: *mut shm::Shm, node: &Mutex<Plug>, events: &mut Vec<Timed
     let g = guard.node_mut();
     if reset {
         g.reset();
+    }
+    let gen = (*p).tuning_gen;
+    if gen != *tuning {
+        *tuning = gen;
+        // Numbers no tuning gives (a host of another build) leave it as
+        // it was.
+        if let Some(t) = mpfree_tuning::Tuning::from_words(&(*p).tuning) {
+            g.set_tuning(&t);
+        }
     }
     let out_l = &mut (&mut (*p).out_l)[..n];
     let out_r = &mut (&mut (*p).out_r)[..n];

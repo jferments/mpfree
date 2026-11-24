@@ -21,7 +21,18 @@
 //!   Per-note expression maps to CLAP's own: a note's slide is its tuning
 //!   expression (with the bend added when the bend goes that way), its tone
 //!   is the brightness expression, and its release velocity goes in its
-//!   note-off.
+//!   note-off. A plugin whose note port takes MIDI and not CLAP's notes
+//!   gets notes, pressure (poly pressure) and the bend as MIDI, and no
+//!   slide or tone.
+//! - **Tunings.** [`Node::set_tuning`] gives the instrument its tuning (the
+//!   song's or its own, tunings step T6): each note's tuning expression
+//!   adds how far the tuning puts it from 12-TET at A4 = 440 Hz, worked
+//!   out at the bent and slid pitch, so a bend moves along the tuning's
+//!   keys; held notes move at the next block. In 12-TET at 440 nothing
+//!   changes. A plugin that takes only MIDI can't follow and plays 12-TET
+//!   ([`Node::follows_tuning`] says false, and the app says so). A plugin
+//!   that takes MIDI bends with MIDI pitch bend, in its own 12-TET steps
+//!   from the tuned note.
 //!   The transport (tempo, beats, playing) goes with every block. Parameter
 //!   values the plugin sends back update [`Node::param`].
 //! - **State.** [`ClapControl`], taken before the node goes to the audio
@@ -57,7 +68,8 @@ pub mod sys;
 pub mod testplug;
 
 use mpfree_node::{
-    Ctl, Ctx, Curve, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Unit, MAX_BLOCK,
+    Ctl, Ctx, Curve, Expr, Kind, Node, NodeEvent, NodeInfo, ParamInfo, Timed, Tuning, Unit,
+    MAX_BLOCK,
 };
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr, CString};
@@ -309,7 +321,7 @@ impl Library {
             if inst.preset_load.is_null() {
                 inst.preset_load = inst.ext(CLAP_EXT_PRESET_LOAD_COMPAT);
             }
-            let (notes_in, midi) = inst.note_input();
+            let (notes_in, midi, clap_notes) = inst.note_input();
             let kind = if notes_in {
                 Kind::Instrument
             } else {
@@ -334,6 +346,10 @@ impl Library {
                 by_clap,
                 kind,
                 midi,
+                clap_notes,
+                tuning: Tuning::standard(),
+                standard: true,
+                retune: false,
                 rate: 0,
                 max_block: 0,
                 active: false,
@@ -704,25 +720,25 @@ impl Instance {
         }) as *const T
     }
 
-    /// Whether the plugin takes notes, and whether its main note port takes
-    /// MIDI.
-    unsafe fn note_input(&self) -> (bool, bool) {
+    /// Whether the plugin takes notes, whether its main note port takes
+    /// MIDI, and whether it takes CLAP's own notes (true unless the port
+    /// says it takes MIDI and not them: notes then go as MIDI).
+    unsafe fn note_input(&self) -> (bool, bool, bool) {
         let np = self.note_ports;
         if np.is_null() {
-            return (false, false);
+            return (false, false, true);
         }
         let n = (*np).count.map_or(0, |c| c(self.plugin, true));
         if n == 0 {
-            return (false, false);
+            return (false, false, true);
         }
         let mut info: clap_note_port_info = std::mem::zeroed();
         let ok = (*np)
             .get
             .is_some_and(|g| g(self.plugin, 0, true, &mut info));
-        (
-            true,
-            ok && info.supported_dialects & CLAP_NOTE_DIALECT_MIDI != 0,
-        )
+        let d = if ok { info.supported_dialects } else { 0 };
+        let midi = d & CLAP_NOTE_DIALECT_MIDI != 0;
+        (true, midi, !midi || d & CLAP_NOTE_DIALECT_CLAP != 0)
     }
 
     /// The visible parameters, as `'static` descriptions and a map to CLAP
@@ -1126,6 +1142,16 @@ pub struct ClapNode {
     events: Vec<EvSlot>,
     pending: Vec<(u16, f32)>,
     held: [bool; 128],
+    /// Whether the plugin takes CLAP's own notes; false for one that takes
+    /// only MIDI (notes, pressure and bend go as MIDI, and it plays 12-TET).
+    clap_notes: bool,
+    /// The instrument's tuning: each note's tuning expression adds how far
+    /// the tuning puts it from 12-TET at 440 (none while `standard`).
+    tuning: Tuning,
+    standard: bool,
+    /// The tuning changed: the held notes get their new tuning expression
+    /// at the next block's start.
+    retune: bool,
     /// The bend and each note's own slide, tone and release velocity.
     notes: NoteState,
     latency: u32,
@@ -1155,8 +1181,8 @@ impl NoteState {
         }
     }
 
-    /// A note's tuning expression: the bend plus its slide.
-    fn tuning(&self, key: u8) -> f64 {
+    /// How far a note is moved, in semitones: the bend plus its slide.
+    fn moved(&self, key: u8) -> f64 {
         self.bend + f64::from(self.slide[usize::from(key)])
     }
 
@@ -1334,7 +1360,45 @@ impl ClapNode {
         }
     }
 
+    /// A note's tuning expression in semitones: its bend and slide, and in
+    /// a tuning other than 12-TET at 440 how far the tuning puts the moved
+    /// note from 12-TET, so a bend or slide moves along the tuning's keys.
+    /// Exactly the bend and slide in 12-TET at 440.
+    fn tune(&self, key: u8) -> f64 {
+        let moved = self.notes.moved(key);
+        if self.standard {
+            return moved;
+        }
+        let at = f32::from(key) + moved as f32;
+        moved + f64::from(self.tuning.offset_cents(at)) / 100.0
+    }
+
+    fn midi_ev(&mut self, time: u32, data: [u8; 3]) {
+        let midi = clap_event_midi {
+            header: Self::header(
+                CLAP_EVENT_MIDI,
+                std::mem::size_of::<clap_event_midi>(),
+                time,
+            ),
+            port_index: 0,
+            data,
+        };
+        self.push_ev(EvSlot { midi });
+    }
+
+    /// A note-on or note-off: CLAP's own, or MIDI's for a plugin that takes
+    /// only MIDI (velocity 0 to 1 either way).
     fn note(&mut self, ty: u16, time: u32, key: u8, velocity: f64) {
+        if !self.clap_notes {
+            let v = (velocity * 127.0).round().clamp(0.0, 127.0) as u8;
+            let data = if ty == CLAP_EVENT_NOTE_ON {
+                [0x90, key & 0x7F, v.max(1)]
+            } else {
+                [0x80, key & 0x7F, v]
+            };
+            self.midi_ev(time, data);
+            return;
+        }
         let note = clap_event_note {
             header: Self::header(ty, std::mem::size_of::<clap_event_note>(), time),
             note_id: -1,
@@ -1346,7 +1410,17 @@ impl ClapNode {
         self.push_ev(EvSlot { note });
     }
 
+    /// A note expression; for a plugin that takes only MIDI, pressure as
+    /// MIDI poly pressure and the rest left out (MIDI has no per-note
+    /// tuning or brightness without MPE).
     fn expression(&mut self, time: u32, which: i32, key: i16, value: f64) {
+        if !self.clap_notes {
+            if which == CLAP_NOTE_EXPRESSION_PRESSURE {
+                let v = (value * 127.0).round().clamp(0.0, 127.0) as u8;
+                self.midi_ev(time, [0xA0, (key & 0x7F) as u8, v]);
+            }
+            return;
+        }
         let expr = clap_event_note_expression {
             header: Self::header(
                 CLAP_EVENT_NOTE_EXPRESSION,
@@ -1401,8 +1475,9 @@ impl ClapNode {
                         note,
                         f64::from(velocity.min(127)) / 127.0,
                     );
-                    // A new note starts at the bend and its own values.
-                    let tuning = self.notes.tuning(note);
+                    // A new note starts at the bend, its own values and
+                    // the tuning's pitch for it.
+                    let tuning = self.tune(note);
                     if tuning != 0.0 {
                         self.expression(time, CLAP_NOTE_EXPRESSION_TUNING, i16::from(note), tuning);
                     }
@@ -1431,7 +1506,7 @@ impl ClapNode {
                     Expr::Slide => {
                         self.notes.slide[k] = v;
                         if self.held[k] {
-                            let t = self.notes.tuning(note);
+                            let t = self.tune(note);
                             self.expression(time, CLAP_NOTE_EXPRESSION_TUNING, i16::from(note), t);
                         }
                     }
@@ -1475,7 +1550,7 @@ impl ClapNode {
                     self.notes.bend = v * BEND_SEMITONES;
                     for k in 0..128u8 {
                         if self.held[usize::from(k)] {
-                            let t = self.notes.tuning(k);
+                            let t = self.tune(k);
                             self.expression(time, CLAP_NOTE_EXPRESSION_TUNING, i16::from(k), t);
                         }
                     }
@@ -1749,6 +1824,14 @@ impl Node for ClapNode {
                     self.param_ev(0, id, v);
                 }
                 self.pending.clear();
+                if std::mem::take(&mut self.retune) {
+                    for k in 0..128u8 {
+                        if self.held[usize::from(k)] {
+                            let t = self.tune(k);
+                            self.expression(0, CLAP_NOTE_EXPRESSION_TUNING, i16::from(k), t);
+                        }
+                    }
+                }
                 first = false;
             }
             while next < events.len() && (events[next].offset as usize) < at + len {
@@ -1778,6 +1861,22 @@ impl Node for ClapNode {
 
     fn latency(&self) -> u32 {
         self.latency
+    }
+
+    /// Each note's tuning expression adds how far the tuning puts it from
+    /// 12-TET at 440; held notes move at the next block. A plugin that
+    /// takes only MIDI keeps 12-TET ([`Node::follows_tuning`]).
+    fn set_tuning(&mut self, tuning: &Tuning) {
+        if self.kind != Kind::Instrument || !self.clap_notes || *tuning == self.tuning {
+            return;
+        }
+        self.tuning.clone_from(tuning);
+        self.standard = tuning.is_standard();
+        self.retune = true;
+    }
+
+    fn follows_tuning(&self) -> bool {
+        self.kind != Kind::Instrument || self.clap_notes
     }
 }
 

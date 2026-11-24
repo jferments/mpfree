@@ -3286,6 +3286,7 @@ pub fn scene_rows(st: &TimeState) -> Vec<OptionRow> {
     let row = |k: usize, value: String| OptionRow {
         name: SCENE_ROWS[k].to_string(),
         value,
+        ..OptionRow::default()
     };
     let s = &st.scene;
     let dash = || "—".to_string();
@@ -3840,10 +3841,12 @@ pub fn clip_rows(st: &TimeState) -> Vec<OptionRow> {
             rows.push(OptionRow {
                 name: CLIP_ROWS[CLIP_MUTATE].to_string(),
                 value: mutate_value(c),
+                ..OptionRow::default()
             });
             rows.push(OptionRow {
                 name: CLIP_ROWS[CLIP_MELODY].to_string(),
                 value: melody_value(c),
+                ..OptionRow::default()
             });
             rows
         }
@@ -3905,6 +3908,7 @@ pub fn card_rows(length: Tick, s: ClipSettings) -> Vec<OptionRow> {
     let row = |k: usize, value: String| OptionRow {
         name: CLIP_ROWS[k].to_string(),
         value,
+        ..OptionRow::default()
     };
     let steps = (length + CARD_STEP - 1) / CARD_STEP;
     let dash = "—".to_string();
@@ -4152,6 +4156,7 @@ fn audio_rows(c: &ClipInfo, meter: Meter) -> Vec<OptionRow> {
         .map(|(name, value)| OptionRow {
             name: name.to_string(),
             value,
+            ..OptionRow::default()
         })
         .collect()
 }
@@ -5898,6 +5903,7 @@ pub fn record_rows(st: &TimeState) -> Vec<OptionRow> {
     let row = |name: &str, value: String| OptionRow {
         name: name.to_string(),
         value,
+        ..OptionRow::default()
     };
     let armed = st
         .armed
@@ -7715,6 +7721,7 @@ mod tests {
             .map(|k| OptionRow {
                 name: RECORD_ROWS[k].to_string(),
                 value: String::new(),
+                ..OptionRow::default()
             })
             .collect();
         assert!(list.row_rects(record, 5).is_none());

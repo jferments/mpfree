@@ -11,9 +11,15 @@
 //! mpfree-arp-render --demo                       every order, every starter pattern, drums, lanes, scales
 //! mpfree-arp-render --chords "60,63,67,70;65,68,72,75" --mode pattern --builtin Bounce
 //! mpfree-arp-render --pads 1,3,5,7 --mode pattern --pattern "x x:2 . x | vel 127 60 90"
-//! mpfree-arp-render --patterns my-patterns.txt   every pattern in a library file (see patterns/example.txt)
+//! mpfree-arp-render --patterns my-patterns.txt   every pattern and phrase in a library file (see patterns/example.txt)
 //! mpfree-arp-render --group Rolls                 every built-in pattern of a group (or --group all)
+//! mpfree-arp-render --phrases                    every starter phrase (phrases/starter.txt), each from one held note
 //! ```
+//!
+//! A phrase plays from one held note, twice through; then the note moves
+//! up a fourth for once through, and back. It plays in C in the scale it
+//! was written in (major for one written for either): the bass from C2,
+//! the chords from C3, riffs and lines from C4.
 //!
 //! Options: `--out DIR` (default ~/mpfree-work/arp-render-<UTC>), `--mode
 //! repeat|arp|pattern`, `--order NAME`, `--pattern TEXT` or `--builtin NAME`
@@ -41,7 +47,7 @@
 use mpfree_arp::groups::GROUPS;
 use mpfree_arp::{
     midi_file, Engine, EventKind, Events, LatchMode, Library, MidiOut, ModSource, Mode, Modifier,
-    NoteMap, Order, Pattern, Ramp, Rate, Scale, Settings, BUILT_IN,
+    NoteMap, Order, Pattern, Phrase, PhraseKind, Ramp, Rate, Scale, Settings, Written, BUILT_IN,
 };
 use std::f32::consts::TAU;
 use std::fmt::Write as _;
@@ -233,6 +239,8 @@ struct Job {
     about: String,
     settings: Settings,
     pattern: Pattern,
+    /// The phrase Phrase mode plays.
+    phrase: Option<Phrase>,
     /// Chords, one per bar, looped; each note list is held for the bar.
     chords: Vec<Vec<u8>>,
     drums: bool,
@@ -261,6 +269,9 @@ fn render(job: &Job) -> Rendered {
     e.set_seed(job.seed);
     e.set_settings(job.settings);
     e.set_pattern(job.pattern);
+    if let Some(p) = job.phrase {
+        e.set_phrase(p);
+    }
     e.set_latch(LatchMode::Replace);
     let mut synth = Synth::new(job.drums);
     let bar_frames = (RATE as f64 * 60.0 / job.bpm * 4.0).round() as u64;
@@ -434,6 +445,7 @@ fn base(name: &str, about: &str, mode: Mode) -> Job {
             ..Settings::default()
         },
         pattern: Pattern::default(),
+        phrase: None,
         chords: vec![vec![60, 63, 67, 70]],
         drums: false,
         bpm: 110.0,
@@ -454,10 +466,12 @@ fn four_chord_loop() -> Vec<Vec<u8>> {
     ]
 }
 
-/// One job per pattern in a library, with the other options as given.
+/// One job per pattern in a library, with the other options as given,
+/// then one per phrase ([`phrase_jobs`]).
 fn library_jobs(lib: &Library, job: &Job, chords: Option<Vec<Vec<u8>>>) -> Vec<Job> {
     let chords = chords.unwrap_or_else(four_chord_loop);
-    lib.iter()
+    let mut jobs: Vec<Job> = lib
+        .iter()
         .enumerate()
         .map(|(i, (name, pattern))| {
             let mut j = job.clone();
@@ -467,6 +481,53 @@ fn library_jobs(lib: &Library, job: &Job, chords: Option<Vec<Vec<u8>>>) -> Vec<J
             j.settings.mode = Mode::Pattern;
             j.settings = j.settings.clamped();
             j.chords = chords.clone();
+            j
+        })
+        .collect();
+    jobs.extend(phrase_jobs(lib, job, jobs.len()));
+    jobs
+}
+
+/// One job per phrase in a library, numbered on from `after`: the phrase
+/// from one held note, twice through, then from the fourth above for once
+/// through, and back. In C, in the scale it was written in (major when
+/// it was written for either), unless `--scale` gave one.
+fn phrase_jobs(lib: &Library, job: &Job, after: usize) -> Vec<Job> {
+    lib.phrases()
+        .enumerate()
+        .map(|(i, (name, phrase))| {
+            let mut j = job.clone();
+            j.name = format!("{:02}-{}", after + i + 1, slug(name));
+            j.about = format!(
+                "{} phrase \"{name}\" ({})",
+                phrase.kind.label(),
+                phrase.to_text()
+            );
+            j.phrase = Some(*phrase);
+            j.settings.mode = Mode::Phrase;
+            if j.settings.scale.is_none() {
+                j.settings.scale = Some(Scale::new(
+                    0,
+                    match phrase.written {
+                        Written::Minor => mpfree_arp::scale::MINOR,
+                        Written::Major | Written::Either => mpfree_arp::scale::MAJOR,
+                    },
+                ));
+            }
+            j.settings = j.settings.clamped();
+            let home = match phrase.kind {
+                PhraseKind::Bass => 36,
+                PhraseKind::Chords => 48,
+                PhraseKind::Riff | PhraseKind::Line => 60,
+            };
+            // The render's bars are four beats: enough of them to hold the
+            // phrase's own bars (a bar of 3/4 is three).
+            let beats = u32::from(phrase.bars) * u32::from(phrase.beats);
+            let once = beats.div_ceil(4).max(1);
+            j.bars = 4 * once;
+            j.chords = (0..j.bars)
+                .map(|bar| vec![if bar / once == 2 { home + 5 } else { home }])
+                .collect();
             j
         })
         .collect()
@@ -740,6 +801,7 @@ fn parse_args(args: &[String]) -> Result<(Vec<Job>, Option<PathBuf>), String> {
     let mut job = base("custom", "", Mode::Arp);
     let mut chords: Option<Vec<Vec<u8>>> = None;
     let mut library: Option<Library> = None;
+    let mut phrases = false;
     let mut i = 0;
     let value = |i: &mut usize| -> Result<String, String> {
         *i += 1;
@@ -807,11 +869,14 @@ fn parse_args(args: &[String]) -> Result<(Vec<Job>, Option<PathBuf>), String> {
                         errors.iter().map(|e| format!("  {path}: {e}")).collect();
                     format!("--patterns: fix these lines:\n{}", lines.join("\n"))
                 })?;
-                if lib.is_empty() {
-                    return Err(format!("--patterns {path}: no patterns in the file"));
+                if lib.is_empty() && lib.phrases().next().is_none() {
+                    return Err(format!(
+                        "--patterns {path}: no patterns or phrases in the file"
+                    ));
                 }
                 library = Some(lib);
             }
+            "--phrases" => phrases = true,
             "--chords" => {
                 let v = value(&mut i)?;
                 chords = Some(
@@ -924,6 +989,9 @@ fn parse_args(args: &[String]) -> Result<(Vec<Job>, Option<PathBuf>), String> {
     if demo {
         return Ok((demo_jobs(), out));
     }
+    if phrases {
+        return Ok((phrase_jobs(&Library::built_in(), &job, 0), out));
+    }
     if let Some(lib) = library {
         if chords
             .as_ref()
@@ -983,7 +1051,7 @@ fn main() {
             if !e.is_empty() {
                 eprintln!("mpfree-arp-render: {e}");
             }
-            eprintln!("usage: mpfree-arp-render --demo | (--chords \"60,63,67;65,68,72\" | --notes 60,64 | --pads 1,3) \
+            eprintln!("usage: mpfree-arp-render --demo | --phrases | (--chords \"60,63,67;65,68,72\" | --notes 60,64 | --pads 1,3) \
                        [--mode repeat|arp|pattern] [--order NAME] [--pattern TEXT | --builtin NAME] [--bpm N] [--rate 1/16] \
                        [--octaves N] [--gate N] [--swing N] [--strum N] [--scale d_dorian] [--snap up] [--chord triad] [--run] [--turns bar] [--ramp 30:16] [--retrigger] [--bars N] [--seed N] \
                        [--name NAME] [--out DIR]\n       mpfree-arp-render --patterns FILE [the same options; --chords etc. replace the four-chord loop]");
@@ -1053,6 +1121,58 @@ mod tests {
             let f = midi_file(&r.midi, RATE, job.bpm, &job.name);
             assert_eq!(&f[..4], b"MThd");
         }
+    }
+
+    /// Every starter phrase renders: it makes sound without clipping, ends
+    /// every note it starts, and moves when the held note does.
+    #[test]
+    fn every_starter_phrase_renders_from_one_held_note() {
+        let (jobs, _) = parse_args(&["--phrases".to_string()]).unwrap();
+        assert_eq!(jobs.len(), 64);
+        let mut names: Vec<&str> = jobs.iter().map(|j| j.name.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), 64, "a file each");
+        assert_eq!(jobs[0].name, "01-offbeat-pump");
+        for job in &jobs {
+            assert_eq!(job.settings.mode, Mode::Phrase, "{}", job.name);
+            let r = render(job);
+            let p = job.phrase.unwrap();
+            // Four times through, less whatever falls off the scale.
+            assert!(r.notes >= 2 * p.len(), "{}: {} notes", job.name, r.notes);
+            assert!(
+                r.peak > 0.02 && r.peak < 1.0,
+                "{}: peak {}",
+                job.name,
+                r.peak
+            );
+            assert_eq!(r.dropped, 0, "{}", job.name);
+            let ons = r.midi.iter().filter(|(_, b)| b[0] & 0xF0 == 0x90).count();
+            let offs = r.midi.iter().filter(|(_, b)| b[0] & 0xF0 == 0x80).count();
+            assert_eq!(ons, offs, "{}", job.name);
+            // Its home note, and the same step from the fourth above.
+            let first = p.notes()[0].semis;
+            let home = job.chords[0][0] as i8;
+            let moved = job.chords.last().map(|_| home + 5).unwrap();
+            let played = |n: i8| {
+                r.midi
+                    .iter()
+                    .any(|(_, b)| b[0] & 0xF0 == 0x90 && b[1] as i8 == n)
+            };
+            if p.notes().iter().any(|n| n.semis == 0) {
+                assert!(played(home), "{}", job.name);
+                assert!(played(moved), "{}: it moves with the held note", job.name);
+            } else {
+                assert!(first != 0);
+            }
+        }
+        // A library file's phrases come after its patterns.
+        let lib = Library::parse("Skip = 1 . 3 2\nMine = bass minor : 1 . 1 b3").unwrap();
+        let jobs = library_jobs(&lib, &base("x", "", Mode::Arp), None);
+        let names: Vec<&str> = jobs.iter().map(|j| j.name.as_str()).collect();
+        assert_eq!(names, ["01-skip", "02-mine"]);
+        assert_eq!(jobs[1].bars, 4);
+        assert_eq!(jobs[1].chords, [[36], [36], [41], [36]]);
     }
 
     #[test]

@@ -2823,6 +2823,7 @@ pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
         .map(|(name, value)| OptionRow {
             name: name.to_string(),
             value,
+            ..OptionRow::default()
         })
         .collect()
 }

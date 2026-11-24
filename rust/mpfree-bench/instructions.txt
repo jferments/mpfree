@@ -10,9 +10,9 @@
 172383	Analog Poly Brass, 8 voices
 288045	Analog Warm Pad, 8 voices
 409027	Analog Worn Cards, 16 voices
-9679	Arps: 16 latched arps at 32nds
-14954	Arps: 16 latched arps at 32nds, a mod wheel always moving
-3183	Arps: 4 latched arps at 32nds
+9732	Arps: 16 latched arps at 32nds
+15763	Arps: 16 latched arps at 32nds, a mod wheel always moving
+3260	Arps: 4 latched arps at 32nds
 128876	Arrange: a step tap in song mode, 512 blocks of 32 clips: until it plays
 151691614	Arrange: the big song saved and opened, 512 blocks of 32 clips
 6918010	Arrange: the big song's view, 512 blocks of 32 clips: compiled and swapped

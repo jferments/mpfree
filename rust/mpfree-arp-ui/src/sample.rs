@@ -6,9 +6,13 @@
 //! Play page's right-hand column, and the quick band over the pads while
 //! NOTE REPEAT is held.
 
-use crate::view::{chips, hint, quick_hint, ArpPanel, ArpState};
+use crate::phrases::{PhraseList, Shelf};
+use crate::view::{chips, hint, hint_for, quick_hint, ArpPanel, ArpState};
 use crate::workspace::{self, record_pad_labels, LaneRow, PatternWorkspace, Row};
-use mpfree_arp::{Engine, Events, LatchMode, Library, Mode, Order, Pattern, Rate, Settings};
+use mpfree_arp::scale::MINOR;
+use mpfree_arp::{
+    Engine, Events, Follow, LatchMode, Library, Mode, Order, Pattern, Phrase, Rate, Scale, Settings,
+};
 use mpfree_ui::widgets::{Header, Label, PadGrid};
 use mpfree_ui::{Align, Color, Fonts, Theme, Tone, Ui};
 
@@ -170,10 +174,239 @@ fn scene(
     })
 }
 
+/// What a sample of the Phrase tab shows: a synth track in A minor (the
+/// pads' key) with the A under middle C held.
+struct PhraseSetup {
+    /// The track's pick, by name.
+    pick: &'static str,
+    /// The phrase still playing while the pick waits for the bar line
+    /// (the transport plays).
+    playing: Option<&'static str>,
+    follow: Follow,
+    swing: u8,
+    octaves: u8,
+    /// The Modifier pushes the rate from 1/16 to this.
+    pushed: Option<Rate>,
+    /// Beats the note has been held for.
+    beats: f64,
+    /// The owner's phrases, then one only the open project has, as text.
+    own: &'static [(&'static str, &'static str)],
+    project: &'static [(&'static str, &'static str)],
+    /// The kind the list shows when it is not the pick's.
+    shelf: Option<Shelf>,
+    /// The track's instrument is a kit: its pads play as pressed.
+    kit: bool,
+    /// The quick band shows, not the panel.
+    quick: bool,
+}
+
+impl Default for PhraseSetup {
+    fn default() -> Self {
+        PhraseSetup {
+            pick: "Night drive",
+            playing: None,
+            follow: Follow::InKey,
+            swing: 50,
+            octaves: 1,
+            pushed: None,
+            beats: 3.0,
+            own: &[],
+            project: &[],
+            shelf: None,
+            kit: false,
+            quick: false,
+        }
+    }
+}
+
+fn phrase_scene(
+    name: &'static str,
+    about: &'static str,
+    fonts: Fonts,
+    setup: PhraseSetup,
+) -> Result<Sample, String> {
+    let mut list = PhraseList::built_in();
+    for (i, (n, text)) in setup.own.iter().chain(setup.project).enumerate() {
+        let phrase = Phrase::parse(text).map_err(|e| format!("{n}: {e}"))?;
+        list.phrases.push((n.to_string(), phrase));
+        if i < setup.own.len() {
+            list.own += 1;
+        }
+    }
+    let place = |n: &str| {
+        list.phrases
+            .iter()
+            .position(|(name, _)| name == n)
+            .ok_or(format!("no phrase {n}"))
+    };
+    let pick = place(setup.pick)?;
+    let playing = setup.playing.map(place).transpose()?;
+    let settings = Settings {
+        mode: if setup.kit {
+            Mode::Direct
+        } else {
+            Mode::Phrase
+        },
+        follow: setup.follow,
+        swing: setup.swing,
+        octaves: setup.octaves,
+        ..Settings::default()
+    };
+    let mut e = Engine::new(SAMPLE_RATE, 120.0);
+    e.set_settings(settings);
+    e.set_key(Some(Scale::new(9, MINOR)));
+    // What sounds: the pick, or the phrase it waits behind.
+    e.set_phrase(list.phrases[playing.unwrap_or(pick)].1);
+    if !setup.kit {
+        e.press(57, 100);
+        let frames = setup.beats * 60.0 / e.bpm() * f64::from(SAMPLE_RATE);
+        let mut out = Events::new();
+        let mut done = 0.0;
+        while done < frames {
+            e.process(128, &mut out);
+            done += 128.0;
+        }
+    }
+    let mut state = ArpState::from_engine(&e, built_in_patterns(), 0, false);
+    state.phrases = list;
+    state.phrase_index = pick;
+    state.phrase.shelf = setup.shelf;
+    if playing.is_some() {
+        state.phrase.waits = true;
+        state.phrase.playing = playing;
+    }
+    if let Some(rate) = setup.pushed {
+        state.live.rate = rate;
+        state.push = 1.0;
+    }
+    if setup.kit {
+        state.phrase.kit_track = Some("Track 1".to_string());
+    }
+
+    let mut ui = Ui::new(Theme::dark(), fonts, SCREEN.0, SCREEN.1);
+    let mut header = Header::app("Play");
+    header.chips = chips(&state);
+    ui.add("header", header);
+    ui.add("pads", PadGrid::new(16, 4));
+    let line = if setup.quick {
+        quick_hint(settings.mode).to_string()
+    } else {
+        hint_for(&state)
+    };
+    ui.add("hint", Label::new(&line, Tone::Dim, Align::Center));
+    let page = ArpPanel::add(&mut ui, PANEL_PAGE, QUICK_PAGE, &state)?;
+    ui.show(if setup.quick { QUICK_PAGE } else { PANEL_PAGE })?;
+    Ok(Sample {
+        name,
+        about,
+        ui,
+        page,
+        quick: setup.quick,
+        state,
+    })
+}
+
+/// The Phrase tab's sample screens: the five boards the owner approved
+/// (23 Nov 2026), then the cases they left out.
+fn phrase_samples(fonts: &impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
+    const OWN: [(&str, &str); 2] = [
+        (
+            "Verse bass",
+            "bass minor : 1! . . 1' . . 1+' . . . b7- 1 . . 1+' .",
+        ),
+        ("riff-idea", "riff either : 5 . 6 5 . 3 . . 1 . 2 3 . 1 . ."),
+    ];
+    const PROJECT: [(&str, &str); 1] = [(
+        "Climbing line",
+        "line either : 1 3 5 1+ 3+ 5+ 1++ 5+ 3+ 1+ 5 3 1 5- 1 3",
+    )];
+    Ok(vec![
+        phrase_scene(
+            "phrase-browse",
+            "Phrase tab: the basses, Night drive playing from a held note in A minor",
+            fonts(),
+            PhraseSetup::default(),
+        )?,
+        phrase_scene(
+            "phrase-next-bar",
+            "Phrase tab: Acid line picked while the song plays, waiting for the bar line",
+            fonts(),
+            PhraseSetup {
+                pick: "Acid line",
+                playing: Some("Night drive"),
+                ..PhraseSetup::default()
+            },
+        )?,
+        phrase_scene(
+            "phrase-exact",
+            "Phrase tab: a riff written in major, Exact, with swing and two octaves",
+            fonts(),
+            PhraseSetup {
+                pick: "Synth pop hook",
+                follow: Follow::Exact,
+                swing: 58,
+                octaves: 2,
+                beats: 5.5,
+                ..PhraseSetup::default()
+            },
+        )?,
+        phrase_scene(
+            "phrase-kit",
+            "Phrase tab on a kit track: its pads play as pressed",
+            fonts(),
+            PhraseSetup {
+                kit: true,
+                ..PhraseSetup::default()
+            },
+        )?,
+        phrase_scene(
+            "phrase-yours",
+            "Phrase tab: the owner's phrases, and one only this project has",
+            fonts(),
+            PhraseSetup {
+                pick: "Verse bass",
+                beats: 1.5,
+                own: &OWN,
+                project: &PROJECT,
+                ..PhraseSetup::default()
+            },
+        )?,
+        phrase_scene(
+            "phrase-yours-empty",
+            "Phrase tab: the owner's shelf before they have made a phrase",
+            fonts(),
+            PhraseSetup {
+                shelf: Some(Shelf::Own),
+                ..PhraseSetup::default()
+            },
+        )?,
+        phrase_scene(
+            "phrase-triplets-pushed",
+            "Phrase tab: a phrase in triplets (swing leaves it), the Modifier pushing the speed",
+            fonts(),
+            PhraseSetup {
+                pick: "Shuffle riff",
+                swing: 62,
+                pushed: Some(Rate::SixteenthTriplet),
+                ..PhraseSetup::default()
+            },
+        )?,
+        phrase_scene(
+            "quick-phrase",
+            "Quick band: NOTE REPEAT held on a synth track, a phrase playing",
+            fonts(),
+            PhraseSetup {
+                quick: true,
+                ..PhraseSetup::default()
+            },
+        )?,
+    ])
+}
+
 /// Every sample screen.
 pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     let base = Settings::default();
-    Ok(vec![
+    let mut all = vec![
         scene(
             "quick-hat-roll",
             "Quick band: NOTE REPEAT held with the closed hat, 1/16",
@@ -314,7 +547,9 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
                 ..Setup::default()
             },
         )?,
-    ])
+    ];
+    all.extend(phrase_samples(&fonts)?);
+    Ok(all)
 }
 
 /// One sample screen of the pattern workspace.
