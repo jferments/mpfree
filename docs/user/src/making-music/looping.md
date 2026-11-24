@@ -161,7 +161,7 @@ How many bars the loop is depends on its **Length**:
 
 - **The tempo is exact,** to many decimal places, so the loop never drifts against the song; the project keeps it exactly when you save. The tempo chip shows it rounded.
 - **Closed too soon** (shorter than a bar at 300 BPM, 0.8 s in 4/4, or than your Length's bars at 300 BPM), the loop keeps recording and closes as soon as it is that long. The ring says **closing**.
-- **Too long for its Length** (2 bars set, but so long that 2 bars would be slower than 30 BPM), MPFree works out the bars instead and the screen says so.
+- **Too long for its Length** (2 bars set, but so long that 2 bars would be slower than 30 BPM), the loop closes and waits, silent, with nothing started, and the Looper tab's bottom line asks: "Loop 1: Length's 2 bars would be 24 BPM, slower than 30. Read it as 4 bars at 48 BPM?" **Read as 4 bars** plays it at that tempo from its top; **Discard** throws the take away (UNDO brings it back). Your Length is never changed without asking. PLAY instead plays the loop at the song's tempo.
 - **PLAY while it records** throws the free loop away (the screen counts it), since the music would start at the old tempo. Close the loop with its ring or REC instead.
 - It is off while another device's clock leads, the song has more than one tempo, or an export is running. A second loop, or a loop recorded with the music playing, keeps to the bars as usual.
 - If the music still can't start at the new tempo, the screen says why, and the loop plays at the song's tempo when the music starts.

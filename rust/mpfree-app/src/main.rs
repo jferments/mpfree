@@ -8500,10 +8500,12 @@ fn looper_action(
             vec![app::Effect::Tell(line)]
         }
         looping::LoopAction::Answer(anyway) => {
-            let line = if anyway {
-                looper.snap_anyway()
-            } else {
-                looper.snap_not_now()
+            // A first pass waiting on its Length is asked before a snap.
+            let line = match (looper.length_asking().is_some(), anyway) {
+                (true, true) => looper.use_reading(),
+                (true, false) => looper.discard_waiting(),
+                (false, true) => looper.snap_anyway(),
+                (false, false) => looper.snap_not_now(),
             };
             line.map(|l| {
                 out.note(&l);
@@ -15349,6 +15351,9 @@ fn player_session(
         let (said, tempo) = loop_sets_tempo(&mut looper, &mut time, take, export.running());
         out.loop_start(said);
         out.smart_end(looper.take_smart());
+        // Or it waits on its Length: the hint line asks (after what smart
+        // loop end said, so the question is what stays).
+        out.loop_start(looper.take_asks());
         // A snap landed: the song's tempo changed with the loop.
         let (said, snapped) = looper.take_snap();
         out.loop_start(said);

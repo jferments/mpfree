@@ -1995,6 +1995,68 @@ mod looper {
         });
     }
 
+    /// Length's bars are final (the looper refactor's Finding C): Length
+    /// at 1 bar, played for 10 s with the song stopped, would be 24 BPM,
+    /// so the loop waits, silent, the song stopped, and the hint line asks
+    /// with Read as and Discard at its end. Read as starts the song at the
+    /// tempo it read; Discard (a second take) clears the loop.
+    #[test]
+    fn a_length_too_slow_asks_on_the_hint_line_with_read_as_and_discard() {
+        use mpfree_transport::State;
+        on_big_stack(|| {
+            for yes in [true, false] {
+                let mut s = Session::new();
+                s.make_sounds();
+                s.press("header", "tab", "Looper");
+                s.app.settings.loop_tempo = true;
+                let one = at(&mut s, "leditor", "bars", 2);
+                s.press_target(&one).run_for(0.1);
+                s.button("REC");
+                s.pad(0, 120, 0.1);
+                s.run_for(10.0);
+                s.button("REC");
+                until_phase(&mut s, Phase::Playing, 1.0);
+                // (What smart loop end said shows first, for its 4 s.)
+                s.run_for(f64::from(crate::gui::TELL_SECONDS) + 0.5);
+                let r = status(&s).asks.expect("it waits on its Length");
+                assert!(
+                    s.hint()
+                        .starts_with("Loop 1: Length's 1 bar would be 24 BPM, slower than 30."),
+                    "{}",
+                    s.hint()
+                );
+                assert!(
+                    s.said()
+                        .iter()
+                        .any(|l| l.starts_with("looper: Loop 1: Length's 1 bar would be")),
+                    "{:?}",
+                    s.said()
+                );
+                assert_eq!(s.time.info().state, State::Stopped, "nothing starts");
+                let read_as = format!("Read as {} bars", r.bars);
+                assert!(s.control("lask", "ask-yes", &read_as).is_some());
+                if yes {
+                    s.press("lask", "ask-yes", &read_as);
+                    s.run_for(0.3);
+                    assert_eq!(s.time.info().state, State::Playing);
+                    assert!(
+                        (s.time.info().bpm - r.bpm).abs() < 0.01,
+                        "{}",
+                        s.time.info().bpm
+                    );
+                    assert_eq!(status(&s).phase, Phase::Playing);
+                } else {
+                    s.press("lask", "ask-no", "Discard");
+                    s.run_for(0.3);
+                    assert_eq!(status(&s).phase, Phase::Empty);
+                    assert_eq!(s.time.info().state, State::Stopped);
+                }
+                assert_eq!(status(&s).asks, None);
+                assert!(s.control("lask", "ask-yes", "").is_none(), "gone");
+            }
+        });
+    }
+
     /// Smart loop end step 2d, hands-free: a footswitch learned on Snap
     /// takes the snap on the downbeat and one learned on Use my tap puts
     /// the loop back on your tap, both hands on the instrument; pressed

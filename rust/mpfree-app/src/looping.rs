@@ -569,6 +569,10 @@ pub struct SmartView {
     /// The snap waiting on "... anyway?" ([`LoopHost::snap_asking`]),
     /// and whether it is an Undo or a Redo of Read as ([`ask_words`]).
     pub asking: Option<(Snap, bool)>,
+    /// The picked loop's first pass waits on a Length it couldn't keep
+    /// ([`Status::asks`]): how it read. The hint line asks
+    /// ([`length_ask_words`]), Read as and Discard answer.
+    pub length: Option<Reading>,
     /// A/B: the loop swaps your tap and the snap on each downbeat.
     pub ab: bool,
     /// The loop point view's audio, while the view is open.
@@ -1526,6 +1530,9 @@ pub struct LoopHost {
     /// tracks' recordings), waiting for Snap anyway or Not now: the hint
     /// line asks ([`LoopHost::snap_asking`]).
     snap_ask: Option<(usize, Snap)>,
+    /// The loops whose wait on their Length was told
+    /// ([`LoopHost::take_asks`]), a bit each.
+    asks_told: u32,
     /// A side picked for a loop (the loop point view's Snap, Keep my tap,
     /// Use my tap, Keep the snap, and A/B's swaps): the snap that gets
     /// there is worked out when no other is under way
@@ -2095,6 +2102,7 @@ impl LoopHost {
             notes_lost: 0,
             snap_want: None,
             snap_ask: None,
+            asks_told: 0,
             snap_wait: None,
             free_snap: None,
             side_want: None,
@@ -2695,6 +2703,13 @@ impl LoopHost {
             }
             (Command::FreeStop, _) => "free loops: stop, at their tops".to_string(),
             (Command::FreePlay, _) => "free loops: play from their tops".to_string(),
+            (Command::UseReading, _) => match s.asks {
+                Some(r) => format!(
+                    "use the reading: it plays as {} from its top",
+                    reading_words(&r)
+                ),
+                None => "use the reading: nothing waits on its Length".to_string(),
+            },
             (Command::SetSmartEnd(m), _) => format!("smart loop end: {}", smart_end_text(m)),
             (Command::SmartByEar(on), _) => format!(
                 "smart loop end listens to {}",
@@ -3680,7 +3695,8 @@ impl LoopHost {
                         Some(c) => format!(", cut at STOP after {:.2} s (silent to the bar line)", c as f64 / 44_100.0),
                         None => String::new(),
                     };
-                    format!("looper: loop of {} at {at}: {} frames ({:.2} s), playing{kept}", ticks_text(s.ticks, self.bar_ticks),
+                    let how = if s.asks.is_some() { "waiting on its Length" } else { "playing" };
+                    format!("looper: loop of {} at {at}: {} frames ({:.2} s), {how}{kept}", ticks_text(s.ticks, self.bar_ticks),
                             s.frames, s.frames as f64 / 44_100.0)
                 }
                 Phase::Playing => format!("looper: playing at {at}, {} layers", s.layers),
@@ -4660,6 +4676,7 @@ impl LoopHost {
                 .snap_ask
                 .filter(|a| a.0 == n)
                 .map(|a| (a.1, self.reads_again(a.1))),
+            length: s.asks,
             ab: self.ab == Some(n),
             point: self
                 .point
@@ -4716,6 +4733,56 @@ impl LoopHost {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn snap_asking(&self) -> Option<(usize, Snap)> {
         self.snap_ask
+    }
+
+    /// A first pass that closed waiting on its Length ([`Status::asks`]):
+    /// the line saying so ([`length_ask_words`]), once a wait, on the
+    /// screen too.
+    pub fn take_asks(&mut self) -> Option<(String, bool)> {
+        let mut line = None;
+        for n in 0..MAX_LOOPS {
+            let bit = 1u32 << n;
+            match self.looper.loop_status(n).and_then(|s| s.asks) {
+                Some(r) if self.asks_told & bit == 0 => {
+                    self.asks_told |= bit;
+                    line = line.or(Some((format!("looper: {}", length_ask_words(n, &r)), true)));
+                }
+                None => self.asks_told &= !bit,
+                Some(_) => {}
+            }
+        }
+        line
+    }
+
+    /// The picked loop's first pass waiting on its Length, if it is:
+    /// its number and how it read.
+    pub fn length_asking(&self) -> Option<(usize, Reading)> {
+        let n = self.looper.selected();
+        self.looper.loop_status(n)?.asks.map(|r| (n, r))
+    }
+
+    /// Read as (the hint line's yes while a first pass waits on its
+    /// Length): it plays as it read ([`Command::UseReading`]). The line
+    /// for the log, or None if nothing waits.
+    pub fn use_reading(&mut self) -> Option<String> {
+        let (n, r) = self.length_asking()?;
+        self.looper.command(Command::UseReading);
+        Some(format!(
+            "looper: Loop {} plays as {}, from its top",
+            n + 1,
+            reading_words(&r)
+        ))
+    }
+
+    /// Discard (the hint line's no while a first pass waits on its
+    /// Length): the pass is cleared, as Clear does (UNDO brings it back).
+    pub fn discard_waiting(&mut self) -> Option<String> {
+        let (n, _) = self.length_asking()?;
+        self.looper.command(Command::Clear);
+        Some(format!(
+            "looper: Loop {}'s pass thrown away (UNDO brings it back)",
+            n + 1
+        ))
     }
 
     /// Snap anyway: the snap that asked goes ahead, as [`LoopHost::snap`]
@@ -5213,6 +5280,28 @@ pub fn ask_words(n: usize, s: Snap, read: bool) -> String {
     )
 }
 
+/// The question a first pass waiting on its Length asks ([`Status::asks`]):
+/// Length's bars would be slower than the looper goes, so read it as the
+/// bars it read?
+pub fn length_ask_words(n: usize, r: &Reading) -> String {
+    let said = r.said.unwrap_or(r.bars);
+    let slow = r.bpm * f64::from(said) / f64::from(r.bars.max(1));
+    format!(
+        "Loop {}: Length's {} would be {slow:.0} BPM, slower than {LOOP_MIN_BPM:.0}. \
+         Read it as {} at {:.0} BPM?",
+        n + 1,
+        bars_words_n(said),
+        bars_words_n(r.bars),
+        r.bpm
+    )
+}
+
+/// Read as's words on the hint line while a first pass waits on its
+/// Length: "Read as 2 bars".
+pub fn length_ask_button(r: &Reading) -> String {
+    format!("Read as {}", bars_words_n(r.bars))
+}
+
 /// The hint line's button that answers yes to [`ask_words`]: Snap
 /// anyway for a snap, Do it anyway for the rest (Read as, an Undo or a
 /// Redo).
@@ -5557,6 +5646,65 @@ mod tests {
     /// and that first message to its worker allocated on the audio
     /// thread.) A song that doesn't take the tempo gets its print asked
     /// for in the next period, as before.
+    /// Length's bars are final (the looper refactor's Finding C): 1 bar
+    /// in 10 s would be 24 BPM, so the pass waits and the hint line asks;
+    /// Read as plays it as it read, Discard clears it.
+    #[test]
+    fn a_length_too_slow_to_keep_asks_and_read_as_or_discard_answers() {
+        const RATE: u32 = 22_050;
+        for yes in [true, false] {
+            let mut h = LoopHost::new(RATE, 20);
+            let mut t = Transport::new(RATE, 100.0).unwrap();
+            let mut b = Block::new();
+            h.set_tempo_from_loop(true);
+            h.command(Command::SetBars(Some(1)));
+            let mut run = |h: &mut LoopHost, periods: usize| {
+                let mut took = None;
+                for _ in 0..periods {
+                    assert!(t.process(PERIOD as u32, &mut b));
+                    let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                    h.period(&b, &mut l, &mut r);
+                    took = took.or(h.take_tempo());
+                }
+                took
+            };
+            h.command(Command::Record);
+            assert_eq!(run(&mut h, 10 * RATE as usize / PERIOD), None);
+            h.command(Command::Record);
+            assert_eq!(run(&mut h, 4), None, "no tempo while it asks");
+            let (line, tell) = h.take_asks().expect("it says it waits");
+            assert!(tell);
+            assert!(
+                line.starts_with(
+                    "looper: Loop 1: Length's 1 bar would be 24 BPM, slower than 30. Read it as "
+                ),
+                "{line}"
+            );
+            assert_eq!(h.take_asks(), None, "once");
+            let r = h.view(100.0).smart.length.expect("the hint line asks");
+            assert_eq!(r.said, Some(1));
+            assert_eq!(length_ask_button(&r), format!("Read as {} bars", r.bars));
+            assert_eq!(h.length_asking(), Some((0, r)));
+            if yes {
+                let said = h.use_reading().expect("Read as");
+                assert!(said.starts_with("looper: Loop 1 plays as "), "{said}");
+                let (n, reading, _, into) = run(&mut h, 2).expect("the tempo, once you say");
+                assert_eq!((n, reading, into), (0, r, 0));
+                assert_eq!(h.looper.loop_status(0).unwrap().phase, Phase::Playing);
+            } else {
+                let said = h.discard_waiting().expect("Discard");
+                assert_eq!(
+                    said,
+                    "looper: Loop 1's pass thrown away (UNDO brings it back)"
+                );
+                assert_eq!(run(&mut h, 2), None);
+                assert_eq!(h.looper.loop_status(0).unwrap().phase, Phase::Empty);
+            }
+            assert_eq!(h.view(100.0).smart.length, None);
+            assert_eq!((h.use_reading(), h.discard_waiting()), (None, None));
+        }
+    }
+
     #[test]
     fn the_period_a_free_loop_sets_the_tempo_asks_the_printer_for_nothing() {
         const RATE: u32 = 44_100;
