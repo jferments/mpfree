@@ -868,6 +868,120 @@ fn free_loops_never_allocate() {
     assert_eq!(l.stats().refused, 0, "{:?}", l.stats());
 }
 
+/// Make song ([`Looper::make_song`]): two free loops playing with the
+/// song stopped become song loops on their bar line, where the song
+/// starts at their tempo, as the host starts it; Undo
+/// ([`Looper::make_free`]) makes them free again and the song stops; one
+/// given with the song never started is refused on the bar line; and with
+/// the free loops stopped, the song's place and tempo set at once, it
+/// lands at once and PLAY starts them with the song: at every period size,
+/// without allocating.
+#[test]
+fn make_song_never_allocates() {
+    const RATE: u32 = 44_100;
+    let mut t = Transport::new(RATE, 120.0).unwrap();
+    let mut l = Looper::new(RATE, 40);
+    let mut b = Block::new();
+    let mut input = vec![0.0f32; 2 * 4096];
+    let mut out = vec![0.0f32; 2 * 4096];
+    let sizes = [1usize, 7, 128, 333, 4096, 64, 256];
+    let mut plan = None;
+    let (mut made, mut refused, mut freed) = (0u32, 0u32, false);
+    let mut song_loops_played = false;
+    watch(true);
+    for k in 0..2 {
+        let _ = l.select_loop(k);
+        let _ = l.command(L::SetClock(Clock::Free));
+        let _ = l.command(L::SetBars(Some(1)));
+    }
+    let _ = l.select_loop(0);
+    let _ = l.command(L::Record);
+    let _ = t.command(0, T::Play);
+    for i in 0..2600u64 {
+        let f = t.frame();
+        match i {
+            // The song stops: loop 0 plays on, free; loop 1 records on the
+            // free clock's bars.
+            400 => {
+                let _ = t.command(f, T::Stop);
+            }
+            500 => {
+                let _ = l.select_loop(1);
+                let _ = l.command(L::Record);
+            }
+            // Make song with them playing: the song starts on their bar
+            // line, back at the start of its bar, at their tempo.
+            1000 => {
+                let p = l.song_plan(f).unwrap();
+                let at = p.at.unwrap();
+                if t.position() != p.tick {
+                    assert!(t.command(at, T::Locate(p.tick)));
+                }
+                assert!(t.command(at, T::SetTempo(p.bpm)));
+                assert!(t.command(at, T::Play));
+                assert!(l.make_song(p));
+                plan = Some(p);
+            }
+            // The host's Undo: free again, and the song it started stops.
+            1400 => {
+                freed = l.make_free(plan.unwrap()).is_ok();
+                let _ = t.command(f, T::Stop);
+            }
+            // Given, but the song never starts: refused on the bar line.
+            1500 => {
+                let p = l.song_plan(f).unwrap();
+                assert!(l.make_song(p));
+            }
+            // STOP again stops the free loops; then Make song lands at once
+            // and PLAY starts them with the song.
+            1700 => {
+                let _ = t.command(f, T::Stop);
+            }
+            1800 => {
+                let p = l.song_plan(f).unwrap();
+                assert!(p.at.is_none());
+                if t.position() != p.tick {
+                    assert!(t.command(f, T::Locate(p.tick)));
+                }
+                assert!(t.command(f, T::SetTempo(p.bpm)));
+                assert!(l.make_song(p));
+            }
+            2000 => {
+                let _ = t.command(f, T::Play);
+            }
+            _ => {}
+        }
+        let n = sizes[(i % sizes.len() as u64) as usize];
+        for k in 0..n {
+            let x = 0.2 * (((i as usize + k) % 23) as f32 - 11.0) / 11.0;
+            input[2 * k] = x;
+            input[2 * k + 1] = -x;
+        }
+        out[..2 * n].fill(0.0);
+        assert!(t.process(n as u32, &mut b));
+        l.process(&b, &input[..2 * n], &mut out[..2 * n]);
+        if let Some(d) = l.take_song() {
+            match d.refused {
+                None => made += 1,
+                Some(_) => refused += 1,
+            }
+        }
+        song_loops_played |= i > 2000
+            && (0..2).all(|k| {
+                let s = l.loop_status(k).unwrap();
+                s.clock == Clock::Song && s.phase == Phase::Playing
+            });
+        let _ = l.take_tempo();
+        let _ = l.stats();
+    }
+    watch(false);
+    assert_eq!(calls(), 0, "allocated making a song");
+    assert!(freed, "Undo made them free");
+    assert_eq!((made, refused), (2, 1), "two made, one refused");
+    assert!(song_loops_played, "song loops, playing with the song");
+    assert!(l.free_clock().is_none(), "the free clock went with them");
+}
+
 /// A free loop read as other bars (a snap that changes the free clock's
 /// tempo on its downbeat), then a capture into another free loop on the
 /// free clock's bars, asked about first as What you played asks, at odd
