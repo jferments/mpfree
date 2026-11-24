@@ -87,6 +87,39 @@ impl Engine {
         }
     }
 
+    /// `phrase` in place of the one playing, when it has the same rhythm
+    /// (the same length, grid and meter, and the same starts and lengths
+    /// note for note): the playhead keeps its place, and the notes still
+    /// to come this time round play as `phrase` has them. Improvise's
+    /// Evolve (composing tools S5) changes notes, never the rhythm, so it
+    /// goes on without a restart. Any other phrase, or one while another
+    /// waits for its line, is [`Engine::set_phrase`].
+    pub fn retune_phrase(&mut self, phrase: Phrase) {
+        let (a, b) = (&phrase, &self.phrase);
+        let same = a.unit == b.unit
+            && a.beats == b.beats
+            && a.ticks() == b.ticks()
+            && a.notes().len() == b.notes().len()
+            && a.notes()
+                .iter()
+                .zip(b.notes())
+                .all(|(x, y)| x.start == y.start && x.len == y.len);
+        if same && self.next_phrase.is_none() {
+            self.phrase = phrase;
+        } else {
+            self.set_phrase(phrase);
+        }
+    }
+
+    /// The chord the phrase plays over now, once settled: three notes or
+    /// more held ([`HeldChord::of`]); None while one note or none leads.
+    pub fn chord_held(&self) -> Option<HeldChord> {
+        match self.lead {
+            Some(Lead::Chord(c)) if !self.notes.active().is_empty() => Some(c),
+            _ => None,
+        }
+    }
+
     /// The phrase playing (or that plays next in Phrase mode).
     pub fn phrase(&self) -> &Phrase {
         &self.phrase
@@ -735,6 +768,37 @@ mod tests {
         run(&mut e, STEP / 2, 128);
         e.set_phrase(Phrase::parse("riff either : 5 . . .").unwrap());
         assert_eq!(ons(&run(&mut e, 4 * STEP, 128)), [(2 * STEP, 67)]);
+    }
+
+    /// A phrase with the same rhythm (Improvise's Evolve) comes in at once
+    /// in place of the one playing, which keeps its place: the notes still
+    /// to come play as it has them. One with another rhythm waits for its
+    /// line as a pick does.
+    #[test]
+    fn a_phrase_retuned_in_its_own_rhythm_comes_in_where_the_playhead_is() {
+        let mut e = phrase_engine(
+            "bass either : 1 . . . 1 . . . 1 . . . 1 . . .",
+            Settings::default(),
+        );
+        e.press(60, 100);
+        let first = ons(&run(&mut e, 4 * STEP + STEP / 2, 128));
+        assert_eq!(first, [(0, 60), (4 * STEP, 60)]);
+        e.retune_phrase(Phrase::parse("bass either : 1 . . . 1 . . . 5 . . . 3 . . .").unwrap());
+        assert_eq!(e.phrase_waiting(), None, "nothing waits");
+        let got = ons(&run(&mut e, BAR, 128));
+        assert_eq!(
+            got,
+            [
+                (8 * STEP, 67),
+                (12 * STEP, 64),
+                (16 * STEP, 60),
+                (20 * STEP, 60)
+            ],
+            "on from where it was, the new notes in place"
+        );
+        // Another rhythm is a pick: it waits for the next step.
+        e.retune_phrase(Phrase::parse("riff either : 5 5 5 5").unwrap());
+        assert_eq!(e.phrase_waiting(), Some(Join::Step));
     }
 
     /// The phrase that plays, picked again, plays on from where it is; and

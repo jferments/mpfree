@@ -748,6 +748,7 @@ mod tests {
             locks: vec![(0, locks)],
             lock_values: Vec::new(),
             silent: None,
+            new_from: None,
         }
     }
 

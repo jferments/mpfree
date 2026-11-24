@@ -1608,6 +1608,7 @@ fn a_midi_file_loads_as_clips() {
         s.detail.buttons,
         [
             Button::Load,
+            Button::MakePhrase,
             Button::Rename,
             Button::Copy,
             Button::Cut,
@@ -1626,6 +1627,38 @@ fn a_midi_file_loads_as_clips() {
     // It is remembered in Recent, as a sound is.
     assert!(matches!(&a[1], BrowseAction::SaveLists(t) if t.contains("Patterns/Sequence01.mid")));
     assert!(b.screen().status.unwrap().0.contains("as clips"));
+}
+
+/// Make a phrase asks the app to read the file for the Make a phrase
+/// sheet (step 3 of the phrases), and says it is reading; a sound has no
+/// such button.
+#[test]
+fn a_midi_files_make_a_phrase_asks_the_app_to_read_it() {
+    let (mut b, lib) = browser();
+    let dir = lib.root().join("Patterns");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("Bassline.mid"), b"MThd").unwrap();
+    b.go_source(src("Patterns"));
+    select(&mut b, "Bassline.mid");
+    let s = b.screen();
+    assert!(s
+        .detail
+        .lines
+        .iter()
+        .any(|l| l.0 == "Phrase" && l.1.contains("first track with notes")));
+    b.take_actions();
+    b.input(Input::Button(Button::MakePhrase));
+    let loc = Loc::new(Place::Patterns, &["Bassline.mid"]).unwrap();
+    assert!(
+        matches!(&b.take_actions()[..], [BrowseAction::MakePhrase { loc: l, path }] if *l == loc && path.is_file())
+    );
+    assert_eq!(
+        b.screen().status.unwrap(),
+        ("Reading Bassline.mid for a phrase".to_string(), false)
+    );
+    b.go_source(src("Samples"));
+    select(&mut b, "Rhodes chord.wav");
+    assert!(!b.screen().detail.buttons.contains(&Button::MakePhrase));
 }
 
 #[test]

@@ -24,7 +24,7 @@
 //! nothing, so the tests read those.
 
 use crate::phrases::{Origin, Shelf};
-use crate::view::ArpState;
+use crate::view::{ArpState, PlaysWhen};
 use crate::widgets::{Slider, SliderStack};
 use mpfree_arp::phrase::PLAIN_VELOCITY;
 use mpfree_arp::scale::{NOTE_NAMES, SCALES};
@@ -74,6 +74,9 @@ pub struct Sketch {
     pub ticks: u32,
     pub bar_ticks: u32,
     pub notes: Vec<SketchNote>,
+    /// Notes still to come (the next Evolve's, S5): drawn outlined, in the
+    /// same picture, where they will be.
+    pub next: Vec<SketchNote>,
 }
 
 impl Sketch {
@@ -91,6 +94,7 @@ impl Sketch {
                     soft: n.velocity < PLAIN_VELOCITY,
                 })
                 .collect(),
+            next: Vec::new(),
         }
     }
 
@@ -178,8 +182,26 @@ impl Sketch {
             }
             tick += PPQ;
         }
-        for (b, soft) in self.boxes(notes, 3) {
-            cx.canvas.fill_round_rect(b, 2, softer(ink, soft));
+        if self.next.is_empty() {
+            for (b, soft) in self.boxes(notes, 3) {
+                cx.canvas.fill_round_rect(b, 2, softer(ink, soft));
+            }
+        } else {
+            // The notes to come share the picture's range of notes, so
+            // each sits where it will play.
+            let both = Sketch {
+                notes: self.notes.iter().chain(&self.next).copied().collect(),
+                next: Vec::new(),
+                ..*self
+            };
+            for (k, (b, soft)) in both.boxes(notes, 3).into_iter().enumerate() {
+                if k < self.notes.len() {
+                    cx.canvas.fill_round_rect(b, 2, softer(ink, soft));
+                } else {
+                    cx.canvas.fill_round_rect(b, 2, ink.with_alpha(40));
+                    cx.canvas.stroke_round_rect(b, 2, 1, ink);
+                }
+            }
         }
         if let Some(at) = at {
             let x = inner.x + ((inner.w - 2) as f32 * at.clamp(0.0, 1.0)).round() as i32;
@@ -316,11 +338,14 @@ pub struct PhraseRow {
 
 /// The shown shelf's phrases, the track's pick kept in view. A tap on a
 /// row gives `Select(i)`, `i` the phrase's place in the app's list
-/// ([`PhraseRow::index`]).
+/// ([`PhraseRow::index`]); New idea in the heading gives
+/// `Toggle(NEW_IDEA)`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PhraseRows {
     /// The shelf's name.
     pub title: String,
+    /// New idea shows in the heading (composing tools P2, board A).
+    pub new_idea: bool,
     pub rows: Vec<PhraseRow>,
     /// The row the track's pick is on, when it is on this shelf.
     pub picked: Option<usize>,
@@ -333,7 +358,18 @@ pub struct PhraseRows {
 const SKETCH_W: i32 = 118;
 const SKETCH_H: i32 = 30;
 
+/// The heading's New idea: `Toggle(NEW_IDEA)` from the list.
+pub const NEW_IDEA: usize = 0;
+/// More like this, on the phrase that plays: `Toggle(MORE_LIKE)` from
+/// [`PhrasePlays`].
+pub const MORE_LIKE: usize = 0;
+
 impl PhraseRows {
+    /// New idea's button, at the right of the heading.
+    pub fn new_idea_button(r: Rect) -> Rect {
+        Rect::new(r.right() - 16 - 110, r.y + 7, 110, 34)
+    }
+
     /// The area for rows: the panel under its heading, less the scroll
     /// bar's side.
     fn body(r: Rect) -> Rect {
@@ -392,33 +428,71 @@ impl Widget for PhraseRows {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.panel(r);
-        // The shelf's name, and where the pick is on it.
+        // The shelf's name, and where the pick is on it: at the right, or
+        // beside the name with New idea at the right.
         let head = Rect::new(r.x + 16, r.y + 6, r.w - 36, 38);
         let count = match (self.picked, self.rows.len()) {
             (_, 0) => String::new(),
             (Some(k), n) => format!("{} of {n}", k + 1),
             (None, n) => format!("{n}"),
         };
-        let cw = cx.text(
-            FontId::Sans,
-            t.size_small,
-            head,
-            Align::Right,
-            t.text_dim,
-            &count,
-        );
-        let name = Rect {
-            w: (head.w - cw - 12).max(1),
-            ..head
-        };
-        cx.text(
-            FontId::Bold,
-            t.size_title + 1.0,
-            name,
-            Align::Left,
-            t.text,
-            &self.title,
-        );
+        if self.new_idea {
+            let b = PhraseRows::new_idea_button(r);
+            cx.canvas.fill_round_rect(b, t.round(10), t.raised);
+            cx.text(
+                FontId::Bold,
+                t.size_small + 1.0,
+                b,
+                Align::Center,
+                t.text,
+                "New idea",
+            );
+            let name = Rect {
+                w: (b.x - 12 - head.x).max(1),
+                ..head
+            };
+            let nw = cx.text(
+                FontId::Bold,
+                t.size_title + 1.0,
+                name,
+                Align::Left,
+                t.text,
+                &self.title,
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                Rect {
+                    x: name.x + nw + 10,
+                    w: (name.w - nw - 10).max(1),
+                    ..name
+                },
+                Align::Left,
+                t.text_dim,
+                &count,
+            );
+        } else {
+            let cw = cx.text(
+                FontId::Sans,
+                t.size_small,
+                head,
+                Align::Right,
+                t.text_dim,
+                &count,
+            );
+            let name = Rect {
+                w: (head.w - cw - 12).max(1),
+                ..head
+            };
+            cx.text(
+                FontId::Bold,
+                t.size_title + 1.0,
+                name,
+                Align::Left,
+                t.text,
+                &self.title,
+            );
+        }
         cx.canvas
             .fill_rect(Rect::new(r.x + 12, r.y + 47, r.w - 24, 1), t.outline);
         let body = PhraseRows::body(r);
@@ -514,18 +588,30 @@ impl Widget for PhraseRows {
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
-        (0..self.rows.len())
+        let mut out: Vec<Target> = (0..self.rows.len())
             .filter_map(|k| {
                 let row = &self.rows[k];
                 let lit = matches!(row.state, RowState::Picked | RowState::Waiting);
                 Some(Target::tap("phrase", k, row.name.clone(), self.row(r, k)?).disabled_if(lit))
             })
-            .collect()
+            .collect();
+        if self.new_idea {
+            out.push(Target::tap(
+                "new-idea",
+                NEW_IDEA,
+                "New idea",
+                PhraseRows::new_idea_button(r),
+            ));
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
+        }
+        if self.new_idea && PhraseRows::new_idea_button(r).contains(x, y) {
+            return Some(EventKind::Toggle(NEW_IDEA));
         }
         let k = (0..self.rows.len()).find(|&k| self.row(r, k).is_some_and(|b| b.contains(x, y)))?;
         let row = &self.rows[k];
@@ -578,7 +664,7 @@ impl Widget for PhraseKit {
 /// What [`PhrasePlays`] shows, apart from its sliders.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Plays {
-    /// The small heading: "Plays", or "Comes in on the next bar".
+    /// The small heading: "Playing", or "Comes in on the next bar".
     pub head: String,
     /// The phrase shown waits for the bar line: its heading and its notes
     /// are in the waiting colour, and it has no cursor.
@@ -593,6 +679,24 @@ pub struct Plays {
     pub follow: usize,
     /// The two lines beside that switch: the key, and whose it is.
     pub follows: [String; 2],
+    /// More like this shows on the heading (composing tools P2, board A).
+    pub more: bool,
+    /// The heading in the good colour: a try of New idea or More like
+    /// this ("Try 3 · Back keeps Night drive").
+    pub head_good: bool,
+    /// The Plays row (S5): a place in `PlaysWhen::ALL`.
+    pub when: usize,
+    /// When I stop can be picked.
+    pub answers: bool,
+    /// Evolve is on (lit), else Hold is.
+    pub evolve: bool,
+    /// The Plays row and the moves answer (not while a try shows).
+    pub moves: bool,
+    /// Return has a phrase to go back to: Evolve has changed this one.
+    pub can_return: bool,
+    /// The line under the picture: what it plays over, and when it evolves
+    /// (in the good colour).
+    pub line: [String; 2],
 }
 
 impl Plays {
@@ -608,9 +712,20 @@ impl Plays {
             cursor: _,
             follow,
             follows,
+            more,
+            head_good,
+            when,
+            answers,
+            evolve,
+            moves,
+            can_return,
+            line,
         } = self;
-        (head, waiting, name, about, sketch, follow, follows)
-            == (
+        (
+            (head, waiting, name, about, sketch, follow, follows, more),
+            (head_good, when, answers, evolve, moves, can_return, line),
+        ) == (
+            (
                 &other.head,
                 &other.waiting,
                 &other.name,
@@ -618,14 +733,37 @@ impl Plays {
                 &other.sketch,
                 &other.follow,
                 &other.follows,
-            )
+                &other.more,
+            ),
+            (
+                &other.head_good,
+                &other.when,
+                &other.answers,
+                &other.evolve,
+                &other.moves,
+                &other.can_return,
+                &other.line,
+            ),
+        )
     }
 }
 
-/// The phrase that plays: its name and what it is, its notes with a cursor
-/// where it is, how it follows the held note, and the four Q-Link sliders.
-/// A tap on In key or Exact gives `Tab(i)`; a finger on slider `i` gives
-/// `Select(i)`, then `Value(v)` as it moves ([`SliderStack`]).
+/// The Plays row's halves: `Tab(WHEN + i)` from [`PhrasePlays`], `i` a
+/// place in `PlaysWhen::ALL`.
+pub const WHEN: usize = 10;
+/// The moves, Hold, Evolve, Return and Capture: `Toggle(MOVES + i)`.
+pub const MOVES: usize = 10;
+/// The moves' names, in their order.
+pub const MOVE_NAMES: [&str; 4] = ["Hold", "Evolve", "Return", "Capture"];
+
+/// The phrase that plays: its name and what it is, when it plays (the
+/// Plays row: While I hold, When I stop), its notes with a cursor where it
+/// is and the next Evolve's notes outlined, what it plays over, the moves
+/// (Hold, Evolve, Return, Capture), how it follows the held note, and the
+/// four Q-Link sliders two by two. A tap on In key or Exact gives
+/// `Tab(i)`, on the Plays row `Tab(WHEN + i)`, on a move `Toggle(MOVES +
+/// i)`; a finger on slider `i` gives `Select(i)`, then `Value(v)` as it
+/// moves ([`SliderStack`]).
 pub struct PhrasePlays {
     pub show: Plays,
     /// The Q-Link sliders, drawn at the foot of this panel.
@@ -642,17 +780,24 @@ struct Drawn {
     active: Option<usize>,
 }
 
-/// The sliders' rows, the Follows switch and the room between the parts.
-const SLIDERS_H: i32 = 168;
-const SWITCH_W: i32 = 196;
+/// The sliders' two lines, the Follows switch, the moves and the room
+/// between the parts.
+const SLIDERS_H: i32 = 84;
+const SWITCH_W: i32 = 170;
 const SWITCH_H: i32 = 44;
+const MOVES_H: i32 = 44;
+const ROW_LABEL_W: i32 = 84;
 
 /// Where each part of the panel is.
 struct Parts {
     head: Rect,
     name: Rect,
     about: Rect,
+    plays: Rect,
+    when: Rect,
     picture: Rect,
+    line: Rect,
+    moves: Rect,
     follows: Rect,
     switch: Rect,
     says: [Rect; 2],
@@ -661,9 +806,11 @@ struct Parts {
 
 impl PhrasePlays {
     pub fn new(labels: &[&str]) -> PhrasePlays {
+        let mut sliders = SliderStack::new("", labels);
+        sliders.columns = 2;
         PhrasePlays {
             show: Plays::default(),
-            sliders: SliderStack::new("", labels),
+            sliders,
             drawn: RefCell::new(None),
         }
     }
@@ -672,34 +819,48 @@ impl PhrasePlays {
     /// whatever height the panel has over them.
     fn parts(r: Rect) -> Parts {
         let (x, w) = (r.x + 16, (r.w - 32).max(1));
-        let sliders = Rect::new(x, r.bottom() - 10 - SLIDERS_H, w, SLIDERS_H);
-        let switch = Rect::new(r.x + 14, sliders.y - 26 - SWITCH_H, SWITCH_W, SWITCH_H);
-        let follows = Rect::new(x, switch.y - 26, w, 22);
-        let top = r.y + 90;
+        let inner = (r.w - 28).max(1);
+        let sliders = Rect::new(x, r.bottom() - 12 - SLIDERS_H, w, SLIDERS_H);
+        let switch = Rect::new(r.x + 100, sliders.y - 12 - SWITCH_H, SWITCH_W, SWITCH_H);
+        let follows = Rect::new(x, switch.y, (switch.x - 8 - x).max(1), SWITCH_H);
+        let moves = Rect::new(r.x + 14, switch.y - 12 - MOVES_H, inner, MOVES_H);
+        let line = Rect::new(x, moves.y - 8 - 20, w, 20);
+        let plays = Rect::new(x, r.y + 86, ROW_LABEL_W - 16, SWITCH_H);
+        let when = Rect::new(
+            r.x + ROW_LABEL_W,
+            plays.y,
+            (r.right() - 14 - r.x - ROW_LABEL_W).max(1),
+            SWITCH_H,
+        );
+        let top = when.bottom() + 10;
         let beside = switch.right() + 12;
         let says = |i: i32| {
             Rect::new(
                 beside,
-                switch.y + 2 + i * 20,
+                switch.y + 3 + i * 19,
                 (r.right() - 16 - beside).max(1),
-                20,
+                19,
             )
         };
         Parts {
             head: Rect::new(x, r.y + 10, w, 22),
             name: Rect::new(x, r.y + 30, w, 30),
             about: Rect::new(x, r.y + 60, w, 22),
-            picture: Rect::new(
-                r.x + 14,
-                top,
-                (r.w - 28).max(1),
-                (follows.y - 8 - top).max(1),
-            ),
+            plays,
+            when,
+            picture: Rect::new(r.x + 14, top, inner, (line.y - 6 - top).max(1)),
+            line,
+            moves,
             follows,
             switch,
             says: [says(0), says(1)],
             sliders,
         }
+    }
+
+    /// More like this's button, at the right of the heading.
+    pub fn more_button(r: Rect) -> Rect {
+        Rect::new(r.right() - 14 - 140, r.y + 10, 140, 34)
     }
 
     /// Half `i` of the Follows switch (In key, Exact).
@@ -708,9 +869,43 @@ impl PhrasePlays {
         Rect::new(s.x + i as i32 * (s.w / 2), s.y, s.w / 2, s.h)
     }
 
+    /// Half `i` of the Plays row (While I hold, When I stop).
+    pub fn when_half(r: Rect, i: usize) -> Rect {
+        let s = PhrasePlays::parts(r).when;
+        Rect::new(s.x + i as i32 * (s.w / 2), s.y, s.w / 2, s.h)
+    }
+
+    /// Move `i`'s button ([`MOVE_NAMES`]).
+    pub fn move_button(r: Rect, i: usize) -> Rect {
+        let m = PhrasePlays::parts(r).moves;
+        let n = MOVE_NAMES.len() as i32;
+        let w = (m.w - 8 * (n - 1)) / n;
+        Rect::new(m.x + i as i32 * (w + 8), m.y, w, m.h)
+    }
+
     /// Slider `i`'s area and its track ([`SliderStack::row_rects_in`]).
     pub fn slider(&self, r: Rect, i: usize) -> (Rect, Rect) {
         self.sliders.row_rects_in(PhrasePlays::parts(r).sliders, i)
+    }
+
+    /// Whether move `i` can be pressed now: Hold while it evolves, Evolve
+    /// while it holds, Return once Evolve has changed the phrase, Capture
+    /// always; none while a try shows.
+    fn move_on(&self, i: usize) -> bool {
+        let s = &self.show;
+        s.moves
+            && match i {
+                0 => s.evolve,
+                1 => !s.evolve,
+                2 => s.can_return,
+                _ => true,
+            }
+    }
+
+    /// Whether half `i` of the Plays row can be picked now.
+    fn when_on(&self, i: usize) -> bool {
+        let s = &self.show;
+        s.moves && i != s.when && (i == 0 || s.answers)
     }
 
     /// What was last drawn at `at` is what shows now, but for where the
@@ -722,6 +917,37 @@ impl PhrasePlays {
                 && d.sliders == self.sliders.rows
                 && d.show.same_still(&self.show)
         })
+    }
+}
+
+/// A two-way switch: its halves' names, the one lit, and which can be
+/// picked.
+fn switch(cx: &mut PaintCx, r: Rect, names: &[&str], on: usize, open: &dyn Fn(usize) -> bool) {
+    let t = cx.theme.clone();
+    cx.canvas.fill_round_rect(r, t.round(10), t.bg);
+    let n = names.len().max(1) as i32;
+    for (i, name) in names.iter().enumerate() {
+        let half = Rect::new(r.x + i as i32 * (r.w / n), r.y, r.w / n, r.h);
+        let lit = i == on;
+        if lit {
+            cx.canvas
+                .fill_round_rect(half.inset(3), t.round(8), t.picked());
+        }
+        let ink = if lit {
+            t.on_picked()
+        } else if open(i) {
+            t.readable(t.text_dim, t.bg)
+        } else {
+            t.faded(t.text_dim, t.bg)
+        };
+        cx.text(
+            FontId::Bold,
+            t.size_small + 1.0,
+            half,
+            Align::Center,
+            ink,
+            name,
+        );
     }
 }
 
@@ -752,13 +978,34 @@ impl Widget for PhrasePlays {
         if clip.intersect(p.picture) == clip.intersect(r) {
             return;
         }
+        let (head, name) = if s.more {
+            let b = PhrasePlays::more_button(r);
+            cx.canvas.fill_round_rect(b, t.round(10), t.raised);
+            cx.text(
+                FontId::Bold,
+                t.size_small + 1.0,
+                b,
+                Align::Center,
+                t.text,
+                "More like this",
+            );
+            let narrow = |q: Rect| Rect {
+                w: (b.x - 10 - q.x).max(1),
+                ..q
+            };
+            (narrow(p.head), narrow(p.name))
+        } else {
+            (p.head, p.name)
+        };
         cx.text(
             FontId::Bold,
             t.size_small - 1.0,
-            p.head,
+            head,
             Align::Left,
             if s.waiting {
                 t.readable(t.warn, t.surface)
+            } else if s.head_good {
+                t.readable(t.good, t.surface)
             } else {
                 t.text_dim
             },
@@ -767,7 +1014,7 @@ impl Widget for PhrasePlays {
         cx.text(
             FontId::Bold,
             t.size_title + 2.0,
-            p.name,
+            name,
             Align::Left,
             t.text,
             &s.name,
@@ -780,6 +1027,52 @@ impl Widget for PhrasePlays {
             t.text_dim,
             &s.about,
         );
+        // When it plays.
+        cx.text(
+            FontId::Sans,
+            t.size_body,
+            p.plays,
+            Align::Left,
+            t.text_dim,
+            "Plays",
+        );
+        let names = PlaysWhen::ALL.map(PlaysWhen::label);
+        switch(cx, p.when, &names, s.when, &|i| self.when_on(i));
+        // What it plays over, and when it evolves.
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            p.line,
+            Align::Left,
+            t.text_dim,
+            &s.line[0],
+        );
+        cx.text(
+            FontId::Bold,
+            t.size_small - 1.0,
+            p.line,
+            Align::Right,
+            t.readable(t.good, t.surface),
+            &s.line[1],
+        );
+        // The moves: the one on (Hold or Evolve) outlined.
+        for (i, m) in MOVE_NAMES.iter().enumerate() {
+            let b = PhrasePlays::move_button(r, i);
+            let lit = s.moves && ((i == 0 && !s.evolve) || (i == 1 && s.evolve));
+            let ink = if lit {
+                cx.canvas.stroke_round_rect(b, t.round(10), 2, t.accent);
+                t.readable(t.accent, t.surface)
+            } else {
+                cx.canvas.fill_round_rect(b, t.round(10), t.raised);
+                if self.move_on(i) {
+                    t.text
+                } else {
+                    t.faded(t.text, t.raised)
+                }
+            };
+            cx.text(FontId::Bold, t.size_small + 1.0, b, Align::Center, ink, m);
+        }
+        // How it follows the held note.
         cx.text(
             FontId::Bold,
             t.size_small - 1.0,
@@ -788,27 +1081,8 @@ impl Widget for PhrasePlays {
             t.text_dim,
             "FOLLOWS",
         );
-        cx.canvas.fill_round_rect(p.switch, t.round(10), t.bg);
-        for (i, f) in Follow::ALL.iter().enumerate() {
-            let half = PhrasePlays::half(r, i);
-            let on = i == s.follow;
-            if on {
-                cx.canvas
-                    .fill_round_rect(half.inset(3), t.round(8), t.picked());
-            }
-            cx.text(
-                FontId::Bold,
-                t.size_small + 1.0,
-                half,
-                Align::Center,
-                if on {
-                    t.on_picked()
-                } else {
-                    t.readable(t.text_dim, t.bg)
-                },
-                f.label(),
-            );
-        }
+        let labels = Follow::ALL.map(Follow::label);
+        switch(cx, p.switch, &labels, s.follow, &|i| i != s.follow);
         cx.text(
             FontId::Bold,
             t.size_small,
@@ -829,19 +1103,37 @@ impl Widget for PhrasePlays {
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
-        let mut out: Vec<Target> = Follow::ALL
+        let mut out: Vec<Target> = PlaysWhen::ALL
             .iter()
             .enumerate()
-            .map(|(i, f)| {
-                Target::tap("follow", i, f.label(), PhrasePlays::half(r, i))
-                    .disabled_if(i == self.show.follow)
+            .map(|(i, w)| {
+                Target::tap("plays-when", i, w.label(), PhrasePlays::when_half(r, i))
+                    .disabled_if(!self.when_on(i))
             })
             .collect();
+        out.extend(MOVE_NAMES.iter().enumerate().map(|(i, m)| {
+            Target::tap("move", i, *m, PhrasePlays::move_button(r, i)).disabled_if(!self.move_on(i))
+        }));
+        out.extend(Follow::ALL.iter().enumerate().map(|(i, f)| {
+            Target::tap("follow", i, f.label(), PhrasePlays::half(r, i))
+                .disabled_if(i == self.show.follow)
+        }));
+        if self.show.more {
+            out.push(Target::tap(
+                "more-like-this",
+                MORE_LIKE,
+                "More like this",
+                PhrasePlays::more_button(r),
+            ));
+        }
         out.extend(self.sliders.targets_in(PhrasePlays::parts(r).sliders));
         out
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if phase == Touch::Down && self.show.more && PhrasePlays::more_button(r).contains(x, y) {
+            return Some(EventKind::Toggle(MORE_LIKE));
+        }
         if phase == Touch::Down {
             if let Some(i) =
                 (0..Follow::ALL.len()).find(|&i| PhrasePlays::half(r, i).contains(x, y))
@@ -849,6 +1141,27 @@ impl Widget for PhrasePlays {
                 return (i != self.show.follow).then(|| {
                     self.show.follow = i;
                     EventKind::Tab(i)
+                });
+            }
+            if let Some(i) =
+                (0..PlaysWhen::ALL.len()).find(|&i| PhrasePlays::when_half(r, i).contains(x, y))
+            {
+                return self.when_on(i).then(|| {
+                    self.show.when = i;
+                    EventKind::Tab(WHEN + i)
+                });
+            }
+            if let Some(i) =
+                (0..MOVE_NAMES.len()).find(|&i| PhrasePlays::move_button(r, i).contains(x, y))
+            {
+                return self.move_on(i).then(|| {
+                    match i {
+                        0 => self.show.evolve = false,
+                        1 => self.show.evolve = true,
+                        2 => self.show.can_return = false,
+                        _ => {}
+                    }
+                    EventKind::Toggle(MOVES + i)
                 });
             }
         }
@@ -936,12 +1249,11 @@ pub fn follow_lines(st: &ArpState) -> [String; 2] {
 
 /// What the owner's shelf says under its rows. (The boards' line names
 /// the three ways to make a phrase: a clip's card, a MIDI file in the
-/// browser, a pattern that plays one note. None of them is built yet, so
-/// it says only what is true today, and takes the boards' words as each
-/// way lands.)
+/// browser, a pattern that plays one note; all three are built.)
 pub const OWN_NOTE: &str = "Phrases of your own are kept here. They play from any note, \
-                            like MPFree's own. Making one from a clip, a MIDI file or a \
-                            pattern comes next.";
+                            like MPFree's own. New idea, More like this, a clip card's \
+                            Phrase row, a MIDI file's Make a phrase in BROWSE and the \
+                            Pattern tab's Keep as a phrase keep theirs here.";
 
 // ---------------------------------------------------------------- models
 
@@ -954,7 +1266,8 @@ pub fn kinds(st: &ArpState) -> PhraseKinds {
             .map(|s| (s.label().to_string(), st.phrases.count(*s)))
             .collect(),
         shown: Shelf::ALL.iter().position(|s| *s == shown).unwrap_or(0),
-        dim: st.phrase.kit_track.is_some(),
+        // On a kit track, or while Answer makes its own notes.
+        dim: st.phrase.kit_track.is_some() || st.answering(),
     }
 }
 
@@ -996,6 +1309,7 @@ pub fn rows(st: &ArpState) -> PhraseRows {
         .collect();
     PhraseRows {
         title: shelf.label().to_string(),
+        new_idea: true,
         picked: list.iter().position(|r| r.index == st.phrase_index),
         rows,
         note: if shelf == Shelf::Own {
@@ -1006,38 +1320,99 @@ pub fn rows(st: &ArpState) -> PhraseRows {
     }
 }
 
+/// The line under the phrase's picture (S5): what it plays over, and when
+/// Evolve changes it next.
+pub fn improvise_line(st: &ArpState) -> [String; 2] {
+    let im = &st.improvise;
+    let over = match (&im.chord, st.notes.is_empty()) {
+        (Some(chord), _) => format!("Over {chord}, the chord you hold"),
+        (None, false) => "From the note you hold".to_string(),
+        (None, true) => "Hold a note, or a chord to play over".to_string(),
+    };
+    let when = match (im.evolve, im.evolves_in) {
+        (true, Some(0 | 1)) => "evolves next bar".to_string(),
+        (true, Some(n)) => format!("evolves in {n} bars"),
+        (true, None) => "evolves every 4 bars".to_string(),
+        (false, _) if im.generation > 0 => "holding".to_string(),
+        (false, _) => String::new(),
+    };
+    [over, when]
+}
+
 /// What [`PhrasePlays`] shows for `st`: the track's pick, which is the
-/// phrase a held note plays, or the one that comes in on the next bar.
+/// phrase a held note plays, or the one that comes in on the next bar; as
+/// Evolve has changed it, with the next change outlined (S5).
 pub fn plays(st: &ArpState) -> Plays {
     let follow = Follow::ALL
         .iter()
         .position(|f| *f == st.settings.follow)
         .unwrap_or(0);
     let follows = follow_lines(st);
+    let im = &st.improvise;
+    let when = PlaysWhen::ALL
+        .iter()
+        .position(|w| *w == im.when)
+        .unwrap_or(0);
+    // New idea or More like this: its try, which a held pad plays.
+    if let Some((name, p)) = st.maker.as_ref().and_then(|m| m.shown.as_ref()) {
+        return Plays {
+            head: st
+                .maker
+                .as_ref()
+                .map_or_else(String::new, |m| m.head.clone()),
+            head_good: true,
+            name: name.clone(),
+            about: about(p),
+            sketch: Sketch::of(p),
+            cursor: st.phrase.at,
+            follow,
+            follows,
+            when,
+            answers: im.answers,
+            evolve: im.evolve,
+            ..Plays::default()
+        };
+    }
     let Some((name, p)) = st.phrases.phrases.get(st.phrase_index) else {
         return Plays {
-            head: "Plays".to_string(),
+            head: "Playing".to_string(),
             name: "No phrase".to_string(),
             follow,
             follows,
+            when,
             ..Plays::default()
         };
     };
     let waiting = st.phrase.waits;
+    let mut sketch = match (&im.sketch, waiting) {
+        (Some(now), false) => now.clone(),
+        _ => Sketch::of(p),
+    };
+    if !waiting && im.evolve {
+        sketch.next = im.next.clone();
+    }
     Plays {
         head: if waiting {
             "Comes in on the next bar"
         } else {
-            "Plays"
+            "Playing"
         }
         .to_string(),
         waiting,
         name: name.clone(),
         about: about(p),
-        sketch: Sketch::of(p),
+        sketch,
         cursor: if waiting { None } else { st.phrase.at },
         follow,
         follows,
+        more: st.maker.is_none(),
+        head_good: false,
+        when,
+        answers: im.answers,
+        evolve: im.evolve,
+        moves: true,
+        can_return: im.generation > 0,
+        line: improvise_line(st),
     }
 }
 
@@ -1180,8 +1555,9 @@ mod tests {
             let row = list.row(r, k).unwrap();
             assert!(row.h >= 44 && row.y > r.y && row.bottom() <= r.bottom());
         }
+        // The rows in view, and New idea in the heading.
         let w = s.ui.get::<PhraseRows>(PHRASES).unwrap();
-        assert_eq!(w.targets(r).len(), seen.len());
+        assert_eq!(w.targets(r).len(), seen.len() + 1);
         assert_eq!(*w, list, "the panel shows the model");
     }
 
@@ -1263,7 +1639,7 @@ mod tests {
             .rows
             .iter()
             .all(|r| matches!(r.state, RowState::Plain | RowState::Picked)));
-        assert_eq!(plays(&st).head, "Plays");
+        assert_eq!(plays(&st).head, "Playing");
         assert_eq!(chip(&st).text, "Phrase: Acid line");
     }
 
@@ -1271,7 +1647,10 @@ mod tests {
     fn the_phrase_that_plays_says_what_it_is_and_where_it_is() {
         let s = sample("phrase-browse");
         let p = plays(&s.state);
-        assert_eq!((p.head.as_str(), p.name.as_str()), ("Plays", "Night drive"));
+        assert_eq!(
+            (p.head.as_str(), p.name.as_str()),
+            ("Playing", "Night drive")
+        );
         assert_eq!(p.about, "Bass · 2 bars · straight · written in minor");
         assert_eq!(p.follow, 0);
         assert_eq!(
@@ -1541,5 +1920,90 @@ mod tests {
         s.page.update(&mut s.ui, &st).unwrap();
         let w = s.ui.get::<PhrasePlays>(PLAYS).unwrap();
         assert_eq!(w.changed_parts(r), None);
+    }
+
+    /// Board A: New idea in the list's heading, More like this on the
+    /// phrase that plays, each a fingertip tall and each asking the app.
+    #[test]
+    fn new_idea_and_more_like_this_open_from_the_tab() {
+        let mut s = sample("phrase-browse");
+        let list = s.ui.rect_of(PHRASES).unwrap();
+        let plays_r = s.ui.rect_of(PLAYS).unwrap();
+        let b = PhraseRows::new_idea_button(list);
+        assert!(list.contains(b.x, b.y) && b.h >= 34 && b.right() < list.right());
+        let ev = tap(&mut s.ui, b).unwrap();
+        assert_eq!(
+            s.page.action(&ev, &s.state, &mut None),
+            Some(ArpAction::NewIdea)
+        );
+        let m = PhrasePlays::more_button(plays_r);
+        assert!(plays_r.contains(m.x, m.y) && m.right() < plays_r.right());
+        let ev = tap(&mut s.ui, m).unwrap();
+        assert_eq!(
+            s.page.action(&ev, &s.state, &mut None),
+            Some(ArpAction::MoreLike)
+        );
+        assert!(plays(&s.state).more);
+    }
+
+    /// Boards B and C: the panel takes the list's place, the detail panel
+    /// shows the try in the good colour, and the panel's touches ask the
+    /// app.
+    #[test]
+    fn the_makers_panel_takes_the_lists_place_and_shows_its_try() {
+        use crate::maker::{PhraseMaker, MAKER};
+        use crate::view::MakerAction;
+        for name in ["phrase-new-idea", "phrase-more-like"] {
+            let mut s = sample(name);
+            assert!(s.ui.rect_of(PHRASES).is_none(), "{name}");
+            let panel = s.ui.rect_of(MAKER).expect("the maker's panel");
+            let kinds = s.ui.rect_of(KINDS).unwrap();
+            let plays_r = s.ui.rect_of(PLAYS).unwrap();
+            assert_eq!(
+                (panel.x, panel.right()),
+                (kinds.right() + 12, plays_r.x - 12)
+            );
+            let p = plays(&s.state);
+            let m = s.state.maker.as_ref().unwrap();
+            assert!(p.head_good && !p.more);
+            assert_eq!(p.name, m.shown.as_ref().unwrap().0);
+            assert_eq!(p.head, m.head);
+            assert_eq!(hint_for(&s.state), crate::view::MAKER_HINT);
+            let w = s.ui.get::<PhraseMaker>(MAKER).unwrap();
+            let g = w.geo(panel);
+            let last = g.steppers.len() - 1;
+            let st = s.state.clone();
+            let s1 = g.steppers[last];
+            let ev = tap(&mut s.ui, Rect::new(s1.right() - 30, s1.y, 20, s1.h)).unwrap();
+            assert_eq!(
+                s.page.action(&ev, &st, &mut None),
+                Some(ArpAction::Maker(MakerAction::Step {
+                    row: last,
+                    delta: 1
+                }))
+            );
+            let want = [
+                MakerAction::TryAgain,
+                MakerAction::Previous,
+                MakerAction::Back,
+                MakerAction::Keep,
+            ];
+            for (k, b) in g.buttons.iter().enumerate() {
+                let ev = tap(&mut s.ui, *b).unwrap();
+                assert_eq!(
+                    s.page.action(&ev, &st, &mut None),
+                    Some(ArpAction::Maker(want[k]))
+                );
+            }
+            let ev = tap(&mut s.ui, g.close).unwrap();
+            assert_eq!(
+                s.page.action(&ev, &st, &mut None),
+                Some(ArpAction::Maker(MakerAction::Back))
+            );
+            // Closed, the list is back.
+            s.state.maker = None;
+            s.page.update(&mut s.ui, &s.state).unwrap();
+            assert!(s.ui.rect_of(MAKER).is_none() && s.ui.rect_of(PHRASES).is_some());
+        }
     }
 }

@@ -18,7 +18,9 @@ use crate::pattern::{Pattern, Pick, Step};
 use crate::phrase::{Follow, Phrase, Playhead, Speed};
 use crate::scale::{Scale, Snap, CHROMATIC, MAJOR};
 
+mod answer_mode;
 mod phrase_mode;
+pub use answer_mode::{AnswerNote, MAX_ANSWER_NOTES};
 pub use phrase_mode::{phrase_speed, CHORD_SETTLE};
 
 /// Clock resolution: ticks per quarter note.
@@ -787,6 +789,9 @@ pub struct Engine {
     lead: Option<phrase_mode::Lead>,
     held_since: f64,
     settle: f64,
+    /// Answer (the Phrase tab's When I stop): the ears and the answer
+    /// made for them, while it is on (`engine/answer_mode.rs`).
+    answer: Option<Box<answer_mode::Answering>>,
 }
 
 impl Engine {
@@ -839,6 +844,7 @@ impl Engine {
             lead: None,
             held_since: 0.0,
             settle: phrase_mode::CHORD_SETTLE,
+            answer: None,
         }
     }
 
@@ -1049,11 +1055,15 @@ impl Engine {
             if self.sync.is_some() {
                 // The engine's own clock carries on from the transport's.
                 self.anchor_free();
+                self.sync = None;
+                // Answer's ears forget a transport stop.
+                self.answer_reset();
             }
             self.sync = None;
             return;
         }
         let was = self.sync.is_some();
+        let bar_was = self.sync.map(|s| s.bar_ticks);
         self.bpm = clock.bpm.clamp(20.0, 300.0);
         self.sync = Some(Synced {
             anchor_frame: self.now as f64 - clock.frames_since_anchor as f64,
@@ -1064,6 +1074,10 @@ impl Engine {
                 .map(|(grid, amount)| (grid.max(1), amount.clamp(50, 75))),
             bar_ticks: clock.bar_ticks.max(1),
         });
+        if !was || clock.jumped || bar_was.is_some_and(|b| b != clock.bar_ticks.max(1)) {
+            // The clock moved under the ears (a start, a jump, a meter).
+            self.answer_reset();
+        }
         if self.running && self.live.mode == Mode::Phrase {
             if !was || clock.jumped {
                 // In time with the transport from its start or its jump:
@@ -1090,7 +1104,7 @@ impl Engine {
             if self.settings.mode == Mode::Phrase {
                 self.stop_phrase();
             }
-            if self.settings.mode == Mode::Direct {
+            if self.settings.mode == Mode::Direct && self.answer.is_none() {
                 // Notes held in Direct mode are sounding: stop them; the
                 // generator takes over from the next step.
                 let mut list = [Held::default(); MAX_NOTES];
@@ -1174,6 +1188,7 @@ impl Engine {
     pub fn hush(&mut self) {
         self.hushed = true;
         self.end_sounding();
+        self.answer_hush();
     }
 
     /// Plays again after [`Engine::hush`]; nothing happens if not hushed.
@@ -1188,7 +1203,7 @@ impl Engine {
     /// queued to start or stop. An idle engine may be passed over with
     /// [`Engine::skip`] instead of [`Engine::sync`] and [`Engine::process`].
     pub fn idle(&self) -> bool {
-        !self.running && self.queued == 0 && self.notes.active().is_empty()
+        !self.running && self.queued == 0 && self.notes.active().is_empty() && !self.answer_busy()
     }
 
     /// Lets `frames` frames pass on an [`Engine::idle`] engine without
@@ -1227,6 +1242,7 @@ impl Engine {
         self.touch = [0; 128];
         self.follow_pressure();
         self.end_sounding();
+        self.answer_hush();
     }
 
     /// Drops what is queued and ends, at the start of the next period,
@@ -1255,6 +1271,9 @@ impl Engine {
     pub fn process(&mut self, frames: u32, out: &mut Events) {
         out.len = 0;
         let end = self.now + u64::from(frames);
+        if self.answer.is_some() {
+            self.answer_period(end);
+        }
         if self.running && self.live.mode == Mode::Phrase {
             self.play_phrase(end);
         } else if self.running && self.sync.is_some() {
@@ -1414,11 +1433,14 @@ impl Engine {
                 self.retrigger_phrase();
             }
         }
-        if self.settings.mode == Mode::Direct {
+        if self.as_pressed() {
             let at = (self.now + u64::from(self.at)) as f64;
+            let mut gone = [0u8; MAX_NOTES];
+            let mut g = 0;
             for h in before.as_slice() {
                 if !self.notes.active().contains(h.note) {
-                    self.queue_at(at, EventKind::Off { note: h.note });
+                    gone[g] = h.note;
+                    g += 1;
                 }
             }
             let mut added = [Held::default(); MAX_NOTES];
@@ -1428,6 +1450,18 @@ impl Engine {
                     added[n] = *h;
                     n += 1;
                 }
+            }
+            if self.answer.is_some() {
+                // The ears hear it first: a note over the answer ends the
+                // answer's notes before this one starts.
+                let mut new = [(0u8, 0u8); MAX_NOTES];
+                for (k, h) in added[..n].iter().enumerate() {
+                    new[k] = (h.note, self.velocity_of(h.velocity));
+                }
+                self.answer_hears(at, &new[..n], &gone[..g]);
+            }
+            for &note in &gone[..g] {
+                self.queue_at(at, EventKind::Off { note });
             }
             for h in &added[..n] {
                 self.queue_at(
@@ -1443,8 +1477,7 @@ impl Engine {
     }
 
     fn update_running(&mut self) {
-        let want =
-            !self.hushed && self.settings.mode != Mode::Direct && !self.notes.active().is_empty();
+        let want = !self.hushed && !self.as_pressed() && !self.notes.active().is_empty();
         if want && !self.running {
             // Free-running, the first step is on the press. With a playing
             // transport it waits for the next step, beat or bar.
@@ -1841,7 +1874,10 @@ impl Engine {
             let offset = (p.at - start).max(0.0).floor() as u32;
             match p.kind {
                 EventKind::On { note, .. } => self.sounding |= 1 << (note & 127),
-                EventKind::Off { note } => self.sounding &= !(1 << (note & 127)),
+                EventKind::Off { note } => {
+                    self.sounding &= !(1 << (note & 127));
+                    self.answer_ended(note);
+                }
             }
             out.push(Event {
                 offset,

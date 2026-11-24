@@ -410,7 +410,12 @@ pub fn continue_drum_clip_how(
             made.notes.sort_by_key(|n| (n.tick, n.note));
             for &b in &kept {
                 made.plan[b] = before.plan[b];
+                made.fills.retain(|&f| f != b);
+                if before.fills.contains(&b) {
+                    made.fills.push(b);
+                }
             }
+            made.fills.sort_unstable();
             let clip = on.project.clip(on.track, on.slot).ok_or(Refused::NoClip)?;
             proposal.edit = crate::keep::continuation(clip, made.notes.clone(), made.to)?;
         }
@@ -442,6 +447,7 @@ impl Drummed {
             to: self.to,
             sketch: None,
             critic: Vec::new(),
+            fills: self.fills,
         }
     }
 }

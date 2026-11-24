@@ -333,6 +333,10 @@ pub enum Button {
     /// A preset picker's: a new track (as + Track adds one, armed) with
     /// its own synth playing the preset picked (New instrument track).
     NewTrackSound,
+    /// A MIDI file: a phrase of your own for the arp from its first track
+    /// with notes, on the Make a phrase sheet (the app's, step 3 of the
+    /// phrases).
+    MakePhrase,
 }
 
 impl Button {
@@ -361,6 +365,7 @@ impl Button {
             Button::SavePreset => "Save preset",
             Button::NewTrack => "New track with this kit",
             Button::NewTrackSound => "New track",
+            Button::MakePhrase => "Make a phrase",
         }
     }
 }
@@ -496,6 +501,12 @@ pub enum BrowseAction {
     /// thread of its own and puts its tracks on the armed track and the
     /// tracks after it as clips (`midi_file.rs`).
     LoadMidi {
+        loc: Loc,
+        path: PathBuf,
+    },
+    /// A MIDI file's Make a phrase: the app reads it in a thread of its
+    /// own and opens the Make a phrase sheet on its first track with notes.
+    MakePhrase {
         loc: Loc,
         path: PathBuf,
     },
@@ -2938,6 +2949,23 @@ impl Browser {
                     _ => self.status = Some((format!("{} is not a sound", r.name), true)),
                 }
             }
+            Button::MakePhrase => {
+                let Some(r) = row.filter(|r| r.kind == Kind::Midi) else {
+                    return;
+                };
+                let Some(loc) = loc else {
+                    return;
+                };
+                let Ok(path) = self.library().file_path(&loc) else {
+                    self.status = Some((format!("Make a phrase: {} is not there", r.name), true));
+                    return;
+                };
+                self.actions.push(BrowseAction::MakePhrase {
+                    loc: loc.clone(),
+                    path,
+                });
+                self.status = Some((format!("Reading {} for a phrase", r.name), false));
+            }
             Button::NewTrackSound => {
                 let (Some(r), Some(Pick::Preset { engine })) = (row, &self.pick) else {
                     return;
@@ -4019,8 +4047,13 @@ impl Browser {
                     "Load".into(),
                     "As clips: from the armed track on, a track each".into(),
                 ));
+                d.lines.push((
+                    "Phrase".into(),
+                    "Its first track with notes, for the arp".into(),
+                ));
                 d.buttons = vec![
                     Button::Load,
+                    Button::MakePhrase,
                     Button::Rename,
                     Button::Copy,
                     Button::Cut,
@@ -4063,6 +4096,7 @@ impl Browser {
                         | Button::Audition
                         | Button::NewTrack
                         | Button::Copy
+                        | Button::MakePhrase
                 )
             });
             d.lines

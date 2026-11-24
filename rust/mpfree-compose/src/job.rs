@@ -205,6 +205,10 @@ pub struct AddAsk {
     pub bars: Option<u32>,
     /// Try again's count: 0 is the first answer.
     pub attempt: u16,
+    /// A phrase to play as the part ([`crate::phrase_part`]), in place of
+    /// one the composer writes: the Style row run on into the phrases of
+    /// the part's kind (P2). The same phrase gives the same part.
+    pub phrase: Option<mpfree_arp::Phrase>,
 }
 
 /// A row's chords for the screens ([`AddPartJob::hear`]).
@@ -386,7 +390,11 @@ impl AddPartJob {
             pads: a.pads,
             swing: a.swing,
         };
-        let result = add_part_again(&req, a.attempt).and_then(|added| {
+        let added = match &a.phrase {
+            Some(p) => crate::phrase_part::phrase_part(&req, p),
+            None => add_part_again(&req, a.attempt),
+        };
+        let result = added.and_then(|added| {
             let notes = clip_notes(&added.events, a.bpm, row.length).map_err(PartRefused::Keep)?;
             let mut clip = Clip::new(part_name(a.part), row.length);
             clip.notes = notes;
@@ -768,6 +776,7 @@ mod tests {
             },
             bars: None,
             attempt: 0,
+            phrase: None,
         }
     }
 

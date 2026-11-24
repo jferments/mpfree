@@ -23,6 +23,10 @@
 //! pads, the header and the hint line belong to the app; the panel only adds
 //! its own widgets and the layouts that place them.
 
+use crate::answer_panel::{self, AnswerPanel, CallPicture};
+use crate::maker::{
+    MakerView, PhraseMaker, MAKER_BACK, MAKER_CLOSE, MAKER_KEEP, MAKER_STEP, MAKER_TRY,
+};
 use crate::phrase_tab::{self, PhraseKinds, PhraseKit, PhrasePlays, PhraseRows};
 use crate::phrases::{PhraseList, Shelf};
 use crate::widgets::{
@@ -58,6 +62,12 @@ pub const KINDS: &str = "arp-phrase-kinds";
 pub const PHRASES: &str = "arp-phrase-list";
 pub const PLAYS: &str = "arp-phrase-plays";
 pub const KIT: &str = "arp-phrase-kit";
+/// The Phrase tab with Plays: When I stop ([`crate::answer_panel`]): the
+/// call and its answer in the list's place, how Answer replies in the
+/// detail's.
+pub const CALL: &str = "arp-phrase-call";
+pub const ANSWER: &str = "arp-phrase-answer";
+pub use crate::maker::MAKER;
 
 /// Every layout but the Phrase tab's keeps the pads where the Play page has
 /// them: the arp's widgets only ever take the right-hand column, [`SIDE`]
@@ -83,6 +93,14 @@ pub const PATTERN_LAYOUT: &str =
 /// are not on the panel at all.)
 pub const PHRASE_LAYOUT: &str =
     "col(header:60, col(arp-modes:52, row(arp-phrase-kinds:166, arp-phrase-list:*, arp-phrase-plays:397):*):*, hint:26)";
+/// Phrase with New idea or More like this open: their panel
+/// ([`crate::maker`]) in the list's place.
+pub const PHRASE_MAKER_LAYOUT: &str =
+    "col(header:60, col(arp-modes:52, row(arp-phrase-kinds:166, arp-phrase-maker:*, arp-phrase-plays:397):*):*, hint:26)";
+/// Phrase with Plays: When I stop: the call and its answer in the list's
+/// place, how Answer replies in the detail's ([`crate::answer_panel`]).
+pub const PHRASE_ANSWER_LAYOUT: &str =
+    "col(header:60, col(arp-modes:52, row(arp-phrase-kinds:166, arp-phrase-call:*, arp-phrase-answer:397):*):*, hint:26)";
 /// Phrase on a kit track, whose pads play as pressed: the kinds, and one
 /// panel that says so in the place of the other two.
 pub const PHRASE_KIT_LAYOUT: &str =
@@ -124,12 +142,16 @@ pub const PHRASE_QLINK_LABELS: [&str; 4] =
 pub const SWING_TRIPLETS: &str = "Swing · Q3 · triplets";
 pub const STRAIGHT: &str = "straight";
 /// The pattern buttons, in [`PatternButton`] order.
-pub const PATTERN_BUTTONS: [(&str, Tone); 4] = [
+pub const PATTERN_BUTTONS: [(&str, Tone); 5] = [
     ("Edit pattern", Tone::Accent),
     ("Record on pads", Tone::Bad),
     ("Mutate", Tone::Normal),
     ("Original", Tone::Normal),
+    ("Keep as a phrase", Tone::Normal),
 ];
+/// The pattern buttons' lines: Edit pattern and Record on pads, then
+/// Mutate, Original and Keep as a phrase (the owner's board G).
+pub const PATTERN_BUTTON_LINES: [usize; 2] = [2, 3];
 /// The most cells the step strip shows at once.
 pub const STRIP_CELLS: usize = 16;
 
@@ -178,11 +200,19 @@ pub struct ArpState {
     /// The phrases to choose from, and the track's pick.
     pub phrases: PhraseList,
     pub phrase_index: usize,
+    /// New idea or More like this, while one is open: its panel takes the
+    /// list's place and the detail panel shows its try.
+    pub maker: Option<MakerView>,
+    /// The Make a phrase sheet's phrase, while it is open, under the name
+    /// Keep gives it ("Clip 1"): what a held pad plays, so the chip names it.
+    pub sheet_name: Option<String>,
     /// The scale the pads play: the key a phrase follows In key while the
     /// arp's own scale is off ([`ArpState::phrase_key`]).
     pub pads_key: Option<Scale>,
     /// What the Phrase tab shows of the phrase as it plays.
     pub phrase: PhraseNow,
+    /// The Phrase tab's Plays row and Evolve (S5).
+    pub improvise: ImproviseNow,
     /// The notes the generator plays, in the order they were pressed.
     pub notes: Vec<Held>,
     /// Steps played since the notes started ([`Engine::step`]).
@@ -211,6 +241,8 @@ impl ArpState {
             pattern_changed,
             phrases: PhraseList::built_in(),
             phrase_index: 0,
+            maker: None,
+            sheet_name: None,
             pads_key: e.key(),
             phrase: PhraseNow {
                 at: e
@@ -219,6 +251,7 @@ impl ArpState {
                 waits: e.phrase_waiting() == Some(Join::Bar),
                 ..PhraseNow::default()
             },
+            improvise: ImproviseNow::default(),
             notes: e.active().as_slice().to_vec(),
             step: e.step(),
             latched: e.latch() != mpfree_arp::LatchMode::Off,
@@ -249,6 +282,14 @@ impl ArpState {
         }
     }
 
+    /// The Phrase tab plays When I stop on a synth track: Answer's panels
+    /// show in place of the list and the phrase that plays.
+    pub fn answering(&self) -> bool {
+        self.tab() == Mode::Phrase
+            && self.phrase.kit_track.is_none()
+            && self.improvise.when == PlaysWhen::WhenIStop
+    }
+
     /// The kind the Phrase tab's list shows: the pick's, unless an empty
     /// one was stepped to ([`PhraseNow::shelf`]).
     pub fn shelf(&self) -> Shelf {
@@ -261,6 +302,14 @@ impl ArpState {
     /// plays, which while a pick waits for the bar line is still the one
     /// before it.
     pub fn phrase_heard(&self) -> &str {
+        // A try plays in the pick's place: New idea's or More like this's,
+        // or the Make a phrase sheet's.
+        if let Some((name, _)) = self.maker.as_ref().and_then(|m| m.shown.as_ref()) {
+            return name;
+        }
+        if let Some(name) = &self.sheet_name {
+            return name;
+        }
         let playing = self.phrase.playing.filter(|_| self.phrase.waits);
         self.phrases.name(playing.unwrap_or(self.phrase_index))
     }
@@ -307,6 +356,194 @@ pub enum ArpAction {
     Phrase(usize),
     /// A kind was tapped on the Phrase tab: show its phrases.
     Shelf(Shelf),
+    /// The list's New idea: its panel opens on the kind shown.
+    NewIdea,
+    /// More like this, on the phrase that plays: its panel opens.
+    MoreLike,
+    /// A touch on the New idea or More like this panel.
+    Maker(MakerAction),
+    /// A touch on the Make a phrase sheet, or the wheel or - / + while it
+    /// is open ([`crate::make_sheet`]).
+    Sheet(crate::make_sheet::SheetAction),
+    /// The Phrase tab's Plays row and moves (composing tools S5).
+    Improvise(ImproviseAction),
+    /// The When I stop panel: how Answer replies (S5, board B).
+    Answer(AnswerAction),
+}
+
+/// When the Phrase tab's phrase plays (composing tools S5): While I hold, a
+/// held note or chord plays it, as it always has; When I stop, Answer plays
+/// a reply to what you played once you stop.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlaysWhen {
+    #[default]
+    WhileIHold,
+    WhenIStop,
+}
+
+impl PlaysWhen {
+    pub const ALL: [PlaysWhen; 2] = [PlaysWhen::WhileIHold, PlaysWhen::WhenIStop];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            PlaysWhen::WhileIHold => "While I hold",
+            PlaysWhen::WhenIStop => "When I stop",
+        }
+    }
+}
+
+/// A touch on the Phrase tab's Plays row or its moves (S5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImproviseAction {
+    Plays(PlaysWhen),
+    /// The phrase stays as it plays now: Evolve off.
+    Hold,
+    /// A little of the phrase changes every few bars.
+    Evolve,
+    /// Back to the phrase as picked.
+    Return,
+    /// The last bars played kept as a clip (CAPTURE).
+    Capture,
+}
+
+/// What the Phrase tab shows of Improvise (composing tools S5), from the
+/// app.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ImproviseNow {
+    pub when: PlaysWhen,
+    /// Evolve is on: a little of the phrase changes every few bars. Off,
+    /// it holds as it plays now.
+    pub evolve: bool,
+    /// Times Evolve has changed the phrase since it was picked: 0 is the
+    /// phrase as picked, and Return has nothing to go back to.
+    pub generation: u32,
+    /// The phrase as it plays now, when Evolve has changed it.
+    pub sketch: Option<crate::phrase_tab::Sketch>,
+    /// The notes the next Evolve changes, as they will be.
+    pub next: Vec<crate::phrase_tab::SketchNote>,
+    /// Whole bars until the next Evolve, while it is on and the phrase
+    /// plays.
+    pub evolves_in: Option<u32>,
+    /// The chord held, by name ("F major"), while three notes or more are
+    /// held: the phrase plays over it.
+    pub chord: Option<String>,
+    /// When I stop can be picked: Answer is there to play.
+    pub answers: bool,
+    /// The When I stop panel, while Plays is When I stop.
+    pub answer: AnswerNow,
+}
+
+/// How Answer replies: the When I stop panel's Mode row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AnswerMode {
+    /// Your phrase back, a little changed.
+    Echo,
+    /// Your rhythm, its own notes, a new ending.
+    #[default]
+    Answer,
+    /// Turns of 1, 2 or 4 bars, answered as Answer.
+    Trade,
+}
+
+impl AnswerMode {
+    pub const ALL: [AnswerMode; 3] = [AnswerMode::Echo, AnswerMode::Answer, AnswerMode::Trade];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            AnswerMode::Echo => "Echo",
+            AnswerMode::Answer => "Answer",
+            AnswerMode::Trade => "Trade",
+        }
+    }
+
+    /// What it does, in a line beside the row.
+    pub const fn says(self) -> &'static str {
+        match self {
+            AnswerMode::Echo => "your phrase back, a little changed",
+            AnswerMode::Answer => "your rhythm, its notes, a new ending",
+            AnswerMode::Trade => "turns: you, then it, as long",
+        }
+    }
+}
+
+/// Trade's turns when Answers for is Like mine, in bars.
+pub const TRADE_BARS: u8 = 2;
+
+/// The Answers for row: Like mine (None), or 1, 2 or 4 bars. In Trade it
+/// is how long each turn is (Like mine: [`TRADE_BARS`]).
+pub const ANSWERS_FOR: [Option<u8>; 4] = [None, Some(1), Some(2), Some(4)];
+
+/// A touch on the When I stop panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnswerAction {
+    Mode(AnswerMode),
+    /// Answers for: Like mine (None) or 1, 2 or 4 bars.
+    For(Option<u8>),
+    /// The call is over: the answer plays from the next beat.
+    Now,
+    /// Q-Link `knob` (Variation, Activity, Range) set to `value`
+    /// thousandths of its way.
+    Set {
+        knob: usize,
+        value: u16,
+    },
+    /// Your call and its answer kept as one clip (CAPTURE).
+    Capture,
+}
+
+/// A note in the Call and answer picture: start and length in ticks from
+/// the call's bar line, and its pitch.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HeardNote {
+    pub at: i64,
+    pub len: i64,
+    pub pitch: u8,
+}
+
+/// What the When I stop panel shows (board B), from the app.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AnswerNow {
+    pub mode: AnswerMode,
+    pub bars: Option<u8>,
+    /// The turn light: None until Answer is on.
+    pub light: Option<mpfree_arp::Light>,
+    /// The call, as played.
+    pub call: Vec<HeardNote>,
+    /// The answer, from where it plays (after the call).
+    pub answer: Vec<HeardNote>,
+    /// Ticks in a bar, and the call's and the answer's whole bars.
+    pub bar_ticks: i64,
+    pub call_bars: u32,
+    pub answer_bars: u32,
+    /// Where the answer has got to, in ticks from the call's bar line.
+    pub playhead: Option<i64>,
+    /// The key the call was read in ("C minor"), and how the answer ends
+    /// ("home", "open").
+    pub key: Option<String>,
+    pub ends: Option<&'static str>,
+    /// Why nothing was answered, when the composer refused.
+    pub refused: Option<String>,
+    /// The reply's Q-Links: Variation and Activity 0 to 1, Range 0
+    /// (narrow) to 2 (wide).
+    pub variation: f32,
+    pub activity: f32,
+    pub range: u8,
+}
+
+/// A touch on the New idea or More like this panel ([`crate::maker`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MakerAction {
+    /// Row `row`'s ‹ (-1) or › (+1): its value changes, and a new try is
+    /// made where the value changes what is made.
+    Step { row: usize, delta: i32 },
+    /// Another try with the same choices.
+    TryAgain,
+    /// ‹ Try N: the try before (from the first, Try N ›: the one after).
+    Previous,
+    /// Back, or ×: the panel closes and the track's phrase plays again.
+    Back,
+    /// The try shown joins Yours and the track picks it.
+    Keep,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -315,6 +552,9 @@ pub enum PatternButton {
     Record,
     Mutate,
     Original,
+    /// The pattern on one held note joins the Phrase tab's Yours
+    /// (answers only for a pattern on one note: `Pattern::on_one_note`).
+    KeepPhrase,
 }
 
 /// A pad or MIDI note as the screen names it: pads by number (slot 0 is
@@ -715,9 +955,19 @@ pub fn phrase_kit_hint(track: &str) -> String {
 pub fn hint_for(st: &ArpState) -> String {
     match &st.phrase.kit_track {
         Some(track) => phrase_kit_hint(track),
+        None if st.answering() => ANSWER_HINT.to_string(),
+        None if st.maker.is_some() && st.tab() == Mode::Phrase => MAKER_HINT.to_string(),
         None => hint(st.tab()).to_string(),
     }
 }
+
+/// The hint with Plays: When I stop.
+pub const ANSWER_HINT: &str =
+    "Play, then stop: it answers on the next bar · play again: it stops at once · Q-Links: variation, activity, range";
+
+/// The hint while New idea or More like this is open.
+pub const MAKER_HINT: &str =
+    "Wheel: a row · − / +: change it · Q-Links: speed, gate, swing, octaves · Keep: on Yours · Back: nothing changes";
 
 /// The hint line under the quick band.
 pub fn quick_hint(mode: Mode) -> &'static str {
@@ -745,6 +995,10 @@ pub fn layout_for(mode: Mode) -> &'static str {
 pub fn layout_of(st: &ArpState) -> &'static str {
     if st.phrase.kit_track.is_some() {
         PHRASE_KIT_LAYOUT
+    } else if st.answering() {
+        PHRASE_ANSWER_LAYOUT
+    } else if st.maker.is_some() && st.tab() == Mode::Phrase {
+        PHRASE_MAKER_LAYOUT
     } else {
         layout_for(st.tab())
     }
@@ -800,7 +1054,13 @@ impl ArpPanel {
         ui.add(LIST, ListView::new("Order · Wheel"));
         ui.add(PATTERNS, PatternList::default());
         ui.add(QLINKS, SliderStack::new("Q-Links 1–4", &QLINK_LABELS));
-        ui.add(ACTIONS, ButtonRow::new(&PATTERN_BUTTONS));
+        ui.add(
+            ACTIONS,
+            ButtonRow {
+                lines: PATTERN_BUTTON_LINES.to_vec(),
+                ..ButtonRow::new(&PATTERN_BUTTONS)
+            },
+        );
         ui.add(STEPS, StepStrip::new(8));
         ui.add(MINI, MiniBar::default());
         ui.add(MODBOX, ModBox::default());
@@ -808,6 +1068,9 @@ impl ArpPanel {
         ui.add(PHRASES, PhraseRows::default());
         ui.add(PLAYS, PhrasePlays::new(&PHRASE_QLINK_LABELS));
         ui.add(KIT, PhraseKit::default());
+        ui.add(CALL, CallPicture::default());
+        ui.add(ANSWER, AnswerPanel::default());
+        ui.add(MAKER, PhraseMaker::default());
         ui.add_page(quick, QUICK_LAYOUT)?;
         let mut panel = ArpPanel {
             name: name.to_string(),
@@ -945,6 +1208,10 @@ impl ArpPanel {
                 disabled: !st.pattern_changed,
                 ..b.buttons[3].clone()
             };
+            b.buttons[4] = Button {
+                disabled: !st.pattern.on_one_note(),
+                ..b.buttons[4].clone()
+            };
         }
         let (cells, first, playing) = if s.mode == Mode::Pattern {
             pattern_cells(st)
@@ -971,8 +1238,31 @@ impl ArpPanel {
             show(ui, KINDS, phrase_tab::kinds(st));
             if st.phrase.kit_track.is_some() {
                 show(ui, KIT, phrase_tab::kit(st));
+            } else if st.answering() {
+                show(
+                    ui,
+                    CALL,
+                    CallPicture {
+                        show: answer_panel::call_show(st),
+                    },
+                );
+                let shows = answer_panel::answer_show(st);
+                let rows = answer_panel::answer_sliders(st);
+                // Its sliders may be under a finger: changed in place.
+                if ui
+                    .get::<AnswerPanel>(ANSWER)
+                    .is_some_and(|w| w.show != shows || w.sliders.rows != rows)
+                {
+                    if let Some(w) = ui.get_mut::<AnswerPanel>(ANSWER) {
+                        w.show = shows;
+                        w.sliders.rows = rows.to_vec();
+                    }
+                }
             } else {
-                show(ui, PHRASES, phrase_tab::rows(st));
+                match &st.maker {
+                    Some(m) => show(ui, MAKER, PhraseMaker { view: m.clone() }),
+                    None => show(ui, PHRASES, phrase_tab::rows(st)),
+                }
                 let plays = phrase_tab::plays(st);
                 // Its sliders may be under a finger, so the panel is
                 // changed in place, and only when it shows something else.
@@ -1023,10 +1313,64 @@ impl ArpPanel {
             (QLINKS | PLAYS, EventKind::Value(v)) => {
                 qlink.map(|i| ArpAction::Settings(with_qlink(s, st.tab(), i, *v)))
             }
+            // When I stop (S5, board B).
+            (ANSWER, EventKind::Select(i)) => {
+                *qlink = Some(*i);
+                None
+            }
+            (ANSWER, EventKind::Value(v)) => qlink.map(|knob| {
+                ArpAction::Answer(AnswerAction::Set {
+                    knob,
+                    value: (v.clamp(0.0, 1.0) * 1000.0).round() as u16,
+                })
+            }),
+            (ANSWER, EventKind::Tab(i)) if *i == phrase_tab::WHEN => Some(ArpAction::Improvise(
+                ImproviseAction::Plays(PlaysWhen::WhileIHold),
+            )),
+            (ANSWER, EventKind::Tab(i)) if *i >= answer_panel::FOR => ANSWERS_FOR
+                .get(*i - answer_panel::FOR)
+                .map(|b| ArpAction::Answer(AnswerAction::For(*b))),
+            (ANSWER, EventKind::Tab(i)) if *i >= answer_panel::MODE => AnswerMode::ALL
+                .get(*i - answer_panel::MODE)
+                .map(|m| ArpAction::Answer(AnswerAction::Mode(*m))),
+            (ANSWER, EventKind::Toggle(answer_panel::NOW)) => {
+                Some(ArpAction::Answer(AnswerAction::Now))
+            }
+            (ANSWER, EventKind::Toggle(answer_panel::CAPTURE)) => {
+                Some(ArpAction::Answer(AnswerAction::Capture))
+            }
             (KINDS, EventKind::Select(i)) => Shelf::ALL.get(*i).map(|k| ArpAction::Shelf(*k)),
             (PHRASES, EventKind::Select(i)) => {
                 (*i < st.phrases.phrases.len()).then_some(ArpAction::Phrase(*i))
             }
+            (PHRASES, EventKind::Toggle(phrase_tab::NEW_IDEA)) => Some(ArpAction::NewIdea),
+            (PLAYS, EventKind::Toggle(phrase_tab::MORE_LIKE)) => Some(ArpAction::MoreLike),
+            // The Plays row and the moves (S5).
+            (PLAYS, EventKind::Tab(i)) if *i >= phrase_tab::WHEN => PlaysWhen::ALL
+                .get(*i - phrase_tab::WHEN)
+                .map(|w| ArpAction::Improvise(ImproviseAction::Plays(*w))),
+            (PLAYS, EventKind::Toggle(i)) if *i >= phrase_tab::MOVES => [
+                ImproviseAction::Hold,
+                ImproviseAction::Evolve,
+                ImproviseAction::Return,
+                ImproviseAction::Capture,
+            ]
+            .get(*i - phrase_tab::MOVES)
+            .map(|m| ArpAction::Improvise(*m)),
+            (MAKER, EventKind::Step { index, delta }) => {
+                Some(ArpAction::Maker(MakerAction::Step {
+                    row: *index,
+                    delta: *delta,
+                }))
+            }
+            (MAKER, EventKind::Toggle(k)) => match *k {
+                MAKER_TRY => Some(MakerAction::TryAgain),
+                MAKER_STEP => Some(MakerAction::Previous),
+                MAKER_CLOSE | MAKER_BACK => Some(MakerAction::Back),
+                MAKER_KEEP => Some(MakerAction::Keep),
+                _ => None,
+            }
+            .map(ArpAction::Maker),
             // In key or Exact.
             (PLAYS, EventKind::Tab(i)) => Follow::ALL
                 .get(*i)
@@ -1036,6 +1380,7 @@ impl ArpPanel {
                 PatternButton::Record,
                 PatternButton::Mutate,
                 PatternButton::Original,
+                PatternButton::KeepPhrase,
             ]
             .get(*i)
             .map(|b| ArpAction::Button(*b)),
@@ -1169,8 +1514,11 @@ mod tests {
             pattern_changed: false,
             phrases: PhraseList::built_in(),
             phrase_index: 0,
+            maker: None,
+            sheet_name: None,
             pads_key: None,
             phrase: PhraseNow::default(),
+            improvise: ImproviseNow::default(),
             notes: held
                 .iter()
                 .map(|&note| Held {
@@ -1223,7 +1571,7 @@ mod tests {
             let mode = s.state.settings.mode;
             let mut want = vec!["header", "hint"];
             let mut gone = vec![];
-            let phrase = [KINDS, PHRASES, PLAYS, KIT];
+            let phrase = [KINDS, PHRASES, PLAYS, KIT, CALL, ANSWER];
             if s.quick {
                 want.extend(["pads", MINI, STEPS]);
                 gone.extend([MODES, LIST, PATTERNS, QLINKS, ACTIONS]);
@@ -1234,9 +1582,15 @@ mod tests {
                 if s.state.phrase.kit_track.is_some() {
                     want.push(KIT);
                     gone.extend([PHRASES, PLAYS]);
+                } else if s.state.answering() {
+                    want.extend([CALL, ANSWER]);
+                    gone.extend([KIT, PHRASES, PLAYS, MAKER]);
+                } else if s.state.maker.is_some() {
+                    want.extend([MAKER, PLAYS]);
+                    gone.extend([KIT, PHRASES]);
                 } else {
                     want.extend([PHRASES, PLAYS]);
-                    gone.push(KIT);
+                    gone.extend([KIT, MAKER]);
                 }
                 gone.extend(["pads", LIST, PATTERNS, QLINKS, ACTIONS, STEPS, MINI]);
             } else {

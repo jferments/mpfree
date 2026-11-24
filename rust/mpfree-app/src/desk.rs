@@ -434,6 +434,7 @@ impl Desk<'_> {
                 transpose,
             } => fx.extend(app.levels_shown(on, open, transpose)),
             gui::FromUi::AddPartSound(s) => fx.extend(app.add_part_sound(s)),
+            gui::FromUi::MakePhrase(from) => fx.extend(app.open_sheet(*from)),
             gui::FromUi::Time(a) => {
                 use crate::rec_arm::Press;
                 use mpfree_time_ui::TimeAction::Transport;
@@ -453,6 +454,15 @@ impl Desk<'_> {
                     }
                     Transport(Command::Stop) if ready => fx.push(app::Effect::Rec(Press::Stop)),
                     _ => {}
+                }
+                // The clip card's Phrase row: the Make a phrase sheet opens
+                // on the clip's notes (the arp's, step 3 of the phrases).
+                if let mpfree_time_ui::TimeAction::MakePhrase { track, slot } = a {
+                    match app::MakeFrom::clip(time.project(), time.info().meter, track, slot) {
+                        Ok(from) => fx.extend(app.open_sheet(from)),
+                        Err(why) => fx.push(app::Effect::Tell(why)),
+                    }
+                    return None;
                 }
                 // An empty Loop cell tapped: the next loop lands there.
                 if let mpfree_time_ui::TimeAction::LoopCell(Some(cell)) = a {

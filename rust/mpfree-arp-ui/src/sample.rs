@@ -6,6 +6,7 @@
 //! Play page's right-hand column, and the quick band over the pads while
 //! NOTE REPEAT is held.
 
+use crate::maker::{MakerRow, MakerView};
 use crate::phrases::{PhraseList, Shelf};
 use crate::view::{chips, hint, hint_for, quick_hint, ArpPanel, ArpState};
 use crate::workspace::{self, record_pad_labels, LaneRow, PatternWorkspace, Row};
@@ -306,6 +307,133 @@ fn phrase_scene(
     })
 }
 
+/// New idea's panel (`more` false) or More like this's over the basses, as
+/// boards B and C of the P2 boards draw them. The app makes the tries; here
+/// the try is one of MPFree's, under the name Keep would give it.
+fn maker_scene(
+    name: &'static str,
+    about: &'static str,
+    fonts: Fonts,
+    more: bool,
+) -> Result<Sample, String> {
+    let mut s = phrase_scene(name, about, fonts, PhraseSetup::default())?;
+    let shown = |n: &str, as_: &str| {
+        s.state
+            .phrases
+            .phrases
+            .iter()
+            .find(|(p, _)| p == n)
+            .map(|(_, p)| (as_.to_string(), *p))
+            .ok_or(format!("no phrase {n}"))
+    };
+    let row = |n: &str, v: &str, note: &str| MakerRow {
+        name: n.to_string(),
+        value: v.to_string(),
+        accent: n == "Change",
+        note: note.to_string(),
+    };
+    let view = if more {
+        MakerView {
+            title: "More like this".into(),
+            from: Some(shown("Night drive", "Night drive")?),
+            rows: vec![
+                row("Change", "New notes", "Its rhythm, with new notes"),
+                row("Style", "Groove", ""),
+            ],
+            notes: vec![
+                "After New notes: New rhythm, Up a step, Upside down and".into(),
+                "First half twice (each comes out one way).".into(),
+                "Keep puts it on Yours as Night drive 2.".into(),
+            ],
+            status: "Try 2 · hold a pad: it plays from that note".into(),
+            step: ("‹ Try 1".into(), true),
+            shown: Some(shown("Funk pocket", "Night drive 2")?),
+            head: "Try 2 · Back keeps Night drive".into(),
+            ..MakerView::default()
+        }
+    } else {
+        MakerView {
+            title: "New idea · Bass".into(),
+            rows: vec![
+                row("Kind", "Bass", ""),
+                row("Style", "Groove", ""),
+                row("Bars", "2 bars", ""),
+                row("Activity", "Middle", ""),
+            ],
+            notes: vec![
+                "Written for the pads' key, A minor.".into(),
+                "Try again keeps the last 8 while this is open.".into(),
+                "Keep puts it on Yours as Groove bass 1.".into(),
+            ],
+            status: "Try 3 · hold a pad: it plays from that note".into(),
+            step: ("‹ Try 2".into(), true),
+            shown: Some(shown("Funk pocket", "Groove bass 1")?),
+            head: "Try 3 · Back keeps Night drive".into(),
+            ..MakerView::default()
+        }
+    };
+    s.state.maker = Some(MakerView {
+        can_try: true,
+        can_keep: true,
+        ..view
+    });
+    s.page.update(&mut s.ui, &s.state)?;
+    if let Some(l) = s.ui.get_mut::<Label>("hint") {
+        *l = Label::new(&hint_for(&s.state), Tone::Dim, Align::Center);
+    }
+    // The arp chip names the try that plays.
+    if let Some(h) = s.ui.get_mut::<Header>("header") {
+        h.chips = chips(&s.state);
+    }
+    Ok(s)
+}
+
+/// When I stop (S5, board B): a call of five eighths in A minor in bar 1,
+/// its answer in bar 2 playing, past half way, landing home.
+fn answer_scene(fonts: Fonts) -> Result<Sample, String> {
+    use crate::view::{AnswerNow, HeardNote, PlaysWhen};
+    let mut s = phrase_scene(
+        "phrase-answer",
+        "Phrase tab, When I stop: a call in bar 1 and Answer answering it in bar 2",
+        fonts,
+        PhraseSetup::default(),
+    )?;
+    let n = |at: i64, len: i64, pitch: u8| HeardNote { at, len, pitch };
+    s.state.improvise.when = PlaysWhen::WhenIStop;
+    s.state.improvise.answers = true;
+    s.state.improvise.answer = AnswerNow {
+        light: Some(mpfree_arp::Light::Answer),
+        call: vec![
+            n(0, 400, 57),
+            n(480, 400, 60),
+            n(960, 400, 62),
+            n(1440, 400, 60),
+            n(1920, 800, 64),
+        ],
+        answer: vec![
+            n(3840, 400, 64),
+            n(4320, 400, 62),
+            n(4800, 400, 60),
+            n(5280, 400, 62),
+            n(5760, 1600, 57),
+        ],
+        bar_ticks: 3840,
+        call_bars: 1,
+        answer_bars: 1,
+        playhead: Some(5500),
+        key: Some("A minor".to_string()),
+        ends: Some("home"),
+        variation: 0.3,
+        activity: 0.5,
+        ..AnswerNow::default()
+    };
+    s.page.update(&mut s.ui, &s.state)?;
+    if let Some(l) = s.ui.get_mut::<Label>("hint") {
+        *l = Label::new(&hint_for(&s.state), Tone::Dim, Align::Center);
+    }
+    Ok(s)
+}
+
 /// The Phrase tab's sample screens: the five boards the owner approved
 /// (23 Nov 2026), then the cases they left out.
 fn phrase_samples(fonts: &impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
@@ -390,6 +518,19 @@ fn phrase_samples(fonts: &impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
                 pushed: Some(Rate::SixteenthTriplet),
                 ..PhraseSetup::default()
             },
+        )?,
+        answer_scene(fonts())?,
+        maker_scene(
+            "phrase-new-idea",
+            "Phrase tab: New idea's panel, its third try in the detail panel",
+            fonts(),
+            false,
+        )?,
+        maker_scene(
+            "phrase-more-like",
+            "Phrase tab: More like this from Night drive, its second try",
+            fonts(),
+            true,
         )?,
         phrase_scene(
             "quick-phrase",
