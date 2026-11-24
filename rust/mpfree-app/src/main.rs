@@ -8702,6 +8702,10 @@ fn looper_action(
             out.note(&line);
             vec![app::Effect::Tell(line)]
         }
+        looping::LoopAction::MakeSong => {
+            out.note(&looper.make_song());
+            Vec::new()
+        }
         looping::LoopAction::Answer(anyway) => {
             // A first pass waiting on its Length is asked before a snap.
             let line = match (looper.length_asking().is_some(), anyway) {
@@ -15754,6 +15758,10 @@ fn player_session(
         // A snap: its tempo asked of the time engine, or, committed, the
         // loop told to change on the same frame.
         out.loop_start(looper.tend_snap(&mut time, tracks.host.tracks.has_regions()));
+        // Make song: the song started on the free loops' bar line (or its
+        // tempo set), or its UNDO.
+        let (said, song_tempo) = looper.tend_song(&mut time, export.running(), loops_on);
+        out.loop_start(said);
         // Loops on audio tracks (Dev's switch, phase 4b): the track
         // player plans where each track's loops sound from what the
         // arranger says, and each loop a loop cell names is told its runs
@@ -15789,7 +15797,9 @@ fn player_session(
         // A snap landed: the song's tempo changed with the loop.
         let (said, snapped) = looper.take_snap();
         out.loop_start(said);
-        loop_tempo = tempo.or(snapped).or(loop_tempo);
+        // Make song landed, or why not.
+        out.loop_start(looper.take_song());
+        loop_tempo = tempo.or(snapped).or(song_tempo).or(loop_tempo);
         // The audio tracks record the same line input onto the Song view's
         // lanes, and each plays into its own mixer channel (song mode only).
         tracks.follow_latency(app.settings.loop_latency);
