@@ -16272,19 +16272,27 @@ fn player_session(
             out.note(&line);
         }
         // A loop recorded lands on a Loop track (or, with loops on audio
-        // tracks, in an audio track's cell armed for it, by its lasting
-        // id); its cells follow it.
+        // tracks, in an audio track's cell, by its lasting id: one armed
+        // for it, else the armed audio track's, another's or a new audio
+        // track's, 4e.4); its cells follow it.
         if let Some(now) = looper.grid_now() {
             let lines = if loops_on {
-                time.loops_are_on(&now, &looper.loop_ids())
+                let room = tracks.free_slot().is_some();
+                time.loops_are_on(&now, &looper.loop_ids(), room)
             } else {
                 time.loops_are(&now)
             };
             if loops_on && !lines.is_empty() {
                 looper.look_again();
+                // A new audio track for a loop takes its engine track now.
+                tracks.sync(time.project(), time.silenced(), true);
             }
             for line in lines {
                 out.note(&format!("time: {line}"));
+                // With loops on audio tracks the hint says where (4e.4).
+                if loops_on {
+                    out.show(gui::ToUi::Tell(line));
+                }
             }
         }
         // A loop's copy onto another Loop track ended.
@@ -20891,8 +20899,9 @@ mod tests {
             let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
             looper.run(time.block(), &mut l, &mut r);
             if let Some(now) = looper.grid_now() {
-                if !time.loops_are_on(&now, &looper.loop_ids()).is_empty() {
+                if !time.loops_are_on(&now, &looper.loop_ids(), true).is_empty() {
                     looper.look_again();
+                    tracks.sync(time.project(), time.silenced(), true);
                 }
             }
             tracks.sync(time.project(), time.silenced(), false);

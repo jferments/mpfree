@@ -5022,12 +5022,7 @@ impl TimeControl {
                 ))
             }
             TimeAction::AddAudioTrack => {
-                let taken = |k: usize| {
-                    let name = format!("Audio {k}");
-                    self.project.tracks.iter().any(|t| t.name == name)
-                };
-                let k = (1..).find(|&k| !taken(k)).unwrap_or(1);
-                let name = format!("Audio {k}");
+                let name = loops::audio_name(&self.project);
                 let track = mpfree_seq::Track::new_audio(&name, 0);
                 self.takes
                     .add_track_as(&mut self.project, track)
@@ -9228,7 +9223,7 @@ impl TimeControl {
     /// with it. Lines for the log; allocates only when something changed.
     pub fn loops_are(&mut self, now: &[LoopNow; LOOPS]) -> Vec<String> {
         let ids = self.loop_ids;
-        self.loops_are_on(now, &ids)
+        self.loops_are_on(now, &ids, false)
     }
 
     /// A loop cell on an audio track copied onto an empty cell of another
@@ -9303,17 +9298,31 @@ impl TimeControl {
     /// first pass that ends with an audio track's empty cell armed lands
     /// there as a loop cell naming its id ([`Clip::new_audio_loop`]),
     /// launched from the loop's own start, so it plays straight on in that
-    /// track. Not with no id, or one the project names already: it lands
-    /// as before, said. An audio track's loop cells follow its loop's
-    /// length and empty when it is cleared, as a Loop track's do.
-    pub fn loops_are_on(&mut self, now: &[LoopNow; LOOPS], ids: &[u128; LOOPS]) -> Vec<String> {
+    /// track. With no cell armed for it (recorded from the Looper tab or
+    /// with Capture: phase 4e.4) it lands on an audio track all the same
+    /// ([`loops::place_audio`]: the armed audio track's cell in the row
+    /// playing, another audio track's, or a new audio track's while `room`,
+    /// an engine track free), never on a Loop track. With no id yet it
+    /// waits for one, landing nowhere; with one the project names already
+    /// it lands nowhere new. An audio track's loop cells follow its loop's
+    /// length and empty when it is cleared, as a Loop track's do. Each line
+    /// says where a loop went.
+    pub fn loops_are_on(
+        &mut self,
+        now: &[LoopNow; LOOPS],
+        ids: &[u128; LOOPS],
+        room: bool,
+    ) -> Vec<String> {
         let mut lines = Vec::new();
         let was_ids = std::mem::replace(&mut self.loop_ids, *ids);
         if *now == self.loops_seen && *ids == was_ids {
             return lines;
         }
         let loops_on = self.loops_on;
+        let audio_armed = self.audio_armed();
         let mut compile = false;
+        // What is seen now, but for a first pass waiting for its id.
+        let mut seen = *now;
         for (n, (&is, was)) in now.iter().zip(self.loops_seen).enumerate() {
             if is == was {
                 continue;
@@ -9333,6 +9342,7 @@ impl TimeControl {
                     };
                     // A redo of the pass that went goes back to its cell,
                     // if that is free and its Loop track plays nothing.
+                    let gone_was = self.loops_gone[n];
                     let project = &mut self.project;
                     // Its lasting id, for an audio track's cell: one the
                     // project names nowhere yet.
@@ -9368,25 +9378,46 @@ impl TimeControl {
                         }
                         free
                     };
+                    let name = format!("Loop {}", n + 1);
                     let landed = match back.or_else(armed) {
                         Some((t, s)) => {
                             let clip = match id.filter(|_| project.tracks[t].is_audio()) {
-                                Some(id) => {
-                                    Clip::new_audio_loop(id, &format!("Loop {}", n + 1), is.ticks)
-                                }
+                                Some(id) => Clip::new_audio_loop(id, &name, is.ticks),
                                 None => Clip::new_loop(k, is.ticks),
                             };
                             let _ = project.put_new_clip(t, s, clip);
-                            // One loop plays per Loop track: the one there
-                            // stops as this one plays.
-                            self.launches.retain(|l| l.track != t);
-                            self.cues.retain(|c| c.track != t);
-                            Some((t, s))
+                            Some((t, s, false))
                         }
-                        None => loops::place(project, k, is.ticks, row, busy),
+                        // No cell for it (4e.4): an audio track's, by its
+                        // id, once it has one.
+                        None if loops_on => match id {
+                            Some(id) => loops::place_audio(
+                                project,
+                                id,
+                                &name,
+                                is.ticks,
+                                row,
+                                audio_armed,
+                                busy,
+                                room,
+                            )
+                            .map(|l| (l.track, l.slot, l.new_track)),
+                            None => {
+                                // Seen again once its id comes.
+                                seen[n] = was;
+                                self.loops_gone[n] = gone_was;
+                                continue;
+                            }
+                        },
+                        None => loops::place(project, k, is.ticks, row, busy)
+                            .map(|(t, s)| (t, s, false)),
                     };
                     match landed {
-                        Some((track, slot)) => {
+                        Some((track, slot, new_track)) => {
+                            // One clip plays a track: what it played stops
+                            // as the loop plays on there.
+                            self.launches.retain(|l| l.track != track);
+                            self.cues.retain(|c| c.track != track);
                             self.launches.push(Launch {
                                 track,
                                 slot,
@@ -9394,13 +9425,18 @@ impl TimeControl {
                                 start: is.origin,
                             });
                             lines.push(format!(
-                                "Loop {} on {}, row {}, playing",
+                                "Loop {} on {}{}, row {}, playing",
                                 n + 1,
                                 self.project.tracks[track].name,
+                                if new_track { " (a new audio track)" } else { "" },
                                 slot + 1
                             ));
                             compile = true;
                         }
+                        None if loops_on => lines.push(format!(
+                            "Loop {} has no cell: no audio track playing nothing has an empty cell for it, and no audio track can be added",
+                            n + 1
+                        )),
                         None => lines.push(format!(
                             "Loop {} is on no Loop track: the project has {} tracks",
                             n + 1,
@@ -9433,7 +9469,7 @@ impl TimeControl {
                 (false, false) => {}
             }
         }
-        self.loops_seen = *now;
+        self.loops_seen = seen;
         if compile {
             if let Err(e) = self.compile() {
                 lines.push(e);

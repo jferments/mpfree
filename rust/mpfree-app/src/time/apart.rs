@@ -494,9 +494,9 @@ impl Apart {
 
     /// [`Apart::loops_are`] with each loop's lasting id
     /// ([`TimeControl::loops_are_on`]).
-    pub fn loops_are_on(&mut self, now: [LoopNow; LOOPS], ids: [u128; LOOPS]) {
+    pub fn loops_are_on(&mut self, now: [LoopNow; LOOPS], ids: [u128; LOOPS], room: bool) {
         self.ask(Box::new(move |c| {
-            let lines = c.loops_are_on(&now, &ids);
+            let lines = c.loops_are_on(&now, &ids, room);
             (!lines.is_empty()).then_some(Told::Notes(lines))
         }));
     }

@@ -1072,16 +1072,25 @@ mod tests {
     /// time engine puts it in that cell, launched from the loop's own
     /// start; from the next period it plays in the track and not on the
     /// Loop strip. Straight on: the Loop strip and the track together are,
-    /// to float rounding, the Loop strip alone when no cell is armed (the
-    /// loop on a Loop track), from the first pass's first frame on, its
-    /// own fade in included.
+    /// to float rounding, the Loop strip alone with the time engine's
+    /// switch off (the loop on a Loop track), from the first pass's first
+    /// frame on, its own fade in included. With no cell armed for it
+    /// (phase 4e.4) it lands in the audio track's first cell all the same,
+    /// and plays on there just as straight.
     #[test]
     fn a_loop_recorded_into_an_armed_audio_cell_plays_on_in_that_track() {
-        let armed = record_a_loop(true);
-        let plain = record_a_loop(false);
+        let plain = record_a_loop(Lands::LoopTrack);
+        assert_eq!(plain.said, "Loop 1 on Loops A, row 1, playing");
+        for into in [Lands::Armed, Lands::NoCell] {
+            heard_straight_on(record_a_loop(into), &plain);
+        }
+    }
+
+    /// `armed` landed in Audio 1's first cell and plays on there exactly as
+    /// `plain` (the loop on a Loop track) did on the Loop strip.
+    fn heard_straight_on(armed: Heard, plain: &Heard) {
         let k = armed.landed;
         assert_eq!(armed.said, "Loop 1 on Audio 1, row 1, playing");
-        assert_eq!(plain.said, "Loop 1 on Loops A, row 1, playing");
         assert_eq!(plain.landed, k, "the pass ends on the same period");
         assert!(armed.in_cell && armed.launched && armed.on_track);
         // After the hand-off the Loop strip is silent and the track plays.
@@ -1123,11 +1132,22 @@ mod tests {
         on_track: bool,
     }
 
+    /// Where [`record_a_loop`]'s loop is to land.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Lands {
+        /// In Audio 1's first cell, armed for it.
+        Armed,
+        /// No cell armed (phase 4e.4: in Audio 1's first cell all the same).
+        NoCell,
+        /// The time engine's switch off: on a new Loop track.
+        LoopTrack,
+    }
+
     /// One bar of a tone recorded on the looper from the pads with Dev's
-    /// switch on, Audio 1's first cell armed for it or not, and the
-    /// periods as main.rs runs them: the left side of the Loop strip and
-    /// of Audio 1, and the period the first pass landed in.
-    fn record_a_loop(arm: bool) -> Heard {
+    /// switch on, landing `into`, and the periods as main.rs runs them:
+    /// the left side of the Loop strip and of Audio 1, and the period the
+    /// first pass landed in.
+    fn record_a_loop(into: Lands) -> Heard {
         use crate::audiotracks::TrackHost;
         use crate::looping::LoopHost;
         use crate::time::{Pads, TimeHost};
@@ -1153,8 +1173,8 @@ mod tests {
         p.tracks.push(a);
         let audio = p.tracks.len() - 1;
         let mut time = TimeHost::with_project(RATE, 120.0, p).unwrap();
-        time.set_loops_on(true);
-        if arm {
+        time.set_loops_on(into != Lands::LoopTrack);
+        if into == Lands::Armed {
             time.act(TimeAction::LoopCell(Some((audio, 0)))).unwrap();
         }
         let mut h = LoopHost::new(RATE, 20);
@@ -1211,7 +1231,7 @@ mod tests {
             let out = tracks.host.tracks.track_out(slot, PERIOD);
             track.extend(out.iter().step_by(2).take(PERIOD));
             if let Some(now) = h.grid_now() {
-                let lines = time.loops_are_on(&now, &h.loop_ids());
+                let lines = time.loops_are_on(&now, &h.loop_ids(), true);
                 if !lines.is_empty() {
                     h.look_again();
                     if landed.is_none() {
