@@ -32,6 +32,12 @@
 //! after the step that made them unreachable, and again while an engine
 //! still holds them (a busy loop passes the ask over).
 //!
+//! A loop's step whose layer left memory (a synced layer only UNDO needed,
+//! phase 4d.4) waits while its layer is brought back from its file: the
+//! audio tracks' worker reads it, and it goes in a piece a period
+//! ([`Pending`]); the step is taken back once it is all in, if it is still
+//! the next. Another UNDO meanwhile says it is still bringing it back.
+//!
 //! UNDO sends the newest step back to its own engine ([`press`]): the time
 //! engine's UNDO (a song edit's region steps go with it, as
 //! `act_with_audio` takes them), the loop's Undo (`LoopHost::undo_loop`,
@@ -276,7 +282,28 @@ pub struct OneUndo {
     /// Periods until each engine (the takes, the audio tracks, the
     /// looper) may be asked again to forget ([`OneUndo::tend`]).
     wait: [u16; 3],
+    /// A step waiting for its layer to come back from its file.
+    pending: Option<Pending>,
 }
+
+/// A loop's step waiting for a layer that left memory (phase 4d.4): the
+/// step (its transaction, UNDO or REDO, its loop and its words), the loop
+/// and slot its layer comes back into, its recording, and its audio once
+/// read, with the frames put back so far.
+#[derive(Debug)]
+struct Pending {
+    txn: TransactionId,
+    redo: bool,
+    n: usize,
+    said: String,
+    lp: usize,
+    rec: u128,
+    audio: Option<Vec<f32>>,
+    at: usize,
+}
+
+/// Frames of a layer coming back put in each period.
+const BACK_FRAMES: usize = 16_384;
 
 /// What [`OneUndo::tend`] asks one engine to forget.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -393,6 +420,111 @@ impl OneUndo {
         time: &mut TimeHost,
         tracks: &mut TrackHost,
         looper: &mut LoopHost,
+    ) -> Vec<app::Effect> {
+        let fx = self.tend_back(out, tracks, looper);
+        self.ask_to_forget(out, time, tracks, looper);
+        fx
+    }
+
+    /// A layer coming back from its file (phase 4d.4): its audio once the
+    /// worker has read it, then a piece a period, and once it is all in,
+    /// the step that waited for it, if it is still the next.
+    fn tend_back(
+        &mut self,
+        out: &mut Out,
+        tracks: &mut TrackHost,
+        looper: &mut LoopHost,
+    ) -> Vec<app::Effect> {
+        // The worker's answer: the audio waited for, or a read no step
+        // waits for any more, which goes back to the worker.
+        let reading = self
+            .pending
+            .as_ref()
+            .filter(|p| p.audio.is_none())
+            .map(|p| p.rec);
+        if let Some((rec, got)) = tracks.layer_read_back() {
+            match (got, reading == Some(rec)) {
+                (Ok(audio), true) => {
+                    if let Some(p) = self.pending.as_mut() {
+                        p.audio = Some(audio);
+                    }
+                }
+                (Err(why), true) => {
+                    looper.looper.call_back_off();
+                    let lp = self.pending.take().map_or(0, |p| p.lp);
+                    let line = format!("Loop {}'s layer can't come back: {why}", lp + 1);
+                    out.note(&format!("one undo: {line}"));
+                    return vec![app::Effect::Tell(line)];
+                }
+                (Ok(other), false) => tracks.drop_audio(other),
+                (Err(_), false) => {}
+            }
+        }
+        let Some(p) = self.pending.as_mut() else {
+            return Vec::new();
+        };
+        if !looper.looper.bringing_back() {
+            // Called off in the looper: the step was let go, or its loop
+            // cleared and forgotten or loaded over. Nothing to take back.
+            let p = self.pending.take().expect("pending above");
+            if let Some(a) = p.audio {
+                tracks.drop_audio(a);
+            }
+            out.note(&format!(
+                "one undo: Loop {}'s layer is no longer needed",
+                p.lp + 1
+            ));
+            return Vec::new();
+        }
+        let Some(audio) = p.audio.as_ref() else {
+            return Vec::new();
+        };
+        let end = (p.at + 2 * BACK_FRAMES).min(audio.len());
+        let whole = looper.looper.put_back(&audio[p.at..end]);
+        p.at = end;
+        if !whole && p.at < audio.len() {
+            return Vec::new();
+        }
+        let p = self.pending.take().expect("pending above");
+        if let Some(a) = p.audio {
+            tracks.drop_audio(a);
+        }
+        if !whole {
+            // The file was shorter than the layer: it stays away.
+            looper.looper.call_back_off();
+            let line = format!(
+                "Loop {}'s layer can't come back: its file is short",
+                p.lp + 1
+            );
+            out.note(&format!("one undo: {line}"));
+            return vec![app::Effect::Tell(line)];
+        }
+        out.note(&format!("one undo: Loop {}'s layer is back", p.lp + 1));
+        if self.next(p.redo).map(|e| e.txn) != Some(p.txn) {
+            return Vec::new();
+        }
+        // A step that brings back more than one (a merge's sources): the
+        // next one, then the step.
+        if let Some(away) = looper.looper.away_for(p.n, p.redo) {
+            return bring_back(
+                self,
+                out,
+                tracks,
+                looper,
+                (p.n, p.txn, p.redo, p.said),
+                away,
+            );
+        }
+        out.note(&looper.undo_loop(p.n, p.redo));
+        vec![app::Effect::Tell(p.said)]
+    }
+
+    fn ask_to_forget(
+        &mut self,
+        out: &mut Out,
+        time: &mut TimeHost,
+        tracks: &mut TrackHost,
+        looper: &mut LoopHost,
     ) {
         let asks = self.to_forget();
         for (e, f) in asks.iter().enumerate() {
@@ -493,7 +625,7 @@ fn loop_words(
 /// time engine says its own). Returns the app's effects.
 #[allow(clippy::too_many_arguments)]
 pub fn press(
-    one: &OneUndo,
+    one: &mut OneUndo,
     redo: bool,
     out: &mut Out,
     time: &mut TimeHost,
@@ -502,6 +634,11 @@ pub fn press(
     app: &mut app::App,
     mix: &mut mixing::MixHost,
 ) -> Vec<app::Effect> {
+    if let Some(p) = &one.pending {
+        let line = format!("Still bringing back Loop {}'s layer", p.lp + 1);
+        out.note(&format!("one undo: {line}"));
+        return vec![app::Effect::Tell(line)];
+    }
     let Some(e) = one.next(redo) else {
         let line = match (redo, one.ledger.let_go) {
             (true, _) => "Nothing to redo",
@@ -540,10 +677,65 @@ pub fn press(
             }
         }
         Part::Loop(n) => {
+            if let Some((lp, slot, born)) = looper.looper.away_for(n, redo) {
+                let txn = e.txn;
+                return bring_back(
+                    one,
+                    out,
+                    tracks,
+                    looper,
+                    (n, txn, redo, said),
+                    (lp, slot, born),
+                );
+            }
             out.note(&looper.undo_loop(n, redo));
             vec![app::Effect::Tell(said)]
         }
     }
+}
+
+/// Start bringing back the layer loop step `step` (its loop, transaction,
+/// UNDO or REDO, words) needs, loop `lp`'s slot `slot`, numbered `born`
+/// (phase 4d.4): its memory is taken again and the audio tracks' worker
+/// reads its file; [`OneUndo::tend`] puts it in and then takes the step
+/// back. Says why not, changing nothing.
+fn bring_back(
+    one: &mut OneUndo,
+    out: &mut Out,
+    tracks: &mut TrackHost,
+    looper: &mut LoopHost,
+    (n, txn, redo, said): (usize, TransactionId, bool, String),
+    (lp, slot, born): (usize, usize, u64),
+) -> Vec<app::Effect> {
+    let rec = looper.layer_rec(lp, born);
+    let refused = |out: &mut Out, why: &str| {
+        let line = format!("Loop {}'s layer can't come back: {why}", lp + 1);
+        out.note(&format!("one undo: {line}"));
+        vec![app::Effect::Tell(line)]
+    };
+    if rec == 0 {
+        return refused(out, "it has no file");
+    }
+    if let Err(why) = looper.looper.begin_back(lp, slot) {
+        return refused(out, why);
+    }
+    if !tracks.read_layer(rec) {
+        looper.looper.call_back_off();
+        return refused(out, "its file can't be read now");
+    }
+    one.pending = Some(Pending {
+        txn,
+        redo,
+        n,
+        said,
+        lp,
+        rec,
+        audio: None,
+        at: 0,
+    });
+    let line = format!("Bringing back Loop {}'s layer", lp + 1);
+    out.note(&format!("one undo: {line}"));
+    vec![app::Effect::Tell(line)]
 }
 
 #[cfg(test)]

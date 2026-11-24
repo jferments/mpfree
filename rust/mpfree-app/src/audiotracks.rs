@@ -3229,6 +3229,25 @@ impl TrackHost {
         })
     }
 
+    /// Read loop layer recording `rec`'s file back, as this run wrote it
+    /// (phase 4d.4): its audio comes back whole
+    /// ([`TrackHost::layer_read_back`]). False with no worker.
+    pub fn read_layer(&mut self, rec: u128) -> bool {
+        self.host.layer_read(RecordingId(rec))
+    }
+
+    /// A layer's file read back ([`TrackHost::read_layer`]): its audio,
+    /// interleaved stereo, or why not. Give the audio back with
+    /// [`TrackHost::drop_audio`].
+    pub fn layer_read_back(&mut self) -> Option<(u128, Result<Vec<f32>, String>)> {
+        self.host.layer_read_back().map(|(r, a)| (r.0, a))
+    }
+
+    /// Audio done with, dropped on the worker.
+    pub fn drop_audio(&self, audio: Vec<f32>) {
+        self.host.drop_audio(audio);
+    }
+
     fn send(&mut self, c: Command) -> Result<(), String> {
         if self.host.command(c) {
             Ok(())

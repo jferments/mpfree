@@ -185,6 +185,9 @@ pub struct LayerRecs {
     /// And, for a layer a merge or a fit made, the recordings it was made
     /// from, in play order, 0 after the last (phase 4c.5).
     from: Box<[[[u128; MAX_LAYERS]; MAX_LAYERS]; MAX_LOOPS]>,
+    /// And whether this run wrote its file (so the audio tracks' worker
+    /// knows where it is, and UNDO can read it back: phase 4d.4).
+    here: [[bool; MAX_LAYERS]; MAX_LOOPS],
 }
 
 /// Where a layer's recording's file stands (phase 4c.3).
@@ -208,6 +211,7 @@ impl Default for LayerRecs {
             recs: [[(0, 0); MAX_LAYERS]; MAX_LOOPS],
             files: [[FileState::Unwritten; MAX_LAYERS]; MAX_LOOPS],
             from: Box::new([[[0; MAX_LAYERS]; MAX_LAYERS]; MAX_LOOPS]),
+            here: [[false; MAX_LAYERS]; MAX_LOOPS],
         }
     }
 }
@@ -226,6 +230,7 @@ impl LayerRecs {
                 if y.closed && y.born != 0 && self.recs[n][s].0 != y.born {
                     self.recs[n][s] = (y.born, fresh());
                     self.files[n][s] = FileState::Unwritten;
+                    self.here[n][s] = false;
                     // A merge's or a fit's: the recordings of the layers
                     // it was made from, which still hold them (4c.5).
                     let mut from = [0; MAX_LAYERS];
@@ -242,6 +247,26 @@ impl LayerRecs {
                 }
             }
         }
+    }
+
+    /// Each layer whose file this run wrote and synced, as (loop, its
+    /// number): it may leave memory while only UNDO needs it, and come
+    /// back from its file (phase 4d.4). Does not allocate.
+    pub fn written_here(&self) -> impl Iterator<Item = (usize, u64)> + '_ {
+        (0..MAX_LOOPS).flat_map(move |n| {
+            (0..MAX_LAYERS).filter_map(move |s| {
+                let synced = self.here[n][s] && self.files[n][s] == FileState::Synced;
+                synced.then_some((n, self.recs[n][s].0))
+            })
+        })
+    }
+
+    /// The recording of loop `n`'s layer numbered `born` (0: none).
+    pub fn rec_of(&self, n: usize, born: u64) -> u128 {
+        self.recs[n % MAX_LOOPS]
+            .iter()
+            .find(|r| r.0 == born && born != 0)
+            .map_or(0, |r| r.1)
     }
 
     /// Layer `y` of loop `n`'s recording (0: none yet).
@@ -270,6 +295,7 @@ impl LayerRecs {
             if rec != 0 && born != 0 {
                 self.recs[n % MAX_LOOPS][k] = (born, rec);
                 self.files[n % MAX_LOOPS][k] = FileState::Synced;
+                self.here[n % MAX_LOOPS][k] = false;
                 self.from[n % MAX_LOOPS][k] = from.get(k).copied().unwrap_or([0; MAX_LAYERS]);
             }
         }
@@ -412,6 +438,7 @@ impl LayerWriter {
                     } else {
                         FileState::Failed
                     };
+                    recs.here[n][s] = why.is_none();
                 }
             }
             if let Some(why) = why {

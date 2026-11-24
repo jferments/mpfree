@@ -11074,7 +11074,7 @@ fn player_session(
                 level_db: &mut level_db,
                 max_db,
                 card: audio,
-                undo: &one_undo,
+                undo: &mut one_undo,
             };
             if step_turn(&a) {
                 step_keys.turned();
@@ -14012,7 +14012,7 @@ fn player_session(
                 level_db: &mut level_db,
                 max_db,
                 card: audio,
-                undo: &one_undo,
+                undo: &mut one_undo,
             };
             let Some(e) = desk.effect(e, out, &mut later) else {
                 parts.item_named(parts::APP, t_item, &item);
@@ -16236,7 +16236,7 @@ fn player_session(
             if let Some(next) = one_undo.follow(&time, &tracks, &looper) {
                 out.show(gui::ToUi::OneUndo(next));
             }
-            one_undo.tend(out, &mut time, &mut tracks, &mut looper);
+            fx.extend(one_undo.tend(out, &mut time, &mut tracks, &mut looper));
         }
         if let Some(wave) = loop_wave {
             out.show(gui::ToUi::LoopWave(wave));
@@ -20155,7 +20155,7 @@ mod tests {
                 let (mut left, mut right) = ([0.0; PERIOD], [0.0; PERIOD]);
                 r.looper.run(r.time.block(), &mut left, &mut right);
                 one.follow(&r.time, &r.tracks, &r.looper);
-                one.tend(&mut r.out, &mut r.time, &mut r.tracks, &mut r.looper);
+                let _ = one.tend(&mut r.out, &mut r.time, &mut r.tracks, &mut r.looper);
             }
         };
         run(&mut r, &mut one, 2, false);
@@ -20270,6 +20270,160 @@ mod tests {
         assert_eq!((take_redo(&r), gain_steps(&r).1), (0, 0));
         assert_eq!((b_at(&r), r.audio()), (2 * bar, 2 * bar), "nothing moved");
         assert_eq!(press(&mut r, &mut one, true), "Nothing to redo");
+    }
+
+    /// Phase 4d.4 on the real engines: a layer only UNDO needs, written to
+    /// its file and synced, leaves memory when a new overdub needs the
+    /// room. The one UNDO that needs it says it is bringing it back (and
+    /// another UNDO meanwhile that it still is), the overdub kept for
+    /// REDO makes room for it, the audio tracks' worker reads its file,
+    /// it goes in a piece a period, and then the step is taken back, the
+    /// layer exactly as it was. REDO brings back the overdub in turn.
+    #[test]
+    fn the_one_undo_brings_a_layer_back_from_its_file_before_its_step() {
+        use mpfree_looper::{Command as L, LayerCommand as Lc, Phase};
+        use one_undo::{OneUndo, Part};
+        let dir = std::env::temp_dir().join(format!("mpfree-one-undo-back-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut r = SongRig::new(false);
+        // Seven seconds: a first pass of a bar (two seconds) with what it
+        // keeps and two overdubs, not a third.
+        r.looper = looping::LoopHost::new(RATE, 7);
+        r.looper.set_recordings(true);
+        r.tracks.record_to(dir.clone());
+        let mut one = OneUndo::default();
+        // Periods as the audio loop runs them with the switch on: layers
+        // get recordings and go to their files, the looper runs on the
+        // pads' steady `x`, and the one history follows and tends; what
+        // it says comes back.
+        let run = |r: &mut SongRig, one: &mut OneUndo, n: usize, x: f32| {
+            let mut told = Vec::new();
+            for _ in 0..n {
+                r.period();
+                let _ = r.looper.follow_plan(&r.time.loop_plan());
+                let tracks = &mut r.tracks;
+                r.looper.give_layer_recs(|| tracks.fresh_recording_id());
+                assert_eq!(r.looper.write_layers(&mut r.tracks, PERIOD), None);
+                r.looper.take_pads(&[x; PERIOD], &[-x; PERIOD]);
+                let (mut left, mut right) = ([0.0; PERIOD], [0.0; PERIOD]);
+                r.looper.run(r.time.block(), &mut left, &mut right);
+                one.follow(&r.time, &r.tracks, &r.looper);
+                let fx = one.tend(&mut r.out, &mut r.time, &mut r.tracks, &mut r.looper);
+                if !fx.is_empty() {
+                    told.push(SongRig::told(&fx));
+                }
+            }
+            told
+        };
+        // Periods until every layer of loop 1 is in its synced file, or
+        // until the one history says something: the worker is a thread.
+        let until = |r: &mut SongRig, one: &mut OneUndo, synced: bool| {
+            let t0 = Instant::now();
+            loop {
+                assert!(
+                    t0.elapsed() < Duration::from_secs(30),
+                    "the worker never answered"
+                );
+                let told = run(r, one, 1, 0.0);
+                if synced && r.looper.unsaved_layers(0) == 0 {
+                    return String::new();
+                }
+                if let (false, Some(line)) = (synced, told.into_iter().next()) {
+                    return line;
+                }
+                std::thread::sleep(Duration::from_micros(200));
+            }
+        };
+        assert!(r.time.command(mpfree_transport::Command::Play));
+        r.looper.command(L::SetBars(Some(1)));
+        r.looper.command(L::Record);
+        let bar_periods = 2 * RATE as usize / PERIOD + 1;
+        for _ in 0..3 * bar_periods {
+            run(&mut r, &mut one, 1, 0.25);
+            if r.looper.looper.status().phase == Phase::Playing {
+                break;
+            }
+        }
+        assert_eq!(r.looper.looper.status().phase, Phase::Playing);
+        let overdub = |r: &mut SongRig, one: &mut OneUndo, x: f32| {
+            r.looper.command(L::Overdub);
+            run(r, one, bar_periods, x);
+            r.looper.command(L::Overdub);
+            run(r, one, 20, 0.0);
+        };
+        overdub(&mut r, &mut one, 0.125);
+        overdub(&mut r, &mut one, 0.0625);
+        let layers = |r: &SongRig| r.looper.looper.status().layers;
+        assert_eq!(layers(&r), 3);
+        until(&mut r, &mut one, true);
+        // The second layer deleted: only its UNDO needs it now.
+        let second = r.looper.looper.layer_info(1).unwrap();
+        let size = r.looper.looper.raw_of(0, second.born, 0, &mut []).unwrap();
+        let mut raw = vec![0.0; 2 * size];
+        r.looper.looper.raw_of(0, second.born, 0, &mut raw);
+        r.looper.layer_command(second.id, Lc::Delete);
+        run(&mut r, &mut one, 20, 0.0);
+        // A new overdub needs its room: it leaves memory.
+        overdub(&mut r, &mut one, 0.5);
+        assert_eq!(layers(&r), 3, "the overdub had room");
+        assert!(r.looper.looper.is_away(0, second.born));
+        until(&mut r, &mut one, true);
+        let press = |r: &mut SongRig, one: &mut OneUndo, redo: bool| {
+            let fx = one_undo::press(
+                one,
+                redo,
+                &mut r.out,
+                &mut r.time,
+                &mut r.tracks,
+                &mut r.looper,
+                &mut r.app,
+                &mut r.mix,
+            );
+            SongRig::told(&fx)
+        };
+        // UNDO: the new overdub, needing nothing.
+        let said = press(&mut r, &mut one, false);
+        assert!(said.starts_with("Undid Overdub"), "{said}");
+        run(&mut r, &mut one, 3, 0.0);
+        assert_eq!(layers(&r), 2);
+        // UNDO: the Delete waits for its layer.
+        assert_eq!(one.next(false).map(|e| e.part), Some(Part::Loop(0)));
+        let delete = one.next(false).map(|e| e.words.clone()).unwrap();
+        assert_eq!(
+            press(&mut r, &mut one, false),
+            "Bringing back Loop 1's layer"
+        );
+        assert_eq!(
+            press(&mut r, &mut one, false),
+            "Still bringing back Loop 1's layer"
+        );
+        let said = until(&mut r, &mut one, false);
+        assert_eq!(said, format!("Undid {delete}"));
+        run(&mut r, &mut one, 3, 0.0);
+        assert_eq!(layers(&r), 3, "the deleted layer is back");
+        let mut again = vec![0.0; 2 * size];
+        assert_eq!(
+            r.looper.looper.raw_of(0, second.born, 0, &mut again),
+            Some(size)
+        );
+        assert_eq!(again, raw, "exactly as it was");
+        // REDO: the Delete again, needing nothing; then the overdub, which
+        // made room and comes back from its file in turn.
+        let said = press(&mut r, &mut one, true);
+        assert_eq!(said, format!("Redid {delete}"));
+        run(&mut r, &mut one, 3, 0.0);
+        assert_eq!(layers(&r), 2);
+        assert_eq!(
+            press(&mut r, &mut one, true),
+            "Bringing back Loop 1's layer"
+        );
+        let said = until(&mut r, &mut one, false);
+        assert!(said.starts_with("Redid Overdub"), "{said}");
+        run(&mut r, &mut one, 3, 0.0);
+        assert_eq!(layers(&r), 3, "the overdub is back on top");
+        assert_eq!(one.next(true).map(|e| e.txn), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The same apart (--time-thread): the control half is lent for the
