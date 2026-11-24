@@ -691,6 +691,33 @@ fn finite_at_the_extremes() {
     }
 }
 
+/// Step 2.2d: the 12 dB types design their coefficients two ways (matched
+/// above about 2 kHz, the plain state-variable filter below), and the
+/// filter type can change under a held note. Switching types mid-note,
+/// and sweeping the cutoff back and forth across the 2 kHz handover at
+/// full resonance, stays finite and bounded.
+#[test]
+fn switching_filter_types_and_crossing_the_handover_stays_bounded() {
+    let mut s = plain();
+    s.set_param(RESONANCE, 100.0);
+    s.set_param(CUTOFF, 16_000.0);
+    s.set_param(ENV_AMT, 100.0);
+    s.set_param(F_ATTACK, 1.0);
+    s.set_param(LFO_CUTOFF, 100.0);
+    let mut ev = vec![(0u64, on(48, 127)), (0, on(84, 127))];
+    let types = [LP12, LP24, BP12, LP12, HP12, LP24, HP12, BP12];
+    for (i, &ft) in types.iter().enumerate() {
+        let at = ms(40.0) * (i as u64 + 1);
+        ev.push((at, set(FILTER_TYPE, ft)));
+        let cut = if i % 2 == 0 { 1_200.0 } else { 18_000.0 };
+        ev.push((at + ms(15.0), set(CUTOFF, cut)));
+    }
+    let (l, r) = render(&mut s, ms(400.0) as usize, &ev, |n| [7, 64, 128, 33][n % 4]);
+    assert!(l.iter().chain(&r).all(|v| v.is_finite()));
+    assert!(peak(&l) < 8.0, "peak {}", peak(&l));
+    assert!(rms(&l) > 1e-3, "the note still sounds");
+}
+
 #[test]
 fn in_tune_and_at_the_same_level_at_other_rates() {
     let level = |rate: u32| {
