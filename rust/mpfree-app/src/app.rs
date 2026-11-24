@@ -1900,6 +1900,13 @@ pub struct App {
     /// The phrase last picked on each kind's shelf, so stepping back to a
     /// kind returns to it (`app/arp/phrases.rs`).
     phrase_last: [Option<usize>; mpfree_arp_ui::phrases::Shelf::ALL.len()],
+    /// The pads play the shared synth on their own (main.rs
+    /// `PadsPreview::Synth`), whose pads press notes, so the pads' arp
+    /// plays the armed track's phrase there ([`App::set_pads_own`]).
+    pads_own_notes: bool,
+    /// Where the pads' arp is in its phrase, while it plays one, in ticks
+    /// of the phrase: the Phrase tab's cursor follows it then.
+    pads_phrase_at: Option<f64>,
     /// The pattern the engine plays (edited, mutated or recorded from the
     /// list's).
     pattern: Pattern,
@@ -2196,6 +2203,8 @@ impl App {
             phrase_index: 0,
             phrase_shelf: None,
             phrase_last: [None; mpfree_arp_ui::phrases::Shelf::ALL.len()],
+            pads_own_notes: false,
+            pads_phrase_at: None,
             pattern,
             mutations: 0,
             recorder: None,

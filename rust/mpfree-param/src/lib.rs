@@ -596,6 +596,9 @@ pub mod arp {
     /// the Modifier's controller is "Learned knob" (mpfree-arp's
     /// `modifier.rs`). Not a Q-Link.
     pub const MODIFIER: u16 = 4;
+    /// A phrase's speed: half, as written or double (0 to 2). On the
+    /// Phrase tab it is the first Q-Link in the rate's place.
+    pub const SPEED: u16 = 5;
     /// The four the Q-Links turn, in Q-Link order, with their names.
     pub const ALL: [(u16, &str); 4] = [
         (RATE, "Rate"),
@@ -608,6 +611,9 @@ pub mod arp {
     pub fn name(id: u16) -> Option<&'static str> {
         if id == MODIFIER {
             return Some("Modifier");
+        }
+        if id == SPEED {
+            return Some("Speed");
         }
         ALL.iter().find(|(i, _)| *i == id).map(|(_, n)| *n)
     }
