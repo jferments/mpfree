@@ -90,12 +90,12 @@ use mpfree_compose::baseline::{
     motif_repeated, regroove, simpler, try_bar_one_sided, Feel, Simpler,
 };
 use mpfree_compose::critic::{judge_continue, Verdict};
-use mpfree_compose::draft::drafts;
+use mpfree_compose::draft::{draft, drafts};
 use mpfree_compose::style::{BassLine, DrumMap};
 use mpfree_compose::{
-    add_part, continue_notes, first_engine, try_bar, AddPart, Added, Continue, Continued, DrumHit,
-    Heard, InstrumentKind, PlainNote, Relation, Role, Row, RowPart, Settings, Source, Style,
-    ToHear, GROOVE, JAZZISH, MINIMAL,
+    add_part, continue_notes, first_engine, safe_controls, sound_of, try_bar, AddPart, Added,
+    Continue, Continued, Control, DrumHit, Heard, InstrumentKind, Knob, PlainNote, Relation, Role,
+    Row, RowPart, Settings, SoundLevel, SoundMove, Source, Style, ToHear, GROOVE, JAZZISH, MINIMAL,
 };
 use mpfree_context::chord::{Chord, ChordSpan, ChordTimeline, Heard as ChordHeard, Quality, Tone};
 use mpfree_context::groove::{Lane, STEP};
@@ -105,7 +105,7 @@ use mpfree_fx::ids::plate;
 use mpfree_fx::{Delay, Plate};
 use mpfree_midi::smf::{self, Smf, SmfTrack};
 use mpfree_midi::Msg;
-use mpfree_node::{Ctx, Node, NodeEvent, Timed};
+use mpfree_node::{Ctx, Curve, Node, NodeEvent, Timed};
 use mpfree_seq::Note;
 use mpfree_synth::{Bass, Drums, Keys, Pluck, Poly, Strings, Wind};
 use mpfree_transport::time::{Meter, Swing, Tick, PPQ};
@@ -136,6 +136,10 @@ static SOUNDS: std::sync::OnceLock<Sounds> = std::sync::OnceLock::new();
 fn sounds() -> Sounds {
     *SOUNDS.get().unwrap_or(&Sounds::A)
 }
+
+/// `--lead NAME`: the melody on the synth's preset NAME (a filtered lead
+/// for the sound moves' gate) in place of the set's.
+static LEAD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 /// The loudness every file is brought to, in LUFS.
 const FILE_LUFS: f64 = -18.0;
@@ -527,6 +531,8 @@ struct Take {
     extra: Vec<Extra>,
     /// Whether the phrase's drummer plays.
     drummer: bool,
+    /// The melody's sound moves (S3), on its preset's safe controls.
+    moves: Vec<SoundMove>,
 }
 
 /// What an added part is, for its sound.
@@ -701,6 +707,7 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                         pad: None,
                         extra: Vec::new(),
                         drummer: true,
+                        moves: Vec::new(),
                     },
                     Take {
                         what: words.to_string(),
@@ -711,6 +718,7 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                         pad: None,
                         extra: Vec::new(),
                         drummer: true,
+                        moves: Vec::new(),
                     },
                 ],
                 labels: Vec::new(),
@@ -744,6 +752,7 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                         pad: None,
                         extra: Vec::new(),
                         drummer: true,
+                        moves: Vec::new(),
                     },
                     Take {
                         what: format!("random notes in {}'s scale and rhythm", style.name),
@@ -754,6 +763,7 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                         pad: None,
                         extra: Vec::new(),
                         drummer: true,
+                        moves: Vec::new(),
                     },
                 ],
                 labels: Vec::new(),
@@ -778,6 +788,7 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                     pad: None,
                     extra: Vec::new(),
                     drummer: true,
+                    moves: Vec::new(),
                 }),
                 Err(e) => fail(
                     "styles",
@@ -842,6 +853,7 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                         pad: None,
                         extra: Vec::new(),
                         drummer: true,
+                        moves: Vec::new(),
                     },
                     Take {
                         what: words.clone(),
@@ -852,6 +864,7 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                         pad: None,
                         extra: Vec::new(),
                         drummer: true,
+                        moves: Vec::new(),
                     },
                 ],
                 labels: Vec::new(),
@@ -886,6 +899,7 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                         pad: None,
                         extra: Vec::new(),
                         drummer: true,
+                        moves: Vec::new(),
                     },
                     Take {
                         what: "a four-bar motif repeated with small random changes".into(),
@@ -896,6 +910,7 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                         pad: None,
                         extra: Vec::new(),
                         drummer: true,
+                        moves: Vec::new(),
                     },
                 ],
                 labels: Vec::new(),
@@ -974,6 +989,7 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                                 pad: None,
                                 extra: Vec::new(),
                                 drummer: true,
+                                moves: Vec::new(),
                             },
                             Take {
                                 what: "tried again without looking at the bar after".into(),
@@ -984,6 +1000,7 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                                 pad: None,
                                 extra: Vec::new(),
                                 drummer: true,
+                                moves: Vec::new(),
                             },
                         ],
                         labels: Vec::new(),
@@ -1013,6 +1030,7 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                 pad: None,
                 extra: Vec::new(),
                 drummer: true,
+                moves: Vec::new(),
             }],
             labels: Vec::new(),
         }),
@@ -1041,6 +1059,7 @@ fn cases(p: &Phrase, seed: u64) -> Made {
                 pad: Some(chords),
                 extra: Vec::new(),
                 drummer: true,
+                moves: Vec::new(),
             }],
             labels: Vec::new(),
         }),
@@ -1105,6 +1124,7 @@ fn gate_cases(p: &Phrase, seed: u64) -> Made {
             pad: Some(pad),
             extra: Vec::new(),
             drummer: true,
+            moves: Vec::new(),
         };
         Ok(Case {
             id: format!("{}-gate", p.slug),
@@ -1145,6 +1165,291 @@ fn gate_cases(p: &Phrase, seed: u64) -> Made {
             Vec::new()
         }
     };
+    Made { cases, notes }
+}
+
+// ------------------------------------------------------------ S4: the critic
+
+/// The S4 gate: the same request carried on twice, once as the critic
+/// offers it (the best of twelve drafts, a weak bar repaired) and once as
+/// the first draft comes, unjudged. Two cases per phrase; a seed whose
+/// first draft is the critic's pick is passed over for the next, up to
+/// four.
+fn critic_cases(p: &Phrase, seed: u64) -> Made {
+    const NEW: u8 = 8;
+    let clip = clip_of(&p.notes, p.bars, p.meter);
+    let yours = yours_as_notes(&p.notes);
+    let mut notes = String::new();
+    let to_bar = p.bars + usize::from(NEW);
+    let mut cases = Vec::new();
+    let mut sd = seed;
+    for k in 0..2u64 {
+        let made = (|| -> Result<Case, String> {
+            for _ in 0..4 {
+                let set = settings(p.style, NEW, sd);
+                sd += 1;
+                let req = request(p, &clip, &set);
+                let all = drafts(&req).map_err(|e| e.words())?;
+                let best = &all[0];
+                let first = draft(&req, 0).map_err(|e| e.words())?;
+                if best.number == 0 && best.made.critic.is_empty() {
+                    continue;
+                }
+                let _ = writeln!(
+                    notes,
+                    "{}: {} bars of {} at {:.0} BPM; read as {}; style {}; seed {}",
+                    p.name,
+                    p.bars,
+                    meter_words(p.meter),
+                    p.bpm,
+                    clip.context.key.words(),
+                    style_words(&p.style),
+                    sd - 1
+                );
+                let _ = writeln!(
+                    notes,
+                    "  the critic: draft {} of {}, passes {}{}; the first draft unjudged passes {}",
+                    best.number + 1,
+                    all.len(),
+                    best.verdict.passed(),
+                    if best.made.critic.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", best.made.critic.join("; "))
+                    },
+                    first.verdict.passed()
+                );
+                let take = |what: &str, c: &Continued| Take {
+                    what: what.to_string(),
+                    mpfree: true,
+                    notes: whole(&yours, &c.notes),
+                    from_bar: 0,
+                    to_bar,
+                    pad: Some(c.chords.clone()),
+                    extra: Vec::new(),
+                    drummer: true,
+                    moves: Vec::new(),
+                };
+                return Ok(Case {
+                    id: format!("{}-critic-{}", p.slug, k + 1),
+                    phrase: p.name.clone(),
+                    test: "critic",
+                    question: "Which would you keep?",
+                    about: format!(
+                        "your {} bars, then 8 new bars in {}, two ways",
+                        p.bars,
+                        style_words(&p.style)
+                    ),
+                    takes: vec![
+                        take("the critic's pick (S4)", &best.made),
+                        take("the first draft, unjudged", &first.made),
+                    ],
+                    labels: Vec::new(),
+                });
+            }
+            Err("the first draft was the critic's pick on four seeds".into())
+        })();
+        let first = order(2, seed, &p.slug)[0] as u64 == k;
+        match made {
+            Ok(c) => cases.push(finish_in(c, if first { &[0, 1] } else { &[1, 0] })),
+            Err(e) => {
+                let _ = writeln!(notes, "{}: critic: left out, {e}", p.name);
+            }
+        }
+    }
+    Made { cases, notes }
+}
+
+// ------------------------------------------------------------ S3: playing
+
+/// The S3 gate: the same new bars (the same notes, places and chords)
+/// played with the phrase and the instrument ([`mpfree_compose::perform`])
+/// and played as before, the style's gesture at 0. Two cases per phrase,
+/// on two seeds, so the pairs are not all one tune.
+fn gestures_cases(p: &Phrase, seed: u64) -> Made {
+    const NEW: u8 = 8;
+    let clip = clip_of(&p.notes, p.bars, p.meter);
+    let yours = yours_as_notes(&p.notes);
+    let mut notes = String::new();
+    let to_bar = p.bars + usize::from(NEW);
+    let mut cases = Vec::new();
+    for k in 0..2u64 {
+        let sd = seed + k;
+        let _ = writeln!(
+            notes,
+            "{}: {} bars of {} at {:.0} BPM; read as {}; style {}; seed {sd}",
+            p.name,
+            p.bars,
+            meter_words(p.meter),
+            p.bpm,
+            clip.context.key.words(),
+            style_words(&p.style)
+        );
+        let played = settings(p.style, NEW, sd);
+        let mut flat_style = p.style;
+        flat_style.playing.gesture = 0.0;
+        let typed = settings(flat_style, NEW, sd);
+        let made = (|| -> Result<Case, String> {
+            let a = continue_notes(&request(p, &clip, &played)).map_err(|e| e.words())?;
+            let b = continue_notes(&request(p, &clip, &typed)).map_err(|e| e.words())?;
+            let same = a.notes.len() == b.notes.len()
+                && a.notes.iter().zip(&b.notes).all(|(x, y)| x.note == y.note);
+            if !same {
+                return Err("the two ways made different notes".into());
+            }
+            let moved = |c: &Continued| {
+                c.part
+                    .decisions
+                    .iter()
+                    .map(|d| f64::from(d.timing.play).abs())
+                    .fold(0.0, f64::max)
+            };
+            let spread = |c: &Continued| {
+                let v: Vec<f64> = c.notes.iter().map(|n| f64::from(n.velocity)).collect();
+                let m = v.iter().sum::<f64>() / v.len().max(1) as f64;
+                (v.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / v.len().max(1) as f64).sqrt()
+            };
+            let _ = writeln!(
+                notes,
+                "  {} notes; played: loudness spread {:.1}, timing moved up to {:.1} ms; as before: spread {:.1}",
+                a.notes.len(),
+                spread(&a),
+                moved(&a) * 60_000.0 / (p.bpm * f64::from(PPQ)),
+                spread(&b),
+            );
+            let take = |what: &str, new: &[Note], pad: ChordTimeline| Take {
+                what: what.to_string(),
+                mpfree: true,
+                notes: whole(&yours, new),
+                from_bar: 0,
+                to_bar,
+                pad: Some(pad),
+                extra: Vec::new(),
+                drummer: true,
+                moves: Vec::new(),
+            };
+            Ok(Case {
+                id: format!("{}-gestures-{}", p.slug, k + 1),
+                phrase: p.name.clone(),
+                test: "gestures",
+                question: "Which would you keep?",
+                about: format!(
+                    "your {} bars, then the same 8 new bars in {}, played two ways",
+                    p.bars,
+                    style_words(&p.style)
+                ),
+                takes: vec![
+                    take("played with the phrase (S3)", &a.notes, a.chords.clone()),
+                    take("played as before", &b.notes, b.chords.clone()),
+                ],
+                labels: Vec::new(),
+            })
+        })();
+        // One of each phrase's two pairs has the new playing first, the
+        // other second, which one by the seed.
+        let first = order(2, seed, &p.slug)[0] as u64 == k;
+        match made {
+            Ok(c) => cases.push(finish_in(c, if first { &[0, 1] } else { &[1, 0] })),
+            Err(e) => {
+                let _ = writeln!(notes, "  gestures: left out, {e}");
+            }
+        }
+    }
+    Made { cases, notes }
+}
+
+/// S3's second gate: the same new bars, played the same way, with the
+/// sound following the phrase ([`mpfree_compose::sound`]) and with the
+/// preset as it is. Two cases per phrase: one at Subtle (the default),
+/// one at Bold, on two seeds.
+fn sound_cases(p: &Phrase, seed: u64) -> Made {
+    const NEW: u8 = 8;
+    let clip = clip_of(&p.notes, p.bars, p.meter);
+    let yours = yours_as_notes(&p.notes);
+    let mut notes = String::new();
+    let to_bar = p.bars + usize::from(NEW);
+    let mut cases = Vec::new();
+    let safe = safe_of(melody_sound(p).as_ref());
+    for (k, level) in [SoundLevel::Subtle, SoundLevel::Bold]
+        .into_iter()
+        .enumerate()
+    {
+        let k = k as u64;
+        let sd = seed + k;
+        let _ = writeln!(
+            notes,
+            "{}: {} bars of {} at {:.0} BPM; read as {}; style {}; seed {sd}; sound {}",
+            p.name,
+            p.bars,
+            meter_words(p.meter),
+            p.bpm,
+            clip.context.key.words(),
+            style_words(&p.style),
+            level.name()
+        );
+        let set = settings(p.style, NEW, sd);
+        let made = (|| -> Result<Case, String> {
+            let req = request(p, &clip, &set);
+            let a = continue_notes(&req).map_err(|e| e.words())?;
+            let moves = sound_of(&req, &a, level);
+            if moves.is_empty() {
+                return Err("no sound moves".into());
+            }
+            let count = |c: Control| moves.iter().filter(|m| m.control == c).count();
+            let turned = |c: Control| match (c, safe.get(c)) {
+                (Control::Space, _) => "the echo send".to_string(),
+                (_, Some(k)) => format!("knob {} from {:.0}", k.id, k.base),
+                (_, None) => "nothing on this preset".to_string(),
+            };
+            let _ = writeln!(
+                notes,
+                "  {} notes; moves: brightness {} ({}), length {} ({}), space {} ({})",
+                a.notes.len(),
+                count(Control::Brightness),
+                turned(Control::Brightness),
+                count(Control::Length),
+                turned(Control::Length),
+                count(Control::Space),
+                turned(Control::Space),
+            );
+            let take = |what: &str, moves: Vec<SoundMove>| Take {
+                what: what.to_string(),
+                mpfree: true,
+                notes: whole(&yours, &a.notes),
+                from_bar: 0,
+                to_bar,
+                pad: Some(a.chords.clone()),
+                extra: Vec::new(),
+                drummer: true,
+                moves,
+            };
+            Ok(Case {
+                id: format!("{}-sound-{}", p.slug, level.name().to_ascii_lowercase()),
+                phrase: p.name.clone(),
+                test: "sound",
+                question: "Which would you keep?",
+                about: format!(
+                    "your {} bars, then the same 8 new bars in {}, the same playing, the sound two ways",
+                    p.bars,
+                    style_words(&p.style)
+                ),
+                takes: vec![
+                    take(&format!("sound moving with the phrase (S3, {})", level.name()), moves),
+                    take("the preset as it is", Vec::new()),
+                ],
+                labels: Vec::new(),
+            })
+        })();
+        // One of each phrase's two pairs has the moving sound first, the
+        // other second, which one by the seed.
+        let first = order(2, seed, &p.slug)[0] as u64 == k;
+        match made {
+            Ok(c) => cases.push(finish_in(c, if first { &[0, 1] } else { &[1, 0] })),
+            Err(e) => {
+                let _ = writeln!(notes, "  sound: left out, {e}");
+            }
+        }
+    }
     Made { cases, notes }
 }
 
@@ -1481,6 +1786,7 @@ fn parts_cases(r: &GateRow, seed: u64, k: usize) -> Made {
         pad: None,
         extra,
         drummer,
+        moves: Vec::new(),
     };
     let made = (|| -> Result<Case, String> {
         let chord_role = if r.tune {
@@ -1756,6 +2062,9 @@ struct Part {
     below: f64,
     /// Drums or a pad: left out on plain keys.
     backing: bool,
+    /// The echo send times this from each frame on (sound moves' Space),
+    /// in time order; none: as `delay` says throughout.
+    sends: Vec<(u64, f32)>,
 }
 
 impl Part {
@@ -1769,6 +2078,7 @@ impl Part {
             events: Vec::new(),
             below: 0.0,
             backing: false,
+            sends: Vec::new(),
         }
     }
 
@@ -1792,6 +2102,112 @@ impl Part {
     }
 }
 
+/// The safe controls of the preset `node` holds ([`safe_controls`]).
+fn safe_of(node: &dyn Node) -> mpfree_compose::SafeControls {
+    let knobs: Vec<Knob> = node
+        .params()
+        .iter()
+        .filter(|i| !i.readonly)
+        .map(|i| Knob {
+            id: i.id,
+            name: i.name,
+            group: i.group,
+            min: i.min,
+            max: i.max,
+            log: i.curve == Curve::Log,
+            value: node.param(i.id),
+        })
+        .collect();
+    safe_controls(&knobs)
+}
+
+/// The echo send at a full Space move: three times the part's own.
+const SPACE_SEND: f32 = 2.0;
+
+/// Sound moves on `part` as the app plays Continue's lane: each move sets
+/// its knob (the preset's safe control) just before its note starts, and
+/// the knob goes back to the preset's value at the next note that has no
+/// move of its own; Space raises the echo send the same way.
+fn sound_moves_on(
+    part: &mut Part,
+    moves: &[SoundMove],
+    notes: &[Note],
+    from: Tick,
+    to: Tick,
+    at: &dyn Fn(Tick) -> u64,
+) {
+    if moves.is_empty() {
+        return;
+    }
+    let safe = safe_of(part.node.as_ref());
+    let mut onsets: Vec<Tick> = notes
+        .iter()
+        .map(|n| n.tick)
+        .filter(|&t| t >= from && t < to)
+        .collect();
+    onsets.sort_unstable();
+    onsets.dedup();
+    // A move's note may be played a few ms ahead of its step: the move
+    // goes in a little before the earliest note on it.
+    let on = |tick: Tick| {
+        let t = onsets
+            .iter()
+            .copied()
+            .filter(|&o| (o - tick).abs() <= STEP / 2)
+            .min()
+            .unwrap_or(tick)
+            .min(tick);
+        at(t).saturating_sub(64)
+    };
+    for c in Control::ALL {
+        let mine: Vec<&SoundMove> = moves
+            .iter()
+            .filter(|m| m.control == c && m.at >= from && m.at < to)
+            .collect();
+        for (j, m) in mine.iter().enumerate() {
+            // The next note after this one, and whether it has a move.
+            let next = onsets.iter().copied().find(|&o| o > m.at + STEP / 2);
+            let moved_next = next.is_some_and(|nx| {
+                mine.get(j + 1)
+                    .is_some_and(|q| (q.at - nx).abs() <= STEP / 2)
+            });
+            match c {
+                Control::Space => {
+                    part.sends
+                        .push((on(m.at), 1.0 + SPACE_SEND * m.amount.max(0.0)));
+                    if let (Some(nx), false) = (next, moved_next) {
+                        part.sends.push((on(nx), 1.0));
+                    }
+                }
+                _ => {
+                    let Some(k) = safe.get(c) else {
+                        continue;
+                    };
+                    part.events.push((
+                        on(m.at),
+                        0,
+                        NodeEvent::Param {
+                            id: k.id,
+                            value: k.value(m.amount),
+                        },
+                    ));
+                    if let (Some(nx), false) = (next, moved_next) {
+                        part.events.push((
+                            on(nx),
+                            0,
+                            NodeEvent::Param {
+                                id: k.id,
+                                value: k.base,
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    part.sends.sort_by_key(|s| s.0);
+}
+
 /// The melody's sound, picked for the phrase's style and the sound set:
 /// the same in every file of a phrase. A bass plays on Pluck "Upright Bass".
 fn melody_sound(p: &Phrase) -> Box<dyn Node> {
@@ -1802,6 +2218,11 @@ fn melody_sound(p: &Phrase) -> Box<dyn Node> {
     }
     if p.role == PartRole::Bass {
         return pluck("Upright Bass");
+    }
+    if let Some(name) = LEAD.get() {
+        let mut s = Poly::new(RATE);
+        s.load_preset(preset(Poly::presets(), name, |p| p.name));
+        return Box::new(s);
     }
     // Riff (Groove), swung line (Jazz-ish), waltz, tune (Minimal).
     match (p.style.bass.drums, p.meter.beats, set) {
@@ -2263,14 +2684,22 @@ fn mix(parts: &mut [Part], drums_lu: f64, bpm: f64, frames: usize) -> (Vec<f32>,
     let (mut rev_l, mut rev_r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
     let (mut del_l, mut del_r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
     for (part, (pl, pr)) in parts.iter().zip(&dry) {
+        // The echo send, following the sound moves' Space over ~10 ms.
+        let glide = 1.0 - (-1.0 / (0.010 * RATE as f32)).exp();
+        let (mut send, mut want, mut next) = (1.0f32, 1.0f32, 0usize);
         for k in 0..frames {
+            while next < part.sends.len() && part.sends[next].0 <= k as u64 {
+                want = part.sends[next].1;
+                next += 1;
+            }
+            send += (want - send) * glide;
             let (a, b) = (pl[k] * part.gain, pr[k] * part.gain);
             left[k] += a;
             right[k] += b;
             rev_l[k] += a * part.reverb;
             rev_r[k] += b * part.reverb;
-            del_l[k] += a * part.delay;
-            del_r[k] += b * part.delay;
+            del_l[k] += a * part.delay * send;
+            del_r[k] += b * part.delay * send;
         }
     }
     // The echo: a dotted 1/8, a few soft repeats, dark; a little of it
@@ -2362,6 +2791,7 @@ fn render(p: &Phrase, t: &Take) -> (Vec<f32>, Vec<f32>, Smf) {
         melody.note(at(n.tick), at(end), n.note, n.velocity);
         midi_note(&mut midi_melody, 0, n.tick, end, n.note, n.velocity);
     }
+    sound_moves_on(&mut melody, &t.moves, &t.notes, from, to, &at);
     // A drummer, the same in every file of a phrase.
     let mut drums = Part::new(
         {
@@ -2773,6 +3203,7 @@ fn critic_table(phrases: &[Phrase], seeds: u64) -> Result<(), String> {
         "{:28} {:>10} {:>6} {:>9} {:>6} {:>8} {:>6} {:>7}",
         "phrase / way", "somewhere", "lands", "breathes", "yours", "repeats", "flows", "all 6"
     );
+    let mut repaired = 0u64;
     for p in phrases {
         let clip = clip_of(&p.notes, p.bars, p.meter);
         let mut tally: Vec<(&str, [u64; 7], Option<Verdict>)> = vec![
@@ -2787,6 +3218,12 @@ fn critic_table(phrases: &[Phrase], seeds: u64) -> Result<(), String> {
             let made = first_engine(&req).map_err(|e| e.words())?;
             let s1 = drafts(&req).map_err(|e| e.words())?;
             let best = &s1[0];
+            if !best.made.critic.is_empty() {
+                repaired += 1;
+                if repaired <= 3 {
+                    println!("  {} seed {seed}: {}", p.slug, best.made.critic.join("; "));
+                }
+            }
             if seed == 1 {
                 println!(
                     "  {} seed 1, S1 draft {} of {}: {} | {}",
@@ -2847,7 +3284,11 @@ fn critic_table(phrases: &[Phrase], seeds: u64) -> Result<(), String> {
             }
         }
     }
-    println!("(out of {seeds} seeds each; checks: {})", NAMES.join(", "));
+    println!(
+        "(out of {seeds} seeds each; checks: {}; the critic repaired {repaired} of {} picks)",
+        NAMES.join(", "),
+        seeds * phrases.len() as u64
+    );
     Ok(())
 }
 
@@ -2901,7 +3342,7 @@ fn show(p: &Phrase, what: &str, c: &Continued, gestures: &[mpfree_compose::sketc
 }
 
 const USAGE: &str = "usage: listen --demo | --midi FILE [--track N] [--from BAR] [--bars N] [--all-notes] \
-[--style minimal|groove|jazzish] [--bpm N] [--swing 1/8:58] [--role melody|bass] [--sounds a|b|now|round2|plain] [--seed N] [--gate | --parts] [--out DIR] | --critic N (--demo | --midi FILE) \
+[--style minimal|groove|jazzish] [--bpm N] [--swing 1/8:58] [--role melody|bass] [--sounds a|b|now|round2|plain] [--seed N] [--gate | --parts | --gestures | --sound [--lead NAME] | --critic-gate] [--out DIR] | --critic N (--demo | --midi FILE) \
 | --phrases | --phrases-from FILE [--only TEXT] [--out DIR] | --ideas [--seed N] [--out DIR]";
 
 fn run(args: &[String]) -> Result<(), String> {
@@ -2919,6 +3360,9 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut role = PartRole::Melody;
     let mut critic: Option<u64> = None;
     let mut gate = false;
+    let mut gestures = false;
+    let mut sound = false;
+    let mut critic_gate = false;
     let mut parts = false;
     let mut phrases = false;
     let mut phrases_from: Option<PathBuf> = None;
@@ -2935,6 +3379,9 @@ fn run(args: &[String]) -> Result<(), String> {
         match args[i].as_str() {
             "--demo" => demo = true,
             "--gate" => gate = true,
+            "--gestures" => gestures = true,
+            "--critic-gate" => critic_gate = true,
+            "--sound" => sound = true,
             "--parts" => parts = true,
             "--phrases" => phrases = true,
             "--phrases-from" => phrases_from = Some(PathBuf::from(value(&mut i)?)),
@@ -3001,6 +3448,13 @@ fn run(args: &[String]) -> Result<(), String> {
                     v => return Err(format!("--sounds {v}: a, b, now, round2 or plain")),
                 };
                 let _ = SOUNDS.set(set);
+            }
+            "--lead" => {
+                let v = value(&mut i)?;
+                if !Poly::presets().iter().any(|p| p.name == v) {
+                    return Err(format!("--lead {v}: no such synth preset"));
+                }
+                let _ = LEAD.set(v);
             }
             "--role" => {
                 role = match value(&mut i)?.as_str() {
@@ -3135,7 +3589,13 @@ fn run(args: &[String]) -> Result<(), String> {
     let made: Vec<(Phrase, Made)> = phrases
         .into_iter()
         .map(|p| {
-            let m = if gate {
+            let m = if critic_gate {
+                critic_cases(&p, seed)
+            } else if sound {
+                sound_cases(&p, seed)
+            } else if gestures {
+                gestures_cases(&p, seed)
+            } else if gate {
                 gate_cases(&p, seed)
             } else {
                 cases(&p, seed)

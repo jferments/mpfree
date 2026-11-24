@@ -28,7 +28,7 @@ use crate::dice::{DiceName, Job};
 use crate::phrase::Phrasing;
 use crate::plan::{BarJob, BarPlan};
 use crate::rhythm::Grid;
-use crate::settings::{Ending, Settings};
+use crate::settings::{Character, Ending, Settings};
 use crate::style::PlanShape;
 
 /// What a new bar does in the phrase.
@@ -232,6 +232,11 @@ pub struct Sketch {
     /// Where the line rests, as `(from, to)` in steps from your first bar.
     pub rests: Vec<(i32, i32)>,
     pub surprise: Option<Surprise>,
+    /// What the new bars are for: the playing reads it too (S5).
+    pub character: Character,
+    /// The sound's brightness moved this much at every new note, -1 to 1
+    /// (an aimed try's Less bright or Brighter; S5).
+    pub tone: f32,
 }
 
 /// Where the middle of a bar falls for a landing: the half bar in an even
@@ -264,9 +269,18 @@ pub fn sketch(ph: &Phrasing, settings: &Settings, total: usize, draft: u16) -> S
         attempt: 0,
     }
     .dice();
-    let gestures = gestures(n, settings.ending, draft % 2 == 1);
+    let brief = settings.character.brief();
+    let mut gestures = gestures(n, settings.ending, brief.early.unwrap_or(draft % 2 == 1));
+    if brief.answers {
+        // Call and answer: the developing bars answer instead.
+        for g in &mut gestures {
+            if *g == Gesture::Develop {
+                *g = Gesture::Answer;
+            }
+        }
+    }
     let pattern = crate::plan::shapes(ph.style, settings.seed).0;
-    let act = 0.5 + settings.activity * 1.1;
+    let act = (0.5 + settings.activity * 1.1) * brief.activity;
 
     // The plan the rest of the composer reads.
     let mut plan: Vec<BarPlan> = (0..yours)
@@ -308,8 +322,12 @@ pub fn sketch(ph: &Phrasing, settings: &Settings, total: usize, draft: u16) -> S
         .max()
         .unwrap_or(ph.centre + 2);
     let first_yours = ph.yours.first().map_or(ph.centre, |m| m.pos);
-    let peak_aim = (top_yours + 1)
-        .max(ph.centre + 4 + i32::from(dice.chance(0.4)))
+    // A character's lift raises the high point (Yearning reaches past
+    // your highest note) or keeps it small (Restrained), never under a
+    // step above your highest note.
+    let bump = i32::from(dice.chance(0.4));
+    let peak_aim = (top_yours + 1 + brief.lift.max(0) / 2)
+        .max(ph.centre + 4 + bump + brief.lift)
         .min(hi)
         .max(lo);
     let home = {
@@ -336,7 +354,11 @@ pub fn sketch(ph: &Phrasing, settings: &Settings, total: usize, draft: u16) -> S
             Gesture::Reach => {
                 // Open: on the five chord, the note its root or its 5th; or
                 // now and then on the four or six chord.
-                let (notes, chords) = if dice.chance(0.75) {
+                let open = dice.chance(0.75);
+                let (notes, chords) = if brief.pull {
+                    // The five chord's leading note, pulling on.
+                    (vec![6, 1], vec![4])
+                } else if open {
                     (vec![4, 1], vec![4])
                 } else {
                     (vec![2, 0], vec![5, 3])
@@ -362,14 +384,23 @@ pub fn sketch(ph: &Phrasing, settings: &Settings, total: usize, draft: u16) -> S
             Gesture::Peak => {
                 // On the middle, or a beat in; in a groove now and then an
                 // 1/8 early, pushing into it. A beat of silence after it.
-                let at = if pattern == PlanShape::CallAndAnswer && dice.chance(0.4) {
+                let push = pattern == PlanShape::CallAndAnswer && dice.chance(0.4);
+                let at = if push || brief.push_peak {
                     mid - eighth
                 } else if dice.chance(0.5) {
                     mid
                 } else {
                     beat
                 };
-                let len = beat.min(grid.bar - at - beat).max(eighth);
+                // Leaning on it: held longer, up to an 1/8 short of the
+                // bar's end.
+                let lean = (beat as f32 * brief.lean) as i32;
+                let len = if lean > 0 {
+                    (beat + lean).min(grid.bar - at - eighth)
+                } else {
+                    beat.min(grid.bar - at - beat)
+                }
+                .max(eighth);
                 let on = start + at;
                 anchors.push(Anchor {
                     kind: AnchorKind::Peak,
@@ -395,7 +426,9 @@ pub fn sketch(ph: &Phrasing, settings: &Settings, total: usize, draft: u16) -> S
                         vec![4, 6, 3],
                     ),
                 };
-                let on = if n == 1 || dice.chance(0.5) {
+                // Held off to the bar's middle when it pulls; on the
+                // downbeat when it lands on time.
+                let on = if n == 1 || brief.pull || (dice.chance(0.5) && !brief.close_on_beat) {
                     start + mid
                 } else {
                     start
@@ -447,7 +480,7 @@ pub fn sketch(ph: &Phrasing, settings: &Settings, total: usize, draft: u16) -> S
             // A borrowed chord only where chords change every bar or
             // sooner, so it colours the set-up alone.
             let short_chords = i32::from(ph.style.harmony.window_steps) <= grid.bar;
-            if ph.clear && short_chords && dice.chance(borrowed_odds) {
+            if ph.clear && short_chords && dice.chance(borrowed_odds) && brief.borrowed {
                 Surprise::Borrowed { bar }
             } else {
                 Surprise::Silence { bar }
@@ -463,6 +496,8 @@ pub fn sketch(ph: &Phrasing, settings: &Settings, total: usize, draft: u16) -> S
         anchors,
         rests,
         surprise,
+        character: settings.character,
+        tone: 0.0,
     }
 }
 
