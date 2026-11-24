@@ -111,7 +111,7 @@ const SCENES: &[Scene] = &[
         id: "mpfree.fx.filter",
         place: "Synth · insert 1",
         values: &[
-            (filter::SLOPE, 1.0),
+            (filter::SLOPE, filter::SLOPE_24),
             (filter::CUTOFF, 1400.0),
             (filter::RESONANCE, 55.0),
             (filter::DRIVE, 6.0),

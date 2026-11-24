@@ -10,10 +10,12 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use mpfree_audiotracks::files::{recover_into, FileEvent, TakeState, WriterConfig};
+use mpfree_audiotracks::files::{
+    layer_file_name, recover_into, FileEvent, TakeState, WriterConfig,
+};
 use mpfree_audiotracks::host::AudioHost;
 use mpfree_audiotracks::save::from_wav;
-use mpfree_audiotracks::{Command as A, Input};
+use mpfree_audiotracks::{Command as A, Input, RecordingId};
 use mpfree_transport::{Block, Command as T, Transport};
 
 const RATE: u32 = 22_050;
@@ -379,4 +381,113 @@ fn a_take_cut_off_is_recovered_at_the_next_start_up_to_its_last_checkpoint() {
     assert_eq!(recover_into(&dir, &keep).unwrap(), Default::default());
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&keep);
+}
+
+impl Rig {
+    /// Give `audio` as recording `rec`'s loop layer, a piece at a time as
+    /// buffers come back, ending it if `end`.
+    fn give_layer(&mut self, rec: RecordingId, audio: &[f32], end: bool) {
+        assert!(self.h.layer_begin(rec, audio.len() / 2, 2));
+        let mut at = 0;
+        let t0 = Instant::now();
+        while at < audio.len() {
+            let Some(mut buf) = self.h.layer_buffer() else {
+                assert!(t0.elapsed() < Duration::from_secs(30), "no buffer back");
+                self.period();
+                std::thread::sleep(Duration::from_micros(300));
+                continue;
+            };
+            let n = buf.len().min(audio.len() - at);
+            buf[..n].copy_from_slice(&audio[at..at + n]);
+            self.h.layer_piece(rec, buf, n);
+            at += n;
+        }
+        if end {
+            self.h.layer_end(rec);
+        }
+    }
+
+    #[track_caller]
+    fn layer_said(&mut self) -> (RecordingId, Option<String>) {
+        let mut said = None;
+        self.run_until(|r| {
+            said = r.h.layer_written();
+            said.is_some()
+        });
+        said.unwrap()
+    }
+}
+
+fn names_in(dir: &Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    v.sort();
+    v
+}
+
+/// Audio tracks phase 4c.3: a loop's closed layer, given a piece at a
+/// time, is written whole as `loop_ID.wav` in the work folder (no part
+/// file left) and said once; a project save that holds a copy takes it
+/// over; one dropped part-way, or short of its audio, leaves nothing; and
+/// one a cut-off run left is found at the next start.
+#[test]
+fn a_loops_layer_goes_to_a_file_of_its_own_and_is_found_after_a_cut_off_run() {
+    let dir = scratch("layers");
+    let project = scratch("layers-project");
+    let keep = scratch("layers-keep");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut r = Rig::new(&dir);
+    assert!(r.h.layer_files());
+    let audio: Vec<f32> = (0..2 * 50_000u64)
+        .map(|i| sig(i / 2, (i % 2) as usize))
+        .collect();
+    let rec = RecordingId(0xfeed_0001);
+    r.give_layer(rec, &audio, true);
+    assert_eq!(r.layer_said(), (rec, None));
+    let path = dir.join(layer_file_name(rec));
+    assert_eq!(wav_at(&path), (audio.clone(), 2));
+    assert!(names_in(&dir).iter().all(|n| !n.ends_with(".part")));
+    // A save that holds a copy takes it over.
+    std::fs::copy(&path, project.join(layer_file_name(rec))).unwrap();
+    r.h.saved_into(project.clone());
+    r.run_until(|_| !path.exists());
+    // Dropped part-way: nothing of it is kept.
+    let rec2 = RecordingId(0xfeed_0002);
+    r.give_layer(rec2, &audio, false);
+    r.h.layer_drop(rec2);
+    // Short of its audio: refused, nothing kept.
+    let rec3 = RecordingId(0xfeed_0003);
+    assert!(r.h.layer_begin(rec3, 1_000, 2));
+    let buf = loop {
+        if let Some(b) = r.h.layer_buffer() {
+            break b;
+        }
+        r.period();
+    };
+    r.h.layer_piece(rec3, buf, 500);
+    r.h.layer_end(rec3);
+    let (said, why) = r.layer_said();
+    assert_eq!(said, rec3);
+    assert!(why.unwrap().contains("500 of its 2000 samples"));
+    assert!(names_in(&dir)
+        .iter()
+        .all(|n| !n.contains("feed0002") && !n.contains("feed0003")));
+    // Written, then the run cut off before a save: the next start keeps
+    // it in Recordings, said as a loop layer.
+    let rec4 = RecordingId(0xfeed_0004);
+    r.give_layer(rec4, &audio, true);
+    assert_eq!(r.layer_said(), (rec4, None));
+    drop(r);
+    let found = recover_into(&dir, &keep).unwrap();
+    assert_eq!(
+        found.lines,
+        ["audio tracks: 1 loop layer not saved in a project was kept in Recordings"]
+    );
+    assert_eq!(wav_at(&keep.join(layer_file_name(rec4))), (audio, 2));
+    for d in [&dir, &project, &keep] {
+        let _ = std::fs::remove_dir_all(d);
+    }
 }

@@ -1169,7 +1169,11 @@ impl Engine {
         if granular && p < PADS {
             self.last_key[at * PADS + p] = Some(hit);
         }
-        let mut grain = pitched_grain(l.grain, from.unwrap_or(hit), l.follow);
+        // Its grain settings, with any live or locked (step 17b).
+        let layer_grain = self.lives[at].layer_grain(p, l);
+        // Moved by the layer's routes from velocity and the key (17c).
+        let routed = l.routes.at_start(layer_grain, vel, semis as f32);
+        let mut grain = pitched_grain(routed, from.unwrap_or(hit), l.follow);
         if let Some(at) = vary.start {
             grain.position = (at * 16.0 / 15.0).min(1.0);
         }
@@ -1380,6 +1384,9 @@ impl Engine {
             grain_follow: l.follow,
             grain_hit: from.unwrap_or(hit),
             grain_key: semis,
+            grain_routes: l.routes,
+            grain_vel: vel,
+            grain_press: granular && l.routes.moves_from(RouteFrom::Pressure),
             glide_to: hit,
             glide_step: from.map_or(0.0, |k| (hit - k) / l.glide as f32),
             glide_left: if from.is_some() { l.glide } else { 0 },
@@ -1439,7 +1446,7 @@ impl Engine {
             hit_gain: level,
             own_cut: vary.cutoff_hz.is_none(),
             layer_step: l.step,
-            layer_grain: l.grain,
+            layer_grain,
             jump: [0.0; 2],
             jump_left: 0,
             last_read: None,

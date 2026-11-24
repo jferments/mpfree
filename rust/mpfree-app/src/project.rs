@@ -96,7 +96,12 @@ pub const TUNINGS: &str = "tunings";
 pub const PATCHES: &str = "patches";
 
 /// The mixer part's first line.
-pub const MIXER_FORMAT: &str = "mpfree-mixer 1";
+/// Version 1 was saved before the Filter effect's 6 to 48 dB slopes (23 Nov
+/// 2026), when its Slope's 0 was 12 dB and 1 was 24 dB: such a part is
+/// read with each effect setting converted ([`mpfree_fx::mixer_upgrade`]).
+pub const MIXER_FORMAT: &str = "mpfree-mixer 2";
+/// The words before the version on the mixer part's first line.
+const MIXER_WORD: &str = "mpfree-mixer";
 /// The synth part's first line.
 pub const SYNTH_FORMAT: &str = "mpfree-synth 1";
 /// The first line of the instruments part.
@@ -144,8 +149,10 @@ pub const FORMAT: u32 = mpfree_library::project::PARTS_FORMAT;
 /// linked song list ([`LINKED_SONG_LIST`]), a scene that keeps a track
 /// playing ([`SCENE_KEEP`]), patches ([`PATCHES_NEED`]), a free loop
 /// ([`FREE_LOOPS`]), a scene that sets the tempo ([`SCENE_TEMPO`]), an
-/// instrument with a tuning of its own ([`OWN_TUNINGS`]) or a loop cell on
-/// an audio track ([`AUDIO_LOOPS`]).
+/// instrument with a tuning of its own ([`OWN_TUNINGS`]), a loop cell on
+/// an audio track ([`AUDIO_LOOPS`]), a grain layer with routes
+/// ([`GRAIN_ROUTES_NEED`]) or loops kept as recordings
+/// ([`LOOP_RECORDINGS`]).
 pub const NEEDS_KEY: &str = "needs";
 /// A project with a synth in a free place (the instrument redesign's step
 /// 6: one picked for the pads, no track's): an older build would read the
@@ -211,7 +218,18 @@ pub const OWN_TUNINGS: &str = "own-tunings";
 /// unknown and open it as an empty note clip, so it refuses the project
 /// instead.
 pub const AUDIO_LOOPS: &str = "audio-loops";
+/// A project whose loops are kept as the looper holds them, each layer as
+/// a recording (`mpfree-looper 2`, the audio tracks rethink's phase 4c.2,
+/// saved with Dev's "Loops on audio tracks"): a build from before it
+/// can't read the looper's part, so it refuses the project with this
+/// reason instead.
+pub const LOOP_RECORDINGS: &str = "loop-recordings";
 
+/// A project with a grain layer's routes from velocity, pressure or the
+/// key (sampler step 17c, `mpfree_sampler::model::GrainRoutes`): an older
+/// build would play the layer without them and drop them at its next
+/// save, so it must not open it.
+pub const GRAIN_ROUTES_NEED: &str = "grain-routes";
 /// The features this build has, of those a project can need.
 pub const KNOWN_NEEDS: &[&str] = &[
     SYNTHS_WITHOUT_TRACKS,
@@ -226,6 +244,8 @@ pub const KNOWN_NEEDS: &[&str] = &[
     SCENE_TEMPO,
     OWN_TUNINGS,
     AUDIO_LOOPS,
+    GRAIN_ROUTES_NEED,
+    LOOP_RECORDINGS,
 ];
 
 // ------------------------------------------------------------ the loop's side
@@ -490,6 +510,18 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     }
     if c.clips.loop_places().next().is_some() {
         needs.push(AUDIO_LOOPS);
+    }
+    if parts
+        .iter()
+        .any(|(name, text)| name == SAMPLER && mpfree_sampler::save::has_grain_routes(text))
+    {
+        needs.push(GRAIN_ROUTES_NEED);
+    }
+    if parts
+        .iter()
+        .any(|(name, text)| name == LOOPER && text.starts_with(mpfree_looper::save::FORMAT_2))
+    {
+        needs.push(LOOP_RECORDINGS);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -1066,23 +1098,65 @@ pub fn track_kits_parse(text: &str) -> Result<Vec<(usize, InstrumentId)>, String
 
 // ------------------------------------------------------------ the looper
 
+/// The looper's part's text, its layers' sounds to write (name, audio) and
+/// the layers' files to copy (names), from [`loops_part`].
+pub type LoopsPart = (String, Vec<(String, Vec<f32>)>, Vec<String>);
+
 /// The looper's part and its layers' sounds for the project's `samples/`,
 /// each layer named for its audio (`loop-<id>.wav`), so a layer saved
-/// before is not written again.
-pub fn loops_part(mut saved: mpfree_looper::save::Saved) -> (String, Vec<(String, Vec<f32>)>) {
+/// before is not written again. A layer kept as the looper holds it with
+/// its recording (audio tracks phase 4c.2) is named by the recording
+/// (`loop_<rec>.wav`, its audio as written), which never changes once the
+/// layer is closed. The third list is the layers a snapshot save found in
+/// their recordings' synced files (phase 4c.4,
+/// [`crate::looping::copied`]): the project copies each file whole
+/// ([`find_layer_file`]), and no audio of theirs was read.
+pub fn loops_part(mut saved: mpfree_looper::save::Saved) -> LoopsPart {
     let mut files = Vec::new();
+    let mut copies: Vec<String> = Vec::new();
     for (_, f) in &mut saved.loops {
-        let n = 2 * f.frames;
-        for y in &mut f.layers {
+        for k in 0..f.layers.len() {
+            if crate::looping::copied(f, k) {
+                let name = f.layers[k].file.clone();
+                if !copies.contains(&name) {
+                    copies.push(name);
+                }
+                continue;
+            }
+            let y = &mut f.layers[k];
+            let (n, rec) = y
+                .raw
+                .as_ref()
+                .map_or((2 * f.frames, 0), |r| (2 * r.size, r.rec));
             let mut audio = std::mem::take(&mut y.audio);
             audio.truncate(n);
-            y.file = format!("loop-{}.wav", audio_id(&audio, saved.rate));
+            y.file = match rec {
+                0 => format!("loop-{}.wav", audio_id(&audio, saved.rate)),
+                rec => format!("loop_{rec:032x}.wav"),
+            };
             if !files.iter().any(|(name, _)| *name == y.file) {
                 files.push((y.file.clone(), audio));
             }
         }
     }
-    (mpfree_looper::save::to_text(&saved), files)
+    copies.retain(|c| !files.iter().any(|(name, _)| name == c));
+    (mpfree_looper::save::to_text(&saved), files, copies)
+}
+
+/// Where a loop layer's synced file `name` (`loop_<rec>.wav`, phase 4c.3)
+/// is now, for a save to copy it: the audio tracks' work folder, where it
+/// was written, until a project save holds a copy and the work folder's
+/// goes (`Files::saved_into`); then the samples of the project it was
+/// saved into or opened from, newest first (`dirs`). Regular files only.
+pub fn find_layer_file(
+    name: &str,
+    work: Option<&std::path::Path>,
+    dirs: &[std::path::PathBuf],
+) -> Option<std::path::PathBuf> {
+    work.into_iter()
+        .chain(dirs.iter().rev().map(|d| d.as_path()))
+        .map(|d| d.join(name))
+        .find(|p| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_file()))
 }
 
 /// 128 bits for a layer's audio: two FNV-1a lanes over the samples' bits,
@@ -1672,7 +1746,7 @@ pub fn untouched_channel(mixer: &Mixer, st: StripId) -> bool {
 /// into Drums.
 ///
 /// ```text
-/// mpfree-mixer 1
+/// mpfree-mixer 2
 /// chanmutes 5
 /// track1 t0
 /// strip t0 0=-3 1=0 3=0 4=0 5=0 6=-80 ...
@@ -1892,10 +1966,17 @@ pub fn mixer_load(
     plugins: &crate::plugins::Plugins,
 ) -> Result<MixLoad, String> {
     let mut lines = text.lines().enumerate();
-    match lines.next() {
-        Some((_, l)) if l.trim() == MIXER_FORMAT => {}
-        _ => return Err(format!("not an {MIXER_FORMAT} part")),
-    }
+    let version = lines
+        .next()
+        .and_then(|(_, l)| {
+            l.trim()
+                .strip_prefix(MIXER_WORD)?
+                .trim()
+                .parse::<u32>()
+                .ok()
+        })
+        .filter(|v| (1..=mpfree_fx::MIXER_VERSION).contains(v))
+        .ok_or_else(|| format!("not an {MIXER_FORMAT} part"))?;
     let mut out = MixLoad {
         pad_mutes: 0,
         old_pad_mutes: 0,
@@ -2039,7 +2120,10 @@ pub fn mixer_load(
                 if let Some((_, _, _, node, _)) = o.as_mut() {
                     // An unknown id (a newer build's) is skipped by the node.
                     if v.is_finite() && node.params().iter().any(|p| p.id == id && !p.readonly) {
-                        node.set_param(id, v);
+                        node.set_param(
+                            id,
+                            mpfree_fx::mixer_upgrade(version, node.info().id, id, v),
+                        );
                     }
                 }
             }
@@ -2758,6 +2842,41 @@ mod tests {
         assert_eq!(b.mixer.param(s, mx::OUTPUT_TRACK), track as f32);
     }
 
+    /// A kit with a grain layer's routes (sampler step 17c) says the
+    /// project needs grain routes, so an older build refuses it; a kit
+    /// without them needs nothing.
+    #[test]
+    fn grain_routes_say_the_project_needs_them() {
+        use mpfree_sampler::model::*;
+        let c = collected(String::new(), InstrumentList::new().text());
+        let kit = |routes: GrainRoutes| {
+            let mut p = Project::new();
+            let s = p.add_source(Source::new("s", 44_100, 1, vec![0.1; 4_410]).unwrap());
+            let mut r = Region::whole(p.source(s).unwrap());
+            r.mode = PlayMode::Granular;
+            r.grain_routes = routes;
+            p.set_pad(0, Some(Pad::new("cloud", Layer::new(r))), None)
+                .unwrap();
+            let text = mpfree_sampler::save::to_text(&[("Kit", &p)], 0, &|_| "s.wav".into());
+            snapshot(&c, vec![(SAMPLER.to_string(), text)])
+        };
+        let need = (NEEDS_KEY.to_string(), GRAIN_ROUTES_NEED.to_string());
+        assert!(!kit(GrainRoutes::OFF).meta.extra.contains(&need));
+        let mut routes = GrainRoutes::OFF;
+        routes.0[3] = GrainRoute {
+            from: RouteFrom::Pressure,
+            to: GrainField::Density,
+            depth: 0.5,
+        };
+        let snap = kit(routes);
+        assert!(snap.meta.extra.contains(&need));
+        assert_eq!(check(&snap), Ok(FORMAT), "this build opens it");
+        assert!(
+            check_against(&snap, &[]).is_err(),
+            "one without them doesn't"
+        );
+    }
+
     /// A kit strip a kit holds (sampler step 15d, part 2) is saved with
     /// its kit, and opens holding it, with its settings, so the kit comes
     /// back to the strip it had; a line for kit 1, for a kit a strip
@@ -2855,6 +2974,63 @@ mod tests {
         .is_err());
     }
 
+    /// Phase 4c.4: a loop layer's synced file is found in the work
+    /// folder first, then in the samples of the projects it went into,
+    /// newest first; not a folder or a missing file.
+    #[test]
+    fn a_layers_file_is_found_where_it_was_written_or_saved() {
+        let root = std::env::temp_dir().join(format!("mpfree-layer-find-{}", std::process::id()));
+        let (work, a, b) = (root.join("work"), root.join("a"), root.join("b"));
+        for d in [&work, &a, &b] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let name = "loop_00000000000000000000000000000001.wav";
+        let dirs = vec![a.clone(), b.clone()];
+        assert_eq!(find_layer_file(name, Some(&work), &dirs), None);
+        std::fs::write(a.join(name), b"a").unwrap();
+        assert_eq!(
+            find_layer_file(name, Some(&work), &dirs),
+            Some(a.join(name))
+        );
+        std::fs::write(b.join(name), b"b").unwrap();
+        assert_eq!(find_layer_file(name, None, &dirs), Some(b.join(name)));
+        std::fs::write(work.join(name), b"w").unwrap();
+        assert_eq!(
+            find_layer_file(name, Some(&work), &dirs),
+            Some(work.join(name))
+        );
+        std::fs::create_dir_all(root.join("c").join(name)).unwrap();
+        assert_eq!(find_layer_file(name, None, &[root.join("c")]), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_filter_effect_saved_before_its_six_slopes_keeps_its_slope() {
+        // Version 1 had the Filter effect's Slope as 0 for 12 dB and 1 for
+        // 24 dB; it opens on the same slopes in the new list, and a part of
+        // this version keeps what it says.
+        use mpfree_fx::ids::filter as f;
+        assert_eq!(
+            MIXER_FORMAT,
+            format!("{MIXER_WORD} {}", mpfree_fx::MIXER_VERSION)
+        );
+        let slopes = |text: &str| {
+            let load = mixer_load(text, None, 44_100, &crate::plugins::Plugins::none()).unwrap();
+            load.chains[0]
+                .1
+                .iter()
+                .map(|(ins, _)| ins.node().param(f::SLOPE))
+                .collect::<Vec<f32>>()
+        };
+        let insert = "insert t0 1 1 mpfree.fx.filter";
+        let old = format!(
+            "mpfree-mixer 1\n{insert}\nparam 1 0\nparam 2 800\n{insert}\nparam 1 1\ninsert t0 2 1 mpfree.fx.drive\nparam 1 1\n"
+        );
+        assert_eq!(slopes(&old), [f::SLOPE_12, f::SLOPE_24, 1.0]);
+        let new = format!("{MIXER_FORMAT}\n{insert}\nparam 1 0\n{insert}\nparam 1 5\n");
+        assert_eq!(slopes(&new), [f::SLOPE_6, f::SLOPE_48]);
+    }
+
     #[test]
     fn loop_layers_are_named_for_their_audio_and_a_missing_one_is_said() {
         use mpfree_looper::save::{LayerFile, LoopFile, Saved};
@@ -2866,6 +3042,7 @@ mod tests {
             faded: 1.0,
             file: String::new(),
             audio,
+            raw: None,
         };
         let one = |n: usize, layers: Vec<LayerFile>| {
             (
@@ -2885,6 +3062,7 @@ mod tests {
                     id: 0,
                     clock: mpfree_looper::Clock::Song,
                     layers,
+                    raw: None,
                 },
             )
         };
@@ -2904,8 +3082,9 @@ mod tests {
                 one(3, vec![layer(vec![0.5; 4])]),
             ],
             free_clock: None,
+            kept: Vec::new(),
         };
-        let (text, files) = loops_part(saved.clone());
+        let (text, files, _) = loops_part(saved.clone());
         assert_eq!(files.len(), 2);
         assert!(files
             .iter()
@@ -3900,7 +4079,9 @@ mod tests {
                     faded: 1.0,
                     file: "loop-1.wav".into(),
                     audio: Vec::new(),
+                    raw: None,
                 }],
+                raw: None,
             };
             let saved = Saved {
                 rate: 44_100,
@@ -3911,6 +4092,7 @@ mod tests {
                     meter: mpfree_transport::Meter::new(4, 4).unwrap(),
                     top: 0,
                 }),
+                kept: Vec::new(),
             };
             snapshot(&c, vec![(LOOPER.to_string(), to_text(&saved))])
         };
@@ -3925,6 +4107,72 @@ mod tests {
         let free = part(Clock::Free);
         assert_eq!(needs(&free).as_deref(), Some(FREE_LOOPS));
         assert_eq!(check(&free), Ok(FORMAT));
+    }
+
+    /// Loops kept as the looper holds them (`mpfree-looper 2`, audio tracks
+    /// phase 4c.2): the project needs `loop-recordings`, which a build from
+    /// before it refuses with the reason; this build opens it.
+    #[test]
+    fn a_project_with_loops_as_recordings_needs_loop_recordings() {
+        use mpfree_looper::save::{to_text, LayerFile, LoopFile, RawLayer, RawShape, Saved};
+        let c = collected(String::new(), InstrumentList::new().text());
+        let file = LoopFile {
+            frames: 2,
+            ticks: 96,
+            origin: 0,
+            level: 1.0,
+            muted: false,
+            bars: None,
+            after: mpfree_looper::After::Play,
+            starts: mpfree_looper::Starts::Bar,
+            fade_old: 1.0,
+            speed: 0,
+            rate: 0,
+            id: 0,
+            clock: mpfree_looper::Clock::Song,
+            layers: vec![LayerFile {
+                level: 1.0,
+                pan: 0.0,
+                muted: false,
+                solo: false,
+                faded: 1.0,
+                file: "loop_1.wav".into(),
+                audio: Vec::new(),
+                raw: Some(RawLayer {
+                    size: 2,
+                    valid: (0, 2),
+                    pieces: vec![(0, 2, false)],
+                    replace: None,
+                    rec: 7,
+                    from: Vec::new(),
+                }),
+            }],
+            raw: Some(RawShape {
+                seam: 0,
+                region: None,
+                captured: (0, 0),
+                cut: 2,
+            }),
+        };
+        let saved = Saved {
+            rate: 44_100,
+            selected: 0,
+            loops: vec![(0, file)],
+            free_clock: None,
+            kept: Vec::new(),
+        };
+        let snap = snapshot(&c, vec![(LOOPER.to_string(), to_text(&saved))]);
+        let needs = snap.meta.extra.iter().find(|(k, _)| k == NEEDS_KEY);
+        assert_eq!(needs.map(|(_, v)| v.as_str()), Some(LOOP_RECORDINGS));
+        assert_eq!(check(&snap), Ok(FORMAT));
+        // A build without it: refused, with the reason.
+        let mut old = snap.clone();
+        for (k, v) in &mut old.meta.extra {
+            if k == NEEDS_KEY {
+                *v = "loop-recordings-2".into();
+            }
+        }
+        assert!(check(&old).unwrap_err().contains("loop-recordings-2"));
     }
 
     /// Phase 0's gate (docs/dev/design/project-safety.md): a project that
@@ -3960,10 +4208,10 @@ mod tests {
         };
         for (name, text, why) in [
             (CLIPS, "mpfree-clips 9\n", "its clips can't be read ("),
-            (MIXER, "mpfree-mixer 2\n", "its mixer can't be read ("),
+            (MIXER, "mpfree-mixer 9\n", "its mixer can't be read ("),
             (SYNTH, "mpfree-synth 2\n", "its synth can't be read ("),
             (SAMPLER, "mpfree-sampler 2\n", "its kits can't be read ("),
-            (LOOPER, "mpfree-looper 2\n", "its loops can't be read ("),
+            (LOOPER, "mpfree-looper 3\n", "its loops can't be read ("),
             (
                 AUDIOTRACKS,
                 "mpfree-audiotracks 9\n",

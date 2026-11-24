@@ -5,8 +5,8 @@
 
 use mpfree_sampler::engine::{CloudState, Engine, EngineView, Event};
 use mpfree_sampler::model::{
-    GrainFilter, GrainFilterKind, GrainMode, GrainQuality, GrainWindow, LfoShape, MotionTarget,
-    PlayMode, Project,
+    GrainField, GrainFilter, GrainFilterKind, GrainMode, GrainQuality, GrainRoute, GrainWindow,
+    LfoShape, MotionTarget, PlayMode, Project, RouteFrom,
 };
 use mpfree_sampler_ui::grain_tab::{self, describe, size_ms_at, CloudNow, Row, View};
 use mpfree_sampler_ui::grain_tool::{GrainPart, PARTS_ROW};
@@ -372,15 +372,7 @@ fn the_grain_tool_shows_the_layers_grain_settings_and_its_window_on_the_wave() {
     };
     assert_eq!(
         options,
-        &[
-            "Grains",
-            "Shape",
-            "Grain filter",
-            "Keys",
-            "Grain LFO",
-            "Grain env",
-            "Presets"
-        ]
+        &["Grains", "Shape", "Filter", "Keys", "Mod", "LFO", "Env", "Presets"]
     );
     assert_eq!(*on, 0);
     let panel = list.panel.as_ref().unwrap();
@@ -512,6 +504,7 @@ fn the_parts_switch_opens_each_part_and_every_part_fits_the_panel() {
         GrainPart::Shape,
         GrainPart::Filter,
         GrainPart::Keys,
+        GrainPart::Mod,
         GrainPart::Lfo,
         GrainPart::Envelope,
         GrainPart::Presets,
@@ -558,6 +551,9 @@ fn the_parts_switch_opens_each_part_and_every_part_fits_the_panel() {
             fits(&s, &format!("{mode} {part:?}"));
             got.extend(placed(&s));
         }
+        // The Mod part's routes are its own (step 17c), not the Grain
+        // page's.
+        got.retain(|r| r.route().is_none() && !matches!(r, Row::RouteFrom | Row::RouteTo));
         let n = got.len();
         got.sort_by_key(|r| format!("{r:?}"));
         got.dedup();
@@ -1528,9 +1524,141 @@ fn every_grain_sample_screen_draws() {
             "grain-movement",
             "grain-filter",
             "grain-shape",
-            "grain-presets"
+            "grain-presets",
+            "grain-mod"
         ]
     );
     let (p, _) = grain_project();
     assert!(!grains_after(&p, 0.5).0.is_empty());
+}
+
+/// The Mod part's names and values, in its order.
+fn mod_rows(s: &Sample) -> Vec<(String, String)> {
+    let list = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+    list.rows[1..]
+        .iter()
+        .map(|r| (r.name.clone(), r.value.clone()))
+        .collect()
+}
+
+fn named(rows: &[(&str, &str)]) -> Vec<(String, String)> {
+    rows.iter()
+        .map(|(n, v)| (n.to_string(), v.to_string()))
+        .collect()
+}
+
+#[test]
+fn the_mod_part_routes_velocity_pressure_and_the_key_to_grain_settings() {
+    let mut s = grain(true);
+    open(&mut s, GrainPart::Mod);
+    assert_eq!(s.tab.hint(), wave_tab::MOD_HINT);
+    assert_eq!(
+        placed(&s),
+        [
+            Row::RouteFrom,
+            Row::RouteTo,
+            Row::Route1,
+            Row::Route2,
+            Row::Route3,
+            Row::Route4
+        ]
+    );
+    fits(&s, "Mod");
+    assert_eq!(
+        mod_rows(&s),
+        named(&[
+            ("Route 1 from", "Off"),
+            ("Route 1 to", "Size"),
+            ("Route 1", "Off"),
+            ("Route 2", "Off"),
+            ("Route 3", "Off"),
+            ("Route 4", "Off"),
+        ])
+    );
+    assert_eq!(note(&s), "route 1: off, pick what moves it");
+    let list = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+    assert!(
+        list.controls[index(&s, Row::Route1)].outlined,
+        "route 1 outlined"
+    );
+    assert!(
+        list.controls[index(&s, Row::Route2)].faint,
+        "an off route is faint"
+    );
+    // An off route's knob turns nothing.
+    assert!(step(&mut s, Row::Route1, 4).is_none());
+
+    // Velocity to size, 40 %: one undo step each.
+    let before = undo_steps(&s.project);
+    step_apply(&mut s, Row::RouteFrom, 1);
+    s.tab.lift();
+    step_apply(&mut s, Row::Route1, 8);
+    s.tab.lift();
+    assert_eq!(undo_steps(&s.project), before + 2);
+    let r = s.state.region.grain_routes.0[0];
+    assert_eq!(
+        (r.from, r.to, r.depth),
+        (RouteFrom::Velocity, GrainField::Size, 0.4)
+    );
+    assert_eq!(mod_rows(&s)[2], ("Vel → size".into(), "+40 %".into()));
+    assert_eq!(note(&s), "route 1: harder hits move the size up");
+    fits(&s, "Mod with a route");
+
+    // A touch on route 3's knob outlines it: the pickers edit it.
+    let ev = region_ev(EventKind::Select(index(&s, Row::Route3)));
+    let st = s.state.clone();
+    assert!(s.tab.action(&mut s.ui, &ev, &st).is_none());
+    assert_eq!(mod_rows(&s)[0], ("Route 3 from".into(), "Off".into()));
+    let list = s.ui.get::<SettingList>(wave_tab::REGION).unwrap();
+    assert!(list.controls[index(&s, Row::Route3)].outlined);
+    assert!(!list.controls[index(&s, Row::Route1)].outlined);
+    step_apply(&mut s, Row::RouteFrom, 3);
+    s.tab.lift();
+    step_apply(&mut s, Row::RouteTo, 4);
+    s.tab.lift();
+    step_apply(&mut s, Row::Route3, 5);
+    s.tab.lift();
+    assert_eq!(
+        mod_rows(&s),
+        named(&[
+            ("Route 3 from", "Key"),
+            ("Route 3 to", "Scan"),
+            ("Vel → size", "+40 %"),
+            ("Route 2", "Off"),
+            ("Key → scan", "+25 %/oct"),
+            ("Route 4", "Off"),
+        ])
+    );
+    assert_eq!(note(&s), "route 3: keys above the root move the scan up");
+    // Pressure down on route 2, by its knob: a turn outlines it too.
+    let ev = region_ev(EventKind::Select(index(&s, Row::Route2)));
+    let st = s.state.clone();
+    s.tab.action(&mut s.ui, &ev, &st);
+    step_apply(&mut s, Row::RouteFrom, 2);
+    s.tab.lift();
+    step_apply(&mut s, Row::RouteTo, 1);
+    s.tab.lift();
+    step_apply(&mut s, Row::Route2, -6);
+    s.tab.lift();
+    assert_eq!(mod_rows(&s)[3], ("Press → density".into(), "-30 %".into()));
+    assert_eq!(note(&s), "route 2: pressing harder moves the density down");
+    // The depth stops at ±100 %.
+    step_apply(&mut s, Row::Route2, -40);
+    assert_eq!(s.state.region.grain_routes.0[1].depth, -1.0);
+    assert!(step(&mut s, Row::Route2, -1).is_none());
+    fits(&s, "Mod with three routes");
+}
+
+#[test]
+fn a_routes_change_is_said_in_the_log() {
+    let mut s = grain(true);
+    let a = s.state.region.clone();
+    let mut b = a.clone();
+    b.grain_routes.0[1] = GrainRoute {
+        from: RouteFrom::Pressure,
+        to: GrainField::Spray,
+        depth: 0.25,
+    };
+    assert_eq!(describe(&a, &b), "route 2 off -> pressure spray +25 %");
+    open(&mut s, GrainPart::Mod);
 }

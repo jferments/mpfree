@@ -104,6 +104,9 @@ pub struct Control {
     /// accent: the Q-Link that turns it (the Pads tab's Level, Pan, Tune
     /// and Voices in Q1 to Q4's colours).
     pub tint: Option<Color>,
+    /// Outlined while another row is picked: the Grain tool's route its
+    /// pickers edit (sampler step 17c).
+    pub outlined: bool,
 }
 
 impl Control {
@@ -113,7 +116,14 @@ impl Control {
             faint: false,
             why: String::new(),
             tint: None,
+            outlined: false,
         }
+    }
+
+    /// Outlined when `on` ([`Control::outlined`]).
+    pub fn outlined(mut self, on: bool) -> Control {
+        self.outlined = on;
+        self
     }
 
     pub fn faint_if(mut self, faint: bool) -> Control {
@@ -883,7 +893,14 @@ fn fit(cx: &mut PaintCx, font: FontId, px: f32, min: f32, s: &str, w: i32) -> f3
 
 /// A knob in the Synth tab's style: the track, the lit arc and the
 /// pointer (`colors`: track, arc, pointer).
-fn knob(cx: &mut PaintCx, (x, y): (f32, f32), d: f32, pos: f32, bipolar: bool, colors: [Color; 3]) {
+pub(crate) fn knob(
+    cx: &mut PaintCx,
+    (x, y): (f32, f32),
+    d: f32,
+    pos: f32,
+    bipolar: bool,
+    colors: [Color; 3],
+) {
     let [track, lit, pointer] = colors;
     let rad = d * 0.5 - 3.0;
     let width = (d / 9.0).clamp(3.0, 5.0);
@@ -1195,6 +1212,12 @@ pub fn paint(
                 t.outline.mix(t.accent, 0.6)
             };
             cx.canvas.stroke_round_rect(ring, t.round(12), 2, color);
+        } else if c.outlined {
+            let ring = match c.look {
+                Look::Knob { .. } => p.rect.inset(-5),
+                _ => p.control.inset(-4),
+            };
+            cx.canvas.stroke_round_rect(ring, t.round(12), 1, t.accent);
         }
     }
 }

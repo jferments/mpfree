@@ -40,7 +40,9 @@
 //!   from where they can be put back, if they are audio track takes by
 //!   name ([`is_take_file`]) and no part of this save or of an earlier one
 //!   still kept mentions them. Never a file outside `samples/`, never a
-//!   link, never on autosave's saves.
+//!   link, never on autosave's saves. Loop layers' recordings are kept
+//!   the same way (phase 4c.6): the files its looper part names on its
+//!   `layer` and `kept` lines ([`layer_files`]), `loop_<rec>.wav`.
 //! - **Sounds an engine made** (a recording in RAM, a resample) come with
 //!   the save as [`NewSample`]s, named by the engine for their content
 //!   ([`Library::save_project_with`]). Each one the project's `samples/`
@@ -89,6 +91,10 @@ pub(crate) const SAMPLES: &str = "samples";
 const VERSIONS: &str = "versions";
 /// The audio tracks' part, whose take lines name their files.
 const TAKES_PART: &str = "audiotracks.txt";
+/// The looper's part, whose layer and `kept` lines name loop layers'
+/// recordings by their files (`mpfree_looper::save`, audio tracks phase
+/// 4c.6).
+const LOOPS_PART: &str = "looper.txt";
 
 /// An engine's piece of a project.
 pub trait Part {
@@ -883,7 +889,8 @@ impl Library {
     }
 
     /// Lets go of all but the newest `keep` earlier saves: the take files
-    /// their audio tracks parts named.
+    /// their audio tracks parts named, and the loop layers' recordings
+    /// their looper parts named.
     fn prune_versions(&self, dir: &Path, keep: usize) -> Vec<String> {
         let mut takes = Vec::new();
         let mut v = self.read_versions(dir);
@@ -892,6 +899,9 @@ impl Library {
                 let at = dir.join(VERSIONS).join(&old.id);
                 if let Ok(t) = fs::read_to_string(at.join(PARTS).join(TAKES_PART)) {
                     takes.extend(take_files(&t).map(str::to_string));
+                }
+                if let Ok(t) = fs::read_to_string(at.join(PARTS).join(LOOPS_PART)) {
+                    takes.extend(layer_files(&t).map(str::to_string));
                 }
                 let _ = fs::remove_dir_all(dir.join(VERSIONS).join(&old.id));
             }
@@ -1186,6 +1196,20 @@ pub fn take_files(part: &str) -> impl Iterator<Item = &str> {
         })
 }
 
+/// The files the looper's part names for loop layers' recordings: the
+/// rest of each `layer` and `kept` line after ` file=`
+/// (`mpfree_looper::save`; audio tracks phase 4c.6). A layer named by its
+/// content (`loop-<hex>.wav`) is listed too, and [`is_take_file`] leaves
+/// it out: only a recording's `loop_<rec>.wav` goes to the Trash.
+pub fn layer_files(part: &str) -> impl Iterator<Item = &str> {
+    part.lines()
+        .filter(|l| l.starts_with("layer ") || l.starts_with("kept "))
+        .filter_map(|l| {
+            l.split_once(" file=")
+                .map(|(_, f)| f.trim_end_matches('\r'))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1458,6 +1482,62 @@ mod tests {
             assert_eq!(save(t, &[], true).cleared, 0);
         }
         assert!(samples.join(&keys).exists());
+    }
+
+    /// Audio tracks phase 4c.6: a loop layer's recording no kept save
+    /// names goes to the Trash as a take does; one a kept save names on a
+    /// `kept` line (held for an Undo) stays, and goes once that save is
+    /// let go too; a layer named by its content never goes.
+    #[test]
+    fn loop_layers_no_kept_save_names_go_to_the_trash() {
+        let d = temp();
+        let lib = Library::at(&d).unwrap();
+        let p = Loc::top(Place::Projects).join("Song").unwrap();
+        let samples = lib.root().join("Projects").join("Song").join(SAMPLES);
+        let rec = |c: char| format!("loop_{}.wav", c.to_string().repeat(32));
+        let (a, b, c) = (rec('a'), rec('b'), rec('c'));
+        let by_content = format!("loop-{}.wav", "d".repeat(32));
+        let save = |t: u64, layers: &[&String], kept: &[&String]| {
+            let mut text = "mpfree-looper 2\nrate=44100 selected=0\nloop=0 frames=1 ticks=1 origin=0 level=1 muted=0 bars=1 after=play fade_old=1\n".to_string();
+            for f in layers {
+                text += &format!("layer level=1 pan=0 muted=0 solo=0 faded=1 size=1 valid=0,1 view=0:1 replace=- file={f}\n");
+            }
+            for f in kept {
+                text += &format!("kept file={f}\n");
+            }
+            let snap = Snapshot {
+                meta: meta("Song", t),
+                parts: vec![("looper".into(), text)],
+            };
+            lib.save_project(&p, &snap, 1).unwrap()
+        };
+        assert_eq!(save(1, &[&a, &b, &by_content], &[]).cleared, 0);
+        for f in [&a, &b, &c, &by_content] {
+            fs::write(samples.join(f), b"RIFF").unwrap();
+        }
+        // Save 2: loop 0 cleared, B held for its Undo; save 1 is kept.
+        assert_eq!(save(2, &[&c], &[&b]).cleared, 0);
+        // Save 3 lets save 1 go: A and the layer named by its content were
+        // only there, B is on save 2's kept line.
+        assert_eq!(save(3, &[&c], &[]).cleared, 1);
+        assert!(!samples.join(&a).exists());
+        for f in [&b, &c, &by_content] {
+            assert!(samples.join(f).exists(), "{f}");
+        }
+        // Save 4 lets save 2 go: B was named there only.
+        assert_eq!(save(4, &[&c], &[]).cleared, 1);
+        assert!(!samples.join(&b).exists());
+        assert!(samples.join(&c).exists());
+        let mut t: Vec<String> = lib.trash().unwrap().into_iter().map(|t| t.name).collect();
+        t.sort();
+        assert_eq!(t, [a.clone(), b.clone()]);
+        assert_eq!(
+            layer_files(&format!(
+                "layer x=1 file={a}\r\nkept file={b}\nloop=0 file=no\n"
+            ))
+            .collect::<Vec<_>>(),
+            [a.as_str(), b.as_str()]
+        );
     }
 
     #[test]

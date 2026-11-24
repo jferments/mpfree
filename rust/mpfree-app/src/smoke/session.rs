@@ -113,7 +113,7 @@ impl time::Pads for Hits {
     ) -> bool {
         use mpfree_play::mpfree_param::Owner;
         match addr.owner {
-            Owner::Pad(..) if crate::sampler::pad_field(addr.param).is_some() => {
+            Owner::Pad(..) if crate::sampler::PadParam::of(addr.param).is_some() => {
                 self.lock_queue.push((addr, value, offset));
             }
             Owner::Inst(_) => {}

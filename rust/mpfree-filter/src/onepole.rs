@@ -74,8 +74,37 @@ impl OnePole {
         (self.step(0, l), self.step(1, r))
     }
 
+    /// One sample of channel `ch`, its state flushed to zero once too
+    /// small to hear, as [`crate::svf::Svf::run`] flushes its own (the
+    /// Filter effect's odd slopes, whose host flushes nothing).
+    #[inline]
+    pub fn run(&mut self, ch: usize, x: f32) -> f32 {
+        let y = self.step(ch, x);
+        self.s[ch] = crate::flush(self.s[ch]);
+        y
+    }
+
     pub fn reset(&mut self) {
         self.s = [0.0; 2];
+    }
+
+    /// Starts as if it had been hearing a sound whose low part is `low`
+    /// ([`crate::svf::Svf::start_from`]).
+    #[inline]
+    pub fn start_from(&mut self, low: [f32; 2]) {
+        self.s = low;
+    }
+
+    /// Its state, each channel's: the low-pass of what it has heard.
+    #[inline]
+    pub fn low_state(&self) -> [f32; 2] {
+        self.s
+    }
+
+    /// Carries on from `from`'s state (the same stage at another rate).
+    #[inline]
+    pub fn copy_states(&mut self, from: &OnePole) {
+        self.s = from.s;
     }
 
     /// Zeros each channel's state once it is under `quiet`.

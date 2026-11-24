@@ -134,6 +134,9 @@ pub struct Channel {
     pub track: String,
     pub track_mute: bool,
     pub track_solo: bool,
+    /// It holds a layer not yet on the stick (audio tracks phase 4c.3):
+    /// a dot at its ring's top right.
+    pub unsaved: bool,
 }
 
 impl Default for Channel {
@@ -155,6 +158,7 @@ impl Default for Channel {
             track: String::new(),
             track_mute: false,
             track_solo: false,
+            unsaved: false,
         }
     }
 }
@@ -750,6 +754,14 @@ impl LoopDeck {
             );
         }
         paint_ring(cx, p.ring, ch, look.clearing.map(|c| c as f32 / 1000.0));
+        if ch.unsaved && ch.state.has_sound() {
+            // A layer not yet on the stick (phase 4c.3): the warning's
+            // amber dot, between the ring and the level bar.
+            let (x, y) = (p.ring.right() + 4, p.ring.y + 4);
+            let mut s = Shape::new(Rect::new(x - 5, y - 5, 10, 10));
+            s.disc(x as f32, y as f32, 4.0);
+            s.draw(cx.canvas, t.warn);
+        }
         if ch.state.has_sound() {
             // The level bar: how loud it plays, and its level (the knob).
             cx.canvas.fill_round_rect(p.level, 4, t.raised);

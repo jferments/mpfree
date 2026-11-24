@@ -140,17 +140,17 @@ pub(super) fn grains<C: GrainSource>(
             } else {
                 v.grain_hit + v.glide_step * k as f32
             };
-            let mut p = pitched_grain(v.layer_grain, v.grain_hit, v.grain_follow);
+            let mut p = pitched_grain(v.routed_grain(), v.grain_hit, v.grain_follow);
             p.position = v.grain_base.position;
             v.grain_base = p;
         }
-        if gliding || v.route.target != PressureTarget::Off || v.grain_cents != v.follow.cents {
+        if gliding
+            || v.route.target != PressureTarget::Off
+            || v.grain_press
+            || v.grain_cents != v.follow.cents
+        {
             let cents = v.follow.cents;
-            g.set_params(tuned_grain(
-                pressed_grain(v.grain_base, v.route, v.press),
-                cents,
-                v.grain_follow,
-            ));
+            g.set_params(tuned_grain(v.pressed_grain(), cents, v.grain_follow));
             v.grain_cents = cents;
         }
         g.render(clip, budget, frame + at as u64, bl, br);
@@ -217,6 +217,26 @@ pub(super) struct KeyFollow {
     pub(super) size: bool,
     /// The scan too ([`GrainKeys::scan`]).
     pub(super) scan: bool,
+}
+
+impl Voice {
+    /// Its layer's grain settings with its routes from velocity and the
+    /// key applied (step 17c), before the hit's pitch.
+    pub(super) fn routed_grain(&self) -> GrainParams {
+        self.grain_routes
+            .at_start(self.layer_grain, self.grain_vel, self.grain_key as f32)
+    }
+
+    /// Its grain settings now: the base, with pressure applied along the
+    /// pad's route and the layer's routes from pressure.
+    pub(super) fn pressed_grain(&self) -> GrainParams {
+        let g = pressed_grain(self.grain_base, self.route, self.press);
+        if self.grain_press {
+            self.grain_routes.pressed(g, self.press)
+        } else {
+            g
+        }
+    }
 }
 
 /// Grain settings with pressure `p` (0 to 1) applied along `route`.

@@ -38,10 +38,15 @@ pub struct ViewLayer {
     pub(super) src_rate: u32,
     /// Grain settings with the layer's tune and reverse folded in.
     pub(super) grain: mpfree_grain::Params,
+    /// The layer's tune in semitones, as `grain` has it (for its own grain
+    /// settings with live values in place, [`Live::layer_grain`]).
+    pub(super) semis: f32,
     /// The region's grain settings as edited, before the tune and reverse
     /// go in: what a grain setting's parameter reads (sampler refactor
     /// step 17, [`EngineView::layer_grain`]).
     pub(super) own_grain: mpfree_grain::Params,
+    /// Its routes from velocity, pressure and the key (step 17c).
+    pub(super) routes: GrainRoutes,
     /// The layer's place on its pad (a layer whose sound is missing has
     /// no view, so the view's places can skip one).
     pub(super) place: u8,
@@ -503,7 +508,9 @@ impl EngineView {
                         vel_hi: l.vel_hi,
                         src_rate: s.rate(),
                         grain,
+                        semis: (cents / 100.0) as f32,
                         own_grain: r.grain,
+                        routes: r.grain_routes,
                         place: li as u8,
                         follow,
                         glide: (r.grain_glide_ms.clamp(0.0, GRAIN_GLIDE_MAX_MS) / 1000.0
@@ -618,7 +625,15 @@ impl EngineView {
                 latch: p.latch,
                 on_launch: p.on_launch,
                 amp: p.amp,
-                filter: p.filter,
+                // Bypassed, a hit plays as if the filter were off.
+                filter: if p.filter_bypass {
+                    Filter {
+                        kind: FilterKind::Off,
+                        ..p.filter
+                    }
+                } else {
+                    p.filter
+                },
                 filter_env: p.filter_env,
                 vel_to_level: p.vel_to_level.clamp(0.0, 1.0),
                 vel_to_start: p.vel_to_start.clamp(0.0, 1.0),
@@ -782,7 +797,10 @@ impl Engine {
             return view;
         };
         let old = std::mem::replace(slot, view);
-        self.lives[kit].pads = Live::OWN;
+        let live = &mut self.lives[kit];
+        live.pads = Live::OWN;
+        live.clear_layer_lives();
+        live.master = [f32::NAN; GrainField::COUNT + 1];
         self.edit_lane[kit] = false;
         if kit == self.master_kit {
             self.apply_master();
@@ -838,7 +856,7 @@ impl Engine {
                     v,
                     g,
                     view,
-                    &live.row(p),
+                    live,
                     &live.program_of(v, t),
                     live_pads.get(p).copied().unwrap_or(false),
                     *tempo,

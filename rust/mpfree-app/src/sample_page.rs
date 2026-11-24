@@ -1745,6 +1745,15 @@ impl SamplePage {
 
     /// What Q-Links 1 to 4 turn on the Play page now, for the hint line
     /// (they follow its section): "Attack, Decay, Sustain, Release".
+    /// The Play page's hint line while the Filter section shows its
+    /// types or what moves the filter; None otherwise.
+    pub fn play_view_hint(&self) -> Option<&'static str> {
+        if self.page() != PLAY_PAGE {
+            return None;
+        }
+        self.play.as_ref().and_then(PlayTab::view_hint)
+    }
+
     pub fn play_qlinks_text(&self) -> String {
         self.play
             .as_ref()
@@ -2022,6 +2031,15 @@ impl SamplePage {
     /// The Wave page shows with the Grain tool.
     pub fn grain_tool(&self) -> bool {
         self.page() == PAGE && self.tool() == Tool::Grain
+    }
+
+    /// The Grain tool shows its Mod part (sampler step 17c).
+    pub fn grain_mod_part(&self) -> bool {
+        self.grain_tool()
+            && self
+                .tab
+                .as_ref()
+                .is_some_and(|t| t.grain_part() == mpfree_sampler_ui::grain_tool::GrainPart::Mod)
     }
 
     /// The Wave page shows with the Slice tool.
@@ -2781,7 +2799,16 @@ impl SamplePage {
                 return;
             };
             let a = tab.action(ui, ev, st);
-            if let Some(a) = self.took(a) {
+            let note = tab.take_note();
+            let a = self.took(a);
+            // What the filter's buttons did (Copy, Paste, Reset, On,
+            // Compare): the hint line and the log say so.
+            if let Some(note) = note {
+                self.answered = true;
+                self.lines.push(format!("sample: {note}"));
+                self.told.push(note);
+            }
+            if let Some(a) = a {
                 self.act_play(ui, a, out);
             }
             return;

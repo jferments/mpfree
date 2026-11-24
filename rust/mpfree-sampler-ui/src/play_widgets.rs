@@ -420,6 +420,11 @@ pub struct EnvelopeView {
     /// The line under the picture.
     pub caption: String,
     pub env: Ahdsr,
+    /// Labels down the right edge at envelope levels (0 to 1): the
+    /// Filter section's cutoff in Hz at the envelope's peak, sustain and
+    /// rest (the filter gap plan's F5). Empty: none, the picture full
+    /// width.
+    pub marks: Vec<(f32, String)>,
     peaks: Option<Arc<dyn Peaks>>,
     /// The region's first and last frame, and the source's rate.
     span: (u64, u64),
@@ -430,6 +435,8 @@ pub struct EnvelopeView {
 }
 
 const POINT: i32 = 18;
+/// The room the envelope's marks take at the right ([`EnvelopeView::marks`]).
+const MARKS_W: i32 = 70;
 
 impl EnvelopeView {
     pub fn new(title: &str) -> EnvelopeView {
@@ -438,6 +445,7 @@ impl EnvelopeView {
             right: String::new(),
             caption: String::new(),
             env: Ahdsr::OPEN,
+            marks: Vec::new(),
             peaks: None,
             span: (0, 0),
             rate: 44_100,
@@ -470,12 +478,13 @@ impl EnvelopeView {
             .unwrap_or_else(|| ((self.sustain_ms() + self.env.release_ms.max(1.0)) * 1.04).max(1.0))
     }
 
-    fn plot(r: Rect) -> Rect {
+    fn plot(&self, r: Rect) -> Rect {
         let b = body(r);
+        let marks = if self.marks.is_empty() { 0 } else { MARKS_W };
         Rect::new(
             b.x + POINT / 2,
             b.y + POINT / 2,
-            (b.w - POINT).max(1),
+            (b.w - POINT - marks).max(1),
             (b.h - POINT - 24).max(1),
         )
     }
@@ -495,7 +504,7 @@ impl EnvelopeView {
 
     /// Point `p` on the screen.
     pub fn point_xy(&self, r: Rect, p: EnvPoint) -> (i32, i32) {
-        let plot = EnvelopeView::plot(r);
+        let plot = self.plot(r);
         let (ms, level) = self.point(p);
         let x = plot.x + (ms / self.axis_ms() * plot.w as f32).round() as i32;
         let y = plot.bottom() - (level * plot.h as f32).round() as i32;
@@ -507,7 +516,7 @@ impl Widget for EnvelopeView {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         titled(cx, r, &self.title, &self.right);
-        let plot = EnvelopeView::plot(r);
+        let plot = self.plot(r);
         let axis = self.axis_ms();
         let ms_at = |x: i32| (x - plot.x) as f32 / plot.w as f32 * axis;
         // The sound, faint, from the region's start.
@@ -560,6 +569,19 @@ impl Widget for EnvelopeView {
                 Align::Center,
                 t.on_accent,
                 p.letter(),
+            );
+        }
+        for (level, text) in &self.marks {
+            let y = plot.bottom() - (level.clamp(0.0, 1.0) * plot.h as f32).round() as i32;
+            let x = plot.right() + POINT / 2 + 4;
+            cx.canvas.fill_rect(Rect::new(x, y, 10, 2), t.warn);
+            cx.text(
+                FontId::Sans,
+                t.size_small - 2.0,
+                Rect::new(x + 12, y - 9, MARKS_W - 16, 18),
+                Align::Left,
+                t.readable(t.warn, t.surface),
+                text,
             );
         }
         let caption = Rect::new(plot.x, plot.bottom() + POINT / 2 + 2, plot.w, 20);
@@ -615,7 +637,7 @@ impl Widget for EnvelopeView {
                 if g != finger {
                     return None;
                 }
-                let plot = EnvelopeView::plot(r);
+                let plot = self.plot(r);
                 let ms = ((x - plot.x) as f32 / plot.w as f32 * self.axis_ms()).max(0.0);
                 let length = self.length_ms();
                 let e = &mut self.env;
@@ -682,24 +704,55 @@ pub fn filter_db(f: &Filter, hz: f32) -> f32 {
     mpfree_sampler::dsp::svf_db(f, hz)
 }
 
+/// A button in the [`FilterCurve`]'s title line: On (the bypass),
+/// Compare, Copy, Paste and Reset (the filter gap plan's F5). `lit`: drawn
+/// as on (On while the filter plays, Compare while comparing); `faint`:
+/// nothing to do now (a tap says why).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HeadButton {
+    pub text: String,
+    pub lit: bool,
+    pub faint: bool,
+}
+
 /// The filter's response on a log frequency axis, with a dot at the
 /// cutoff. Dragging sideways gives [`EventKind::Marker`] with `index` 0
-/// and the new cutoff in Hz as `frame`.
+/// and the new cutoff in Hz as `frame`. While the envelope moves the
+/// cutoff (`filter.env_octaves`), a dashed curve in the warning colour
+/// shows where its peak takes the filter, the band between shaded. The
+/// [`HeadButton`]s in the title line give [`EventKind::Tab`] with their
+/// place (a faint one [`EventKind::Select`]). Bypassed, the curve is
+/// drawn faint behind a flat line: the sound passes as it is.
 pub struct FilterCurve {
     pub title: String,
+    /// The title when the full one doesn't fit beside the buttons.
+    pub short: String,
     pub right: String,
     pub caption: String,
     pub filter: Filter,
+    pub bypassed: bool,
+    /// While comparing, the changes Compare set aside, drawn dashed
+    /// behind the filter as it was.
+    pub ghost: Option<Filter>,
+    pub buttons: Vec<HeadButton>,
     grab: Option<u64>,
 }
+
+/// The title line's buttons: their height, the gap between them.
+const HEAD_BUTTON_H: i32 = 36;
+const HEAD_BUTTON_GAP: i32 = 6;
 
 impl FilterCurve {
     pub fn new(title: &str) -> FilterCurve {
         FilterCurve {
             title: title.to_string(),
+            short: String::new(),
             right: String::new(),
             caption: String::new(),
             filter: Filter::default(),
+            bypassed: false,
+            ghost: None,
+            buttons: Vec::new(),
             grab: None,
         }
     }
@@ -707,6 +760,26 @@ impl FilterCurve {
     fn plot(r: Rect) -> Rect {
         let b = body(r);
         Rect::new(b.x, b.y + 4, b.w.max(1), (b.h - 4 - 24).max(1))
+    }
+
+    /// The title line's buttons, right to left from the panel's right
+    /// edge, sized by their text.
+    pub fn button_rects(&self, r: Rect) -> Vec<Rect> {
+        let mut x = r.right() - 12;
+        let mut out: Vec<Rect> = self
+            .buttons
+            .iter()
+            .rev()
+            .map(|b| {
+                let w = 26 + 8 * b.text.chars().count() as i32;
+                x -= w;
+                let rect = Rect::new(x, r.y + 8, w, HEAD_BUTTON_H);
+                x -= HEAD_BUTTON_GAP;
+                rect
+            })
+            .collect();
+        out.reverse();
+        out
     }
 
     fn x_of(plot: Rect, hz: f32) -> i32 {
@@ -733,12 +806,43 @@ impl FilterCurve {
             FilterCurve::y_of(plot, filter_db(&self.filter, hz)),
         )
     }
+
+    /// Where the envelope's peak takes the cutoff, when it moves it.
+    pub fn env_target(&self) -> Option<f32> {
+        let f = &self.filter;
+        (f.kind != FilterKind::Off && f.env_octaves != 0.0)
+            .then(|| (f.cutoff_hz * f.env_octaves.exp2()).clamp(F_LO, F_HI))
+    }
 }
 
 impl Widget for FilterCurve {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
-        titled(cx, r, &self.title, &self.right);
+        let rects = self.button_rects(r);
+        if self.buttons.is_empty() {
+            titled(cx, r, &self.title, &self.right);
+        } else {
+            cx.panel(r);
+            let px = t.size_small;
+            let left = rects.first().map_or(r.right(), |b| b.x) - 8;
+            let head = Rect::new(r.x + t.pad, r.y + t.pad, (left - r.x - t.pad).max(0), 26);
+            let full = self.title.to_uppercase();
+            let title = if cx.measure(FontId::Bold, px, &full) <= head.w || self.short.is_empty() {
+                full
+            } else {
+                self.short.to_uppercase()
+            };
+            cx.text(FontId::Bold, px, head, Align::Left, t.text_dim, &title);
+            for (b, rect) in self.buttons.iter().zip(&rects) {
+                let (fill, ink) = match (b.lit, b.faint) {
+                    (_, true) => (t.raised, t.text_faint),
+                    (true, false) => (t.picked(), t.on_picked()),
+                    (false, false) => (t.raised, t.text),
+                };
+                cx.canvas.fill_round_rect(*rect, t.round(8), fill);
+                cx.text(FontId::Bold, 14.0, *rect, Align::Center, ink, &b.text);
+            }
+        }
         let plot = FilterCurve::plot(r);
         for (hz, label) in [(100.0, "100"), (1000.0, "1k"), (10_000.0, "10k")] {
             let x = FilterCurve::x_of(plot, hz);
@@ -753,17 +857,83 @@ impl Widget for FilterCurve {
                 label,
             );
         }
-        cx.canvas.fill_rect(
-            Rect::new(plot.x, FilterCurve::y_of(plot, 0.0), plot.w, 1),
-            t.outline,
-        );
+        let zero = FilterCurve::y_of(plot, 0.0);
+        cx.canvas
+            .fill_rect(Rect::new(plot.x, zero, plot.w, 1), t.outline);
         let off = self.filter.kind == FilterKind::Off;
-        let color = if off { t.text_faint } else { t.good };
+        // The envelope's reach: the band from the cutoff to where its
+        // peak takes it, and the filter there, dashed.
+        if let (Some(to), false) = (self.env_target(), self.bypassed) {
+            let (x0, x1) = (
+                FilterCurve::x_of(plot, self.filter.cutoff_hz),
+                FilterCurve::x_of(plot, to),
+            );
+            let (a, b) = (x0.min(x1), x0.max(x1));
+            cx.canvas.fill_rect(
+                Rect::new(a, plot.y, (b - a).max(1), plot.h),
+                t.warn.with_alpha(26),
+            );
+            let peak = Filter {
+                cutoff_hz: to,
+                ..self.filter
+            };
+            for x in plot.x..plot.right() {
+                // Dashes 6 on, 5 off.
+                if (x - plot.x) % 11 >= 6 {
+                    continue;
+                }
+                let y0 = FilterCurve::y_of(plot, filter_db(&peak, FilterCurve::hz_at(plot, x)));
+                let y1 = FilterCurve::y_of(plot, filter_db(&peak, FilterCurve::hz_at(plot, x + 1)));
+                let (top, bot) = (y0.min(y1), y0.max(y1));
+                cx.canvas
+                    .fill_rect(Rect::new(x, top - 1, 1, bot - top + 2), t.warn);
+            }
+            let label = format!("env {:+.1} oct → {}", self.filter.env_octaves, hz_label(to));
+            let lw = cx.measure(FontId::Sans, t.size_small - 1.0, &label) + 4;
+            let lx = if x1 >= x0 {
+                (a + 6).min(plot.right() - lw)
+            } else {
+                (b - lw - 6).max(plot.x)
+            };
+            cx.text(
+                FontId::Sans,
+                t.size_small - 1.0,
+                Rect::new(lx, plot.y + 2, lw, 18),
+                Align::Left,
+                t.readable(t.warn, t.surface),
+                &label,
+            );
+        }
+        if let Some(g) = &self.ghost {
+            let ys: Vec<i32> = (plot.x..=plot.right())
+                .map(|x| FilterCurve::y_of(plot, filter_db(g, FilterCurve::hz_at(plot, x))))
+                .collect();
+            for (i, w) in ys.windows(2).enumerate() {
+                // Dashes 6 on, 5 off.
+                if i % 11 >= 6 {
+                    continue;
+                }
+                let (top, bot) = (w[0].min(w[1]), w[0].max(w[1]));
+                cx.canvas.fill_rect(
+                    Rect::new(plot.x + i as i32, top - 1, 1, bot - top + 2),
+                    t.text_dim,
+                );
+            }
+        }
+        let color = if off || self.bypassed {
+            t.text_faint
+        } else {
+            t.good
+        };
         let ys: Vec<i32> = (plot.x..=plot.right())
             .map(|x| FilterCurve::y_of(plot, filter_db(&self.filter, FilterCurve::hz_at(plot, x))))
             .collect();
         polyline(cx, plot.x, &ys, 3, color);
-        if !off {
+        if self.bypassed {
+            // What is heard: the sound as it is.
+            cx.canvas
+                .fill_rect(Rect::new(plot.x, zero - 1, plot.w, 2), t.text);
+        } else if !off {
             let (x, y) = self.dot_xy(r);
             dot(cx, x, y, 16, t.good);
         }
@@ -780,19 +950,30 @@ impl Widget for FilterCurve {
 
     fn targets(&self, r: Rect) -> Vec<Target> {
         let plot = FilterCurve::plot(r);
-        vec![Target::drag("cutoff", 0, "cutoff", plot)
+        let mut out = vec![Target::drag("cutoff", 0, "cutoff", plot)
             .towards(-40, 0)
-            .disabled_if(self.filter.kind == FilterKind::Off)]
+            .disabled_if(self.filter.kind == FilterKind::Off)];
+        for (i, (b, rect)) in self.buttons.iter().zip(self.button_rects(r)).enumerate() {
+            out.push(Target::tap("button", i, b.text.clone(), rect).disabled_if(b.faint));
+        }
+        out
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let plot = FilterCurve::plot(r);
         match phase {
-            Touch::Down
-                if self.filter.kind != FilterKind::Off
-                    && plot.inset_xy(-10, -10).contains(x, y) =>
-            {
-                self.grab = Some(finger);
+            Touch::Down => {
+                if let Some(i) = self.button_rects(r).iter().position(|b| b.contains(x, y)) {
+                    let faint = self.buttons.get(i).is_some_and(|b| b.faint);
+                    return Some(if faint {
+                        EventKind::Select(i)
+                    } else {
+                        EventKind::Tab(i)
+                    });
+                }
+                if self.filter.kind != FilterKind::Off && plot.inset_xy(-10, -10).contains(x, y) {
+                    self.grab = Some(finger);
+                }
                 None
             }
             Touch::Move if self.grab == Some(finger) => {
@@ -807,6 +988,671 @@ impl Widget for FilterCurve {
                 None
             }
             _ => None,
+        }
+    }
+}
+
+/// A frequency as the pictures label it: "250 Hz", "4.00 kHz", "12.0 kHz".
+pub fn hz_label(hz: f32) -> String {
+    if hz < 1000.0 {
+        format!("{hz:.0} Hz")
+    } else if hz < 10_000.0 {
+        format!("{:.2} kHz", hz / 1000.0)
+    } else {
+        format!("{:.1} kHz", hz / 1000.0)
+    }
+}
+
+// ---------------------------------------------------------------- types
+
+/// One filter type on the [`FilterTypes`] picker: its curve, its name and
+/// a line on what it is for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TypeTile {
+    pub name: String,
+    pub line: String,
+    /// The curve its icon draws.
+    pub filter: Filter,
+}
+
+/// One slope chip under the types: "24", lit when the pad has it, faint
+/// when the type picked has no such slope.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SlopeChip {
+    pub text: String,
+    pub lit: bool,
+    pub faint: bool,
+}
+
+/// The filter types over the Filter section's pictures (the filter gap
+/// plan's F5): a tile each, the pad's lit, and the slopes as chips under
+/// them. A tap on a tile gives [`EventKind::Tab`] with its place; on a
+/// slope chip `Tab(SLOPE_BASE + place)` (a faint one
+/// [`EventKind::Select`] with the same number, for the page to say why);
+/// Done `Tab(DONE)`.
+pub struct FilterTypes {
+    pub title: String,
+    pub note: String,
+    pub tiles: Vec<TypeTile>,
+    pub picked: usize,
+    pub slope_title: String,
+    pub slope_note: String,
+    pub slopes: Vec<SlopeChip>,
+}
+
+/// [`FilterTypes`]' and [`FilterMoves`]' Done: `Tab(DONE)`.
+pub const DONE: usize = 99;
+/// A slope chip's tap: `Tab(SLOPE_BASE + its place)`.
+pub const SLOPE_BASE: usize = 10;
+
+impl FilterTypes {
+    pub fn new() -> FilterTypes {
+        FilterTypes {
+            title: "Pick a filter".into(),
+            note: String::new(),
+            tiles: Vec::new(),
+            picked: 0,
+            slope_title: "Slope (dB an octave)".into(),
+            slope_note: String::new(),
+            slopes: Vec::new(),
+        }
+    }
+
+    fn done_rect(r: Rect) -> Rect {
+        Rect::new(r.right() - 12 - 96, r.y + 8, 96, HEAD_BUTTON_H)
+    }
+
+    /// The tiles, side by side across the panel.
+    pub fn tile_rects(&self, r: Rect) -> Vec<Rect> {
+        let n = self.tiles.len().max(1) as i32;
+        let gap = 8;
+        let x0 = r.x + 14;
+        let w = (r.w - 28 - gap * (n - 1)) / n;
+        let top = r.y + 52;
+        let h = (r.h - 52 - 92).max(60);
+        (0..self.tiles.len() as i32)
+            .map(|i| Rect::new(x0 + i * (w + gap), top, w, h))
+            .collect()
+    }
+
+    /// The slope chips, side by side right of their title.
+    pub fn slope_rects(&self, r: Rect) -> Vec<Rect> {
+        let n = self.slopes.len().max(1) as i32;
+        let gap = 8;
+        let x0 = r.x + 14 + 190;
+        let w = ((r.w - 28 - 190 - gap * (n - 1)) / n).min(110);
+        let y = r.bottom() - 14 - 26 - 44;
+        (0..self.slopes.len() as i32)
+            .map(|i| Rect::new(x0 + i * (w + gap), y, w, 44))
+            .collect()
+    }
+}
+
+impl Default for FilterTypes {
+    fn default() -> FilterTypes {
+        FilterTypes::new()
+    }
+}
+
+/// Splits a tile's line in two at its comma, or at the space nearest its
+/// middle, so it fits a narrow tile.
+fn two_lines(line: &str) -> (String, String) {
+    if let Some((a, b)) = line.split_once(", ") {
+        return (format!("{a},"), b.to_string());
+    }
+    if line.chars().count() <= 14 {
+        return (line.to_string(), String::new());
+    }
+    let mid = line.len() / 2;
+    let cut = line
+        .match_indices(' ')
+        .map(|(i, _)| i)
+        .min_by_key(|i| i.abs_diff(mid));
+    match cut {
+        Some(i) => (line[..i].to_string(), line[i + 1..].to_string()),
+        None => (line.to_string(), String::new()),
+    }
+}
+
+impl Widget for FilterTypes {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.panel(r);
+        cx.canvas
+            .stroke_round_rect(r, t.round(12), 2, t.accent.with_alpha(160));
+        let done = FilterTypes::done_rect(r);
+        let head = Rect::new(r.x + 14, r.y + 12, done.x - r.x - 24, 26);
+        let title = self.title.to_uppercase();
+        let tw = cx.measure(FontId::Bold, t.size_small, &title);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            head,
+            Align::Left,
+            t.text_dim,
+            &title,
+        );
+        let note = Rect::new(head.x + tw + 14, head.y, (head.w - tw - 14).max(0), 26);
+        cx.text(
+            FontId::Sans,
+            t.size_small - 1.0,
+            note,
+            Align::Left,
+            t.text_faint,
+            &self.note,
+        );
+        cx.canvas.fill_round_rect(done, t.round(8), t.raised);
+        cx.text(FontId::Bold, 15.0, done, Align::Center, t.text, "Done");
+        for (i, (tile, rect)) in self.tiles.iter().zip(self.tile_rects(r)).enumerate() {
+            let lit = i == self.picked;
+            cx.canvas.fill_round_rect(rect, t.round(10), t.raised);
+            if lit {
+                cx.canvas.stroke_round_rect(rect, t.round(10), 2, t.accent);
+            }
+            // The icon: the type's curve on a small log axis.
+            let icon = Rect::new(rect.x + 10, rect.y + 10, rect.w - 20, (rect.h - 70).max(24));
+            let ys: Vec<i32> = (icon.x..=icon.right())
+                .map(|x| {
+                    let u = (x - icon.x) as f32 / icon.w.max(1) as f32;
+                    let hz = F_LO * (F_HI / F_LO).powf(u);
+                    let db = filter_db(&tile.filter, hz).clamp(-30.0, 18.0);
+                    icon.bottom() - ((db + 30.0) / 48.0 * icon.h as f32).round() as i32
+                })
+                .collect();
+            let ink = if lit { t.good } else { t.text_dim };
+            polyline(cx, icon.x, &ys, 2, ink);
+            let name = Rect::new(rect.x + 4, icon.bottom() + 6, rect.w - 8, 20);
+            cx.text(FontId::Bold, 15.0, name, Align::Center, t.text, &tile.name);
+            let (a, b) = two_lines(&tile.line);
+            for (k, l) in [a, b].iter().enumerate() {
+                let lr = Rect::new(
+                    rect.x + 4,
+                    name.bottom() + 2 + 15 * k as i32,
+                    rect.w - 8,
+                    15,
+                );
+                cx.text(FontId::Sans, 12.0, lr, Align::Center, t.text_dim, l);
+            }
+        }
+        let rects = self.slope_rects(r);
+        if let Some(first) = rects.first() {
+            let label = Rect::new(r.x + 14, first.y, 180, 44);
+            cx.text(
+                FontId::Bold,
+                t.size_small - 1.0,
+                label,
+                Align::Left,
+                t.text_dim,
+                &self.slope_title,
+            );
+            let note = Rect::new(r.x + 14, first.bottom() + 6, r.w - 28, 20);
+            cx.text(
+                FontId::Sans,
+                t.size_small - 1.0,
+                note,
+                Align::Left,
+                t.text_faint,
+                &self.slope_note,
+            );
+        }
+        for (s, rect) in self.slopes.iter().zip(rects) {
+            let (fill, ink) = match (s.lit, s.faint) {
+                (_, true) => (t.raised, t.text_faint),
+                (true, false) => (t.picked(), t.on_picked()),
+                (false, false) => (t.raised, t.text),
+            };
+            cx.canvas.fill_round_rect(rect, t.round(10), fill);
+            cx.text(FontId::Bold, 15.0, rect, Align::Center, ink, &s.text);
+        }
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let mut out = vec![Target::tap("done", 0, "Done", FilterTypes::done_rect(r))];
+        for (i, (tile, rect)) in self.tiles.iter().zip(self.tile_rects(r)).enumerate() {
+            out.push(Target::tap("type", i, tile.name.clone(), rect).disabled_if(i == self.picked));
+        }
+        for (i, (s, rect)) in self.slopes.iter().zip(self.slope_rects(r)).enumerate() {
+            out.push(Target::tap("slope", i, s.text.clone(), rect).disabled_if(s.faint || s.lit));
+        }
+        out
+    }
+
+    fn touch(&mut self, _finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if phase != Touch::Down {
+            return None;
+        }
+        if FilterTypes::done_rect(r).contains(x, y) {
+            return Some(EventKind::Tab(DONE));
+        }
+        if let Some(i) = self.tile_rects(r).iter().position(|t| t.contains(x, y)) {
+            return Some(EventKind::Tab(i));
+        }
+        let i = self.slope_rects(r).iter().position(|t| t.contains(x, y))?;
+        Some(if self.slopes[i].faint {
+            EventKind::Select(SLOPE_BASE + i)
+        } else {
+            EventKind::Tab(SLOPE_BASE + i)
+        })
+    }
+}
+
+// ---------------------------------------------------------------- moves
+
+/// The octaves either way the [`FilterMoves`] bars show round the cutoff.
+pub const MOVES_OCTAVES: f32 = 4.0;
+
+/// One row of [`FilterMoves`]: a name and what it does, a knob (or,
+/// set elsewhere, its value and a jump there) and, for the cutoff's, a bar
+/// of how far it can take the cutoff, in octaves.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MoveRow {
+    pub name: String,
+    pub what: String,
+    pub value: String,
+    /// The page's row number its knob steps and a tap picks; None for a
+    /// row set in another section (no knob).
+    pub index: Option<usize>,
+    /// The knob, lit this far round (0 to 1), from the middle if bipolar.
+    pub pos: f32,
+    pub bipolar: bool,
+    /// How many steps take the knob from end to end ([`crate::panel::step_px`]).
+    pub steps: u32,
+    /// Octaves below and above the cutoff it can reach; None: no bar.
+    pub span: Option<(f32, f32)>,
+    /// A line beside the bar ("keys C2 to C6").
+    pub aside: String,
+    /// A button to where it is set ("Movement ›") and the number its tap
+    /// gives as [`EventKind::Tab`].
+    pub jump: Option<(String, usize)>,
+    /// The Q-Link (0 to 3) that turns it, whose colour the knob and bar
+    /// take: Q1's accent, Q2's good, Q3's warning and Q4's violet, as
+    /// their cards.
+    pub qlink: Option<usize>,
+    pub faint: bool,
+    pub picked: bool,
+}
+
+impl MoveRow {
+    pub fn new(name: &str, what: &str, value: &str) -> MoveRow {
+        MoveRow {
+            name: name.into(),
+            what: what.into(),
+            value: value.into(),
+            index: None,
+            pos: 0.0,
+            bipolar: false,
+            steps: 20,
+            span: None,
+            aside: String::new(),
+            jump: None,
+            qlink: None,
+            faint: false,
+            picked: false,
+        }
+    }
+}
+
+/// What moves the filter (the filter gap plan's F5), under the section
+/// chips in place of the pictures and panels: left, the cutoff's moves,
+/// each with a knob and a bar on one octave scale round the cutoff;
+/// right, the resonance's and the envelope's, and a line on where a hit
+/// takes the filter. A knob dragged gives [`EventKind::Step`] with its
+/// row's `index`; a tap on a row [`EventKind::Select`]; a jump
+/// [`EventKind::Tab`] with its number; Done `Tab(DONE)`.
+pub struct FilterMoves {
+    pub title: String,
+    pub note: String,
+    /// The cutoff in Hz, the bars' middle.
+    pub cutoff_hz: f32,
+    pub cutoff: Vec<MoveRow>,
+    /// Headed groups on the right.
+    pub right: Vec<(String, Vec<MoveRow>)>,
+    /// Under the rows: where the hardest and softest hits take it.
+    pub hits: String,
+    drag: Option<(u64, usize, i32)>,
+}
+
+const MOVE_ROW_H: i32 = 56;
+const MOVE_NAME_W: i32 = 200;
+const MOVE_KNOB_W: i32 = 130;
+const MOVE_BAR_W: i32 = 300;
+/// The line beside a cutoff row's bar ([`MoveRow::aside`]).
+const MOVE_ASIDE_W: i32 = 160;
+
+impl FilterMoves {
+    pub fn new() -> FilterMoves {
+        FilterMoves {
+            title: "What moves the filter".into(),
+            note: String::new(),
+            cutoff_hz: 1000.0,
+            cutoff: Vec::new(),
+            right: Vec::new(),
+            hits: String::new(),
+            drag: None,
+        }
+    }
+
+    fn done_rect(r: Rect) -> Rect {
+        Rect::new(r.right() - 12 - 96, r.y + 8, 96, HEAD_BUTTON_H)
+    }
+
+    /// The left column's width: name, knob, bar and the line beside it,
+    /// leaving the right column room for its rows.
+    fn left_w(r: Rect) -> i32 {
+        (MOVE_NAME_W + MOVE_KNOB_W + MOVE_BAR_W + MOVE_ASIDE_W).min(r.w - 28 - 24 - 300)
+    }
+
+    /// Every row's rect, with its row, in drawing order: the cutoff's,
+    /// then the right's under their headings.
+    fn row_rects(&self, r: Rect) -> Vec<(Rect, &MoveRow)> {
+        let mut out = Vec::new();
+        let lw = FilterMoves::left_w(r);
+        // Under the title and the scale's labels.
+        let mut y = r.y + 52 + 30;
+        for row in &self.cutoff {
+            out.push((Rect::new(r.x + 14, y, lw, MOVE_ROW_H), row));
+            y += MOVE_ROW_H;
+        }
+        let x = r.x + 14 + lw + 24;
+        let w = r.right() - 14 - x;
+        let mut y = r.y + 52;
+        for (_, rows) in &self.right {
+            y += 30;
+            for row in rows {
+                out.push((Rect::new(x, y, w, MOVE_ROW_H), row));
+                y += MOVE_ROW_H;
+            }
+            y += 8;
+        }
+        out
+    }
+
+    fn knob_rect(row: Rect) -> Rect {
+        Rect::new(row.x + MOVE_NAME_W, row.y + 6, 44, 44)
+    }
+
+    fn jump_rect(row: Rect, text: &str) -> Rect {
+        let w = 24 + 8 * text.chars().count() as i32;
+        Rect::new(row.x + MOVE_NAME_W + MOVE_KNOB_W - w - 8, row.y + 13, w, 30)
+    }
+
+    /// The bar's place in a cutoff row.
+    fn bar_rect(row: Rect) -> Rect {
+        let x = row.x + MOVE_NAME_W + MOVE_KNOB_W;
+        Rect::new(x, row.y, (row.right() - x).min(MOVE_BAR_W), MOVE_ROW_H)
+    }
+
+    fn x_of(bar: Rect, oct: f32) -> i32 {
+        let u = (oct.clamp(-MOVES_OCTAVES, MOVES_OCTAVES) + MOVES_OCTAVES) / (2.0 * MOVES_OCTAVES);
+        bar.x + (u * bar.w as f32).round() as i32
+    }
+}
+
+impl Default for FilterMoves {
+    fn default() -> FilterMoves {
+        FilterMoves::new()
+    }
+}
+
+/// A frequency as short as the scale labels it: "62 Hz", "250", "1 kHz", "4k".
+fn scale_label(hz: f32, first: bool) -> String {
+    let (n, unit) = if hz >= 1000.0 {
+        let k = hz / 1000.0;
+        let n = if k >= 10.0 || k.fract() < 0.05 {
+            format!("{k:.0}")
+        } else {
+            format!("{k:.1}")
+        };
+        (n, if first { " kHz" } else { "k" })
+    } else {
+        (format!("{hz:.0}"), if first { " Hz" } else { "" })
+    };
+    format!("{n}{unit}")
+}
+
+impl Widget for FilterMoves {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        cx.panel(r);
+        let done = FilterMoves::done_rect(r);
+        let head = Rect::new(r.x + 14, r.y + 12, done.x - r.x - 24, 26);
+        let title = self.title.to_uppercase();
+        let tw = cx.measure(FontId::Bold, t.size_small, &title);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            head,
+            Align::Left,
+            t.text_dim,
+            &title,
+        );
+        let note = Rect::new(head.x + tw + 14, head.y, (head.w - tw - 14).max(0), 26);
+        cx.text(
+            FontId::Sans,
+            t.size_small - 1.0,
+            note,
+            Align::Left,
+            t.text_faint,
+            &self.note,
+        );
+        cx.canvas.fill_round_rect(done, t.round(8), t.raised);
+        cx.text(FontId::Bold, 15.0, done, Align::Center, t.text, "Done");
+        let lw = FilterMoves::left_w(r);
+        // Headings: Cutoff with its scale; the right's groups.
+        let heading = |cx: &mut PaintCx, x: i32, y: i32, w: i32, text: &str| {
+            cx.text(
+                FontId::Bold,
+                t.size_small - 1.0,
+                Rect::new(x, y, w, 24),
+                Align::Left,
+                t.text_dim,
+                &text.to_uppercase(),
+            );
+        };
+        let top = r.y + 52;
+        heading(cx, r.x + 14, top, MOVE_NAME_W, "Cutoff");
+        let rows = self.row_rects(r);
+        if let Some((first, _)) = rows.first().filter(|_| !self.cutoff.is_empty()) {
+            let bar = FilterMoves::bar_rect(*first);
+            for (k, oct) in [-4.0f32, -2.0, 0.0, 2.0, 4.0].into_iter().enumerate() {
+                let x = FilterMoves::x_of(bar, oct);
+                let label = scale_label(self.cutoff_hz * oct.exp2(), k == 0);
+                let w = cx.measure(FontId::Sans, t.size_small - 2.0, &label) + 2;
+                let lx = (x - w / 2).clamp(bar.x, bar.right() - w);
+                cx.text(
+                    FontId::Sans,
+                    t.size_small - 2.0,
+                    Rect::new(lx, top + 4, w, 18),
+                    Align::Left,
+                    t.text_faint,
+                    &label,
+                );
+            }
+        }
+        let mut y = top;
+        let rx = r.x + 14 + lw + 24;
+        for (name, group) in &self.right {
+            heading(cx, rx, y, r.right() - 14 - rx, name);
+            y += 30 + MOVE_ROW_H * group.len() as i32 + 8;
+        }
+        for (rect, row) in &rows {
+            cx.canvas
+                .fill_rect(Rect::new(rect.x, rect.y, rect.w, 1), t.outline);
+            if row.picked {
+                cx.canvas
+                    .fill_round_rect(rect.inset(1), t.round(6), t.raised.with_alpha(160));
+            }
+            let ink = if row.faint { t.text_faint } else { t.text };
+            let tint = match row.qlink {
+                Some(1) => t.good,
+                Some(2) => t.warn,
+                Some(3) => crate::widgets::PAD_COLORS[4],
+                _ => t.accent,
+            };
+            cx.text(
+                FontId::Bold,
+                16.0,
+                Rect::new(rect.x + 8, rect.y + 7, MOVE_NAME_W - 12, 22),
+                Align::Left,
+                ink,
+                &row.name,
+            );
+            cx.text(
+                FontId::Sans,
+                12.0,
+                Rect::new(rect.x + 8, rect.y + 30, MOVE_NAME_W - 12, 18),
+                Align::Left,
+                t.text_dim,
+                &row.what,
+            );
+            let kr = FilterMoves::knob_rect(*rect);
+            if row.index.is_some() {
+                let lit = if row.faint { t.text_faint } else { tint };
+                crate::panel::knob(
+                    cx,
+                    (kr.x as f32 + 22.0, kr.y as f32 + 22.0),
+                    40.0,
+                    row.pos,
+                    row.bipolar,
+                    [t.outline, lit, ink],
+                );
+                cx.text(
+                    FontId::Bold,
+                    15.0,
+                    Rect::new(kr.right() + 6, rect.y, MOVE_KNOB_W - 50, MOVE_ROW_H),
+                    Align::Left,
+                    ink,
+                    &row.value,
+                );
+            } else {
+                cx.text(
+                    FontId::Bold,
+                    15.0,
+                    Rect::new(kr.x, rect.y, 60, MOVE_ROW_H),
+                    Align::Left,
+                    ink,
+                    &row.value,
+                );
+            }
+            if let Some((text, _)) = &row.jump {
+                let jr = FilterMoves::jump_rect(*rect, text);
+                cx.canvas.fill_round_rect(jr, t.round(8), t.raised);
+                cx.text(FontId::Sans, 13.0, jr, Align::Center, t.text, text);
+            }
+            // The bar: how far this one can take the cutoff.
+            if rect.x < rx - 10 {
+                let bar = FilterMoves::bar_rect(*rect);
+                let mid = bar.y + bar.h / 2;
+                cx.canvas
+                    .fill_rect(Rect::new(bar.x, mid - 1, bar.w, 2), t.outline);
+                let cx0 = FilterMoves::x_of(bar, 0.0);
+                cx.canvas
+                    .fill_rect(Rect::new(cx0 - 1, mid - 14, 2, 28), t.text_faint);
+                if let Some((lo, hi)) = row.span.filter(|(lo, hi)| hi > lo) {
+                    let (a, b) = (FilterMoves::x_of(bar, lo), FilterMoves::x_of(bar, hi));
+                    let fill = if row.faint {
+                        t.text_faint.with_alpha(120)
+                    } else {
+                        tint.with_alpha(200)
+                    };
+                    cx.canvas
+                        .fill_round_rect(Rect::new(a, mid - 7, (b - a).max(4), 14), 7, fill);
+                }
+                if !row.aside.is_empty() {
+                    let ax = bar.right() + 10;
+                    cx.text(
+                        FontId::Sans,
+                        12.0,
+                        Rect::new(ax, rect.y, (rect.right() - ax).max(0), MOVE_ROW_H),
+                        Align::Left,
+                        t.text_dim,
+                        &row.aside,
+                    );
+                }
+            }
+        }
+        let foot = Rect::new(r.x + 14, r.bottom() - 14 - 40, r.w - 28, 40);
+        cx.canvas.fill_round_rect(foot, t.round(8), t.raised);
+        cx.text(
+            FontId::Sans,
+            t.size_small - 1.0,
+            foot.inset(10),
+            Align::Left,
+            t.text,
+            &self.hits,
+        );
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        let mut out = vec![Target::tap("done", 0, "Done", FilterMoves::done_rect(r))];
+        for (rect, row) in self.row_rects(r) {
+            if let Some(i) = row.index {
+                out.push(
+                    Target::drag("knob", i, row.name.clone(), FilterMoves::knob_rect(rect))
+                        .towards(0, -60)
+                        .disabled_if(row.faint),
+                );
+            }
+            if let Some((text, k)) = &row.jump {
+                out.push(Target::tap(
+                    "jump",
+                    *k,
+                    text.clone(),
+                    FilterMoves::jump_rect(rect, text),
+                ));
+            }
+        }
+        out
+    }
+
+    fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        match phase {
+            Touch::Down => {
+                if FilterMoves::done_rect(r).contains(x, y) {
+                    return Some(EventKind::Tab(DONE));
+                }
+                let (rect, row) = self
+                    .row_rects(r)
+                    .into_iter()
+                    .find(|(rect, _)| rect.contains(x, y))
+                    .map(|(rect, row)| (rect, row.clone()))?;
+                if let Some((text, k)) = &row.jump {
+                    if FilterMoves::jump_rect(rect, text).contains(x, y) {
+                        return Some(EventKind::Tab(*k));
+                    }
+                }
+                let i = row.index?;
+                if !row.faint
+                    && FilterMoves::knob_rect(rect)
+                        .inset_xy(-10, -6)
+                        .contains(x, y)
+                {
+                    self.drag = Some((finger, i, y));
+                }
+                Some(EventKind::Select(i))
+            }
+            Touch::Move => {
+                let (f, i, from) = self.drag?;
+                if f != finger {
+                    return None;
+                }
+                let steps = self
+                    .row_rects(r)
+                    .iter()
+                    .find(|(_, row)| row.index == Some(i))
+                    .map_or(20, |(_, row)| row.steps);
+                let px = crate::panel::step_px(steps);
+                let n = (from - y) / px;
+                if n == 0 {
+                    return None;
+                }
+                self.drag = Some((f, i, from - n * px));
+                Some(EventKind::Step { index: i, delta: n })
+            }
+            Touch::Up | Touch::Cancel => {
+                self.drag.take_if(|(f, ..)| *f == finger);
+                None
+            }
         }
     }
 }

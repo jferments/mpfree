@@ -13,10 +13,15 @@
 //!   there. It takes the Grain page's touch pad's place.
 //! - **The Grain section**, the panel's first, holds the Grain page's
 //!   settings a part at a time: a switch along its top (Grains, Shape,
-//!   Filter, Keys, LFO, Envelope, Presets) and the part's controls under
+//!   Filter, Keys, Mod, LFO, Env, Presets) and the part's controls under
 //!   it ([`GrainPart`]). Shape holds the grain mode and
 //!   **Quality** (Clean, Tape, Lo-fi). A grain mode shows only the rows it
 //!   uses, as the Grain page did ([`Row::used_in`]).
+//! - **Mod** (sampler refactor step 17c, layout A as Jay picked it, 24
+//!   Nov 2026): the layer's four routes from velocity, pressure or the key
+//!   to one of its grain settings each. Two pickers, From and To, edit the
+//!   route outlined; four depth knobs, named by their routes ("Vel →
+//!   size"), turn each route's depth, and a touch on one outlines it.
 //! - **Q-Links 1 to 4** turn Position, Size, Density and Pitch, as on the
 //!   Grain page (with SHIFT: the spray, finer size and density, the pitch
 //!   spray).
@@ -25,7 +30,9 @@
 //! ([`crate::grain_tab`]), so the two never disagree.
 
 use mpfree_sampler::grain_presets;
-use mpfree_sampler::model::{GrainFilterKind, GrainQuality, MotionTarget, Region};
+use mpfree_sampler::model::{
+    GrainFilterKind, GrainQuality, MotionTarget, Region, RouteFrom, GRAIN_ROUTES,
+};
 use mpfree_ui::wave::{GrainSpan, Marker, MarkerKind, TabSide};
 use mpfree_ui::{Paint, Role};
 
@@ -47,6 +54,8 @@ pub enum GrainPart {
     Filter,
     /// What keys do: size and scan following them, glide.
     Keys,
+    /// The routes from velocity, pressure and the key (step 17c).
+    Mod,
     /// The LFO and what it moves.
     Lfo,
     /// The envelope and what it moves.
@@ -56,11 +65,12 @@ pub enum GrainPart {
 }
 
 impl GrainPart {
-    pub const ALL: [GrainPart; 7] = [
+    pub const ALL: [GrainPart; 8] = [
         GrainPart::Grains,
         GrainPart::Shape,
         GrainPart::Filter,
         GrainPart::Keys,
+        GrainPart::Mod,
         GrainPart::Lfo,
         GrainPart::Envelope,
         GrainPart::Presets,
@@ -70,10 +80,13 @@ impl GrainPart {
         match self {
             GrainPart::Grains => "Grains",
             GrainPart::Shape => "Shape",
-            GrainPart::Filter => "Grain filter",
+            // Short, so eight fit along the switch (step 17c); the
+            // section's title says they are the grains'.
+            GrainPart::Filter => "Filter",
             GrainPart::Keys => "Keys",
-            GrainPart::Lfo => "Grain LFO",
-            GrainPart::Envelope => "Grain env",
+            GrainPart::Mod => "Mod",
+            GrainPart::Lfo => "LFO",
+            GrainPart::Envelope => "Env",
             GrainPart::Presets => "Presets",
         }
     }
@@ -114,6 +127,14 @@ impl GrainPart {
                 (Row::KeyScan, false),
                 (Row::Glide, false),
             ]],
+            GrainPart::Mod => &[&[
+                (Row::RouteFrom, true),
+                (Row::RouteTo, true),
+                (Row::Route1, false),
+                (Row::Route2, false),
+                (Row::Route3, false),
+                (Row::Route4, false),
+            ]],
             GrainPart::Lfo => &[&[
                 (Row::LfoTo, true),
                 (Row::LfoShape, true),
@@ -141,7 +162,11 @@ impl GrainPart {
                 line.iter()
                     .copied()
                     .filter(|(row, _)| {
-                        matches!(row, Row::Preset | Row::PresetMore) || row.used_in(mode)
+                        matches!(
+                            row,
+                            Row::Preset | Row::PresetMore | Row::RouteFrom | Row::RouteTo
+                        ) || row.route().is_some()
+                            || row.used_in(mode)
                     })
                     .collect::<Vec<_>>()
             })
@@ -196,16 +221,48 @@ pub fn part_note(r: &Region, part: GrainPart) -> Option<&'static str> {
     }
 }
 
+/// What the Grain section's note says with the Mod part open: what route
+/// `route` (from 0, the one outlined) does, in words ("route 1: harder
+/// hits move the size up").
+pub fn route_note(r: &Region, route: usize) -> String {
+    let k = route.min(GRAIN_ROUTES - 1);
+    let x = r.grain_routes.0[k];
+    let to = grain_tab::route_to_name(x.to);
+    let to = if to.starts_with("LFO") {
+        to.to_string()
+    } else {
+        to.to_lowercase()
+    };
+    let way = if x.depth < 0.0 { "down" } else { "up" };
+    let what = match x.from {
+        RouteFrom::Off => return format!("route {}: off, pick what moves it", k + 1),
+        _ if x.depth == 0.0 => return format!("route {}: turn its knob to set how far", k + 1),
+        RouteFrom::Velocity => "harder hits move",
+        RouteFrom::Pressure => "pressing harder moves",
+        RouteFrom::Key => "keys above the root move",
+    };
+    format!("route {}: {what} the {to} {way}", k + 1)
+}
+
 /// The list's row of the parts' switch; the part's rows follow it.
 pub const PARTS_ROW: usize = 0;
 /// Spray shape's width at the end of Grains' line of knobs.
 const SPRAY_SHAPE_W: i32 = 124;
+/// The Mod part's From and To pickers.
+const ROUTE_PICK_W: i32 = 150;
 /// The grain filter's passes (Off, Low pass, Band pass, High pass).
 const PASSES_W: i32 = 330;
 
 /// The Grain section as the panel's rows, controls and layout, for part
-/// `part` of `r`. `note` is the section's note (what the cloud is doing).
-pub fn section(r: &Region, part: GrainPart, note: &str) -> (Vec<Setting>, Vec<Control>, Panel) {
+/// `part` of `r`. `note` is the section's note (what the cloud is doing);
+/// `route` the Mod part's route outlined (from 0), the one its pickers
+/// edit.
+pub fn section(
+    r: &Region,
+    part: GrainPart,
+    note: &str,
+    route: usize,
+) -> (Vec<Setting>, Vec<Control>, Panel) {
     let mut rows = vec![Setting {
         name: "Grain".into(),
         value: part.label().into(),
@@ -226,17 +283,37 @@ pub fn section(r: &Region, part: GrainPart, note: &str) -> (Vec<Setting>, Vec<Co
                 // words.
                 (true, Row::SprayShape) => item.labelled().wide(SPRAY_SHAPE_W),
                 (true, Row::Filter) => item.labelled().wide(PASSES_W),
+                // The Mod part's pickers: wide enough for "Velocity".
+                (true, Row::RouteFrom | Row::RouteTo) => item.labelled().wide(ROUTE_PICK_W),
                 (true, _) => item.labelled(),
-                // Grains' nine knobs are narrow: their names on two lines
+                // Grains' nine knobs are narrow, and a route's name can be
+                // long ("Press → filter spray"): their names on two lines
                 // ("Size / spray"), so each reads whole.
-                _ if part == GrainPart::Grains => item.two_lines(),
+                _ if part == GrainPart::Grains || part == GrainPart::Mod => item.two_lines(),
                 _ => item,
             });
-            rows.push(Setting {
-                name: row.short().into(),
-                value: grain_tab::panel_text(r, row),
+            rows.push(match row {
+                // The Mod part's names and values say which route.
+                Row::RouteFrom => Setting {
+                    name: format!("Route {} from", route + 1),
+                    value: grain_tab::route_text(r, row, route),
+                },
+                Row::RouteTo => Setting {
+                    name: format!("Route {} to", route + 1),
+                    value: grain_tab::route_text(r, row, route),
+                },
+                _ => match row.route() {
+                    Some(k) => Setting {
+                        name: grain_tab::route_name(r, k),
+                        value: grain_tab::route_text(r, row, route),
+                    },
+                    None => Setting {
+                        name: row.short().into(),
+                        value: grain_tab::panel_text(r, row),
+                    },
+                },
             });
-            controls.push(control(r, row));
+            controls.push(control(r, row).outlined(row.route() == Some(route)));
         }
         lines.push(items);
     }

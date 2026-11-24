@@ -41,9 +41,14 @@ impl Engine {
     }
 
     pub(super) fn apply_master(&mut self) {
-        if let (Some(fx), Some(view)) = (&mut self.master, self.views.get(self.master_kit)) {
-            fx.set_params(view.master.grain);
-            fx.set_mix(view.master.mix);
+        if let (Some(fx), Some(view), Some(live)) = (
+            &mut self.master,
+            self.views.get(self.master_kit),
+            self.lives.get(self.master_kit),
+        ) {
+            let (grain, mix) = live.master_with(view.master.grain, view.master.mix);
+            fx.set_params(grain);
+            fx.set_mix(mix);
         }
     }
 

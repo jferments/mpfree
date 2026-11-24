@@ -13,7 +13,7 @@ use crate::character::soft_big;
 use crate::oversample::IirPair;
 use crate::{db_to_gain, defaults, fast_tanh, flush, lerp, soft, FixedDelay};
 
-use mpfree_filter::multi::{bend_for, bends, set_stages, Stages, BEND_FULL_RES};
+use mpfree_filter::multi::{bend_for, SlopeStages, BEND_FULL_RES};
 use mpfree_filter::svf::{hard, res_to_q};
 pub use mpfree_filter::svf::{Svf, SvfCoefs, SvfMode};
 
@@ -26,7 +26,9 @@ const TYPES: &[&str] = &[
     "Low shelf",
     "High shelf",
 ];
-const SLOPES: &[&str] = &["12 dB", "24 dB"];
+const SLOPES: &[&str] = &["6 dB", "12 dB", "18 dB", "24 dB", "36 dB", "48 dB"];
+/// Each Slope's poles (6 dB an octave each, [`mpfree_filter::multi::slope`]).
+const SLOPE_POLES: [u8; 6] = [1, 2, 3, 4, 6, 8];
 const MODELS: &[&str] = &["Multi", "Ladder"];
 const RES_MODES: &[&str] = &["Soft", "Hard", "Clean"];
 
@@ -45,6 +47,16 @@ pub mod multi {
     /// Hard (it clips, at twice the rate) or Clean (nothing: the linear
     /// filter).
     pub const RES_MODE: u16 = 7;
+
+    /// The Slope's choices, in order (6 to 48 dB an octave). A band-pass
+    /// plays 12, 24, 36 or 48 (6 dB goes to 12, 18 to 12), a notch 12 or
+    /// 24 (36 and 48 to 24); the bell and shelves have one slope.
+    pub const SLOPE_6: f32 = 0.0;
+    pub const SLOPE_12: f32 = 1.0;
+    pub const SLOPE_18: f32 = 2.0;
+    pub const SLOPE_24: f32 = 3.0;
+    pub const SLOPE_36: f32 = 4.0;
+    pub const SLOPE_48: f32 = 5.0;
 }
 
 static MULTI_INFO: NodeInfo = NodeInfo {
@@ -69,8 +81,8 @@ static MULTI_PARAMS: [ParamInfo; 8] = [
         name: "Slope",
         group: "Filter",
         min: 0.0,
-        max: 1.0,
-        default: 0.0,
+        max: 5.0,
+        default: 1.0,
         unit: Unit::None,
         curve: Curve::Choice(SLOPES),
         readonly: false,
@@ -463,8 +475,9 @@ fn rise(n: u32, len: u32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// A multi-mode filter: low-pass, high-pass, band-pass and notch at 12 or
-/// 24 dB per octave, plus a bell and two shelves; or a Moog-style ladder
+/// A multi-mode filter: low-pass and high-pass at 6 to 48 dB an octave,
+/// band-pass at 12 to 48 and notch at 12 or 24 (the pads' slopes,
+/// [`SlopeStages`]), plus a bell and two shelves; or a Moog-style ladder
 /// low-pass (the Model). Resonance up to a long ring, held back on a loud
 /// sound as the Res mode says: it bends (Soft), it clips at twice the rate
 /// (Hard), or nothing holds it (Clean). Optional drive into a soft
@@ -481,8 +494,8 @@ pub struct MultiFilter {
     /// The plain engine: its stages; the filter being faded out after a
     /// type or slope change, and the frames of the fade left and in all;
     /// Soft's knee and room.
-    st: Stages,
-    old: Stages,
+    st: SlopeStages,
+    old: SlopeStages,
     fade_left: u32,
     fade_len: u32,
     knee: f32,
@@ -506,8 +519,8 @@ pub struct MultiFilter {
     /// The Hard engine: its stages at twice the rate, the ones fading out
     /// after a type or slope change and the frames of that fade left, its
     /// ceiling, each channel's path, and whether its drive is running.
-    st2: Stages,
-    old2: Stages,
+    st2: SlopeStages,
+    old2: SlopeStages,
     fade2_left: u32,
     lim: f32,
     hard_os: [Os2x; 2],
@@ -535,13 +548,7 @@ impl Default for MultiFilter {
 impl MultiFilter {
     pub fn new() -> MultiFilter {
         let v = defaults(&MULTI_PARAMS);
-        let st = Stages {
-            a: Svf::default(),
-            b: Svf::default(),
-            cascaded: false,
-            bend_a: false,
-            bend_b: false,
-        };
+        let st = SlopeStages::default();
         let mut f = MultiFilter {
             v,
             rate: 48_000,
@@ -653,44 +660,23 @@ impl MultiFilter {
         }
     }
 
-    fn cascaded(&self) -> bool {
-        self.v[1] >= 0.5 && (self.v[0] as usize) < 4
+    /// The slope's poles (the bell and shelves ignore it).
+    fn poles(&self) -> u8 {
+        SLOPE_POLES[(self.v[multi::SLOPE as usize] as usize).min(SLOPE_POLES.len() - 1)]
     }
 
     fn update(&mut self) {
-        let (mode, cascaded) = (self.mode(), self.cascaded());
+        let (mode, poles) = (self.mode(), self.poles());
         let hz = self.log_hz.value.exp2();
         let (res, gain, rate) = (self.res.value, self.gain.value, self.rate);
-        set_stages(
-            &mut self.st.a,
-            &mut self.st.b,
-            mode,
-            cascaded,
-            hz,
-            res,
-            gain,
-            rate,
-        );
-        self.st.cascaded = cascaded;
-        // The resonant stages bend ([`bends`]).
-        (self.st.bend_a, self.st.bend_b) = bends(mode, cascaded);
+        // The resonant stage bends (the last; a notch, bell or shelf has
+        // none).
+        self.st.set(mode, poles, hz, res, gain, rate);
         let r = (res / BEND_FULL_RES).min(1.0);
         (self.knee, self.room) = bend_for(res);
         if self.runs(HARD) {
             // The same stages at twice the rate; the same ones clip.
-            set_stages(
-                &mut self.st2.a,
-                &mut self.st2.b,
-                mode,
-                cascaded,
-                hz,
-                res,
-                gain,
-                2 * rate,
-            );
-            self.st2.cascaded = cascaded;
-            self.st2.bend_a = self.st.bend_a;
-            self.st2.bend_b = self.st.bend_b;
+            self.st2.set(mode, poles, hz, res, gain, 2 * rate);
             self.lim = if r > 0.0 { HARD_LIM / r } else { f32::INFINITY };
         }
         if self.runs(LADDER) {
@@ -714,15 +700,10 @@ impl MultiFilter {
         } else {
             self.rate
         };
-        let (mut a, mut b) = (Svf::default(), Svf::default());
-        let (mode, cascaded) = (self.mode(), self.cascaded());
+        let mut st = SlopeStages::default();
         let (cut, res, gain) = (self.v[2], self.v[3] / 100.0, self.v[4]);
-        set_stages(&mut a, &mut b, mode, cascaded, cut, res, gain, rate);
-        let mut h = a.response(hz, rate);
-        if cascaded {
-            h = cmul(h, b.response(hz, rate));
-        }
-        power_db(h)
+        st.set(self.mode(), self.poles(), cut, res, gain, rate);
+        power_db(st.response(hz, rate))
     }
 
     fn apply(&mut self, id: u16, value: f32) {
@@ -730,7 +711,6 @@ impl MultiFilter {
             return;
         };
         let v = p.clamp(value);
-        let was_cascaded = self.cascaded();
         let (was_engine, was_mode) = (self.engine(), self.res_mode());
         let was = self.v[id as usize];
         self.v[id as usize] = v;
@@ -774,7 +754,7 @@ impl MultiFilter {
                 }
                 // Type or slope: the new filter takes over over 10 ms. It
                 // carries on from the old one's state (a 12 dB filter's
-                // types share it); a second stage that was idle starts from
+                // types share it); a stage that was idle starts from
                 // silence. A change in the first half of a fade fades from
                 // the same old filter; later, from the one that was coming
                 // in. The ladder is a low-pass whatever the type.
@@ -790,11 +770,10 @@ impl MultiFilter {
                     }
                     self.fade2_left = self.fade_len;
                 }
-                if self.cascaded() && !was_cascaded {
-                    self.st.b.reset();
-                    self.st2.b.reset();
-                }
+                let (was, was2) = (self.st.layout(), self.st2.layout());
                 self.update();
+                self.st.clear_new(was);
+                self.st2.clear_new(was2);
             }
         }
     }
@@ -821,8 +800,7 @@ impl MultiFilter {
                 if self.lv[PLAIN] > 0 {
                     self.st2.take_states(&self.st);
                 } else {
-                    self.st2.a.reset();
-                    self.st2.b.reset();
+                    self.st2.reset();
                 }
             }
             _ => {
@@ -1018,12 +996,37 @@ impl MultiFilter {
     #[inline]
     fn clean_stages(&mut self, mut y: [f32; 2]) -> [f32; 2] {
         let (knee, room) = self.bend_now();
+        // The 12 and 24 dB filters (only the last stages, old and new) run
+        // them as before the steeper slopes; a steeper one runs out of line.
+        if !(self.st.last_only() && (self.fade_left == 0 || self.old.last_only())) {
+            return self.clean_steep(y, knee, room);
+        }
+        for c in 0..2 {
+            let new = self.st.st.run(c, y[c], knee, room);
+            y[c] = if self.fade_left > 0 {
+                let old = self.old.st.run(c, y[c], knee, room);
+                let t = 1.0 - self.fade_left as f32 / self.fade_len as f32;
+                // A raised cosine, smooth at both ends.
+                let w = t * t * (3.0 - 2.0 * t);
+                lerp(old, new, w)
+            } else {
+                new
+            };
+        }
+        self.fade_left = self.fade_left.saturating_sub(1);
+        y
+    }
+
+    /// [`MultiFilter::clean_stages`] with a one-pole or plain stages before
+    /// the last, or fading from such a filter.
+    #[cold]
+    #[inline(never)]
+    fn clean_steep(&mut self, mut y: [f32; 2], knee: f32, room: f32) -> [f32; 2] {
         for c in 0..2 {
             let new = self.st.run(c, y[c], knee, room);
             y[c] = if self.fade_left > 0 {
                 let old = self.old.run(c, y[c], knee, room);
                 let t = 1.0 - self.fade_left as f32 / self.fade_len as f32;
-                // A raised cosine, smooth at both ends.
                 let w = t * t * (3.0 - 2.0 * t);
                 lerp(old, new, w)
             } else {
@@ -1048,6 +1051,41 @@ impl MultiFilter {
         let (g, lim) = (self.drive_gain, self.lim);
         let fade =
             (self.fade2_left > 0).then(|| rise(self.fade_len - self.fade2_left, self.fade_len));
+        // The 12 and 24 dB filters (only the last stages, old and new) run
+        // them as before the steeper slopes; a steeper one runs out of line
+        // ([`MultiFilter::hard_steep`]), so this loop stays as lean as it
+        // was.
+        if !(self.st2.last_only() && (fade.is_none() || self.old2.last_only())) {
+            return self.hard_steep(x, g, amt, lim, fade);
+        }
+        let (st, old, os) = (&mut self.st2.st, &mut self.old2.st, &mut self.hard_os);
+        let mut y = [0.0f32; 2];
+        for c in 0..2 {
+            y[c] = os[c].run(x[c], g, amt, |v| {
+                let new = st.run_clip(c, v, lim);
+                match fade {
+                    Some(w) => lerp(old.run_clip(c, v, lim), new, w),
+                    None => new,
+                }
+            });
+        }
+        self.fade2_left = self.fade2_left.saturating_sub(1);
+        y
+    }
+
+    /// [`MultiFilter::hard_frame`]'s stages with a one-pole or plain
+    /// stages before the last (6, 18, 36 and 48 dB, a 24 dB band-pass), or
+    /// fading from such a filter.
+    #[cold]
+    #[inline(never)]
+    fn hard_steep(
+        &mut self,
+        x: [f32; 2],
+        g: f32,
+        amt: f32,
+        lim: f32,
+        fade: Option<f32>,
+    ) -> [f32; 2] {
         let (st, old, os) = (&mut self.st2, &mut self.old2, &mut self.hard_os);
         let mut y = [0.0f32; 2];
         for c in 0..2 {
@@ -1109,8 +1147,7 @@ impl MultiFilter {
 
     /// The plain engine starts again: from silence.
     fn clean_from_silence(&mut self) {
-        self.st.a.reset();
-        self.st.b.reset();
+        self.st.reset();
         self.fade_left = 0;
         for d in &mut self.dly {
             d.reset();
@@ -1166,8 +1203,7 @@ impl Node for MultiFilter {
         self.res.snap(self.res.target);
         self.gain.snap(self.gain.target);
         self.drive.snap(self.drive.target);
-        self.st.a.reset();
-        self.st.b.reset();
+        self.st.reset();
         self.fade_left = 0;
         for d in &mut self.dly {
             d.reset();
@@ -1183,8 +1219,7 @@ impl Node for MultiFilter {
         };
         self.drive_db = f32::NAN;
         self.grid = 0;
-        self.st2.a.reset();
-        self.st2.b.reset();
+        self.st2.reset();
         self.fade2_left = 0;
         for p in &mut self.hard_os {
             p.reset();
