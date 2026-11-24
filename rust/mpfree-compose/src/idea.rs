@@ -73,7 +73,7 @@ mod riff;
 mod simple;
 mod written;
 
-pub use like::{develop, next_rework, rework, Develop, Rework};
+pub use like::{develop, evolve, next_rework, rework, Develop, Rework};
 
 use line::line;
 use riff::riff;

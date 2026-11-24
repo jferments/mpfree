@@ -102,12 +102,22 @@ pub fn drafts_keeping(
     req: &Continue,
     keeping: Option<(&Continued, &[usize])>,
 ) -> Result<Vec<Draft>, Refused> {
+    drafts_with(req, keeping, None)
+}
+
+/// [`drafts_keeping`], leading into another clip's opening when `into`
+/// says (a Bridge, [`crate::bridge`]; not repaired).
+pub(crate) fn drafts_with(
+    req: &Continue,
+    keeping: Option<(&Continued, &[usize])>,
+    into: Option<&Into>,
+) -> Result<Vec<Draft>, Refused> {
     let n = usize::from(req.settings.bars.max(1));
     let count = if n > 8 { DRAFTS_LONG } else { DRAFTS };
     let mut out: Vec<Draft> = Vec::new();
     let mut first_err: Option<Refused> = None;
     for d in 0..count {
-        match draft_keeping(req, d, keeping) {
+        match draft_with(req, d, keeping, into) {
             Ok(x) => out.push(x),
             Err(e) => {
                 first_err.get_or_insert(e);
@@ -128,10 +138,21 @@ pub fn drafts_keeping(
     let from = yours as i32 * phrasing(req, &ChordTimeline::default()).grid.bar;
     finalists(&mut out, from);
     let kept = kept_bars(keeping, yours, yours + n);
-    if let Some(best) = out.first_mut() {
+    if let (Some(best), None) = (out.first_mut(), into) {
         repair(req, best, &kept);
     }
     Ok(out)
+}
+
+/// Where a Bridge leads ([`crate::bridge`]): the next clip's first note,
+/// as a scale place in this clip's key, the chord degrees that lead into
+/// its first chord, and its bars (from each bar's start), which the
+/// second half of the new bars grow from.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Into {
+    pub pos: i32,
+    pub chords: Vec<u8>,
+    pub bars: Vec<Vec<GridNote>>,
 }
 
 /// How far two results' new notes (from step `from`) differ: the share of
@@ -201,6 +222,7 @@ pub(crate) fn verdict_for(req: &Continue, made: &Continued, sk: &Sketch) -> Verd
         copy_bars: copy_bars(&s.style),
         landings: &landings,
         rests: if s.keeps.rhythm { &[] } else { &sk.rests },
+        lead_to: None,
     })
 }
 
@@ -415,7 +437,42 @@ fn material(
     let velocity = src
         .first()
         .map_or(ph.style.playing.velocity, |m| m.velocity);
+    // Keep yours: Rhythm holds your rhythm exactly, so a fixed note takes
+    // the onset of yours nearest it (a close takes the bar's last) with its
+    // length, and the rest of your bar plays round it.
+    let anchor = match anchor {
+        Some(a) if settings.keeps.rhythm => {
+            let r = rhythm_of(src, grid);
+            let pick = if a.kind == AnchorKind::Close {
+                r.last()
+            } else {
+                r.iter().min_by_key(|o| ((o.on - a.on).abs(), o.on))
+            };
+            Some(pick.map_or(a, |o| Fixed {
+                on: o.on,
+                len: o.len,
+                ..a
+            }))
+        }
+        a => a,
+    };
     let mut planned: Vec<Planned> = match (g, anchor) {
+        (_, Some(a)) if settings.keeps.rhythm => {
+            // Your tune moved so its note there is the fixed one.
+            let r = rhythm_of(src, grid);
+            let at = src
+                .iter()
+                .rev()
+                .find(|m| m.on <= a.on)
+                .or(src.first())
+                .map_or(a.pos, |m| m.pos);
+            let tune = transform(src, Transform::Move(a.pos - at));
+            let mut v = aimed(&r, &tune);
+            for p in v.iter_mut().filter(|p| p.on == a.on) {
+                p.target = Some(note(a.on, a.len, a.pos, a.alt, velocity));
+            }
+            v
+        }
         (_, Some(a)) => {
             // Your bar's rhythm up to the anchor, your tune moved so it
             // arrives a step away (from below rising to a landing or the
@@ -530,7 +587,9 @@ fn material(
             let mut tune = a;
             tune.extend(b);
             tune.retain(|m| m.on < grid.bar);
-            let r = reshaped(ph, bp, settings, &tune, 0.4, true, dice);
+            // Keep yours: Rhythm plays the developed tune in your rhythm.
+            let from = if settings.keeps.rhythm { src } else { &tune };
+            let r = reshaped(ph, bp, settings, from, 0.4, true, dice);
             aimed(&r, &tune)
         }
         (Gesture::HoldBack, None) => {
@@ -541,11 +600,15 @@ fn material(
                 .filter(|m| m.on < grid.half())
                 .take(3)
                 .collect();
-            let mut r = rhythm_of(&tune, grid);
-            if let Some(l) = r.last_mut() {
-                l.len = (grid.bar - beat - l.on).max(l.len);
+            if settings.keeps.rhythm {
+                aimed(&rhythm_of(src, grid), &tune)
+            } else {
+                let mut r = rhythm_of(&tune, grid);
+                if let Some(l) = r.last_mut() {
+                    l.len = (grid.bar - beat - l.on).max(l.len);
+                }
+                aimed(&r, &tune)
             }
-            aimed(&r, &tune)
         }
         (_, None) => {
             // A set-up: your tune climbing, its rhythm reshaped.
@@ -668,9 +731,20 @@ struct Frame<'a, 'b> {
     under: Option<u8>,
     your_bars: &'b [Vec<GridNote>],
     head: &'b [GridNote],
+    /// From this bar on, the bars grow from these instead of yours (a
+    /// Bridge's second half, from the next clip's bars).
+    late: Option<(usize, &'b [Vec<GridNote>])>,
 }
 
 impl Frame<'_, '_> {
+    /// The bar new bar `b` grows from.
+    fn src(&self, b: usize) -> &[GridNote] {
+        match self.late {
+            Some((from, bars)) if b >= from && !bars.is_empty() => &bars[(b - from) % bars.len()],
+            _ => &self.your_bars[b % self.your_bars.len()],
+        }
+    }
+
     /// The next bar's anchor, when it falls on that bar's downbeat.
     fn anchor_after(&self, b: usize) -> Option<i32> {
         let at = (b as i32 + 1) * self.ph.grid.bar;
@@ -700,7 +774,7 @@ impl Frame<'_, '_> {
         let bp = self.sketch.plan[b];
         let mut rd = ph.dice(s, Job::Rhythm, b, attempt);
         let mut pd = ph.dice(s, Job::Pitch, b, attempt);
-        let src = &self.your_bars[b % self.your_bars.len()];
+        let src = self.src(b);
         let anchor = self.fixed.iter().find(|f| f.bar == b).map(|f| Fixed {
             on: f.on - off,
             ..*f
@@ -772,6 +846,16 @@ pub fn draft_keeping(
     d: u16,
     keeping: Option<(&Continued, &[usize])>,
 ) -> Result<Draft, Refused> {
+    draft_with(req, d, keeping, None)
+}
+
+/// [`draft_keeping`], leading into `into` when given.
+pub(crate) fn draft_with(
+    req: &Continue,
+    d: u16,
+    keeping: Option<(&Continued, &[usize])>,
+    into: Option<&Into>,
+) -> Result<Draft, Refused> {
     let s = req.settings;
     let yours = your_bars(req);
     let total = yours + usize::from(s.bars.max(1));
@@ -785,7 +869,16 @@ pub fn draft_keeping(
     let ph0 = phrasing(req, &empty);
     let grid: Grid = ph0.grid;
     let gb = grid.bar;
-    let sk = sketch(&ph0, s, total, d);
+    let mut sk = sketch(&ph0, s, total, d);
+    if let Some(i) = into {
+        // The last note leads into the next clip's first, over a chord
+        // leading into its first chord.
+        if let Some(c) = sk.anchors.iter_mut().find(|a| a.kind == AnchorKind::Close) {
+            c.aim = i.pos;
+            c.notes = vec![i.pos.rem_euclid(7), 4];
+            c.chords = i.chords.clone();
+        }
+    }
     let kept = kept_bars(keeping, yours, total);
     let is_kept = |b: usize| kept.contains(&b);
     let old = keeping.map(|(before, _)| before);
@@ -955,6 +1048,7 @@ pub fn draft_keeping(
         under,
         your_bars: &your_bars,
         head: &head,
+        late: into.map(|x| (yours + (total - yours) / 2, x.bars.as_slice())),
     };
     let mut notes: Vec<GridNote> = ph
         .yours
@@ -984,6 +1078,7 @@ pub fn draft_keeping(
                     })
                     .flatten()
             })
+            .or_else(|| (b + 1 == total).then(|| into.map(|x| x.pos)).flatten())
             .or_else(|| {
                 (b + 1 == total && req.loops)
                     .then(|| ph.yours.first().map(|m| m.pos))
@@ -1035,6 +1130,7 @@ pub fn draft_keeping(
         copy_bars: copy_bars(&s.style),
         landings: &landings,
         rests: if s.keeps.rhythm { &[] } else { &sk.rests },
+        lead_to: into.map(|i| i.pos),
     });
     Ok(Draft {
         number: d,
@@ -1160,6 +1256,7 @@ fn refill(
         under,
         your_bars: &your_bars,
         head: &head,
+        late: None,
     };
     let mut notes = before.line.notes.clone();
     let mut sims = before.line.similarity.clone();
@@ -1575,6 +1672,51 @@ mod tests {
             bars,
             seed,
             ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn keep_yours_rhythm_holds_your_rhythm_in_every_new_bar() {
+        let notes = riff();
+        let ctx = context(&notes);
+        let yours = |b: i32| -> Vec<i32> {
+            let mut v: Vec<i32> = notes
+                .iter()
+                .map(|(n, _)| (n.at / STEP) as i32)
+                .filter(|&on| on / 16 == b)
+                .map(|on| on % 16)
+                .collect();
+            v.dedup();
+            v
+        };
+        let mine = [yours(0), yours(1)];
+        for style in [MINIMAL, GROOVE, JAZZISH] {
+            for ending in [Ending::Home, Ending::Open, Ending::LoopsBack] {
+                for seed in 1..=3 {
+                    let mut s = settings(style, 8, seed);
+                    s.keeps.rhythm = true;
+                    s.ending = ending;
+                    let req = ask(&notes, &ctx, &s);
+                    let best = drafts(&req).unwrap().remove(0);
+                    for b in 2..10 {
+                        let mut ons: Vec<i32> = best
+                            .made
+                            .line
+                            .notes
+                            .iter()
+                            .filter(|g| g.on / 16 == b)
+                            .map(|g| g.on % 16)
+                            .collect();
+                        ons.dedup();
+                        assert!(
+                            mine.contains(&ons),
+                            "{} {ending:?} seed {seed}: bar {} plays {ons:?}, not your rhythm",
+                            style.name,
+                            b + 1
+                        );
+                    }
+                }
+            }
         }
     }
 

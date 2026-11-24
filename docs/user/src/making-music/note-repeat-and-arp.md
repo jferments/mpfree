@@ -134,7 +134,7 @@ Under the list, four buttons work on the pattern:
 
 ### Phrases
 
-A **phrase** is a short piece of music, a bar or two long, that plays from the note you hold: a bass line, a riff, a run of chords or an arp line, with its own rhythm, long and short notes and accents. Hold one pad on a synth track and the whole phrase plays from that pad's note, round and round. Hold another pad and it carries on from there, without losing its place. It is the quickest way from one finger to a part that sounds written.
+A **phrase** is a short piece of music, a bar or two long, that plays from the note you hold: a bass line, a riff, a run of chords or an arp line, with its own rhythm, long and short notes and accents. Hold one pad on a synth track and the whole phrase plays from that pad's note, round and round. Hold another pad and it carries on from there, without losing its place. It is the quickest way from one finger to a part that sounds written. Hold a chord of three notes or more and the phrase plays over the chord itself: a riff written over C minor takes F major's notes when you hold F major (its root, third and fifth, and the notes between them from F major's scale). A chord played a little unevenly counts as one change: the phrase follows it about 30 ms after its last note.
 
 {{shot: arp-phrase | The Phrase tab: the kinds of phrase on the left, the basses in the middle with Night drive picked, and on the right its notes over two bars with a line where it is playing, what it follows, and the four Q-Link settings.}}
 

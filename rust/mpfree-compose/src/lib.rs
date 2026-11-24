@@ -110,9 +110,11 @@
 //! idle-priority background job (phase 0C onwards).
 #![forbid(unsafe_code)]
 
+pub mod answer;
 pub mod baseline;
 pub mod beat;
 pub mod bind;
+pub mod bridge;
 pub mod cells;
 pub mod clip_style;
 pub mod critic;
@@ -147,6 +149,7 @@ pub mod sound;
 pub mod style;
 pub mod timing;
 
+pub use answer::{answer, Answered, Call, Reply};
 pub use beat::{continue_drums, Drummed, DrumsAsk, DrumsRefused, Hit as BeatHit};
 pub use bind::{audition, revision, revision_in, Binding, Stale};
 pub use clip_style::{read_clip, ClipStyle, Read as ClipRead, Subdivision};
@@ -154,7 +157,8 @@ pub use dice::{Dice, DiceName, Job};
 pub use event::{Event, MotifRef, Motion, NoteDecision, Part, PartId, Role, Source};
 pub use fit::{fit_clip, marks, FitRefused};
 pub use idea::{
-    develop, new_idea, next_idea, next_rework, rework, Develop, Idea, IdeaVerdict, NewIdea, Rework,
+    develop, evolve, new_idea, next_idea, next_rework, rework, Develop, Idea, IdeaVerdict, NewIdea,
+    Rework,
 };
 pub use job::{
     lane_named, AddAsk, AddDone, AddPartJob, Ask, ContinueJob, Done, Lanes, PartMade, RowChords,
