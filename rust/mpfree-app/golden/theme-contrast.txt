@@ -113,6 +113,8 @@ console looper-smart-ask 2 # the Looper page's own runs, as looper-listen (the d
 console looper-smart-chip 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 console looper-smart-close-call 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 console looper-smart-point 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+console looper-smart-point-ab 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+console looper-smart-point-memory-full 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 console looper-smart-point-snapped 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 console looper-smart-snapped 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 console looper-smart-start 2 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
@@ -271,6 +273,8 @@ default looper-smart-ask 7 # the Looper page's own runs, as looper-listen (the d
 default looper-smart-chip 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 default looper-smart-close-call 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 default looper-smart-point 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+default looper-smart-point-ab 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+default looper-smart-point-memory-full 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 default looper-smart-point-snapped 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 default looper-smart-snapped 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 default looper-smart-start 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
@@ -561,6 +565,8 @@ spaceship looper-smart-ask 11 # the Looper page's own runs, as looper-listen (th
 spaceship looper-smart-chip 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 spaceship looper-smart-close-call 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 spaceship looper-smart-point 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+spaceship looper-smart-point-ab 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+spaceship looper-smart-point-memory-full 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 spaceship looper-smart-point-snapped 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 spaceship looper-smart-snapped 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 spaceship looper-smart-start 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
