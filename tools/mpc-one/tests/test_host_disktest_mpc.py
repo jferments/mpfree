@@ -428,6 +428,50 @@ class DiskTestTests(unittest.TestCase):
         self.assertIn("ended with exit code 1", res.stdout)
         self.assertIn("rm -r /run/mpfree-data/mpfree-disktest", res.stdout)
 
+    def test_sd_card_runs_the_sd_card_test_and_shows_the_windows_logs(self):
+        survey_root(self.root)
+        th.write(f"{self.root}/run/mpfree-setup/sd-card-write-log.txt",
+                 "the card checks clean (fsck.exfat -n)\nclosed cleanly after writing 812 MiB\n")
+        th.write(f"{self.root}/run/mpfree-setup/sd-card-write-status", "state=closed\nwritten=812\n")
+        res = self.run_helper(extra=["--sd-card"])
+        self.assertEqual(res.returncode, 0, res.stdout)
+        for text in ("MPFree SD card test on the test build", "copied; its hash on the MPC matches",
+                     "[4/4] The SD card test: READS the card's own files through the read-only window, then "
+                     "WRITES test files in the card's MPFree/mpfree-disktest",
+                     "put the SD card in the MPC's slot now if it isn't",
+                     "the SD card windows' own logs (read-only):",
+                     "--- /run/mpfree-setup/sd-card-log.txt\n    (none)",
+                     "    closed cleanly after writing 812 MiB", "    written=812",
+                     "RESULT: the SD card test ran (numbers above); the card checked clean after."):
+            self.assertIn(text, res.stdout)
+        # A card put in late is waited for, up to 15 minutes.
+        self.assertEqual(self.lines("disktest: "), ["[--sd-card --card-wait 900]"])
+        # Only YES allows it: it writes to the card and the stick.
+        res = self.run_helper(extra=["--sd-card"], MPFREE_ACCEPT_DISKTEST="READ-ONLY")
+        self.assertEqual(res.returncode, 1)
+        self.assertIn("MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py --sd-card", res.stdout)
+        self.assertEqual(len(self.lines("disktest: ")), 1)
+
+    def test_a_refused_or_failed_sd_card_run_says_so(self):
+        res = self.run_helper(extra=["--sd-card"], FAKE_DISKTEST_RC="3")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("the SD card test refused (reason above); it wrote no test file", res.stdout)
+        self.assertIn("the SD card windows' own logs (read-only):", res.stdout)
+        res = self.run_helper(extra=["--sd-card"], FAKE_DISKTEST_RC="1")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("mpfree-disktest --sd-card ended with exit code 1 (reason above)", res.stdout)
+        self.assertNotIn("rm -r", res.stdout)
+
+    def test_a_hands_off_round_needs_no_terminal_and_no_enter(self):
+        res = self.run_helper(answers="", extra=["--sd-card"], MPFREE_APP_TEST="", MPFREE_ROUND="1")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(res.stdout.count("(hands-off round: going on)"), 2, res.stdout)
+        self.assertIn("RESULT: the SD card test ran", res.stdout)
+        # Without the round, the same run wants a terminal.
+        res = self.run_helper(answers="", extra=["--sd-card"], MPFREE_APP_TEST="")
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("run this from a terminal", res.stdout)
+
     def test_a_failed_read_only_run_says_it_wrote_nothing(self):
         res = self.run_helper(extra=["--read-only"], MPFREE_ACCEPT_DISKTEST="READ-ONLY", FAKE_DISKTEST_RC="1")
         self.assertEqual(res.returncode, 1, res.stdout)

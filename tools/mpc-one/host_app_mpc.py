@@ -126,6 +126,10 @@ SETUP_WORD = "SEND"
 LINE_WORD = "LINE"
 # Tests set this so the prompts can be answered without a terminal.
 TESTING = os.environ.get("MPFREE_APP_TEST") == "1"
+# The SD card round's second command (sd-card-round.py run) sets this: every "press Enter" step goes on by
+# itself, an answer only you could give is recorded as not asked, and a typed word is never given (its step
+# stops instead).
+ROUND = os.environ.get("MPFREE_ROUND") == "1"
 
 # The only program runs this tool asks for: fixed arguments, nothing from the command line.
 PHASES = {
@@ -472,6 +476,9 @@ cat "$R/run/mpfree-app/report.txt" 2>/dev/null || echo "(no report file)"
 
 def ask(prompt):
     """Enter goes on; 's' skips this step; 'q' stops (the log display is still started again)."""
+    if ROUND:
+        print(f"{prompt}(hands-off round: going on)", flush=True)
+        return "go"
     if not TESTING:
         if not sys.stdin.isatty():
             raise Stop("run this from a terminal: each step waits for you to press Enter")
@@ -486,6 +493,9 @@ def ask(prompt):
 
 def typed(prompt):
     """A typed word, exactly as typed (q if the input ends)."""
+    if ROUND:
+        print(f"{prompt}(hands-off round: a typed word is never given, so this stops)", flush=True)
+        return "q"
     if not TESTING:
         import termios
         termios.tcflush(sys.stdin, termios.TCIFLUSH)
@@ -497,6 +507,9 @@ def typed(prompt):
 
 def note(out, question):
     """Your answer to what only you can see or hear, recorded in the report."""
+    if ROUND:
+        out.say(f"  {question} (not asked: hands-off round)")
+        return ""
     if not TESTING:
         import termios
         termios.tcflush(sys.stdin, termios.TCIFLUSH)

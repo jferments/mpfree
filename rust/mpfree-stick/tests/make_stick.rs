@@ -294,6 +294,18 @@ fn makes_a_stick_the_hook_takes() {
             .perm(),
         0o755
     );
+    // The SD card's write window too, started only by its own path unit.
+    assert_eq!(
+        read(&root, "/etc/mpfree-test/setup-sd-card-write.sh"),
+        include_bytes!("../../../tools/mpc-one/stick/setup-sd-card-write.sh")
+    );
+    assert_eq!(
+        root.lookup("/etc/mpfree-test/setup-sd-card-write.sh")
+            .unwrap()
+            .unwrap()
+            .perm(),
+        0o755
+    );
     // The startup screen waits for the format step, in a drop-in folder of its own.
     let drop_in = String::from_utf8(read(
         &root,

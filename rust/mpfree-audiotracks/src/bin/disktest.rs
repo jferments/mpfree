@@ -74,6 +74,12 @@
 //! instead, as saving to the SD card would write it: imports only, each
 //! published by a rename or hidden until synced, and the second half
 //! checks them without writing anything.
+//!
+//! `--sd-card` reads and writes the SD card in the MPC's slot beside the
+//! stick ([`sdcard`]): the card's own files through the read-only window
+//! (S1), then 14 steps through the write window (S2a), which writes only
+//! in the card's `MPFree/` folder; the run writes only in its own folder
+//! there and on partition 4, deleting both at the end.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -148,6 +154,10 @@ mod prio;
 #[path = "disktest/cut.rs"]
 mod cut;
 
+/// The SD card in the MPC's slot, read and written beside the stick (S2a).
+#[path = "disktest/sdcard.rs"]
+mod sdcard;
+
 static STOP: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_signal(_: libc::c_int) {
@@ -170,6 +180,9 @@ struct Opts {
     under_load: bool,
     recorder: bool,
     heat: bool,
+    sd_card: bool,
+    /// `--card-wait SECS`: how long `--sd-card` waits for a card in the slot.
+    card_wait: u64,
     cut_test: bool,
     /// `--fat` or `--fat-hidden`: the cut test on a FAT stick.
     fat: Option<cut::Way>,
@@ -186,6 +199,8 @@ fn parse() -> Result<Opts, String> {
         under_load: false,
         recorder: false,
         heat: false,
+        sd_card: false,
+        card_wait: 0,
         cut_test: false,
         fat: None,
         after_cut: None,
@@ -202,6 +217,14 @@ fn parse() -> Result<Opts, String> {
             "--under-load" => o.under_load = true,
             "--recorder" => o.recorder = true,
             "--heat" => o.heat = true,
+            "--sd-card" => o.sd_card = true,
+            "--card-wait" => {
+                o.card_wait = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .filter(|&s| s <= 3600)
+                    .ok_or("--card-wait needs a number of seconds, at most 3600")?;
+            }
             "--cut-test" => o.cut_test = true,
             "--fat" | "--fat-hidden" => {
                 if o.fat.is_some() {
@@ -220,7 +243,7 @@ fn parse() -> Result<Opts, String> {
                 ))
             }
             "-h" | "--help" => {
-                say!("usage: mpfree-disktest [--read-only | --under-load | --recorder | --heat] [--desktop-test DIR] [--quick]");
+                say!("usage: mpfree-disktest [--read-only | --under-load | --recorder | --heat | --sd-card] [--desktop-test DIR] [--quick]");
                 say!("Without --desktop-test it runs only on {MOUNT}, the stick's partition 4.");
                 say!("--read-only reads the audio in its library folder and writes nothing.");
                 say!("--under-load reads it with a recording, heavy reads and writes, busy cores and");
@@ -232,6 +255,13 @@ fn parse() -> Result<Opts, String> {
                     "--heat keeps every core busy until the temperature settles (30 minutes at the"
                 );
                 say!("most, stopping at 75 C), reading the temperatures and clocks; it writes no file.");
+                say!("--sd-card reads the SD card's own files through its read-only window, then writes");
+                say!(
+                    "and reads test files in the card's MPFree folder and on the stick through the"
+                );
+                say!("write window, idle and with busy cores, deleting them; with --desktop-test DIR the");
+                say!("windows' files are under DIR/run and a test answers them. --card-wait SECS: with no");
+                say!("card in the slot, ask again every 10 s for that long (the round puts the card in late).");
                 say!("--cut-test records 4 takes and writes imports beside them in its own folder until");
                 say!("the stick is pulled; --after-cut FILE recovers them and checks every promise in");
                 say!("FILE (the cut run's saved text), then deletes the folder. Only with --desktop-test.");
@@ -251,6 +281,7 @@ fn parse() -> Result<Opts, String> {
         o.under_load,
         o.recorder,
         o.heat,
+        o.sd_card,
         o.cut_test,
         o.after_cut.is_some(),
     ]
@@ -259,7 +290,10 @@ fn parse() -> Result<Opts, String> {
     .count()
         > 1
     {
-        return Err("--read-only, --under-load, --recorder, --heat, --cut-test and --after-cut are different runs".into());
+        return Err("--read-only, --under-load, --recorder, --heat, --sd-card, --cut-test and --after-cut are different runs".into());
+    }
+    if o.card_wait > 0 && !o.sd_card {
+        return Err("--card-wait goes with --sd-card".into());
     }
     if o.fat.is_some() && !o.cut_test {
         return Err("--fat and --fat-hidden go with --cut-test; --after-cut takes the way from the saved text".into());
@@ -841,6 +875,35 @@ fn cut_main(base: &Path, o: &Opts) -> ExitCode {
     }
 }
 
+/// `--sd-card`: on the MPC the stick's partition 4 has been checked (and
+/// no MMC device was there) before the windows open the card.
+fn sd_card_main(base: &Path, o: &Opts) -> ExitCode {
+    let places = if o.desktop {
+        // A desktop test names a stand-in for the thermal zones, or has none.
+        let thermal = std::env::var_os("MPFREE_DISKTEST_THERMAL")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| base.join("no-thermal"));
+        sdcard::Places::desktop(base, thermal, o.quick)
+    } else {
+        sdcard::Places::mpc()
+    }
+    .card_wait(Duration::from_secs(o.card_wait));
+    match sdcard::run(&places) {
+        Ok(()) => {
+            say!("done");
+            ExitCode::SUCCESS
+        }
+        Err(read::Fail::Refused(e)) => {
+            esay!("mpfree-disktest: refused: {e}. Nothing was written by the test.");
+            ExitCode::from(3)
+        }
+        Err(read::Fail::Failed(e)) => {
+            esay!("mpfree-disktest: failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let o = match parse() {
         Ok(o) => o,
@@ -904,6 +967,9 @@ fn main() -> ExitCode {
     }
     if o.cut_test || o.after_cut.is_some() {
         return cut_main(&base, &o);
+    }
+    if o.sd_card {
+        return sd_card_main(&base, &o);
     }
     if o.heat {
         // A desktop test may name stand-ins for the thermal zones and the

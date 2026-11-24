@@ -880,6 +880,17 @@ class StaticTests(unittest.TestCase):
         self.assertIn("Unit=mpfree-setup-sd-card.service\n", sd_path)
         self.assertIn("WantedBy=sysinit.target\n", sd_path)
         self.assertNotIn("sd-card", path, "the backup's path unit never starts the SD card's window")
+        # The SD card's write window (test_sd_card_write.py), the same way, by its own request.
+        sdw = self.read(os.path.join(STICK, "mpfree-setup-sd-card-write.service"))
+        self.assertIn("ExecStart=/bin/sh /etc/mpfree-test/setup-sd-card-write.sh\n", sdw)
+        for line in ("Requires=mpfree-test-internal-off.service", "After=mpfree-test-internal-off.service",
+                     "Type=oneshot", "TimeoutStartSec=infinity", "Conflicts=shutdown.target"):
+            self.assertIn(line + "\n", sdw)
+        sdw_path = self.read(os.path.join(STICK, "mpfree-setup-sd-card-write.path"))
+        self.assertIn("PathExists=/run/mpfree-app/sd-card-write.request\n", sdw_path)
+        self.assertIn("Unit=mpfree-setup-sd-card-write.service\n", sdw_path)
+        self.assertIn("WantedBy=sysinit.target\n", sdw_path)
+        self.assertNotIn("write", sd_path, "the read-only window's path unit never starts the write window")
 
 
 class FormatTests(unittest.TestCase):
