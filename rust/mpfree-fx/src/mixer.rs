@@ -1680,6 +1680,59 @@ impl Mixer {
         true
     }
 
+    /// Moves strip `from`'s inserts onto strip `to`, from the next block:
+    /// each with its state, its slot id, its bypass and its key, so an
+    /// effect's tail rings on where the sound now goes. For a host whose
+    /// sound moves from one strip to another (a kit getting a track), with
+    /// the strip's own controls set alongside ([`Mixer::set_now`]).
+    /// Real-time safe: the chains swap, `from` taking `to`'s empty one.
+    ///
+    /// False, and nothing changes, unless both strips are tracks or pad
+    /// channels (one stage) and `to` has no inserts, neither has an edit
+    /// waiting, is frozen or has its inserts away on a lane, no other
+    /// strip is keyed from `from`, and every key the inserts take is
+    /// allowed on `to` (module docs).
+    pub fn move_chain(&mut self, from: StripId, to: StripId) -> bool {
+        let topo = self.plan.topo;
+        let (Some(f), Some(t)) = (topo.order(from), topo.order(to)) else {
+            return false;
+        };
+        let stage = |k: usize| self.strips[k].role;
+        if f == t
+            || stage(f) != stage(t)
+            || !matches!(stage(f), Role::Track | Role::Pad)
+            || !self.strips[t].chain.is_empty()
+            || [f, t].iter().any(|&k| {
+                self.away(k)
+                    || self.strips[k].fz != Fz::Off
+                    || self.strips[k].frozen.is_some()
+                    || self.edits.iter().any(|e| topo.order(e.strip()) == Some(k))
+            })
+        {
+            return false;
+        }
+        let keyed_from = self.strips.iter().enumerate().any(|(k, st)| {
+            k != f && (0..st.chain.len()).any(|s| st.chain.key(s) == Some(f as u16))
+        });
+        let chain = &self.strips[f].chain;
+        let keys_ok = (0..chain.len())
+            .filter_map(|s| chain.key(s))
+            .all(|j| may_key(&topo, j as usize, t));
+        if keyed_from || !keys_ok {
+            return false;
+        }
+        let (a, b) = (f.min(t), f.max(t));
+        let (lo, hi) = self.strips.split_at_mut(b);
+        std::mem::swap(&mut lo[a].chain, &mut hi[0].chain);
+        if !self.reorder() {
+            let (lo, hi) = self.strips.split_at_mut(b);
+            std::mem::swap(&mut lo[a].chain, &mut hi[0].chain);
+            self.reorder();
+            return false;
+        }
+        true
+    }
+
     /// Why strip `key` can't feed the sidechain of strip `s`'s inserts
     /// (what [`Mixer::set_key`] would refuse it for), or None when it can:
     /// the sidechain list greys a strip with this. A strip `s` doesn't
@@ -2080,6 +2133,31 @@ impl Mixer {
 
     pub fn profiling(&self) -> bool {
         self.profiling
+    }
+
+    /// Counts each strip's inserts' time from the next block on, while on
+    /// (two clock reads a strip with inserts that runs; inserts on a lane
+    /// count there), for [`Mixer::take_spent`]. System status's "tracks
+    /// using the most" turns it on one block in a few. A chain away on a
+    /// late lane when this changes keeps its old setting until the next
+    /// change.
+    pub fn set_spending(&mut self, on: bool) {
+        for st in &mut self.strips {
+            st.chain.set_spending(on);
+        }
+    }
+
+    /// Each strip's counted insert time since the last take, ns (strips
+    /// with none left out), and starts the count again. A chain still on
+    /// a late lane keeps its count until it is back. Never allocates.
+    pub fn take_spent(&mut self, mut f: impl FnMut(StripId, u64)) {
+        let topo = self.plan.topo;
+        for (k, st) in self.strips.iter_mut().enumerate() {
+            let ns = st.chain.take_spent();
+            if ns > 0 {
+                f(topo.id(k), ns);
+            }
+        }
     }
 
     /// The whole mixer's time per block, while profiling.

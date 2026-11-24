@@ -29,6 +29,9 @@
 //! |---|---|
 //! | track 3's instrument, parameter 12 | `t3.inst.12` |
 //! | track 3, sampler pad 5, parameter 2 | `t3.pad5.2` |
+//! | kit 9's pad 5 (the kit's instrument number), parameter 2, whichever track plays it (MIDI Learn) | `kit9.pad5.2` |
+//! | kit 9's pad 5, its third layer's grain setting 12 ([`pad::layer`]: 256 + 2 × 64 + 12) | `kit9.pad5.396` |
+//! | instrument 9's parameter 12, whichever track plays it (MIDI Learn) | `i9.12` |
 //! | mixer track 7's strip, volume (0): sequencer track 3's own ([`track_strip`]; the Drums strip, `t0`, is track 0's) | `t7.mix.0` |
 //! | bus 2, the insert with slot id 7, parameter 4 | `bus2.fx7.4` |
 //! | input 0 / pad channel 9 / return 1 / master strip | `in0.mix.0` / `ps9.mix.0` / `ret1.mix.0` / `master.mix.0` |
@@ -105,8 +108,19 @@ pub enum Owner {
     /// A track's instrument node (Poly, FM, ...).
     Inst(u8),
     /// A sampler pad's sound on a drum track: `(track, pad)`. A value set
-    /// here applies to the voice that starts on that frame.
+    /// here applies to the voice that starts on that frame. Its parameters
+    /// are the pad's own settings and its layers' grain settings ([`pad`]).
     Pad(u8, u8),
+    /// A kit's pad by the kit's instrument number in its project's list
+    /// and the pad, whichever track plays the kit (sampler step 16): what
+    /// MIDI Learn names a pad's setting by, so a learned knob stays on its
+    /// kit when a track picks another. Its parameters are [`Owner::Pad`]'s.
+    KitPad(u16, u8),
+    /// An instrument of the project's list by its number, whichever track
+    /// plays it (sampler step 16): what MIDI Learn names a synth's knob by,
+    /// so it stays on that synth when a track picks another. Its
+    /// parameters are [`Owner::Inst`]'s.
+    Sound(u16),
     /// A mixer strip's own controls (volume, pan, sends ...).
     Strip(Strip),
     /// An insert on a strip, named by its slot id: a number the chain
@@ -576,6 +590,45 @@ pub mod arp {
     }
 }
 
+/// [`Owner::Pad`]'s and [`Owner::KitPad`]'s parameters, as far as this
+/// crate names them (sampler step 17). Ids below [`LAYER_BASE`] are the
+/// pad's own settings (the sampler's `PadField` numbers). From it, each of
+/// the pad's layers has [`LAYER_SETTINGS`] ids for its grain settings (the
+/// sampler's `GrainField` numbers): layer `l`'s setting `g` is
+/// `LAYER_BASE + l × LAYER_SETTINGS + g`. The text form is the number, so
+/// a build that doesn't know an id reads and keeps it, moving nothing.
+pub mod pad {
+    /// The first layer id: layer 0's setting 0.
+    pub const LAYER_BASE: u16 = 256;
+    /// Ids a layer has, one a grain setting.
+    pub const LAYER_SETTINGS: u16 = 64;
+    /// Layers a pad can have (the sampler's `MAX_LAYERS`).
+    pub const LAYERS: u8 = 16;
+
+    /// Layer `layer`'s setting `setting`; None past the last layer or
+    /// setting.
+    pub const fn layer(layer: u8, setting: u8) -> Option<u16> {
+        if layer >= LAYERS || setting as u16 >= LAYER_SETTINGS {
+            return None;
+        }
+        Some(LAYER_BASE + layer as u16 * LAYER_SETTINGS + setting as u16)
+    }
+
+    /// The layer and setting id `id` names ([`layer`]'s inverse); None for
+    /// one of the pad's own settings, or past the last layer.
+    pub const fn layer_of(id: u16) -> Option<(u8, u8)> {
+        if id < LAYER_BASE {
+            return None;
+        }
+        let n = id - LAYER_BASE;
+        let l = n / LAYER_SETTINGS;
+        if l >= LAYERS as u16 {
+            return None;
+        }
+        Some((l as u8, (n % LAYER_SETTINGS) as u8))
+    }
+}
+
 /// [`Owner::Play`]'s parameters: the Play page's own controls, for MIDI
 /// Learn. Learned controls are saved with these numbers in the rig and the
 /// project, so they never change: a new control takes the next number.
@@ -891,6 +944,8 @@ impl fmt::Display for Owner {
             Owner::Perform => f.write_str("perform"),
             Owner::Play => f.write_str("play"),
             Owner::Show => f.write_str("show"),
+            Owner::KitPad(k, p) => write!(f, "kit{k}.pad{p}"),
+            Owner::Sound(n) => write!(f, "i{n}"),
             o => {
                 let (t, on) = o.split().expect("every other owner is on a track");
                 write!(f, "t{t}.{on}")
@@ -980,8 +1035,12 @@ fn owner(words: &[&str]) -> Option<Owner> {
         [w] => num(w, "macro")
             .map(Owner::Macro)
             .or_else(|| num(w, "mod").map(Owner::Mod))
-            .or_else(|| num(w, "morph").map(Owner::Morph)),
+            .or_else(|| num(w, "morph").map(Owner::Morph))
+            .or_else(|| num(w, "i").map(Owner::Sound)),
         [s, what] => {
+            if let Some(k) = num(s, "kit") {
+                return Some(Owner::KitPad(k, num(what, "pad")?));
+            }
             let s = strip(s)?;
             if what == "mix" {
                 return Some(Owner::Strip(s));
@@ -1041,6 +1100,10 @@ mod tests {
             Owner::Inst(0),
             Owner::Inst(63),
             Owner::Pad(3, 5),
+            Owner::KitPad(1, 0),
+            Owner::KitPad(u16::MAX, 127),
+            Owner::Sound(1),
+            Owner::Sound(u16::MAX),
             Owner::Arp(1),
             Owner::Seq(2),
             Owner::NoteFx(3, 2),
@@ -1076,10 +1139,35 @@ mod tests {
     }
 
     #[test]
+    fn a_pads_layer_ids_follow_its_own_settings_and_come_back() {
+        assert_eq!(pad::layer(0, 0), Some(pad::LAYER_BASE));
+        assert_eq!(pad::layer(2, 12), Some(396));
+        assert_eq!(pad::layer(15, 63), Some(1279));
+        assert_eq!(pad::layer(16, 0), None, "a pad has 16 layers");
+        assert_eq!(pad::layer(0, 64), None, "a layer has 64 ids");
+        for id in 0..pad::LAYER_BASE {
+            assert_eq!(pad::layer_of(id), None, "{id} is the pad's own");
+        }
+        for l in 0..pad::LAYERS {
+            for g in 0..pad::LAYER_SETTINGS as u8 {
+                let id = pad::layer(l, g).unwrap();
+                assert_eq!(pad::layer_of(id), Some((l, g)));
+            }
+        }
+        assert_eq!(pad::layer_of(1280), None, "past the last layer");
+    }
+
+    #[test]
     fn text_examples() {
         let cases = [
             (ParamAddr::new(Owner::Inst(3), 12), "t3.inst.12"),
             (ParamAddr::new(Owner::Pad(3, 5), 2), "t3.pad5.2"),
+            (ParamAddr::new(Owner::KitPad(9, 5), 2), "kit9.pad5.2"),
+            (ParamAddr::new(Owner::Sound(9), 12), "i9.12"),
+            (
+                ParamAddr::new(Owner::KitPad(9, 5), pad::layer(2, 12).unwrap()),
+                "kit9.pad5.396",
+            ),
             (ParamAddr::new(Owner::Strip(Strip::Track(3)), 0), "t3.mix.0"),
             (
                 ParamAddr::new(Owner::Insert(Strip::Bus(2), 7), 4),
@@ -1352,6 +1440,14 @@ mod tests {
             "t3.midi3.7",
             "play0.1",
             "t1.play.0",
+            "kit9.inst.1",
+            "kit.pad1.0",
+            "kit9.pad.0",
+            "kit70000.pad1.0",
+            "kit9.pad1",
+            "i.1",
+            "i9.pad1.0",
+            "i70000.1",
         ] {
             assert!(s.parse::<ParamAddr>().is_err(), "{s:?} should not parse");
         }

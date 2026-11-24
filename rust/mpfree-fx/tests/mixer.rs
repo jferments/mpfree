@@ -628,6 +628,58 @@ fn the_sidechain_refusals_match_what_set_key_refuses() {
     assert_eq!(Refusal::Loop.text(), "it listens to this one");
 }
 
+/// A strip's inserts move onto an empty strip of the same stage with their
+/// keys (a kit's strip settings following it to its track), and play
+/// there from the next block; a move that would break something is
+/// refused and changes nothing.
+#[test]
+fn move_chain_takes_the_inserts_and_their_keys_to_an_empty_strip() {
+    let mut m = mixer(small());
+    let (t0, t1, t2, t3) = (
+        StripId::Track(0),
+        StripId::Track(1),
+        StripId::Track(2),
+        StripId::Track(3),
+    );
+    let c = m.chain_mut(t0).unwrap();
+    c.push(Box::new(Gain(0.5)));
+    c.push(Box::new(Compressor::new()));
+    assert!(m.set_key(t0, 1, Some(StripId::Pad(0))));
+    m.chain_mut(t2).unwrap().push(Box::new(Gain(1.0)));
+    // Onto a strip with inserts, another stage, or itself: no.
+    assert!(!m.move_chain(t0, t2));
+    assert!(!m.move_chain(t0, StripId::Bus(0)));
+    assert!(!m.move_chain(t0, t0));
+    assert!(m.move_chain(t0, t1));
+    assert_eq!(m.chain(t0).unwrap().len(), 0);
+    assert_eq!(m.chain(t1).unwrap().len(), 2);
+    assert_eq!(m.key(t1, 1), Some(StripId::Pad(0)), "the key moves along");
+    // It plays there from the next block, as if built there.
+    let n = 2048;
+    let s = Script {
+        feeds: vec![(t1, mono(sine(200.0, 0.4, n)))],
+        ..Default::default()
+    };
+    let mut built = mixer(small());
+    let c = built.chain_mut(t1).unwrap();
+    c.push(Box::new(Gain(0.5)));
+    c.push(Box::new(Compressor::new()));
+    assert!(built.set_key(t1, 1, Some(StripId::Pad(0))));
+    built.chain_mut(t2).unwrap().push(Box::new(Gain(1.0)));
+    let want = play(&mut built, &s, n, &mut blocks(256)).out;
+    let got = play(&mut m, &s, n, &mut blocks(256)).out;
+    assert!(peak(&want.0) > 0.05);
+    assert_eq!(got, want);
+    // A strip another is keyed from stays put; so does one with an edit
+    // waiting.
+    assert!(m.set_key(t2, 0, Some(t1)));
+    assert!(!m.move_chain(t1, t3));
+    assert!(m.set_key(t2, 0, None));
+    assert!(m.edit(Edit::Remove { strip: t1, at: 0 }).is_ok());
+    assert!(!m.move_chain(t1, t3));
+    assert_eq!(m.chain(t1).unwrap().len(), 2);
+}
+
 #[test]
 fn capture_points_take_what_they_say() {
     let n = 4096;
@@ -1301,6 +1353,42 @@ fn profiling_times_the_mixer_its_strips_and_their_inserts_only_when_on() {
     m.set_profiling(false);
     play(&mut m, &script, 1024, &mut blocks(128));
     assert_eq!(m.probe().lifetime().blocks, blocks_run);
+}
+
+/// Spending (System status's tracks): each strip's inserts' time counts
+/// while on, by strip, strips without inserts never; a take starts again;
+/// off, nothing counts; the output is the same either way.
+#[test]
+fn spending_counts_each_strips_inserts_only_while_on() {
+    let n = 2048;
+    let mut m = mixer(small());
+    m.chain_mut(StripId::Track(1)).unwrap().push(Lag::boxed(3));
+    let script = Script {
+        feeds: vec![
+            (StripId::Track(1), mono(sine(220.0, 0.3, n))),
+            (StripId::Track(2), mono(sine(330.0, 0.3, n))),
+        ],
+        ..Default::default()
+    };
+    let off = play(&mut m, &script, n, &mut blocks(128));
+    let mut seen = Vec::new();
+    m.take_spent(|s, ns| seen.push((s, ns)));
+    assert!(seen.is_empty(), "nothing while off: {seen:?}");
+    m.reset();
+    m.set_spending(true);
+    let on = play(&mut m, &script, n, &mut blocks(128));
+    close("spending", &on.out, &off.out, 0.0);
+    m.take_spent(|s, ns| seen.push((s, ns)));
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!(seen[0].0, StripId::Track(1));
+    assert!(seen[0].1 > 0);
+    seen.clear();
+    m.take_spent(|s, ns| seen.push((s, ns)));
+    assert!(seen.is_empty(), "a take starts again");
+    m.set_spending(false);
+    play(&mut m, &script, 512, &mut blocks(128));
+    m.take_spent(|s, ns| seen.push((s, ns)));
+    assert!(seen.is_empty(), "off again");
 }
 
 /// The busy mixer with inserts on more tracks and pad channels, so a lane

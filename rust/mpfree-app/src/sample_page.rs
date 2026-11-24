@@ -84,8 +84,8 @@ use mpfree_sampler::export;
 use mpfree_sampler::jobs::{Config as JobsConfig, Jobs, Key, Lane, Order};
 use mpfree_sampler::keymap::{self, RootFrom};
 use mpfree_sampler::model::{
-    self as model, ChannelPick, Fade, Levels, LoopMode, ModelError, Pad, PadsPlay, PlayMode,
-    Project, Region, Source, SourceId, Warp, PADS, SLICE_KEYS_FROM, WARP_BPM,
+    self as model, ChannelPick, Fade, KeysPlay, Levels, LoopMode, ModelError, Pad, PadsPlay,
+    PlayMode, Project, Region, Source, SourceId, Warp, PADS, SLICE_KEYS_FROM, WARP_BPM,
 };
 use mpfree_sampler::phrase::Phrase;
 use mpfree_sampler::record::{self, Input, Looped, Progress, Recording};
@@ -121,7 +121,7 @@ use crate::gui::FromUi;
 use crate::instrument_list::{InstrumentId, KitIds};
 use crate::mixing::Captured;
 use crate::modpanels::PadFx;
-use crate::sampler::{Cloud, Playheads, RecFeed, RecSource, ViewSwap};
+use crate::sampler::{Cloud, PadParam, Playheads, RecFeed, RecSource, ViewSwap};
 use crate::sampler_commands::{self, Change, Command, Landing, SceneSlot};
 use crate::views::Summary;
 use mpfree_fx::{CapturePoint, StripId};
@@ -973,7 +973,7 @@ pub struct SamplePage {
     play_turn: Option<(usize, PadKnob, u64)>,
     /// A learned MIDI control turning a pad's setting (MIDI Learn): the
     /// kit, the pad, the setting and the turn's undo id.
-    learn_turn: Option<(usize, usize, PadField, u64)>,
+    learn_turn: Option<(usize, usize, PadParam, u64)>,
     shown_heads: Vec<u64>,
     lines: Vec<String>,
     /// What the pad take ([`SamplePage::pad_take`]) tells the arm next,
@@ -1154,6 +1154,14 @@ pub struct SamplePage {
     /// Load to pad and Send to pad say so when a hit lands them on
     /// another (the kit the pads play on their own, sampler step 15d).
     track_kit: usize,
+    /// The selected track (0 based), for the bar's "Track 1's kit" chip,
+    /// and the pad of its kit hit last, which the chip shows again
+    /// (sampler step 15e, board 4).
+    track: usize,
+    track_pad: usize,
+    /// The bank pressed while the kit shown plays from another of its
+    /// banks (bank B playing Big Kit's bank C): "from pad B1".
+    from_bank: Option<usize>,
     /// The take kept on the page that the Wave page shows (one-page step
     /// 2b), by its place in the kit's [`Project::takes`]; None: the pad.
     open: Option<usize>,
@@ -1358,6 +1366,9 @@ impl SamplePage {
             assign: None,
             sending: None,
             track_kit: 0,
+            track: 0,
+            track_pad: 0,
+            from_bank: None,
             open: None,
             sending_take: None,
             take_held: None,
@@ -1547,7 +1558,77 @@ impl SamplePage {
     ///
     /// [`ToUi::Kit`]: crate::gui::ToUi::Kit
     pub fn set_track_kit(&mut self, k: usize) {
-        self.track_kit = k;
+        if k != self.track_kit {
+            self.track_kit = k;
+            self.stale = true;
+        }
+    }
+
+    /// The selected track (0 based): the bar's chip names its kit.
+    pub fn set_track(&mut self, t: usize) {
+        if t != self.track {
+            self.track = t;
+            self.stale = true;
+        }
+    }
+
+    /// The bank pressed while the pads play another bank of the kit (its
+    /// source bank, sampler step 15e), or None: the bar says "from pad
+    /// B1".
+    pub fn set_from_bank(&mut self, b: Option<usize>) {
+        if b != self.from_bank {
+            self.from_bank = b;
+            self.stale = true;
+        }
+    }
+
+    /// The bar's "Track 1's kit" chip (sampler step 15e, board 4): the
+    /// page shows the selected track's own kit again, at its pad hit
+    /// last. Nothing while it shows it, or the pads play the synth.
+    pub fn show_track_kit(&mut self) {
+        if self.synth || self.kit == self.track_kit || self.track_kit >= self.projects.len() {
+            return;
+        }
+        let pad = self.track_pad;
+        self.set_kit(self.track_kit, false);
+        self.pick(pad);
+        self.stale = true;
+        self.told.push(format!(
+            "Track {}'s kit, at pad {}: a hit on another kit shows that kit again",
+            self.track + 1,
+            self.pad_text(self.kit, self.pad)
+        ));
+    }
+
+    /// What the bar says of the kit shown while it isn't the selected
+    /// track's (sampler step 15e, board 4): its name, and the pad pressed
+    /// when it plays from another of its banks ("Big Kit, from pad B1");
+    /// and the chip that shows the track's kit again. None for the track's
+    /// own kit and while the pads play the synth.
+    fn kit_shown_note(&self) -> Option<(String, String)> {
+        if self.synth || self.kit == self.track_kit || self.kit >= self.projects.len() {
+            return None;
+        }
+        let name = self
+            .names
+            .get(self.kit)
+            .filter(|n| !n.is_empty())
+            .cloned()
+            .unwrap_or_else(|| format!("Kit {}", self.kit + 1));
+        let from = self
+            .from_bank
+            .filter(|&b| b != self.pad / 16)
+            .map(|b| {
+                format!(
+                    ", from pad {}",
+                    crate::app::kit_pad_name(b * 16 + self.pad % 16)
+                )
+            })
+            .unwrap_or_default();
+        Some((
+            format!("{name}{from}"),
+            format!("Track {}'s kit", self.track + 1),
+        ))
     }
 
     /// Load to pad or Send to pad (`what`) landed on pad `pad` of kit
@@ -1637,6 +1718,9 @@ impl SamplePage {
     }
 
     fn pick(&mut self, pad: usize) {
+        if pad < PADS && self.kit == self.track_kit {
+            self.track_pad = pad;
+        }
         if pad == self.pad || pad >= PADS {
             return;
         }
@@ -2136,11 +2220,17 @@ impl SamplePage {
             send::show(ui, has_sound, self.sending.is_some());
         }
         // The pad bar's title names the pad (and its sound) on the editors
-        // of a pad with a sound.
+        // of a pad with a sound; on another kit than the track's, the bar
+        // names it and offers the track's kit back (sampler step 15e).
+        let (note, chip) = self.kit_shown_note().unzip();
         for bar in NAMED_BARS {
             if let Some(b) = ui.get_mut::<mpfree_sampler_ui::widgets::PadBar>(bar) {
                 if b.nameable != has_sound {
                     b.nameable = has_sound;
+                }
+                if b.kit_note != note || b.track_kit != chip {
+                    b.kit_note.clone_from(&note);
+                    b.track_kit.clone_from(&chip);
                 }
             }
         }
@@ -2600,6 +2690,16 @@ impl SamplePage {
                 .is_some()
         {
             self.ask_names();
+            return;
+        }
+        // The bar's "Track 1's kit" chip (sampler step 15e, board 4).
+        if ev.kind == EventKind::Tab(mpfree_sampler_ui::widgets::TRACK_KIT)
+            && ui
+                .get::<mpfree_sampler_ui::widgets::PadBar>(&ev.widget)
+                .is_some()
+        {
+            self.show_track_kit();
+            self.refresh_if_stale(ui);
             return;
         }
         // A finger dragged on a Q-Link card turns that knob, as the knob
@@ -3393,6 +3493,14 @@ impl SamplePage {
                         ""
                     }
                 ));
+                // On a kit the pads play on their own, the hint says where
+                // the slices went (sampler step 15e, board 4).
+                if to_kit == kit && kit != self.track_kit {
+                    self.told.push(format!(
+                        "Chopped onto {to} of {}, the kit shown",
+                        self.kit_text_of(kit)
+                    ));
+                }
                 let mut for_track = None;
                 match phrase.map(|p| p.map(|p| phrase_clip(&name, &p, pads.start, *one_pad))) {
                     Ok(None) => {}
@@ -3793,6 +3901,27 @@ impl SamplePage {
         self.command(&cmd)
     }
 
+    /// Kit `kit`'s Keys play set to `play` (sampler step 15e, from the
+    /// pads picker's Kits side): what a key plays on it, its pad, the
+    /// keygroups that hold it, or both. One undo step on the kit. The line
+    /// that says so, for the log and the hint.
+    pub fn set_keys_play(&mut self, ui: &mut Ui, kit: usize, play: KeysPlay) -> String {
+        let what = match self.change_kit(kit, Change::KeysPlay(Some(play)), None) {
+            Ok(_) => match play {
+                KeysPlay::Pads => "each key plays its pad".to_string(),
+                KeysPlay::Keygroups => "each key plays the keygroups that hold it".to_string(),
+                KeysPlay::Both => {
+                    "keys play the keygroups that hold them, the pad elsewhere".to_string()
+                }
+            },
+            Err(e) => format!("keys play not changed ({e})"),
+        };
+        let line = format!("sample: {}: {what}", self.kit_text_of(kit));
+        self.lines.push(line.clone());
+        self.refresh(ui);
+        line
+    }
+
     /// The kit place whose id is `id`, as the audio loop last said
     /// (sampler step 15); None for an instrument that isn't a kit.
     pub fn kit_of_id(&self, id: InstrumentId) -> Option<usize> {
@@ -3992,26 +4121,36 @@ impl SamplePage {
         }
     }
 
-    /// A learned MIDI control (MIDI Learn) set kit `kit`'s pad `pad`'s own
-    /// `field` to `value`, in the field's units ([`scene::own`]'s), as the
-    /// Play tab's knob sets it: one undo step a turn, a turn after a rest
-    /// ([`TURN_REST_S`]) or of another setting a new one. The kit's new view
-    /// goes to the audio thread; the engine's live rows (the Q-Links'
-    /// values, the clips' locks) are left alone. Nothing for a pad without
-    /// a sound, or a value it has already.
-    pub fn learned(&mut self, kit: usize, pad: usize, field: PadField, value: f32) {
+    /// A learned MIDI control (MIDI Learn) set kit `kit`'s pad `pad`'s
+    /// setting `what` to `value`, in the setting's units: one of the pad's
+    /// own ([`scene::own`]'s), as the Play tab's knob sets it, or a layer's
+    /// grain setting (sampler refactor step 17), as the Grain tool's row
+    /// sets it. One undo step a turn, a turn after a rest ([`TURN_REST_S`])
+    /// or of another setting a new one. The kit's new view goes to the
+    /// audio thread; the engine's live rows (the Q-Links' values, the
+    /// clips' locks) are left alone. Nothing for a pad without a sound, a
+    /// layer it hasn't got, or a value it has already.
+    pub fn learned(&mut self, kit: usize, pad: usize, what: PadParam, value: f32) {
         let Some(before) = self.projects.get(kit).and_then(|p| p.pad(pad)).cloned() else {
             return;
         };
         let mut after = before.clone();
-        scene::set_own(&mut after, field, value);
+        match what {
+            PadParam::Own(field) => scene::set_own(&mut after, field, value),
+            PadParam::Grain { layer, field } => {
+                let Some(l) = after.layers.get_mut(usize::from(layer)) else {
+                    return;
+                };
+                field.set(&mut l.region.grain, value);
+            }
+        }
         if after == before {
             return;
         }
         self.turned();
         if self
             .learn_turn
-            .is_some_and(|(k, p, f, _)| (k, p, f) != (kit, pad, field))
+            .is_some_and(|(k, p, f, _)| (k, p, f) != (kit, pad, what))
             || (self.learn_turn.is_none() && self.gesture.is_some())
         {
             self.lift();
@@ -4021,7 +4160,7 @@ impl SamplePage {
             None => {
                 // "LEARN" and the edit count: a new undo step.
                 let id = 0x4C45_4152_4E00_0000 | (self.edits & 0xFF_FFFF);
-                self.learn_turn = Some((kit, pad, field, id));
+                self.learn_turn = Some((kit, pad, what, id));
                 self.gesture = Some(Gesture {
                     id,
                     kit,
@@ -4032,8 +4171,18 @@ impl SamplePage {
                 id
             }
         };
-        let own = Change::Own { pad, field, value };
-        match self.change_kit(kit, own, Some(id)) {
+        let change = match what {
+            PadParam::Own(field) => Change::Own { pad, field, value },
+            PadParam::Grain { layer, .. } => {
+                let layer = usize::from(layer);
+                Change::Region {
+                    pad,
+                    layer,
+                    region: Box::new(after.layers[layer].region.clone()),
+                }
+            }
+        };
+        match self.change_kit(kit, change, Some(id)) {
             Ok(_) => self.stale = true,
             Err(e) => self.lines.push(format!(
                 "sample: pad {} not changed by MIDI Learn ({e})",
@@ -4044,17 +4193,27 @@ impl SamplePage {
 
     /// The pad setting under a touch for SHIFT + a touch (MIDI Learn): a
     /// knob or row of the Play tab's panel, or the Pads tab's Level, Pan
-    /// or Tune, on the pad the page edits ([`SamplePage::pad`]). None for
-    /// anything else.
-    pub fn learn_field(&self, widget: &str, t: &mpfree_ui::Target) -> Option<(usize, PadField)> {
-        let field = if widget == play_tab::LIST {
-            self.play.as_ref()?.field_at(t)?
+    /// or Tune, on the pad the page edits ([`SamplePage::pad`]); or a row
+    /// with a range of the Grain tool, a grain setting of the layer it
+    /// edits (sampler refactor step 17). None for anything else.
+    pub fn learn_field(&self, widget: &str, t: &mpfree_ui::Target) -> Option<(usize, PadParam)> {
+        let what = if widget == play_tab::LIST {
+            PadParam::Own(self.play.as_ref()?.field_at(t)?)
         } else if widget == pads_tab::LIST {
-            pads_tab::Row::field_at(self.pads_state.as_ref()?, t)?
+            PadParam::Own(pads_tab::Row::field_at(self.pads_state.as_ref()?, t)?)
+        } else if let (Some(tab), Some(st)) = (self.tab.as_ref(), self.state.as_ref()) {
+            if self.shown_take().is_some() {
+                return None;
+            }
+            let field = tab.grain_row_at(st, widget, t)?.field()?;
+            PadParam::Grain {
+                layer: u8::try_from(self.layer()).ok()?,
+                field,
+            }
         } else {
             return None;
         };
-        Some((self.pad, field))
+        Some((self.pad, what))
     }
 
     /// Whether the Pads tab's picked pad has the Level, Pan and Tune rows
