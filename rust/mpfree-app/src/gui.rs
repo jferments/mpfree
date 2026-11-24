@@ -3343,6 +3343,7 @@ impl Player {
             sheet_name: None,
             pads_key: None,
             phrase: arp_view::PhraseNow::default(),
+            improvise: arp_view::ImproviseNow::default(),
             notes: Vec::new(),
             step: 0,
             latched: false,
@@ -13037,6 +13038,7 @@ impl Player {
                 a.phrase_index = v.phrase_index;
                 a.pads_key = v.pads_key;
                 a.maker = v.maker.map(|m| *m);
+                a.improvise = v.improvise;
                 let sheet = v.sheet.map(|s| *s);
                 a.sheet_name = sheet
                     .as_ref()
@@ -28110,8 +28112,9 @@ pub fn sample_sets(name: &str, fonts: Fonts) -> Result<Player, String> {
     }
 }
 
-pub const PHRASE_SAMPLES: [&str; 6] = [
+pub const PHRASE_SAMPLES: [&str; 7] = [
     "arp-phrase",
+    "arp-phrase-evolve",
     "arp-phrase-next-bar",
     "arp-phrase-kit",
     "arp-quick-band-phrase",
@@ -28191,6 +28194,34 @@ pub fn sample_phrase(name: &str, fonts: Fonts) -> Player {
             fx.extend(app.arp_action(ArpAction::Maker(MakerAction::TryAgain)));
             apply_effects(&mut p, fx);
             run_arp(&mut p, &mut app, 3 * 22_050);
+            p
+        }
+        // Improvise's While I hold (S5, board A): Minor hook latched over
+        // F major (F, A and C held) with Evolve on, five bars in: one
+        // change made, the next outlined.
+        "arp-phrase-evolve" => {
+            use mpfree_arp_ui::view::ImproviseAction;
+            let (mut p, mut app) = phrase_player(fonts);
+            let mut fx = app.toggle_panel();
+            fx.extend(app.arp_action(ArpAction::Mode(Mode::Phrase)));
+            fx.extend(app.arp_action(ArpAction::Phrase(phrase_named("Minor hook"))));
+            fx.extend(app.arp_action(ArpAction::Latch));
+            for pad in [5, 7, 9] {
+                fx.extend(app.pad_down(pad, 100));
+            }
+            for pad in [5, 7, 9] {
+                app.pad_up(pad);
+            }
+            fx.extend(app.arp_action(ArpAction::Improvise(ImproviseAction::Evolve)));
+            apply_effects(&mut p, fx);
+            // Evolve keeps time from the playhead, heard every period.
+            let mut ev = mpfree_arp::Events::new();
+            let mut last = None;
+            for _ in 0..5 * 2 * 44_100 / 128 {
+                app.process(128, &mut ev);
+                last = app.arp_poll().or(last);
+            }
+            apply_effects(&mut p, last.into_iter().collect());
             p
         }
         // NOTE REPEAT held on the synth with + pressed to Phrase: the band

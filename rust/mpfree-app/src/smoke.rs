@@ -438,7 +438,7 @@ mod tests {
     }
 
     /// The Arp panel's Phrase tab, swept on its own: every control on its
-    /// four screens does something, its own are all pressed, and each is
+    /// screens does something, its own are all pressed, and each is
     /// in the catalogue.
     #[test]
     fn the_phrase_tabs_controls_do_something_and_are_in_the_catalogue() {
@@ -460,6 +460,9 @@ mod tests {
             ("arp-phrase-kinds/kind", "arp-phrase-kit", 5),
             ("arp-phrase-list/phrase", "arp-phrase", 8),
             ("arp-phrase-plays/follow", "arp-phrase", 2),
+            ("arp-phrase-plays/plays-when", "arp-phrase", 2),
+            ("arp-phrase-plays/move", "arp-phrase", 4),
+            ("arp-phrase-plays/move", "arp-phrase-evolve", 4),
             ("arp-phrase-plays/slider", "arp-phrase", 4),
             ("arp-modes/segment", "arp-phrase", 5),
             ("arp-mini/slower", "arp-quick-band-phrase", 1),

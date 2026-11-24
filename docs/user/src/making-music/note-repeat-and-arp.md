@@ -137,7 +137,7 @@ Under the list, five buttons work on the pattern:
 
 A **phrase** is a short piece of music, a bar or two long, that plays from the note you hold: a bass line, a riff, a run of chords or an arp line, with its own rhythm, long and short notes and accents. Hold one pad on a synth track and the whole phrase plays from that pad's note, round and round. Hold another pad and it carries on from there, without losing its place. It is the quickest way from one finger to a part that sounds written. Hold a chord of three notes or more and the phrase plays over the chord itself: a riff written over C minor takes F major's notes when you hold F major (its root, third and fifth, and the notes between them from F major's scale). A chord played a little unevenly counts as one change: the phrase follows it about 30 ms after its last note.
 
-{{shot: arp-phrase | The Phrase tab: the kinds of phrase on the left, the basses in the middle with Night drive picked, and on the right its notes over two bars with a line where it is playing, what it follows, and the four Q-Link settings.}}
+{{shot: arp-phrase | The Phrase tab: the kinds of phrase on the left, the basses in the middle with Night drive picked, and on the right the Plays row (While I hold), its notes over two bars with a line where it is playing, the moves Hold, Evolve, Return and Capture, what it follows, and the four Q-Link settings.}}
 
 MPFree comes with 64 phrases of its own, 16 of each kind: **Bass**, **Riff**, **Chords** and **Arp lines**. **Yours** is for phrases of your own: the ones you make with **New idea**, **More like this** and **Make a phrase** (below), and patterns you keep with **Keep as a phrase** on the Pattern tab, go there.
 
@@ -158,7 +158,22 @@ Tapping a kind, or stepping to it with **–** and **+**, also picks a phrase of
 
 In the list, each phrase shows its length and its notes drawn small. The phrases that suit the key you are in come first. One written for the other kind of scale (a major phrase while you play in minor) comes after them, faint, and says which scale it was written in. It still plays, moved onto your key.
 
-**Follows**, under the phrase's picture, sets how the phrase finds its notes:
+#### Evolve, Hold, Return and Capture
+
+Under the phrase's picture, four moves change it as it plays:
+
+- **Evolve** changes a little of the phrase every 4 bars: a few of its notes, never its rhythm and never its last note, so it still comes round as it did. Each change builds on the last, so the phrase wanders a little at a time. The notes the next change brings are outlined in the picture, and the line above the moves counts the bars to it.
+- **Hold** keeps the phrase as it plays now. It is what a phrase does until you tap Evolve.
+- **Return** goes back to the phrase as you picked it.
+- **Capture** keeps the last bars you played as a clip, as **SHIFT** + **REC** does.
+
+Picking another phrase starts it again from that phrase as written; Evolve stays on. The line above the moves also says what the phrase plays over: the chord you hold, by name, or the note.
+
+{{shot: arp-phrase-evolve | The Phrase tab with Minor hook latched over F major and Evolve on: the line reads Over F major, the chord you hold, and evolves in a few bars; the notes the next change brings are outlined.}}
+
+The **Plays** row picks when the phrase plays: **While I hold** is what this section describes. **When I stop**, where MPFree answers what you play, is not ready yet and stays faint.
+
+**Follows**, under the moves, sets how the phrase finds its notes:
 
 - **In key** moves the phrase onto a scale, so every note belongs. It follows the arp's own **Scale** if you set one (see [Arp options](#arp-options)), otherwise the scale the pads play; the key is named beside the switch. With no scale anywhere it plays by semitones, as Exact does.
 - **Exact** plays the phrase's notes as written, counted in semitones from the note you hold, whatever the key.

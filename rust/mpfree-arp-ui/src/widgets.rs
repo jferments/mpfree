@@ -336,8 +336,14 @@ pub struct SliderStack {
     pub rows: Vec<Slider>,
     /// The row that is being turned (by a Q-Link or a finger), highlighted.
     pub active: Option<usize>,
+    /// Rows side by side: 1 is a stack; 2 puts them two to a line, left to
+    /// right then down (the Phrase tab's sliders, two by two).
+    pub columns: usize,
     grabbed: Option<(u64, usize)>,
 }
+
+/// The room between two columns of sliders.
+const SLIDER_GAP: i32 = 20;
 
 const SLIDER_HEAD: i32 = 20;
 
@@ -353,6 +359,7 @@ impl SliderStack {
                 })
                 .collect(),
             active: None,
+            columns: 1,
             grabbed: None,
         }
     }
@@ -367,11 +374,16 @@ impl SliderStack {
         self.row_rects_in(SliderStack::body(r), i)
     }
 
-    /// Row `i`'s area and its track, the rows sharing `body`.
+    /// Row `i`'s area and its track, the rows sharing `body` (in
+    /// [`SliderStack::columns`] columns).
     pub fn row_rects_in(&self, body: Rect, i: usize) -> (Rect, Rect) {
-        let n = self.rows.len().max(1) as i32;
-        let h = body.h / n;
-        let row = Rect::new(body.x, body.y + i as i32 * h, body.w, h);
+        let cols = self.columns.max(1);
+        let lines = self.rows.len().max(1).div_ceil(cols) as i32;
+        let h = body.h / lines;
+        let gaps = SLIDER_GAP * (cols as i32 - 1);
+        let w = ((body.w - gaps) / cols as i32).max(1);
+        let (line, col) = ((i / cols) as i32, (i % cols) as i32);
+        let row = Rect::new(body.x + col * (w + SLIDER_GAP), body.y + line * h, w, h);
         let track = Rect::new(
             row.x + 11,
             row.y + SLIDER_HEAD + (h - SLIDER_HEAD - 8) / 2,

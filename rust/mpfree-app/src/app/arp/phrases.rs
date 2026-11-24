@@ -207,6 +207,7 @@ impl App {
         let phrase = self
             .maker_try()
             .or_else(|| self.sheet_try())
+            .or_else(|| self.improvised())
             .or_else(|| self.phrases.get(self.phrase_index).map(|(_, p)| *p));
         if let Some(phrase) = phrase {
             self.arps.engine_at_mut(self.track).set_phrase(phrase);

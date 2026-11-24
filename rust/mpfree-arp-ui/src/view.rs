@@ -201,6 +201,8 @@ pub struct ArpState {
     pub pads_key: Option<Scale>,
     /// What the Phrase tab shows of the phrase as it plays.
     pub phrase: PhraseNow,
+    /// The Phrase tab's Plays row and Evolve (S5).
+    pub improvise: ImproviseNow,
     /// The notes the generator plays, in the order they were pressed.
     pub notes: Vec<Held>,
     /// Steps played since the notes started ([`Engine::step`]).
@@ -239,6 +241,7 @@ impl ArpState {
                 waits: e.phrase_waiting() == Some(Join::Bar),
                 ..PhraseNow::default()
             },
+            improvise: ImproviseNow::default(),
             notes: e.active().as_slice().to_vec(),
             step: e.step(),
             latched: e.latch() != mpfree_arp::LatchMode::Off,
@@ -344,6 +347,68 @@ pub enum ArpAction {
     /// A touch on the Make a phrase sheet, or the wheel or - / + while it
     /// is open ([`crate::make_sheet`]).
     Sheet(crate::make_sheet::SheetAction),
+    /// The Phrase tab's Plays row and moves (composing tools S5).
+    Improvise(ImproviseAction),
+}
+
+/// When the Phrase tab's phrase plays (composing tools S5): While I hold, a
+/// held note or chord plays it, as it always has; When I stop, Answer plays
+/// a reply to what you played once you stop.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlaysWhen {
+    #[default]
+    WhileIHold,
+    WhenIStop,
+}
+
+impl PlaysWhen {
+    pub const ALL: [PlaysWhen; 2] = [PlaysWhen::WhileIHold, PlaysWhen::WhenIStop];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            PlaysWhen::WhileIHold => "While I hold",
+            PlaysWhen::WhenIStop => "When I stop",
+        }
+    }
+}
+
+/// A touch on the Phrase tab's Plays row or its moves (S5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImproviseAction {
+    Plays(PlaysWhen),
+    /// The phrase stays as it plays now: Evolve off.
+    Hold,
+    /// A little of the phrase changes every few bars.
+    Evolve,
+    /// Back to the phrase as picked.
+    Return,
+    /// The last bars played kept as a clip (CAPTURE).
+    Capture,
+}
+
+/// What the Phrase tab shows of Improvise (composing tools S5), from the
+/// app.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ImproviseNow {
+    pub when: PlaysWhen,
+    /// Evolve is on: a little of the phrase changes every few bars. Off,
+    /// it holds as it plays now.
+    pub evolve: bool,
+    /// Times Evolve has changed the phrase since it was picked: 0 is the
+    /// phrase as picked, and Return has nothing to go back to.
+    pub generation: u32,
+    /// The phrase as it plays now, when Evolve has changed it.
+    pub sketch: Option<crate::phrase_tab::Sketch>,
+    /// The notes the next Evolve changes, as they will be.
+    pub next: Vec<crate::phrase_tab::SketchNote>,
+    /// Whole bars until the next Evolve, while it is on and the phrase
+    /// plays.
+    pub evolves_in: Option<u32>,
+    /// The chord held, by name ("F major"), while three notes or more are
+    /// held: the phrase plays over it.
+    pub chord: Option<String>,
+    /// When I stop can be picked: Answer is there to play.
+    pub answers: bool,
 }
 
 /// A touch on the New idea or More like this panel ([`crate::maker`]).
@@ -1106,6 +1171,18 @@ impl ArpPanel {
             }
             (PHRASES, EventKind::Toggle(phrase_tab::NEW_IDEA)) => Some(ArpAction::NewIdea),
             (PLAYS, EventKind::Toggle(phrase_tab::MORE_LIKE)) => Some(ArpAction::MoreLike),
+            // The Plays row and the moves (S5).
+            (PLAYS, EventKind::Tab(i)) if *i >= phrase_tab::WHEN => PlaysWhen::ALL
+                .get(*i - phrase_tab::WHEN)
+                .map(|w| ArpAction::Improvise(ImproviseAction::Plays(*w))),
+            (PLAYS, EventKind::Toggle(i)) if *i >= phrase_tab::MOVES => [
+                ImproviseAction::Hold,
+                ImproviseAction::Evolve,
+                ImproviseAction::Return,
+                ImproviseAction::Capture,
+            ]
+            .get(*i - phrase_tab::MOVES)
+            .map(|m| ArpAction::Improvise(*m)),
             (MAKER, EventKind::Step { index, delta }) => {
                 Some(ArpAction::Maker(MakerAction::Step {
                     row: *index,
@@ -1267,6 +1344,7 @@ mod tests {
             sheet_name: None,
             pads_key: None,
             phrase: PhraseNow::default(),
+            improvise: ImproviseNow::default(),
             notes: held
                 .iter()
                 .map(|&note| Held {

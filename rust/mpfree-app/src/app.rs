@@ -1911,6 +1911,9 @@ pub struct App {
     /// Counts New idea and More like this's openings: each asks the
     /// composer with the next seed, so each opening's tries are new.
     maker_seed: u64,
+    /// Improvise on the Phrase tab: the Plays row and Evolve
+    /// (`app/arp/improvise.rs`).
+    improvise: arp::Improvise,
     /// The pads play the shared synth on their own (main.rs
     /// `PadsPreview::Synth`), whose pads press notes, so the pads' arp
     /// plays the armed track's phrase there ([`App::set_pads_own`]).
@@ -2218,6 +2221,7 @@ impl App {
             sheet: None,
             maker_set: arp::MakerSet::default(),
             maker_seed: 0,
+            improvise: arp::Improvise::default(),
             pads_own_notes: false,
             pads_phrase_at: None,
             pattern,
