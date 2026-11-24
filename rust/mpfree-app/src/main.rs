@@ -120,6 +120,7 @@ mod instruments;
 mod kernel_log;
 mod kit;
 mod locks;
+mod loop_group;
 mod loop_row;
 mod looper_deck;
 mod looper_page;
@@ -10616,6 +10617,8 @@ fn player_session(
     // And the one UNDO across the takes, the loops and the audio tracks
     // (phase 4d.1), followed once a period.
     let mut one_undo = one_undo::OneUndo::default();
+    // The Play page's Loop group over the loops on audio tracks (4e.1).
+    let mut loop_group = loop_group::LoopGroup::new(RATE);
     // With takes streaming, a cue that launches audio waits until the
     // start of its audio is in memory (the audio tracks rethink's phase
     // 2): the needs go to the tracks whenever they change.
@@ -11272,6 +11275,7 @@ fn player_session(
                 // Your XY layouts (xy_song.rs): the loop names each
                 // setting, the mixer plays the layout, and the screen sees
                 // the song's layouts again.
+                gui::FromUi::LoopGroup(set) => loop_group.set_to(set),
                 gui::FromUi::Xy(act) => {
                     let pad_now = |owner, id: u16| {
                         let (kit, pad) = learned_kit(&listed, &track_kits, owner)?;
@@ -15814,6 +15818,14 @@ fn player_session(
         // What each audio track plays (its clips, its song or nothing)
         // comes from the player's last period, on its frames.
         if loops_on {
+            // The Loop group (4e.1) on each loop's sound before its track:
+            // every loop, or the armed track's.
+            let (set, armed) = (loop_group.set(), time.armed());
+            loop_group.run(
+                PERIOD,
+                |n| looper.slot_out(n),
+                |n| loop_group::reaches(&set, armed, looper.slot_track(n)),
+            );
             // Each loop on a track into its track (phase 4b).
             tracks.period_with_loops(
                 time.block(),
@@ -15821,9 +15833,26 @@ fn player_session(
                 time.song_on(),
                 looper.input(),
                 &|p| time.audio(p),
-                &|id| looper.track_loop(id),
+                &|id| {
+                    looper
+                        .slot_of(id)
+                        .and_then(|n| loop_group.out(n))
+                        .or_else(|| looper.track_loop(id))
+                },
             );
+            // And its Delay on Send A of each track playing a loop.
+            let plays: [Option<(usize, bool)>; mpfree_audiotracks::MAX_TRACKS] =
+                std::array::from_fn(|s| {
+                    let p = tracks.place(s)?;
+                    let on = !tracks.loop_player().runs(s).is_empty();
+                    Some((
+                        mix.track_channel(p),
+                        on && loop_group::reaches(&set, armed, Some(p)),
+                    ))
+                });
+            loop_group.sends(&mut mix.mixer, |s| plays[s]);
         } else {
+            loop_group.sends(&mut mix.mixer, |_| None);
             tracks.period(
                 time.block(),
                 time.tempo_map(),
