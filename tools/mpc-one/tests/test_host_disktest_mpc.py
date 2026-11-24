@@ -438,18 +438,33 @@ class DiskTestTests(unittest.TestCase):
         for text in ("MPFree SD card test on the test build", "copied; its hash on the MPC matches",
                      "[4/4] The SD card test: READS the card's own files through the read-only window, then "
                      "WRITES test files in the card's MPFree/mpfree-disktest",
-                     "put the SD card in the MPC's slot now if it isn't",
+                     "the SD card stays in the MPC's slot",
                      "the SD card windows' own logs (read-only):",
                      "--- /run/mpfree-setup/sd-card-log.txt\n    (none)",
                      "    closed cleanly after writing 812 MiB", "    written=812",
                      "RESULT: the SD card test ran (numbers above); the card checked clean after."):
             self.assertIn(text, res.stdout)
-        # A card put in late is waited for, up to 15 minutes.
-        self.assertEqual(self.lines("disktest: "), ["[--sd-card --card-wait 900]"])
+        # The card stays in the slot; one not there yet is waited for up to 2 minutes. No repair unless asked.
+        self.assertEqual(self.lines("disktest: "), ["[--sd-card --card-wait 120]"])
+        self.assertNotIn("REPAIRS IT FIRST", res.stdout)
         # Only YES allows it: it writes to the card and the stick.
         res = self.run_helper(extra=["--sd-card"], MPFREE_ACCEPT_DISKTEST="READ-ONLY")
         self.assertEqual(res.returncode, 1)
         self.assertIn("MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py --sd-card", res.stdout)
+        self.assertEqual(len(self.lines("disktest: ")), 1)
+
+    def test_repair_card_asks_the_sd_card_test_for_a_repair_in_the_mpc(self):
+        res = self.run_helper(extra=["--sd-card", "--repair-card"])
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(self.lines("disktest: "), ["[--sd-card --card-wait 120 --repair-card]"])
+        self.assertIn("the card repaired first if it is marked or doesn't check clean)", res.stdout)
+        self.assertIn("it REPAIRS IT FIRST (fsck.exfat -y on the card's filesystem records, then checked again)",
+                      res.stdout)
+        # Only with the SD card test.
+        for other in ([], ["--under-load"], ["--heat"]):
+            res = self.run_helper(extra=other + ["--repair-card"])
+            self.assertEqual(res.returncode, 1, res.stdout)
+            self.assertIn("--repair-card goes with --sd-card", res.stdout)
         self.assertEqual(len(self.lines("disktest: ")), 1)
 
     def test_a_refused_or_failed_sd_card_run_says_so(self):

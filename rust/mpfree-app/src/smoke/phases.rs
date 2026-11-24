@@ -1518,11 +1518,13 @@ mod looper {
             assert_eq!(s.time.tempo_map().segments().len(), 1);
             assert_eq!(s.looper.tempos_refused, 0);
             // Smart loop end (Suggest, the default) found no note near
-            // the tap: it stood, counted and said.
+            // the tap: it stood, counted and said, with how sure it was
+            // (no end to go on).
             assert!(
-                s.said()
-                    .iter()
-                    .any(|l| l == "looper: Loop 1: smart loop end kept your tap: no note near it"),
+                s.said().iter().any(|l| l.starts_with(
+                    "looper: Loop 1: smart loop end kept your tap: no note near it; \
+                     how sure: no end to go on, "
+                )),
                 "{:?}",
                 s.said()
             );

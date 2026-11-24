@@ -1709,6 +1709,10 @@ pub enum ToUi {
     Problem(mpfree_status::Report),
     /// What the Looper tab shows: the looper, the line input's meter.
     Looper(Box<LooperView>),
+    /// What UNDO and SHIFT + UNDO would take back or bring back from the
+    /// one history across the engines (Dev's "Loops on audio tracks",
+    /// audio tracks phase 4d.1: [`crate::one_undo`]).
+    OneUndo(crate::one_undo::UndoNext),
     /// The audio tracks' level bars, 0 to 1, by track (Arrange's Song
     /// view, a few times a second).
     AudioLevels([f32; mpfree_audiotracks::MAX_TRACKS]),
@@ -2232,6 +2236,12 @@ pub enum FromUi {
     /// The Looper tab: a command for the picked loop (an edit tool, Fade
     /// old, the seam fade, After recording).
     LoopCommand(mpfree_looper::Command),
+    /// UNDO, or SHIFT + UNDO (`redo`), from the one history across the
+    /// engines (Dev's "Loops on audio tracks", audio tracks phase 4d.1:
+    /// [`crate::one_undo::press`]).
+    OneUndo {
+        redo: bool,
+    },
     /// The Looper tab's Listen: the picked loop (Some(None)) or one of
     /// its layers by id played alone while the music is stopped; None
     /// stops it ([`crate::looping::LoopAction::Listen`]).
@@ -2962,6 +2972,9 @@ pub struct Player {
     /// history moved last, layout spec 4c), not the takes.
     undo_audio: bool,
     seen_takes: (usize, usize),
+    /// What UNDO and SHIFT + UNDO would do from the one history (Dev's
+    /// "Loops on audio tracks": [`crate::one_undo`]).
+    one_undo: crate::one_undo::UndoNext,
     /// The Song view's picked block or section is grabbed by the wheel's
     /// push: turns move it (Jay, 14 Nov: drag and drop).
     song_grab: bool,
@@ -3394,6 +3407,7 @@ impl Player {
             undo_audio: false,
             song_grab: false,
             seen_takes: (0, 0),
+            one_undo: crate::one_undo::UndoNext::default(),
             typing: None,
             power: None,
             power_request: None,
@@ -10022,9 +10036,15 @@ impl Player {
     /// takes on the Sequencer, on Arrange and on the Arp and pattern
     /// screens, and on Play (the loop row and the pattern) whichever of the
     /// two changed last. Other pages say they have nothing to undo.
+    /// With Dev's "Loops on audio tracks" on, every page whose UNDO takes
+    /// the takes, a loop's steps or the audio tracks' takes the newest of
+    /// all of them, from the one history (audio tracks phase 4d.1).
     fn undo(&mut self, redo: bool) {
         use mpfree_looper::Command;
         let to = match self.undo_source() {
+            Some(HistoryOf::Loop | HistoryOf::Takes) if self.time.loops_on => {
+                FromUi::OneUndo { redo }
+            }
             Some(HistoryOf::Loop) => {
                 FromUi::LoopCommand(if redo { Command::Redo } else { Command::Undo })
             }
@@ -10579,6 +10599,9 @@ impl Player {
     /// Pads tabs too, whose UNDO the app sends straight on).
     fn undo_ready(&self) -> bool {
         match self.undo_source() {
+            Some(HistoryOf::Loop | HistoryOf::Takes) if self.time.loops_on => {
+                self.one_undo.undo.is_some()
+            }
             Some(HistoryOf::Loop) => {
                 !self.looper.history.done().is_empty()
                     || (self.looper.status.kept
@@ -12153,6 +12176,7 @@ impl Player {
             ToUi::Map(m) => DebugPages::set_map(&mut self.ui, &m),
             ToUi::Engines(shared) => self.engines = Some(shared),
             ToUi::Problem(r) => self.report_problem(r),
+            ToUi::OneUndo(next) => self.one_undo = next,
             ToUi::Looper(v) => {
                 // The picked loop's history moved, or a loop was cleared
                 // (a key held on Play picks it as it clears): UNDO on All
@@ -31957,6 +31981,63 @@ mod tests {
         p.tick(0.0);
         let h = p.ui.get::<HistoryPanel>(HISTORY).unwrap();
         assert_eq!((h.rows.len(), h.now), (2, 0));
+    }
+
+    /// With Dev's "Loops on audio tracks" on, UNDO and SHIFT + UNDO on
+    /// Play, the Sequencer, Arrange and the Looper tab take the one
+    /// history across the engines (audio tracks phase 4d.1), and the
+    /// UNDO light follows what it holds; the Synth tab keeps its own
+    /// turns. With the switch off, each page's own history as before.
+    #[test]
+    fn with_loops_on_undo_takes_the_one_history_on_the_songs_and_loops_pages() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::All);
+        p.take_actions();
+        let undo = |p: &mut Player, redo: bool| {
+            p.apply(ToUi::Undo(redo));
+            p.take_actions()
+                .into_iter()
+                .filter(|a| !matches!(a, FromUi::Arm(_)))
+                .collect::<Vec<_>>()
+        };
+        let mut st = p.time.clone();
+        st.loops_on = true;
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        for v in [View::Play, View::Sequencer, View::Arrange, View::Looper] {
+            p.apply(ToUi::Show(v));
+            assert_eq!(
+                undo(&mut p, false),
+                [FromUi::OneUndo { redo: false }],
+                "{v:?}"
+            );
+            assert_eq!(
+                undo(&mut p, true),
+                [FromUi::OneUndo { redo: true }],
+                "{v:?}"
+            );
+        }
+        // The light: lit while the one history has a step to take back.
+        assert!(!p.undo_ready());
+        p.apply(ToUi::OneUndo(crate::one_undo::UndoNext {
+            undo: Some("Overdub · Layer 2 · Loop 1".to_string()),
+            ..Default::default()
+        }));
+        assert!(p.undo_ready());
+        p.apply(ToUi::Show(View::Synth));
+        assert_eq!(
+            undo(&mut p, false),
+            [FromUi::UndoOn {
+                on: UndoOn::Synth,
+                redo: false
+            }]
+        );
+        // Off: the Looper tab's UNDO is the loop's again.
+        st.loops_on = false;
+        p.apply(ToUi::Time(Box::new(st)));
+        p.apply(ToUi::Show(View::Looper));
+        assert_eq!(
+            undo(&mut p, false),
+            [FromUi::LoopCommand(mpfree_looper::Command::Undo)]
+        );
     }
 
     #[test]
