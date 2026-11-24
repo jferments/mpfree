@@ -8443,6 +8443,22 @@ mod tests {
         let plan = |h: &TimeHost| h.free_plan()[0];
         assert_eq!(plan(&h), Some(true));
         assert!(h.free_plan()[1..].iter().all(Option::is_none));
+        // Song mode: its track plays the free cell (its loop, which the
+        // track player takes as the free clock plays it), not the song.
+        // Stopped, it is the song's again.
+        h.act(TimeAction::SongMode(true)).unwrap();
+        let mut pads = Fake::default();
+        run(&mut h, &mut pads, u64::from(PERIOD), &[]);
+        assert!(
+            matches!(h.audio(a).start, mpfree_play::AudioPlays::Loop { id, .. } if id == LoopId(0x10)),
+            "{:?}",
+            h.audio(a).start
+        );
+        h.act(TimeAction::StopClip(a)).unwrap();
+        run(&mut h, &mut pads, 2 * u64::from(PERIOD), &[]);
+        assert_eq!(h.audio(a).start, mpfree_play::AudioPlays::Song);
+        h.act(TimeAction::Launch { track: a, slot: 0 }).unwrap();
+        h.act(TimeAction::SongMode(false)).unwrap();
         // A stop: off at once. A launch: on at once, by the free clock.
         h.act(TimeAction::StopClip(a)).unwrap();
         assert_eq!(plan(&h), Some(false));

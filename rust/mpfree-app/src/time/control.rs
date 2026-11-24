@@ -2374,7 +2374,27 @@ impl TimeControl {
     /// The view of the project as it is, with what it includes and room
     /// to record into in place.
     pub(super) fn view(&self) -> Result<PlayView, String> {
-        let mut v = PlayView::compile_cued(&self.project, &self.launches, &self.cues)
+        // A free cell playing is its track's clip (phase 4e.4), so the
+        // track leaves the song as for any launch; the track player mixes
+        // its loop as the free clock plays it, never the runs this gives.
+        let with_free;
+        let launches = if self.free_on.is_empty() {
+            &self.launches
+        } else {
+            with_free = self
+                .launches
+                .iter()
+                .copied()
+                .chain(self.free_on.iter().map(|&(track, slot)| Launch {
+                    track,
+                    slot,
+                    origin: 0,
+                    start: 0,
+                }))
+                .collect::<Vec<_>>();
+            &with_free
+        };
+        let mut v = PlayView::compile_cued(&self.project, launches, &self.cues)
             .map_err(|e| format!("clips: {e:?}"))?;
         v.set_armed(self.armed);
         v.set_also(self.also);

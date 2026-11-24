@@ -4116,10 +4116,13 @@ impl LoopHost {
         self.on_tracks.ids()
     }
 
-    /// Loops on audio tracks: the loops heard on the Loop strip now, by
-    /// their lasting ids (0 where none): playing or overdubbing, launched,
-    /// not muted, on no track. One that goes on a track carries on there
-    /// unfaded (`TrackHost::loops_moving`).
+    /// Loops on audio tracks: the loops heard now that no track places,
+    /// by their lasting ids (0 where none): playing or overdubbing,
+    /// launched, not muted, and not on a track (`Looper::play`): on the
+    /// Loop strip, or through a free cell (4e.4), which plays itself. One
+    /// that a track's runs take over carries on there unfaded
+    /// (`TrackHost::loops_moving`): a first pass landing in a cell, or a
+    /// free cell's loop that Make song made a song loop.
     pub fn moving_ids(&self) -> [u128; MAX_LOOPS] {
         let ids = self.on_tracks.ids();
         std::array::from_fn(|n| {
