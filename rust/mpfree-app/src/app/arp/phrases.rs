@@ -120,10 +120,14 @@ impl App {
         self.phrases.get(i).map_or("", |(n, _)| n.as_str())
     }
 
-    /// A phrase plays here: the pads press notes into the armed track's
-    /// arp (a synth), not a kit's pads.
+    /// A phrase plays here: the armed track's instrument takes notes (its
+    /// own synth, the shared synth, a kit played as notes), or the pads
+    /// press notes into its arp; not a kit's pads. It asks the track's
+    /// instrument (`TrackArps::on_notes`) as well as what the pads press,
+    /// because while the pads play something of their own they press
+    /// nothing into the track, and its phrase plays on.
     pub fn phrases_play(&self) -> bool {
-        self.press_layout().is_some()
+        self.press_layout().is_some() || self.arps.on_notes(self.track)
     }
 
     /// The armed track takes phrase `i` of the list. While its phrase
@@ -1022,6 +1026,43 @@ mod tests {
         assert_eq!(app.eng().settings().mode, Mode::Phrase);
         app.set_pad_layout(None);
         assert_eq!(app.eng().settings().mode, Mode::Direct);
+    }
+
+    /// A track with a synth of its own keeps its phrase while the pads
+    /// play something else on their own: they press nothing into the
+    /// track then (main.rs `press_layout`), but its instrument still takes
+    /// notes (`TrackArps::on_notes`), so its arp stays on Phrase, a
+    /// latched phrase plays on, and the tab keeps its list. A kit track's
+    /// instrument takes pad hits, and its pads play as pressed (repeated
+    /// while latched).
+    #[test]
+    fn a_tracks_own_synth_keeps_its_phrase_while_the_pads_are_away() {
+        let mut app = ready();
+        let pads = layout(&PadSetup {
+            layout: PadLayout::Chromatic,
+            ..PadSetup::default()
+        });
+        app.arps.set_on_notes(0, true);
+        app.set_arp_layout(Some(pads));
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Phrase));
+        app.arp_action(ArpAction::Latch);
+        app.pad_down(0, 100);
+        app.pad_up(0);
+        assert_eq!(app.eng().settings().mode, Mode::Phrase);
+        assert!(!ons(&mut app, 22_050).is_empty(), "the phrase plays");
+        // The pads go to a kit of their own: nothing pressed into the
+        // track, which plays on.
+        app.set_arp_layout(None);
+        assert!(app.phrases_play());
+        assert_eq!(app.eng().settings().mode, Mode::Phrase);
+        assert!(!ons(&mut app, 22_050).is_empty(), "it plays on");
+        // The track's instrument becomes a kit: no phrase, and with Latch
+        // on, repeats of what is latched, as on a kit track.
+        app.arps.set_on_notes(0, false);
+        app.set_arp_layout(None);
+        assert!(!app.phrases_play());
+        assert_eq!(app.eng().settings().mode, Mode::Repeat);
     }
 
     /// What the pads play on their own (the pads' arp, sampler step 15c)
