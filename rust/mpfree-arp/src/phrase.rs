@@ -46,6 +46,7 @@
 //! hold and swap one on the audio thread.
 
 use crate::engine::{Rate, PPQ};
+use crate::pattern::{Pattern, Step};
 use crate::scale::{Scale, Snap};
 
 /// Most notes in a phrase.
@@ -498,6 +499,96 @@ impl Phrase {
         }
         let bar = p.bar_ticks();
         p.bars = end.div_ceil(bar).clamp(1, u32::from(MAX_BARS)) as u8;
+        p
+    }
+
+    /// A latch pattern played on one held note, as a phrase (the Yours
+    /// shelf's "a pattern that plays one note"): every step that plays
+    /// sounds `home`, moved by its octaves (the step's and the `oct`
+    /// lane's), as loud as its accent or the `vel` lane says (else
+    /// `velocity`), as long as its gate (the step's, the `gate` lane's,
+    /// else `gate`, the arp's setting, in percent of the step), with its
+    /// ratchets and its nudge; a tie holds the notes before it on. The
+    /// steps, a `rate` apart, repeat until they fill whole bars of `beats`
+    /// (at most [`MAX_BARS`]), so the phrase loops as the pattern did.
+    /// Scale degrees, chances and random amounts are left out: a phrase
+    /// plays the same notes every time. Written for either scale, on the
+    /// pattern's rate (1/8 for a pattern at 1/4).
+    pub fn from_pattern(
+        pattern: &Pattern,
+        rate: Rate,
+        beats: u8,
+        gate: u8,
+        velocity: u8,
+        home: u8,
+    ) -> Self {
+        let beats = beats.clamp(1, 12);
+        let step = rate.ticks();
+        let bar = u32::from(beats) * PPQ;
+        let n = pattern.len().max(1) as u32;
+        let most = u32::from(MAX_BARS) * bar;
+        // Whole bars: the steps repeated until both line up, or as many
+        // as eight bars hold.
+        let round = n * step;
+        let whole = round / gcd(round, bar) * bar;
+        let total = if whole <= most {
+            whole / step
+        } else {
+            most / step
+        };
+        let lanes = &pattern.lanes;
+        let mut notes: Vec<(u32, u32, u8, u8)> = Vec::new();
+        // The notes the last playing step started, to hold on over a tie.
+        let mut last: core::ops::Range<usize> = 0..0;
+        for i in 0..total {
+            let at = i * step;
+            let k = u64::from(i);
+            match pattern.steps()[(i % n) as usize] {
+                Step::Rest => last = notes.len()..notes.len(),
+                Step::Tie => {
+                    for t in &mut notes[last.clone()] {
+                        t.1 = at + step - t.0;
+                    }
+                }
+                Step::Play {
+                    octave,
+                    accent,
+                    gate: g,
+                    ratchet,
+                    ..
+                } => {
+                    let octave = i16::from(octave) + i16::from(lanes.octave.at(k).unwrap_or(0));
+                    let note = (i16::from(home) + 12 * octave.clamp(-3, 3)).clamp(0, 127) as u8;
+                    let vel = match lanes.velocity.at(k) {
+                        _ if accent => ACCENT_VELOCITY,
+                        Some(v) if v > 0 => v,
+                        _ => velocity,
+                    };
+                    let g = [g, lanes.gate.at(k).unwrap_or(0), gate]
+                        .into_iter()
+                        .find(|g| *g > 0)
+                        .unwrap_or(GATE_WRITTEN)
+                        .min(100);
+                    let nudge = i64::from(lanes.nudge.at(k).unwrap_or(0).clamp(-50, 50));
+                    let start = (i64::from(at) + i64::from(step) * nudge / 100).max(0) as u32;
+                    let hits = u32::from(ratchet.clamp(1, 8));
+                    let each = step / hits;
+                    let first = notes.len();
+                    for h in 0..hits {
+                        let len = (each * u32::from(g) / 100).max(1);
+                        notes.push((start + h * each, len, note, vel));
+                    }
+                    last = first..notes.len();
+                }
+            }
+        }
+        let unit = if rate == Rate::Quarter {
+            Rate::Eighth
+        } else {
+            rate
+        };
+        let mut p = Self::from_notes(&notes, home, Written::Either, unit, beats);
+        p.bars = (total * step).div_ceil(bar).clamp(1, u32::from(MAX_BARS)) as u8;
         p
     }
 
@@ -1117,10 +1208,62 @@ fn shortest_lane(values: &[Option<i32>]) -> Option<Vec<i32>> {
     })
 }
 
+/// The greatest common divisor of `a` and `b`.
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 {
+        a.max(1)
+    } else {
+        gcd(b, a % b)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::scale::{MAJOR, MINOR, PENTATONIC_MINOR};
+
+    /// A pattern played on one note becomes a phrase that plays the same:
+    /// its steps repeated to a whole bar, each note on its step for its
+    /// gate, ties holding on, accents and octaves kept, ratchets split.
+    #[test]
+    fn a_pattern_on_one_note_becomes_a_phrase_that_loops_as_it_did() {
+        let pat = |t: &str| Pattern::parse(t).unwrap();
+        let notes = |p: &Phrase| -> Vec<(u32, u32, i8, u8)> {
+            p.notes()
+                .iter()
+                .map(|n| (n.start, n.len, n.semis, n.velocity))
+                .collect()
+        };
+        let s = Rate::Sixteenth.ticks();
+        // Four steps of 1/16 fill a beat: four times to the bar.
+        let p = Phrase::from_pattern(&pat("x . x x"), Rate::Sixteenth, 4, 50, 100, 60);
+        assert_eq!((p.bars, p.len()), (1, 12));
+        assert_eq!(
+            &notes(&p)[..3],
+            [
+                (0, s / 2, 0, 100),
+                (2 * s, s / 2, 0, 100),
+                (3 * s, s / 2, 0, 100)
+            ]
+        );
+        // A tie holds on, an accent and an octave stay, a ratchet splits.
+        let p = Phrase::from_pattern(&pat("x _ . x+! x:2 . . ."), Rate::Sixteenth, 4, 50, 90, 60);
+        assert_eq!(
+            &notes(&p)[..4],
+            [
+                (0, 2 * s, 0, 90),
+                (3 * s, s / 2, 12, ACCENT_VELOCITY),
+                (4 * s, s / 4, 0, 90),
+                (4 * s + s / 2, s / 4, 0, 90),
+            ]
+        );
+        // Three steps don't fill a bar: three bars do.
+        let p = Phrase::from_pattern(&pat("x x ."), Rate::Sixteenth, 4, 50, 100, 60);
+        assert_eq!((p.bars, p.len()), (3, 32));
+        // A pattern at 1/4 is written on 1/8s.
+        let p = Phrase::from_pattern(&pat("x"), Rate::Quarter, 4, 50, 100, 60);
+        assert_eq!((p.unit, p.len()), (Rate::Eighth, 4));
+    }
 
     fn semis(p: &Phrase) -> Vec<i8> {
         p.notes().iter().map(|n| n.semis).collect()
