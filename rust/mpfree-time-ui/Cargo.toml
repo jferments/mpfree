@@ -14,6 +14,8 @@ mpfree-ui = { path = "../mpfree-ui" }
 mpfree-capture = { path = "../mpfree-capture" }
 mpfree-audiotracks = { path = "../mpfree-audiotracks" }
 mpfree-compose = { path = "../mpfree-compose" }
+# The Make a phrase sheet in the clip card's place (step 3 of the phrases).
+mpfree-arp-ui = { path = "../mpfree-arp-ui" }
 mpfree-context = { path = "../mpfree-context" }
 
 [[bin]]

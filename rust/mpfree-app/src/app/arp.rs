@@ -64,6 +64,9 @@ pub struct ArpView {
     /// New idea or More like this, while open (`arp/maker.rs`). Boxed: it
     /// holds two phrases, and the view travels in every [`Effect::Arp`].
     pub maker: Option<Box<mpfree_arp_ui::maker::MakerView>>,
+    /// The Make a phrase sheet, while open (`arp/make.rs`). Boxed, as
+    /// [`ArpView::maker`] is.
+    pub sheet: Option<Box<mpfree_arp_ui::make_sheet::SheetView>>,
     /// Held and latched pads (slots), in the order they were pressed.
     pub notes: Vec<Held>,
     /// Steps played since the notes started.
@@ -153,10 +156,13 @@ impl LibraryFile {
 /// and octaves: the first and the last have few values, so they need a
 /// longer turn.
 const QLINK_UNITS: [i32; 4] = [3, 1, 1, 4];
+mod make;
 mod maker;
 mod part;
 mod phrases;
 
+pub use make::MakeFrom;
+pub(super) use make::Sheet;
 pub(super) use maker::{Maker, MakerSet};
 /// The arp part's first line, for the project opener's check.
 pub use part::HEADER as ARP_HEADER;
@@ -316,6 +322,9 @@ impl App {
             self.held_mode_with(phrases)
         } else if self.panel_open() {
             self.arp_mode
+        } else if self.sheet.is_some() {
+            // The Make a phrase sheet: a held pad plays its phrase.
+            Mode::Phrase
         } else {
             Mode::Direct
         };
@@ -465,6 +474,7 @@ impl App {
             pads_key: self.arps.engine_at(self.track).key(),
             phrase: self.phrase_view(),
             maker: self.maker_view().map(Box::new),
+            sheet: self.sheet_view().map(Box::new),
             notes: self.arps.engine_at(self.track).active().as_slice().to_vec(),
             step: self.arps.engine_at(self.track).step(),
             latched: self.latched,
@@ -665,6 +675,7 @@ impl App {
             ArpAction::NewIdea => self.open_new_idea(),
             ArpAction::MoreLike => self.open_more_like(),
             ArpAction::Maker(a) => self.maker_action(a),
+            ArpAction::Sheet(a) => self.sheet_action(a),
         }
     }
 
@@ -2062,9 +2073,14 @@ impl App {
             self.keys_held = [false; 128];
             self.note_holds = [0; 128];
         }
+        // A try (New idea, More like this, Make a phrase) is the armed
+        // track's alone: the track left plays its pick again.
+        let mut closed = self.close_maker();
+        closed.extend(self.close_sheet());
         self.track_ui[self.track] = self.current_ui();
         self.track = track;
-        let mut fx = self.take_ui(self.track_ui[track]);
+        let mut fx = closed;
+        fx.extend(self.take_ui(self.track_ui[track]));
         fx.push(Effect::Note(format!(
             "arp: track {} ({})",
             track + 1,

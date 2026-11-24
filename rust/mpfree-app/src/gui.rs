@@ -2803,6 +2803,10 @@ pub struct Player {
     /// A phrase plays on the armed track (its pads press notes), so the
     /// NOTE REPEAT band's - and + reach Phrase: what its hint lists.
     phrases_play: bool,
+    /// The Make a phrase sheet, while open (the app's, step 3 of the
+    /// phrases): on Arrange in the clip card's place, in the browser in
+    /// the Selected panel's.
+    sheet: Option<mpfree_arp_ui::make_sheet::SheetView>,
     /// The Q-Link slider a finger is on, on the panel.
     qlink_focus: Option<usize>,
     /// Where the arp chip is in the header's chips.
@@ -3312,6 +3316,7 @@ impl Player {
             phrases: mpfree_arp_ui::PhraseList::built_in(),
             phrase_index: 0,
             maker: None,
+            sheet_name: None,
             pads_key: None,
             phrase: arp_view::PhraseNow::default(),
             notes: Vec::new(),
@@ -3540,6 +3545,7 @@ impl Player {
             workspace,
             arp,
             phrases_play: false,
+            sheet: None,
             qlink_focus: None,
             arp_chip: None,
             clock_from: None,
@@ -9306,6 +9312,17 @@ impl Player {
         }
     }
 
+    /// The Make a phrase sheet as the app has it, on the page shown: in
+    /// the clip card's place on Arrange.
+    fn refresh_sheet(&mut self) {
+        let on_arrange = self.sheet.clone().filter(|_| self.view == View::Arrange);
+        if self.time_page.make != on_arrange {
+            self.time_page.make = on_arrange;
+            self.time_page.update(&mut self.ui, &self.time);
+        }
+        self.refresh_hint();
+    }
+
     fn refresh_hint(&mut self) {
         let stop = self.stop_words();
         self.stop_said = stop;
@@ -9588,6 +9605,10 @@ impl Player {
                     .as_deref()
                     .map_or_else(String::new, time_view::report_hint),
                 View::Arrange if self.time.scene_open.is_some() => time_view::SCENE_CARD_HINT.to_string(),
+                // The Make a phrase sheet (step 3 of the phrases).
+                View::Arrange if self.time_page.make.is_some() => {
+                    self.sheet.as_ref().map(|v| v.hint.clone()).unwrap_or_default()
+                }
                 View::Arrange if self.time_page.adding => mpfree_time_ui::song::ADD_HINT.to_string(),
                 // Link's chooser (the Arrange refactor's 4b.5).
                 View::Arrange if self.time_page.linking => time_view::LINK_HINT.to_string(),
@@ -12926,6 +12947,11 @@ impl Player {
                 a.phrase_index = v.phrase_index;
                 a.pads_key = v.pads_key;
                 a.maker = v.maker.map(|m| *m);
+                let sheet = v.sheet.map(|s| *s);
+                a.sheet_name = sheet
+                    .as_ref()
+                    .filter(|s| s.can_keep)
+                    .map(|s| s.name.clone());
                 a.phrase = arp_view::PhraseNow {
                     shelf: v.phrase.shelf,
                     at: v.phrase.at,
@@ -12938,6 +12964,10 @@ impl Player {
                 a.latched = v.latched;
                 a.bpm = v.bpm;
                 self.refresh_arp();
+                if sheet != self.sheet {
+                    self.sheet = sheet;
+                    self.refresh_sheet();
+                }
             }
             ToUi::SixteenLevels => self.toggle_levels(),
             ToUi::LevelsWheel(d) => {
@@ -13342,6 +13372,18 @@ impl Player {
                 // - / + came as Step above.
                 RowKey::Editing(_) | RowKey::Arrow { .. } => {}
             }
+            return;
+        }
+        // The Make a phrase sheet (step 3 of the phrases): the wheel picks
+        // Kind or Home, and - / + change it.
+        if self.sheet.is_some() && matches!(self.view, View::Arrange | View::Browser) {
+            use mpfree_arp_ui::make_sheet::SheetAction;
+            let a = match k {
+                RowKey::Pick(d) => SheetAction::Wheel(d),
+                RowKey::Step(d) => SheetAction::Change(d),
+                RowKey::Editing(_) | RowKey::Arrow { .. } => return,
+            };
+            self.outbox.push(FromUi::Arp(ArpAction::Sheet(a)));
             return;
         }
         // The conversion report card: the wheel scrolls its rows (when
@@ -17910,6 +17952,11 @@ impl Player {
 
     /// A touch meant something: hand it to the audio thread, which decides.
     pub fn on_event(&mut self, ev: UiEvent) -> Option<FromUi> {
+        // The Make a phrase sheet, on Arrange or in the browser: the app's.
+        if ev.widget == mpfree_arp_ui::make_sheet::MAKE_SHEET {
+            return mpfree_arp_ui::make_sheet::SheetAction::of(&ev.kind)
+                .map(|a| FromUi::Arp(ArpAction::Sheet(a)));
+        }
         // An audio track's input list open (phase 4, board 4): a tap on
         // an input picks it, or says why it can't; a touch anywhere else
         // only closes it.
@@ -21484,6 +21531,43 @@ pub fn sample_clips(fonts: Fonts) -> Result<Player, String> {
     Ok(p)
 }
 
+/// A clip of a C minor bass line from C2, two bars of 1/16s, as Make a
+/// phrase reads it from Clip 1 on Track 1 (the sample screens' and the
+/// tests' clip).
+pub fn sample_bass_clip() -> crate::app::MakeFrom {
+    use mpfree_context::listen::Played;
+    const NOTES: [(i64, i64, u8); 18] = [
+        (0, 360, 36),
+        (480, 240, 36),
+        (720, 240, 48),
+        (1200, 240, 36),
+        (1440, 480, 39),
+        (1920, 360, 36),
+        (2400, 240, 43),
+        (2880, 480, 46),
+        (3360, 240, 43),
+        (3840, 360, 36),
+        (4320, 240, 36),
+        (4560, 240, 48),
+        (5040, 240, 36),
+        (5280, 480, 41),
+        (5760, 360, 39),
+        (6240, 240, 43),
+        (6720, 240, 34),
+        (7200, 480, 36),
+    ];
+    crate::app::MakeFrom {
+        place: "Clip 1 · Track 1".to_string(),
+        name: "Clip 1".to_string(),
+        notes: NOTES
+            .iter()
+            .map(|&(at, len, pitch)| Played::new(at, len, pitch, 100))
+            .collect(),
+        len: 2 * 4 * 960,
+        meter: mpfree_transport::time::Meter { beats: 4, unit: 4 },
+    }
+}
+
 /// The Arrange page in the middle of a jam (Jay, 19 Nov 02:45Z: more
 /// clips, in more states, some slots empty): the time UI's busy session
 /// (six tracks playing, Vox chop recording, two launches waiting for the
@@ -24587,6 +24671,50 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                     l.selected = time_view::CLIP_CONTINUE;
                 }
                 out.push(("clips-card-continue", p));
+            }
+            // The same clip scrolled to its Phrase row (step 3 of the
+            // phrases, board D): either arrow opens Make a phrase.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                let mut st = st.clone();
+                if let Some(c) = st
+                    .focus()
+                    .and_then(|(t, s)| st.tracks.get_mut(t)?.slots.get_mut(s)?.as_mut())
+                {
+                    c.holds = mpfree_seq::Holds::Notes;
+                    c.notes = c.notes.max(8);
+                }
+                p.time_page.clip_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
+                    l.selected = time_view::CLIP_PHRASE;
+                }
+                out.push(("clips-card-phrase", p));
+            }
+            // Make a phrase open from it (board E): a C minor bass line of
+            // two bars read as Bass from C2 on 1/16s, a held pad playing it.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                let mut st = st.clone();
+                if let Some(c) = st
+                    .focus()
+                    .and_then(|(t, s)| st.tracks.get_mut(t)?.slots.get_mut(s)?.as_mut())
+                {
+                    c.holds = mpfree_seq::Holds::Notes;
+                    c.notes = c.notes.max(8);
+                }
+                p.time_page.clip_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                let mut app = sample_app();
+                app.set_pad_layout(Some(mpfree_arp::scale::pads::layout(
+                    &mpfree_arp::scale::pads::PadSetup {
+                        layout: mpfree_arp::scale::pads::PadLayout::Chromatic,
+                        ..mpfree_arp::scale::pads::PadSetup::default()
+                    },
+                )));
+                let fx = app.open_sheet(sample_bass_clip());
+                apply_effects(&mut p, fx);
+                out.push(("clips-make-phrase", p));
             }
             // Mutated (S6): it plays a variant, its original kept for ‹.
             if let Ok(mut p) = sample_clips(fonts()) {

@@ -225,6 +225,18 @@ fn free_name<'a>(base: &str, first: u32, names: impl Iterator<Item = &'a str> + 
     }
 }
 
+/// `base` as a phrase's name when no phrase in `names` has it (within the
+/// library's 32 characters), else the first "`base` N" free from 2: what
+/// Keep as a phrase and Make a phrase name theirs.
+pub(super) fn keep_name<'a>(base: &str, names: impl Iterator<Item = &'a str> + Clone) -> String {
+    let bare: String = base.chars().take(mpfree_arp::library::MAX_NAME).collect();
+    if names.clone().any(|n| n.eq_ignore_ascii_case(&bare)) {
+        free_name(base, 2, names)
+    } else {
+        bare
+    }
+}
+
 impl Maker {
     fn rows(&self) -> &'static [RowName] {
         match (&self.from, self.change.rework()) {
@@ -699,13 +711,10 @@ impl App {
         if !self.pattern.on_one_note() {
             return Vec::new();
         }
-        let base = self.pattern_name();
-        let names = self.phrases.iter().map(|(n, _)| n.as_str());
-        let name = if names.clone().any(|n| n.eq_ignore_ascii_case(&base)) {
-            free_name(&base, 2, names)
-        } else {
-            base.chars().take(mpfree_arp::library::MAX_NAME).collect()
-        };
+        let name = keep_name(
+            &self.pattern_name(),
+            self.phrases.iter().map(|(n, _)| n.as_str()),
+        );
         let phrase = Phrase::from_pattern(
             &self.pattern,
             self.settings.rate,

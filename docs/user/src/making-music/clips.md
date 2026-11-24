@@ -135,6 +135,7 @@ The Record panel has two tabs at its top: **Record**, the record settings, and *
 - **Mutate:** a new variation of the clip's notes, and back. **›** mutates it; **‹** restores the original. See [Mutate and Restore](#mutate-and-restore) below.
 - **Melody:** **pads** or **notes**: whether the clip's tune follows what its pads play now, or keeps its own notes. On a synth track, **›** converts a clip that follows the pads. See [Melody: Convert to notes](#melody-convert-to-notes) below.
 - **Continue:** carries the clip on for a few more bars. Either arrow opens the note editor on the clip with **Continue** open, and you hear the first try straight away; see [Continue](editing-notes.md#continue). The row says how many bars it adds (**+4 bars**), or why it can't: **no tune** on a clip of pad hits, **no notes** on an empty clip, **—** on a Loop track's cell.
+- **Phrase:** makes a phrase of your own from the clip's notes, for the arp. Either arrow opens the **Make a phrase** sheet in the card's place; see [Make a phrase](note-repeat-and-arp.md#make-a-phrase). The row reads **Make ›**, or why it can't, as Continue's does.
 
 {{shot: clips-card-direction | The Clip tab's Direction row: Clip 1 plays its steps in reverse.}}
 

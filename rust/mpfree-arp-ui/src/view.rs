@@ -193,6 +193,9 @@ pub struct ArpState {
     /// New idea or More like this, while one is open: its panel takes the
     /// list's place and the detail panel shows its try.
     pub maker: Option<MakerView>,
+    /// The Make a phrase sheet's phrase, while it is open, under the name
+    /// Keep gives it ("Clip 1"): what a held pad plays, so the chip names it.
+    pub sheet_name: Option<String>,
     /// The scale the pads play: the key a phrase follows In key while the
     /// arp's own scale is off ([`ArpState::phrase_key`]).
     pub pads_key: Option<Scale>,
@@ -227,6 +230,7 @@ impl ArpState {
             phrases: PhraseList::built_in(),
             phrase_index: 0,
             maker: None,
+            sheet_name: None,
             pads_key: e.key(),
             phrase: PhraseNow {
                 at: e
@@ -277,6 +281,14 @@ impl ArpState {
     /// plays, which while a pick waits for the bar line is still the one
     /// before it.
     pub fn phrase_heard(&self) -> &str {
+        // A try plays in the pick's place: New idea's or More like this's,
+        // or the Make a phrase sheet's.
+        if let Some((name, _)) = self.maker.as_ref().and_then(|m| m.shown.as_ref()) {
+            return name;
+        }
+        if let Some(name) = &self.sheet_name {
+            return name;
+        }
         let playing = self.phrase.playing.filter(|_| self.phrase.waits);
         self.phrases.name(playing.unwrap_or(self.phrase_index))
     }
@@ -329,6 +341,9 @@ pub enum ArpAction {
     MoreLike,
     /// A touch on the New idea or More like this panel.
     Maker(MakerAction),
+    /// A touch on the Make a phrase sheet, or the wheel or - / + while it
+    /// is open ([`crate::make_sheet`]).
+    Sheet(crate::make_sheet::SheetAction),
 }
 
 /// A touch on the New idea or More like this panel ([`crate::maker`]).
@@ -1249,6 +1264,7 @@ mod tests {
             phrases: PhraseList::built_in(),
             phrase_index: 0,
             maker: None,
+            sheet_name: None,
             pads_key: None,
             phrase: PhraseNow::default(),
             notes: held

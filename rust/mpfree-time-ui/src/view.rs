@@ -67,6 +67,7 @@ use crate::widgets::{
     ADD_TRACK, BACK_TO_SONG, BANK, CAPTURE, GRID_COLS, PAGE_BACK, PAGE_ON, PICKER, ROWS_BACK,
     ROWS_ON, ROW_DROP, STRIP_BAR, STRIP_CHIP, TAKE_WORDS,
 };
+use mpfree_arp_ui::make_sheet::{MakeSheet, SheetView, MAKE_SHEET};
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{Input, Monitor};
 use mpfree_play::mpfree_param::clips::{self, Clips};
@@ -157,6 +158,15 @@ pub const SONG_CARD_LAYOUT: &str =
 /// panel in the record settings' and the takes' place.
 pub const CLIPS_ADD_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(col(clips:*, morph:64):*, add-part:250):*):*, qlinks:128):*, hint:26)";
+/// The three views with the Make a phrase sheet open from the clip card
+/// (composing tools, step 3 of the phrases): the sheet in the clip card's
+/// and the takes' place.
+pub const CLIPS_MAKE_LAYOUT: &str =
+    "col(header:60, row(col(transport:44, row(col(clips:*, morph:64):*, make-phrase:250):*):*, qlinks:128):*, hint:26)";
+pub const SONG_MAKE_LAYOUT: &str =
+    "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, make-phrase:250):*):*, qlinks:128):*, hint:26)";
+pub const LIST_MAKE_LAYOUT: &str =
+    "col(header:60, row(col(transport:44, row(song-list:*, make-phrase:250):*):*, qlinks:128):*, hint:26)";
 /// The three views with the Record panel on its Chords tab: the row's
 /// chords in the record settings' place.
 pub const CLIPS_CHORDS_LAYOUT: &str =
@@ -512,7 +522,7 @@ pub const OTHERS: [FollowAction; 9] = [
     FollowAction::Stop,
 ];
 /// The clip settings card's rows, top to bottom.
-pub const CLIP_ROWS: [&str; 15] = [
+pub const CLIP_ROWS: [&str; 16] = [
     "Length",
     "Speed",
     "Swing",
@@ -528,6 +538,7 @@ pub const CLIP_ROWS: [&str; 15] = [
     "Mutate",
     "Melody",
     "Continue",
+    "Phrase",
 ];
 /// The clip card's Direction row (S6).
 pub const CLIP_DIRECTION: usize = 11;
@@ -574,6 +585,9 @@ pub enum AudioSet {
 /// The clip card's Continue row (composing tools, phase 1 step 4): either
 /// arrow opens the note editor on the clip with Continue open.
 pub const CLIP_CONTINUE: usize = 14;
+/// The clip card's Phrase row (composing tools, step 3 of the phrases):
+/// either arrow opens the Make a phrase sheet on the clip's notes.
+pub const CLIP_PHRASE: usize = 15;
 
 /// A play direction (S6) as the clip card names it.
 pub fn direction_name(d: Direction) -> &'static str {
@@ -1903,6 +1917,14 @@ pub enum TimeAction {
         slot: usize,
         row: u8,
         set: AudioSet,
+    },
+    /// The clip card's Phrase row (composing tools, step 3 of the
+    /// phrases): the Make a phrase sheet opens on the clip's notes. The
+    /// app answers it (the sheet is the arp's); the time engine changes
+    /// nothing.
+    MakePhrase {
+        track: usize,
+        slot: usize,
     },
     /// Convert to notes' preview (step sequencer refactor E1,
     /// `mpfree_seq::convert`): what converting a clip that follows the
@@ -4094,6 +4116,11 @@ pub fn clip_rows(st: &TimeState) -> Vec<OptionRow> {
                 value: continue_card_value(c),
                 ..OptionRow::default()
             });
+            rows.push(OptionRow {
+                name: CLIP_ROWS[CLIP_PHRASE].to_string(),
+                value: phrase_card_value(c),
+                ..OptionRow::default()
+            });
             rows
         }
         None => Vec::new(),
@@ -4136,6 +4163,16 @@ pub fn continue_card_value(c: &ClipInfo) -> String {
         "no notes".to_string()
     } else {
         crate::editor::compose::ContinueSet::default().value(1)
+    }
+}
+
+/// The clip card's Phrase row's value (step 3 of the phrases): "Make ›",
+/// which opens the Make a phrase sheet, or why it can't, as Continue's
+/// row says it.
+pub fn phrase_card_value(c: &ClipInfo) -> String {
+    match continue_card_value(c) {
+        why if c.looped.is_some() || c.holds == mpfree_seq::Holds::Hits || c.notes == 0 => why,
+        _ => "Make ›".to_string(),
     }
 }
 
@@ -4671,6 +4708,19 @@ fn settings_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction,
             Err("Continue: play or draw some notes to carry on first".into())
         } else {
             Ok(TimeAction::Continue(ContinueAction::Open { track, slot }))
+        };
+    }
+    // Phrase: the Make a phrase sheet opens on the clip's notes (step 3
+    // of the phrases), or why it can't.
+    if index == CLIP_PHRASE {
+        return if c.looped.is_some() {
+            Err("A loop's cell has no notes to make a phrase of".into())
+        } else if c.holds == mpfree_seq::Holds::Hits {
+            Err("Make a phrase: a clip of pad hits has no notes of its own (a pad's note is its kit's)".into())
+        } else if c.notes == 0 {
+            Err("Make a phrase: play or draw some notes first".into())
+        } else {
+            Ok(TimeAction::MakePhrase { track, slot })
         };
     }
     if c.looped.is_some() && !(5..8).contains(&index) {
@@ -7025,6 +7075,10 @@ pub struct TimePage {
     /// Add a part's panel is open (composing tools S2.6, layout spec 4r):
     /// its choices, the screen's own until Back, Keep or ×.
     pub add: Option<AddPick>,
+    /// The Make a phrase sheet is open from the clip card (step 3 of the
+    /// phrases): what it shows. The app sets it; the sheet is the arp's,
+    /// and its touches go to the app.
+    pub make: Option<SheetView>,
     /// Keep was tapped: the panel closes once the time engine has kept
     /// the part (a refusal leaves it open, saying why).
     keeping: bool,
@@ -7091,6 +7145,7 @@ impl TimePage {
         ui.add(CLIP_CARD, card);
         ui.add(CHORDS_CARD, chords);
         ui.add(ADD_PANEL, AddPanel::new());
+        ui.add(MAKE_SHEET, MakeSheet::new());
         ui.add(TAKES, TakeList::new("Takes"));
         ui.add(MORPH, MorphBar::new());
         ui.add(SONG, SongLanes::new());
@@ -7389,14 +7444,14 @@ impl TimePage {
         }
         if matches!(
             ui.layout_of(CLIPS_PAGE),
-            Some(SONG_LAYOUT | SONG_CARD_LAYOUT | SONG_CHORDS_LAYOUT)
+            Some(SONG_LAYOUT | SONG_CARD_LAYOUT | SONG_CHORDS_LAYOUT | SONG_MAKE_LAYOUT)
         ) {
             self.first_bar = (self.first_bar + i64::from(delta) * self.bars_step()).max(0);
             return None;
         }
         if matches!(
             ui.layout_of(CLIPS_PAGE),
-            Some(LIST_LAYOUT | LIST_CARD_LAYOUT | LIST_CHORDS_LAYOUT)
+            Some(LIST_LAYOUT | LIST_CARD_LAYOUT | LIST_CHORDS_LAYOUT | LIST_MAKE_LAYOUT)
         ) {
             // The list scrolls with a drag.
             return None;
@@ -7870,6 +7925,9 @@ impl TimePage {
             (true, ..) if self.edit_drawer => EDIT_DRAWER_LAYOUT,
             (true, ..) => EDIT_LAYOUT,
             _ if self.show && self.set_open => SHOW_LAYOUT,
+            _ if self.make.is_some() && st.list_view => LIST_MAKE_LAYOUT,
+            (false, true, _) if self.make.is_some() => SONG_MAKE_LAYOUT,
+            (false, false, _) if self.make.is_some() => CLIPS_MAKE_LAYOUT,
             _ if st.list_view && self.chords_card => LIST_CHORDS_LAYOUT,
             _ if st.list_view && self.clip_card => LIST_CARD_LAYOUT,
             _ if st.list_view => LIST_LAYOUT,
@@ -7894,6 +7952,7 @@ impl TimePage {
                 CLIPS_CARD_LAYOUT,
                 CLIPS_ADD_LAYOUT,
                 CLIPS_CHORDS_LAYOUT,
+                CLIPS_MAKE_LAYOUT,
             ]
             .contains(&l)
         });
@@ -8379,6 +8438,17 @@ impl TimePage {
                 l.tabs = tabs.clone();
                 l.buttons = buttons;
                 l.note = note;
+            }
+        }
+        // The Make a phrase sheet, while it shows.
+        if let Some(v) = &self.make {
+            if ui
+                .get::<MakeSheet>(MAKE_SHEET)
+                .is_some_and(|w| w.view != *v)
+            {
+                if let Some(w) = ui.get_mut::<MakeSheet>(MAKE_SHEET) {
+                    w.view = v.clone();
+                }
             }
         }
         // Add a part's panel and the Chords tab, while they show.
@@ -9033,6 +9103,8 @@ mod tests {
             (SONG_LAYOUT, SONG, RECORD),
             (CLIPS_CARD_LAYOUT, CLIPS, CLIP_CARD),
             (SONG_CARD_LAYOUT, SONG, CLIP_CARD),
+            (CLIPS_MAKE_LAYOUT, CLIPS, MAKE_SHEET),
+            (SONG_MAKE_LAYOUT, SONG, MAKE_SHEET),
             (EDIT_DRAWER_LAYOUT, NOTES, EDIT_OPTIONS),
         ] {
             ui.set_layout(CLIPS_PAGE, layout).unwrap();
@@ -9045,7 +9117,9 @@ mod tests {
             assert_eq!(ui.rect_of(TRANSPORT), Some(Rect::new(12, 84, 1116, 44)));
             let s = ui.rect_of(side).unwrap();
             assert_eq!((s.x, s.w), (878, SIDE_W), "{layout}");
-            assert_eq!(ui.rect_of(TAKES).map(|t| (t.x, t.w)), Some((878, SIDE_W)));
+            // The Make a phrase sheet runs down the whole column: no takes.
+            let takes = (side != MAKE_SHEET).then_some((878, SIDE_W));
+            assert_eq!(ui.rect_of(TAKES).map(|t| (t.x, t.w)), takes, "{layout}");
             let b = ui.rect_of(body).unwrap();
             assert_eq!((b.x, b.right()), (12, 866), "{layout}");
         }
@@ -11888,7 +11962,8 @@ mod tests {
                 "Direction Forward",
                 "Mutate —",
                 "Melody pads",
-                "Continue no tune"
+                "Continue no tune",
+                "Phrase no tune"
             ]
         );
         let step = |st: &TimeState, index: usize, delta: i32| {
@@ -12360,6 +12435,40 @@ mod tests {
         st.tracks[1].slots[1].as_mut().unwrap().holds = mpfree_seq::Holds::Hits;
         assert_eq!(shown(&st).value, "no tune");
         assert!(why(&st).contains("no tune to carry on"), "{}", why(&st));
+        let c = st.tracks[1].slots[1].as_mut().unwrap();
+        c.holds = mpfree_seq::Holds::Notes;
+        c.notes = 0;
+        assert_eq!(shown(&st).value, "no notes");
+        assert!(why(&st).contains("some notes"), "{}", why(&st));
+        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
+        assert_eq!(shown(&st).value, "—");
+        assert!(why(&st).contains("loop's cell"), "{}", why(&st));
+    }
+
+    /// The card's Phrase row (step 3 of the phrases): "Make ›" on a clip
+    /// of notes, either arrow opening the Make a phrase sheet on it (the
+    /// app's); on pad hits, an empty clip or a loop's cell it says why,
+    /// as Continue's row does.
+    #[test]
+    fn the_clip_cards_phrase_row_opens_the_make_a_phrase_sheet() {
+        let mut st = state();
+        st.armed = Some(1);
+        let c = st.tracks[1].slots[1].as_mut().unwrap();
+        c.notes = 4;
+        c.holds = mpfree_seq::Holds::Notes;
+        let shown = |st: &TimeState| clip_rows(st)[CLIP_PHRASE].clone();
+        let row = shown(&st);
+        assert_eq!(
+            (row.name.as_str(), row.value.as_str()),
+            ("Phrase", "Make ›")
+        );
+        let open = Ok(TimeAction::MakePhrase { track: 1, slot: 1 });
+        assert_eq!(card_action(&st, CLIP_PHRASE, 1, false), open);
+        assert_eq!(card_action(&st, CLIP_PHRASE, -1, false), open);
+        let why = |st: &TimeState| card_action(st, CLIP_PHRASE, 1, false).unwrap_err();
+        st.tracks[1].slots[1].as_mut().unwrap().holds = mpfree_seq::Holds::Hits;
+        assert_eq!(shown(&st).value, "no tune");
+        assert!(why(&st).contains("pad hits"), "{}", why(&st));
         let c = st.tracks[1].slots[1].as_mut().unwrap();
         c.holds = mpfree_seq::Holds::Notes;
         c.notes = 0;

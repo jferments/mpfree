@@ -265,10 +265,34 @@ Two ways to make a phrase on the tab (composing tools P2), built as the owner's 
 
 Tests: in the app (`app/arp/maker.rs`) `new_idea_tries_play_and_keep_joins_yours`, `keep_as_a_phrase_puts_a_pattern_on_one_note_on_yours`, `back_and_leaving_change_nothing`, `more_like_this_offers_what_the_phrase_can_take`, `names_are_free_and_fit` and `the_key_says_minor_or_major`; in the screens (`phrase_tab.rs`) `new_idea_and_more_like_this_open_from_the_tab` and `the_makers_panel_takes_the_lists_place_and_shows_its_try`, and `maker.rs`'s own; in the composer `a_phrase_in_three_is_developed_but_not_reworked`; and the audit sweep over the two new sample screens.
 
+#### Make a phrase
+
+A phrase of the owner's own from notes (step 3 of the composing plan's phrases), built as boards D and E draw it. The clip card's last row, **Phrase** (`CLIP_PHRASE`, after Continue), reads "Make ›" on a clip of notes, or why not as Continue's row does ("no tune", "no notes", "—"); either arrow sends `TimeAction::MakePhrase`, which the app answers (`desk.rs`: the time engine changes nothing) by opening the **Make a phrase** sheet (`make-phrase`, [`mpfree-arp-ui/src/make_sheet.rs`](../../../rust/mpfree-arp-ui/src/make_sheet.rs)) in the clip card's and the takes' place (`CLIPS_MAKE_LAYOUT`, `SONG_MAKE_LAYOUT`, `LIST_MAKE_LAYOUT`). The sample screens are `clips-card-phrase` and `clips-make-phrase`.
+
+**What the sheet shows.** "MAKE A PHRASE" and ×, where the notes came from ("From Clip 1 · Track 1 · 2 bars"), the phrase large (as Plays draws one), what the notes were heard as ("Heard in C minor · on 1/16s", or "No clear key"), Kind and Home as ‹ value › steppers (Home in the accent colour), two lines ("A held pad plays it from here.", then "Both are read from the notes." or, once a row was changed, what the notes said), the status in green ("Hold a pad: hear it from that note"; "Arm a synth track to hear it" on a kit), what Keep does ("Keep puts it on Yours as Clip 1."), and Back and Keep. With nothing made (notes in 6/8) the status says why in amber and Keep is faint.
+
+| Control | While the sheet is open |
+|---|---|
+| Wheel | The row (Kind, Home) |
+| − / + | The wheel's row's value; the phrase is made again |
+| A row's ‹ or › | The same, on that row |
+| Keep | The phrase joins Yours, and the track picks it |
+| Back, × | Closes; nothing changes |
+
+**The choices, and why.** The pad player's side is [`app/arp/make.rs`](../../../rust/mpfree-app/src/app/arp/make.rs).
+
+- **Read, not asked.** The clip is read as one pass plays it, on the song's beats (its quantise and speed, before swing: `mpfree_compose::clip_played`), and made into a phrase at once (`phrase_of_as`, [compose.md](compose.md), "Phrases of your own"). Kind and Home are what was read and only correct a misreading (`Asked`); a kind changed reads the home again for that kind unless Home was changed too. Home steps a half step from C1 to C7, and keeps the scale the notes were heard in, so a home off the key's tonic counts its steps from there.
+- **The pads play through Phrase while it is open,** as on the Arp panel's Phrase tab (`App::mode_with`), and the sheet's phrase is the armed track's engine's (`App::send_phrase`), so a held pad plays it from that note with no other step. The track's pick does not move until Keep. On a kit the pads play as pressed, and the status says so. The arp chip names the phrase heard ("Phrase: Clip 1"), as it now names New idea's or More like this's try.
+- **The clip's name.** Keep names it after the clip ("Clip 1"), or with that taken the first free "Clip 1 2" (`keep_name`, shared with Keep as a phrase), within the library's 32 characters.
+- **Anything that takes the page away closes it, as Back:** another page (`after_view_change`) or another track (`App::set_track`, which now also closes New idea and More like this before the track changes, so the track left plays its pick again rather than keeping a try).
+- **Pad hits are refused** ("a clip of pad hits has no notes of its own"): a pad's note is its kit's, so there is no tune to read.
+
+Tests: `the_sheet_reads_the_notes_and_keep_joins_yours`, `back_and_leaving_change_nothing` and `a_clip_is_named_and_read` (`app/arp/make.rs`), `the_clip_cards_phrase_row_opens_the_make_a_phrase_sheet` (time-ui), `the_steppers_and_buttons_answer_where_they_are` (`make_sheet.rs`), `a_clip_is_read_as_it_plays` (compose), and the audit sweep over the two sample screens.
+
 #### Open, for later
 
 - **Browsing over a playing song.** With the transport stopped a pick comes in on the next step, so the list is quick to hear through. With it playing, each pick waits for the bar line, which suits a change while performing and keeps every phrase's first note on the one, but makes the list slow to hear through over a beat (16 phrases take 16 bars). The owner approved the rule as built with the boards. Coming in at once at the same place in the bar would be quicker and still in time, without the phrase's start being heard first, if hearing through a list over a beat turns out to matter.
-- **Phrases of the owner's own.** `Phrase::from_notes`, `Phrase::from_pattern` (a latch pattern on one held note) and the composer's `phrase_of` (a clip's or a MIDI file's notes, with the key, home note, kind and grid read from them; [compose.md](compose.md), "Phrases of your own") are built. The three places to start from (a clip's card on Arrange, a MIDI file in the browser, the pattern workspace) are drawn for the owner before they are built, and the owner's shelf says so until then.
+- **Phrases of the owner's own.** `Phrase::from_notes`, `Phrase::from_pattern` (a latch pattern on one held note) and the composer's `phrase_of` (a clip's or a MIDI file's notes, with the key, home note, kind and grid read from them; [compose.md](compose.md), "Phrases of your own") are built. A clip's card on Arrange (Make a phrase, above) and the Pattern tab (Keep as a phrase) are built; a MIDI file in the browser (board F) comes next, and the owner's shelf says so until then.
 - **Keeping a project's own phrase.** A phrase only the open project has is on the owner's shelf marked "this project" (`Origin::Project`); a button to keep it with the owner's comes with making phrases.
 - **A latched phrase's chip and MAKE.** Beside the status chip the top bar has room for an arp chip of about 25 characters and MAKE or PERFORM. "Phrase: Night drive, latched" is longer, so it still pushes that chip out, as a long pattern's name does. Cutting the name sooner to keep MAKE, or a shorter way to say latched, is the owner's call.
 - **A value as wide as its ring** on a Q-Link card ("as written") touches the ring's dots: the card takes 16 px text up to the ring's inside with no room to spare (`mpfree_ui::qlink::fitting`). A margin there makes 13 other sample screens' values a size smaller, so it is a change for the pages' owners, not for this tab.

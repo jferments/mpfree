@@ -206,6 +206,7 @@ impl App {
         }
         let phrase = self
             .maker_try()
+            .or_else(|| self.sheet_try())
             .or_else(|| self.phrases.get(self.phrase_index).map(|(_, p)| *p));
         if let Some(phrase) = phrase {
             self.arps.engine_at_mut(self.track).set_phrase(phrase);
@@ -303,7 +304,8 @@ impl App {
                 e.set_phrase(*phrase);
             }
         }
-        // The armed track's try, while New idea or More like this is open.
+        // The armed track's try, while New idea, More like this or Make a
+        // phrase is open.
         self.send_phrase();
     }
 

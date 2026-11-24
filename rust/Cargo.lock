@@ -1474,6 +1474,7 @@ dependencies = [
 name = "mpfree-time-ui"
 version = "0.1.0"
 dependencies = [
+ "mpfree-arp-ui",
  "mpfree-audiotracks",
  "mpfree-capture",
  "mpfree-compose",

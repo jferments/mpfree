@@ -4764,6 +4764,9 @@ impl TimeControl {
             } => self.mutate(track, slot, more, melodic),
             TimeAction::Restore { track, slot } => self.restore(track, slot),
             TimeAction::ConvertPreview { track, slot } => self.convert_preview(track, slot),
+            // The Make a phrase sheet is the arp's: the app opens it
+            // (desk.rs), and nothing here changes.
+            TimeAction::MakePhrase { .. } => Ok(String::new()),
             TimeAction::Convert { track, slot } => self.convert(track, slot),
             TimeAction::ConvertCancel => {
                 self.convert_asked = None;

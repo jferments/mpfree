@@ -45,7 +45,7 @@ mod tunings_page;
 
 pub use add_sound::AddSound;
 pub use arp::{
-    built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView, ARP_HEADER,
+    built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, MakeFrom, WorkspaceView, ARP_HEADER,
 };
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
@@ -1903,6 +1903,9 @@ pub struct App {
     /// New idea or More like this, while open on the Phrase tab
     /// (`app/arp/maker.rs`).
     maker: Option<arp::Maker>,
+    /// The Make a phrase sheet, while open on Arrange or in the browser
+    /// (`app/arp/make.rs`).
+    sheet: Option<arp::Sheet>,
     /// The choices New idea and More like this keep between openings.
     maker_set: arp::MakerSet,
     /// Counts New idea and More like this's openings: each asks the
@@ -2212,6 +2215,7 @@ impl App {
             phrase_shelf: None,
             phrase_last: [None; mpfree_arp_ui::phrases::Shelf::ALL.len()],
             maker: None,
+            sheet: None,
             maker_set: arp::MakerSet::default(),
             maker_seed: 0,
             pads_own_notes: false,
@@ -4801,6 +4805,8 @@ impl App {
         if self.view != View::Arp {
             fx.extend(self.close_maker());
         }
+        // So does the Make a phrase sheet on another page than its own.
+        fx.extend(self.sheet_follows_view());
         if self.view != View::Pattern && self.recorder.is_some() {
             fx.extend(self.set_recording(false));
         }
