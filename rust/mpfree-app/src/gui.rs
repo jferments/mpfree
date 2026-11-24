@@ -34862,6 +34862,7 @@ mod tests {
                     fade_old: 1.0,
                     speed: 0,
                     rate: 0,
+                    id: 0,
                     clock: mpfree_looper::Clock::Song,
                     layers: vec![mpfree_looper::save::LayerFile {
                         level: 0.5,

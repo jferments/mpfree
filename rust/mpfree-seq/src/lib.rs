@@ -72,7 +72,7 @@ pub mod time_edit;
 pub use arrange::{
     Arrangement, FromScene, Marker, MorphRows, Placement, SongClips, SongSection, TempoPoint,
 };
-pub use audio::{AudioClip, ClipRegion, RecId, MAX_CLIP_REGIONS};
+pub use audio::{AudioClip, ClipRegion, LoopClip, LoopId, RecId, MAX_CLIP_REGIONS};
 pub use mutate::{Amount, Original, Pitches};
 pub use scenes::{
     Follow, FollowAction, ListStep, Scene, SceneSettings, SongList, TrackProgram, MAX_SCENE_NAME,
@@ -963,8 +963,15 @@ pub struct Clip {
     /// An audio track's clip: the regions of its recordings it plays
     /// (the audio tracks rethink's phase 2, [`audio`]). Such a clip holds
     /// nothing else a note clip holds, plays at normal speed, and lives on
-    /// an audio track; a clip on an audio track always has one.
+    /// an audio track; a clip on an audio track has this or a loop
+    /// ([`Clip::loop_clip`]).
     pub audio: Option<AudioClip>,
+    /// A loop cell on an audio track (phase 4, step 4b): the looper's loop
+    /// it plays, by its lasting id ([`LoopClip`]). Such a clip holds
+    /// nothing else (no notes, no regions), plays at normal speed, and
+    /// lives on the loop's one track ([`Project::loop_track`]). Loop
+    /// tracks' cells use [`Clip::looped`] instead until Loop tracks go.
+    pub loop_clip: Option<LoopClip>,
     /// The instrument its instrument locks were made for, with the names
     /// of the controls they lock (step sequencer refactor F1,
     /// [`inst`]); None while it has none.
@@ -1048,20 +1055,23 @@ pub enum ModelError {
     BadScale,
     /// A loop cell names no loop or holds notes, or a clip is on a track
     /// of the other kind (a loop cell on a note track, a note clip on a
-    /// Loop track).
+    /// Loop track). On an audio track (phase 4): a loop cell naming no
+    /// loop, holding notes, or a loop named on two tracks.
     BadLoop,
     /// A song's tempo point is before the start, out of range, too near
     /// another (a 1/16 at least) or one too many.
     BadTempo,
     /// A note or Loop clip, or its song block, on an audio track, or an
     /// audio clip or its block on another kind of track: an audio track's
-    /// cells hold audio clips only ([`Clip::audio`]), and its lane holds
+    /// cells hold audio clips only ([`Clip::audio`], or a loop cell's
+    /// [`Clip::loop_clip`]), and its lane holds
     /// its regions (in the audio tracks part) and blocks of audio clips
     /// (phase 2's step 2d).
     AudioTrack,
     /// An audio clip out of range ([`AudioClip::check`]), or one that also
     /// holds what a note clip holds (notes, locks, pressure, moves, a
-    /// loop, a speed, swing, quantise, a direction or a program).
+    /// loop, a speed, swing, quantise, a direction or a program), or a
+    /// loop cell's loop as well as its regions.
     BadAudioClip,
 }
 
@@ -1218,6 +1228,7 @@ impl Clip {
             original: None,
             holds: Holds::Hits,
             audio: None,
+            loop_clip: None,
             made_for: None,
         }
     }
@@ -1235,6 +1246,26 @@ impl Clip {
     /// in region order (one may repeat). A copy names the same ones.
     pub fn recordings(&self) -> impl Iterator<Item = RecId> + '_ {
         self.audio.iter().flat_map(AudioClip::recordings)
+    }
+
+    /// A loop cell for an audio track (phase 4): loop `id`, `ticks` long
+    /// (within a clip's range, as [`loops::length`] makes it), named `name`.
+    pub fn new_audio_loop(id: LoopId, name: &str, ticks: Tick) -> Clip {
+        Clip {
+            loop_clip: Some(LoopClip { id }),
+            ..Clip::new(name, loops::length(ticks))
+        }
+    }
+
+    /// The loop it plays, if it is a loop cell of an audio track.
+    pub fn loop_id(&self) -> Option<LoopId> {
+        self.loop_clip.map(|l| l.id)
+    }
+
+    /// Whether it is an audio track's clip: a take clip
+    /// ([`Clip::audio`]) or a loop cell ([`Clip::loop_clip`]).
+    pub fn is_audio_clip(&self) -> bool {
+        self.audio.is_some() || self.loop_clip.is_some()
     }
 
     /// A Loop track's cell for loop `n` (0 based), `ticks` long: named
@@ -1415,8 +1446,10 @@ impl Clip {
         if let Some(o) = &self.original {
             o.check(&self.touch)?;
         }
-        if let Some(a) = &self.audio {
-            let plain = self.notes.is_empty()
+        // An audio track's clip, a take clip or a loop cell, holds nothing
+        // a note clip holds and plays forward at normal speed.
+        let plain = || {
+            self.notes.is_empty()
                 && self.locks.is_empty()
                 && self.touch.is_empty()
                 && self.moves.is_empty()
@@ -1426,11 +1459,19 @@ impl Clip {
                 && self.swing.is_none()
                 && self.quantise.is_none()
                 && self.direction == Direction::Forward
-                && self.program.is_none();
-            if !plain {
+                && self.program.is_none()
+        };
+        if let Some(a) = &self.audio {
+            if !plain() || self.loop_clip.is_some() {
                 return Err(ModelError::BadAudioClip);
             }
             a.check(self.length)?;
+        }
+        if let Some(l) = &self.loop_clip {
+            if !plain() {
+                return Err(ModelError::BadLoop);
+            }
+            l.check()?;
         }
         if (grouped || self.original.is_some()) && !self.groups_ok() {
             return Err(ModelError::BadGroup);
@@ -2123,7 +2164,7 @@ impl Project {
         self.check_tracks()?;
         for t in &self.tracks {
             for c in t.slots.clips() {
-                if c.audio.is_some() != t.is_audio() {
+                if c.is_audio_clip() != t.is_audio() {
                     return Err(ModelError::AudioTrack);
                 }
                 c.check()?;
@@ -2145,7 +2186,58 @@ impl Project {
         if !song.is_empty() && self.cell_clips().any(|(_, _, c)| song.get(c.id).is_some()) {
             return Err(ModelError::BadPlacement);
         }
-        self.arrangement.check(&self.tracks)
+        self.arrangement.check(&self.tracks)?;
+        self.check_loops()
+    }
+
+    /// A loop belongs to one track (phase 4): every cell naming it, and
+    /// every block of a clip naming it, is on that track. `BadLoop` for a
+    /// loop named on two.
+    fn check_loops(&self) -> Result<(), ModelError> {
+        let mut seen: Vec<(LoopId, usize)> = Vec::new();
+        for (l, t) in self.loop_places() {
+            match seen.iter().find(|(k, _)| *k == l) {
+                Some(&(_, owner)) if owner != t => return Err(ModelError::BadLoop),
+                Some(_) => {}
+                None => seen.push((l, t)),
+            }
+        }
+        Ok(())
+    }
+
+    /// Every place a loop is named (phase 4), as its loop and the track:
+    /// each loop cell, and each block on the song of a clip that names a
+    /// loop (a cell's or one of the song's own), on its lane's track.
+    pub fn loop_places(&self) -> impl Iterator<Item = (LoopId, usize)> + '_ {
+        let cells = self
+            .cell_clips()
+            .filter_map(|(t, _, c)| Some((c.loop_id()?, t)));
+        let blocks = self
+            .arrangement
+            .placements
+            .iter()
+            .filter_map(move |p| Some((self.block_clip(p)?.loop_id()?, p.track)));
+        cells.chain(blocks)
+    }
+
+    /// The track loop `id` belongs to (phase 4): the track of the first
+    /// place it is named ([`Project::loop_places`]); a project that
+    /// passes [`Project::check`] names it on that track alone. None when
+    /// nothing names it: the loop is stored, not in a slot.
+    pub fn loop_track(&self, id: LoopId) -> Option<usize> {
+        self.loop_places().find(|&(l, _)| l == id).map(|(_, t)| t)
+    }
+
+    /// The loops the project names, each once, in the order first named:
+    /// the loops that need a slot of the looper's. Allocates.
+    pub fn loops_named(&self) -> Vec<LoopId> {
+        let mut out: Vec<LoopId> = Vec::new();
+        for (l, _) in self.loop_places() {
+            if !out.contains(&l) {
+                out.push(l);
+            }
+        }
+        out
     }
 
     /// The tracks alone, not their clips: no more than [`MAX_TRACKS`],

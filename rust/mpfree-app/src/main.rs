@@ -125,6 +125,7 @@ mod looper_deck;
 mod looper_page;
 mod looper_tab;
 mod looping;
+mod loops_on_tracks;
 mod memory;
 mod midi_file;
 mod midi_in;
@@ -2915,6 +2916,14 @@ fn loop_input(
     let moved = looper.follow_pads(pads);
     let how = match looper.takes_from() {
         (LoopSource::Mix(strip), _) => mix.loop_take(Some(strip), left, right),
+        // A loop into an audio track's cell (phase 4b): the track's input,
+        // inside the mix where the mixer says, or its line pick.
+        (LoopSource::Track(t), _) => match t.from {
+            looping::TrackFrom::Mix(strip, point) => {
+                mix.track_loop_take((strip, point), t.channel, left, right)
+            }
+            looping::TrackFrom::Line(_) => Ok(0),
+        },
         (LoopSource::Pads, Some(i)) => match mix.instrument_strip(i, homes) {
             Some(strip) => mix.loop_take(Some(strip), left, right),
             None => Err(looping::PADS_ON_MIDI_OUT),
@@ -2924,10 +2933,8 @@ fn loop_input(
         (LoopSource::Line, _) => Ok(0),
     };
     if how.is_err()
-        || matches!(
-            looper.takes_from(),
-            (LoopSource::Line, _) | (LoopSource::Pads, None)
-        )
+        || looper.takes_from().0.line()
+        || matches!(looper.takes_from(), (LoopSource::Pads, None))
     {
         left.fill(0.0);
         right.fill(0.0);
@@ -10246,6 +10253,14 @@ fn player_session(
         app.settings.audio_streams = tracks.streams();
         out.show(gui::ToUi::Settings(app.settings.clone()));
     }
+    // Loops on audio tracks (Dev's switch, phase 4b): for this start.
+    if app.settings.loops_on_tracks {
+        app.settings.loops_on = true;
+        out.say("looper: loops play on audio tracks (Dev, MENU: Loops on audio tracks)");
+        out.show(gui::ToUi::Settings(app.settings.clone()));
+    }
+    let loops_on = app.settings.loops_on;
+    time.set_loops_on(loops_on);
     // With takes streaming, a cue that launches audio waits until the
     // start of its audio is in memory (the audio tracks rethink's phase
     // 2): the needs go to the tracks whenever they change.
@@ -15244,6 +15259,17 @@ fn player_session(
         // A snap: its tempo asked of the time engine, or, committed, the
         // loop told to change on the same frame.
         out.loop_start(looper.tend_snap(&mut time, tracks.host.tracks.has_regions()));
+        // Loops on audio tracks (Dev's switch, phase 4b): the track
+        // player plans where each track's loops sound from what the
+        // arranger says, and each loop a loop cell names is told its runs
+        // before the looper runs.
+        if loops_on {
+            tracks.sync(time.project(), time.silenced(), false);
+            tracks.loops_moving(&looper.moving_ids());
+            tracks.plan_loops(time.block(), &|p| time.audio(p));
+            looper.give_loop_id(|| tracks.fresh_loop_id());
+            looper.tell_tracks(time.project(), tracks.loop_player());
+        }
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
         // A loop that heard the line input with the song stopped starts it.
         let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
@@ -15273,13 +15299,25 @@ fn player_session(
         tracks.feed_inside(&mut mix);
         // What each audio track plays (its clips, its song or nothing)
         // comes from the player's last period, on its frames.
-        tracks.period(
-            time.block(),
-            time.tempo_map(),
-            time.song_on(),
-            looper.input(),
-            Some(&|p| time.audio(p)),
-        );
+        if loops_on {
+            // Each loop on a track into its track (phase 4b).
+            tracks.period_with_loops(
+                time.block(),
+                time.tempo_map(),
+                time.song_on(),
+                looper.input(),
+                &|p| time.audio(p),
+                &|id| looper.track_loop(id),
+            );
+        } else {
+            tracks.period(
+                time.block(),
+                time.tempo_map(),
+                time.song_on(),
+                looper.input(),
+                Some(&|p| time.audio(p)),
+            );
+        }
         // Each audio track into its own channel (phase 1b).
         tracks.play_into(&mut mix);
         // The strip's waveform, built a slice at a time: its cost counts in
@@ -15630,9 +15668,19 @@ fn player_session(
         for line in looper.changes(|| time.position_text()) {
             out.note(&line);
         }
-        // A loop recorded lands on a Loop track; its cells follow it.
+        // A loop recorded lands on a Loop track (or, with loops on audio
+        // tracks, in an audio track's cell armed for it, by its lasting
+        // id); its cells follow it.
         if let Some(now) = looper.grid_now() {
-            for line in time.loops_are(&now) {
+            let lines = if loops_on {
+                time.loops_are_on(&now, &looper.loop_ids())
+            } else {
+                time.loops_are(&now)
+            };
+            if loops_on && !lines.is_empty() {
+                looper.look_again();
+            }
+            for line in lines {
                 out.note(&format!("time: {line}"));
             }
         }

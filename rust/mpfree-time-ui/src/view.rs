@@ -1698,11 +1698,16 @@ pub enum TimeAction {
     /// (loop-tracks.md part 6): the cell there takes loop `into`, an empty
     /// loop the looper copies the audio into. Not a take: the looper's
     /// UNDO takes the copy back, and its cell goes with it. The app sends
-    /// it for SHIFT + a drop onto another Loop track.
+    /// it for SHIFT + a drop onto another Loop track. With Dev's "Loops on
+    /// audio tracks" a loop cell on an audio track copies onto an empty
+    /// cell of another audio track the same way, as a new loop: `id` is
+    /// its lasting id, which the app gave loop `into` (audio tracks phase
+    /// 4b); 0 for a Loop track's copy.
     LoopCopy {
         from: (usize, usize),
         to: (usize, usize),
         into: u8,
+        id: u128,
     },
     /// Loop `n`'s copy stopped before any of it went in: its cells empty.
     LoopCopyOff(u8),

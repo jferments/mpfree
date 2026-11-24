@@ -488,7 +488,7 @@ impl Arrangement {
             // An audio clip's block on an audio track's lane, and only
             // there (the audio tracks rethink's phase 2, step 2d).
             let clip = self.clip_of(tracks, p);
-            if clip.is_some_and(|c| c.audio.is_some() != tracks[p.track].is_audio()) {
+            if clip.is_some_and(|c| c.is_audio_clip() != tracks[p.track].is_audio()) {
                 return Err(ModelError::AudioTrack);
             }
             if clip.is_some_and(|c| c.looped.is_some() != tracks[p.track].is_loops()) {

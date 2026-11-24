@@ -689,6 +689,8 @@ impl LooperPage {
                 .iter()
                 .position(|m| m.1 == s)
                 .map_or(usize::MAX, |i| fixed + i),
+            // An audio track's input (phase 4b, Dev's switch): no chip.
+            (false, LoopSource::Track(_)) => usize::MAX,
         }
     }
 
@@ -709,6 +711,7 @@ impl LooperPage {
             LoopSource::Pads => "Pads".to_string(),
             LoopSource::Line => "Line in".to_string(),
             LoopSource::Mix(s) => self.mix_name(s),
+            LoopSource::Track(_) => "Track in".to_string(),
         }
     }
 
@@ -790,6 +793,7 @@ impl LooperPage {
         } else {
             match now_source(v) {
                 LoopSource::Line => "Line in",
+                LoopSource::Track(_) => "Track in",
                 LoopSource::Mix(_) => &mix_name,
                 LoopSource::Pads => match counts.iter().max_by_key(|(_, c)| *c) {
                     Some((g, _)) => g,
@@ -1224,6 +1228,7 @@ impl LooperPage {
                 "records the whole mix but the loops".to_string()
             }
             (false, LoopSource::Mix(m)) => format!("records {}", self.mix_name(m)),
+            (false, LoopSource::Track(_)) => "records its audio track's input".to_string(),
         };
         let sub = {
             let mut parts = Vec::new();
@@ -1426,17 +1431,17 @@ impl LooperPage {
                     "Loop {} records free when you play: {} starts it, and REC again sets \
                      the tempo",
                     n + 1,
-                    match now_source(v) {
-                        LoopSource::Pads | LoopSource::Mix(_) => "the first pad you play",
-                        LoopSource::Line => "the line input's first note",
+                    match now_source(v).line() {
+                        false => "the first pad you play",
+                        true => "the line input's first note",
                     }
                 ),
                 Phase::Armed if s.listening => format!(
                     "Loop {} records when you play: {} starts it {}",
                     n + 1,
-                    match now_source(v) {
-                        LoopSource::Pads | LoopSource::Mix(_) => "the first pad you play",
-                        LoopSource::Line => "the line input's first note",
+                    match now_source(v).line() {
+                        false => "the first pad you play",
+                        true => "the line input's first note",
                     },
                     match self.transport.state {
                         State::Playing | State::Recording => "on the nearest bar line",
