@@ -34,9 +34,10 @@ R=''
 #   5. makes the card's disk writable: force_ro 0 on that disk alone (ro must follow; if it stays 1, the
 #      card's lock switch is on, and it is refused), mounts it rw,nosuid,nodev,noexec,noatime,dirsync,
 #      errors=remount-ro (files root's and the pad player's group's) at a private place, makes its MPFree
-#      folder if missing, and shows it as two bind mounts: the whole card READ-ONLY at /run/mpfree-sd, and
-#      its MPFree folder writable at /run/mpfree-sd/MPFree. The private mount goes, so nothing on the
-#      system, root included, can write outside MPFree/;
+#      folder if missing, makes that mount read-only, binds it at /run/mpfree-sd (the whole card,
+#      READ-ONLY), takes the private mount away, and only then binds /run/mpfree-sd/MPFree onto itself and
+#      makes that alone writable. So nothing on the system, root included, can write outside MPFree/, and
+#      the copies the shared /run hands to other mount namespaces are read-only too;
 #   6. waits, once a second, until asked to close (sd-card-write.close), the asker's counter in
 #      sd-card-write.alive stands still for QUIET seconds, the card is taken out, or the system stops this.
 #      It fails and closes if the eMMC controller is bound, a device that is not the card's appears, or the
@@ -425,14 +426,23 @@ if [ ! -d "$R$PRIV/MPFree" ]; then
   mkdir "$R$PRIV/MPFree" || fail "could not make the MPFree folder on the card"
   say "made the MPFree folder on the card"
 fi
+# /run is a shared mount (systemd makes every mount shared), so each mount below is copied to the other
+# mount namespaces (a service's own, made with PrivateMounts and the like), and a bind of a shared mount is a
+# peer of it. Hence the order: the private mount is made read-only before the card is bound at $MNT, so
+# every copy of $MNT is read-only from the start (a later remount changes this mount alone, never its
+# copies), and it goes before anything is mounted inside $MNT, which would otherwise be copied inside the
+# private mount too and hold it ("target is busy"). Every mount stays shared, so each unmount reaches the
+# copies as well.
+mount -o remount,bind,ro,nosuid,nodev,noexec,noatime "$R$PRIV" 2>> "$S/sd-card-write-log.txt" ||
+  fail "could not make the card read-only at its private place before showing it"
 mount --bind "$R$PRIV" "$R$MNT" 2>> "$S/sd-card-write-log.txt" &&
   mount -o remount,bind,ro,nosuid,nodev,noexec,noatime "$R$MNT" 2>> "$S/sd-card-write-log.txt" ||
   fail "could not show the card read-only at $MNT"
-mount --bind "$R$PRIV/MPFree" "$R$MPF" 2>> "$S/sd-card-write-log.txt" &&
-  mount -o remount,bind,rw,nosuid,nodev,noexec,noatime "$R$MPF" 2>> "$S/sd-card-write-log.txt" ||
-  fail "could not show the card's MPFree folder writable at $MPF"
 umount "$R$PRIV" 2>> "$S/sd-card-write-log.txt" || fail "could not take away the card's private mount"
 rmdir "$R$PRIV" 2>/dev/null
+mount --bind "$R$MPF" "$R$MPF" 2>> "$S/sd-card-write-log.txt" &&
+  mount -o remount,bind,rw,nosuid,nodev,noexec,noatime "$R$MPF" 2>> "$S/sd-card-write-log.txt" ||
+  fail "could not show the card's MPFree folder writable at $MPF"
 grep -q "^/dev/$dev $MNT exfat ro," "$R/proc/mounts" || fail "the card is not read-only at $MNT"
 grep -q "^/dev/$dev $MPF exfat rw," "$R/proc/mounts" || fail "the card's MPFree folder is not writable at $MPF"
 [ "$(grep -c "^/dev/$dev " "$R/proc/mounts")" = 2 ] || fail "the card is mounted somewhere else too"
