@@ -791,6 +791,7 @@ impl Desk<'_> {
             | gui::FromUi::PickPatch(_)
             | gui::FromUi::SongEnd(_)
             | gui::FromUi::SongEndReset
+            | gui::FromUi::Muted(_)
             | gui::FromUi::OpenLoops(_)
             | gui::FromUi::OpenAudio(_)
             | gui::FromUi::AudioFiles(_)

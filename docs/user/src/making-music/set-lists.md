@@ -51,7 +51,7 @@ Each song shows one of these:
 - **LIMITS**: it plays, but without something it would like, such as a keyboard marked Nice to have that isn't plugged in, or a stick that's nearly full.
 - **NOT READY**: something it needs is missing, or it's too big to open. It can't go on stage until that's fixed. The row says why in red, for example "samples/strings.wav is missing".
 
-Under each song's name are its numbers: how long it should take to open and how much memory it uses ("about 5 s · about 460 MB"). For now these are estimates from the song's files. The line at the top counts the songs ("7 ready, 1 with limits, 1 not ready") and says when the set was checked.
+Under each song's name are its numbers: how long it takes to open and how much memory it uses. Until you soundcheck it they're estimates from the song's files ("about 5 s · about 460 MB · not soundchecked yet"); after, they're what [Soundcheck](#soundcheck) measured ("opens in 3.1 s · 540 MB · CPU 71 % in Chorus 2"). The line at the top counts the songs ("7 ready, 1 with limits, 1 not ready") and says when the set was checked.
 
 Turn the wheel or tap a song to see every check it ran, each with a mark (✓ fine, **i** a note, **!** limits, **×** not ready) and what it found:
 
@@ -67,9 +67,39 @@ Turn the wheel or tap a song to see every check it ran, each with a mark (✓ fi
 | **Streams** | Audio track takes that play from the stick as the song plays. |
 | **Soundcheck** | What the last soundcheck measured, or "not soundchecked yet". |
 
-**Open in Make** opens the picked song as a normal project, so you can fix it. **Check every file**, at the top right, reads every file in full instead of only looking at its size and date. It takes longer, so it's for the day of the show. Tap **‹** by the title, or press **-**, to go back.
+**Soundcheck this song** soundchecks just the picked song (see below). **Open in Make** opens the picked song as a normal project, so you can fix it. **Check every file**, at the top right, reads every file in full instead of only looking at its size and date. It takes longer, so it's for the day of the show. Tap **‹** by the title, or press **-**, to go back.
 
 The set keeps what the check found, so the chips show on the set's card and in the Set editor next time too. Run it again before the show, after you've plugged everything in. A song saved by an older version of MPFree shows a note under Files until you save it again, so the check can look at its files.
+
+## Soundcheck
+
+**Soundcheck** plays the set through on this MPC and measures each song for real: how long it takes to open from cold, how much memory it uses, how hard its busiest part works the MPC, and how long the change into the next song takes. Do it once you've set up for the show, with everything plugged in.
+
+Tap **Soundcheck** on the set's card (or **Soundcheck this song** in the check view, for one song and its change into the next). It asks first, in the right-hand column: what it's going to do and about how long it takes ("about 6 minutes" for nine songs), and **Sound**:
+
+- **Out loud** (the first choice) plays through Main out and the headphones, so turn the PA down.
+- **Muted** measures exactly the same with nothing coming out.
+
+If the song open now has changes you haven't saved, it says so: they're saved first, and that song opens again at the end. A song that was never saved has to be saved before you can start. Tap **Start soundcheck**, or **Cancel**.
+
+{{shot: browser-sets-soundcheck | Soundcheck on Friday at the Lantern: songs 1 and 2 are done and show what was measured, song 3, Undertow, is playing its busiest part, Chorus 2, at bar 41, with the CPU now and at its worst, and the rest wait.}}
+
+For each song, in turn:
+
+1. **Opened cold**: the song opens just as it would on stage, timed, with its memory at its peak.
+2. **Its busiest part**: the step of the song's list with the most playing at once (audio tracks and plugins count double) plays for up to 16 bars. A song with no song list plays its first 16 bars. The box shows the CPU (now, and a mark at its worst), the longest a clip waited for its audio from the stick, stream misses and xruns.
+3. **The change into the next song**: the song ends the way its **Ends** says, then the next song opens cold, and the pause is timed. The last song has no change.
+
+The song being checked is outlined with a **SOUNDCHECK** chip, the songs done show their new numbers, and the rest say "waiting". The line at the top says how far it's got and about how long is left.
+
+- **Skip this song** stops its part where it is and goes on to the change into the next song.
+- **Stop soundcheck** (or **STOP**) stops it. Everything measured so far is kept.
+
+At the end it says how it went: how many songs and how long it took, the busiest song, any stream misses or xruns (that song may crackle there), and the longest pause between songs. The sound comes back, and the song you had open before opens again. Tap **Done**.
+
+What it measured goes into each song's line in the set, so the check uses real numbers from now on, and the Show view's COLD LOAD card says how long the silence will be while the next song opens ("about 4 s of silence while it opens"). If you change a song after its soundcheck, the check says so: soundcheck it again for its numbers now.
+
+While a set is playing, Soundcheck is faint: close the set first. While Soundcheck runs, Play set waits for it.
 
 ## Playing a set
 

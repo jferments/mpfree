@@ -964,7 +964,7 @@ mod tests {
         song.soundcheck = Some(Soundcheck {
             at: u64::MAX / 2,
             open_ms: 3_140,
-            peak_kb: 552_000,
+            peak_kb: 527_344,
             cpu_x10: 712,
             misses: 2,
             xruns: 1,

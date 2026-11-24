@@ -1,0 +1,88 @@
+title Soundcheck: the three demo songs saved and made into a set, then soundchecked Muted: each song opened cold, its busiest part played, its change into the next timed, and each song's line kept in the set
+covers soundcheck
+needs demo-songs
+# Live shows B2b: Soundcheck's own lines (show: soundcheck kept song N
+# (name): opens in ... · MB · CPU ...; longest disk wait ..., change ...)
+# are what it measured on this MPC; devtest_report.py's Soundcheck section
+# lists them. Muted, so nothing leaves the outputs. The
+# demo songs are put in the run's own library (RAM only on the MPC) and
+# saved once each, so their kits' sounds are files the opens read.
+wait 2
+mark songs-saved
+button BROWSE
+# Sets then Projects: the list starts again with its first row picked, so
+# the first tap on another song picks it and the second opens it.
+tap browser place Sets
+tap browser place Projects
+tap browser row Night Market
+tap browser row Night Market
+wait 1
+expect project: Night Market opened in
+tap header tab Arrange
+button SHIFT + BROWSE
+wait 1
+expect project: saved Night Market
+button BROWSE
+tap browser place Sets
+tap browser place Projects
+tap browser row Tidal Suite
+tap browser row Tidal Suite
+wait 1
+expect project: Tidal Suite opened in
+tap header tab Arrange
+button SHIFT + BROWSE
+wait 1
+expect project: saved Tidal Suite
+button BROWSE
+tap browser place Sets
+tap browser place Projects
+# Glass Garden is the first row, picked already: one tap opens it.
+tap browser row Glass Garden
+wait 1
+expect project: Glass Garden opened in
+tap header tab Arrange
+button SHIFT + BROWSE
+wait 1
+expect project: saved Glass Garden
+mark set-made
+tap header tab Arrange
+button BROWSE
+tap browser place Sets
+tap browser sets-button New set
+tap browser key Char('c')
+tap browser key Char('h')
+tap browser key Char('e')
+tap browser key Char('c')
+tap browser key Char('k')
+tap browser key Done
+wait 0.5
+tap browser sets-button Add songs
+wait 0.5
+tap browser sets-add Add Night Market
+tap browser sets-add Add Glass Garden
+tap browser sets-add Add Tidal Suite
+tap browser sets-button Done
+wait 0.5
+tap browser sets-back ‹ Check
+wait 0.5
+mark soundcheck
+# Its question: every song, Muted, then Start. About 3 minutes on the MPC:
+# each song's busiest part is up to 16 bars (Tidal Suite's at 76 BPM is
+# 50 s), and Let it finish rings out for 10 s at most.
+tap browser sets-button Soundcheck
+wait 0.5
+tap browser sets-value Sound ›
+tap browser sets-button Start soundcheck
+wait 3
+expect show: soundcheck of Check.set (3 songs, muted)
+expect show: soundcheck opens Night Market cold
+wait 60
+expect show: soundcheck kept song 1 (Night Market):
+wait 60
+expect show: soundcheck kept song 2 (Glass Garden):
+wait 70
+expect show: soundcheck kept song 3 (Tidal Suite):
+expect show: soundcheck of Check.set done: 3 songs in
+mark soundcheck-done
+tap browser sets-button Done
+wait 1

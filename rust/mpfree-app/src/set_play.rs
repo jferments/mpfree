@@ -125,7 +125,7 @@ pub struct SetPlay {
 }
 
 /// The song's own ending, as the audio loop runs it.
-fn end_of(song: &SetSong) -> End {
+pub(crate) fn end_of(song: &SetSong) -> End {
     match song.ends {
         Ends::Finish => End::Finish,
         Ends::Fade(s) => End::Fade(s),
@@ -599,7 +599,14 @@ impl SetPlay {
                     Starts::Playing => Starting::Playing,
                     Starts::CountIn => Starting::CountIn,
                 };
-                NextCard::cold(&of, name, Some(now_name), None, ending, starting)
+                // The silence while it opens: its cold open as Soundcheck
+                // measured it (live shows B2b), until then not measured.
+                let pause = song
+                    .soundcheck
+                    .as_ref()
+                    .map(|sc| sc.open_ms.div_ceil(1000))
+                    .filter(|s| *s > 0);
+                NextCard::cold(&of, name, Some(now_name), pause, ending, starting)
             }
         }
     }
@@ -766,6 +773,24 @@ mod tests {
         );
         let v = p.view(&Now::default());
         assert_eq!(v.card.word.as_ref().unwrap().0, "FADING");
+    }
+
+    /// The cold card's pause: not measured until Soundcheck has timed the
+    /// song's cold open (live shows B2b), then that, in whole seconds.
+    #[test]
+    fn the_cold_cards_pause_is_soundchecks() {
+        let mut p = started();
+        p.press(Press::NextSong, FOOT, 0, true, false);
+        let v = p.view(&Now::default());
+        assert_eq!(v.card.meaning, "pause not measured yet");
+        let mut p = started();
+        p.set.songs[1].soundcheck = Some(mpfree_library::Soundcheck {
+            open_ms: 3_140,
+            ..mpfree_library::Soundcheck::default()
+        });
+        p.press(Press::NextSong, FOOT, 0, true, false);
+        let v = p.view(&Now::default());
+        assert_eq!(v.card.meaning, "about 4 s of silence while it opens");
     }
 
     /// A song that changed on stage: its recovery copy first, then the

@@ -55,7 +55,7 @@ pub use plugins::{
 };
 pub use sets::{
     CheckMark, CheckRow, NeedRow, RigThing, SetButton, SetDetail, SetField, SetInput, SetRow,
-    SetsScreen, SetsView, Stepper,
+    SetsScreen, SetsView, SoundcheckNow, Stepper,
 };
 pub use state::{
     in_xy_folder, BrowseAction, Browser, Button, CardState, Filter, Input, MapCell, MapShown,
@@ -77,6 +77,8 @@ pub const PLUGINS_HINT: &str = "Dial: move  ·  push: next picture  ·  +: insta
 pub const SETS_HINT: &str = "Dial: move  ·  push: edit the set  ·  Play set: plays it in Perform  ·  Check set: every song's checks  ·  BROWSE closes";
 /// The hint line while the check view shows (live shows B2, layout spec 4p).
 pub const SET_CHECK_HINT: &str = "Dial: move  ·  push: the song's checks  ·  Check every file: reads every file in full  ·  ‹ or –: back to the set  ·  BROWSE closes";
+/// The hint line while Soundcheck runs (live shows B2b).
+pub const SOUNDCHECK_HINT: &str = "Soundcheck plays each song's busiest part  ·  STOP or Stop soundcheck: stop it  ·  what it measured is kept";
 /// The hint line while a set is being edited.
 pub const SET_EDIT_HINT: &str = "Dial: move  ·  - / +: move the picked song  ·  push or tap a value: change it  ·  Add songs: from Projects  ·  BROWSE closes";
 /// The hint line while songs are being added to a set.

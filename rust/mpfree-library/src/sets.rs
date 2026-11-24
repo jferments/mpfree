@@ -211,10 +211,12 @@ impl Soundcheck {
     /// Its line in the check view: "opens in 3.1 s · 540 MB · CPU 71 % in
     /// Chorus 2".
     pub fn line(&self) -> String {
+        // Megabytes as the Memory line says them (kB of 1024 bytes, then
+        // MB of 1 000 000), so the two agree.
         let mut s = format!(
-            "opens in {} s \u{b7} {} MB \u{b7} CPU {} %",
+            "opens in {} s \u{b7} {} \u{b7} CPU {} %",
             tenths(self.open_ms / 100),
-            self.peak_kb.div_ceil(1024),
+            crate::preflight::size_word(self.peak_kb * 1024),
             (self.cpu_x10 + 5) / 10
         );
         if !self.part.is_empty() {
@@ -827,7 +829,7 @@ mod tests {
         a.soundcheck = Some(Soundcheck {
             at: 1_763_836_900,
             open_ms: 3_140,
-            peak_kb: 552_960,
+            peak_kb: 527_344,
             cpu_x10: 712,
             disk_wait_ms: 14,
             misses: 0,
@@ -849,7 +851,7 @@ mod tests {
         assert_eq!(Set::parse(&text).unwrap(), set);
         assert!(text.contains("song = - Old song\n"), "{text}");
         assert!(
-            text.contains("soundcheck = 1763836900 3140 552960 712 14 0 0 4200 Chorus 2\n"),
+            text.contains("soundcheck = 1763836900 3140 527344 712 14 0 0 4200 Chorus 2\n"),
             "{text}"
         );
         assert!(text.starts_with("mpfree-set 1\nmedia = 1763837000 13 2576980378\n"));
@@ -869,7 +871,7 @@ mod tests {
             (
                 None,
                 true,
-                "opens in 2 s \u{b7} 1 MB \u{b7} CPU 91 % in Outro"
+                "opens in 2 s \u{b7} 1.0 MB \u{b7} CPU 91 % in Outro"
             )
         );
         assert_eq!(back.songs[1].soundcheck, None);

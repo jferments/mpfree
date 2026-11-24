@@ -8,7 +8,7 @@
 use super::*;
 use crate::sets::{
     CheckMark, CheckRow, NeedRow, RigThing, SetButton, SetField, SetInput, SetRow, SetsScreen,
-    SetsView, Stepper, Tone,
+    SetsView, SoundcheckNow, Stepper, Tone,
 };
 use mpfree_library::preflight::{AppCheck, AppChecks, Machine, Mark, SongPreflight};
 use mpfree_library::sets::{FADE_DEFAULT, FADE_MAX, FADE_MIN, MAX_NOTES};
@@ -50,6 +50,24 @@ pub(super) struct SetsPlace {
     /// A fixed time for checks that come back (the sample screens, so they
     /// are the same every run); None: the clock.
     clock: Option<u64>,
+    /// Soundcheck's question (live shows B2b), in the check view's Selected
+    /// column until it starts or is cancelled.
+    asking: Option<SoundAsk>,
+    /// Soundcheck running, as the app last told it.
+    running: Option<SoundcheckNow>,
+    /// How the last Soundcheck went (the set, its lines and the words
+    /// after them), until Done.
+    sound_done: Option<(Loc, Vec<CheckRow>, String)>,
+    /// Sound as last picked (Muted), for the next question.
+    muted: bool,
+}
+
+/// Soundcheck's question: the set, every song or one, and the Sound.
+#[derive(Debug, Clone)]
+struct SoundAsk {
+    loc: Loc,
+    only: Option<usize>,
+    muted: bool,
 }
 
 /// The check view: the set it checks, each song's last preflight, and the
@@ -181,6 +199,35 @@ fn tally_words(set: &Set) -> String {
     parts.join(", ")
 }
 
+/// About how long Soundcheck takes ("about 6 minutes"): each song's open
+/// (5 s until measured), its busiest part (16 bars at its tempo, else 120
+/// BPM) and each change's ending (5 s), as the app's soundcheck.rs counts.
+fn soundcheck_about(set: &Set, only: Option<usize>) -> String {
+    let part_ms = |s: Option<&SetSong>| -> u64 {
+        let tempo = s
+            .and_then(|s| s.check.as_ref())
+            .map(|(_, c)| f64::from(c.tempo_x10) / 10.0)
+            .filter(|t| *t > 0.0)
+            .unwrap_or(120.0);
+        (16.0 * 4.0 * 60_000.0 / tempo) as u64
+    };
+    let n = set.songs.len();
+    let ms: u64 = match only {
+        Some(k) => 5_000 + part_ms(set.songs.get(k)) + if k + 1 < n { 10_000 } else { 0 },
+        None => {
+            (0..n)
+                .map(|k| 5_000 + part_ms(set.songs.get(k)))
+                .sum::<u64>()
+                + 5_000 * n.saturating_sub(1) as u64
+        }
+    };
+    match (ms.div_ceil(1000) + 30) / 60 {
+        0 => "under a minute".into(),
+        1 => "about 1 minute".into(),
+        m => format!("about {m} minutes"),
+    }
+}
+
 fn song_sub(s: &SetSong) -> String {
     format!("{} \u{b7} {}", s.starts.label(), s.ends.label())
 }
@@ -270,6 +317,118 @@ impl Browser {
     /// same every run.
     pub fn fix_set_clock(&mut self, secs: u64) {
         self.sets.clock = Some(secs);
+    }
+
+    /// Soundcheck running, as the app has it now (None: it isn't), for
+    /// the check view to draw (live shows B2b).
+    pub fn set_soundcheck(&mut self, now: Option<SoundcheckNow>) {
+        if let Some(n) = &now {
+            // The check view follows the song it's on.
+            let vis = self.song_rows();
+            if let Some(v) = self.sets.viewing.as_mut().filter(|v| v.loc == n.loc) {
+                let len = v.songs.as_ref().map_or(0, Vec::len);
+                if v.picked != Some(n.song) && n.song < len {
+                    v.picked = Some(n.song);
+                    v.top = in_view(v.picked, v.top, vis, len);
+                }
+            }
+            self.sets.asking = None;
+            self.sets.sound_done = None;
+        }
+        self.sets.running = now;
+    }
+
+    /// Soundcheck is running.
+    pub fn soundcheck_running(&self) -> bool {
+        self.sets.running.is_some()
+    }
+
+    /// Soundcheck measured song `k` of the set at `loc`: its line goes into
+    /// the set, which is saved. `theirs` is the set as Soundcheck has it,
+    /// for when the browser hasn't read it (BROWSE never showed Sets).
+    pub fn soundchecked(
+        &mut self,
+        loc: &Loc,
+        k: usize,
+        line: mpfree_library::Soundcheck,
+        theirs: &Set,
+    ) {
+        let mut set = self.set_at(loc).unwrap_or_else(|| theirs.clone());
+        let Some(song) = set.songs.get_mut(k) else {
+            return;
+        };
+        song.soundcheck = Some(line);
+        self.sets_keep(loc, set);
+    }
+
+    /// Soundcheck on the set at `loc` is over: `rows` say how it went and
+    /// `words` what happens now, until Done, and the set is checked again
+    /// with what it measured.
+    pub fn soundcheck_over(&mut self, loc: &Loc, rows: Vec<CheckRow>, words: String) {
+        self.sets.running = None;
+        self.sets.sound_done = Some((loc.clone(), rows, words));
+        if let Some(set) = self.set_at(loc) {
+            if self.sets.viewing.as_ref().is_some_and(|v| v.loc == *loc) {
+                let deep = self.sets.viewing.as_ref().is_some_and(|v| v.deep);
+                self.send_check(loc.clone(), set, deep);
+            } else {
+                self.check_set_now(loc);
+            }
+        }
+    }
+
+    /// The question before Soundcheck: on the set at `loc`, every song or
+    /// only `only`. It opens the check view on the set.
+    fn ask_soundcheck(&mut self, loc: Loc, set: Set, only: Option<usize>) {
+        if self.sets.playing.is_some() {
+            self.status = Some(("Close the set or stop it first".into(), false));
+            return;
+        }
+        if self.sets.running.is_some() {
+            self.status = Some(("Soundcheck is running: Stop soundcheck first".into(), false));
+            return;
+        }
+        if set.songs.is_empty() {
+            self.status = Some((
+                "No songs to soundcheck yet: Add songs picks them".into(),
+                false,
+            ));
+            return;
+        }
+        if self.sets.viewing.as_ref().is_none_or(|v| v.loc != loc) {
+            self.check_view(loc.clone(), set, false);
+        }
+        self.sets.sound_done = None;
+        let muted = self.sets.muted;
+        self.sets.asking = Some(SoundAsk { loc, only, muted });
+    }
+
+    /// The song open now has changes that Soundcheck saves first, or it
+    /// can't be saved (it was never saved): the line that says so, and
+    /// whether Start can go.
+    fn soundcheck_open_song(&self) -> (Option<(String, Tone)>, bool) {
+        if !self.unsaved {
+            return (None, true);
+        }
+        match &self.project {
+            Some(p) => (
+                Some((
+                    format!(
+                        "{}, open now, has changes: they\u{2019}re saved first. It opens again at the end.",
+                        p.name()
+                    ),
+                    Tone::Warn,
+                )),
+                true,
+            ),
+            None => (
+                Some((
+                    "The song open now was never saved: save it first, or it would be lost".into(),
+                    Tone::Bad,
+                )),
+                false,
+            ),
+        }
     }
 
     /// The check view shows (the hint line says what the keys do there).
@@ -758,6 +917,7 @@ impl Browser {
                     self.sets_add(i);
                 }
             }
+            SetInput::Back if self.sets.asking.is_some() => self.sets.asking = None,
             SetInput::Back if self.sets.viewing.is_some() => {
                 self.sets.viewing = None;
                 if self.sets.editing.is_none() {
@@ -906,7 +1066,16 @@ impl Browser {
 
     fn sets_button(&mut self, b: SetButton) {
         let checking = self.sets.checking.is_some();
-        if checking && b != SetButton::NeedsDone && b != SetButton::Done {
+        let always = matches!(
+            b,
+            SetButton::NeedsDone
+                | SetButton::Done
+                | SetButton::StopSoundcheck
+                | SetButton::SkipSong
+                | SetButton::CancelSoundcheck
+                | SetButton::SoundcheckDone
+        );
+        if checking && !always {
             self.status = Some(("Checking the set: one moment".into(), false));
             return;
         }
@@ -920,6 +1089,11 @@ impl Browser {
                 };
             }
             SetButton::PlaySet => {
+                if self.sets.running.is_some() {
+                    self.status =
+                        Some(("Soundcheck is running: Stop soundcheck first".into(), false));
+                    return;
+                }
                 let Some((loc, set)) = self.this_set() else {
                     return self.set_unreadable();
                 };
@@ -964,6 +1138,57 @@ impl Browser {
                 };
                 self.check_view(loc, set, b == SetButton::CheckEveryFile);
             }
+            // Soundcheck (live shows B2b): it asks first.
+            SetButton::Soundcheck => {
+                let Some((loc, set)) = self.this_set() else {
+                    return self.set_unreadable();
+                };
+                self.ask_soundcheck(loc, set, None);
+            }
+            SetButton::SoundcheckSong => {
+                let Some((loc, set)) = self.this_set() else {
+                    return self.set_unreadable();
+                };
+                let Some(k) = self.sets.viewing.as_ref().and_then(|v| v.picked) else {
+                    return;
+                };
+                self.ask_soundcheck(loc, set, Some(k));
+            }
+            SetButton::StartSoundcheck => {
+                let Some(ask) = self.sets.asking.clone() else {
+                    return;
+                };
+                let Some(set) = self.set_at(&ask.loc) else {
+                    return self.set_unreadable();
+                };
+                if !self.soundcheck_open_song().1 {
+                    self.status = Some(("Save the song open now first".into(), false));
+                    return;
+                }
+                self.sets.asking = None;
+                self.status = Some((
+                    format!("Soundcheck: {}\u{2026}", stem(ask.loc.name())),
+                    false,
+                ));
+                self.actions.push(BrowseAction::Soundcheck {
+                    loc: ask.loc,
+                    set,
+                    only: ask.only,
+                    muted: ask.muted,
+                });
+            }
+            SetButton::CancelSoundcheck => self.sets.asking = None,
+            SetButton::StopSoundcheck => {
+                if self.sets.running.is_some() {
+                    self.actions.push(BrowseAction::StopSoundcheck);
+                }
+            }
+            SetButton::SkipSong => {
+                if self.sets.running.is_some() {
+                    self.actions.push(BrowseAction::SkipSoundcheckSong);
+                }
+            }
+            SetButton::SoundcheckDone => self.sets.sound_done = None,
             SetButton::Rename => {
                 let Some((loc, _)) = self.picked_set() else {
                     return;
@@ -1218,6 +1443,13 @@ impl Browser {
     }
 
     fn sets_step(&mut self, f: SetField, d: i32) {
+        if f == SetField::Sound {
+            if let Some(a) = self.sets.asking.as_mut() {
+                a.muted = !a.muted;
+                self.sets.muted = a.muted;
+            }
+            return;
+        }
         if f == SetField::Needs {
             if let Some(e) = self.sets.editing.as_mut().filter(|e| e.picked.is_some()) {
                 e.needs = true;
@@ -1245,7 +1477,7 @@ impl Browser {
                 }
                 _ => return,
             },
-            SetField::Needs => return,
+            SetField::Needs | SetField::Sound => return,
         }
         self.sets_save();
     }
@@ -1391,6 +1623,7 @@ impl Browser {
                     sub_tone: Tone::Dim,
                     chip: set_chip(set),
                     add: false,
+                    ..SetRow::default()
                 },
                 Err(_) => SetRow {
                     number: None,
@@ -1399,6 +1632,7 @@ impl Browser {
                     sub_tone: Tone::Bad,
                     chip: None,
                     add: false,
+                    ..SetRow::default()
                 },
             })
             .collect();
@@ -1433,6 +1667,27 @@ impl Browser {
             d.facts.push(("Checked".into(), when(at), Tone::Dim));
             d.facts.push((String::new(), tally_words(&set), Tone::Dim));
         }
+        // Soundcheck (live shows B2b): when, and how many songs.
+        if !set.songs.is_empty() {
+            let checked: Vec<u64> = set
+                .songs
+                .iter()
+                .filter_map(|s| s.soundcheck.as_ref().map(|c| c.at))
+                .collect();
+            let value = match checked.iter().max() {
+                None => "not yet".to_string(),
+                Some(&at) => {
+                    let n = set.songs.len();
+                    let some = if checked.len() == n {
+                        format!("all {n} songs")
+                    } else {
+                        format!("{} of {n} songs", checked.len())
+                    };
+                    format!("{} \u{b7} {some}", when(at))
+                }
+            };
+            d.facts.push(("Soundcheck".into(), value, Tone::Dim));
+        }
         let worst = |pick: fn(&SongCheck) -> Option<&String>| -> Vec<String> {
             set.songs
                 .iter()
@@ -1458,15 +1713,21 @@ impl Browser {
             d.lists.push(("With limits".into(), Tone::Warn, limits));
         }
         // Check every file is on the check view's title line (live shows
-        // B2).
+        // B2); Soundcheck after Check set (B2b).
         d.buttons = vec![
             SetButton::PlaySet,
             SetButton::EditSet,
             SetButton::CheckSet,
+            SetButton::Soundcheck,
             SetButton::Rename,
             SetButton::Copy,
             SetButton::Delete,
         ];
+        if self.sets.running.is_some() {
+            d.faint = vec![SetButton::PlaySet, SetButton::Soundcheck];
+        } else if self.sets.playing.is_some() {
+            d.faint = vec![SetButton::Soundcheck];
+        }
     }
 
     /// The check view (live shows B2; layout spec 4p): each song with its
@@ -1560,11 +1821,33 @@ impl Browser {
                     sub_tone,
                     chip: Some(chip_of(p.chip())),
                     add: false,
+                    ..SetRow::default()
                 }
             })
             .collect();
         s.selected = v.picked;
         s.top = v.top;
+        // Soundcheck (live shows B2b): running on this set, its question,
+        // or how it went.
+        if let Some(n) = self.sets.running.as_ref().filter(|n| n.loc == v.loc) {
+            return self.soundcheck_running_screen(n, &set, s);
+        }
+        if let Some(a) = self.sets.asking.as_ref().filter(|a| a.loc == v.loc) {
+            return self.soundcheck_ask_screen(a, &set, &mut s.detail);
+        }
+        if let Some((_, rows, words)) = self
+            .sets
+            .sound_done
+            .as_ref()
+            .filter(|(l, _, _)| *l == v.loc)
+        {
+            d.eyebrow = "Soundcheck".into();
+            d.title = stem(v.loc.name()).to_string();
+            d.checks = rows.clone();
+            d.after = Some((words.clone(), Tone::Dim));
+            d.buttons = vec![SetButton::SoundcheckDone];
+            return;
+        }
         let Some(k) = v.picked.filter(|&k| k < songs.len()) else {
             d.eyebrow = "Selected".into();
             d.line = "Pick a song to see every check".into();
@@ -1594,7 +1877,140 @@ impl Browser {
                 text: l.words.clone(),
             })
             .collect();
-        d.buttons = vec![SetButton::OpenInMake];
+        d.buttons = vec![SetButton::SoundcheckSong, SetButton::OpenInMake];
+        if self.sets.playing.is_some() || self.sets.running.is_some() {
+            d.faint = vec![SetButton::SoundcheckSong];
+        }
+    }
+
+    /// The check view while Soundcheck plays its set: the title button
+    /// stops it, its line says how far it is, the song it's on is outlined
+    /// with a SOUNDCHECK chip and those to come wait, faint; the Selected
+    /// column shows its three steps for that song.
+    fn soundcheck_running_screen(&self, n: &SoundcheckNow, set: &Set, s: &mut SetsScreen) {
+        s.head_buttons = vec![SetButton::StopSoundcheck];
+        let left = n.left_s.div_ceil(60);
+        s.sub = Some((
+            Some(("SOUNDCHECK".into(), Tone::Accent)),
+            format!(
+                "song {} of {} \u{b7} {} \u{b7} {}",
+                (n.pos + 1).min(n.songs.len().max(1)),
+                n.songs.len(),
+                if left <= 1 {
+                    "about a minute left".to_string()
+                } else {
+                    format!("about {left} min left")
+                },
+                if n.out_loud {
+                    "playing out loud"
+                } else {
+                    "muted"
+                }
+            ),
+        ));
+        let to_come: Vec<usize> = n.songs.iter().skip(n.pos + 1).copied().collect();
+        for (i, row) in s.rows.iter_mut().enumerate() {
+            if i == n.song {
+                row.lit = true;
+                row.chip = Some(("SOUNDCHECK".into(), Tone::Accent));
+                if !n.row_line.is_empty() {
+                    row.sub = n.row_line.clone();
+                    row.sub_tone = Tone::Dim;
+                }
+            } else if to_come.contains(&i) {
+                row.faint = true;
+                row.sub = "waiting".into();
+                row.sub_tone = Tone::Dim;
+            }
+        }
+        s.selected = None;
+        let d = &mut s.detail;
+        let song = set.songs.get(n.song);
+        d.eyebrow = format!(
+            "Soundcheck \u{b7} song {} of {}",
+            n.song + 1,
+            set.songs.len()
+        );
+        d.title = song.map_or(String::new(), |s| s.name.clone());
+        d.line = song.map_or(String::new(), |s| {
+            let ends = format!("ends: {}", s.ends.label());
+            match s.check.as_ref().and_then(|(_, c)| c.tempo()) {
+                Some(tempo) => format!("{tempo} \u{b7} {ends}"),
+                None => ends,
+            }
+        });
+        d.checks = n.steps.clone();
+        d.meter = n.meter;
+        d.meter_facts = n.meter_facts.clone();
+        d.meter_at = 2;
+        if n.out_loud {
+            d.after = Some((
+                "Playing out loud on Main out. Turn the PA down, or stop and start again Muted."
+                    .into(),
+                Tone::Warn,
+            ));
+        }
+        d.buttons = vec![SetButton::StopSoundcheck, SetButton::SkipSong];
+    }
+
+    /// Soundcheck's question in the Selected column: what it does and about
+    /// how long, Sound (Out loud or Muted), a line when the song open now
+    /// has changes, then Start soundcheck and Cancel.
+    fn soundcheck_ask_screen(&self, a: &SoundAsk, set: &Set, d: &mut crate::sets::SetDetail) {
+        let about = soundcheck_about(set, a.only);
+        d.eyebrow = "Soundcheck".into();
+        match a.only.and_then(|k| set.songs.get(k).map(|s| (k, s))) {
+            Some((k, song)) => {
+                d.title = song.name.clone();
+                d.line = format!("Song {} of {}", k + 1, set.songs.len());
+                d.para = Some(match set.songs.get(k + 1) {
+                    Some(next) => format!(
+                        "Opens {} cold and plays its busiest part, then its change into {}: {about}.",
+                        song.name, next.name
+                    ),
+                    None => format!(
+                        "Opens {} cold and plays its busiest part: {about}.",
+                        song.name
+                    ),
+                });
+            }
+            None => {
+                let n = set.songs.len();
+                d.title = stem(a.loc.name()).to_string();
+                d.line = plural(n, "song");
+                d.para = Some(if n == 1 {
+                    format!("Opens its song cold and plays its busiest part: {about}.")
+                } else {
+                    format!(
+                        "Opens each of the {n} songs in turn and plays its busiest part, then its change into the next: {about}."
+                    )
+                });
+            }
+        }
+        d.steppers = vec![Stepper {
+            field: SetField::Sound,
+            value: if a.muted { "Muted" } else { "Out loud" }.into(),
+            faint: false,
+            focused: false,
+        }];
+        let (line, can) = self.soundcheck_open_song();
+        d.after = Some(line.unwrap_or_else(|| {
+            if a.muted {
+                (
+                    "Muted measures the same; nothing leaves the outputs".into(),
+                    Tone::Dim,
+                )
+            } else {
+                (
+                    "It plays on Main out: Muted measures the same, silently".into(),
+                    Tone::Dim,
+                )
+            }
+        }));
+        d.buttons = vec![SetButton::StartSoundcheck, SetButton::CancelSoundcheck];
+        if !can {
+            d.faint = vec![SetButton::StartSoundcheck];
+        }
     }
 
     fn edit_screen(&self, e: &Editing, s: &mut SetsScreen) {
@@ -1621,6 +2037,7 @@ impl Browser {
                     sub_tone: if changed { Tone::Accent2 } else { Tone::Dim },
                     chip: Some(chip(song.check.as_ref().map(|(_, c)| c))),
                     add: false,
+                    ..SetRow::default()
                 }
             })
             .collect();
@@ -1819,6 +2236,7 @@ impl Browser {
                     sub_tone: Tone::Dim,
                     chip: None,
                     add: true,
+                    ..SetRow::default()
                 }
             })
             .collect();

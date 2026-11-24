@@ -244,6 +244,24 @@ class ReportTests(unittest.TestCase):
         res = self.report(self.write("06-devtest.log", run("effects", "default", effects())))
         self.assertNotIn("Opens and song changes", res.stdout)
 
+    def test_soundcheck_lists_each_songs_numbers_and_how_it_went(self):
+        body = ['    script: "Soundcheck", 3 steps, 200.0 s', "    script: line 3 at 1.000 s: mark soundcheck"]
+        body += status(0, 344, 100, 50)
+        body += ["    show: soundcheck of Check.set (3 songs, muted)",
+                 "    show: soundcheck kept song 1 (Night Market): opens in 3.1 s \u00b7 540 MB \u00b7 CPU 71 % in "
+                 "Chorus 2; longest disk wait 9 ms, 0 misses, 0 xruns, change 4.20 s",
+                 "    show: soundcheck of Check.set done: 1 song in 52 s \u00b7 no misses",
+                 "    script: done"]
+        body += status(0, 3444, 110, 55)
+        res = self.report(self.write("09-devtest.log", run("soundcheck", "default", body)))
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("## Soundcheck", res.stdout)
+        self.assertIn("| soundcheck | 1 Night Market | opens in 3.1 s \u00b7 540 MB \u00b7 CPU 71 % in Chorus 2; "
+                      "longest disk wait 9 ms, 0 misses, 0 xruns, change 4.20 s |", res.stdout)
+        self.assertIn("soundcheck: Check.set done: 1 song in 52 s \u00b7 no misses.", res.stdout)
+        res = self.report(self.write("10-devtest.log", run("effects", "default", effects())))
+        self.assertNotIn("## Soundcheck", res.stdout)
+
     def test_nothing_to_read(self):
         res = self.report(self.write("empty.log", ["hello"]))
         self.assertEqual(res.returncode, 2)

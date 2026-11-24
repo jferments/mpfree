@@ -614,6 +614,21 @@ pub enum BrowseAction {
         loc: Loc,
         set: Set,
     },
+    /// Start soundcheck on the set (live shows B2b): every song, or only
+    /// song `only` (and its change into the next), Muted or out loud. The
+    /// app saves a song open with changes first, and answers with
+    /// [`Browser::set_soundcheck`], [`Browser::soundchecked`] and
+    /// [`Browser::soundcheck_over`].
+    Soundcheck {
+        loc: Loc,
+        set: Set,
+        only: Option<usize>,
+        muted: bool,
+    },
+    /// Stop soundcheck: what it measured so far is kept.
+    StopSoundcheck,
+    /// Soundcheck goes on to the next song.
+    SkipSoundcheckSong,
     /// The set's song asked for with [`Browser::open_set_song`] read whole
     /// and checked: the [`BrowseAction::ProjectOpened`] right after this is
     /// that song's. Open it without asking anything (nothing asks on
@@ -3276,6 +3291,13 @@ impl Browser {
         self.opening_last = true;
         self.send(Job::OpenProject(loc));
         true
+    }
+
+    /// Opens the project at `loc` again with nothing asked (Soundcheck's
+    /// end, live shows B2b: the song open before it). It comes as
+    /// [`BrowseAction::ProjectOpened`], like an open from Projects.
+    pub fn reopen(&mut self, loc: Loc) {
+        self.send(Job::OpenProject(loc));
     }
 
     /// The answer to [`BrowseAction::SaveKitRequested`]: saves the kit the

@@ -948,6 +948,53 @@ impl Trades {
     }
 }
 
+/// What the screen keeps while Soundcheck runs (live shows B2b).
+#[derive(Debug, Default)]
+struct SoundcheckScreen {
+    /// Its clock's start: Soundcheck counts ms from here.
+    t0: Option<Instant>,
+    /// Waiting for the song open now to be saved before it starts.
+    after_save: Option<(
+        mpfree_library::Loc,
+        mpfree_library::Set,
+        Option<usize>,
+        bool,
+    )>,
+    /// The project open before it, to open again after it.
+    before: Option<mpfree_library::Loc>,
+    /// The memory free for songs before its first open, kB: a song's
+    /// memory is how much of it the song takes.
+    base_kb: Option<u64>,
+    /// When it last read the memory.
+    memory_at: Option<Instant>,
+    /// The part playing: its first tick, when Play went, and whether the
+    /// transport has rolled since.
+    part_from: Option<i64>,
+    play_at: Option<Instant>,
+    rolled: bool,
+    /// When the save it waits for was asked for: given up after
+    /// [`SOUNDCHECK_SAVE_S`].
+    save_asked: Option<Instant>,
+    /// Another project opened from BROWSE stopped it: the song open before
+    /// doesn't open again over that one.
+    no_reopen: bool,
+    /// When the check view last heard where it is.
+    screen_at: Option<Instant>,
+}
+
+impl SoundcheckScreen {
+    /// Soundcheck's clock, ms.
+    fn ms(&self) -> u64 {
+        self.t0.map_or(0, |t| t.elapsed().as_millis() as u64)
+    }
+}
+
+/// The longest Soundcheck waits for the song open now to be saved.
+const SOUNDCHECK_SAVE_S: u64 = 30;
+/// The longest a part waits for the transport to roll before it counts as
+/// over (it never played).
+const SOUNDCHECK_ROLL_MS: u128 = 3_000;
+
 /// Timing numbers from the audio thread.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Timing {
@@ -1810,6 +1857,9 @@ pub enum FromUi {
     SongEnd(crate::song_end::End),
     /// Full sound again with no ending (Reopen, or the set closed).
     SongEndReset,
+    /// Soundcheck's Muted (live shows B2b): the audio loop measures as
+    /// ever, and nothing leaves the outputs until it's false again.
+    Muted(bool),
     /// A set is open and the Show view's state, for MENU's rows (live
     /// shows B1): (a set is open, the Show view shows).
     ShowState(bool, bool),
@@ -2648,6 +2698,10 @@ pub struct Player {
     /// The open going in, timed part by part for its line (live shows A4,
     /// open_clock.rs).
     open_clock: Option<crate::open_clock::OpenClock>,
+    /// Soundcheck running (live shows B2b, soundcheck.rs), and what the
+    /// screen keeps for it.
+    soundcheck: Option<crate::soundcheck::Soundcheck>,
+    sound: SoundcheckScreen,
     /// When a set's song change began (Play set, or the song's end), for
     /// the line saying when the next song is in.
     change_from: Option<(Instant, &'static str)>,
@@ -3422,6 +3476,8 @@ impl Player {
             project_rate: 44_100,
             opened_at: None,
             open_clock: None,
+            soundcheck: None,
+            sound: SoundcheckScreen::default(),
             change_from: None,
             opens_out: 0,
             set_play: None,
@@ -13573,6 +13629,7 @@ impl Player {
             A::SaveRequested => self.ask_save(),
             A::NewProject => {
                 self.close_set("a new project was made");
+                self.soundcheck_abandon("a new project was made");
                 self.new_project();
             }
             A::ProjectOpened {
@@ -13588,17 +13645,26 @@ impl Player {
                             if let Some(sp) = self.set_play.as_mut() {
                                 let fx = sp.open_failed(&why);
                                 self.set_do(fx);
+                            } else if let Some(sc) = self.soundcheck.as_mut() {
+                                let fx = sc.open_failed(self.sound.ms(), &why);
+                                self.soundcheck_do(fx);
                             }
                         }
                     }
                 } else {
-                    // Another project opened from BROWSE ends the set.
+                    // Another project opened from BROWSE ends the set, and
+                    // Soundcheck.
                     self.close_set("another project opened");
+                    self.soundcheck_abandon("another project opened");
                     let _ = self.open_project(&loc, &snap, what_reads, false);
                 }
             }
             A::ProjectSaved { loc } => {
                 self.say(format!("project: saved {}", loc.name()));
+                // Soundcheck waited for the song open now to be saved.
+                if let Some((sloc, set, only, muted)) = self.sound.after_save.take() {
+                    self.soundcheck_begin(sloc, set, only, muted);
+                }
                 // The audio tracks' takes copied into it are kept from
                 // there now; their copies in the work folder go. So do
                 // the loop layers' (4c.3), found there from now on.
@@ -13655,8 +13721,27 @@ impl Player {
             // Sets (live shows B1): Play set opens the Show view, and the
             // set player hears how its songs' opens and copies went.
             A::PlaySet { loc, set } => self.play_set(loc, set),
+            // Soundcheck (live shows B2b, soundcheck.rs).
+            A::Soundcheck {
+                loc,
+                set,
+                only,
+                muted,
+            } => self.soundcheck_start(loc, set, only, muted),
+            A::StopSoundcheck => {
+                if let Some(sc) = self.soundcheck.as_mut() {
+                    let fx = sc.stop(self.sound.ms());
+                    self.soundcheck_do(fx);
+                }
+            }
+            A::SkipSoundcheckSong => {
+                if let Some(sc) = self.soundcheck.as_mut() {
+                    let fx = sc.skip(self.sound.ms());
+                    self.soundcheck_do(fx);
+                }
+            }
             A::SetSongOpened { loc } => {
-                if self.set_play.is_some() {
+                if self.set_play.is_some() || self.soundcheck.is_some() {
                     self.set_song_next = true;
                     self.say(format!("show: {} read, opening it", loc.name()));
                 }
@@ -13666,6 +13751,9 @@ impl Player {
                 if let Some(sp) = self.set_play.as_mut() {
                     let fx = sp.open_failed(&why);
                     self.set_do(fx);
+                } else if let Some(sc) = self.soundcheck.as_mut() {
+                    let fx = sc.open_failed(self.sound.ms(), &why);
+                    self.soundcheck_do(fx);
                 }
             }
             A::OnStageCopied { loc } => self.on_stage_copied(&loc),
@@ -14598,6 +14686,357 @@ impl Player {
         self.refresh_hint();
     }
 
+    /// Start soundcheck (BROWSE's check view, live shows B2b): on the set
+    /// at `loc`, every song or only `only`, `muted` or out loud. The song
+    /// open now, if it has changes, is saved first.
+    fn soundcheck_start(
+        &mut self,
+        loc: mpfree_library::Loc,
+        set: mpfree_library::Set,
+        only: Option<usize>,
+        muted: bool,
+    ) {
+        if self.set_play.is_some() || self.set_changing() {
+            self.tell("Close the set or stop it first");
+            return;
+        }
+        let unsaved = self
+            .browser
+            .as_ref()
+            .is_some_and(|b| b.unsaved() && b.project().is_some());
+        if unsaved {
+            self.say("show: soundcheck waits for the song open now to be saved".into());
+            self.sound.after_save = Some((loc, set, only, muted));
+            self.sound.save_asked = Some(Instant::now());
+            self.ask_save();
+            return;
+        }
+        self.soundcheck_begin(loc, set, only, muted);
+    }
+
+    /// Soundcheck starts: the memory free before its first open, its
+    /// clock, Perform, and its first song opening.
+    fn soundcheck_begin(
+        &mut self,
+        loc: mpfree_library::Loc,
+        set: mpfree_library::Set,
+        only: Option<usize>,
+        muted: bool,
+    ) {
+        if self.soundcheck.is_some() || self.set_play.is_some() {
+            return;
+        }
+        let held = self.sample.memory();
+        let free = crate::open_clock::Memory::now().free_kb;
+        self.sound = SoundcheckScreen {
+            t0: Some(Instant::now()),
+            before: self.browser.as_ref().and_then(|b| b.project().cloned()),
+            // The song open now's sounds go when the first song opens.
+            base_kb: free.map(|f| f + (held.sounds as u64 + held.copies as u64) / 1024),
+            ..SoundcheckScreen::default()
+        };
+        let n = match only {
+            Some(_) => 1,
+            None => set.songs.len(),
+        };
+        let (sc, fx) =
+            crate::soundcheck::Soundcheck::new(loc.clone(), set, only, muted, 0, now_utc());
+        self.say(format!(
+            "show: soundcheck of {} ({}, {})",
+            loc.name(),
+            if n == 1 {
+                "1 song".to_string()
+            } else {
+                format!("{n} songs")
+            },
+            if muted { "muted" } else { "out loud" }
+        ));
+        self.soundcheck = Some(sc);
+        (self.set_song_next, self.set_song_landing) = (false, false);
+        if !self.time.perform {
+            self.outbox.push(FromUi::Time(TimeAction::Perform(true)));
+        }
+        self.soundcheck_do(fx);
+        self.refresh_hint();
+    }
+
+    /// Does what Soundcheck answers.
+    fn soundcheck_do(&mut self, fx: Vec<crate::soundcheck::Do>) {
+        use crate::soundcheck::Do;
+        use mpfree_transport::Command;
+        for d in fx {
+            match d {
+                Do::Tell(line) => {
+                    self.say(format!("show: {line}"));
+                    self.tell(&line);
+                }
+                Do::Mute(m) => self.outbox.push(FromUi::Muted(m)),
+                Do::Open(song) => {
+                    self.say(format!("show: soundcheck opens {} cold", song.name));
+                    if let Some(b) = self.browser.as_mut() {
+                        b.open_set_song(&song);
+                    }
+                }
+                Do::Play(step) => {
+                    (self.sound.part_from, self.sound.rolled) = (None, false);
+                    self.sound.play_at = Some(Instant::now());
+                    if !self.time.perform {
+                        self.outbox.push(FromUi::Time(TimeAction::Perform(true)));
+                    }
+                    match step {
+                        // The song list from the busiest step (linked to
+                        // the song, it plays the song from there).
+                        Some(k) => {
+                            self.outbox.push(FromUi::Time(TimeAction::ListPlay(k)));
+                        }
+                        None => self
+                            .outbox
+                            .push(FromUi::Time(TimeAction::Transport(Command::Locate(0)))),
+                    }
+                    self.outbox
+                        .push(FromUi::Time(TimeAction::Transport(Command::Play)));
+                }
+                Do::End(end) => {
+                    self.say(format!("show: soundcheck ends the song ({end:?})"));
+                    self.outbox.push(FromUi::SongEnd(end));
+                }
+                Do::Stop => {
+                    if self.time.transport.state.rolling() {
+                        self.outbox
+                            .push(FromUi::Time(TimeAction::Transport(Command::Stop)));
+                    }
+                }
+                Do::Reset => self.outbox.push(FromUi::SongEndReset),
+                Do::Keep(k, line) => {
+                    let Some((loc, set)) = self
+                        .soundcheck
+                        .as_ref()
+                        .map(|s| (s.loc.clone(), s.set.clone()))
+                    else {
+                        continue;
+                    };
+                    // Everything it kept, for the device round's report.
+                    self.say(format!(
+                        "show: soundcheck kept song {} ({}): {}; longest disk wait {} ms, {} misses, {} xruns, change {}",
+                        k + 1,
+                        set.songs.get(k).map_or("", |s| s.name.as_str()),
+                        line.line(),
+                        line.disk_wait_ms,
+                        line.misses,
+                        line.xruns,
+                        line.change_ms
+                            .map_or("none".to_string(), |c| format!("{:.2} s", f64::from(c) / 1000.0))
+                    ));
+                    if let Some(b) = self.browser.as_mut() {
+                        b.soundchecked(&loc, k, line, &set);
+                    }
+                }
+                Do::Reopen => self.soundcheck_over(),
+            }
+        }
+        self.soundcheck_screen();
+    }
+
+    /// Soundcheck is over: the check view says how it went and checks the
+    /// set again with what it measured, and the song open before opens
+    /// again (a new project if there was none).
+    fn soundcheck_over(&mut self) {
+        let Some(sc) = self.soundcheck.take() else {
+            return;
+        };
+        let sound = std::mem::take(&mut self.sound);
+        (self.set_song_next, self.set_song_landing) = (false, false);
+        let summary = sc.summary();
+        self.say(format!(
+            "show: soundcheck of {} {}: {summary}",
+            sc.loc.name(),
+            if sc.stopped() { "stopped" } else { "done" }
+        ));
+        let mut words =
+            "The check and the Show view\u{2019}s pauses now use these numbers.".to_string();
+        if let (false, Some(before)) = (sound.no_reopen, sound.before.as_ref()) {
+            words.push_str(&format!(" {} is open again.", before.name()));
+        }
+        if let Some(b) = self.browser.as_mut() {
+            b.soundcheck_over(&sc.loc, sc.done_rows(), words);
+        }
+        if !sound.no_reopen {
+            match sound.before {
+                Some(before) => {
+                    if let Some(b) = self.browser.as_mut() {
+                        b.reopen(before);
+                    }
+                }
+                None => self.new_project(),
+            }
+        }
+        self.refresh_hint();
+    }
+
+    /// Soundcheck stops because of something else (another project opened
+    /// from BROWSE): what it measured is kept, and nothing opens over it.
+    fn soundcheck_abandon(&mut self, why: &str) {
+        use crate::soundcheck::Do;
+        let ms = self.sound.ms();
+        let Some(sc) = self.soundcheck.as_mut() else {
+            return;
+        };
+        let mut fx = sc.stop(ms);
+        fx.retain(|d| *d != Do::Stop);
+        self.say(format!("show: soundcheck stopped ({why})"));
+        self.sound.no_reopen = true;
+        self.soundcheck_do(fx);
+    }
+
+    /// The song opening is in: its busiest part, from its song list and
+    /// clips as they are now.
+    fn soundcheck_opened(&mut self) {
+        let part = crate::soundcheck::busiest(
+            &self.time.list,
+            &crate::soundcheck::loads(&self.time.tracks),
+        );
+        let ms = self.sound.ms();
+        if let Some(sc) = self.soundcheck.as_mut() {
+            let fx = sc.opened(ms, part);
+            self.soundcheck_do(fx);
+        }
+    }
+
+    /// Once a frame while Soundcheck runs: the part's numbers, STOP, a
+    /// save it waits for, and the check view.
+    fn soundcheck_tick(&mut self) {
+        use crate::soundcheck::{Sample, Stage, MEMORY_EVERY_MS};
+        if let Some(at) = self.sound.save_asked {
+            if self.sound.after_save.is_some() && at.elapsed().as_secs() >= SOUNDCHECK_SAVE_S {
+                self.sound.after_save = None;
+                self.sound.save_asked = None;
+                self.tell("Soundcheck didn\u{2019}t start: the song open now wasn\u{2019}t saved");
+            }
+        }
+        let Some(stage) = self.soundcheck.as_ref().map(|s| s.stage()) else {
+            return;
+        };
+        // The check view's time left and bar, four times a second.
+        if self
+            .sound
+            .screen_at
+            .is_none_or(|s| s.elapsed().as_millis() as u64 >= MEMORY_EVERY_MS)
+        {
+            self.sound.screen_at = Some(Instant::now());
+            self.soundcheck_screen();
+        }
+        if stage != Stage::Playing {
+            return;
+        }
+        let ms = self.sound.ms();
+        let t = &self.time.transport;
+        let rolling = t.state.rolling();
+        let bar = t.meter.bar_ticks().max(1);
+        if rolling && !self.sound.rolled {
+            self.sound.rolled = true;
+            self.sound.part_from = Some(t.position);
+        }
+        let bars_in = self
+            .sound
+            .part_from
+            .map_or(0.0, |from| (t.position - from).max(0) as f64 / bar as f64);
+        if !self.sound.rolled {
+            // It never rolled: the part is over, not played.
+            if self
+                .sound
+                .play_at
+                .is_some_and(|p| p.elapsed().as_millis() >= SOUNDCHECK_ROLL_MS)
+            {
+                let name = self.soundcheck.as_ref().map_or(String::new(), |sc| {
+                    sc.song_now()
+                        .and_then(|k| sc.set.songs.get(k))
+                        .map_or(String::new(), |s| s.name.clone())
+                });
+                self.tell(&format!(
+                    "Soundcheck: {name} didn\u{2019}t play, so it goes on"
+                ));
+                if let Some(sc) = self.soundcheck.as_mut() {
+                    let fx = sc.skip(ms);
+                    self.soundcheck_do(fx);
+                }
+            }
+            return;
+        }
+        let memory_kb = if self
+            .sound
+            .memory_at
+            .is_none_or(|m| m.elapsed().as_millis() as u64 >= MEMORY_EVERY_MS)
+        {
+            self.sound.memory_at = Some(Instant::now());
+            let held = self.sample.memory();
+            let held_kb = (held.sounds as u64 + held.copies as u64) / 1024;
+            let taken = match (self.sound.base_kb, crate::open_clock::Memory::now().free_kb) {
+                (Some(base), Some(free)) => base.saturating_sub(free),
+                _ => 0,
+            };
+            Some(taken.max(held_kb))
+        } else {
+            None
+        };
+        let silent = self
+            .timing
+            .audio
+            .track_files
+            .map_or(0, |f| (f.silent_s * 10.0) as u64);
+        let w = self.time.audio_waits;
+        let sample = Sample {
+            bars_in,
+            cpu: self
+                .engines
+                .as_ref()
+                .and_then(|e| crate::engines::cpu_pct(e)),
+            waiting: w.waiting > 0,
+            misses: w.moved + w.cancelled + silent,
+            xruns: self.timing.underruns,
+            memory_kb,
+        };
+        let Some(sc) = self.soundcheck.as_mut() else {
+            return;
+        };
+        let bars = sc.measures().get(sc.pos()).map_or(0, |m| m.part.bars) as f64;
+        let mut fx = sc.tick(ms, sample);
+        if fx.is_empty() && !rolling && sc.stage() == Stage::Playing {
+            // The transport stopped before the part was over: STOP, unless
+            // the song list ran out right at its end, which is played.
+            fx = if bars - bars_in <= 0.25 {
+                sc.tick(
+                    ms,
+                    Sample {
+                        bars_in: bars,
+                        ..sample
+                    },
+                )
+            } else {
+                sc.stop(ms)
+            };
+        }
+        if !fx.is_empty() {
+            self.soundcheck_do(fx);
+        }
+    }
+
+    /// The check view hears where Soundcheck is.
+    fn soundcheck_screen(&mut self) {
+        let now = self
+            .soundcheck
+            .as_ref()
+            .filter(|s| !s.done())
+            .map(|s| s.screen(self.sound.ms()));
+        if let Some(b) = self.browser.as_mut() {
+            if now.is_some() || b.soundcheck_running() {
+                b.set_soundcheck(now);
+                if b.sets_shown() {
+                    mpfree_browser_ui::show(&mut self.ui, b);
+                }
+            }
+        }
+    }
+
     /// The set ends (MENU's Close the set, another project opened, or its
     /// first song didn't open): the song playing stays open as a plain
     /// project, and the Show view goes. `why` goes in the log.
@@ -14624,9 +15063,12 @@ impl Player {
     /// A set's song is changing (ending, its copy being written, the next
     /// one opening), or its first song is opening.
     fn set_changing(&self) -> bool {
-        self.set_play
-            .as_ref()
-            .is_some_and(|p| p.step() != crate::set_play::Step::Idle)
+        // Soundcheck opens and plays songs too (live shows B2b).
+        self.soundcheck.is_some()
+            || self
+                .set_play
+                .as_ref()
+                .is_some_and(|p| p.step() != crate::set_play::Step::Idle)
     }
 
     /// The app hears whether a set is open and the Show view shows, for
@@ -14838,12 +15280,21 @@ impl Player {
         if let Some(sp) = self.set_play.as_mut() {
             let fx = sp.opened();
             self.set_do(fx);
+        } else if self.soundcheck.is_some() {
+            self.soundcheck_opened();
         }
     }
 
     /// The audio loop's news of a set's song's ending.
     fn song_end_news(&mut self, n: crate::song_end::News) {
         use crate::song_end::News;
+        if let Some(sc) = self.soundcheck.as_mut() {
+            if n == News::Ended {
+                let fx = sc.ended(self.sound.ms());
+                self.soundcheck_do(fx);
+            }
+            return;
+        }
         let changed = self.browser.as_ref().is_some_and(|b| b.unsaved());
         let Some(sp) = self.set_play.as_mut() else {
             return;
@@ -18602,6 +19053,7 @@ impl Player {
         self.poll_audio();
         self.open_clock_tick();
         self.set_play_tick();
+        self.soundcheck_tick();
         self.poll_audio_recover();
         self.open_at_start();
         self.bundle_tick();
@@ -21866,6 +22318,127 @@ fn browser_set_check(fonts: Fonts) -> Result<Player, String> {
     built
 }
 
+/// Soundcheck on Friday at the Lantern (live shows B2b, layout spec 4p, as
+/// the approved board draws it): songs 1 and 2 measured, song 3, Undertow,
+/// opened cold in 2.8 s and its busiest part, Chorus 2, at bar 41, out
+/// loud. The numbers are made up and fixed, so it draws the same each run.
+fn browser_set_soundcheck(fonts: Fonts) -> Result<Player, String> {
+    use crate::soundcheck::{Busiest, Do, Sample, Soundcheck};
+    use mpfree_browser_ui::sample::{
+        fill, fill_set_files, fill_sets, sample_rig, source, SAMPLE_CHECKED, SAMPLE_MACHINE,
+    };
+    use mpfree_browser_ui::{Input, SetButton, SetInput};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir =
+        std::env::temp_dir().join(format!("mpfree-soundcheck-{}-{nanos}", std::process::id()));
+    let built = (|| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let lib = fill(&dir)?;
+        fill_sets(&lib)?;
+        fill_set_files(&lib)?;
+        let loc = mpfree_library::Loc::top(mpfree_library::Place::Sets)
+            .join("Friday at the Lantern.set")
+            .map_err(|e| e.to_string())?;
+        let set = lib.load_set(&loc).map_err(|e| e.to_string())?;
+        let mut p = sample_sampler(fonts);
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        p.take_actions();
+        p.apply(ToUi::Show(View::Browser));
+        let b = p.browser.as_mut().ok_or("no browser")?;
+        b.set_rig(sample_rig());
+        b.fix_set_clock(SAMPLE_CHECKED);
+        b.go_source(source("Sets"));
+        b.input(Input::Sets(SetInput::Row(1)));
+        b.set_machine(SAMPLE_MACHINE);
+        b.input(Input::Sets(SetInput::Button(SetButton::CheckSet)));
+        p.step_browser();
+        p.take_actions();
+        // Songs 1 and 2, then song 3 to bar 41 of Chorus 2.
+        let (mut sc, _) = Soundcheck::new(loc.clone(), set, None, false, 0, SAMPLE_CHECKED);
+        let mut fx: Vec<Do> = Vec::new();
+        let cpu = |c: f64, bars_in: f64| Sample {
+            bars_in,
+            cpu: Some(c),
+            ..Sample::default()
+        };
+        // Soundcheck's clock: each song opens, its part plays 32 s, its
+        // ending takes 3 s.
+        let mut t = 0u64;
+        for (open, part, peak, worst) in [
+            (3_100, "Chorus 2", 480_000u64, 58.0),
+            (2_600, "Bridge", 412_000, 49.0),
+        ] {
+            t += open;
+            fx.extend(sc.opened(
+                t,
+                Busiest {
+                    name: part.into(),
+                    step: Some(2),
+                    bar: 17,
+                    bars: 16,
+                },
+            ));
+            sc.tick(
+                t + 100,
+                Sample {
+                    memory_kb: Some(peak),
+                    ..cpu(worst, 0.0)
+                },
+            );
+            t += 32_000;
+            fx.extend(sc.tick(t, cpu(worst - 6.0, 16.0)));
+            t += 3_000;
+            fx.extend(sc.ended(t));
+        }
+        t += 2_800;
+        fx.extend(sc.opened(
+            t,
+            Busiest {
+                name: "Chorus 2".into(),
+                step: Some(3),
+                bar: 33,
+                bars: 16,
+            },
+        ));
+        sc.tick(
+            t + 100,
+            Sample {
+                memory_kb: Some(527_344),
+                ..cpu(52.0, 0.0)
+            },
+        );
+        sc.tick(
+            t + 6_000,
+            Sample {
+                waiting: true,
+                ..cpu(71.0, 3.0)
+            },
+        );
+        sc.tick(t + 6_009, cpu(66.0, 3.1));
+        t += 16_000;
+        sc.tick(t, cpu(64.0, 8.5));
+        let b = p.browser.as_mut().ok_or("no browser")?;
+        for d in fx {
+            if let Do::Keep(k, line) = d {
+                b.soundchecked(&loc, k, line, &sc.set);
+            }
+        }
+        p.step_browser();
+        let now = sc.screen(t);
+        let b = p.browser.as_mut().ok_or("no browser")?;
+        b.set_soundcheck(Some(now));
+        mpfree_browser_ui::show(&mut p.ui, b);
+        p.refresh_hint();
+        p.take_actions();
+        Ok(p)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    built
+}
+
 /// The whole browser (BROWSE) on its SD card place: a stand-in card beside
 /// a scratch library, open read only as the pad player opens the real one
 /// (nothing is asked of the stick), Rhodes chord picked. Removed again once
@@ -22017,6 +22590,8 @@ pub fn on_screens_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
 fn place_hint(b: &mpfree_browser_ui::Browser) -> Option<&'static str> {
     if b.plugins_shown() {
         Some(mpfree_browser_ui::PLUGINS_HINT)
+    } else if b.set_check_shown() && b.soundcheck_running() {
+        Some(mpfree_browser_ui::SOUNDCHECK_HINT)
     } else if b.set_check_shown() {
         Some(mpfree_browser_ui::SET_CHECK_HINT)
     } else if b.set_adding() {
@@ -25141,6 +25716,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     match browser_set_check(fonts()) {
         Ok(check) => out.push(("browser-sets-check", check)),
         Err(e) => eprintln!("browser-sets-check: not drawn ({e})"),
+    }
+    // Soundcheck running on it: song 3's busiest part (live shows B2b).
+    match browser_set_soundcheck(fonts()) {
+        Ok(sound) => out.push(("browser-sets-soundcheck", sound)),
+        Err(e) => eprintln!("browser-sets-soundcheck: not drawn ({e})"),
     }
     // The Slice tool on the same pad: chopped at its hits, slice 3 picked
     // (Q-Link 2).
@@ -37241,6 +37821,126 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Soundcheck (live shows B2b): each song opens cold and its first 16
+    /// bars play in Perform, Muted; the song ends by its own Ends into the
+    /// next, and its line (timed open, memory, CPU, its change) goes into
+    /// the set; STOP keeps what was measured, the sound comes back and a
+    /// project opens again where there was none.
+    #[test]
+    fn a_set_is_soundchecked_song_by_song() {
+        use crate::project::{self, Defaults};
+        use crate::song_end::{End, News};
+        use mpfree_library::{Loc, Place};
+        use mpfree_transport::{Command, State};
+        let dir = std::env::temp_dir().join(format!("mpfree-soundcheck-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = mpfree_library::Library::at(&dir).unwrap();
+        mpfree_browser_ui::sample::fill_sets(&lib).unwrap();
+        let mut p = sample_sampler(Fonts::embedded());
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib.clone()), "");
+        let synth = crate::synth::Synth::new(44_100);
+        let mixer = project::mixer_text(&crate::mixing::MixHost::new(44_100, -6.0, 0.0).mixer, 0);
+        let synth_text = project::synth_text(&Default::default(), &synth.sounds());
+        p.apply(ToUi::ProjectDefaults(Box::new(Defaults {
+            tempo: 120.0,
+            mixer,
+            modu: String::new(),
+            synth: synth_text,
+        })));
+        p.start_checked = true;
+        p.take_actions();
+        let land = |p: &mut Player| {
+            p.step_browser();
+            p.step_browser();
+            let o = p
+                .take_actions()
+                .into_iter()
+                .find_map(|a| match a {
+                    FromUi::OpenProject(o) => Some(o),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("an open: {:?}", events_log(p)));
+            p.apply(ToUi::ProjectBack(o));
+            p.tick(0.033);
+            p.take_actions()
+        };
+        let bar = p.time.transport.meter.bar_ticks();
+        let roll = |p: &mut Player, at: i64| {
+            p.time.transport.state = State::Playing;
+            p.time.transport.position = at;
+            p.tick(0.033);
+            p.take_actions()
+        };
+        let set = Loc::top(Place::Sets).join("Sunday rehearsal.set").unwrap();
+        p.apply(ToUi::Show(View::Browser));
+        p.browse_action(mpfree_browser_ui::BrowseAction::Soundcheck {
+            loc: set.clone(),
+            set: lib.load_set(&set).unwrap(),
+            only: None,
+            muted: true,
+        });
+        let acts = p.take_actions();
+        assert!(acts.contains(&FromUi::Muted(true)), "{acts:?}");
+        assert!(p.set_changing(), "nothing else plays or saves meanwhile");
+        // Play set waits for it.
+        p.browse_action(mpfree_browser_ui::BrowseAction::PlaySet {
+            loc: set.clone(),
+            set: lib.load_set(&set).unwrap(),
+        });
+        assert!(p.set_play.is_none());
+
+        // Sunday chops is in: its first 16 bars play (it has no song list).
+        let acts = land(&mut p);
+        assert!(
+            acts.contains(&FromUi::Time(TimeAction::Transport(Command::Locate(0)))),
+            "{acts:?}"
+        );
+        assert!(acts.contains(&FromUi::Time(TimeAction::Transport(Command::Play))));
+        assert!(p.browser.as_ref().unwrap().soundcheck_running());
+        assert!(roll(&mut p, 0).is_empty());
+        assert!(roll(&mut p, 8 * bar).is_empty());
+        // 16 bars in: it ends by its own Ends (Let it finish).
+        let acts = roll(&mut p, 16 * bar);
+        assert!(acts.contains(&FromUi::SongEnd(End::Finish)), "{acts:?}");
+        p.time.transport.state = State::Stopped;
+        p.apply(ToUi::SongEnd(News::Ended));
+        // Slow signal opens; once in, Sunday chops's line is kept, its
+        // change timed.
+        land(&mut p);
+        p.step_browser();
+        let kept = lib.load_set(&set).unwrap();
+        let line = kept.songs[0]
+            .soundcheck
+            .clone()
+            .unwrap_or_else(|| panic!("song 1 measured: {:#?}", events_log(&p)));
+        assert!(line.change_ms.is_some(), "{line:?}");
+        assert!(kept.songs[1].soundcheck.is_none());
+        // STOP in Slow signal's part: what it played is kept, the sound
+        // comes back, and with no project open before, a new one.
+        roll(&mut p, 0);
+        roll(&mut p, 3 * bar);
+        p.time.transport.state = State::Stopped;
+        p.tick(0.033);
+        let acts = p.take_actions();
+        assert!(acts.contains(&FromUi::Muted(false)), "{acts:?}");
+        assert!(acts.contains(&FromUi::SongEndReset));
+        assert!(p.soundcheck.is_none() && !p.set_changing());
+        p.step_browser();
+        let kept = lib.load_set(&set).unwrap();
+        assert!(kept.songs[1].soundcheck.is_some());
+        assert!(kept.songs[2].soundcheck.is_none());
+        let log = events_log(&p);
+        assert!(
+            log.iter()
+                .any(|l| l
+                    .starts_with("show: soundcheck of Sunday rehearsal.set stopped: 2 songs in ")),
+            "{log:?}"
+        );
+        assert!(!p.browser.as_ref().unwrap().soundcheck_running());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Live shows B1 through the screen: Play set puts up the Show view

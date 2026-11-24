@@ -1,11 +1,11 @@
 //! The Sets place and the Set editor (live shows B1; layout spec 4p): a
 //! set is a list of songs in order, each a project in Projects, kept as
 //! `Sets/<name>.set`. The place lists the sets with their last check, a
-//! set picked shows its card (Play set, Edit set, Check set, Rename, Copy,
-//! Delete), Check set opens the check view (each song with its chip and
-//! its numbers; Check every file reads every sound), and Edit set lists its
-//! songs, each set in the Selected column: Starts, Ends, Fade, Needs and
-//! Notes.
+//! set picked shows its card (Play set, Edit set, Check set, Soundcheck,
+//! Rename, Copy, Delete), Check set opens the check view (each song with
+//! its chip and its numbers; Check every file reads every sound), and Edit
+//! set lists its songs, each set in the Selected column: Starts, Ends,
+//! Fade, Needs and Notes.
 //!
 //! This module draws the place from a [`SetsScreen`] and says what a touch
 //! meant as a [`SetInput`]; the browser's logic (`state::set_place`) keeps
@@ -58,6 +58,19 @@ pub enum SetButton {
     KeepChanges,
     /// A song that changed on stage: its recovery copies go to the Trash.
     ThrowChanges,
+    /// Soundcheck (live shows B2b): the set's card asks it for every song,
+    /// the check view's Selected column for the song picked.
+    Soundcheck,
+    SoundcheckSong,
+    /// Soundcheck's question: start it, or not.
+    StartSoundcheck,
+    CancelSoundcheck,
+    /// While it runs: stop it (what it measured is kept), or go on to the
+    /// next song.
+    StopSoundcheck,
+    SkipSong,
+    /// It's over: back to the check view.
+    SoundcheckDone,
 }
 
 impl SetButton {
@@ -81,11 +94,21 @@ impl SetButton {
             SetButton::NeedsDone => "Done",
             SetButton::KeepChanges => "Keep the changes",
             SetButton::ThrowChanges => "Throw them away",
+            SetButton::Soundcheck => "Soundcheck",
+            SetButton::SoundcheckSong => "Soundcheck this song",
+            SetButton::StartSoundcheck => "Start soundcheck",
+            SetButton::CancelSoundcheck => "Cancel",
+            SetButton::StopSoundcheck => "Stop soundcheck",
+            SetButton::SkipSong => "Skip this song",
+            SetButton::SoundcheckDone => "Done",
         }
     }
 
     fn primary(self) -> bool {
-        matches!(self, SetButton::PlaySet | SetButton::KeepChanges)
+        matches!(
+            self,
+            SetButton::PlaySet | SetButton::KeepChanges | SetButton::StartSoundcheck
+        )
     }
 
     fn danger(self) -> bool {
@@ -95,6 +118,7 @@ impl SetButton {
                 | SetButton::Remove
                 | SetButton::ConfirmRemove
                 | SetButton::ThrowChanges
+                | SetButton::StopSoundcheck
         )
     }
 }
@@ -107,6 +131,8 @@ pub enum SetField {
     Fade,
     /// A tap lists the rig's keyboards and controls.
     Needs,
+    /// Soundcheck's question: Out loud or Muted (live shows B2b).
+    Sound,
 }
 
 impl SetField {
@@ -116,6 +142,7 @@ impl SetField {
             SetField::Ends => "Ends",
             SetField::Fade => "Fade",
             SetField::Needs => "Needs",
+            SetField::Sound => "Sound",
         }
     }
 }
@@ -133,6 +160,10 @@ pub struct SetRow {
     pub chip: Option<(String, Tone)>,
     /// A + at the row's right (adding songs).
     pub add: bool,
+    /// Outlined in the accent: the song Soundcheck is on (live shows B2b).
+    pub lit: bool,
+    /// Drawn faint: a song Soundcheck hasn't reached ("waiting").
+    pub faint: bool,
 }
 
 /// A value row of a song's card: ‹ value ›.
@@ -160,13 +191,16 @@ pub struct NeedRow {
 }
 
 /// A check line's mark (live shows B2): ✓ green, i a blue note, ! amber
-/// limits, × red not ready.
+/// limits, × red not ready; for Soundcheck's steps (B2b), ● the step now
+/// and ○ a step to come.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckMark {
     Fine,
     Note,
     Limits,
     NotReady,
+    Now,
+    Later,
 }
 
 /// One line of a song's checks in the Selected column: its mark, what it
@@ -205,6 +239,18 @@ pub struct SetDetail {
     pub buttons: Vec<SetButton>,
     /// Faint buttons (a check is running).
     pub faint: Vec<SetButton>,
+    /// A few lines of words under the title (Soundcheck's question and how
+    /// it went, live shows B2b).
+    pub para: Option<String>,
+    /// The CPU while a part plays, as a bar: now and at its worst, %;
+    /// under it, label and value ("Longest disk wait", "9 ms"). It goes
+    /// after the first `meter_at` checks.
+    pub meter: Option<(f32, f32)>,
+    pub meter_facts: Vec<(String, String)>,
+    pub meter_at: usize,
+    /// One line after the checks, the values and the meter ("Playing out
+    /// loud on Main out" in amber).
+    pub after: Option<(String, Tone)>,
 }
 
 /// Everything the place draws.
@@ -278,6 +324,9 @@ const STEP_LABEL_W: i32 = 150;
 const NOTES_H: i32 = 100;
 const NEED_H: i32 = 52;
 const SUB_H: i32 = 30;
+/// Soundcheck's words under the title: at most this many lines of 20 px.
+const PARA_LINES: usize = 3;
+const PARA_H: i32 = PARA_LINES as i32 * 20 + 8;
 
 /// A row's pitch: songs in a set are 50 px rows, sets and projects 48.
 pub fn row_h(view: SetsView) -> i32 {
@@ -353,7 +402,7 @@ impl Geo {
             .collect();
         // Under the title and its line (and the reason, if any): the
         // values, then Notes.
-        let top = title_h(&s.detail);
+        let top = title_h(&s.detail) + if s.detail.para.is_some() { PARA_H } else { 0 };
         let mut y = body.y + top + 8;
         let mut steppers = Vec::new();
         let mut needs = Vec::new();
@@ -553,7 +602,8 @@ fn ink(cx: &PaintCx, tone: Tone) -> mpfree_ui::Color {
         Tone::Plain => t.text,
         Tone::Good => t.good,
         Tone::Warn => t.warn,
-        Tone::Accent | Tone::Accent2 => t.accent2,
+        Tone::Accent => t.accent,
+        Tone::Accent2 => t.accent2,
         Tone::Bad => t.bad,
     }
 }
@@ -584,7 +634,7 @@ pub fn paint(cx: &mut PaintCx, list: Rect, detail: Rect, s: &SetsScreen) {
             t.size_body,
             *br,
             Align::Center,
-            t.text,
+            if b.danger() { t.bad } else { t.text },
             b.label(),
         );
     }
@@ -656,6 +706,9 @@ pub fn paint(cx: &mut PaintCx, list: Rect, detail: Rect, s: &SetsScreen) {
 
 fn paint_row(cx: &mut PaintCx, rr: Rect, view: SetsView, row: &SetRow, selected: bool) {
     let t = cx.theme.clone();
+    if row.lit {
+        cx.canvas.stroke_round_rect(rr, t.round(10), 2, t.accent);
+    }
     if selected {
         cx.canvas.fill_round_rect(rr, t.round(10), t.raised);
         cx.canvas
@@ -710,7 +763,9 @@ fn paint_row(cx: &mut PaintCx, rr: Rect, view: SetsView, row: &SetRow, selected:
             t.size_body,
             top.take_top(4).1,
             Align::Left,
-            t.text,
+            // Faint (waiting while Soundcheck runs): the dim words, which
+            // read in every theme.
+            if row.faint { t.text_dim } else { t.text },
             &row.name,
         );
         cx.text(
@@ -718,7 +773,11 @@ fn paint_row(cx: &mut PaintCx, rr: Rect, view: SetsView, row: &SetRow, selected:
             t.size_small * 0.9,
             bottom.take_bottom(bottom.h - 2).1.take_top(bottom.h - 8).0,
             Align::Left,
-            ink(cx, row.sub_tone),
+            if row.faint {
+                t.text_dim
+            } else {
+                ink(cx, row.sub_tone)
+            },
             &row.sub,
         );
         return;
@@ -763,8 +822,16 @@ fn paint_mark(cx: &mut PaintCx, x: i32, y: i32, mark: CheckMark) {
         CheckMark::Note => (t.accent, "i"),
         CheckMark::Limits => (t.warn, "!"),
         CheckMark::NotReady => (t.bad, "\u{d7}"),
+        // Soundcheck's steps: ● now, ○ to come.
+        CheckMark::Now => (t.accent, ""),
+        CheckMark::Later => (t.text_faint, ""),
     };
     let r = Rect::new(x, y, 18, 18);
+    if mark == CheckMark::Now {
+        cx.canvas.stroke_round_rect(r, 9, 2, c);
+        cx.canvas.fill_round_rect(r.inset(5), 4, c);
+        return;
+    }
     cx.canvas.stroke_round_rect(r, 9, 2, c);
     cx.text(
         FontId::Bold,
@@ -778,7 +845,14 @@ fn paint_mark(cx: &mut PaintCx, x: i32, y: i32, mark: CheckMark) {
 
 /// The check lines from `y` down to `bottom` in a column `x`..`x + w`:
 /// each its mark, then its word in bold and what it found, wrapped.
-fn paint_checks(cx: &mut PaintCx, x: i32, mut y: i32, w: i32, bottom: i32, rows: &[CheckRow]) {
+fn paint_checks(
+    cx: &mut PaintCx,
+    x: i32,
+    mut y: i32,
+    w: i32,
+    bottom: i32,
+    rows: &[CheckRow],
+) -> i32 {
     let t = cx.theme.clone();
     let px = t.size_small;
     let lh = 20;
@@ -789,16 +863,33 @@ fn paint_checks(cx: &mut PaintCx, x: i32, mut y: i32, w: i32, bottom: i32, rows:
             break;
         }
         paint_mark(cx, x, y + 1, row.mark);
-        let word = format!("{}:", row.word);
-        let ww = cx.measure(FontId::Bold, px, &word) + 6;
-        cx.text(
-            FontId::Bold,
-            px,
-            Rect::new(text_x, y, ww, lh),
-            Align::Left,
-            t.text,
-            &word,
-        );
+        let ink_word = if row.mark == CheckMark::Later {
+            t.text_dim
+        } else {
+            t.text
+        };
+        let ink_text = t.text_dim;
+        // A row with no word is a plain line (how Soundcheck went).
+        let word = if row.word.is_empty() {
+            String::new()
+        } else {
+            format!("{}:", row.word)
+        };
+        let ww = if word.is_empty() {
+            0
+        } else {
+            cx.measure(FontId::Bold, px, &word) + 6
+        };
+        if !word.is_empty() {
+            cx.text(
+                FontId::Bold,
+                px,
+                Rect::new(text_x, y, ww, lh),
+                Align::Left,
+                ink_word,
+                &word,
+            );
+        }
         // The first line starts after the word; the rest use the column.
         let mut first = String::new();
         let mut rest = Vec::new();
@@ -822,27 +913,120 @@ fn paint_checks(cx: &mut PaintCx, x: i32, mut y: i32, w: i32, bottom: i32, rows:
             px,
             Rect::new(text_x + ww, y, text_w - ww, lh),
             Align::Left,
-            t.text_dim,
+            ink_text,
             &first,
         );
         y += lh;
         if !rest.is_empty() {
             for l in wrap(cx, px, &rest.join(" "), text_w) {
                 if y + lh > bottom {
-                    return;
+                    return y;
                 }
                 cx.text(
                     FontId::Sans,
                     px,
                     Rect::new(text_x, y, text_w, lh),
                     Align::Left,
-                    t.text_dim,
+                    ink_text,
                     &l,
                 );
                 y += lh;
             }
         }
         y += 6;
+    }
+    y
+}
+
+/// The CPU a part may take before it counts as too much (the meter's
+/// tick), %.
+const CPU_LIMIT: f32 = 85.0;
+
+/// The meter's height with `facts` lines under its bar, the gap after it
+/// included.
+fn meter_h(facts: usize) -> i32 {
+    74 + 20 * facts as i32 + 8
+}
+
+/// Soundcheck's meter (layout spec 4p): a box with the CPU as a bar, now
+/// filled and its worst a tick, the limit a faint amber tick, "now 64 % ·
+/// worst 71 %" and "limit 85 %" under it, then each fact, label and value.
+fn paint_meter(cx: &mut PaintCx, r: Rect, now: f32, worst: f32, facts: &[(String, String)]) {
+    let t = cx.theme.clone();
+    let px = t.size_small;
+    cx.canvas.fill_round_rect(r, t.round(8), t.raised);
+    let (x, w) = (r.x + 14, r.w - 28);
+    cx.text(
+        FontId::Sans,
+        px * 0.93,
+        Rect::new(x, r.y + 8, w, 18),
+        Align::Left,
+        t.text_dim,
+        "CPU",
+    );
+    let bar = Rect::new(x, r.y + 30, w, 12);
+    cx.canvas.fill_round_rect(bar, 6, t.outline);
+    let at = |v: f32| bar.x + (bar.w as f32 * (v / 100.0).clamp(0.0, 1.0)) as i32;
+    let tone = |v: f32| {
+        if v >= CPU_LIMIT {
+            t.bad
+        } else if v >= 70.0 {
+            t.warn
+        } else {
+            t.good
+        }
+    };
+    cx.canvas.fill_round_rect(
+        Rect::new(bar.x, bar.y, (at(now) - bar.x).max(6), bar.h),
+        6,
+        tone(now),
+    );
+    cx.canvas.fill_rect(
+        Rect::new(at(worst).min(bar.right() - 2), bar.y - 4, 2, bar.h + 8),
+        t.text,
+    );
+    cx.canvas.fill_rect(
+        Rect::new(at(CPU_LIMIT), bar.y - 4, 1, bar.h + 8),
+        t.warn.with_alpha(200),
+    );
+    let words = format!("now {:.0} %  \u{b7}  worst {:.0} %", now, worst);
+    cx.text(
+        FontId::Sans,
+        px,
+        Rect::new(x, r.y + 46, w, 20),
+        Align::Left,
+        t.text,
+        &words,
+    );
+    cx.text(
+        FontId::Sans,
+        px * 0.86,
+        Rect::new(x, r.y + 46, w, 20),
+        Align::Right,
+        t.warn,
+        &format!("limit {CPU_LIMIT:.0} %"),
+    );
+    for (i, (label, value)) in facts.iter().enumerate() {
+        let y = r.y + 70 + 20 * i as i32;
+        if y + 20 > r.bottom() {
+            break;
+        }
+        cx.text(
+            FontId::Sans,
+            px * 0.93,
+            Rect::new(x, y, w, 20),
+            Align::Left,
+            t.text_dim,
+            label,
+        );
+        cx.text(
+            FontId::Sans,
+            px,
+            Rect::new(x + w * 45 / 100, y, w - w * 45 / 100, 20),
+            Align::Left,
+            t.text,
+            value,
+        );
     }
 }
 
@@ -909,6 +1093,21 @@ fn paint_detail(cx: &mut PaintCx, detail: Rect, g: &Geo, d: &SetDetail) {
         );
         rest = after;
     }
+    if let Some(para) = &d.para {
+        let (pr, after) = rest.take_top(PARA_H);
+        let lines = wrap(cx, t.size_small, para, pr.w);
+        for (k, l) in lines.iter().take(PARA_LINES).enumerate() {
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                Rect::new(pr.x, pr.y + 4 + k as i32 * 20, pr.w, 20),
+                Align::Left,
+                t.text,
+                l,
+            );
+        }
+        rest = after;
+    }
     let mut rest = rest.take_top(8).1;
     for (label, value, tone) in &d.facts {
         if rest.h < 30 {
@@ -934,8 +1133,30 @@ fn paint_detail(cx: &mut PaintCx, detail: Rect, g: &Geo, d: &SetDetail) {
     }
     // The boxed lists, in what is left above the buttons.
     let lists_bottom = g.buttons.first().map_or(body.bottom(), |(_, r)| r.y - 8);
-    if !d.checks.is_empty() {
-        paint_checks(cx, rest.x, rest.y, rest.w, lists_bottom, &d.checks);
+    let mut low = rest.y;
+    // The meter (Soundcheck's part playing) goes between its checks.
+    let split = match d.meter {
+        Some(_) => d.meter_at.min(d.checks.len()),
+        None => d.checks.len(),
+    };
+    if split > 0 {
+        low = paint_checks(cx, rest.x, rest.y, rest.w, lists_bottom, &d.checks[..split]);
+    }
+    if let Some((now, worst)) = d.meter {
+        let h = meter_h(d.meter_facts.len());
+        if low + h <= lists_bottom {
+            paint_meter(
+                cx,
+                Rect::new(rest.x + 28, low, rest.w - 28, h - 8),
+                now,
+                worst,
+                &d.meter_facts,
+            );
+            low += h;
+        }
+    }
+    if split < d.checks.len() {
+        low = paint_checks(cx, rest.x, low, rest.w, lists_bottom, &d.checks[split..]);
     }
     if !d.lists.is_empty() && rest.y + 60 < lists_bottom {
         let boxr = Rect::new(rest.x, rest.y + 4, rest.w, lists_bottom - rest.y - 8);
@@ -1080,6 +1301,22 @@ fn paint_detail(cx: &mut PaintCx, detail: Rect, g: &Geo, d: &SetDetail) {
             );
         }
     }
+    if let Some((words, tone)) = &d.after {
+        let below_steps = g.steppers.last().map_or(0, |(_, r)| r.bottom() + 10);
+        let y = low.max(below_steps).max(rest.y) + 4;
+        let c = ink(cx, *tone);
+        for (k, l) in wrap(cx, t.size_small, words, rest.w)
+            .iter()
+            .take(2)
+            .enumerate()
+        {
+            let r = Rect::new(rest.x, y + k as i32 * 20, rest.w, 20);
+            if r.bottom() > lists_bottom {
+                break;
+            }
+            cx.text(FontId::Sans, t.size_small, r, Align::Left, c, l);
+        }
+    }
     for (b, br) in &g.buttons {
         let faint = d.faint.contains(b);
         button(cx, *br, b.label(), b.primary() && !faint, b.danger(), faint);
@@ -1140,4 +1377,33 @@ fn wrap(cx: &mut PaintCx, px: f32, text: &str, w: i32) -> Vec<String> {
 pub struct RigThing {
     pub name: String,
     pub connected: bool,
+}
+
+/// Soundcheck running (live shows B2b), as the app tells the browser each
+/// frame ([`crate::Browser::set_soundcheck`]): what the check view and its
+/// Selected column draw while it plays the set through.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundcheckNow {
+    /// The set it plays.
+    pub loc: mpfree_library::Loc,
+    /// The set's songs it checks, in order, and the one it's on (from 0;
+    /// it can be the song after the last, opened for its change).
+    pub songs: Vec<usize>,
+    pub song: usize,
+    /// Which of `songs` it's on, from 0.
+    pub pos: usize,
+    /// About how long it has left, in seconds.
+    pub left_s: u64,
+    /// Its three steps for the song it's on, each with its mark (✓ done,
+    /// ● now, ○ to come) and what it found.
+    pub steps: Vec<CheckRow>,
+    /// The CPU while the part plays: now and at its worst, %, and under
+    /// it the longest disk wait, misses and xruns, each a label and value.
+    pub meter: Option<(f32, f32)>,
+    pub meter_facts: Vec<(String, String)>,
+    /// The song's row's line in the list ("opened in 2.8 s · 540 MB · now
+    /// playing Chorus 2").
+    pub row_line: String,
+    /// Sound goes out (not Muted).
+    pub out_loud: bool,
 }
