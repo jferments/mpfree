@@ -588,17 +588,17 @@ spaceship looper-listen 11 # before the theme refactor (phase 0 baseline)
 spaceship looper-listening 7 # before the theme refactor (phase 0 baseline)
 spaceship looper-loops 11 # before the theme refactor (phase 0 baseline)
 spaceship looper-master-refused 8 # before the theme refactor (phase 0 baseline)
-spaceship looper-move 7 # new screen (looper refactor R2, Move start / Move end): the Looper page's own runs, as looper-smart-point; none in the loop point view's steps, arrows, hits or your move
-spaceship looper-move-ab 7 # new screen (looper refactor R2, Move start / Move end): the Looper page's own runs, as looper-smart-point; none in the loop point view's steps, arrows, hits or your move
-spaceship looper-moved 7 # new screen (looper refactor R2, Move start / Move end): the Looper page's own runs, as looper-smart-point; none in the loop point view's steps, arrows, hits or your move
+spaceship looper-move 11 # the Looper page's own runs, as looper-listen (the deck's empty loops), and the free Q3 and Q4 cards' while the loop point view shows (Q1 and Q2 move its start and end; spaceship's text_faint on bg, as sequencer-notes-tool); none in the view's own
+spaceship looper-move-ab 11 # the Looper page's own runs, as looper-listen (the deck's empty loops), and the free Q3 and Q4 cards' while the loop point view shows (Q1 and Q2 move its start and end; spaceship's text_faint on bg, as sequencer-notes-tool); none in the view's own
+spaceship looper-moved 11 # the Looper page's own runs, as looper-listen (the deck's empty loops), and the free Q3 and Q4 cards' while the loop point view shows (Q1 and Q2 move its start and end; spaceship's text_faint on bg, as sequencer-notes-tool); none in the view's own
 spaceship looper-perform-throws 11 # before the theme refactor (phase 0 baseline)
 spaceship looper-smart-ask 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 spaceship looper-smart-chip 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 spaceship looper-smart-close-call 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
-spaceship looper-smart-point 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
-spaceship looper-smart-point-ab 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
-spaceship looper-smart-point-memory-full 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
-spaceship looper-smart-point-snapped 7 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
+spaceship looper-smart-point 11 # the Looper page's own runs, as looper-listen (the deck's empty loops), and the free Q3 and Q4 cards' while the loop point view shows (Q1 and Q2 move its start and end; spaceship's text_faint on bg, as sequencer-notes-tool); none in the view's own
+spaceship looper-smart-point-ab 11 # the Looper page's own runs, as looper-listen (the deck's empty loops), and the free Q3 and Q4 cards' while the loop point view shows (Q1 and Q2 move its start and end; spaceship's text_faint on bg, as sequencer-notes-tool); none in the view's own
+spaceship looper-smart-point-memory-full 11 # the Looper page's own runs, as looper-listen (the deck's empty loops), and the free Q3 and Q4 cards' while the loop point view shows (Q1 and Q2 move its start and end; spaceship's text_faint on bg, as sequencer-notes-tool); none in the view's own
+spaceship looper-smart-point-snapped 11 # the Looper page's own runs, as looper-listen (the deck's empty loops), and the free Q3 and Q4 cards' while the loop point view shows (Q1 and Q2 move its start and end; spaceship's text_faint on bg, as sequencer-notes-tool); none in the view's own
 spaceship looper-smart-snapped 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 spaceship looper-smart-start 11 # the Looper page's own runs, as looper-listen (the deck's empty loops); none in smart loop end's chip, view or buttons
 spaceship looper-sources 8 # before the theme refactor (phase 0 baseline)

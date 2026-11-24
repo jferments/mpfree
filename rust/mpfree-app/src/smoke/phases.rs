@@ -2522,6 +2522,63 @@ mod looper {
         });
     }
 
+    /// While the loop point view shows, Q1 moves the start and Q2 the end,
+    /// a step a detent (the card's Q-Link option, the looper refactor's
+    /// R2); Q3 and Q4 move nothing; the column and the hint line say so,
+    /// and closing the view gives the Q-Links back to their bank.
+    #[test]
+    fn q1_and_q2_move_the_start_and_end_while_the_loop_point_view_shows() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let (_, _, _, _) = closed_late(&mut s);
+            open_point(&mut s);
+            let column = |s: &Session| {
+                let q = s
+                    .screen
+                    .ui
+                    .get::<mpfree_ui::qlink::QLinkColumn>(crate::looper_tab::QLINKS)
+                    .expect("the Q-Links");
+                (q.title.clone(), q.cards.clone())
+            };
+            let (title, cards) = column(&s);
+            assert_eq!(title, "Loop point");
+            assert_eq!(
+                (cards[0].name.as_str(), cards[1].name.as_str()),
+                ("Start", "End")
+            );
+            assert!(cards[2].is_free() && cards[3].is_free());
+            assert!(
+                s.hint()
+                    .starts_with("Q1: move the start   ·   Q2: move the end"),
+                "{}",
+                s.hint()
+            );
+            let st = status(&s);
+            let start = st.moved.map_or(0, |m| m.start);
+            let sixteenth = (st.frames as i64 + 8) / 16;
+            // 1 ms: Q2 three detents earlier.
+            s.press("leditor", "point-step", "Step: 1 ms");
+            s.qlink(1, -3).run_for(0.1);
+            let m = moving(&mut s).expect("a move").to;
+            assert_eq!(m.end, -3 * i64::from(crate::RATE / 1000));
+            assert_eq!(column(&s).1[1].value, "\u{2212}3 ms");
+            // 1/16: Q1 one detent later.
+            s.press("leditor", "point-step", "Step: 1/16");
+            s.qlink(0, 1).run_for(0.1);
+            let m2 = moving(&mut s).expect("a move").to;
+            assert_eq!((m2.start, m2.end), (start + sixteenth, m.end));
+            // Q3 and Q4 move nothing.
+            s.qlink(2, 5).qlink(3, -5).run_for(0.1);
+            assert_eq!(moving(&mut s).map(|m| m.to), Some(m2));
+            assert_eq!(status(&s).moved, st.moved, "nothing changed yet");
+            // Closed: the bank again.
+            s.press("leditor", "point-close", "");
+            s.run_for(0.1);
+            assert_eq!(column(&s).0, "Loops 1-4");
+            assert!(s.hint().starts_with("Tap a ring"), "{}", s.hint());
+        });
+    }
+
     /// Smart loop end step 2's screens: a snap over recorded audio asks on
     /// the hint line, with Snap anyway and Not now at its end; Not now
     /// takes them away and nothing changes.

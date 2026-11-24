@@ -1213,6 +1213,12 @@ impl LoopEditor {
         }
     }
 
+    /// The loop point view, while it shows (as [`LoopEditor::point_shown`]):
+    /// the Q-Links move its start and end then.
+    pub fn shown_point(&self) -> Option<&PointLook> {
+        self.point_shown()
+    }
+
     /// The loop point view, while it shows in the lanes' place: open, with
     /// something in it, and none of Records from, Send or the undo
     /// history over it.

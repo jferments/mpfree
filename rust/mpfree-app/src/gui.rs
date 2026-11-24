@@ -257,6 +257,9 @@ pub const EDIT_CLIPS_LAYOUT: &str =
 /// The hint line under an empty clip's note editor (composing tools S2.6,
 /// board D).
 const EMPTY_CLIP_HINT: &str = "Add a part: Arrange's panel on this clip's row and track   ·   play or draw: the clip is yours as now   ·   Continue shows once the clip has notes";
+/// The Looper tab's hint line while the loop point view shows starts
+/// with this (Q1 and Q2 move its start and end).
+const LOOPER_POINT_HINT: &str = "Q1: move the start";
 const EDIT_CLIPS_HINT: &str = "Tap a clip, or turn the wheel and push: the Sequencer edits it and nothing starts   ·   Back or a tab: close the list";
 /// The Sequencer's step size chip's list (step sequencer refactor D1).
 pub const STEP_SIZE_PAGE: &str = "Step size";
@@ -8630,6 +8633,19 @@ impl Player {
                 self.outbox.push(f);
             }
         }
+        // The loop point view came or went (its look comes with the
+        // looper's view): the hint line says what the Q-Links do now.
+        let point = self.view == View::Looper
+            && self.looper.smart.length.is_none()
+            && self.looper.smart.asking.is_none()
+            && crate::looper_page::LooperPage::point_showing(&self.ui);
+        let said = self
+            .ui
+            .get::<mpfree_ui::widgets::Label>("hint")
+            .is_some_and(|l| l.text.starts_with(LOOPER_POINT_HINT));
+        if point != said && self.view == View::Looper {
+            self.refresh_hint();
+        }
     }
 
     /// A Q-Link on the Looper tab: the loops' levels (Q-LINK: loops 5 to
@@ -8658,6 +8674,14 @@ impl Player {
                     .push(FromUi::LoopCommand(mpfree_looper::Command::Edit(
                         mpfree_looper::Edit::SeamFade(f),
                     )))
+            }
+            // A step a detent, as the view's arrows (16 at most a turn).
+            Some(LoopTurn::Move(edge, ticks)) => {
+                let d = ticks.signum() as i8;
+                for _ in 0..ticks.unsigned_abs().min(16) {
+                    self.outbox
+                        .push(FromUi::LoopMove(crate::looping::MoveAct::Step(edge, d)));
+                }
             }
             None => {}
         }
@@ -9768,6 +9792,9 @@ impl Player {
                     .asking
                     .map(|(snap, read)| crate::looping::ask_words(self.looper.selected, snap, read))
                     .unwrap_or_default(),
+                View::Looper if crate::looper_page::LooperPage::point_showing(&self.ui) => format!("{LOOPER_POINT_HINT}   ·   Q2: move the end   ·   \
+                                         a step a click (STEP: 1/16, 1 ms, Hit)   ·   drag a window: put an edge there   ·   \
+                                         ×: close   ·   {stop}"),
                 View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
                                          drag: scroll   ·   Undo history: close   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
                 View::Looper => format!("Tap a ring: record, play, overdub   ·   hold it: clear   ·   \
@@ -22853,13 +22880,16 @@ fn sample_smart_loop_end(p: &mut Player, name: &str, open: bool) {
         }
         v.smart.point = Some(point);
     }
-    p.apply(ToUi::Looper(Box::new(v)));
+    p.apply(ToUi::Looper(Box::new(v.clone())));
     if open {
         if let Some(e) =
             p.ui.get_mut::<crate::looper_tab::LoopEditor>(crate::looper_tab::EDITOR)
         {
             e.open_point();
         }
+        // The looper's next view: the Q-Links and the hint line follow
+        // the view (Q1 and Q2 move its start and end).
+        p.apply(ToUi::Looper(Box::new(v)));
     }
     // (The tab telling the looper, for a desk there is none of here.)
     let _ = crate::looper_tab::take_actions(&mut p.ui);

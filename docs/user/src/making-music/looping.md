@@ -222,7 +222,7 @@ When loop memory was full as the loop closed, it kept nothing after your tap, so
 When neither your tap nor the snap is quite right, move the loop's start or end yourself in the loop point view, hear it, and keep it or put it away.
 
 - **STEP**, at the top right of the view, sets how far each move goes: **1/16** (a sixteenth note at the loop's tempo, the first choice), **1 ms**, or **Hit** (to the next or the previous hit you can see in that window). The hits are the short marks under the sound. STEP stays as you left it.
-- **◀** and **▶**, after Start and End, move that edge earlier or later by one step.
+- **◀** and **▶**, after Start and End, move that edge earlier or later by one step. On the MPC, **Q1** and **Q2** do the same for the start and the end, a step a click, while the view is open; Q3 and Q4 move nothing until it closes.
 - **Drag on a window** to put that edge where your finger is. A finger within a few pixels of a hit puts it exactly on the hit.
 - Your move is a white line with a grip, labelled "your move" and how far it is from your press or your tap ("−65 ms"). Each window follows the edge you move, so you can keep going past what it showed.
 - Nothing changes until you decide. The line says what your move would make of the loop ("Your move makes it 4 bars at 92.58 BPM, from the loop's next downbeat."), and the buttons are **Move** and **Cancel**. A move can't go past the other edge, or outside what the first pass recorded.
@@ -261,7 +261,7 @@ Capture needs room in the loop memory for the bars, as a recording does; when th
 | **Loops 5-8** | Loops 5 to 8's levels. |
 | **The picked loop** | **Feedback**, the picked layer's **level** and **pan**, and the **seam fade**: how smoothly the loop's end joins its start, from a hard cut to the looper's longest fade, a millisecond a click. |
 
-Press **Q-LINK** to step from one bank to the next, and **SHIFT + Q-LINK** to step back; the line at the bottom names the bank.
+Press **Q-LINK** to step from one bank to the next, and **SHIFT + Q-LINK** to step back; the line at the bottom names the bank. While [the loop point view](#the-loop-point-view) is open, Q1 and Q2 move the loop's start and end instead (see [Move the start or end yourself](#move-the-start-or-end-yourself)), whatever the bank.
 
 ### The pads as loop keys
 

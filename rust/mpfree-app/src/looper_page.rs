@@ -20,7 +20,9 @@ use crate::looper_tab::{
     HistoryList, LayerDrag, LayerRow, LoopEditor, Pick, PointLook, PointPane, SmartChip, Strip,
     ASK, BAR_CHOICES, EDITOR, LOOP_COLOURS, QLINKS, SEND_SHOW, SPEED_CHOICES,
 };
-use crate::looping::{bars_words_n, hand_moved, LoopSource, LoopWave, LooperView, Side, POINT_MS};
+use crate::looping::{
+    bars_words_n, hand_moved, Edge, LoopSource, LoopWave, LooperView, Side, POINT_MS,
+};
 use mpfree_looper::{
     After, Clock, Command, Edit, History, LayerCommand, LayerInfo, Overdubs, Phase, Shift, Snap,
     Starts, Status, Step, LOOP_MAX_BPM, LOOP_MIN_BPM, MAX_LAYERS, MAX_LOOPS, MAX_SEAM,
@@ -277,6 +279,9 @@ pub enum LoopTurn {
     FadeOld(f32),
     /// The picked loop's seam fade, in frames.
     Seam(u32),
+    /// Move start / Move end while the loop point view shows: Q1 the
+    /// start, Q2 the end, a step a detent (later above 0).
+    Move(Edge, i32),
 }
 
 /// The Q-Link banks on the Looper tab, in Q-LINK's order.
@@ -917,6 +922,15 @@ impl LooperPage {
         if ticks == 0 || k > 3 {
             return None;
         }
+        // The loop point view shows: Q1 moves the start, Q2 the end, by
+        // its step; Q3 and Q4 move nothing.
+        if Self::point_showing(ui) {
+            return match k {
+                0 => Some(LoopTurn::Move(Edge::Start, ticks)),
+                1 => Some(LoopTurn::Move(Edge::End, ticks)),
+                _ => None,
+            };
+        }
         let d = ticks as f32 * if fine { 0.1 } else { 0.5 };
         let step_db = |level: f32| {
             let db = (20.0 * level.max(1e-6).log10()).max(-60.0);
@@ -998,7 +1012,28 @@ impl LooperPage {
         }
     }
 
+    /// Whether the loop point view shows (the Q-Links move its start and
+    /// end, and the hint line says so).
+    pub fn point_showing(ui: &Ui) -> bool {
+        ui.get::<LoopEditor>(EDITOR)
+            .is_some_and(|e| e.shown_point().is_some())
+    }
+
     fn refresh_qlinks(&mut self, ui: &mut Ui, v: &LooperView) {
+        if let Some(look) = ui
+            .get::<LoopEditor>(EDITOR)
+            .and_then(|e| e.shown_point())
+            .cloned()
+        {
+            let cards = point_qlinks(v, &look);
+            if let Some(q) = ui.get_mut::<QLinkColumn>(QLINKS) {
+                if q.cards != cards || q.title != "Loop point" {
+                    q.cards = cards;
+                    q.title = "Loop point".to_string();
+                }
+            }
+            return;
+        }
         let loop_card = |n: usize| {
             let l = &v.loops[n];
             let name = format!("Loop {}", n + 1);
@@ -2001,6 +2036,35 @@ fn bpm_of(ticks: i64, frames: i64, rate: u32) -> f64 {
 
 /// A difference in ms with its sign, as the loop point view says it:
 /// "−48 ms", "+80 ms".
+/// The Q-Links while the loop point view shows: Q1 the start and Q2 the
+/// end, each where your move (or else the loop) has it, from your press
+/// or your tap, its ring where it is across its window; Q3 and Q4 move
+/// nothing.
+fn point_qlinks(v: &LooperView, look: &PointLook) -> [QLinkCard; 4] {
+    let s = &v.status;
+    let at = v
+        .smart
+        .moving
+        .map(|m| m.to)
+        .or(s.moved)
+        .unwrap_or(Shift::NONE);
+    let card = |name: &str, f: i64, pane: &PointPane| {
+        let pos = pane.moving.as_ref().map_or(pane.edge.0, |m| m.0);
+        QLinkCard::new(
+            name,
+            "Loop point",
+            &signed_ms(f, v.rate),
+            pos.clamp(0.0, 1.0),
+        )
+    };
+    [
+        card("Start", at.start, &look.start),
+        card("End", at.end, &look.end),
+        QLinkCard::default(),
+        QLinkCard::default(),
+    ]
+}
+
 fn signed_ms(frames: i64, rate: u32) -> String {
     let ms = ms_of(frames, rate);
     match frames.signum() {
