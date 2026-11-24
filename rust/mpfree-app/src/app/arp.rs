@@ -2011,6 +2011,10 @@ impl App {
             arp_ids::RATE => Rate::ALL.iter().position(|r| *r == rate).unwrap_or(0) as f32,
             arp_ids::GATE => f32::from(s.gate),
             arp_ids::SWING => f32::from(s.swing),
+            arp_ids::SPEED => mpfree_arp::Speed::ALL
+                .iter()
+                .position(|v| *v == s.speed)
+                .unwrap_or(1) as f32,
             _ => f32::from(s.octaves),
         };
         Some((info, v))
@@ -2044,6 +2048,9 @@ impl App {
                 arp_ids::RATE => *rate = Rate::ALL[v.min(Rate::ALL.len() - 1)],
                 arp_ids::GATE => s.gate = v as u8,
                 arp_ids::SWING => s.swing = v as u8,
+                arp_ids::SPEED => {
+                    s.speed = mpfree_arp::Speed::ALL[v.min(mpfree_arp::Speed::ALL.len() - 1)]
+                }
                 _ => s.octaves = v as u8,
             }
             *s = s.clamped();
@@ -2130,6 +2137,7 @@ fn hand_on(id: u16) -> Option<HandOn> {
         arp_ids::SWING => HandOn::Swing,
         arp_ids::OCTAVES => HandOn::Octaves,
         arp_ids::MODIFIER => HandOn::Modifier,
+        arp_ids::SPEED => HandOn::Speed,
         _ => return None,
     })
 }
@@ -2144,6 +2152,9 @@ const RATE_NAMES: [&str; 7] = {
     }
     n
 };
+
+/// The names of a phrase's speeds, as the Phrase tab's slider says them.
+const SPEED_NAMES: [&str; 3] = ["Half", "As written", "Double"];
 
 /// What an arp setting is to MIDI Learn (`Owner::Arp`, ids in
 /// `mpfree_param::arp`): its name, range and units, as the arp's Q-Link
@@ -2173,6 +2184,14 @@ pub fn arp_info(id: u16) -> Option<ParamInfo> {
         arp_ids::SWING => info("Swing", 50.0, 75.0, 50.0, Unit::Percent, Curve::Stepped),
         arp_ids::OCTAVES => info("Octaves", 1.0, 4.0, 1.0, Unit::None, Curve::Stepped),
         arp_ids::MODIFIER => info("Modifier", 0.0, 100.0, 0.0, Unit::Percent, Curve::Linear),
+        arp_ids::SPEED => info(
+            "Speed",
+            0.0,
+            (SPEED_NAMES.len() - 1) as f32,
+            1.0,
+            Unit::None,
+            Curve::Choice(&SPEED_NAMES),
+        ),
         _ => return None,
     })
 }

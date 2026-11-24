@@ -645,6 +645,35 @@ mod tests {
         assert_eq!(app.eng().settings().speed, Speed::Double, "kept");
     }
 
+    /// The phrase's speed is a parameter of its own: a learned control
+    /// sets it as Q-Link 1 does, the XY pad's hand holds it until it lets
+    /// go (the speed as set kept), and Stay keeps where it held.
+    #[test]
+    fn a_learned_control_and_the_xy_pad_turn_a_phrases_speed() {
+        use mpfree_play::mpfree_param::arp as ids;
+        let mut app = on_the_phrase_tab();
+        let (info, v) = app.arp_param(0, ids::SPEED).unwrap();
+        assert_eq!((info.name, v), ("Speed", 1.0));
+        assert_eq!(mpfree_mod::text::value_text(&info, v), "As written");
+        assert!(!app.set_arp_param(0, ids::SPEED, 2.0).is_empty());
+        assert_eq!(app.eng().settings().speed, Speed::Double);
+        assert!(
+            app.set_arp_param(0, ids::SPEED, 2.4).is_empty(),
+            "the same step"
+        );
+        // The pad's hand: half while it holds, the speed as set kept.
+        assert!(app.arp_hand(0, ids::SPEED, Some(0.0)));
+        assert_eq!(app.eng().live().speed, Speed::Half);
+        assert_eq!(app.eng().settings().speed, Speed::Double);
+        assert_eq!(app.arp_beneath(0, ids::SPEED), Some((2.0, 2.0)));
+        assert!(app.arp_hand(0, ids::SPEED, None));
+        assert_eq!(app.eng().live().speed, Speed::Double);
+        // Stay: where it held becomes the speed as set.
+        let (v, _) = app.keep_arp(0, ids::SPEED, 0.2).unwrap();
+        assert_eq!(v, 0.0);
+        assert_eq!(app.eng().settings().speed, Speed::Half);
+    }
+
     /// NOTE REPEAT held away from the panel: on a synth - and + reach
     /// Phrase after Pattern, and no further (no kinds show there); the
     /// wheel moves the pick along its kind.

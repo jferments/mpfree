@@ -719,6 +719,27 @@ mod tests {
         assert_eq!(starts(&mut e, 2 * STEP), [8 * STEP, 9 * STEP]);
     }
 
+    /// The pad's hand on the phrase's own speed (its place in
+    /// [`Speed::ALL`]): double while it holds, from where the phrase is,
+    /// and the speed as set again when it lets go.
+    #[test]
+    fn the_xy_pads_hand_on_the_speed_holds_it_until_it_lets_go() {
+        let starts = |e: &mut Engine, frames: u64| -> Vec<u64> {
+            ons(&run(e, frames, 128)).iter().map(|(t, _)| *t).collect()
+        };
+        let mut e = phrase_engine(EVERY_SIXTEENTH, Settings::default());
+        let set = e.settings();
+        e.press(60, 100);
+        assert_eq!(starts(&mut e, 2 * STEP), [0, STEP]);
+        e.hold(HandOn::Speed, Some(2.0));
+        assert_eq!(e.live().speed, Speed::Double);
+        assert_eq!(e.settings(), set, "the settings as set stay");
+        assert_eq!(starts(&mut e, STEP), [2 * STEP, 2 * STEP + STEP / 2]);
+        e.hold(HandOn::Speed, None);
+        assert_eq!(e.live(), set);
+        assert_eq!(starts(&mut e, 2 * STEP), [3 * STEP, 4 * STEP]);
+    }
+
     /// With Octaves above 1, each time through the phrase climbs an octave,
     /// then starts again from the bottom.
     #[test]

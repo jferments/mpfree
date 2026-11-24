@@ -16355,14 +16355,13 @@ impl Player {
                 .is_some_and(|q| q.title == ARP_QLINKS)
         };
         // The Phrase tab's own sliders are the same four, but its first is
-        // the phrase's speed, which has no parameter of its own yet (the
-        // rate's would turn the wrong thing), so it learns nothing.
+        // the phrase's speed, a parameter of its own.
         let slider = w == arp_view::QLINKS
             || (w == arp_view::PLAYS && t.id == "slider")
             || (w == play_page::QLINKS && arp_cards());
         if slider {
             if t.index == 0 && self.arp.tab() == Mode::Phrase {
-                return None;
+                return Some(LearnValue::Arp(mpfree_play::mpfree_param::arp::SPEED));
             }
             let (id, _) = mpfree_play::mpfree_param::arp::ALL.get(t.index)?;
             return Some(LearnValue::Arp(*id));
@@ -30083,6 +30082,45 @@ mod tests {
                 .any(|a| matches!(a, FromUi::Arp(ArpAction::Settings(_)))),
             "without SHIFT the slider moves: {acts:?}"
         );
+    }
+
+    /// On the Phrase tab the first slider is the phrase's speed, a
+    /// parameter of its own: SHIFT + a touch learns it, and the others
+    /// learn as on every tab.
+    #[test]
+    fn shift_and_a_touch_on_the_phrase_tabs_speed_learns_the_speed() {
+        use mpfree_play::mpfree_param::arp;
+        // The sample screen outgrows a debug build's test thread.
+        let mut p = std::thread::Builder::new()
+            .stack_size(SCREENS_STACK)
+            .spawn(|| {
+                let mut p = sample_phrase("arp-phrase", Fonts::embedded());
+                p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
+                p.take_actions();
+                p
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        let slider = |p: &Player, i: usize| {
+            p.ui.targets()
+                .into_iter()
+                .find(|pt| {
+                    pt.widget == arp_view::PLAYS && pt.target.id == "slider" && pt.target.index == i
+                })
+                .map(|pt| pt.target.rect)
+                .unwrap()
+        };
+        p.status.shift = true;
+        for (i, id) in [(0, arp::SPEED), (1, arp::GATE), (3, arp::OCTAVES)] {
+            let r = slider(&p, i);
+            assert_eq!(
+                p.learnable_at(r.x + r.w / 2, r.y + r.h / 2),
+                Some(LearnValue::Arp(id)),
+                "slider {i}"
+            );
+        }
+        p.status.shift = false;
     }
 
     #[test]
