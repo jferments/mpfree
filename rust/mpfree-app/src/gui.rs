@@ -25681,18 +25681,32 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // Continue open on a two-bar riff (composing tools, phase 1 step 2):
     // its second try plays, the new bars faint after yours with their jobs
     // and chords, the drawer Continue's settings and the tries. Step 3's
-    // screen: bar 4 locked and bar 6 picked and tried again.
+    // screen: bar 4 locked and bar 6 picked and tried again. S5: the
+    // Character row on Yearning (board A), and Try again's ▾ open on the
+    // first, its aimed tries over the roll's foot (board B).
     let continues = [
         (
             "sequencer-notes-continue",
             mpfree_time_ui::sample::notes_continue_state(),
+            false,
         ),
         (
             "sequencer-notes-continue-picks",
             mpfree_time_ui::sample::notes_continue_picks_state(),
+            false,
+        ),
+        (
+            "sequencer-notes-continue-character",
+            mpfree_time_ui::sample::notes_continue_character_state(),
+            false,
+        ),
+        (
+            "sequencer-notes-continue-aim",
+            mpfree_time_ui::sample::notes_continue_state(),
+            true,
         ),
     ];
-    for (name, made) in continues {
+    for (name, made, aim) in continues {
         let state = match made {
             Ok(state) => state,
             Err(e) => {
@@ -25713,6 +25727,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             let lo = g.notes.iter().map(|n| n.note).min().unwrap_or(48);
             let hi = g.notes.iter().map(|n| n.note).max().unwrap_or(59);
             g.view = g.view.fit(roll, g.length, 128, (0, g.length), (lo, hi));
+            g.aim_menu = aim;
         }
         p.refresh_qlinks();
         p.refresh_hint();

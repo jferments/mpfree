@@ -229,6 +229,13 @@ pub const CONTINUE_NOTE: usize = 1_000_000;
 pub const TOOL_CANCEL: usize = 0;
 pub const TOOL_OPTION: usize = 1;
 pub const TOOL_DONE: usize = 7;
+/// Continue's Try again ▾ menu (S5): `Tab(AIM_MENU + k)` is the aimed try
+/// `mpfree_compose::Aim::ALL[k]`.
+pub const AIM_MENU: usize = 650;
+/// The aim menu's rows: an aim's words and what it does.
+const AIM_ROW_H: i32 = 46;
+/// The ▾ beside Try again.
+const AIM_W: i32 = 46;
 /// A tracker step tapped: `Cell`'s row says the editor's sound.
 pub const PEN: usize = usize::MAX;
 /// A finger holding a note while another taps note `col`
@@ -627,6 +634,9 @@ pub enum ToolAct {
     /// The tool's own button: Chop's Reset pressure (on and off),
     /// Humanize's Again (another roll of the dice), Continue's Try again.
     Option,
+    /// Continue's Try again ▾ (S5): an aimed try, `Aim::ALL[k]`, on the
+    /// picked bars or every new bar, the rest kept.
+    Aim(usize),
 }
 
 /// The tools (piano roll plans 2B.2 and 2B.3), opened from their rows of
@@ -2125,6 +2135,7 @@ impl Editor {
                             "edit: {name} cancelled: the clip is as it was"
                         ));
                     }
+                    ToolAct::Aim(_) => return Done::default(),
                     ToolAct::Option => {
                         match tool.kind {
                             ToolKind::Chop => tool.reset = !tool.reset,
@@ -2667,6 +2678,26 @@ impl Editor {
                 }
                 ask_in(self, String::new(), self.continue_picks.scope())
             }
+            // Try again's ▾ (S5): one thing changed, on the picked bars or
+            // every new bar.
+            EditAction::Tool(ToolAct::Aim(k)) => {
+                let Some(&aim) = mpfree_compose::Aim::ALL.get(k) else {
+                    return Some(Done::default());
+                };
+                if self.continue_picks.only_locked() {
+                    return Some(Done::line(
+                        "continue: the picked bars are locked: Unlock them to try them again"
+                            .into(),
+                    ));
+                }
+                let Some(scope) = self.continue_picks.aimed(aim) else {
+                    return Some(Done::line(
+                        "continue: an aimed try changes bars: pick bars, or none for every new bar"
+                            .into(),
+                    ));
+                };
+                ask_in(self, String::new(), scope)
+            }
             EditAction::ContinueBar(b) => Done::line(self.continue_picks.bar(b)),
             EditAction::ContinueNote(t) => Done::line(self.continue_picks.note(t)),
             EditAction::ContinueLock => Done::line(self.continue_picks.lock()),
@@ -3053,7 +3084,7 @@ fn continue_value(ed: &Editor, clip: &Clip) -> String {
     } else if clip.notes.iter().all(|n| !n.on) {
         "no notes".into()
     } else {
-        ed.continuing.value(1)
+        ed.continuing.value(compose::BARS_ROW)
     }
 }
 
@@ -3787,11 +3818,18 @@ fn kept<T: ?Sized>(
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ToolBar {
     pub name: &'static str,
+    /// A word after the name: Continue's Character when one is picked
+    /// ("Continue · Yearning", S5).
+    pub more: Option<&'static str>,
     /// What turning the Q-Links does, or why the tool changes nothing.
     pub hint: String,
     /// The tool's own button's words and whether it is lit (Chop's Reset
     /// pressure, Humanize's Again).
     pub option: Option<(String, bool)>,
+    /// Continue's ▾ beside its Try again (S5): its menu of aimed tries
+    /// ([`AIM_MENU`]). Some(whether it can be tapped: faint while notes
+    /// are picked, since an aim changes bars).
+    pub aim: Option<bool>,
 }
 
 /// A chord under the roll while Continue is open (composing tools, phase
@@ -3898,6 +3936,9 @@ pub struct NoteGrid {
     pub minor: bool,
     /// The Chord menu is open over the roll (the roll's own).
     pub chord_menu: bool,
+    /// Continue's Try again ▾ menu is open over the roll (the roll's
+    /// own, S5): the aimed tries.
+    pub aim_menu: bool,
     /// Which rows show (the page's, plan 2B.1): the Fold chip and the
     /// hidden notes' chip change it here, and the page keeps it.
     pub fold: Fold,
@@ -4228,6 +4269,7 @@ impl Default for NoteGrid {
             chord: ChordShape::Off,
             minor: false,
             chord_menu: false,
+            aim_menu: false,
             fold: Fold::All,
             tool_bar: None,
             new_from: None,
@@ -4605,6 +4647,9 @@ impl NoteGrid {
         // A tool's bar closes the menus over the roll (plan 2B.3).
         let open = other.tool_bar.is_none();
         let (menu, scale_menu, chord_menu) = (menu && open, scale_menu && open, chord_menu && open);
+        // The aim menu stays while its ▾ can still be tapped.
+        let aim_menu =
+            self.aim_menu && other.tool_bar.as_ref().is_some_and(|t| t.aim == Some(true));
         // The Show menu stays open for more picks (plan 4.1).
         let (show_menu, show_page, ghost_cell) = (self.show_menu, self.show_page, self.ghost_cell);
         *self = NoteGrid {
@@ -4622,6 +4667,7 @@ impl NoteGrid {
             menu,
             scale_menu,
             chord_menu,
+            aim_menu,
             show_menu,
             show_page,
             ghost_cell,
@@ -5272,16 +5318,91 @@ impl NoteGrid {
     fn tool_rects(&self, r: Rect) -> (Rect, Option<Rect>, Rect, Rect) {
         let b = self.button_rects(r);
         let span = |a: Rect, z: Rect| Rect::new(a.x, a.y, z.right() - a.x, a.h);
+        let aim = self.tool_bar.as_ref().is_some_and(|t| t.aim.is_some());
         let option = self
             .tool_bar
             .as_ref()
             .and_then(|t| t.option.as_ref())
-            .map(|_| span(b[1], b[2]));
+            .map(|_| span(b[1], b[2]))
+            .map(|o| match aim {
+                // Continue's ▾ takes the right of Try again's place.
+                true => Rect::new(o.x, o.y, o.w - AIM_W - 6, o.h),
+                false => o,
+            });
         let hint = match option {
             Some(_) => span(b[3], b[6]),
             None => span(b[1], b[6]),
         };
         (b[TOOL_CANCEL], option, hint, b[TOOL_DONE])
+    }
+
+    /// Continue's ▾ beside Try again (S5), while the tool bar has one.
+    fn aim_rect(&self, r: Rect) -> Option<Rect> {
+        self.tool_bar.as_ref()?.aim?;
+        let (_, option, _, _) = self.tool_rects(r);
+        let o = option?;
+        Some(Rect::new(o.right() + 6, o.y, AIM_W, o.h))
+    }
+
+    /// The aim menu (S5) over the roll, above Try again: its panel and a
+    /// row for each of `Aim::ALL`.
+    fn aim_menu_rects(&self, r: Rect) -> (Rect, Vec<Rect>) {
+        const PAD: i32 = 8;
+        const HEAD: i32 = 34;
+        const GAP: i32 = 4;
+        let (_, option, _, _) = self.tool_rects(r);
+        let o = option.unwrap_or_default();
+        let n = mpfree_compose::Aim::ALL.len() as i32;
+        let h = HEAD + n * AIM_ROW_H + (n - 1) * GAP + 2 * PAD;
+        let w = 340.min(r.w - 2 * PAD);
+        let x = o.x.max(r.x + PAD);
+        let panel = Rect::new(x, (o.y - 6 - h).max(r.y), w, h);
+        let rows = (0..n)
+            .map(|k| {
+                Rect::new(
+                    panel.x + PAD,
+                    panel.y + PAD + HEAD + k * (AIM_ROW_H + GAP),
+                    panel.w - 2 * PAD,
+                    AIM_ROW_H,
+                )
+            })
+            .collect();
+        (panel, rows)
+    }
+
+    fn paint_aim_menu(&self, cx: &mut PaintCx, r: Rect) {
+        let t = cx.theme.clone();
+        let (panel, rows) = self.aim_menu_rects(r);
+        cx.canvas.fill_round_rect(panel, t.round(12), t.surface);
+        cx.canvas
+            .stroke_round_rect(panel, t.round(12), 1, t.outline);
+        cx.text(
+            FontId::Bold,
+            t.size_small - 3.0,
+            Rect::new(panel.x + 16, panel.y + 8, panel.w - 32, 26),
+            Align::Left,
+            t.text_dim,
+            "TRY AGAIN, AIMED",
+        );
+        for (aim, m) in mpfree_compose::Aim::ALL.iter().zip(rows) {
+            cx.canvas.fill_round_rect(m, t.round(8), t.raised);
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                Rect::new(m.x + 12, m.y, 104, m.h),
+                Align::Left,
+                t.text,
+                aim.words(),
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small - 3.0,
+                Rect::new(m.x + 118, m.y, m.w - 126, m.h),
+                Align::Left,
+                t.text_dim,
+                aim.says(),
+            );
+        }
     }
 
     /// What button `k` says: some show a state.
@@ -6353,14 +6474,28 @@ impl NoteGrid {
         if let (Some(o), Some((name, lit))) = (option, &tb.option) {
             button(cx, o, name, *lit);
         }
+        // Continue's ▾ (S5): outlined while its menu is open, faint while
+        // it can't be tapped.
+        if let (Some(a), Some(on)) = (self.aim_rect(r), tb.aim) {
+            cx.canvas.fill_round_rect(a, t.round(10), t.raised);
+            if self.aim_menu {
+                cx.canvas.stroke_round_rect(a, t.round(10), 2, t.accent);
+            }
+            let ink = if on { t.text } else { t.text_faint };
+            paint_caret(cx, a.x + a.w / 2, a.y + a.h / 2, false, ink);
+        }
         button(cx, done, "Done", true);
+        let name = match tb.more {
+            Some(more) => format!("{} · {more}", tb.name),
+            None => tb.name.to_string(),
+        };
         cx.text(
             FontId::Bold,
             t.size_small,
             Rect::new(hint.x + 8, hint.y, hint.w - 16, hint.h / 2 + 2),
             Align::Left,
             t.text,
-            tb.name,
+            &name,
         );
         cx.text(
             FontId::Sans,
@@ -7188,6 +7323,9 @@ impl Widget for NoteGrid {
         if self.show_menu && self.lens == Lens::Grid {
             self.paint_show_menu(cx, r);
         }
+        if self.aim_menu && self.tool_bar.is_some() {
+            self.paint_aim_menu(cx, r);
+        }
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
@@ -7201,7 +7339,17 @@ impl Widget for NoteGrid {
                 if let (Some(o), Some((name, _))) = (option, &tb.option) {
                     v.push(Target::tap("tool-option", 0, name, o));
                 }
+                if let (Some(a), Some(on)) = (self.aim_rect(r), tb.aim) {
+                    v.push(Target::tap("tool-aim", 0, "Try again, aimed", a).disabled_if(!on));
+                }
                 v.push(Target::tap("tool-done", 0, "Done", done));
+                // Its menu, open (S5): an aimed try each row.
+                if self.aim_menu {
+                    let (_, rows) = self.aim_menu_rects(r);
+                    for (k, (aim, m)) in mpfree_compose::Aim::ALL.iter().zip(rows).enumerate() {
+                        v.push(Target::tap("aim-pick", k, aim.words(), m));
+                    }
+                }
                 v
             }
             None => self
@@ -8622,6 +8770,16 @@ impl NoteGrid {
 
     /// A finger coming down alone.
     fn down(&mut self, f: u64, x: i32, y: i32, r: Rect, g: &Geo) -> Option<EventKind> {
+        // Continue's aim menu, while open (S5): an aim asks and closes it;
+        // a touch anywhere else closes it and does nothing more.
+        if self.aim_menu {
+            self.aim_menu = false;
+            let (_, rows) = self.aim_menu_rects(r);
+            return rows
+                .iter()
+                .position(|m| m.contains(x, y))
+                .map(|k| EventKind::Tab(AIM_MENU + k));
+        }
         // The Scale menu, while open (plan 2B.1): a root or a scale, and
         // it stays open for the other; a touch anywhere else closes it
         // and does nothing more.
@@ -8712,6 +8870,11 @@ impl NoteGrid {
         // roll and the lane only move the view, and the rest that would
         // edit is still.
         if self.tool_bar.is_some() {
+            // Continue's ▾ opens its menu (S5): the roll's own.
+            if self.aim_rect(r).is_some_and(|a| a.contains(x, y)) {
+                self.aim_menu = self.tool_bar.as_ref().and_then(|t| t.aim) == Some(true);
+                return None;
+            }
             let (cancel, option, _, done) = self.tool_rects(r);
             let k = if cancel.contains(x, y) {
                 Some(TOOL_CANCEL)
@@ -10497,6 +10660,7 @@ mod tests {
             name: "Continue",
             hint: String::new(),
             option: Some(("Try again".to_string(), false)),
+            ..ToolBar::default()
         });
         g.view = g.view_in(r);
         g.view.start = 0;
@@ -12660,6 +12824,7 @@ mod chord_tests {
             name: "Chop",
             hint: "Turn the Q-Links: the roll shows the result".into(),
             option: Some(("Reset pressure".to_string(), false)),
+            ..ToolBar::default()
         };
         g.show(NoteGrid {
             tool_bar: Some(bar.clone()),
@@ -12726,6 +12891,58 @@ mod chord_tests {
         assert_eq!(target(&g, "tool-option", 0), None);
         let gap = g.button_rects(R)[1];
         assert_eq!(tap(&mut g, 9, gap), None);
+    }
+
+    /// S5: Continue's ▾ beside Try again opens the aim menu over the
+    /// roll's foot; a row asks for that aimed try and closes it; a touch
+    /// elsewhere only closes it; while notes are picked the ▾ is faint and
+    /// opens nothing.
+    #[test]
+    fn continues_aim_menu_opens_from_its_button_and_asks_once() {
+        let mut g = roll(ChordShape::Off, false, None);
+        let bar = ToolBar {
+            name: "Continue",
+            hint: "Try 2 plays".into(),
+            option: Some(("Try again".to_string(), false)),
+            aim: Some(true),
+            ..ToolBar::default()
+        };
+        g.show(NoteGrid {
+            tool_bar: Some(bar.clone()),
+            ..g.clone()
+        });
+        let aim = target(&g, "tool-aim", 0).expect("the ▾");
+        assert_eq!(target(&g, "aim-pick", 0), None, "shut until tapped");
+        assert_eq!(tap(&mut g, 1, aim), None);
+        assert!(g.aim_menu);
+        let calmer = target(&g, "aim-pick", 1).expect("Calmer's row");
+        assert!(target(&g, "aim-pick", mpfree_compose::Aim::ALL.len() - 1).is_some());
+        assert_eq!(tap(&mut g, 2, calmer), Some(EventKind::Tab(AIM_MENU + 1)));
+        assert!(!g.aim_menu, "an aim closes the menu");
+        // Open again, and a touch on the roll closes it, asking nothing.
+        tap(&mut g, 3, aim);
+        let roll = g.roll_rect(R);
+        let away = Rect::new(roll.x + 10, roll.y + 10, 4, 4);
+        assert_eq!(tap(&mut g, 4, away), None);
+        assert!(!g.aim_menu);
+        // The bar shown again keeps an open menu while the ▾ can be
+        // tapped; faint (notes picked), the ▾ opens nothing.
+        tap(&mut g, 5, aim);
+        g.show(NoteGrid {
+            tool_bar: Some(bar.clone()),
+            ..g.clone()
+        });
+        assert!(g.aim_menu);
+        g.show(NoteGrid {
+            tool_bar: Some(ToolBar {
+                aim: Some(false),
+                ..bar
+            }),
+            ..g.clone()
+        });
+        assert!(!g.aim_menu);
+        assert_eq!(tap(&mut g, 6, aim), None);
+        assert!(!g.aim_menu);
     }
 }
 

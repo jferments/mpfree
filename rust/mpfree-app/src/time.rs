@@ -17074,6 +17074,82 @@ mod tests {
         assert_eq!(h.project().clip(0, 0).unwrap().notes, four.notes);
     }
 
+    /// S5: Try again's ▾ aims a try. Calmer on every new bar makes the
+    /// new bars no busier, the riff kept; Busier on a picked bar changes
+    /// only that bar; a locked bar stays through an aimed try; the tries
+    /// list names each by its aim.
+    #[test]
+    fn an_aimed_try_changes_one_thing_and_keeps_locked_bars() {
+        use mpfree_compose::Aim;
+        use mpfree_seq::Note;
+        use mpfree_time_ui::continuing::Again;
+        use mpfree_time_ui::editor::{EditAction as E, ToolAct, CONTINUE_ROW};
+        const BAR: Tick = 3840;
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        h.act(TimeAction::Edit(E::Row {
+            row: CONTINUE_ROW,
+            delta: 1,
+        }))
+        .unwrap();
+        until(&mut h, &mut pads, |h| {
+            continuing(h).is_some_and(|c| c.heard)
+        });
+        let heard = |h: &TimeHost| continuing(h).unwrap().clip.clone().unwrap();
+        // The riff is one bar; the new bars follow it.
+        let new_notes = |c: &Clip| c.notes.iter().filter(|n| n.tick >= BAR - 60).count();
+        let in_bar = |c: &Clip, b: Tick| -> Vec<Note> {
+            c.notes
+                .iter()
+                .copied()
+                .filter(|n| (b * BAR - 60..(b + 1) * BAR - 60).contains(&n.tick))
+                .collect()
+        };
+        let one = heard(&h);
+        let yours = |c: &Clip| in_bar(c, 0);
+        let calmer = Aim::ALL.iter().position(|&a| a == Aim::Calmer).unwrap();
+        assert_eq!(
+            h.act(TimeAction::Edit(E::Tool(ToolAct::Aim(calmer))))
+                .unwrap(),
+            "continue: trying every new bar again, calmer (only that changes)"
+        );
+        until(&mut h, &mut pads, |h| {
+            continuing(h).is_some_and(|c| c.position == Some((2, 2)) && c.line.is_none())
+        });
+        let two = heard(&h);
+        assert_eq!(yours(&two), yours(&one), "your bars stay");
+        assert!(
+            new_notes(&two) <= new_notes(&one),
+            "{} > {}",
+            new_notes(&two),
+            new_notes(&one)
+        );
+        assert_eq!(
+            continuing(&h).unwrap().tries[1].again,
+            Some(Again::Aimed {
+                aim: Aim::Calmer,
+                bars: 0
+            })
+        );
+        // Bar 4 locked, then Busier on every new bar: bar 4 stays.
+        h.act(TimeAction::Edit(E::ContinueBar(3))).unwrap();
+        h.act(TimeAction::Edit(E::ContinueLock)).unwrap();
+        h.act(TimeAction::Edit(E::Tool(ToolAct::Aim(0)))).unwrap();
+        until(&mut h, &mut pads, |h| {
+            continuing(h).is_some_and(|c| c.position == Some((3, 3)) && c.line.is_none())
+        });
+        let three = heard(&h);
+        assert_eq!(in_bar(&three, 3), in_bar(&two, 3), "the locked bar stays");
+        assert!(matches!(
+            continuing(&h).unwrap().tries[2].again,
+            Some(Again::Aimed { aim: Aim::Busier, bars }) if bars > 0
+        ));
+        // Back keeps the clip as it was.
+        h.act(TimeAction::Edit(E::Tool(ToolAct::Cancel))).unwrap();
+        assert_eq!(h.project().clip(0, 0).unwrap().notes, yours(&one));
+    }
+
     /// Phase 1 step 2: Continue from the note editor. The kind of
     /// instrument comes from what the screen says the track plays, else
     /// from the clip's notes. Opening the tool asks at once; stopped, the
@@ -17117,8 +17193,11 @@ mod tests {
         assert_eq!(*e.clip, riff, "the editor's clip is the clip as it is");
         // A setting asks again.
         assert_eq!(
-            h.act(TimeAction::Edit(E::Row { row: 1, delta: -1 }))
-                .unwrap(),
+            h.act(TimeAction::Edit(E::Row {
+                row: mpfree_time_ui::editor::compose::BARS_ROW,
+                delta: -1
+            }))
+            .unwrap(),
             "continue: 2 more bars: the next try is on its way"
         );
         until(&mut h, &mut pads, |h| {

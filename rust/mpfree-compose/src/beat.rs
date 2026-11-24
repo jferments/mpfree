@@ -375,12 +375,24 @@ pub fn continue_drum_clip_how(
             Some(before),
             locked.iter().map(|&b| usize::from(b)).collect(),
         ),
+        // A beat has no phrase plan to aim: an aimed try is a fresh try of
+        // its bars, as `request::try_aimed` does.
         Making::Bars {
             before,
             bars,
             attempt,
+        }
+        | Making::Aimed {
+            before,
+            bars,
+            attempt,
+            ..
         } => {
-            let again: Vec<usize> = bars.iter().map(|&b| usize::from(b)).collect();
+            let every = bars.is_empty() && matches!(how, Making::Aimed { .. });
+            let again: Vec<usize> = match every {
+                true => (0..before.plan.len()).collect(),
+                false => bars.iter().map(|&b| usize::from(b)).collect(),
+            };
             let keep = (0..before.plan.len())
                 .filter(|b| !again.contains(b))
                 .collect();
