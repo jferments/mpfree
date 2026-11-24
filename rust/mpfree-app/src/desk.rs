@@ -390,6 +390,21 @@ impl Desk<'_> {
                         fx.extend(copy_loop_cell(time, looper, out, from, to));
                         return None;
                     }
+                    // An audio track's loop cell (Dev's switch, phase 4b):
+                    // onto another audio track, a new loop.
+                    let loop_id = time
+                        .project()
+                        .clip(from.0, from.1)
+                        .and_then(|c| c.loop_id());
+                    let audio = |t: usize| time.project().tracks.get(t).is_some_and(|t| t.is_audio());
+                    if let Some(id) = loop_id.filter(|_| {
+                        app.settings.loops_on && from.0 != to.0 && audio(to.0)
+                    }) {
+                        fx.extend(copy_audio_loop_cell(
+                            time, tracks, looper, out, from, to, id,
+                        ));
+                        return None;
+                    }
                 }
                 let picked = matches!(
                     a,
@@ -1923,7 +1938,11 @@ fn arm_loop_cell(
     use crate::rec_arm::{Mover, Target};
     let n = match looper.free_loop() {
         Ok(n) => n,
-        Err(why) => return vec![app::Effect::Tell(why)],
+        Err(why) => {
+            return vec![app::Effect::Tell(
+                full_words(time, looper, t).unwrap_or(why),
+            )]
+        }
     };
     let now = rec_now(time, looper);
     let was = app.rec;
@@ -1944,22 +1963,73 @@ fn arm_loop_cell(
         mpfree_time_ui::TimeAction::LoopCell(Some((t, s))),
     );
     out.show(gui::ToUi::Rec(app.rec));
-    let input = time
-        .project()
-        .tracks
-        .get(t)
-        .and_then(|tr| tr.loops())
-        .unwrap_or_default();
     fx.push(app::Effect::Looper(looping::LoopAction::Select(n)));
-    fx.extend(app.loop_input(input));
+    // An audio track's cell (Dev's switch, phase 4b) records the track's
+    // own input; a Loop track's, its Loop input.
+    let from = match tracks.loop_input(t, mix) {
+        Some(input) => {
+            fx.extend(app.loop_track_input(input));
+            looping::source_words(looping::LoopSource::Track(input), None)
+        }
+        None => {
+            let input = time
+                .project()
+                .tracks
+                .get(t)
+                .and_then(|tr| tr.loops())
+                .unwrap_or_default();
+            fx.extend(app.loop_input(input));
+            input.name().to_lowercase()
+        }
+    };
     fx.extend(rec_effects(done, time, looper));
     if let Some(name) = mpfree_time_ui::view::loop_cell_name(&time.state()) {
         fx.push(app::Effect::Tell(format!(
-            "REC \u{2192} {name}: REC records a loop there, from {}",
-            input.name().to_lowercase()
+            "REC \u{2192} {name}: REC records a loop there, from {from}"
         )));
     }
     fx
+}
+
+/// Every loop in use, an audio track's empty cell tapped (Dev's "Loops on
+/// audio tracks", phase 4, board 3): the REC chip's refusal and the cells
+/// holding the loops, "REC: 8 loops · clear one (Vocal · row 2, Bass ·
+/// row 1, …)". None for a Loop track's cell, or while a loop is free.
+fn full_words(time: &time::TimeHost, looper: &looping::LoopHost, t: usize) -> Option<String> {
+    use mpfree_looper::Phase;
+    let p = time.project();
+    if !p.tracks.get(t)?.is_audio() {
+        return None;
+    }
+    let full = (0..mpfree_looper::MAX_LOOPS).all(|n| {
+        looper
+            .looper
+            .loop_status(n)
+            .is_some_and(|s| s.phase != Phase::Empty)
+    });
+    if !full {
+        return None;
+    }
+    let row = |s: usize| match p.scenes.get(s).filter(|sc| !sc.name.is_empty()) {
+        Some(sc) => sc.name.clone(),
+        None => format!("row {}", s + 1),
+    };
+    let places: Vec<String> = looper
+        .loop_ids()
+        .iter()
+        .filter(|&&id| id != 0)
+        .filter_map(|&id| mpfree_seq::loops::audio_cells(p, mpfree_seq::LoopId(id)).next())
+        .map(|(tr, s)| format!("{} · {}", p.tracks[tr].name, row(s)))
+        .collect();
+    let cells = if places.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", places.join(", "))
+    };
+    Some(format!(
+        "REC: {} loops \u{b7} clear one{cells}",
+        mpfree_looper::MAX_LOOPS
+    ))
 }
 
 /// SHIFT + a loop's cell dropped on an empty cell of another Loop track
@@ -1992,6 +2062,7 @@ fn copy_loop_cell(
         from,
         to,
         into: m as u8,
+        id: 0,
     }) {
         Ok(line) => line,
         Err(why) => return tell(why),
@@ -2003,6 +2074,56 @@ fn copy_loop_cell(
             return tell(why);
         }
     }
+    tell(said)
+}
+
+/// SHIFT + an audio track's loop cell dropped on an empty cell of
+/// another audio track (Dev's "Loops on audio tracks", phase 4b): a copy
+/// is a new loop, so an empty loop takes a new lasting id, the cell there
+/// names it, and the looper copies the layers into it, silent until the
+/// cell is launched. Says why not, and takes the id back.
+fn copy_audio_loop_cell(
+    time: &mut time::TimeHost,
+    tracks: &mut audiotracks::TrackHost,
+    looper: &mut looping::LoopHost,
+    out: &mut Out,
+    from: (usize, usize),
+    to: (usize, usize),
+    id: mpfree_seq::LoopId,
+) -> Vec<app::Effect> {
+    use mpfree_time_ui::TimeAction::{LoopCopy, LoopCopyOff};
+    let tell = |s: String| vec![app::Effect::Tell(s)];
+    let Some(n) = looper.slot_of(id.0) else {
+        return tell("clips: that loop isn't in memory to copy".to_string());
+    };
+    let m = match looper.free_loop() {
+        Ok(m) => m,
+        Err(why) => return tell(why),
+    };
+    let new = tracks.fresh_loop_id();
+    let was = looper.loop_ids()[m];
+    looper.set_loop_id(m, new);
+    let said = match time.act(LoopCopy {
+        from,
+        to,
+        into: m as u8,
+        id: new,
+    }) {
+        Ok(line) => line,
+        Err(why) => {
+            looper.set_loop_id(m, was);
+            return tell(why);
+        }
+    };
+    match looper.copy_loop(n, m) {
+        Ok(line) => out.note(&line),
+        Err(why) => {
+            let _ = time.act(LoopCopyOff(m as u8));
+            looper.set_loop_id(m, was);
+            return tell(why);
+        }
+    }
+    looper.look_again();
     tell(said)
 }
 

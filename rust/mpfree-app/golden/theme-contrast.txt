@@ -466,6 +466,7 @@ spaceship browser 3 # before the theme refactor (phase 0 baseline)
 spaceship browser-kits 1 # before the theme refactor (phase 0 baseline)
 spaceship browser-samples 22 # before the theme refactor (phase 0 baseline)
 spaceship browser-xy-layouts 3 # as browser (the same runs: each row's star while not starred)
+spaceship browser-sd-card 15 # the pad map's faint empty cells, as on browser-samples (Spaceship shows the map under a sound); none of the SD card place's own
 spaceship browser-set-song 4 # the Fade row, faint while Ends isn't Fade (live shows B1)
 spaceship chain 3 # before the theme refactor (phase 0 baseline)
 spaceship chain-comp 3 # before the theme refactor (phase 0 baseline)

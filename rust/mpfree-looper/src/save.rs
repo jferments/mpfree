@@ -25,6 +25,10 @@
 //! faster than it is, [`crate::Status::rate`]); a loop as recorded leaves
 //! them out.
 //!
+//! A loop on an audio track (audio tracks phase 4, step 4b) adds `id=` to
+//! its line: its lasting id as its host gave it (`mpfree_seq::LoopId`), 32
+//! hex digits, never 0. The looper keeps it only in the text.
+//!
 //! A free loop ([`crate::Clock::Free`]) adds `clock=free` to its line, and
 //! the part then ends with the free clock's line: its exact tempo, its
 //! meter and its bar 1, which the free loops' origins count from
@@ -65,6 +69,9 @@ pub struct LoopFile {
     /// audio plays faster than it is ([`crate::Status::rate`]).
     pub speed: i8,
     pub rate: i8,
+    /// Its lasting id, its host's (`mpfree_seq::LoopId`), 0 for none:
+    /// the looper keeps it for the host in the text, nothing more.
+    pub id: u128,
     /// The clock it keeps time with: a free loop's `ticks` and `origin`
     /// are the free clock's ([`Saved::free_clock`]).
     pub clock: Clock,
@@ -152,6 +159,10 @@ pub fn to_text(saved: &Saved) -> String {
         if l.speed != 0 || l.rate != 0 {
             s.pop();
             s.push_str(&format!(" speed={} octaves={}\n", l.speed, l.rate));
+        }
+        if l.id != 0 {
+            s.pop();
+            s.push_str(&format!(" id={:032x}\n", l.id));
         }
         if l.clock == Clock::Free {
             s.pop();
@@ -298,6 +309,16 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                     fade_old: level(&kv, "fade_old", n, 0.0, 1.0).unwrap_or(1.0),
                     speed: small(&kv, "speed", n, 1)?,
                     rate: small(&kv, "octaves", n, 2)?,
+                    id: match get(&kv, "id") {
+                        None => 0,
+                        Some(h) => match Some(h)
+                            .filter(|h| h.len() == 32 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+                            .and_then(|h| u128::from_str_radix(h, 16).ok())
+                        {
+                            Some(id) if id != 0 => id,
+                            _ => return Err(format!("line {n}: id={h}")),
+                        },
+                    },
                     clock: match get(&kv, "clock") {
                         Some("free") => Clock::Free,
                         _ => Clock::Song,
@@ -443,6 +464,7 @@ mod tests {
                         fade_old: 0.9,
                         speed: -1,
                         rate: -2,
+                        id: 0x0123_4567_89ab_cdef_fedc_ba98_7654_3210,
                         clock: Clock::Free,
                         layers: vec![layer(1.0, "a b.wav"), layer(0.1, "c.wav")],
                     },
@@ -461,6 +483,7 @@ mod tests {
                         fade_old: 1.0,
                         speed: 0,
                         rate: 0,
+                        id: 0,
                         clock: Clock::Song,
                         layers: vec![layer(1.0 / 3.0, "d.wav")],
                     },
@@ -505,6 +528,18 @@ mod tests {
         let cut = t.lines().take(6).collect::<Vec<_>>().join("\n");
         assert!(from_text(&cut).unwrap_err().contains("loop 2"));
         assert!(from_text(&t.replace("speed=-1", "speed=3")).is_err());
+        // A loop's id: 32 hex digits, never 0.
+        let id = "id=0123456789abcdeffedcba9876543210";
+        assert!(t.contains(id), "{t}");
+        for bad in [
+            "id=0",
+            "id=00000000000000000000000000000000",
+            "id=0123456789abcdeffedcba987654321",
+            "id=+123456789abcdeffedcba9876543210",
+            "id=0123456789abcdeffedcba987654321g",
+        ] {
+            assert!(from_text(&t.replace(id, bad)).is_err(), "{bad}");
+        }
         // Out-of-range mixes are kept in range.
         let s = from_text(&t.replace("level=0.7", "level=9")).unwrap();
         assert_eq!(s.loops[0].1.level, 2.0);

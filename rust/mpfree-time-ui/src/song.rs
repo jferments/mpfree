@@ -27,8 +27,8 @@
 //!   audio track * REGION_SLOTS + region index, frame: its new start in
 //!   song ticks }`;
 //! - an audio lane's header: its arm dot `Toggle(audio track)`, its name
-//!   or input chip `Cell { row: audio track, col: PANEL }` (on the lift,
-//!   unless the finger dragged to scroll);
+//!   `Cell { row: audio track, col: PANEL }`, its input chip `col:
+//!   INPUT_CHIP` (on the lift, unless the finger dragged to scroll);
 //! - "+ Track", the lane after the last while
 //!   [`SongLanes::can_add_track`] holds: `Tab(ADD_TRACK)`; with the
 //!   chooser open ([`SongLanes::adding`]) its rows `Tab(ADD_NOTE)`,
@@ -175,6 +175,13 @@ pub const REC: usize = SONG_BUTTONS.len();
 pub const ADD_AUDIO: usize = REC + 1;
 /// The `col` of a `Cell` for a tap on an audio lane's name or input chip.
 pub const PANEL: usize = usize::MAX;
+/// The `col` of a `Cell` for a tap on an audio lane's input chip (the
+/// right of its header, [`CHIP_HIT_W`]): its panel, as the name opens,
+/// or with Dev's "Loops on audio tracks" its input list (phase 4, board
+/// 4; [`crate::inputs`]).
+pub const INPUT_CHIP: usize = usize::MAX - 1;
+/// How much of a header's right end a tap takes for its input chip.
+pub const CHIP_HIT_W: i32 = 36;
 /// The track panel's Close, Mute, Solo and Takes, as Tab reports them.
 pub const PANEL_CLOSE: usize = ADD_AUDIO + 1;
 pub const PANEL_MUTE: usize = PANEL_CLOSE + 1;
@@ -219,6 +226,18 @@ pub const MONITORS: [(&str, Monitor); 3] = [
 /// The chip for input `i`.
 pub fn input_chip(i: Input) -> &'static str {
     INPUTS.iter().find(|x| x.1 == i).map_or("", |x| x.0)
+}
+
+/// An audio track's input in words (loops on audio tracks, phase 4: the
+/// REC chip, the Looper tab, the Mix tab): "Line L", "Line ST", or what it
+/// records inside the mix, "Mix › Bass", or the pads' instrument as the
+/// input list names it, "Pads · Kit 1".
+pub fn input_words(lane: &AudioLane) -> String {
+    match &lane.mix {
+        Some(m) if m.name.starts_with("Pads \u{b7} ") => m.name.clone(),
+        Some(m) => format!("Mix \u{203a} {}", m.name),
+        None => format!("Line {}", input_chip(lane.input)),
+    }
 }
 /// What Tab reports for "+ Track" (the lane after the last): well clear
 /// of the panel's, so a step past the panel's last is still nothing. The
@@ -3887,11 +3906,15 @@ impl Widget for SongLanes {
                 }
                 return Some(
                     (0..self.audio.len())
-                        .find(|&a| self.header_rect(r, a).is_some_and(|h| h.contains(x, y)))
-                        .map_or(EventKind::Select(NONE), |a| EventKind::Cell {
-                            row: self.audio[a].track,
-                            col: PANEL,
-                        }),
+                        .find_map(|a| {
+                            let h = self.header_rect(r, a).filter(|h| h.contains(x, y))?;
+                            let chip = x >= h.right() - CHIP_HIT_W;
+                            Some(EventKind::Cell {
+                                row: self.audio[a].track,
+                                col: if chip { INPUT_CHIP } else { PANEL },
+                            })
+                        })
+                        .unwrap_or(EventKind::Select(NONE)),
                 );
             }
             Touch::Cancel => {
@@ -4810,6 +4833,16 @@ mod tests {
         assert_eq!(
             s.touch(3, Touch::Up, x, y, r),
             Some(EventKind::Cell { row: 0, col: PANEL })
+        );
+        // Its input chip, at the header's right end.
+        let x = head.right() - 8;
+        assert_eq!(s.touch(3, Touch::Down, x, y, r), None);
+        assert_eq!(
+            s.touch(3, Touch::Up, x, y, r),
+            Some(EventKind::Cell {
+                row: 0,
+                col: INPUT_CHIP
+            })
         );
         // A MIDI lane's name picks nothing, as empty space does.
         let (x, y) = (r.x + 20, midi.y + 4);

@@ -51,6 +51,16 @@
 //! aren't alike enough to be the opening hit played again. The test
 //! plays a seventh of one seed's takes ([`EAR_EVERY`]) and asserts no
 //! wrong move and a floor on the moves ([`EAR_MOVES_AT_LEAST`]).
+//!
+//! **Held out.** A second set the rules were never set on ([`HELD_OUT`]:
+//! a shuffle, swung 16ths, ghost notes, 5/4, 7/8 and chords from a
+//! keyboard; other tempos, REC leads and seed; and fills that end on a
+//! kick, the corpus's grooves too), from the pads and by ear. It found
+//! one kind of wrong move the corpus never plays, a fill's last kick
+//! taken for the downbeat ([`HELD_KNOWN_WRONG`]); the tests allow what
+//! it found and fail on more or on any other kind. Set
+//! `MPFREE_CORPUS_SEEDS` (seeds, commas between) to play the corpus on
+//! other seeds.
 
 use mpfree_looper::ends::{decide, reach, Ask, NoteLog, Verdict};
 use mpfree_looper::find::{find, FindJob};
@@ -310,6 +320,44 @@ fn play(
     fill: bool,
     s: &mut Seq,
 ) -> Take {
+    let fill = if fill { Fill::Snare } else { Fill::No };
+    play_with(g, bpm, bars, sd, early, after, fill, s)
+}
+
+/// The beat before the downbeat: as played, a fill of four sixteenths on
+/// the snare getting louder, or the same fill ending on a kick (a hit
+/// like the opening one a sixteenth before the downbeat).
+#[derive(Clone, Copy, PartialEq)]
+enum Fill {
+    No,
+    Snare,
+    KickLast,
+}
+
+impl Fill {
+    fn words(self) -> &'static str {
+        match self {
+            Fill::No => "",
+            Fill::Snare => "a fill, ",
+            Fill::KickLast => "a fill ending on a kick, ",
+        }
+    }
+}
+
+/// [`play`] with any [`Fill`]. The groove's first hit (its pad) is the
+/// downbeat's: the kick, or a keyboard's bass note.
+#[allow(clippy::too_many_arguments)]
+fn play_with(
+    g: &Groove,
+    bpm: f64,
+    bars: u32,
+    sd: f64,
+    early: f64,
+    after: After,
+    fill: Fill,
+    s: &mut Seq,
+) -> Take {
+    let one = g.hits[0].1;
     let beat_ms = 60_000.0 / bpm * g.meter.beat as f64 / f64::from(PPQ);
     let bar_ms = beat_ms * (g.meter.bar / g.meter.beat) as f64;
     let step_ms = bar_ms / f64::from(g.steps);
@@ -340,24 +388,29 @@ fn play(
         let (bar, step) = (k / g.steps, k % g.steps);
         for &(at, key, velocity, behind) in g.hits.iter().filter(|h| h.0 == step) {
             let grid = f64::from(bar) * bar_ms + f64::from(at) * step_ms;
-            if k == bars * g.steps && after == After::Stops && key != KICK {
+            if k == bars * g.steps && after == After::Stops && key != one {
                 continue;
             }
-            if fill && grid >= fill_from && grid < end_ms {
+            if fill != Fill::No && grid >= fill_from && grid < end_ms {
                 continue;
             }
             let frame = push(grid + behind, key, f64::from(velocity), s);
             if k == bars * g.steps {
                 on_it.push(frame);
-                if key == KICK {
+                if key == one {
                     downbeat = Some(frame);
                 }
             }
         }
     }
-    if fill {
+    if fill != Fill::No {
         for (i, v) in [60.0, 75.0, 90.0, 105.0].into_iter().enumerate() {
-            push(fill_from + i as f64 * quarter_ms / 4.0, SNARE, v, s);
+            let key = if fill == Fill::KickLast && i == 3 {
+                KICK
+            } else {
+                SNARE
+            };
+            push(fill_from + i as f64 * quarter_ms / 4.0, key, v, s);
         }
     }
     notes.sort_by_key(|n| n.frame);
@@ -514,7 +567,14 @@ fn across_the_corpus_a_tap_moves_only_to_the_downbeat_you_played() {
     let mut by_fill = [Tally::default(); 2];
     let mut lines = Vec::new();
     let mut grooves = [Tally::default(); GROOVES.len()];
-    for &seed in SEEDS {
+    let seeds: Vec<u64> = std::env::var("MPFREE_CORPUS_SEEDS")
+        .map(|s| {
+            s.split(',')
+                .map(|x| x.trim().parse().expect("a seed"))
+                .collect()
+        })
+        .unwrap_or_else(|_| SEEDS.to_vec());
+    for &seed in &seeds {
         let mut s = Seq(seed);
         for (gi, g) in GROOVES.iter().enumerate() {
             let groove = &mut grooves[gi];
@@ -860,5 +920,314 @@ fn by_ear_across_the_corpus_a_tap_moves_only_to_the_downbeat_you_played() {
         moved >= EAR_MOVES_AT_LEAST,
         "by ear Auto moved only {:.1} % of the taps it could",
         100.0 * moved
+    );
+}
+
+const FIVE: Meter = Meter {
+    name: "5/4",
+    bar: 5 * PPQ as Tick,
+    beat: PPQ as Tick,
+};
+const SEVEN_EIGHT: Meter = Meter {
+    name: "7/8",
+    bar: 7 * PPQ as Tick / 2,
+    beat: PPQ as Tick / 2,
+};
+
+/// A keyboard's bass note and chord (MIDI from a keyboard, not pads).
+const BASS: u8 = 40;
+const CHORD: [u8; 3] = [60, 64, 67];
+
+/// Grooves held out: none of the rules or their constants were set on
+/// them, so what the engine does here is what it may do on styles it
+/// hasn't seen. Swing (a triplet shuffle, and 16ths played late), ghost
+/// notes, odd meters, and chords from a keyboard, strummed.
+const HELD_OUT: &[Groove] = &[
+    Groove {
+        name: "shuffle",
+        meter: FOUR,
+        steps: 12,
+        hits: &[
+            (0, KICK, 120, 0.0),
+            (0, HAT, 70, 0.0),
+            (2, HAT, 50, 0.0),
+            (3, SNARE, 110, 0.0),
+            (3, HAT, 70, 0.0),
+            (5, HAT, 50, 0.0),
+            (6, KICK, 112, 0.0),
+            (6, HAT, 70, 0.0),
+            (8, KICK, 90, 0.0),
+            (8, HAT, 50, 0.0),
+            (9, SNARE, 110, 0.0),
+            (9, HAT, 70, 0.0),
+            (11, HAT, 50, 0.0),
+        ],
+    },
+    Groove {
+        name: "swung 16ths",
+        meter: FOUR,
+        steps: 16,
+        hits: &[
+            (0, KICK, 120, 0.0),
+            (0, HAT, 65, 0.0),
+            (1, HAT, 40, 22.0),
+            (2, HAT, 60, 0.0),
+            (3, HAT, 40, 22.0),
+            (4, SNARE, 112, 0.0),
+            (4, HAT, 65, 0.0),
+            (5, HAT, 40, 22.0),
+            (6, KICK, 100, 0.0),
+            (6, HAT, 60, 0.0),
+            (7, HAT, 40, 22.0),
+            (8, HAT, 65, 0.0),
+            (9, HAT, 40, 22.0),
+            (10, KICK, 105, 0.0),
+            (10, HAT, 60, 0.0),
+            (11, HAT, 40, 22.0),
+            (12, SNARE, 112, 0.0),
+            (12, HAT, 65, 0.0),
+            (13, HAT, 40, 22.0),
+            (14, HAT, 60, 0.0),
+            (15, HAT, 40, 22.0),
+        ],
+    },
+    Groove {
+        name: "ghost notes",
+        meter: FOUR,
+        steps: 16,
+        hits: &[
+            (0, KICK, 120, 0.0),
+            (0, HAT, 65, 0.0),
+            (2, SNARE, 30, 0.0),
+            (2, HAT, 55, 0.0),
+            (3, KICK, 95, 0.0),
+            (4, SNARE, 115, 0.0),
+            (4, HAT, 65, 0.0),
+            (6, HAT, 55, 0.0),
+            (7, SNARE, 28, 0.0),
+            (8, HAT, 65, 0.0),
+            (9, SNARE, 32, 0.0),
+            (10, KICK, 108, 0.0),
+            (10, HAT, 55, 0.0),
+            (11, SNARE, 30, 0.0),
+            (12, SNARE, 115, 0.0),
+            (12, HAT, 65, 0.0),
+            (14, HAT, 55, 0.0),
+            (15, SNARE, 34, 0.0),
+        ],
+    },
+    Groove {
+        name: "5/4",
+        meter: FIVE,
+        steps: 10,
+        hits: &[
+            (0, KICK, 120, 0.0),
+            (0, HAT, 70, 0.0),
+            (1, HAT, 55, 0.0),
+            (2, SNARE, 110, 0.0),
+            (2, HAT, 70, 0.0),
+            (3, HAT, 55, 0.0),
+            (4, KICK, 108, 0.0),
+            (4, HAT, 70, 0.0),
+            (5, HAT, 55, 0.0),
+            (6, KICK, 100, 0.0),
+            (6, HAT, 70, 0.0),
+            (7, HAT, 55, 0.0),
+            (8, SNARE, 110, 0.0),
+            (8, HAT, 70, 0.0),
+            (9, HAT, 55, 0.0),
+        ],
+    },
+    Groove {
+        name: "7/8",
+        meter: SEVEN_EIGHT,
+        steps: 7,
+        hits: &[
+            (0, KICK, 120, 0.0),
+            (0, HAT, 70, 0.0),
+            (1, HAT, 55, 0.0),
+            (2, SNARE, 108, 0.0),
+            (2, HAT, 70, 0.0),
+            (3, HAT, 55, 0.0),
+            (4, KICK, 110, 0.0),
+            (4, HAT, 70, 0.0),
+            (5, SNARE, 95, 0.0),
+            (5, HAT, 55, 0.0),
+            (6, HAT, 55, 0.0),
+        ],
+    },
+    Groove {
+        name: "keyboard chords",
+        meter: FOUR,
+        steps: 8,
+        hits: &[
+            (0, BASS, 110, 0.0),
+            (0, CHORD[0], 90, 0.0),
+            (0, CHORD[1], 85, 9.0),
+            (0, CHORD[2], 85, 18.0),
+            (3, BASS, 90, 0.0),
+            (4, BASS, 105, 0.0),
+            (4, CHORD[0], 88, 0.0),
+            (4, CHORD[1], 84, 9.0),
+            (4, CHORD[2], 84, 18.0),
+            (6, BASS, 95, 0.0),
+            (7, CHORD[0], 70, 0.0),
+            (7, CHORD[1], 66, 9.0),
+            (7, CHORD[2], 66, 18.0),
+        ],
+    },
+];
+
+/// Held out: the tempos, REC's lead and the seed differ from the
+/// corpus's, as do the grooves. Every fill also ends on a kick once (a
+/// hit like the opening one a 16th before the downbeat), for the
+/// corpus's own grooves too.
+const HELD_TEMPOS: &[f64] = &[80.0, 96.0, 110.0, 132.0, 150.0, 165.0];
+const HELD_EARLY: &[f64] = &[0.0, 30.0];
+const HELD_SEED: u64 = 4_040_404;
+
+/// What the held-out set found (23 Nov 2026), which no rule answers yet:
+/// a fill whose last 16th is a kick, a hit like the opening one, wins
+/// over your tap when nothing is played on the downbeat (from the pads:
+/// 2,392 of 277,992 taps, at 96 to 165 BPM, from taps up to 80 ms
+/// early) and, by ear, sometimes even when it is (the downbeat's kick
+/// alone isn't alike enough in tone). The beat backs it 0.1 to 0.3, and
+/// it is nearer the tap than [`ends::FAR`] of the reach. And 3 like the
+/// corpus's own last one: a tap 75 or 80 ms early, with swing at 132
+/// and 150 BPM, to a hit the beat backs 0.11 to 0.14. The tests allow
+/// these, no more, and no other kind.
+const HELD_KNOWN_WRONG: usize = 2_395;
+const HELD_KNOWN_OTHER: usize = 3;
+const HELD_KNOWN_BY_EAR: usize = 29;
+
+/// How a wrong move to a fill's kick reads (see [`Fill::words`]).
+const KICK_FILL: &str = "a fill ending on a kick";
+
+/// Every take of the held-out set, with its group and words, in order.
+fn held_out_takes(mut each: impl FnMut(&Groove, usize, Take, String)) {
+    const BARS: &[u32] = &[1, 2, 4];
+    const TIMING: &[(&str, f64)] = &[("tight", 2.0), ("human", 6.0), ("loose", 12.0)];
+    const AFTER: [After; 3] = [After::Stops, After::PlaysOn, After::Silent];
+    let sets: [(&[Groove], &[Fill]); 2] = [
+        (HELD_OUT, &[Fill::No, Fill::Snare, Fill::KickLast]),
+        (GROOVES, &[Fill::KickLast]),
+    ];
+    let mut s = Seq(HELD_SEED);
+    let mut gi = 0;
+    for (grooves, fills) in sets {
+        for g in grooves {
+            for &bpm in HELD_TEMPOS {
+                for &bars in BARS {
+                    for &(timing, sd) in TIMING {
+                        for &early in HELD_EARLY {
+                            for after in AFTER {
+                                for &fill in fills {
+                                    let take =
+                                        play_with(g, bpm, bars, sd, early, after, fill, &mut s);
+                                    let what = format!(
+                                        "{} at {bpm} BPM, {bars} bars, {timing}, REC {early} ms early, {}{} (seed {HELD_SEED})",
+                                        g.name,
+                                        fill.words(),
+                                        after.words()
+                                    );
+                                    each(g, gi, take, what);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            gi += 1;
+        }
+    }
+}
+
+/// The held-out set's groups: its grooves, then the corpus's grooves
+/// with a fill ending on a kick.
+fn held_out_names() -> Vec<String> {
+    HELD_OUT
+        .iter()
+        .map(|g| format!("{} ({})", g.name, g.meter.name))
+        .chain(
+            GROOVES
+                .iter()
+                .map(|g| format!("{}, fill ending on a kick", g.name)),
+        )
+        .collect()
+}
+
+/// Held out, from the pads: grooves, tempos and fills none of the rules
+/// were set on, decided as Auto decides when a free first loop closes.
+#[test]
+fn held_out_a_tap_moves_only_to_the_downbeat_you_played() {
+    let names = held_out_names();
+    let mut tallies = vec![Tally::default(); names.len()];
+    let mut wrongs = Vec::new();
+    held_out_takes(|g, gi, take, what| {
+        let t = taps(&take, g, &mut wrongs, &what);
+        tallies[gi].add(&t);
+    });
+    let mut total = Tally::default();
+    eprintln!("smart loop end, held out (Auto, from the pads):");
+    for (name, t) in names.iter().zip(&tallies) {
+        eprintln!("  {name:>44}: {}", t.line());
+        total.add(t);
+    }
+    eprintln!("  {:>44}: {}", "all", total.line());
+    for w in &wrongs {
+        eprintln!("  wrong: {w}");
+    }
+    let other: Vec<_> = wrongs.iter().filter(|w| !w.contains(KICK_FILL)).collect();
+    assert!(
+        other.len() <= HELD_KNOWN_OTHER,
+        "wrong moves held out, not to a fill's kick: {other:#?}"
+    );
+    assert!(
+        wrongs.len() <= HELD_KNOWN_WRONG,
+        "{} wrong moves held out, {HELD_KNOWN_WRONG} known",
+        wrongs.len()
+    );
+}
+
+/// Held out, by ear: the same takes on the hit track's kit (the drums
+/// only: the kit has no keyboard), a seventh of them.
+#[test]
+fn held_out_by_ear_a_tap_moves_only_to_the_downbeat_you_played() {
+    let every: usize = std::env::var("MPFREE_EAR_EVERY")
+        .map(|s| s.parse().expect("a whole number"))
+        .unwrap_or(EAR_EVERY)
+        .max(1);
+    let names = held_out_names();
+    let mut tallies = vec![Tally::default(); names.len()];
+    let mut wrongs = Vec::new();
+    let mut job = FindJob::new(reach(RATE, f64::NAN));
+    let mut k = 0usize;
+    held_out_takes(|g, gi, take, what| {
+        k += 1;
+        if !(k - 1).is_multiple_of(every) || g.hits.iter().any(|h| h.1 == BASS) {
+            return;
+        }
+        let t = taps_by_ear(&take, g, 20, &mut job, &mut wrongs, &what);
+        tallies[gi].add(&t);
+    });
+    let mut total = Tally::default();
+    eprintln!("smart loop end, held out (Auto, by ear):");
+    for (name, t) in names.iter().zip(&tallies) {
+        eprintln!("  {name:>44}: {}", t.line());
+        total.add(t);
+    }
+    eprintln!("  {:>44}: {}", "all", total.line());
+    for w in &wrongs {
+        eprintln!("  wrong: {w}");
+    }
+    let other: Vec<_> = wrongs.iter().filter(|w| !w.contains(KICK_FILL)).collect();
+    assert!(
+        other.is_empty(),
+        "wrong moves held out by ear, not to a fill's kick: {other:#?}"
+    );
+    assert!(
+        wrongs.len() <= HELD_KNOWN_BY_EAR,
+        "{} wrong moves held out by ear, {HELD_KNOWN_BY_EAR} known",
+        wrongs.len()
     );
 }

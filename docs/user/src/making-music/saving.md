@@ -112,7 +112,7 @@ MPFree opens the project you last saved or opened: once the sound is going, it o
 
 **BROWSE** opens the browser over the page you are on, and pressing it again goes back to that page. The folder at the right end of the top bar does the same, and the Pads tab's **Browse for** opens it to find a sound for the pad picked. It is a full file manager for MPFree's stick:
 
-- **Places** on the left: Projects, Sets, Samples, Kits, Instruments, Patterns and Recordings, plus Recent, Favourites, the Trash, and Factory (read-only kits). **Sets** holds your set lists (see [Set lists](set-lists.md)). **Plugins** finds and installs MPC plugins (see [Getting plugins](plugins.md)).
+- **Places** on the left: Projects, Sets, Samples, Kits, Instruments, Patterns and Recordings, plus Recent, Favourites, the Trash, Factory (read-only kits) and the **SD card** in the MPC's slot (read only: see [The SD card](#the-sd-card)). **Sets** holds your set lists (see [Set lists](set-lists.md)). **Plugins** finds and installs MPC plugins (see [Getting plugins](plugins.md)).
 - **The list** in the middle, folders first, in natural order (Kick 2 before Kick 10), with filters for audio, projects and kits. Each row has a **star** at its right end: tap it to add the item to Favourites, and again to take it out.
 - **The selected item** on the right: a sound's length and waveform, a project's tempo and when it was saved, and buttons to Load (for a sound, **Load on A5**: the pad picked), Next pad hit, Audition, Rename, Copy, Cut and Delete. Under a sound, the kit's pads show what each pad holds; a finger on one picks it and plays it (see [Finding sounds](pads.md#finding-sounds-browse-for)).
 
@@ -129,6 +129,18 @@ Moving onto a sound plays it once, so you can audition as you scroll. Delete alw
 **Load on A5** puts a sound on the pad picked, named on the button: hit another pad and the button follows it. **Next pad hit** puts it on the next pad you hit. WAV, AIFF and FLAC files load, mono or stereo, at 8 to 192 kHz, whatever their name says. A file that was cut short, by a recorder that lost power say, loads the part it has. A FLAC file with a damaged part doesn't load at all, rather than play it as noise. A pad you exported from the Sample tab loads with its settings: load its sound, and the settings file beside it brings back its trim, loop, layers and slices (see [Library: saving the pad and its slices](sampling.md#library-saving-the-pad-and-its-slices)).
 
 The data wheel moves through the list and its push opens or loads; the other buttons are in [Buttons and controls](../reference/controls.md#the-browser).
+
+### The SD card
+
+{{shot: browser-sd-card | The SD card place: an exFAT card's folders and a sound, read only, with Copy to put it in the library.}}
+
+**SD card** in the places shows the card in the MPC's slot. MPFree only reads it: nothing on the card is changed, added or deleted, so it is safe with a card your MPC software uses too. Tap **SD card** and it opens in a few seconds; the top of the list says what the card is, such as **SD card · exFAT, 63.9 GB · read only**. MPFree reads FAT32 and exFAT cards.
+
+Sounds on the card play, load and go on pads as anywhere else. To keep one in your library, pick it, tap **Copy**, then go to a place such as Samples and tap **Paste**. There is no Rename, Cut, Delete, New folder or star on the card.
+
+If the card wasn't safely removed last time (the power went off, or it was pulled out while something was saving to it), the line under the list says **This card wasn't safely removed last time: check it on a computer**. It still opens to read. The card keeps that mark until a disk check clears it, so it may be from long ago. Before saving anything to it from your computer or the MPC software, check it with your computer's disk tool (on Windows, the drive's Properties > Tools > Check; on a Mac, Disk Utility > First Aid).
+
+With no card in the slot, the place says so: put one in and tap **SD card** again. The card is put away 30 seconds after you close the browser, and opens again when you come back to it.
 
 ### Pickers
 

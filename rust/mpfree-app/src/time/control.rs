@@ -52,8 +52,8 @@ use mpfree_seq::time_edit::Refused;
 use mpfree_seq::ListStep;
 use mpfree_seq::TimeEdit;
 use mpfree_seq::{
-    Clip, ClipId, ClipRegion, Holds, LaunchGrid, Lock, ModelError, Project, RecId, TouchPoint,
-    TrackId, TrackKind, LOOPS, MAX_TRACKS, ROWS,
+    Clip, ClipId, ClipRegion, Holds, LaunchGrid, Lock, LoopId, ModelError, Project, RecId,
+    TouchPoint, Track, TrackId, TrackKind, LOOPS, MAX_TRACKS, ROWS,
 };
 use mpfree_time_ui::editor::{Done, EditAction, Editor, ScaleOffers};
 use mpfree_time_ui::list::ListRow;
@@ -352,6 +352,13 @@ pub trait SongAudio {
     fn regions(&self) -> Vec<(TrackId, Vec<ClipRegion>)> {
         Vec::new()
     }
+}
+
+/// Whether track `tr` takes a loop recorded into an armed cell: a Loop
+/// track, or with loops on audio tracks (`on`, Dev's switch) an audio
+/// track.
+fn takes_loops(tr: &Track, on: bool) -> bool {
+    tr.is_loops() || (on && tr.is_audio())
 }
 
 /// The edit a bars action makes (`b` ticks a bar), with the tick it
@@ -661,6 +668,17 @@ pub struct TimeControl {
     /// The Loop cell armed (`TimeAction::LoopCell`): the next loop
     /// recorded lands there.
     loop_cell: Option<(usize, usize)>,
+    /// Loops on audio tracks (Dev's switch, audio tracks phase 4b): an
+    /// empty cell of an audio track arms as a Loop track's does, and the
+    /// next loop recorded lands there as a loop cell
+    /// ([`TimeControl::set_loops_on`]).
+    loops_on: bool,
+    /// Each loop's lasting id, as the loop host last said
+    /// ([`TimeControl::loops_are_on`]; 0: none yet).
+    loop_ids: [u128; LOOPS],
+    /// The id an audio loop cell's copy gave each loop, until its copy
+    /// ends ([`TimeAction::LoopCopyOff`] empties its cell); 0: none.
+    copy_ids: [u128; LOOPS],
     /// The loops the song's blocks play (song mode, `loops::song_plan`),
     /// as of the last period.
     song_loops: [bool; LOOPS],
@@ -856,6 +874,9 @@ impl TimeControl {
             loops_seen: [LoopNow::default(); LOOPS],
             loops_gone: [None; LOOPS],
             loop_cell: None,
+            loops_on: false,
+            loop_ids: [0; LOOPS],
+            copy_ids: [0; LOOPS],
             song_loops: [false; LOOPS],
             touch: Vec::with_capacity(TOUCH_POINTS),
             moves: Vec::with_capacity(MOVE_POINTS),
@@ -1197,11 +1218,18 @@ impl TimeControl {
     /// lands there.
     pub fn loop_cell(&self) -> Option<(usize, usize)> {
         self.loop_cell.filter(|&(t, s)| {
-            self.project
-                .tracks
-                .get(t)
-                .is_some_and(|tr| tr.is_loops() && tr.slots.get(s).is_some_and(|c| c.is_none()))
+            self.project.tracks.get(t).is_some_and(|tr| {
+                takes_loops(tr, self.loops_on) && tr.slots.get(s).is_some_and(|c| c.is_none())
+            })
         })
+    }
+
+    /// Loops on audio tracks (Dev's switch, phase 4b), for this start: an
+    /// audio track's empty cell arms for the next loop recorded
+    /// (`TimeAction::LoopCell`), which lands there as a loop cell naming
+    /// the loop's lasting id ([`TimeControl::loops_are_on`]).
+    pub fn set_loops_on(&mut self, on: bool) {
+        self.loops_on = on;
     }
 
     /// Fills the queue to the audio half (empty now) but for `free`
@@ -4866,12 +4894,18 @@ impl TimeControl {
                 Ok("loop cell: none armed".into())
             }
             TimeAction::LoopCell(Some((t, s))) => {
+                let on = self.loops_on;
                 let tr = self
                     .project
                     .tracks
                     .get(t)
-                    .filter(|tr| tr.is_loops())
-                    .ok_or_else(|| format!("track {} is not a Loop track", t + 1))?;
+                    .filter(|tr| takes_loops(tr, on))
+                    .ok_or_else(|| match on {
+                        true => {
+                            format!("track {} is neither a Loop track nor an audio track", t + 1)
+                        }
+                        false => format!("track {} is not a Loop track", t + 1),
+                    })?;
                 match tr.slots.get(s) {
                     None => return Err(format!("{} has no row {}", tr.name, s + 1)),
                     Some(Some(_)) => {
@@ -4887,12 +4921,20 @@ impl TimeControl {
                     s + 1
                 ))
             }
-            TimeAction::LoopCopy { from, to, into } => {
+            TimeAction::LoopCopy { from, to, into, id } => {
                 let n = usize::from(into);
                 let name = |p: &Project, (t, s): (usize, usize)| {
                     let track = p.tracks.get(t).map_or("", |t| t.name.as_str());
                     format!("{track} / {}", s + 1)
                 };
+                let audio = self.loops_on
+                    && self
+                        .project
+                        .clip(from.0, from.1)
+                        .is_some_and(|c| c.loop_clip.is_some());
+                if audio {
+                    return self.copy_audio_loop(from, to, into, id);
+                }
                 let clip = self
                     .project
                     .clip(from.0, from.1)
@@ -4929,9 +4971,15 @@ impl TimeControl {
                 // Only while nothing of the copy went in: a loop with a
                 // pass keeps its cells (its clear empties them).
                 let n = usize::from(into);
+                // An audio cell's copy: the cell naming its new id.
+                let copy = self.copy_ids.get_mut(n).map_or(0, std::mem::take);
+                let audio = |p: &mut Project| match copy {
+                    0 => 0,
+                    id => loops::remove_audio(p, LoopId(id)),
+                };
                 if n < LOOPS
                     && !self.loops_seen[n].pass
-                    && loops::remove(&mut self.project, into) > 0
+                    && loops::remove(&mut self.project, into) + audio(&mut self.project) > 0
                 {
                     self.compile()?;
                     return Ok(format!(
@@ -8236,10 +8284,92 @@ impl TimeControl {
     /// undo steps: the looper's undo takes a loop back, and its cell goes
     /// with it. Lines for the log; allocates only when something changed.
     pub fn loops_are(&mut self, now: &[LoopNow; LOOPS]) -> Vec<String> {
+        let ids = self.loop_ids;
+        self.loops_are_on(now, &ids)
+    }
+
+    /// A loop cell on an audio track copied onto an empty cell of another
+    /// audio track (Dev's switch, phase 4b; [`TimeAction::LoopCopy`]): a
+    /// copy is a new loop, so the cell there names `id`, the one the app
+    /// gave loop `into`, an empty loop the looper copies the audio into.
+    /// As a Loop track's copy it is not a take: the looper's UNDO takes it
+    /// back, and its cell goes with it ([`TimeAction::LoopCopyOff`] while
+    /// nothing went in). Refused, with why: no id, one the project names
+    /// already, a loop not free, the same track, or a cell that isn't an
+    /// audio track's empty one.
+    fn copy_audio_loop(
+        &mut self,
+        from: (usize, usize),
+        to: (usize, usize),
+        into: u8,
+        id: u128,
+    ) -> Result<String, String> {
+        let n = usize::from(into);
+        let name = |p: &Project, (t, s): (usize, usize)| {
+            let track = p.tracks.get(t).map_or("", |t| t.name.as_str());
+            format!("{track} / {}", s + 1)
+        };
+        let clip = self
+            .project
+            .clip(from.0, from.1)
+            .filter(|c| c.loop_clip.is_some())
+            .ok_or_else(|| format!("clips: {} holds no loop", name(&self.project, from)))?;
+        let (len, was) = (clip.length, clip.name.clone());
+        let there = self
+            .project
+            .tracks
+            .get(to.0)
+            .filter(|tr| tr.is_audio() && to.0 != from.0)
+            .and_then(|tr| tr.slots.get(to.1))
+            .ok_or("clips: a loop's copy onto another audio track goes in a cell of it")?;
+        if there.is_some() {
+            return Err(format!(
+                "clips: {} has a clip; a copy goes in an empty cell",
+                name(&self.project, to)
+            ));
+        }
+        let held = |i: u128| i != 0 && self.project.loop_track(LoopId(i)).is_some();
+        if id == 0 || held(id) {
+            return Err("clips: the copy has no loop of its own to name".to_string());
+        }
+        if n >= LOOPS
+            || loops::in_cell(&self.project, into)
+            || held(self.loop_ids[n])
+            || self.loops_seen[n].pass
+        {
+            return Err(format!("clips: loop {} isn't free for a copy", n + 1));
+        }
+        self.project
+            .put_new_clip(
+                to.0,
+                to.1,
+                Clip::new_audio_loop(LoopId(id), &format!("Loop {}", n + 1), len),
+            )
+            .map_err(|e| format!("clips: {e:?}"))?;
+        self.compile()?;
+        self.copy_ids[n] = id;
+        Ok(format!(
+            "clips: {was} copies into Loop {} on {}: launch it to hear it (the looper's UNDO takes it back)",
+            n + 1,
+            name(&self.project, to)
+        ))
+    }
+
+    /// [`TimeControl::loops_are`], with each loop's lasting id (`ids`, 0:
+    /// none yet), for loops on audio tracks (Dev's switch, phase 4b): a
+    /// first pass that ends with an audio track's empty cell armed lands
+    /// there as a loop cell naming its id ([`Clip::new_audio_loop`]),
+    /// launched from the loop's own start, so it plays straight on in that
+    /// track. Not with no id, or one the project names already: it lands
+    /// as before, said. An audio track's loop cells follow its loop's
+    /// length and empty when it is cleared, as a Loop track's do.
+    pub fn loops_are_on(&mut self, now: &[LoopNow; LOOPS], ids: &[u128; LOOPS]) -> Vec<String> {
         let mut lines = Vec::new();
-        if *now == self.loops_seen {
+        let was_ids = std::mem::replace(&mut self.loop_ids, *ids);
+        if *now == self.loops_seen && *ids == was_ids {
             return lines;
         }
+        let loops_on = self.loops_on;
         let mut compile = false;
         for (n, (&is, was)) in now.iter().zip(self.loops_seen).enumerate() {
             if is == was {
@@ -8256,27 +8386,49 @@ impl TimeControl {
                     // A redo of the pass that went goes back to its cell,
                     // if that is free and its Loop track plays nothing.
                     let project = &mut self.project;
+                    // Its lasting id, for an audio track's cell: one the
+                    // project names nowhere yet.
+                    let id = Some(LoopId(ids[n]))
+                        .filter(|id| loops_on && id.0 != 0 && project.loop_track(*id).is_none());
+                    let takes = |tr: &Track| tr.is_loops() || (id.is_some() && tr.is_audio());
                     let back = self.loops_gone[n].take().and_then(|((t, s), went)| {
                         let free = project
                             .tracks
                             .get(t)
-                            .is_some_and(|tr| tr.is_loops() && tr.slots[s].is_none());
+                            .is_some_and(|tr| takes(tr) && tr.slots[s].is_none());
                         (went == is && free && !busy(t)).then_some((t, s))
                     });
                     // Else the armed Loop cell takes it, if it is still
                     // empty.
                     let loop_cell = &mut self.loop_cell;
                     let armed = || {
-                        loop_cell.take().filter(|&(t, s)| {
+                        let cell = loop_cell.take();
+                        let free = cell.filter(|&(t, s)| {
                             project
                                 .tracks
                                 .get(t)
-                                .is_some_and(|tr| tr.is_loops() && tr.slots[s].is_none())
-                        })
+                                .is_some_and(|tr| takes(tr) && tr.slots[s].is_none())
+                        });
+                        // An audio track's cell with no id to give: the
+                        // arm stays, and the loop lands as before.
+                        if free.is_none() {
+                            *loop_cell = cell.filter(|&(t, s)| {
+                                project.tracks.get(t).is_some_and(|tr| {
+                                    tr.is_audio() && loops_on && tr.slots[s].is_none()
+                                })
+                            });
+                        }
+                        free
                     };
                     let landed = match back.or_else(armed) {
                         Some((t, s)) => {
-                            let _ = project.put_new_clip(t, s, Clip::new_loop(k, is.ticks));
+                            let clip = match id.filter(|_| project.tracks[t].is_audio()) {
+                                Some(id) => {
+                                    Clip::new_audio_loop(id, &format!("Loop {}", n + 1), is.ticks)
+                                }
+                                None => Clip::new_loop(k, is.ticks),
+                            };
+                            let _ = project.put_new_clip(t, s, clip);
                             // One loop plays per Loop track: the one there
                             // stops as this one plays.
                             self.launches.retain(|l| l.track != t);
@@ -8308,11 +8460,24 @@ impl TimeControl {
                         )),
                     }
                 }
-                (_, true) => compile |= loops::set_length(&mut self.project, k, is.ticks) > 0,
+                (_, true) => {
+                    let mut changed = loops::set_length(&mut self.project, k, is.ticks);
+                    if let Some(id) = Some(LoopId(ids[n])).filter(|id| loops_on && id.0 != 0) {
+                        changed += loops::set_audio_length(&mut self.project, id, is.ticks);
+                    }
+                    compile |= changed > 0;
+                }
                 (true, false) => {
-                    let first = loops::cells(&self.project, k).next();
+                    let id = Some(LoopId(was_ids[n])).filter(|id| loops_on && id.0 != 0);
+                    let first = loops::cells(&self.project, k)
+                        .next()
+                        .or_else(|| id.and_then(|id| loops::audio_cells(&self.project, id).next()));
                     self.loops_gone[n] = first.map(|cell| (cell, was));
-                    if loops::remove(&mut self.project, k) > 0 {
+                    let mut gone = loops::remove(&mut self.project, k);
+                    if let Some(id) = id {
+                        gone += loops::remove_audio(&mut self.project, id);
+                    }
+                    if gone > 0 {
                         lines.push(format!("Loop {} cleared: its cells are empty", n + 1));
                         compile = true;
                     }
@@ -8589,6 +8754,7 @@ impl TimeControl {
             self.armed,
             &self.takes,
         );
+        st.loops_on = self.loops_on;
         st.track_pick = self.track_pick;
         st.clip_pick = self.clip_picked();
         st.continuing = self.compose.screen();

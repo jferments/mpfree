@@ -73,9 +73,33 @@ Every button works as soon as MPFree starts, with nothing to learn: the develope
 
 | Control | What it does | When |
 |---|---|---|
-| **Data wheel** | Picks a row of the Record settings, or of the Edit options while the note editor's drawer is open (a push opens it). **–** and **+** change it; push the wheel and the wheel changes it. With the note editor's drawer closed, the wheel moves the cursor, **–** and **+** move the picked notes a snap earlier or later, and **SHIFT + –** or **+** zoom the roll in time. | Works (note editor's cursor and nudge new: needs a device check) |
-| **SHIFT + data wheel** | Scrolls the clip grid, the song, or the note editor's roll, list or tracker. | Works |
-| **Q-Link knobs 1-4** | The same knobs as on the Play page, as the cards on the right show; Q-LINK steps to the macro banks. See [Clips and patterns](../making-music/clips.md#the-q-links-on-arrange). With notes picked in the note editor they change the notes instead: position, length, semitones and velocity, under a **Note edit** header (**SHIFT**: finer steps; on velocity, the gap between soft and loud). From the first knob you touch to the last you let go is one **UNDO**. See [Change notes with the Q-Links](../making-music/editing-notes.md#change-notes-with-the-q-links). | Works (note editor's knobs new: needs a device check) |
+| **Data wheel** | Picks a row of the Record settings. **–** and **+** change it; push the wheel and the wheel changes it. | Works |
+| **SHIFT + data wheel** | Scrolls the clip grid or the song. | Works |
+| **Q-Link knobs 1-4** | The same knobs as on the Play page, as the cards on the right show; Q-LINK steps to the macro banks. See [Clips and patterns](../making-music/clips.md#the-q-links-on-arrange). | Works |
+
+## Sequencer tab: the piano roll
+
+These are the controls of the note editor, the Sequencer tab's **Notes** view (its piano roll, list and tracker). See [Editing notes in the piano roll](../making-music/editing-notes.md). None of them has run on the MPC yet, so each still needs a device check.
+
+| Control | What it does | When |
+|---|---|---|
+| **Data wheel** | With the drawer closed, moves the cursor (the line where **Pads write** puts notes) a snap at a time, round the clip; on the list it opens the drawer. With the drawer open, picks a row of the Edit options. | Works (new: needs a device check) |
+| **Push the data wheel** | Opens the drawer of Edit options and Takes; with it open, enters the row picked, so the wheel changes it. | Works (new: needs a device check) |
+| **SHIFT + data wheel** | Scrolls the roll's rows, the list or the tracker. | Works (new: needs a device check) |
+| **–** and **+** | With the drawer closed, move the picked notes a snap earlier or later (the MPC's Nudge); a run of presses is one **UNDO**. With no notes picked, they open the drawer. With it open, they change the row picked. | Works (new: needs a device check) |
+| **SHIFT + –** and **+** | Zoom the roll in time, around the cursor when it is on screen. | Works (new: needs a device check) |
+| **A finger on a note + data wheel** | Turns that note's velocity, one step a click; **–** and **+** step it too, and a push does nothing. A picked note turns with all the picks, keeping their differences; **SHIFT** while turning widens or narrows the gap between the softest and the loudest. **SHIFT + push** puts its velocity back to 100, the velocity a drawn note gets (the picks' too, when it is one of them). Everything you do before you lift is one **UNDO**. Not while **ERASE** is held. See [Hold a note and turn the wheel](../making-music/editing-notes.md#hold-a-note-and-turn-the-wheel). | Works (new: needs a device check) |
+| **Q-Link knobs 1-4** | With notes picked, change them under a **Note edit** header: **Q1** position, **Q2** length, **Q3** semitones (scale steps with a scale on), **Q4** velocity. **SHIFT** gives finer steps (on Q3, semitones; on Q4, the gap between soft and loud). From the first knob you touch to the last you let go is one **UNDO**. With a tool open they set the tool. With no notes picked they do what they do on Play. See [Change notes with the Q-Links](../making-music/editing-notes.md#change-notes-with-the-q-links). | Works (new: needs a device check) |
+| **ERASE + tap a note** | Takes the note out (on the list or tracker, tap its row). Hold **ERASE** and drag across the roll to take out every note your finger passes over, one **UNDO** for them all. On a lock lane, **ERASE** + a bar takes that lock off. | Works (new: needs a device check) |
+| **COPY + tap** | Hold **COPY** and tap a note to copy it (or the picked notes); hold **COPY** again and tap an empty spot, in this clip or another track's, to paste there. See [Copy and paste](../making-music/editing-notes.md#copy-and-paste). | Works (new: needs a device check) |
+| **SHIFT** at the start of a drag | Moves the notes by semitones instead of scale steps; a note drawn with **SHIFT** goes exactly where you tap, off the scale. On the clip's end grip, it changes the length by steps at any zoom. | Works (new: needs a device check) |
+| **SHIFT** at the start of a stroke on the Repeats lane | Draws each repeating note's ramp instead of its number of repeats. | Works (new: needs a device check) |
+| A pad, with **Pads write** lit | Writes the pad's note (or a chord pad's chord, or a drum hit) at the cursor, one snap long, then steps the cursor on. Pads held together go in as one chord, one **UNDO**. With **Pads write** off, a pad on a drum clip picks every note it plays. | Works (new: needs a device check) |
+| **ERASE + a pad** | Takes all of that pad's notes out of the clip, as on every page (see [Everywhere](#everywhere)). | Works (new: needs a device check) |
+| **PAD BANK A–H** | On a drum clip, also takes the roll to that bank's first pad. | Works (new: needs a device check) |
+| **TC** | Opens the note editor on the track you are on with the drawer on Timing Correct; pressed again, corrects the picked notes (or all of them). See [Timing Correct](../making-music/editing-notes.md#timing-correct). | Works (new: needs a device check) |
+| **STEP SEQ** | Closes the note editor and shows the Steps, with the pads as steps. | Works |
+| **UNDO** / **SHIFT + UNDO** | Takes the last edit back, or puts it back again. Every edit in the note editor is one take: a drag, a lane stroke, a turn of the Q-Links, a hold and turn, a tool's **Done**. | Works |
 
 ## Pads tab
 

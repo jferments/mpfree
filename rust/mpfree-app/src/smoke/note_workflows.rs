@@ -148,6 +148,38 @@ mod tests {
         });
     }
 
+    /// SHIFT + the wheel's push with a finger on a note puts its velocity
+    /// back to 100, the velocity a drawn note gets (Jay's card, 23 Nov
+    /// 2026), the hint line says so, and it joins the hold's take: one
+    /// UNDO takes back the turn and the reset together.
+    #[test]
+    fn shift_and_the_push_on_a_held_note_put_its_velocity_back_to_100() {
+        on_big_stack(|| {
+            let mut s = kicks_in_the_editor();
+            let v = velocities(&s)[1];
+            let (x, y) = mid(notes_on_the_roll(&mut s)[1]);
+            // One hold: the second kick 8 softer than 100 and lifted.
+            touch(&mut s, Touch::Down, x, y);
+            s.wheel(100 - i32::from(v) - 8);
+            touch(&mut s, Touch::Up, x, y);
+            s.settle();
+            assert_eq!(velocities(&s)[1], 92);
+            // The next: turned on, then SHIFT + the push.
+            touch(&mut s, Touch::Down, x, y);
+            s.wheel(-3);
+            assert_eq!(velocities(&s)[1], 89);
+            s.button_with("SHIFT", "DATA DIAL PUSH");
+            assert_eq!(velocities(&s)[1], 100, "back to a drawn note's velocity");
+            assert!(s.hint().starts_with("Velocity 100"), "{}", s.hint());
+            assert!(s.hint().contains("back to its default"), "{}", s.hint());
+            touch(&mut s, Touch::Up, x, y);
+            s.settle();
+            assert_eq!(clip(&s).notes.len(), 4, "the lift taps nothing");
+            s.button("UNDO").settle();
+            assert_eq!(velocities(&s)[1], 92, "one UNDO: the turn and the reset");
+        });
+    }
+
     /// ERASE held, a finger dragged along the kicks' row takes out every
     /// note it crosses, as one edit on the lift (piano roll plan 1B.5),
     /// and one UNDO brings them all back.

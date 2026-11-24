@@ -116,6 +116,8 @@ fn plays(p: &AudioPlays, project: &Project) -> Plays {
                 last_frame,
             }
         }
+        // No loop cells in these sessions (phase 4's are in audio.rs).
+        AudioPlays::Loop { .. } => panic!("a loop in a session of take clips"),
     }
 }
 

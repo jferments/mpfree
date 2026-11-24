@@ -10,6 +10,7 @@ These are the patterns MPFree comes with, as the Arp panel's Pattern mode lists 
 
 The steps column is the pattern written as text, as the workspace and your patterns file write it: **.** is a rest, **\_** a tie, **!** an accent, **+** and **-** an octave up or down, **:3** three hits in the step, **%50** a 50 % chance, **'** a short note and **~** a long one. After a **|** come lanes that loop on their own length: **oct** (octaves), **deg** (steps of the scale, or semitones with no scale picked), **vel** (velocity), **gate** (note length in percent) and **nudge**. A lane name with **~** and a number varies by up to that much each time.
 
+> [!NOTE]
 > MPFree wrote all of these for itself; none is copied from Akai's patterns. The rhythms with old names (tresillo, clave, Charleston) are centuries-old figures that belong to everyone.
 
 ## Starters

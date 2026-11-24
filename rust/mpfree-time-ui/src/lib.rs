@@ -37,6 +37,7 @@
 
 pub mod continuing;
 pub mod editor;
+pub mod inputs;
 pub mod lane;
 pub mod list;
 pub mod report;

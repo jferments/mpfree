@@ -1073,3 +1073,90 @@ fn snaps_never_allocate() {
         "Snap, Undo, Redo, Use my tap, Read as and its Undo landed"
     );
 }
+
+/// A loop on an audio track (`Looper::play`): told where it sounds each
+/// period, from two origins and after silence, with an overdub, a merge
+/// and refused launches, at every period size, without allocating.
+#[test]
+fn a_loop_on_a_track_never_allocates() {
+    use mpfree_looper::PlayRun;
+    const RATE: u32 = 44_100;
+    let mut t = Transport::new(RATE, 120.0).unwrap();
+    let mut l = Looper::new(RATE, 30);
+    let mut b = Block::new();
+    let input: Vec<f32> = (0..2 * 4096)
+        .map(|i| ((i % 89) as f32 - 44.0) / 200.0)
+        .collect();
+    l.command(L::SetBars(Some(1)));
+    l.command(L::Record);
+    t.command(0, T::Play);
+    while l.status().phase != Phase::Playing {
+        assert!(t.process(128, &mut b));
+        l.process_each(&b, &input[..256]);
+    }
+    let origin = l.loop_status(0).unwrap().origin as f64;
+    watch(true);
+    for (i, &n) in [1usize, 7, 128, 333, 4096, 64]
+        .iter()
+        .cycle()
+        .take(600)
+        .enumerate()
+    {
+        let n32 = n as u32;
+        let runs = match i % 5 {
+            // Silent.
+            0 => [None, None],
+            // All of it, from its own origin.
+            1 | 2 => [
+                Some(PlayRun {
+                    from: 0,
+                    to: n32,
+                    origin,
+                }),
+                None,
+            ],
+            // A new origin halfway.
+            3 if n > 1 => [
+                Some(PlayRun {
+                    from: 0,
+                    to: n32 / 2,
+                    origin,
+                }),
+                Some(PlayRun {
+                    from: n32 / 2,
+                    to: n32,
+                    origin: origin + 960.0,
+                }),
+            ],
+            _ => [
+                Some(PlayRun {
+                    from: 0,
+                    to: n32,
+                    origin: origin + 960.0,
+                }),
+                None,
+            ],
+        };
+        let mut told = [PlayRun::default(); 2];
+        let mut k = 0;
+        for r in runs.into_iter().flatten() {
+            told[k] = r;
+            k += 1;
+        }
+        assert!(l.play(0, &told[..k]));
+        match i {
+            100 => assert!(l.command(L::Overdub)),
+            160 => assert!(l.command(L::Overdub)),
+            200 => assert!(l.launch(0, false, None)),
+            210 => assert!(l.command(L::Mute(true))),
+            300 => assert!(l.command(L::Merge)),
+            _ => {}
+        }
+        assert!(t.process(n32, &mut b));
+        l.process_each(&b, &input[..2 * n]);
+        std::hint::black_box(l.outs().loop_out(0));
+    }
+    watch(false);
+    assert!(l.on_track(0));
+    assert_eq!(calls(), 0, "allocated with a loop on a track");
+}

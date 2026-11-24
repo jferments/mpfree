@@ -96,6 +96,21 @@ pub struct ClipPlay<'a> {
     pub stamp: u64,
 }
 
+/// A loop clip as a track plays it (phase 4, step 4b): the looper renders
+/// it, and [`crate::loop_play`] says where and how loud.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoopPlay {
+    /// The loop's lasting id (`mpfree_seq::LoopId`'s).
+    pub id: u128,
+    /// The song tick its passes count from.
+    pub origin: f64,
+    /// Its pass length in ticks.
+    pub len: Tick,
+    pub clip: u32,
+    /// Changes whenever the clip does.
+    pub stamp: u64,
+}
+
 /// What a track plays.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Plays<'a> {
@@ -104,6 +119,19 @@ pub enum Plays<'a> {
     #[default]
     Song,
     Clip(ClipPlay<'a>),
+    /// A loop clip: the looper's to render ([`crate::loop_play`]); the
+    /// region player plays nothing for it.
+    Loop(LoopPlay),
+}
+
+impl<'a> Plays<'a> {
+    /// What the region player plays for it: nothing for a loop.
+    pub(crate) fn for_regions(self) -> Plays<'a> {
+        match self {
+            Plays::Loop(_) => Plays::Nothing,
+            p => p,
+        }
+    }
 }
 
 /// What a track plays from frame `frame` of the period on.
@@ -227,7 +255,12 @@ impl Window {
 
     /// Closed for good by frame `f`.
     pub(crate) fn over(&self, f: u64) -> bool {
-        f >= self.to.saturating_add(rise(self.close))
+        f >= self.over_from()
+    }
+
+    /// The first frame it is closed for good from (never, while open).
+    pub(crate) fn over_from(&self) -> u64 {
+        self.to.saturating_add(rise(self.close))
     }
 }
 

@@ -20,7 +20,7 @@ checked: 2026-11-19 f0b39161
 
 **Chain** — The effects on one mixer strip, in the order the sound goes through them.
 
-**Chance** — How likely a note is to play each time round, from 0 to 100 %.
+**Chance** — How likely a note is to play each time round, from 1 to 100 %.
 
 **Chop** — Cut a sample into slices, one per pad: the Sample tab's **Slice** tool does it.
 
@@ -32,6 +32,8 @@ checked: 2026-11-19 f0b39161
 
 **Crossfade** — Blending from one sample into the next where two zones or velocity layers meet, instead of a hard switch.
 
+**Cursor** — In the note editor, the line across the roll that the data wheel moves a snap at a time; **Pads write** puts notes there.
+
 **CV/gate** — Voltages that play a modular synth: CV sets the pitch or moves a value, the gate says when a note is held.
 
 **Edit pad** — The Pads tab's page for a pad's deep settings: its layers, envelope, filter, keygroup, scenes and slices. Tap Edit pad in the pad's settings, or press PROG EDIT on the Pads tab.
@@ -40,7 +42,11 @@ checked: 2026-11-19 f0b39161
 
 **Euclidean fill** — Spreading a number of hits as evenly as they go over a number of steps, a quick way to write a groove.
 
+**Faint clips** — Other clips shown faintly behind the one you edit in the piano roll, picked with its **Show** chip, so you can write a part against another.
+
 **Flatten** — Recording a pad as it sounds now, with all its settings, into a new sound.
+
+**Fold** — The note editor's chip that hides rows: show every row, only the rows with notes, or only the clip's scale.
 
 **I/O view** — The mixer's view of where everything goes: audio, MIDI, sync and CV.
 
@@ -72,6 +78,8 @@ checked: 2026-11-19 f0b39161
 
 **Mute group** — Pads that cut each other off, like an open and a closed hi-hat.
 
+**Note editor** — The Sequencer tab's **Notes** view: a clip's notes as a piano roll, a list or a tracker, to draw, pick, move and change them.
+
 **Note Repeat** — Hold NOTE REPEAT and a pad, and the pad repeats in time.
 
 **Nudge** — Move a note a little early or late.
@@ -84,11 +92,17 @@ checked: 2026-11-19 f0b39161
 
 **Pads tab** — The tab where you put sounds on pads and set each pad's level, tuning, effects and what it plays.
 
+**Pads write** — The note editor's switch that makes each pad you press write its note at the cursor, one step at a time.
+
 **Parameter lock** — A setting changed for one step only, such as a filter that opens on one hit.
 
 **Pattern** — A clip shown as steps: the rows on the Play page, and the Sequencer's Steps.
 
 **Perform set** — Eight pages of action pads (loop keys, throws, mutes, scenes, macros) that can take over the pads, set up on the Pads tab.
+
+**Piano roll** — A view of notes as bars against a keyboard: higher notes higher up, time left to right. MPFree's is the note editor on the Sequencer tab.
+
+**Pick** — Choose notes in the note editor (a tap, a box, the Select menu) so the Q-Links, a drag, **Delete** or a tool act on them. The chosen notes are the **picked** notes.
 
 **Pin** — A hit in a warped sound fixed to a beat with the Warp tool; the sound between pins stretches to fit.
 
@@ -113,6 +127,8 @@ checked: 2026-11-19 f0b39161
 **Sequencer** — The tab after Play: the armed track's clip as steps (**Steps**) or as notes in the note editor (**Notes**). **STEP SEQ** opens it.
 
 **Skip back** — Keeping what had just come in without having pressed Record: Sample Recall, with **From** set to the recorder's Source.
+
+**Snap** — The grid that notes you draw or move land on in the note editor. **Auto** follows how far you have zoomed in.
 
 **Song** — Clips laid out on a timeline on the Arrange tab, one lane per track, with the audio tracks under them.
 
