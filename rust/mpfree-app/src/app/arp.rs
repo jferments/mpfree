@@ -80,8 +80,9 @@ pub struct PhraseView {
     pub waits: bool,
     /// The phrase that plays until then, as a place in the list.
     pub playing: Option<usize>,
-    /// A phrase plays on the armed track: its pads press notes (a synth's),
-    /// so NOTE REPEAT's - and + reach Phrase there.
+    /// A phrase plays on the armed track (its pads press notes, a
+    /// synth's) or on the shared synth the pads play on their own, so NOTE
+    /// REPEAT's - and + reach Phrase there.
     pub plays: bool,
     /// The Phrase tab shows on a kit track, whose pads play as pressed:
     /// the track (0 based), for the screen to name.
@@ -288,6 +289,12 @@ pub fn mode_label(m: Mode) -> &'static str {
 impl App {
     /// What the pads play through now.
     pub(super) fn engine_mode(&self) -> Mode {
+        self.mode_with(self.phrases_play())
+    }
+
+    /// What the pads play through now where a phrase plays (`phrases`:
+    /// they press notes) or not (on a kit the pads play as pressed).
+    fn mode_with(&self, phrases: bool) -> Mode {
         let mode = if self.free_time_recording() {
             // Free time: the pattern plays the latched notes while the pads
             // write steps into it.
@@ -296,14 +303,14 @@ impl App {
             // Step time: pads write steps and sound as pressed.
             Mode::Direct
         } else if self.repeating() {
-            self.held_mode()
+            self.held_mode_with(phrases)
         } else if self.panel_open() {
             self.arp_mode
         } else {
             Mode::Direct
         };
         // A phrase moves notes: on a kit the pads play as pressed.
-        if mode == Mode::Phrase && !self.phrases_play() {
+        if mode == Mode::Phrase && !phrases {
             Mode::Direct
         } else {
             mode
@@ -330,23 +337,31 @@ impl App {
     /// where that plays the pads as pressed (Direct, and Phrase on a kit,
     /// so a tab left on Phrase never takes Note Repeat from a kit's pads).
     fn held_mode(&self) -> Mode {
+        self.held_mode_with(self.phrases_play())
+    }
+
+    /// [`App::held_mode`] where a phrase plays (`phrases`) or not.
+    fn held_mode_with(&self, phrases: bool) -> Mode {
         match self.arp_mode {
             Mode::Direct => Mode::Repeat,
-            Mode::Phrase if !self.phrases_play() => Mode::Repeat,
+            Mode::Phrase if !phrases => Mode::Repeat,
             m => m,
         }
     }
 
     /// The mode what the pads play on their own goes through (the pads'
     /// arp, main.rs `PadsArp`, sampler step 15c): the armed track's arp's
-    /// as the panel and NOTE REPEAT set it, but for Phrase. A phrase is
-    /// the armed track's: it moves the notes of the track's instrument,
-    /// and the pads' arp has the track's settings and no phrase, on what
-    /// is often a kit, whose pads are not notes. So what the pads play on
-    /// their own they play as pressed, and NOTE REPEAT and Latch repeat
-    /// it, as on a kit track ([`App::held_mode`]); the track's own phrase
-    /// plays on.
+    /// as the panel and NOTE REPEAT set it. A phrase moves notes, so on
+    /// the shared synth (its pads press notes, [`App::set_pads_own`]) the
+    /// pads' arp plays the track's phrase, whatever the track plays
+    /// (`PadsArp::follow` takes the phrase and the key). On a kit or a
+    /// host's pads, which are not notes, they play as pressed, and NOTE
+    /// REPEAT and Latch repeat it, as on a kit track ([`App::held_mode`]).
+    /// Either way the track's own phrase plays on.
     pub fn pads_own_mode(&self) -> Mode {
+        if self.pads_own_notes {
+            return self.mode_with(true);
+        }
         match self.arps.engine_at(self.track).settings().mode {
             Mode::Phrase if self.repeating() => Mode::Repeat,
             Mode::Phrase => Mode::Direct,
@@ -357,7 +372,26 @@ impl App {
     /// The Arp panel shows its Phrase tab on a kit track, whose pads play
     /// as pressed: the tab says so in the place of its list.
     pub(super) fn phrase_on_kit(&self) -> bool {
-        self.arp_mode == Mode::Phrase && !self.phrases_play() && self.panel_open()
+        self.arp_mode == Mode::Phrase
+            && !self.phrases_play()
+            && !self.pads_own_notes
+            && self.panel_open()
+    }
+
+    /// What the pads play on their own, each period from the audio loop:
+    /// `notes`, the shared synth, whose pads press notes (main.rs
+    /// `PadsPreview::Synth`), and where the pads' arp is in its phrase
+    /// (`at`, in the phrase's ticks; None while it plays none). With
+    /// `notes` the pads' arp plays the armed track's phrase
+    /// ([`App::pads_own_mode`]), the tab shows its list on a kit track
+    /// too, and its cursor follows the pads' phrase while it plays.
+    /// Allocates nothing.
+    pub fn set_pads_own(&mut self, notes: bool, at: Option<f64>) {
+        if notes != self.pads_own_notes {
+            self.pads_own_notes = notes;
+            self.arp_dirty = true;
+        }
+        self.pads_phrase_at = at.filter(|_| notes);
     }
 
     /// The tab the wheel, - / + and Q-Link 1 follow: the mode the pads
@@ -367,8 +401,25 @@ impl App {
     fn arp_tab(&self) -> Mode {
         if self.phrase_on_kit() {
             Mode::Phrase
+        } else if self.pads_own_notes {
+            self.pads_own_mode()
         } else {
             self.arps.engine_at(self.track).settings().mode
+        }
+    }
+
+    /// The armed track's arp's settings as the screens show them: with
+    /// the mode the pads play through ([`App::arp_tab`]), which on the
+    /// shared synth the pads play on their own is the pads' arp's.
+    fn shown_settings(&self) -> Settings {
+        let s = self.arps.engine_at(self.track).settings();
+        if self.pads_own_notes {
+            Settings {
+                mode: self.pads_own_mode(),
+                ..s
+            }
+        } else {
+            s
         }
     }
 
@@ -394,7 +445,7 @@ impl App {
 
     pub fn arp_view(&self) -> Effect {
         Effect::Arp(ArpView {
-            settings: self.arps.engine_at(self.track).settings(),
+            settings: self.shown_settings(),
             live: self.arps.engine_at(self.track).live(),
             push: self.arps.engine_at(self.track).modifier(),
             pattern: self.pattern,
@@ -416,7 +467,9 @@ impl App {
     fn phrase_moves(&self) -> (Option<u32>, bool) {
         let e = self.arps.engine_at(self.track);
         (
-            e.phrase_at().map(|t| t.max(0.0) as u32 / CURSOR_TICKS),
+            self.pads_phrase_at
+                .or(e.phrase_at())
+                .map(|t| t.max(0.0) as u32 / CURSOR_TICKS),
             e.phrase_waiting() == Some(Join::Bar),
         )
     }
@@ -433,7 +486,7 @@ impl App {
             playing: waits
                 .then(|| self.phrases.iter().position(|(_, p)| p == e.phrase()))
                 .flatten(),
-            plays: self.phrases_play(),
+            plays: self.phrases_play() || self.pads_own_notes,
             kit_track: self.phrase_on_kit().then_some(self.track),
         }
     }
@@ -612,7 +665,7 @@ impl App {
         if self.phrase_on_kit() {
             return Vec::new();
         }
-        match self.arps.engine_at(self.track).settings().mode {
+        match self.arp_tab() {
             Mode::Arp => {
                 let o = step_in(&Order::ALL, self.arp.order, delta);
                 if o == self.arp.order {
@@ -677,8 +730,8 @@ impl App {
                 }
             }
             step_in(&MODES, self.arp_mode, d)
-        } else if self.phrases_play() {
-            step_in(&GENERATING_NOTES, self.held_mode(), d)
+        } else if self.phrases_play() || self.pads_own_notes {
+            step_in(&GENERATING_NOTES, self.held_mode_with(true), d)
         } else {
             step_in(&GENERATING, self.held_mode(), d)
         };

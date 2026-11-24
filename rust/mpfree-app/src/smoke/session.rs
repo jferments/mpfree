@@ -2035,6 +2035,8 @@ impl Session {
             .period_arps(PERIOD as u32, &mut self.hits, &mut self.app.arps);
         // The pads' arp (sampler step 15c), as main.rs: on the clips' arps'
         // period, where the pads play on their own.
+        let synth = matches!(self.pads_preview(), Some(crate::PadsPreview::Synth));
+        self.app.set_pads_own(synth, self.pads_arp.phrase_at());
         let (mode, own_swing) = (self.app.pads_own_mode(), self.app.arp_own_swing());
         self.pads_arp
             .follow(self.app.arps.engine_at(self.app.track()), mode, own_swing);

@@ -72,6 +72,13 @@ impl Engine {
         &self.phrase
     }
 
+    /// The phrase picked last: the one waiting for its line
+    /// ([`Engine::set_phrase`]), else the one playing. Another engine that
+    /// follows this one's pick takes it from here.
+    pub fn phrase_picked(&self) -> &Phrase {
+        self.next_phrase.as_ref().unwrap_or(&self.phrase)
+    }
+
     /// The key a phrase follows In key while the arp's own scale
     /// (`Settings::scale`) is off: the scale the track's pads play, so a
     /// riff stays in the key the pads are in. The arp's own scale, when

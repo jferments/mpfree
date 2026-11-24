@@ -1093,6 +1093,41 @@ mod tests {
         assert_eq!(app.pads_own_mode(), Mode::Direct, "the panel closed");
     }
 
+    /// The shared synth the pads play on their own presses notes, so the
+    /// pads' arp plays the track's phrase there, even beside a kit track:
+    /// the tab shows its list and its cursor follows the pads' phrase,
+    /// while the kit track's own arp plays its pads as pressed.
+    #[test]
+    fn the_synth_the_pads_play_on_their_own_plays_the_tracks_phrase() {
+        let mut app = ready();
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Phrase));
+        let view = |app: &App| match app.arp_view() {
+            Effect::Arp(v) => v,
+            _ => unreachable!(),
+        };
+        assert!(view(&app).phrase.kit_track.is_some(), "a kit track's tab");
+        app.set_pads_own(true, None);
+        assert_eq!(app.pads_own_mode(), Mode::Phrase);
+        assert_eq!(app.eng().settings().mode, Mode::Direct, "the kit track");
+        let v = view(&app);
+        assert_eq!(v.settings.mode, Mode::Phrase);
+        assert!(v.phrase.plays && v.phrase.kit_track.is_none(), "the list");
+        // The cursor follows the pads' phrase.
+        let ticks = app.eng().phrase().ticks() as f32;
+        app.set_pads_own(true, Some(f64::from(ticks) / 2.0));
+        assert_eq!(view(&app).phrase.at, Some(0.5));
+        // NOTE REPEAT and Latch keep it on the phrase.
+        app.button(NOTE_REPEAT, true, 0.0);
+        assert_eq!(app.pads_own_mode(), Mode::Phrase);
+        app.button(NOTE_REPEAT, false, 0.0);
+        // Back to the track: as pressed, and the kit panel again.
+        app.set_pads_own(false, Some(1.0));
+        assert_eq!(app.pads_own_mode(), Mode::Direct);
+        let v = view(&app);
+        assert!(v.phrase.kit_track.is_some() && v.phrase.at.is_none());
+    }
+
     /// Each track keeps its own pick, and a latched phrase plays on,
     /// from where it is, when its track is armed again.
     #[test]
