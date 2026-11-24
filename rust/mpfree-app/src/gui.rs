@@ -9242,6 +9242,11 @@ impl Player {
                 View::Pads if self.sample.play_row(&self.ui) == Some(mpfree_sampler_ui::play_tab::Row::KitTuning) => {
                     mpfree_sampler_ui::play_tab::TUNING_HINT.to_string()
                 }
+                // The Filter section's types, or what moves the filter (F5).
+                View::Pads if self.sample.play_view_hint().is_some() => {
+                    format!("{}   ·   Q-Links 1-4: {}", self.sample.play_view_hint().unwrap_or_default(),
+                     self.sample.play_qlinks_text())
+                }
                 View::Pads if self.sample.page() == sample_page::PLAY_PAGE && self.sample.play_keys_shown() => {
                     format!("Press keys to hear the kit   ·   drag the zone edges and root   ·   \
                      Q-Links 1-4: {}   ·   {ROWS_HINT}", self.sample.play_qlinks_text())
@@ -13051,10 +13056,12 @@ impl Player {
         }
         // What the Q-Links turn: Edit pad's section's, and the Pads tab's
         // for the type of the pad picked (a tap on the map picks another).
+        // The Filter section's types or moves opened or closed: their hint.
         let qlinks = format!(
-            "{} | {}",
+            "{} | {} | {:?}",
             self.sample.play_qlinks_text(),
-            self.sample.pads_qlinks_text()
+            self.sample.pads_qlinks_text(),
+            self.sample.play_view_hint()
         );
         let live = self.sample.chop_live_method();
         if keys != self.sample_keys || live != self.sample_live || qlinks != self.sample_qlinks {
@@ -24810,13 +24817,13 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         widget: mpfree_sampler_ui::play_tab::SECTIONS.into(),
         kind: EventKind::Tab(2),
     });
-    // Off, LP 1-pole, LP 2-pole.
+    // Off to Low-pass (12 dB, the pad's slope).
     let filter = mpfree_sampler_ui::play_tab::Row::Filter.place();
     play.on_event(UiEvent {
         widget: mpfree_sampler_ui::play_tab::LIST.into(),
         kind: EventKind::Step {
             index: filter,
-            delta: 2,
+            delta: 1,
         },
     });
     play.on_event(UiEvent {
@@ -25396,14 +25403,14 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         out.push(("pads-edit-mono", mono));
     }
     // The Filter section's Ladder, resonant and driven 12 dB (sampler
-    // R5.6): Filter steps Off, LP 1 to 8-pole (six), HP the same, BP 2 to
-    // 8-pole (four), Notch2, Notch4, Peak, Ladder.
+    // R5.6): Type steps Off, Low-pass, High-pass, Band-pass, Notch, Peak,
+    // Ladder (the filter gap plan's F5).
     {
         use mpfree_sampler_ui::play_tab::{Row, LIST};
         let mut ladder = sample_sampler(fonts());
         edit_pad(&mut ladder);
         for (row, delta) in [
-            (Row::Filter, 20),
+            (Row::Filter, 6),
             (Row::Cutoff, -3),
             (Row::Resonance, 14),
             (Row::Drive, 4),
@@ -25417,6 +25424,64 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         ladder.take_actions();
         out.push(("pads-edit-ladder", ladder));
+    }
+    // The pad filter screen (the filter gap plan's F5): the types over the
+    // Filter section's pictures, a 24 dB low-pass picked; then what moves
+    // the filter, with the envelope, velocity, key track and random set.
+    {
+        use mpfree_sampler_ui::play_tab::{Row, LIST, TYPES_VIEW};
+        let mut types = sample_sampler(fonts());
+        edit_pad(&mut types);
+        let index = play_row(&mut types, Row::Filter);
+        types.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Select(index),
+        });
+        for i in [1, mpfree_sampler_ui::play_widgets::SLOPE_BASE + 3] {
+            types.on_event(UiEvent {
+                widget: TYPES_VIEW.into(),
+                kind: EventKind::Tab(i),
+            });
+            types.apply(ToUi::SampleLift);
+        }
+        types.take_actions();
+        out.push(("pads-edit-filter-types", types));
+        let filter = |fonts: Fonts| {
+            let mut p = sample_sampler(fonts);
+            edit_pad(&mut p);
+            for (row, delta) in [
+                (Row::Filter, 1),
+                (Row::Slope, 2),
+                (Row::Cutoff, -2),
+                (Row::Resonance, 7),
+                (Row::FilterEnv, 8),
+                (Row::EnvDecay, 6),
+                (Row::EnvSustain, -10),
+            ] {
+                let index = play_row(&mut p, row);
+                p.on_event(UiEvent {
+                    widget: LIST.into(),
+                    kind: EventKind::Step { index, delta },
+                });
+                p.apply(ToUi::SampleLift);
+            }
+            p
+        };
+        // The Filter section with its envelope on the graph and in Hz.
+        let mut main = filter(fonts());
+        main.take_actions();
+        out.push(("pads-edit-filter", main));
+        let mut moves = filter(fonts());
+        moves.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Tab(Row::Moves.place()),
+        });
+        for (k, delta) in [(0, 50), (1, 50), (2, 25)] {
+            moves.apply(ToUi::SampleQLink(k, delta));
+            moves.apply(ToUi::SampleLift);
+        }
+        moves.take_actions();
+        out.push(("pads-edit-filter-moves", moves));
     }
     // 16 LEVEL on Play: the 16 Levels panel, by tune, pad 12 held.
     {

@@ -1149,6 +1149,7 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
         latch,
         amp,
         filter,
+        filter_bypass,
         filter_env,
         vel_to_level,
         vel_to_start,
@@ -1200,6 +1201,8 @@ fn visit_pad<F: Fields>(f: &mut F, p: &mut Pad) {
         f.num("drive_db", drive_db);
     });
     f.scope("filter_env", |f| visit_envelope(f, filter_env));
+    // Saves before the filter gap plan's F5 open with the filter on.
+    f.flag("filter_bypass", filter_bypass);
     f.num("vel_to_level", vel_to_level);
     f.num("vel_to_start", vel_to_start);
     f.num("level_db", level_db);
