@@ -15819,8 +15819,8 @@ fn player_session(
         // comes from the player's last period, on its frames.
         if loops_on {
             // The Loop group (4e.1) on each loop's sound before its track:
-            // every loop, or the armed track's.
-            let (set, armed) = (loop_group.set(), time.armed());
+            // every loop, or the armed audio track's (by its own arm).
+            let (set, armed) = (loop_group.set(), time.audio_armed());
             loop_group.run(
                 PERIOD,
                 |n| looper.slot_out(n),

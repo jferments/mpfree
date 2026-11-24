@@ -8028,14 +8028,15 @@ impl Player {
 
     /// Play's Loop group (audio tracks phase 4e.1, board 7): on the loop
     /// row with Dev's "Loops on audio tracks" on, its switch naming the
-    /// armed track when it is an audio track. When the switch goes off the
+    /// audio track armed by its own arm (`TimeState::audio_focus`; an
+    /// audio track is never the armed note track). When the switch goes off the
     /// group goes, and the audio is told it is at rest, so a new start of
     /// the group is at rest everywhere.
     fn refresh_loop_group(&mut self) {
         use crate::loop_row::{GroupPanel, LoopRow, LOOP_ROW};
         let st = &self.time;
         let armed = st
-            .armed
+            .audio_focus
             .filter(|&t| st.audio_lane_at(t).is_some())
             .map(|t| self.track_name(t));
         let on = st.loops_on;
@@ -36785,6 +36786,37 @@ mod tests {
         st.loop_cell = Some((vocal, empty));
         p.apply(ToUi::Time(Box::new(st)));
         assert_eq!(p.rec_chip().alert, RecAlert::None);
+    }
+
+    /// The audio tracks rethink's phase 4e.1 (board 7): the Loop group's
+    /// "Armed" half names the audio track armed by its own arm, never the
+    /// armed note track; with none it says none, and with the switch off
+    /// the group goes.
+    #[test]
+    fn with_loops_on_the_loop_groups_armed_half_names_the_armed_audio_track() {
+        use crate::loop_row::{LoopRow, LOOP_ROW};
+        let mut st = mpfree_time_ui::sample::clips_audio_state().unwrap();
+        st.loops_on = true;
+        let vocal = st.audio[0].row;
+        let note = (0..st.tracks.len())
+            .find(|&t| st.audio_lane_at(t).is_none())
+            .expect("a note track");
+        st.armed = Some(note);
+        st.audio_focus = None;
+        let mut p = quiet_player(Fonts::embedded());
+        let armed = |p: &Player| {
+            p.ui.get::<LoopRow>(LOOP_ROW)
+                .and_then(|r| r.group.as_ref())
+                .map(|g| g.armed.clone())
+        };
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(armed(&p), Some(None), "a note track armed: none");
+        st.audio_focus = Some(vocal);
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(armed(&p), Some(Some("Vocal".to_string())));
+        st.loops_on = false;
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(armed(&p), None, "no group with the switch off");
     }
 
     /// The audio tracks rethink's phase 4c.3 and board 2: a loop holding a
