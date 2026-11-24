@@ -123,7 +123,7 @@ use mpfree_stream::msg::{Place, MAX_CURSORS, MAX_SOURCES};
 use mpfree_stream::player::Player;
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::transport::MAX_PERIOD;
-use mpfree_transport::{Block, Mark, Span, State};
+use mpfree_transport::{Block, Mark, Span, State, TransactionId};
 
 /// Audio tracks at most.
 pub const MAX_TRACKS: usize = 8;
@@ -245,14 +245,15 @@ pub enum Command {
         from: Tick,
         to: Tick,
     },
-    /// [`Command::Erase`] as an undo step of song edit `song` (not 0):
+    /// [`Command::Erase`] as an undo step of song edit `song` (named by
+    /// its transaction, `mpfree_play::Take::txn`; not none):
     /// Rec song's block of an audio clip replacing the regions under it
     /// (phase 2, step 2d). As for [`Command::Retime`], only
     /// [`Command::SongUndo`] and [`Command::SongRedo`] take it back and
     /// bring it back; [`Command::Undo`] and [`Command::Redo`] stop at it.
     /// Refused while the track records.
     EraseSong {
-        song: u32,
+        song: TransactionId,
         track: usize,
         from: Tick,
         to: Tick,
@@ -309,7 +310,8 @@ pub enum Command {
     },
     /// A song time edit (the Arrange refactor's 3.4, [`retime`]): every
     /// track's regions move with the stretch of song they sit in, as one
-    /// undo step that belongs to song edit `song` (not 0). Only
+    /// undo step that belongs to song edit `song` (named by its
+    /// transaction, not none). Only
     /// [`Command::SongUndo`] and [`Command::SongRedo`] take that step back
     /// and bring it back; [`Command::Undo`] and [`Command::Redo`] stop at
     /// it. The cuts use the tempo map of the period before (the one the
@@ -317,32 +319,32 @@ pub enum Command {
     /// Refused, nothing changing, while a track records or when a track's
     /// regions would not fit ([`AudioTracks::retime_refused`] says first).
     Retime {
-        song: u32,
+        song: TransactionId,
         retime: Retime,
     },
     /// Undo step `step` (a recording's or a sound's put on a lane,
-    /// [`AudioTracks::take_took`]) becomes one of song edit `song` (not
-    /// 0): the song edit that cut the blocks under it (phase 2, step 2d).
+    /// [`AudioTracks::take_took`]) becomes one of song edit `song` (by
+    /// its transaction, not none): the song edit that cut the blocks under it (phase 2, step 2d).
     /// From then on it is as a [`Command::Retime`]'s step: only
     /// [`Command::SongUndo`] and [`Command::SongRedo`] take it back and
     /// bring it back. Refused when Undo can't reach that step, or it
     /// belongs to a song edit already.
     TieStep {
         step: u32,
-        song: u32,
+        song: TransactionId,
     },
     /// Take back, or bring back, song edit `song`'s steps (one a
     /// [`Command::Retime`] it was made of: + Bar pressed in a row is one
     /// song edit): refused unless they are the steps Undo, or Redo, would
     /// take next.
-    SongUndo(u32),
-    SongRedo(u32),
+    SongUndo(TransactionId),
+    SongRedo(TransactionId),
     /// The song can no longer take back, or bring back, song edit `song`
     /// (its history moved on past it): its steps go, with every step
     /// Undo or Redo could only reach through them, so the regions never
     /// go back to where they sat on a song that is gone. Changes no
     /// region.
-    ForgetSong(u32),
+    ForgetSong(TransactionId),
     /// Take `take`'s file is open as stream source generation `gen` (the
     /// source is the take's id): finished, or, when `growing`, still
     /// being written while the take records (opened at the frames
@@ -1024,9 +1026,10 @@ struct Snap {
     /// The step it belongs to: the snaps of one step share it (a song time
     /// edit changes several tracks at once), and it goes up by one a step.
     step: u32,
-    /// The song edit the step belongs to (0: none): see
+    /// The song edit the step belongs to, by its transaction (none: no
+    /// song edit's): see
     /// [`Command::Retime`].
-    song: u32,
+    song: TransactionId,
     regions: [Region; MAX_REGIONS],
 }
 
@@ -1036,7 +1039,7 @@ impl Snap {
             track: 0,
             n: 0,
             step: 0,
-            song: 0,
+            song: TransactionId::NONE,
             regions: [Region::EMPTY; MAX_REGIONS],
         }
     }
@@ -1777,9 +1780,10 @@ impl AudioTracks {
     }
 
     /// Save the scratch copy (a track's regions before an edit) in undo
-    /// step `step`, of song edit `song` (0: none), dropping anything Redo
+    /// step `step`, of song edit `song` (by its transaction; none: no song
+    /// edit's), dropping anything Redo
     /// could bring back and, when full, the oldest step (all its tracks).
-    fn push_history(&mut self, step: u32, song: u32) {
+    fn push_history(&mut self, step: u32, song: TransactionId) {
         if self.h_done == HISTORY {
             let oldest = self.hist[self.h_base].step;
             while self.h_done > 0 && self.hist[self.h_base].step == oldest {
@@ -1844,24 +1848,24 @@ impl AudioTracks {
 
     /// The song edit whose step Undo would take next (Undo stops there:
     /// it is the app's UNDO's), if it is one.
-    pub fn undo_is_song(&self) -> Option<u32> {
-        self.undo_snap().map(|s| s.song).filter(|&s| s != 0)
+    pub fn undo_is_song(&self) -> Option<TransactionId> {
+        self.undo_snap().map(|s| s.song).filter(|s| s.is_some())
     }
 
     /// The same for Redo.
-    pub fn redo_is_song(&self) -> Option<u32> {
-        self.redo_snap().map(|s| s.song).filter(|&s| s != 0)
+    pub fn redo_is_song(&self) -> Option<TransactionId> {
+        self.redo_snap().map(|s| s.song).filter(|s| s.is_some())
     }
 
     /// Where song edit `song`'s step is: next for Undo (`undo`) or Redo,
     /// under other steps, or gone.
-    pub fn song_step(&self, song: u32, undo: bool) -> SongStep {
+    pub fn song_step(&self, song: TransactionId, undo: bool) -> SongStep {
         let next = if undo {
             self.undo_snap()
         } else {
             self.redo_snap()
         };
-        if song != 0 && next.is_some_and(|s| s.song == song) {
+        if song.is_some() && next.is_some_and(|s| s.song == song) {
             return SongStep::Next;
         }
         let (from, n) = if undo {
@@ -1870,7 +1874,7 @@ impl AudioTracks {
             (self.h_done, self.h_redo)
         };
         let held = (from..from + n).any(|i| self.hist[(self.h_base + i) % HISTORY].song == song);
-        if song != 0 && held {
+        if song.is_some() && held {
             SongStep::Under
         } else {
             SongStep::Gone
@@ -1881,8 +1885,8 @@ impl AudioTracks {
     /// through them: on the Undo side the newest of them and all older
     /// steps, on the Redo side the first of them and all steps redone
     /// after it ([`Command::ForgetSong`]).
-    fn forget_song(&mut self, song: u32) {
-        if song == 0 {
+    fn forget_song(&mut self, song: TransactionId) {
+        if !song.is_some() {
             return self.refuse();
         }
         let at = |i: usize| self.hist[(self.h_base + i) % HISTORY].song == song;
@@ -1925,7 +1929,8 @@ impl AudioTracks {
     /// Whether any step of the history, done or undone, belongs to a song
     /// edit.
     pub fn has_song_steps(&self) -> bool {
-        (0..self.h_done + self.h_redo).any(|i| self.hist[(self.h_base + i) % HISTORY].song != 0)
+        (0..self.h_done + self.h_redo)
+            .any(|i| self.hist[(self.h_base + i) % HISTORY].song.is_some())
     }
 
     /// Whether any track holds a region.
@@ -1952,8 +1957,8 @@ impl AudioTracks {
     /// Song time edit `r` of song edit `song` on every track it changes,
     /// as one step (see [`Command::Retime`]). False, nothing changed, when
     /// a track records or one's regions would not fit.
-    fn retime(&mut self, song: u32, r: &Retime) -> bool {
-        if song == 0 || self.retime_refused(r).is_some() {
+    fn retime(&mut self, song: TransactionId, r: &Retime) -> bool {
+        if !song.is_some() || self.retime_refused(r).is_some() {
             return false;
         }
         let step = self.next_step();
@@ -2036,20 +2041,20 @@ impl AudioTracks {
     /// Undo step `step` becomes one of song edit `song`
     /// ([`Command::TieStep`]): false, nothing changed, when Undo can't
     /// reach it or it belongs to a song edit.
-    fn tie_step(&mut self, step: u32, song: u32) -> bool {
+    fn tie_step(&mut self, step: u32, song: TransactionId) -> bool {
         let (base, done) = (self.h_base, self.h_done);
         let mine = move |k: usize| (base + k) % HISTORY;
         let snaps = || (0..done).map(mine);
         let mut found = false;
         for i in snaps() {
             if self.hist[i].step == step {
-                if self.hist[i].song != 0 {
+                if self.hist[i].song.is_some() {
                     return false;
                 }
                 found = true;
             }
         }
-        if song == 0 || !found {
+        if !song.is_some() || !found {
             return false;
         }
         for i in snaps() {
@@ -2061,8 +2066,9 @@ impl AudioTracks {
     }
 
     /// Silence `track` from `from` to `to`, as an undo step of song edit
-    /// `song` (0: none); refused where no region plays.
-    fn erase(&mut self, track: usize, from: Tick, to: Tick, song: u32, map: &TempoMap) {
+    /// `song` (by its transaction; none: no song edit's); refused where no
+    /// region plays.
+    fn erase(&mut self, track: usize, from: Tick, to: Tick, song: TransactionId, map: &TempoMap) {
         if !self.tracks[track]
             .regions()
             .iter()
@@ -2092,14 +2098,15 @@ impl AudioTracks {
         f: impl FnOnce(&mut Track, &TempoMap, u32) -> bool,
         map: &TempoMap,
     ) {
-        self.edit_of(track, 0, f, map)
+        self.edit_of(track, TransactionId::NONE, f, map)
     }
 
-    /// [`AudioTracks::edit`], its step one of song edit `song` (0: none).
+    /// [`AudioTracks::edit`], its step one of song edit `song` (by its transaction; none: no song
+    /// edit's).
     fn edit_of(
         &mut self,
         track: usize,
-        song: u32,
+        song: TransactionId,
         f: impl FnOnce(&mut Track, &TempoMap, u32) -> bool,
         map: &TempoMap,
     ) {
@@ -2216,14 +2223,18 @@ impl AudioTracks {
                 );
             }
             Command::Erase { track, from, to } if ok_track(track) && from < to => {
-                self.erase(track, from, to, 0, map)
+                self.erase(track, from, to, TransactionId::NONE, map)
             }
             Command::EraseSong {
                 song,
                 track,
                 from,
                 to,
-            } if ok_track(track) && from < to && song != 0 && self.tracks[track].rec.is_none() => {
+            } if ok_track(track)
+                && from < to
+                && song.is_some()
+                && self.tracks[track].rec.is_none() =>
+            {
                 self.erase(track, from, to, song, map)
             }
             Command::Move { track, at, to } if ok_track(track) && to >= 0 => {

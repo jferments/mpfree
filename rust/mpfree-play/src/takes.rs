@@ -295,6 +295,13 @@ fn notes_in(t: &mut Take, track: usize, slot: usize, f: &mut impl FnMut(&mut Not
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Take {
     pub number: u32,
+    /// The transaction this take is (the audio tracks rethink, phase 4b):
+    /// given as it goes on the list ([`Takes`]), kept by whatever joins it
+    /// later and through undo and redo. An engine that keeps a part of the
+    /// same step (the audio tracks' regions under a song edit) names it by
+    /// this, so one UNDO takes back both. The `number` stays what the
+    /// screens show.
+    pub txn: mpfree_transport::TransactionId,
     /// Made by CAPTURE, not by recording.
     pub captured: bool,
     /// An edit of a clip's notes (the step sequencer), not a recording.
@@ -1899,7 +1906,8 @@ impl Takes {
         })
     }
 
-    fn push(&mut self, take: Take) -> &mut Take {
+    fn push(&mut self, mut take: Take) -> &mut Take {
+        take.txn = mpfree_transport::TransactionId::next();
         self.cleared = std::mem::take(&mut self.undone);
         self.evicted = None;
         if self.done.len() == self.limit {
@@ -2842,6 +2850,39 @@ mod tests {
         let now = p.arrangement.clone();
         assert_eq!(t.undo(&mut p), Some(1));
         assert_eq!(p.arrangement, now);
+    }
+
+    /// The audio tracks rethink, phase 4b: each take is a transaction of
+    /// its own, given as it goes on the list, after every one before;
+    /// what joins it keeps its transaction, and so do undo and redo.
+    #[test]
+    fn each_take_is_one_transaction_kept_through_joins_undo_and_redo() {
+        let mut p = project();
+        let mut t = Takes::default();
+        let turn = |p: &mut Project, t: &mut Takes, bpm: f64, join| {
+            let before = p.arrangement.clone();
+            p.arrangement.set_tempo(3840, bpm, None).unwrap();
+            t.song_edit_joining(p, SongChange::Tempo { at: 3840 }, before, join);
+            t.done().last().unwrap().txn
+        };
+        let first = turn(&mut p, &mut t, 100.0, Some(7));
+        assert!(first.is_some());
+        assert_eq!(turn(&mut p, &mut t, 101.0, Some(7)), first, "joined");
+        let second = turn(&mut p, &mut t, 102.0, None);
+        assert!(second > first);
+        let txns =
+            |t: &Takes| -> Vec<_> { t.done().iter().chain(t.undone()).map(|k| k.txn).collect() };
+        assert_eq!(txns(&t), [first, second]);
+        t.undo(&mut p);
+        assert_eq!(t.undone().last().unwrap().txn, second);
+        t.redo(&mut p);
+        assert_eq!(txns(&t), [first, second]);
+        // Another list never gives one of these again.
+        let mut other = Takes::default();
+        let before = p.arrangement.clone();
+        p.arrangement.set_tempo(3840, 90.0, None).unwrap();
+        other.song_edit(&p, SongChange::Tempo { at: 3840 }, before);
+        assert!(other.done()[0].txn > second);
     }
 
     #[test]

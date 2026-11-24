@@ -104,7 +104,10 @@ pub type AudioSpans = Vec<(mpfree_seq::TrackId, Vec<(Tick, Tick)>)>;
 
 /// Rec song's song edit that put blocks of audio clips in: its number,
 /// and each block's track and song ticks (phase 2, step 2d).
-pub type SongPlaced = (u32, Vec<(mpfree_seq::TrackId, Tick, Tick)>);
+pub type SongPlaced = (
+    mpfree_transport::TransactionId,
+    Vec<(mpfree_seq::TrackId, Tick, Tick)>,
+);
 
 /// Tracks in a new project.
 pub const TRACKS: usize = 8;
@@ -1643,14 +1646,14 @@ impl TimeHost {
         &mut self,
         track: mpfree_seq::TrackId,
         span: (Tick, Tick),
-    ) -> Result<Option<(u32, String)>, String> {
+    ) -> Result<Option<(mpfree_transport::TransactionId, String)>, String> {
         let r = self.with(|c| c.audio_took(track, span));
         self.sent(r)
     }
 
     /// Whether the song's UNDO (`undo`), or its REDO, still reaches song
     /// edit `n` ([`TimeControl::song_reaches`]).
-    pub fn song_reaches(&mut self, n: u32, undo: bool) -> bool {
+    pub fn song_reaches(&mut self, n: mpfree_transport::TransactionId, undo: bool) -> bool {
         self.with(|c| c.song_reaches(n, undo))
     }
 
@@ -1981,7 +1984,7 @@ impl TimeHost {
     /// The audio tracks made a step tied to song edit `n`: the song's UNDO
     /// and REDO of it go through them ([`TimeControl::tie_audio`]). False
     /// when the song's history no longer holds `n`.
-    pub fn tie_audio(&mut self, n: u32) -> bool {
+    pub fn tie_audio(&mut self, n: mpfree_transport::TransactionId) -> bool {
         let r = self.with(|c| c.tie_audio(n));
         self.sent(r)
     }
@@ -9857,7 +9860,7 @@ mod tests {
     /// The audio tracks as a song time edit sees them, holding regions
     /// that every edit moves: the edits they were given, by song edit.
     #[derive(Default)]
-    struct Regions(Vec<(u32, mpfree_audiotracks::Retime)>);
+    struct Regions(Vec<(mpfree_transport::TransactionId, mpfree_audiotracks::Retime)>);
 
     impl SongAudio for Regions {
         fn busy(&self) -> Option<String> {
@@ -9869,14 +9872,22 @@ mod tests {
         fn moves(&self, _: &mpfree_audiotracks::Retime) -> bool {
             true
         }
-        fn retime(&mut self, song: u32, r: mpfree_audiotracks::Retime) -> bool {
+        fn retime(
+            &mut self,
+            song: mpfree_transport::TransactionId,
+            r: mpfree_audiotracks::Retime,
+        ) -> bool {
             self.0.push((song, r));
             true
         }
-        fn step(&self, _: u32, _: bool) -> mpfree_audiotracks::SongStep {
+        fn step(
+            &self,
+            _: mpfree_transport::TransactionId,
+            _: bool,
+        ) -> mpfree_audiotracks::SongStep {
             mpfree_audiotracks::SongStep::Next
         }
-        fn song_undo(&mut self, _: u32, _: bool) {}
+        fn song_undo(&mut self, _: mpfree_transport::TransactionId, _: bool) {}
     }
 
     /// Arrange 4b.2: a linked list's edit that moves time in the song
@@ -15955,7 +15966,7 @@ mod tests {
         /// steps UNDO and REDO took back and brought back.
         #[derive(Default)]
         struct Tied {
-            undone: Vec<(u32, bool)>,
+            undone: Vec<(mpfree_transport::TransactionId, bool)>,
             regions: Vec<(mpfree_seq::TrackId, Vec<mpfree_seq::ClipRegion>)>,
         }
 
@@ -15969,13 +15980,21 @@ mod tests {
             fn moves(&self, _: &mpfree_audiotracks::Retime) -> bool {
                 false
             }
-            fn retime(&mut self, _: u32, _: mpfree_audiotracks::Retime) -> bool {
+            fn retime(
+                &mut self,
+                _: mpfree_transport::TransactionId,
+                _: mpfree_audiotracks::Retime,
+            ) -> bool {
                 false
             }
-            fn step(&self, _: u32, _: bool) -> mpfree_audiotracks::SongStep {
+            fn step(
+                &self,
+                _: mpfree_transport::TransactionId,
+                _: bool,
+            ) -> mpfree_audiotracks::SongStep {
                 mpfree_audiotracks::SongStep::Next
             }
-            fn song_undo(&mut self, song: u32, undo: bool) {
+            fn song_undo(&mut self, song: mpfree_transport::TransactionId, undo: bool) {
                 self.undone.push((song, undo));
             }
             fn regions(&self) -> Vec<(mpfree_seq::TrackId, Vec<mpfree_seq::ClipRegion>)> {
@@ -16009,7 +16028,7 @@ mod tests {
             let st = h.state();
             let took = st.done.last().unwrap();
             assert_eq!(took.word(), "rec song");
-            let n = took.number;
+            let n = h.control.last_txn();
             let end = h.control.project.arrangement.placements[1].end();
             assert_eq!(h.take_song_placed(), Some((n, vec![(vocal, 0, end)])));
             assert_eq!(h.take_song_placed(), None, "once");
@@ -16025,7 +16044,10 @@ mod tests {
             h.act_with_audio(TimeAction::Undo, &mut tied).unwrap();
             h.act_with_audio(TimeAction::Redo, &mut tied).unwrap();
             assert_eq!(tied.undone, [(n, true), (n, false)]);
-            assert!(!h.tie_audio(n + 100), "no such edit");
+            assert!(
+                !h.tie_audio(mpfree_transport::TransactionId(n.0 + 100)),
+                "no such edit"
+            );
         }
 
         /// Phase 2, step 2d: Song → scenes asks the audio tracks for the
@@ -16136,7 +16158,7 @@ mod tests {
             assert_eq!(lane(&h, DRUMS), [(0, 4 * bar, 0)], "another lane stays");
             let st = h.state();
             let took = st.done.last().unwrap();
-            assert_eq!((took.number, took.word()), (n, "recorded over"));
+            assert_eq!((h.control.last_txn(), took.word()), (n, "recorded over"));
             assert_eq!(
                 took.song,
                 Some(mpfree_play::SongChange::Recorded {
