@@ -32,8 +32,9 @@
 //!   MPC note map, any bank) or the keygroups that hold it
 //!   (`RouteSynths::kit_key` in `main.rs`); the wheel bends its
 //!   keygroups. REC records it on a track of its own pointed at the kit,
-//!   each note as that kit takes it. The Routing card lists synths only
-//!   until step 15e's pickers; a project's setup can name a kit.
+//!   each note as that kit takes it. The Routing card's stepper names
+//!   the kits with sounds past the synths (step 15e's follow-up; the
+//!   screen's `name_io_kits`).
 
 use super::pad_layers::MORE;
 use super::pads_focus::{PadFocus, RecFrom, RecMore, RecSound};

@@ -10208,6 +10208,9 @@ fn player_session(
     // The source bank the screen was last told the pads play (sampler
     // step 15e), while it isn't the bank shown.
     let mut kit_source: Option<usize> = None;
+    // The pads' kit layers the screen was last told of (sampler step 15e's
+    // follow-up).
+    let mut layer_kits_shown = None;
     // The name of the instrument the host's pads player plays, as the
     // screen last heard it (step 6).
     let mut pads_host_shown: Option<&'static str> = None;
@@ -14732,6 +14735,13 @@ fn player_session(
         if source_now != kit_source {
             kit_source = source_now;
             out.show(gui::ToUi::KitSource(source_now));
+        }
+        // The pads' kit layers: the Sample page's bar names them after a
+        // hit (sampler step 15e's follow-up).
+        let layer_kits = app.pads_layer_kits();
+        if layer_kits_shown != Some(layer_kits) {
+            layer_kits_shown = Some(layer_kits);
+            out.show(gui::ToUi::PadsLayerKits(layer_kits));
         }
         // The PAD BANK buttons found so far: the bank playing is lit, or
         // TRACK MUTE's bank while the pads mute tracks.
