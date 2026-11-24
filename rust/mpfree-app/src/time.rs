@@ -626,9 +626,9 @@ impl Pads for crate::sampler::Player {
         value: Option<f32>,
         offset: u32,
     ) -> bool {
-        match (addr.owner, crate::sampler::pad_field(addr.param)) {
-            (mpfree_play::mpfree_param::Owner::Pad(_, pad), Some(field)) => {
-                self.pad_lock(self.kit(), usize::from(pad), field, value, offset)
+        match (addr.owner, crate::sampler::PadParam::of(addr.param)) {
+            (mpfree_play::mpfree_param::Owner::Pad(_, pad), Some(p)) => {
+                self.pad_param_lock(self.kit(), usize::from(pad), p, value, offset)
             }
             _ => false,
         }

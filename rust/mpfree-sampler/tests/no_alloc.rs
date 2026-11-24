@@ -26,7 +26,9 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mpfree_sampler::dsp::{Ahdsr, Filter, FilterKind};
-use mpfree_sampler::engine::{Engine, EngineView, Event, PadField, PadOut, ProgramField};
+use mpfree_sampler::engine::{
+    Engine, EngineView, Event, GrainField, MasterField, PadField, PadOut, ProgramField,
+};
 use mpfree_sampler::model::*;
 use mpfree_sampler::record::{bar_lines, rolling, rolling16};
 
@@ -491,6 +493,36 @@ fn render_and_events_never_allocate() {
                 pad: (block % 20) as u8,
                 field: PadField::ALL[(block / 11) as usize % PadField::COUNT],
                 value: f32::NAN,
+            });
+        }
+        // The granular pads' layers' grain settings live and locked, ended
+        // again, and the master effect's (sampler step 17b).
+        if block % 5 == 2 {
+            let field = GrainField::ALL[block as usize % GrainField::COUNT];
+            let pad = 16 + (block % 4) as u8;
+            let value = if block % 15 == 2 {
+                f32::NAN
+            } else {
+                field.info().max * 0.4
+            };
+            e.schedule(
+                block % 128,
+                Event::LayerLive {
+                    pad,
+                    layer: 0,
+                    field,
+                    value,
+                },
+            );
+            e.apply(Event::LayerLock {
+                pad,
+                layer: 0,
+                field,
+                value,
+            });
+            e.apply(Event::MasterLive {
+                field: MasterField::Grain(field),
+                value,
             });
         }
         if block % 500 == 377 {

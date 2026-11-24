@@ -1169,7 +1169,9 @@ impl Engine {
         if granular && p < PADS {
             self.last_key[at * PADS + p] = Some(hit);
         }
-        let mut grain = pitched_grain(l.grain, from.unwrap_or(hit), l.follow);
+        // Its grain settings, with any live or locked (step 17b).
+        let layer_grain = self.lives[at].layer_grain(p, l);
+        let mut grain = pitched_grain(layer_grain, from.unwrap_or(hit), l.follow);
         if let Some(at) = vary.start {
             grain.position = (at * 16.0 / 15.0).min(1.0);
         }
@@ -1439,7 +1441,7 @@ impl Engine {
             hit_gain: level,
             own_cut: vary.cutoff_hz.is_none(),
             layer_step: l.step,
-            layer_grain: l.grain,
+            layer_grain,
             jump: [0.0; 2],
             jump_left: 0,
             last_read: None,

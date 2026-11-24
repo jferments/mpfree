@@ -9759,8 +9759,7 @@ fn refused_words(r: &mpfree_seq::convert::Refused, grid: Grid, length: Tick) -> 
         } => format!(
             "{}'s {} on step {}{}: a pad's own setting has no note to follow, and the lane's × removes it",
             pad(p),
-            crate::sampler::pad_field(param)
-                .map_or("setting", |f| crate::sampler::pad_info(f, 1).name),
+            crate::sampler::PadParam::of(param).map_or("setting", |p| p.info(1).name),
             step(tick),
             kept(original)
         ),
