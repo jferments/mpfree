@@ -3084,10 +3084,10 @@ impl MixHost {
 
     /// The time counted since the last take, ns, by whose it is: a
     /// sequencer track's (its own instrument and its strip's inserts) or
-    /// a kit's (its pads' copies and the inserts on its pads' channels).
-    /// Time on the engines' strips, the submixes, the returns, the master
-    /// and the free places is no track's and is left out. Starts the
-    /// count again. Never allocates.
+    /// a kit's (its pads' copies, the inserts on its pads' channels and on
+    /// the kit strip it holds). Time on the engines' strips, the submixes,
+    /// the returns, the master and the free places is no track's and is
+    /// left out. Starts the count again. Never allocates.
     pub fn take_spent(&mut self, mut f: impl FnMut(Spender, u64)) {
         let first = self.track_channel(0);
         let track_of = |ch: usize| {
@@ -3105,8 +3105,14 @@ impl MixHost {
         self.pad_synths
             .take_spent(|kit, ns| f(Spender::Kit(kit), ns));
         let channels = &self.pad_channels;
+        let places = self.kit_strips;
         self.mixer.take_spent(|s, ns| {
             let who = match s {
+                StripId::Track(ch) if ch >= KIT_FIRST => places
+                    .get(ch - KIT_FIRST)
+                    .copied()
+                    .flatten()
+                    .map(|k| Spender::Kit(usize::from(k))),
                 StripId::Track(ch) => track_of(ch).map(Spender::Track),
                 StripId::Pad(_) => channels.holder(s).map(|(kit, _)| Spender::Kit(kit)),
                 _ => None,
@@ -5999,6 +6005,59 @@ mod tests {
         }
         assert_eq!(h.poll_built(), None);
         h.mixer.chain(strip).unwrap().len()
+    }
+
+    /// System status's "tracks using the most": a kit strip's inserts
+    /// count to the kit it holds, and only while spending is on.
+    #[test]
+    fn a_kit_strips_inserts_count_to_its_kit() {
+        let mut h = MixHost::new(RATE, -6.0, -6.0);
+        let homeless = [0u8; 8];
+        h.strip_kits(&[Some(0), Some(2)], &homeless);
+        assert_eq!(h.kit_strip(2), Some(0));
+        let strip = StripId::Track(kit_channel(0));
+        let base = h.mixer.chain(strip).unwrap().len();
+        h.add_insert(strip, "mpfree.fx.drive").unwrap();
+        let z = [0f32; PERIOD];
+        let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
+        let mut period = |h: &mut MixHost, p: usize| {
+            let d = tone(110.0, 0.5, p * PERIOD);
+            let mut pads = h.pads_homed(&homeless);
+            let (pl, _) = pads.pad(2, 7).unwrap();
+            pl[..PERIOD].iter_mut().zip(&d).for_each(|(o, x)| *o += x);
+            let ctx = Ctx::new(RATE, (p * PERIOD) as u64);
+            h.period(&ctx, (&z, &z), (&z, &z), (&z, &z), &mut l, &mut r);
+        };
+        let give_up = Instant::now() + Duration::from_secs(5);
+        let mut p = 0;
+        while h.mixer.chain(strip).unwrap().len() != base + 1 && Instant::now() < give_up {
+            assert_eq!(h.poll_built(), None);
+            period(&mut h, p);
+            p += 1;
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        assert_eq!(h.mixer.chain(strip).unwrap().len(), base + 1);
+        let mut seen = Vec::new();
+        h.take_spent(|w, ns| seen.push((w, ns)));
+        assert!(seen.is_empty(), "nothing while off: {seen:?}");
+        h.set_spending(true);
+        for _ in 0..4 {
+            period(&mut h, p);
+            p += 1;
+        }
+        h.set_spending(false);
+        h.take_spent(|w, ns| seen.push((w, ns)));
+        let kit3: u64 = seen
+            .iter()
+            .filter(|(w, _)| *w == Spender::Kit(2))
+            .map(|(_, ns)| ns)
+            .sum();
+        assert!(kit3 > 0, "kit 3's strip counted to kit 3: {seen:?}");
+        assert!(
+            seen.iter()
+                .all(|(w, _)| matches!(w, Spender::Kit(2) | Spender::Track(_))),
+            "no other kit's: {seen:?}"
+        );
     }
 
     /// Adds then removes a Drive on track 2 `times` times, checking the
