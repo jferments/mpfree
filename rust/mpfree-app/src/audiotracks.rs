@@ -2346,21 +2346,33 @@ impl TrackHost {
     /// plays, take by take, with the frames along `map` at the block's
     /// first pass. Into `st` after [`TrackHost::fill`] made its lanes of
     /// `project`; a block whose clip or takes are gone draws its header
-    /// without a wave.
+    /// without a wave. A loop cell's block (phase 4e.3) names its loop,
+    /// whose wave the screen has from the looper.
     pub fn fill_blocks(&self, st: &mut TimeState, project: &mpfree_seq::Project, map: &TempoMap) {
         let tr = &self.host.tracks;
         for (index, p) in project.arrangement.placements.iter().enumerate() {
             let Some(lane) = st.audio.iter_mut().find(|l| l.row == p.track) else {
                 continue;
             };
-            let Some((c, a)) = project
-                .block_clip(p)
-                .and_then(|c| Some((c, c.audio.as_ref()?)))
-            else {
+            let Some(c) = project.block_clip(p) else {
                 continue;
             };
             let origin = p.origin(c);
             let pass = c.length.max(1);
+            if let Some(id) = c.loop_id() {
+                lane.clips.push(ClipBlock {
+                    index,
+                    origin,
+                    pass,
+                    once: false,
+                    pieces: Vec::new(),
+                    looped: Some(id.0),
+                });
+                continue;
+            }
+            let Some(a) = c.audio.as_ref() else {
+                continue;
+            };
             // The first pass the block plays some of.
             let base = origin + (p.start - origin).div_euclid(pass) * pass;
             let pieces = a
@@ -2387,6 +2399,7 @@ impl TrackHost {
                 pass,
                 once: c.once,
                 pieces,
+                looped: None,
             });
         }
     }
@@ -4021,6 +4034,31 @@ mod tests {
         // Its clip gone: a block with no wave and no header.
         r.project.tracks[guitar].slots[0] = None;
         assert!(r.state().audio[0].clips.is_empty());
+    }
+
+    /// A loop cell's block (phase 4e.3, board 8): its lane draws it as a
+    /// clip block naming its loop, its passes counted from its start less
+    /// its offset, with no pieces (the screen has the loop's wave from
+    /// the looper).
+    #[test]
+    fn a_loop_cells_block_names_its_loop_and_where_its_passes_start() {
+        let mut r = Rig::with(1);
+        let audio = r.h.place(0).unwrap();
+        let id = mpfree_seq::LoopId(0xfeed);
+        let clip = mpfree_seq::Clip::new_audio_loop(id, "Vox loop", 3 * 3840);
+        let cid = r.project.put_new_clip(audio, 0, clip).unwrap();
+        // From bar 6, a bar into its loop.
+        let mut p = mpfree_seq::Placement::new(audio, cid, 5 * 3840, 4 * 3840);
+        p.offset = 3840;
+        r.project.arrangement.placements.push(p);
+        let st = r.state();
+        assert_eq!(st.audio[0].clips.len(), 1);
+        let c = &st.audio[0].clips[0];
+        assert_eq!(
+            (c.index, c.origin, c.pass, c.once, c.looped),
+            (0, 4 * 3840, 3 * 3840, false, Some(0xfeed))
+        );
+        assert!(c.pieces.is_empty());
     }
 
     /// Takes the project's audio clips name stay (the audio tracks

@@ -528,6 +528,7 @@ spaceship arrange-song 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-add 12 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
 spaceship arrange-song-audio 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-audio-blocks 10 # the same Song view chrome as arrange-song-audio (none in the audio blocks, whose names use ink_on)
+spaceship arrange-song-loop-blocks 10 # the same Song view chrome as arrange-song-audio (none in the loop blocks, whose names and chips use ink_on)
 spaceship arrange-song-block 10 # arrange-song with Hook picked (Arrange phase 6): its start grip, Split and Duplicate; the same 10 runs as arrange-song
 spaceship arrange-song-box 12 # new screen (Arrange 6.5): arrange-song's faint runs (the ruler's numbers, the faint Duplicate, Make unique and Delete, the morph bar's and Takes' faint labels); the box adds none
 spaceship arrange-song-chord-picker 13 # new screen (composing step 6, board C): arrange-song-chords' 12 runs and the picker's faint Use Ab7 (nothing changed yet)
