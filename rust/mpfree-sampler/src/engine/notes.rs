@@ -1171,7 +1171,9 @@ impl Engine {
         }
         // Its grain settings, with any live or locked (step 17b).
         let layer_grain = self.lives[at].layer_grain(p, l);
-        let mut grain = pitched_grain(layer_grain, from.unwrap_or(hit), l.follow);
+        // Moved by the layer's routes from velocity and the key (17c).
+        let routed = l.routes.at_start(layer_grain, vel, semis as f32);
+        let mut grain = pitched_grain(routed, from.unwrap_or(hit), l.follow);
         if let Some(at) = vary.start {
             grain.position = (at * 16.0 / 15.0).min(1.0);
         }
@@ -1382,6 +1384,9 @@ impl Engine {
             grain_follow: l.follow,
             grain_hit: from.unwrap_or(hit),
             grain_key: semis,
+            grain_routes: l.routes,
+            grain_vel: vel,
+            grain_press: granular && l.routes.moves_from(RouteFrom::Pressure),
             glide_to: hit,
             glide_step: from.map_or(0.0, |k| (hit - k) / l.glide as f32),
             glide_left: if from.is_some() { l.glide } else { 0 },

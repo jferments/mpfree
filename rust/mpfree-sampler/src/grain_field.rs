@@ -235,6 +235,122 @@ impl GrainField {
     }
 }
 
+/// What moves a grain route (sampler refactor step 17c).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RouteFrom {
+    /// The route does nothing.
+    #[default]
+    Off,
+    /// The hit's velocity, as the voice starts.
+    Velocity,
+    /// The pad's pressure, as the voice plays.
+    Pressure,
+    /// The key, from the layer's root note, as the voice starts.
+    Key,
+}
+
+impl RouteFrom {
+    pub const ALL: [RouteFrom; 4] = [
+        RouteFrom::Off,
+        RouteFrom::Velocity,
+        RouteFrom::Pressure,
+        RouteFrom::Key,
+    ];
+}
+
+/// The routes a grain layer has.
+pub const GRAIN_ROUTES: usize = 4;
+
+/// A route's depth: -1 to 1 (-100 % to +100 %).
+pub const ROUTE_DEPTH: std::ops::RangeInclusive<f32> = -1.0..=1.0;
+
+/// One of a grain layer's routes: velocity, pressure or the key moving
+/// one of its grain settings (step 17c). Full velocity or full pressure
+/// moves the setting by `depth` times its whole range, as the Grain tab's
+/// knob turns it (along its curve); the key by `depth` of it an octave
+/// from the layer's root, up above it and down below.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GrainRoute {
+    pub from: RouteFrom,
+    pub to: GrainField,
+    pub depth: f32,
+}
+
+impl GrainRoute {
+    /// A route that does nothing (where a new layer's routes start).
+    pub const OFF: GrainRoute = GrainRoute {
+        from: RouteFrom::Off,
+        to: GrainField::Size,
+        depth: 0.0,
+    };
+
+    /// It moves its setting: a source, and a depth.
+    pub fn moves(&self) -> bool {
+        self.from != RouteFrom::Off && self.depth != 0.0
+    }
+
+    /// `g` with the route's setting moved by `amount` (a fraction of its
+    /// whole range, before the depth), kept in its range.
+    fn apply(&self, g: &mut GrainParams, amount: f32) {
+        let i = self.to.info();
+        let at = i.to_unit(self.to.get(g));
+        self.to.set(g, i.from_unit(at + self.depth * amount));
+    }
+}
+
+impl Default for GrainRoute {
+    fn default() -> Self {
+        GrainRoute::OFF
+    }
+}
+
+/// A grain layer's four routes ([`GrainRoute`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GrainRoutes(pub [GrainRoute; GRAIN_ROUTES]);
+
+impl GrainRoutes {
+    /// Every route off.
+    pub const OFF: GrainRoutes = GrainRoutes([GrainRoute::OFF; GRAIN_ROUTES]);
+
+    /// Every route as a new layer has it: nothing to save.
+    pub fn is_off(&self) -> bool {
+        *self == GrainRoutes::OFF
+    }
+
+    /// Whether a route from `from` moves anything.
+    pub fn moves_from(&self, from: RouteFrom) -> bool {
+        self.0.iter().any(|r| r.from == from && r.moves())
+    }
+
+    /// Every number is finite and in its range.
+    pub fn ok(&self) -> bool {
+        self.0.iter().all(|r| ROUTE_DEPTH.contains(&r.depth))
+    }
+
+    /// `g` with the routes from velocity and the key applied: `velocity`
+    /// 0 to 1, the key `semis` from the layer's root.
+    pub fn at_start(&self, mut g: GrainParams, velocity: f32, semis: f32) -> GrainParams {
+        for r in self.0.iter().filter(|r| r.moves()) {
+            match r.from {
+                RouteFrom::Velocity => r.apply(&mut g, velocity.clamp(0.0, 1.0)),
+                RouteFrom::Key if semis != 0.0 => r.apply(&mut g, semis / 12.0),
+                _ => {}
+            }
+        }
+        g
+    }
+
+    /// `g` with the routes from pressure applied, at pressure `p` (0 to 1).
+    pub fn pressed(&self, mut g: GrainParams, p: f32) -> GrainParams {
+        for r in self.0.iter() {
+            if r.from == RouteFrom::Pressure && r.moves() {
+                r.apply(&mut g, p);
+            }
+        }
+        g
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -350,6 +350,11 @@ pub(super) struct Voice {
     pub(super) grain_follow: KeyFollow,
     pub(super) grain_hit: f32,
     pub(super) grain_key: i32,
+    /// Its layer's grain routes (step 17c) and the hit's velocity (0 to 1)
+    /// they read; and whether one is from pressure (followed as it plays).
+    pub(super) grain_routes: GrainRoutes,
+    pub(super) grain_vel: f32,
+    pub(super) grain_press: bool,
     /// Gliding to another key ([`ViewLayer::glide`]): where `grain_hit`
     /// goes, how far it moves a frame, and the frames left.
     pub(super) glide_to: f32,
@@ -443,6 +448,7 @@ pub(super) struct Voice {
     pub(super) hit_gain: f32,
     pub(super) own_cut: bool,
     pub(super) layer_step: i64,
+    /// Before its routes from velocity and the key ([`Voice::routed_grain`]).
     pub(super) layer_grain: GrainParams,
     /// A jump into a moved loop: what the read was minus what it is now,
     /// fading out over [`JUMP_FRAMES`] frames so the sound doesn't step.

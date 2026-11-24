@@ -1077,7 +1077,7 @@ impl Engine {
                 continue;
             };
             if l.place == layer && l.mode == PlayMode::Granular {
-                follow_grain(v, g, live.layer_grain(usize::from(pad), l), l.follow);
+                follow_grain(v, g, live.layer_grain(usize::from(pad), l), l);
             }
         }
         // Split: the lane's share is away; its voices follow when it is

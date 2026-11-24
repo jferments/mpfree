@@ -288,13 +288,13 @@ mod tests {
                 "session",
                 &format!("{GRAIN}qlink 4 +4\nwait 1\n"),
                 None,
-                "title Turned back\nqlink 4 -4\nwait 0.5\ntap smp-region choice Grain: Grain LFO\nexpect : pitch +0 st -> +4 st\n",
+                "title Turned back\nqlink 4 -4\nwait 0.5\ntap smp-region choice Grain: LFO\nexpect : pitch +0 st -> +4 st\n",
             );
             run(
                 "wall",
                 &format!("{GRAIN}qlink 4 +4\n"),
                 Some(std::time::Duration::from_millis(1_200)),
-                "title Turned back\nqlink 4 -4\nwait 0.5\ntap smp-region choice Grain: Grain LFO\nexpect-not : pitch +0 st\n",
+                "title Turned back\nqlink 4 -4\nwait 0.5\ntap smp-region choice Grain: LFO\nexpect-not : pitch +0 st\n",
             );
         });
     }

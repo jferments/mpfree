@@ -636,6 +636,7 @@ pub fn sound_region(old: Option<&Region>, id: SourceId, frames: u64) -> Region {
             grain_mode: GrainMode::Cloud,
             grain_keys: GrainKeys::default(),
             grain_glide_ms: 0.0,
+            grain_routes: mpfree_sampler::model::GrainRoutes::OFF,
             warp: None,
             slices: Vec::new(),
             slice_sets: Vec::new(),

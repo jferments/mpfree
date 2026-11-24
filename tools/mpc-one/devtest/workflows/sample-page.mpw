@@ -62,7 +62,7 @@ wait 1
 qlink 4 -4
 wait 1
 pad-up 1
-tap smp-region choice Grain: Grain LFO
+tap smp-region choice Grain: LFO
 expect : pitch +0 st -> +4 st
 pad 1 100 2
 tap smp-region choice Grain: Presets

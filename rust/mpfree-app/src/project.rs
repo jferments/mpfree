@@ -144,8 +144,9 @@ pub const FORMAT: u32 = mpfree_library::project::PARTS_FORMAT;
 /// linked song list ([`LINKED_SONG_LIST`]), a scene that keeps a track
 /// playing ([`SCENE_KEEP`]), patches ([`PATCHES_NEED`]), a free loop
 /// ([`FREE_LOOPS`]), a scene that sets the tempo ([`SCENE_TEMPO`]), an
-/// instrument with a tuning of its own ([`OWN_TUNINGS`]) or a loop cell on
-/// an audio track ([`AUDIO_LOOPS`]).
+/// instrument with a tuning of its own ([`OWN_TUNINGS`]), a loop cell on
+/// an audio track ([`AUDIO_LOOPS`]) or a grain layer with routes
+/// ([`GRAIN_ROUTES_NEED`]).
 pub const NEEDS_KEY: &str = "needs";
 /// A project with a synth in a free place (the instrument redesign's step
 /// 6: one picked for the pads, no track's): an older build would read the
@@ -212,6 +213,11 @@ pub const OWN_TUNINGS: &str = "own-tunings";
 /// instead.
 pub const AUDIO_LOOPS: &str = "audio-loops";
 
+/// A project with a grain layer's routes from velocity, pressure or the
+/// key (sampler step 17c, `mpfree_sampler::model::GrainRoutes`): an older
+/// build would play the layer without them and drop them at its next
+/// save, so it must not open it.
+pub const GRAIN_ROUTES_NEED: &str = "grain-routes";
 /// The features this build has, of those a project can need.
 pub const KNOWN_NEEDS: &[&str] = &[
     SYNTHS_WITHOUT_TRACKS,
@@ -226,6 +232,7 @@ pub const KNOWN_NEEDS: &[&str] = &[
     SCENE_TEMPO,
     OWN_TUNINGS,
     AUDIO_LOOPS,
+    GRAIN_ROUTES_NEED,
 ];
 
 // ------------------------------------------------------------ the loop's side
@@ -490,6 +497,12 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     }
     if c.clips.loop_places().next().is_some() {
         needs.push(AUDIO_LOOPS);
+    }
+    if parts
+        .iter()
+        .any(|(name, text)| name == SAMPLER && mpfree_sampler::save::has_grain_routes(text))
+    {
+        needs.push(GRAIN_ROUTES_NEED);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -2756,6 +2769,41 @@ mod tests {
         assert_eq!(b.mixer.param(s, mx::PAN), 30.0);
         let track = crate::instruments::first_track() + 1;
         assert_eq!(b.mixer.param(s, mx::OUTPUT_TRACK), track as f32);
+    }
+
+    /// A kit with a grain layer's routes (sampler step 17c) says the
+    /// project needs grain routes, so an older build refuses it; a kit
+    /// without them needs nothing.
+    #[test]
+    fn grain_routes_say_the_project_needs_them() {
+        use mpfree_sampler::model::*;
+        let c = collected(String::new(), InstrumentList::new().text());
+        let kit = |routes: GrainRoutes| {
+            let mut p = Project::new();
+            let s = p.add_source(Source::new("s", 44_100, 1, vec![0.1; 4_410]).unwrap());
+            let mut r = Region::whole(p.source(s).unwrap());
+            r.mode = PlayMode::Granular;
+            r.grain_routes = routes;
+            p.set_pad(0, Some(Pad::new("cloud", Layer::new(r))), None)
+                .unwrap();
+            let text = mpfree_sampler::save::to_text(&[("Kit", &p)], 0, &|_| "s.wav".into());
+            snapshot(&c, vec![(SAMPLER.to_string(), text)])
+        };
+        let need = (NEEDS_KEY.to_string(), GRAIN_ROUTES_NEED.to_string());
+        assert!(!kit(GrainRoutes::OFF).meta.extra.contains(&need));
+        let mut routes = GrainRoutes::OFF;
+        routes.0[3] = GrainRoute {
+            from: RouteFrom::Pressure,
+            to: GrainField::Density,
+            depth: 0.5,
+        };
+        let snap = kit(routes);
+        assert!(snap.meta.extra.contains(&need));
+        assert_eq!(check(&snap), Ok(FORMAT), "this build opens it");
+        assert!(
+            check_against(&snap, &[]).is_err(),
+            "one without them doesn't"
+        );
     }
 
     /// A kit strip a kit holds (sampler step 15d, part 2) is saved with

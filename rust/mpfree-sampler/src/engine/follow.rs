@@ -242,7 +242,7 @@ pub(super) fn follow_edit(
         v.hits = None;
     }
     if v.granular && l.mode == PlayMode::Granular {
-        follow_grain(v, g, kit_live.layer_grain(usize::from(v.pad), l), l.follow);
+        follow_grain(v, g, kit_live.layer_grain(usize::from(v.pad), l), l);
     }
 
     if v.mode == Some(l.mode) && !v.granular && !v.reverse && !l.reverse {
@@ -255,27 +255,30 @@ pub(super) fn follow_edit(
 
 /// A granular voice takes its layer's grain settings `grain` (as
 /// [`Live::layer_grain`] gives them: the view's, or with live values and
-/// locks in place) and `follow`, if they changed: what its hit added (a
-/// keygroup's semitones, 16 Levels' position) is kept, and the grain
-/// voice hears them from its next grain.
+/// locks in place), and layer `l`'s key follow and routes, if they
+/// changed: what its hit added (a keygroup's semitones, 16 Levels'
+/// position) is kept, and the grain voice hears them from its next grain.
 pub(super) fn follow_grain(
     v: &mut Voice,
     g: &mut GrainVoice,
     grain: mpfree_grain::Params,
-    follow: KeyFollow,
+    l: &ViewLayer,
 ) {
-    if grain == v.layer_grain && follow == v.grain_follow {
+    if grain == v.layer_grain && l.follow == v.grain_follow && l.routes == v.grain_routes {
         return;
     }
-    v.grain_follow = follow;
-    let mut p = pitched_grain(grain, v.grain_hit, v.grain_follow);
-    if v.grain_base.position != v.layer_grain.position {
+    let was = v.routed_grain();
+    v.grain_follow = l.follow;
+    v.grain_routes = l.routes;
+    v.grain_press = l.routes.moves_from(RouteFrom::Pressure);
+    v.layer_grain = grain;
+    let mut p = pitched_grain(v.routed_grain(), v.grain_hit, v.grain_follow);
+    if v.grain_base.position != was.position {
         p.position = v.grain_base.position;
     }
     v.grain_base = p;
-    v.layer_grain = grain;
     g.set_params(tuned_grain(
-        pressed_grain(p, v.route, v.press),
+        v.pressed_grain(),
         v.follow.cents,
         v.grain_follow,
     ));

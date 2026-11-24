@@ -45,6 +45,8 @@ pub struct ViewLayer {
     /// go in: what a grain setting's parameter reads (sampler refactor
     /// step 17, [`EngineView::layer_grain`]).
     pub(super) own_grain: mpfree_grain::Params,
+    /// Its routes from velocity, pressure and the key (step 17c).
+    pub(super) routes: GrainRoutes,
     /// The layer's place on its pad (a layer whose sound is missing has
     /// no view, so the view's places can skip one).
     pub(super) place: u8,
@@ -508,6 +510,7 @@ impl EngineView {
                         grain,
                         semis: (cents / 100.0) as f32,
                         own_grain: r.grain,
+                        routes: r.grain_routes,
                         place: li as u8,
                         follow,
                         glide: (r.grain_glide_ms.clamp(0.0, GRAIN_GLIDE_MAX_MS) / 1000.0
