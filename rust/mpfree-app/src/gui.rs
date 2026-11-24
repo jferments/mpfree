@@ -40,7 +40,7 @@ use crate::play_page::{
     self, HeldBank, InspectTap, Knob, PadInfo, PadsBar, PlayPage, PlayView, SynthPads, Turn,
 };
 use crate::play_widgets::{
-    self, MiniPads, PlayTransport, StepGrid, StepInspector, Throws, XyPad, YourTiming,
+    self, GridCont, MiniPads, PlayTransport, StepGrid, StepInspector, Throws, XyPad, YourTiming,
 };
 use crate::sample_page::{self, SamplePage};
 use crate::sampler::{Cloud, Playheads, ViewSwap};
@@ -2953,6 +2953,12 @@ pub struct Player {
     /// What each track plays, as last told the time engine for the note
     /// editor's Continue ([`Player::refresh_compose_parts`]).
     compose_parts: Option<Arc<mpfree_time_ui::continuing::Parts>>,
+    /// Continue open on Steps (composing step 4): its rows' settings and
+    /// the Q-Links', kept while it is open ([`steps_cont`]).
+    steps_cont: Option<mpfree_time_ui::editor::compose::ContinueSet>,
+    /// The time engine has said Continue is under way for it: its end
+    /// closes the panel.
+    steps_cont_live: bool,
     /// Add a part's New track (composing tools S2.6b): the synth asked for
     /// its tries (the index the track will get, the synth's node id), and
     /// a try held until that synth plays there, with the seconds it has
@@ -3173,6 +3179,14 @@ impl Player {
         ui.add(play_page::TIMING, YourTiming::default());
         ui.add(play_page::INSPECTOR, StepInspector::default());
         ui.add(
+            crate::steps_continue::BARS,
+            crate::steps_continue::BarStrip::default(),
+        );
+        ui.add(
+            crate::steps_continue::PANEL,
+            crate::steps_continue::ContinuePanel::default(),
+        );
+        ui.add(
             crate::rec_list::REC_LIST,
             crate::rec_list::RecList::default(),
         );
@@ -3258,6 +3272,8 @@ impl Player {
             ui.add_page(page, &PlayView::step_layout(timing))
                 .expect("beats with the step inspector");
         }
+        ui.add_page(crate::steps_continue::PAGE, &PlayView::continue_layout())
+            .expect("beats with Continue open");
         ui.add_page(
             crate::rec_list::REC_PAGE,
             &play_page::frame(&format!("{}:*", crate::rec_list::REC_LIST)),
@@ -3614,6 +3630,8 @@ impl Player {
             tuning: Tuning::default(),
             saved_tuning: Tuning::default(),
             compose_parts: None,
+            steps_cont: None,
+            steps_cont_live: false,
             add_sound: None,
             add_held: None,
         };
@@ -5637,6 +5655,9 @@ impl Player {
             });
             held_title = format!("Q-Links · Controller {}", c.bank_words());
             (held_title.as_str(), cards)
+        } else if let Some(cards) = self.steps_continue_cards() {
+            // Continue on Steps (composing step 4).
+            ("Q-Links · Continue", cards)
         } else if let Some(cards) = self.patch_qlinks() {
             // The patch editor: the picked zone's ends, transpose and
             // softest velocity (layout spec 4q).
@@ -8332,9 +8353,12 @@ impl Player {
             (g.top, g.add_lane) = (old.top, old.add_lane);
             g.rows_open.clone_from(&old.rows_open);
             g.hold_picks = old.hold_picks;
+            g.add_continue = old.add_continue;
+            g.cont.clone_from(&old.cont);
         }
         self.refresh_lock_knobs();
         self.play.fill_steps(&mut g);
+        self.fill_steps_cont(&mut g);
         let same = self
             .ui
             .get::<StepGrid>(play_page::STEPS)
@@ -8355,6 +8379,8 @@ impl Player {
                     && old.hold_picks == g.hold_picks
                     && old.chip == g.chip
                     && old.size == g.size
+                    && old.add_continue == g.add_continue
+                    && old.cont == g.cont
             });
         if !same {
             if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
@@ -8374,6 +8400,8 @@ impl Player {
                 (w.top, w.add_lane) = (g.top, g.add_lane);
                 w.rows_open = g.rows_open;
                 w.hold_picks = g.hold_picks;
+                w.add_continue = g.add_continue;
+                w.cont = g.cont;
             }
         }
         if self.lane_list {
@@ -8463,6 +8491,8 @@ impl Player {
                 crate::xy_setup::XY_SETUP_PAGE
             } else if self.xy_full && self.view == View::Play {
                 play_page::XY_FULL_PAGE
+            } else if self.steps_continuing() {
+                crate::steps_continue::PAGE
             } else {
                 self.play
                     .view
@@ -9617,6 +9647,8 @@ impl Player {
                         && self.note_inspector().is_some();
                     time_view::edit_hint(lens, tool, picked).to_string()
                 }
+                // Continue open on Steps (composing step 4).
+                View::Sequencer if self.steps_continuing() => steps_cont::HINT.to_string(),
                 // A kit's Steps: + Lane and the lock lanes (the redesign's
                 // step 5).
                 View::Sequencer if !self.play.pitched() => format!("Tap a step: in or out   ·   hold a step: edit it   ·   \
@@ -10375,6 +10407,20 @@ impl Player {
                         self.outbox.push(a);
                     }
                 }
+            }
+            self.refresh_hint();
+            return;
+        }
+        // Continue open on Steps (composing step 4): the wheel and - / +
+        // step the panel's picked row, the push picks the next row.
+        if self.steps_continuing() {
+            match n {
+                Nav::Turn(d) | Nav::Step(d) | Nav::Fine(d) => {
+                    if let Some(a) = self.steps_continue_wheel(d) {
+                        self.outbox.push(a);
+                    }
+                }
+                Nav::Push => self.steps_continue_next_row(),
             }
             self.refresh_hint();
             return;
@@ -12043,6 +12089,7 @@ impl Player {
                 self.play.set_steps(*st);
                 self.play.track = self.track_look();
                 self.refresh_play();
+                self.refresh_steps_continue();
                 if matches!(self.view, View::Play | View::Sequencer) {
                     self.refresh_qlinks();
                 }
@@ -12088,6 +12135,9 @@ impl Player {
                 } else if self.xy_setup_showing() {
                     // XY Setup: the picked setting's range and curve.
                     self.xy_setup_qlink(k, ticks);
+                } else if self.steps_continuing() {
+                    // Continue on Steps: Similarity, Variation, Activity.
+                    self.steps_continue_knob(k, ticks);
                 } else if self.play.held.is_some()
                     && matches!(self.view, View::Play | View::Sequencer | View::Arrange)
                 {
@@ -13146,6 +13196,7 @@ impl Player {
                 self.refresh_show();
                 self.play.set_transport(self.time.transport);
                 self.refresh_play();
+                self.refresh_steps_continue();
                 let inspecting = self
                     .ui
                     .get::<QLinkColumn>(play_page::QLINKS)
@@ -16959,6 +17010,9 @@ impl Player {
             View::Play if self.patch_showing() && self.ready => self.patch_page().to_string(),
             View::Play if self.xy_setup && self.ready => crate::xy_setup::XY_SETUP_PAGE.to_string(),
             View::Play if self.xy_full && self.ready => play_page::XY_FULL_PAGE.to_string(),
+            View::Play | View::Sequencer if self.steps_continuing() && self.ready => {
+                crate::steps_continue::PAGE.to_string()
+            }
             View::Play | View::Sequencer => self
                 .play
                 .view
@@ -18487,7 +18541,10 @@ impl Player {
                 if matches!(self.view, View::Play | View::Sequencer | View::Arrange)
                     && !self.band_showing() =>
             {
-                if self.patch_qlink(index, delta) {
+                if self.steps_continuing() {
+                    // Continue on Steps: Similarity, Variation, Activity.
+                    self.steps_continue_knob(index, delta);
+                } else if self.patch_qlink(index, delta) {
                     // The patch editor's zone.
                 } else if !self.audio_qlink(index, delta) {
                     self.play_qlink(index, delta);
@@ -18504,6 +18561,15 @@ impl Player {
             (play_page::STEPS, EventKind::Tab(play_widgets::HEAD_LANE)) => {
                 self.toggle_lane_list();
                 None
+            }
+            // Continue on Steps (composing step 4): the head's Continue
+            // opens its panel and asks; the panel and the bar strip.
+            (play_page::STEPS, EventKind::Tab(play_widgets::HEAD_CONTINUE)) => {
+                self.steps_continue_open()
+            }
+            (w @ (crate::steps_continue::PANEL | crate::steps_continue::BARS), e) => {
+                let w = w.to_string();
+                self.steps_continue_event(&w, e)
             }
             // The clip chip (refactor C2): the track's clips, to edit one
             // without starting it.
@@ -21169,17 +21235,113 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
     p
 }
 
+/// Continue open on Steps (composing step 4), as its boards draw it: a
+/// one-bar beat (Kick, Snare, Hat, Hat op) carried on by the real time
+/// engine and composer, Groove, +4 bars, landing home; the grid on bar
+/// `page` + 1, the bar strip, the panel with its tries and the Q-Links.
+pub fn sample_steps_continue(fonts: Fonts, tries: usize, page: usize) -> Player {
+    use crate::time::{Pads, StepAction, TimeHost};
+    struct Quiet;
+    impl Pads for Quiet {
+        fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+            true
+        }
+        fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+        fn stop_all(&mut self) {}
+        fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+    }
+    let mut p = sample_play(fonts, PlayView::Beats);
+    p.play.selected = None;
+    p.apply(ToUi::QLinkTouch(0, false));
+    // The kit's pads named as the Steps show them, so Continue reads the
+    // same kick, snare and hats the lanes say.
+    for k in p.kits.iter_mut().filter(|k| k.synth.is_none()) {
+        for (slot, name) in k.pads.iter_mut().zip(BOOM_BAP) {
+            *slot = Some(name.to_string());
+        }
+    }
+    let Ok(mut h) = TimeHost::new(44_100, 92.0) else {
+        return p;
+    };
+    let beat: [(u8, &[usize], u8); 4] = [
+        (0, &[0, 6, 8, 10], 110),
+        (2, &[4, 12, 15], 100),
+        (4, &[0, 2, 3, 4, 6, 7, 8, 10, 11, 12, 14, 15], 80),
+        (5, &[7], 90),
+    ];
+    for (pad, steps, velocity) in beat {
+        for &step in steps {
+            let _ = h.step_action(StepAction::Tap {
+                pad,
+                step,
+                velocity,
+            });
+        }
+    }
+    let mut q = Quiet;
+    h.period(128, &mut q);
+    p.apply(ToUi::Time(Box::new(h.state())));
+    p.apply(ToUi::Steps(Box::new(h.steps())));
+    let groove = mpfree_compose::STYLES
+        .iter()
+        .position(|k| k.name == "Groove")
+        .unwrap_or(0);
+    p.steps_cont = Some(mpfree_time_ui::editor::compose::ContinueSet {
+        style: groove,
+        ..Default::default()
+    });
+    for k in 0..tries.max(1) {
+        let a = if k == 0 {
+            p.steps_continue_open()
+        } else {
+            p.steps_continue_event(
+                crate::steps_continue::PANEL,
+                EventKind::Tab(crate::steps_continue::TRY_AGAIN),
+            )
+        };
+        for o in std::mem::take(&mut p.outbox) {
+            if let FromUi::Time(t) = o {
+                let _ = h.act(t);
+            }
+        }
+        if let Some(FromUi::Time(a)) = a {
+            let _ = h.act(a);
+        }
+        let t0 = std::time::Instant::now();
+        while t0.elapsed() < Duration::from_secs(10)
+            && !h
+                .state()
+                .continuing
+                .is_some_and(|c| c.position == Some((k + 1, k + 1)) && c.heard)
+        {
+            h.period(128, &mut q);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        h.period(128, &mut q);
+    }
+    p.apply(ToUi::Time(Box::new(h.state())));
+    p.apply(ToUi::Steps(Box::new(h.steps())));
+    p.play.page = page;
+    p.refresh_play();
+    p.refresh_steps_continue();
+    p.refresh_qlinks();
+    p.refresh_hint();
+    p
+}
+
+/// Boom Bap's pad names, as the previews' Steps show them.
+const BOOM_BAP: [&str; 16] = [
+    "Kick", "Kick 2", "Snare", "Rim", "Hat", "Hat op", "Shaker", "Clap", "Conga", "Tom", "Perc",
+    "Crash", "Bass", "Chop 1", "Chop 2", "Vox",
+];
+
 /// Boom Bap's sampler project for the previews: a short made-up sound on
 /// each of its 16 pads, with the mockups' settings on Kick (-2 st) and Hat
 /// (+2 st, 180 ms decay).
 fn boom_bap_project() -> mpfree_sampler::model::Project {
     use mpfree_sampler::model::{Layer, Pad, Project, Region, Source};
     let mut p = Project::new();
-    let names = [
-        "Kick", "Kick 2", "Snare", "Rim", "Hat", "Hat op", "Shaker", "Clap", "Conga", "Tom",
-        "Perc", "Crash", "Bass", "Chop 1", "Chop 2", "Vox",
-    ];
-    for (i, name) in names.iter().enumerate() {
+    for (i, name) in BOOM_BAP.iter().enumerate() {
         let data: Vec<f32> = (0..2_000)
             .map(|n| (n as f32 * 0.05 * (i + 1) as f32).sin() * (1.0 - n as f32 / 2_000.0))
             .collect();
@@ -23764,6 +23926,16 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     ] {
         out.push((name, sample_play(fonts(), v)));
     }
+    // Continue on Steps (composing step 4): its third try, on its last bar
+    // landing home, then on bar 2.
+    out.push((
+        "sequencer-steps-continue",
+        sample_steps_continue(fonts(), 3, 4),
+    ));
+    out.push((
+        "sequencer-steps-continue-bar",
+        sample_steps_continue(fonts(), 3, 1),
+    ));
     // The Sequencer's lock lanes (the Play, Pads and Sequencer redesign's
     // board 3): Kick's Decay locked on steps 7 and 12, and a Delay send
     // lane on the track throwing on steps 8, 15 and 16; then the Lanes
@@ -28054,6 +28226,7 @@ fn button_play() -> u8 {
 }
 
 mod patches;
+mod steps_cont;
 
 #[cfg(test)]
 mod tests {
@@ -33984,6 +34157,155 @@ mod tests {
         );
         let c = p.play.steps.clip.as_ref().unwrap();
         assert_eq!(c.row(0)[a].unwrap().velocity, was + 5);
+    }
+
+    /// Continue on Steps (composing tools, step 4): the head's Continue
+    /// opens Continue in the step editor's place and asks the time engine
+    /// to carry the kit's beat on, its pads' drums read from their names;
+    /// the Q-Links are Continue's (Range has nothing to do on drums), the
+    /// hardware knobs too, each change a new ask; Try again asks again,
+    /// ‹ steps back a try, Done keeps it and Cancel goes back, each
+    /// closing Continue.
+    #[test]
+    fn continue_on_steps_asks_for_a_beat_and_its_buttons_answer() {
+        use crate::steps_continue as sc;
+        use mpfree_compose::InstrumentKind;
+        use mpfree_context::groove::Lane;
+        use mpfree_time_ui::continuing::ContinueAction;
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        assert!(p.ui.get::<StepGrid>(play_page::STEPS).unwrap().add_continue);
+        let b = steps_target(&p, "head", play_widgets::HEAD_CONTINUE);
+        let a = steps_tap(&mut p, b);
+        let Some(FromUi::Time(TimeAction::Continue(ContinueAction::Ask(ask)))) = a else {
+            panic!("{a:?}");
+        };
+        assert_eq!(ask.kind, InstrumentKind::Percussive);
+        assert_eq!(ask.track, p.play.steps.track);
+        assert_eq!(
+            (0..3)
+                .map(|pad| ask.lanes.lane(ask.track, pad))
+                .collect::<Vec<_>>(),
+            [Some(Lane::Kick), Some(Lane::Snare), Some(Lane::Hats)],
+            "the sample kit's Kick, Snare and Closed Hat"
+        );
+        // The kit's drums went to the time engine just before.
+        assert!(p.take_actions().iter().any(|a| matches!(
+            a,
+            FromUi::Time(TimeAction::Continue(ContinueAction::Parts(_)))
+        )));
+        assert_eq!(p.page(), sc::PAGE);
+        let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+        assert!(!g.add_continue);
+        assert!(
+            g.cont.as_ref().is_some_and(|c| c.bar.starts_with("Bar 1")),
+            "{:?}",
+            g.cont
+        );
+        let q = p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap();
+        assert_eq!(
+            q.cards.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["Similarity", "Variation", "Activity", "Range"]
+        );
+        assert_eq!(q.cards[3].value, "drums: none");
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.starts_with("Continue: Q1 similarity"), "{hint}");
+        // A hardware Q-Link: Variation up, a new ask with it.
+        let was = p.steps_cont.unwrap().q[1];
+        p.apply(ToUi::PlayQLink(1, 2));
+        assert_eq!(p.steps_cont.unwrap().q[1], was + 10);
+        assert!(p.take_actions().iter().any(|a| matches!(
+            a,
+            FromUi::Time(TimeAction::Continue(ContinueAction::Ask(_)))
+        )));
+        // Range turns nothing, and says so.
+        p.apply(ToUi::PlayQLink(3, 1));
+        assert!(!p.take_actions().iter().any(|a| matches!(
+            a,
+            FromUi::Time(TimeAction::Continue(ContinueAction::Ask(_)))
+        )));
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("Range has nothing to do on drums"), "{hint}");
+        let tap = |p: &mut Player, k: usize| {
+            p.on_event(UiEvent {
+                widget: sc::PANEL.into(),
+                kind: EventKind::Tab(k),
+            })
+        };
+        assert!(matches!(
+            tap(&mut p, sc::TRY_AGAIN),
+            Some(FromUi::Time(TimeAction::Continue(ContinueAction::Ask(_))))
+        ));
+        assert!(matches!(
+            tap(&mut p, sc::BACK_A_TRY),
+            Some(FromUi::Time(TimeAction::Continue(ContinueAction::Step {
+                back: true
+            })))
+        ));
+        assert_eq!(p.page(), sc::PAGE);
+        assert!(matches!(
+            tap(&mut p, sc::DONE),
+            Some(FromUi::Time(TimeAction::Continue(ContinueAction::Keep)))
+        ));
+        assert_ne!(p.page(), sc::PAGE);
+        assert!(p.steps_cont.is_none());
+        assert!(p.ui.get::<StepGrid>(play_page::STEPS).unwrap().add_continue);
+        // Again, and Cancel: the clip as it was.
+        let b = steps_target(&p, "head", play_widgets::HEAD_CONTINUE);
+        assert!(steps_tap(&mut p, b).is_some());
+        assert!(matches!(
+            tap(&mut p, sc::CANCEL),
+            Some(FromUi::Time(TimeAction::Continue(ContinueAction::Back)))
+        ));
+        assert_ne!(p.page(), sc::PAGE);
+        assert!(p.steps_cont.is_none());
+    }
+
+    /// Continue on Steps with the real composer (the previews' sample):
+    /// the beat carried on four bars, each new bar faint on the grid; the
+    /// bar strip shows your bar and the four new ones with their jobs; a
+    /// tap on one pages the grid to it, and the title row says which bar
+    /// it is and what it does.
+    #[test]
+    fn continue_on_steps_shows_the_new_bars_and_pages_to_them() {
+        use crate::steps_continue as sc;
+        use mpfree_ui::Widget as _;
+        let mut p = sample_steps_continue(Fonts::embedded(), 1, 0);
+        assert_eq!(p.page(), sc::PAGE);
+        let strip = p.ui.get::<sc::BarStrip>(sc::BARS).unwrap().clone();
+        assert_eq!(strip.bars.len(), 5, "{strip:?}");
+        assert_eq!(strip.bars[0].job, "yours");
+        assert!(!strip.bars[0].new);
+        assert!(strip.bars[1..].iter().all(|b| b.new && !b.hits.is_empty()));
+        assert!(
+            strip.bars[4].job.starts_with("land home"),
+            "{:?}",
+            strip.bars[4].job
+        );
+        assert_eq!(strip.shown, 0);
+        let clip = p.play.steps.clip.as_ref().unwrap();
+        assert_eq!(clip.new_from, Some(16));
+        assert_eq!(clip.steps, 80);
+        // Bar 5 from the strip.
+        let r = p.ui.rect_of(sc::BARS).unwrap();
+        let t =
+            p.ui.get::<sc::BarStrip>(sc::BARS)
+                .unwrap()
+                .targets(r)
+                .into_iter()
+                .find(|t| t.id == "bar" && t.index == 4)
+                .unwrap()
+                .rect;
+        let (x, y) = (t.x + t.w / 2, t.y + t.h / 2);
+        let down = p.touch(7, Touch::Down, x, y);
+        let up = p.touch(7, Touch::Up, x, y);
+        assert_eq!(down.or(up), None);
+        assert_eq!(p.play.page, 4);
+        assert_eq!(p.ui.get::<sc::BarStrip>(sc::BARS).unwrap().shown, 4);
+        let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+        let cont = g.cont.as_ref().unwrap();
+        assert!(cont.bar.starts_with("Bar 5 · land home"), "{}", cont.bar);
+        assert_eq!(cont.new_from, Some(0), "the whole page is new");
     }
 
     /// The Steps' target `id`, `index` (a lane's head, a lock cell).

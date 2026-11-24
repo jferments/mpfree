@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/play_widgets.rs rust/mpfree-app/src/app/step_pads.rs rust/mpfree-app/src/step_keys.rs rust/mpfree-app/src/locks.rs rust/mpfree-app/src/rec_arm.rs rust/mpfree-app/src/rec_list.rs rust/mpfree-seq
+covers: rust/mpfree-app/src/play_page.rs rust/mpfree-app/src/play_widgets.rs rust/mpfree-app/src/steps_continue.rs rust/mpfree-app/src/gui/steps_cont.rs rust/mpfree-app/src/app/step_pads.rs rust/mpfree-app/src/step_keys.rs rust/mpfree-app/src/locks.rs rust/mpfree-app/src/rec_arm.rs rust/mpfree-app/src/rec_list.rs rust/mpfree-seq
 checked: 2026-11-19 a6fb29b2
 -->
 
@@ -27,7 +27,7 @@ A **pattern** is a loop of steps, like a grid: each row is a pad, each column a 
 
 Changes play the next time the pattern comes round. **PLAY** starts the pattern on the screen when nothing else is playing, and a line moves across the grid to show where it is.
 
-The heading over the grid has, from the left: the red **Armed** pill, the clip chip with the pattern's name, the track's name, **+ Lane** (see [Lock lanes](#lock-lanes)), the page arrows **‹ 1/1 ›**, the step size chip **1/16 ▾** (see [Change the step size](#change-the-step-size)) and the length **– 16 steps +**.
+The heading over the grid has, from the left: the red **Armed** pill, the clip chip with the pattern's name, the track's name, **Continue** on a kit's pattern (see [Carry the beat on: Continue](#carry-the-beat-on-continue)), **+ Lane** (see [Lock lanes](#lock-lanes)), the page arrows **‹ 1/1 ›**, the step size chip **1/16 ▾** (see [Change the step size](#change-the-step-size)) and the length **– 16 steps +**.
 
 ### Edit another clip
 
@@ -173,6 +173,24 @@ A send's lane throws on chosen steps: lock **Delay send** high on the last two s
 With a synth on the pads, the rows are notes, the highest on top, like a piano roll turned to the scale. With a scale on, the rows are its notes, and the root's rows are shaded and marked **root**. Tap more rows on the same step for a chord. **‹ Oct ›** shows the rows an octave lower or higher, and **Fold** shows only the notes the pattern uses. See [The synth's notes on the Sequencer](synths.md#the-synths-notes-on-the-sequencer).
 
 {{shot: sequencer-steps-synth | The Steps on a synth track in C minor: the rows are the scale's notes from C3 to C4, the roots shaded, and the eight throws underneath while no step is picked.}}
+
+## Carry the beat on: Continue
+
+**Continue**, on the heading of a kit's pattern, carries your beat on: it listens to your bars and plays some more in the same groove, the way a drummer keeps a beat going. Your kick and snare stay where you put them. What moves is what a drummer moves: a kick pushed a 16th or added before the backbeat, a quiet ghost snare, the hats opened up or thinned out, a percussion hit in a gap. Every fourth bar ends with a fill into the next, and the last bar ends as **Ending** says. You hear the new bars in place of the pattern before anything is written, and keep them only if you like them.
+
+{{shot: sequencer-steps-continue | Continue open on a one-bar beat, showing its last new bar: the kick and snare where they were, the snare rolling louder over the last beat and the kick closing it on the last step. Under the grid, your bar and the four new ones; at the bottom, Continue's settings, the tries and its buttons. The Q-Links are Similarity, Variation and Activity.}}
+
+- **Tap Continue** and it makes a first try straight away. While the pattern plays, the new bars come in on the next bar line; with the transport stopped, press **PLAY** to hear them. On a synth's pattern, Continue is in the note editor instead (see [Continue](editing-notes.md#continue)).
+- **The grid** shows one bar at a time, as always, the new bars' steps faint until you keep them. The heading says which bar you're on and what it does: "Bar 2 · vary", "Bar 4 · vary · fill", "Bar 5 · land home · fill". **‹** and **›** page through the bars.
+- **The bar strip**, in the timing strip's place, shows your bar and each new one as a small picture, its job above it. Tap one to see it on the grid.
+- **The settings**, in the step inspector's place: **Style** (Minimal, Groove, Jazz-ish; Minimal's fills are half a beat, the others' a beat), **Bars** (+1, +2, +4, +8 or +16) and **Ending** (**Home** ends with a fill and a kick on the last step, **Open** leaves the last beat to the hats, **Loop** ends with a fill that leads back into your first bar). Tap ‹ or › on one, or tap its name and turn the wheel.
+- **The Q-Links**: **Q1 Similarity** (how many bars come back just as you played them), **Q2 Variation** (how much moves) and **Q3 Activity** (hats and percussion sparser or busier than yours, "As yours" in the middle). Q4 Range has nothing to do on drums. Hold **SHIFT** for the finest steps.
+- **Every change makes a new try**; the one you hear plays on until it is ready. **Try again** makes another with the same settings, and **‹ Try 2** goes back to the one before. The last 8 tries are listed beside the settings, the one you hear lit.
+- **Done** writes the try you hear into the pattern as one take (the pattern grows by the new bars), and one **UNDO** takes it all back. **Cancel** brings the pattern back as it was, and nothing is written.
+
+{{shot: sequencer-steps-continue-bar | The same try paged to bar 2: your kick and snare as you put them, one hat thinned out.}}
+
+Each hit keeps the timing you played it with, and Continue only uses pads your bar plays, so nothing lands on a pad the kit doesn't have. Which pad is the kick, the snare or a hat comes from the kit's names for its sounds; a pad with no name counts as percussion. Step locks, chance, conditions and ratchets stay on your own bars, and the new bars are plain hits. Picking only some bars to try again is in the note editor's Continue but not here yet: on Steps, Try again makes every new bar again.
 
 ## Your timing
 

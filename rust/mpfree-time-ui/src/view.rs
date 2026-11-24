@@ -6964,7 +6964,9 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
 
 /// What Continue's bar says (composing tools, phase 1 step 2): what it is
 /// doing, which try is heard and from when, or why nothing can be.
-fn continue_hint(c: Option<&Continuing>, bar: Tick) -> String {
+/// What Continue is doing, in words, for the screens that show it (the
+/// note editor's tool bar, and Continue on Steps' panel).
+pub fn continue_hint(c: Option<&Continuing>, bar: Tick) -> String {
     use mpfree_compose::State;
     let Some(c) = c else {
         return "Making the new bars".into();

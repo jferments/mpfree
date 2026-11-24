@@ -185,6 +185,7 @@ mod status_report;
 mod status_screen;
 mod status_watch;
 mod step_keys;
+mod steps_continue;
 mod synth;
 mod sys;
 mod sysinfo;

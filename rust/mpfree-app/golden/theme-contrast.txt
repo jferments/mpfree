@@ -694,6 +694,8 @@ spaceship sequencer-notes-tracker 70 # before the theme refactor (phase 0 baseli
 spaceship sequencer-silent-locks 7 # the same runs as sequencer-steps-synth (the root tag on the picked row, a picked step's badge, Spaceship's meter and Throws labels) and a lock lane's outline as on sequencer-steps; none of its own
 spaceship sequencer-step-ratchet 14 # the same runs as sequencer-steps (the Steps page under it, phase 0 baseline), none of its own
 spaceship sequencer-steps 14 # before the theme refactor (phase 0 baseline)
+spaceship sequencer-steps-continue 9 # new screen (composing tools step 4, Continue on Steps): the master meter's scale, as sequencer-steps, and the bar strip's and panel's faint helper words (tap one: page to it, wheel or arrows, the last 8: spaceship's text_faint)
+spaceship sequencer-steps-continue-bar 9 # as sequencer-steps-continue (the same page paged to bar 2)
 spaceship sequencer-steps-synth 8 # before the theme refactor (phase 0 baseline)
 spaceship sequencer-value-lanes 14 # the same runs as sequencer-steps (the Steps page under it, phase 0 baseline), none of its own
 spaceship status-red-hint 18 # the Play page's own runs, as on play (System status phase 2)

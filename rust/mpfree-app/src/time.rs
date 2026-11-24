@@ -193,6 +193,11 @@ pub struct StepClip {
     /// refactor F1, `mpfree_seq::inst`): kept, not played. None while
     /// they play.
     pub silent: Option<SilentLocks>,
+    /// While Continue's result for this clip is shown (composing step 4,
+    /// Continue on Steps): the step its new bars start on. The clip is
+    /// then the one heard with the result, yours and the new bars, and
+    /// nothing is written until Done.
+    pub new_from: Option<usize>,
 }
 
 /// A clip's instrument locks that don't play on its track's instrument
@@ -16592,6 +16597,90 @@ mod tests {
             "{}",
             h.describe()
         );
+    }
+
+    /// Composing step 4, Continue on Steps: a clip of pad hits on a kit
+    /// carries on as a beat. The Steps show the clip as heard with the
+    /// result, the new bars from their first step, while nothing is
+    /// written; Back shows the clip as it was, and Keep writes the beat
+    /// as one take. As a tune it is still refused.
+    #[test]
+    fn a_beat_carries_on_on_steps_shown_until_kept() {
+        use mpfree_context::groove::Lane;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let mut c = Clip::new("beat", 3840);
+        c.holds = mpfree_seq::Holds::Hits;
+        let hit = |step: Tick, pad: u8| mpfree_seq::Note::new(step * 240, 120, pad, 100);
+        c.notes = [(0, 0), (8, 0), (4, 1), (12, 1)]
+            .into_iter()
+            .map(|(st, p)| hit(st, p))
+            .chain((0..16).step_by(2).map(|st| hit(st, 2)))
+            .collect();
+        h.control.project.tracks[0].slots[0] = Some(c);
+        h.control.project.give_clip_ids();
+        let beat = h.project().clip(0, 0).unwrap().clone();
+        let mut pads = Fake::default();
+        let ask = |kind| {
+            TimeAction::Continue(ContinueAction::Ask(Box::new(ContinueAsk {
+                track: 0,
+                slot: 0,
+                settings: mpfree_compose::Settings {
+                    bars: 2,
+                    ..mpfree_compose::Settings::default()
+                },
+                kind,
+                lanes: mpfree_compose::Lanes::new(vec![
+                    (0, 0, Lane::Kick),
+                    (0, 1, Lane::Snare),
+                    (0, 2, Lane::Hats),
+                ]),
+                scope: mpfree_time_ui::continuing::Scope::All,
+                locked: Vec::new(),
+            })))
+        };
+        let tune = h.act(ask(mpfree_compose::InstrumentKind::OneNote));
+        assert!(tune.unwrap_err().contains("no tune"));
+        assert_eq!(
+            h.act(ask(mpfree_compose::InstrumentKind::Percussive))
+                .unwrap(),
+            "continue: 2 more bars of beat, Minimal"
+        );
+        result_in(&mut h, &mut pads);
+        until(&mut h, &mut pads, |h| {
+            h.steps().clip.is_some_and(|c| c.new_from.is_some())
+        });
+        let st = h.steps().clip.unwrap();
+        assert_eq!((st.steps, st.new_from), (48, Some(16)));
+        let kicks = &st.rows.iter().find(|(p, _)| *p == 0).unwrap().1;
+        assert!(kicks[16].is_some() && kicks[32].is_some(), "the backbone");
+        assert_eq!(h.project().clip(0, 0).unwrap(), &beat, "nothing written");
+        let made = continuing(&h).unwrap().made.clone().unwrap();
+        assert_eq!(made.plan.len(), 3);
+
+        // Back: the clip as it was, on Steps too.
+        h.act(TimeAction::Continue(ContinueAction::Back)).unwrap();
+        until(&mut h, &mut pads, |h| {
+            h.steps().clip.is_some_and(|c| c.new_from.is_none())
+        });
+        assert_eq!(h.steps().clip.unwrap().steps, 16);
+
+        // Again, and Done: the beat written as one take.
+        h.act(ask(mpfree_compose::InstrumentKind::Percussive))
+            .unwrap();
+        result_in(&mut h, &mut pads);
+        let heard = continuing(&h).unwrap().clip.clone().unwrap();
+        assert_eq!(
+            h.act(TimeAction::Continue(ContinueAction::Keep)).unwrap(),
+            "continue: 2 more bars of beat kept (UNDO takes it back)"
+        );
+        let kept = h.project().clip(0, 0).unwrap();
+        assert_eq!((kept.length, &kept.notes), (3 * 3840, &heard.notes));
+        assert_eq!(kept.holds, mpfree_seq::Holds::Hits);
+        until(&mut h, &mut pads, |h| {
+            h.steps()
+                .clip
+                .is_some_and(|c| c.new_from.is_none() && c.steps == 48)
+        });
     }
 
     /// Try again while a result plays: it plays on until the next one has

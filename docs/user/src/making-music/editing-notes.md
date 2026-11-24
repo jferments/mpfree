@@ -306,7 +306,7 @@ The very last row, **Continue**, carries the clip on: it listens to your bars (a
 - **Lock the bars you like.** With bars picked, the drawer's button says **Lock bar 6** (or **Lock 2 bars**): tap it and the bar shows a lock and "locked" on the ruler. A locked bar stays exactly as it is through every try, whether you tap Try again or change a setting, until you pick it and tap **Unlock** or close Continue. Try again leaves locked bars out even when they are picked.
 - **Done** writes the try you hear into the clip as one take (the clip grows by the new bars), and one **UNDO** takes it all back. **Cancel** brings the clip back as it was from the next bar line, and nothing is written.
 - If the clip changes while a try plays (you edit it, record into it or press **UNDO**), the clip comes back at once and the bar says "The clip changed: try again?". **REC** brings the clip back before the take starts; the try stays ready for afterwards.
-- A clip of pad hits has no tune to carry on, so its row says "no tune", and an empty clip's says "no notes". Carrying on drums and chords comes later.
+- A clip of pad hits has no tune to carry on here, so its row says "no tune": carry a beat on from the Sequencer's Steps instead (see [Carry the beat on: Continue](sequencer.md#carry-the-beat-on-continue)). An empty clip's row says "no notes". Carrying on chords comes later.
 
 {{shot: sequencer-notes-continue-picks | The same riff a few taps later: bar 4 is locked (a lock and "locked" on the ruler), bar 6 is picked (lit on the ruler) and was just tried again, so the tool's button says "Try bar 6 again", the drawer's button "Lock bar 6", and the newest try in the list says "bar 6".}}
 

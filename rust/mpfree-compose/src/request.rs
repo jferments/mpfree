@@ -84,6 +84,9 @@ pub struct Continued {
     /// a repair ("bar 6 made again so it lands"; S4). Empty when nothing
     /// was repaired.
     pub critic: Vec<String>,
+    /// The bars (from 0, yours counted) that end with a fill: a beat's
+    /// ([`crate::beat`]); a tune has none.
+    pub fills: Vec<usize>,
 }
 
 /// The sound moves for a result of `req` at `level` ([`crate::sound`]):
@@ -370,6 +373,7 @@ pub fn first_engine_keeping(
         to,
         sketch: None,
         critic: Vec::new(),
+        fills: Vec::new(),
     })
 }
 
@@ -461,6 +465,7 @@ pub fn try_bars(
         to: before.to,
         sketch: before.sketch.clone(),
         critic: Vec::new(),
+        fills: Vec::new(),
     })
 }
 
@@ -564,6 +569,7 @@ pub fn try_notes(
         to: before.to,
         sketch: before.sketch.clone(),
         critic: Vec::new(),
+        fills: Vec::new(),
     })
 }
 

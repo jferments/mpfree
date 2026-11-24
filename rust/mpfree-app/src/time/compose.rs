@@ -469,6 +469,21 @@ impl Composing {
         }
     }
 
+    /// The shown result's clip as it is heard with it, with where its
+    /// new bars start, and the clip it is bound to (Steps show it).
+    pub(super) fn heard(&self) -> Option<(usize, usize, &Clip, Tick)> {
+        let (track, slot) = self.bound()?;
+        let m = self.shown()?;
+        Some((track, slot, &m.clip, m.new_from))
+    }
+
+    /// What the Steps show of Continue, to know when it changes: the
+    /// bound clip and the shown result's number.
+    pub(super) fn heard_key(&self) -> Option<(usize, usize, u32)> {
+        let (track, slot) = self.bound()?;
+        Some((track, slot, self.shown()?.id))
+    }
+
     /// The shown result.
     fn shown(&self) -> Option<&Made> {
         let (i, _) = self.preview.position()?;
