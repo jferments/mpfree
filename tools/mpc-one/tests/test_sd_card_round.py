@@ -108,7 +108,8 @@ class Mpc:
         off = os.path.exists(os.path.join(self.fake_dir, "power-off.done"))
         if self.mode == "prepare" or off:
             return {self.akai}
-        return {self.stick} if self.mpfree_boots else set()
+        # A stick that doesn't start leaves Akai's system to come up instead.
+        return {self.stick} if self.mpfree_boots else {self.akai}
 
     def loop(self):
         while self.on:
@@ -403,9 +404,8 @@ class RoundTests(unittest.TestCase):
 
     def test_mpfree_not_answering_runs_nothing_on_it_but_takes_the_boot_map(self):
         self.prepared()
+        # The stick doesn't start, so Akai's system answers from the start (no clock to race).
         self.mpc.mpfree_boots = False
-        # Akai's system comes back (the stick didn't start): the power-off step never ran, so open it by hand.
-        threading.Timer(1.0, lambda: open(os.path.join(self.fake_dir, "power-off.done"), "w").close()).start()
         res = self.tool("run", MPFREE_ROUND_BOOT_WAIT="0.5")
         self.assertEqual(res.returncode, 1, res.stdout)
         self.assertIn("MPFree didn't answer: nothing was run on the MPC.", res.stdout)
