@@ -943,7 +943,7 @@ fn the_sound_section_turns_the_pad_as_the_play_page_does() {
     assert_eq!(pad(&s).filter.kind, FilterKind::Off);
     assert!(!sound_control(&s, "knob", "Cutoff").enabled);
     assert!(sound_tap(&mut s, "knob", "Cutoff").is_empty());
-    sound_tap_apply(&mut s, "more", "Filter ›");
+    sound_tap_apply(&mut s, "more", "Type ›");
     assert_eq!(pad(&s).filter.kind, FilterKind::LowPass);
     assert!(sound_control(&s, "knob", "Cutoff").enabled);
     // Pitch: Vintage is a switch.
