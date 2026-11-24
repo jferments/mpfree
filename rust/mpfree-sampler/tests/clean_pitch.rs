@@ -372,16 +372,34 @@ fn grains_pitched_past_nyquist_are_gone_not_folded_back() {
 }
 
 #[test]
-fn grains_up_to_two_semitones_up_sound_exactly_as_vintage_ones() {
-    let s = sine(RATE, 1.0, 3_000.0);
-    for semis in [2.0f32, 1.0, 0.0, -7.0, -12.0] {
-        let clean = play(&grain_pad(&s, semis, false), hit(), 8_000, 128);
-        let vintage = play(&grain_pad(&s, semis, true), hit(), 8_000, 128);
-        assert_eq!(clean, vintage, "{semis} semitones");
-        assert!(clean.iter().any(|x| x.abs() > 0.05));
+fn grains_up_to_two_semitones_up_fold_back_50_db_down_as_a_pads_read() {
+    // 9 kHz out, as the pad's test above: grains at and under two semitones
+    // up read with the 8-point read a pad uses there, so the image the
+    // Hermite read folds back at -26 to -44 dB (a Vintage pad's grains
+    // keep it) stays under -50 dB. A fifth down the image sits at 20.4
+    // kHz and the cloud's grains, each at its own phase, leave it a little
+    // nearer in this measure (fxlab's steady read gives -58 dB): under -45.
+    for (semis, limit) in [
+        (2.0f32, -50.0),
+        (1.0, -50.0),
+        (-1.0, -50.0),
+        (-2.0, -50.0),
+        (-7.0, -45.0),
+    ] {
+        let v = f64::from(semis / 12.0).exp2();
+        let src = 9_000.0 / v;
+        let s = sine(RATE, 2.0, src);
+        let clean = play(&grain_pad(&s, semis, false), hit(), 12_000, 128);
+        let vintage = play(&grain_pad(&s, semis, true), hit(), 12_000, 128);
+        assert!(clean.iter().any(|x| x.abs() > 0.05), "{semis}: silent");
+        let at = image(src, v);
+        let c = db(level(&clean, at)) - db(level(&clean, 9_000.0));
+        let w = db(level(&vintage, at)) - db(level(&vintage, 9_000.0));
+        eprintln!("grains {semis:+}: image at {at:.0} Hz {c:.1} dB, Vintage {w:.1} dB");
+        assert!(c < limit, "grains {semis:+}: the image is {c:.1} dB");
+        assert!(
+            w > -50.0,
+            "grains {semis:+}: Vintage keeps its image, {w:.1} dB"
+        );
     }
-    // A little past two semitones the read changes.
-    let clean = play(&grain_pad(&s, 2.05, false), hit(), 8_000, 128);
-    let vintage = play(&grain_pad(&s, 2.05, true), hit(), 8_000, 128);
-    assert_ne!(clean, vintage);
 }

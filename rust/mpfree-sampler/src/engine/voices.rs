@@ -833,6 +833,23 @@ impl Pool {
             + self.budget.live()
     }
 
+    /// Adds what each playing voice costs, in [`Pool::cost`]'s units, by
+    /// `frames`, to its kit's count in `out` (a kit past `out` is left
+    /// out): the share of the pads' time each kit takes, without timing
+    /// any voice. A voice that leads a hit counts apart from its
+    /// followers, which count too.
+    pub(super) fn count_kits(&self, frames: u64, out: &mut [u64]) {
+        for (v, g) in self.voices.iter().zip(&self.grains) {
+            if !v.active {
+                continue;
+            }
+            let units = if v.light { LIGHT_COST } else { VOICE_COST } + g.alive();
+            if let Some(n) = out.get_mut(usize::from(v.kit)) {
+                *n = n.saturating_add(units as u64 * frames);
+            }
+        }
+    }
+
     /// `n` voices, the first of them slot `first` of the whole pool (it
     /// seeds their grain voices). `lane`: with the buffers the lane's share
     /// renders into.

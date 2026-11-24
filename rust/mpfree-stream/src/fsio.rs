@@ -48,7 +48,8 @@ pub struct StdFs {
 }
 
 /// Fresh reads are made in blocks of this size, at offsets and into
-/// memory aligned to it (what `O_DIRECT` asks).
+/// memory aligned to it (what `O_DIRECT` asks; Linux only).
+#[cfg(target_os = "linux")]
 const ALIGN: usize = 4096;
 
 impl StdFs {

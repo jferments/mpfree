@@ -1235,6 +1235,23 @@ impl Instruments {
         self.host.moves()
     }
 
+    /// Counts each instrument's time from the next render on, while on
+    /// (`TrackHost::set_spending`), for System status's tracks.
+    pub fn set_spending(&mut self, on: bool) {
+        self.host.set_spending(on);
+    }
+
+    /// Each instrument's counted time since the last take, ns, with the
+    /// mixer channel it plays into (a ring-out's too), and starts again.
+    /// Never allocates.
+    pub fn take_spent(&mut self, mut f: impl FnMut(usize, u64)) {
+        self.host.take_spent(|_, ch, ns| {
+            if let Some(ch) = ch {
+                f(ch, ns);
+            }
+        });
+    }
+
     /// An instrument taken out, after its ring-out: drop it off the audio
     /// thread.
     pub fn pop_retired(&mut self) -> Option<Instrument> {
