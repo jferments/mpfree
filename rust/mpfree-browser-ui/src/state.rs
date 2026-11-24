@@ -614,6 +614,21 @@ pub enum BrowseAction {
         loc: Loc,
         set: Set,
     },
+    /// Start soundcheck on the set (live shows B2b): every song, or only
+    /// song `only` (and its change into the next), Muted or out loud. The
+    /// app saves a song open with changes first, and answers with
+    /// [`Browser::set_soundcheck`], [`Browser::soundchecked`] and
+    /// [`Browser::soundcheck_over`].
+    Soundcheck {
+        loc: Loc,
+        set: Set,
+        only: Option<usize>,
+        muted: bool,
+    },
+    /// Stop soundcheck: what it measured so far is kept.
+    StopSoundcheck,
+    /// Soundcheck goes on to the next song.
+    SkipSoundcheckSong,
     /// The set's song asked for with [`Browser::open_set_song`] read whole
     /// and checked: the [`BrowseAction::ProjectOpened`] right after this is
     /// that song's. Open it without asking anything (nothing asks on
@@ -3278,6 +3293,13 @@ impl Browser {
         true
     }
 
+    /// Opens the project at `loc` again with nothing asked (Soundcheck's
+    /// end, live shows B2b: the song open before it). It comes as
+    /// [`BrowseAction::ProjectOpened`], like an open from Projects.
+    pub fn reopen(&mut self, loc: Loc) {
+        self.send(Job::OpenProject(loc));
+    }
+
     /// The answer to [`BrowseAction::SaveKitRequested`]: saves the kit the
     /// pads play as a kit folder named `name` (or `name 2` ...) where Save
     /// kit was pressed (the top of Kits if it wasn't). `text` is the
@@ -4105,6 +4127,17 @@ fn files_why(missing: usize, damaged: usize) -> String {
 pub fn when(secs: u64) -> String {
     let (y, m, d, h, mi) = mpfree_library::project::civil(secs);
     format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02} UTC")
+}
+
+/// `secs` said briefly against `now`, for a line with little room: "today
+/// 19:04 UTC" or "yesterday 19:04 UTC", else the date as [`when`] says it.
+pub fn when_short(secs: u64, now: u64) -> String {
+    let (_, _, _, h, mi) = mpfree_library::project::civil(secs);
+    match (now / 86_400).checked_sub(secs / 86_400) {
+        Some(0) => format!("today {h:02}:{mi:02} UTC"),
+        Some(1) => format!("yesterday {h:02}:{mi:02} UTC"),
+        _ => when(secs),
+    }
 }
 
 fn entry_detail(e: &Entry) -> String {

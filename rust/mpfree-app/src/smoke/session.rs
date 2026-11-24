@@ -353,6 +353,9 @@ pub struct Session {
     /// A set's song ending (live shows B1), as main.rs's audio loop runs
     /// it: its fade, and silence once over.
     song_end: crate::song_end::SongEnd,
+    /// Soundcheck's Muted (live shows B2b), as main.rs keeps it: nothing
+    /// heard once the period is measured.
+    muted: bool,
     /// The library the browser saves projects into (`with_library`).
     pub library: Option<mpfree_library::Library>,
     /// A save asked for (SHIFT + BROWSE, Save in the browser), and the
@@ -501,6 +504,7 @@ impl Session {
             xy_rec: crate::xy_rec::XyRec::new(),
             play_moves: crate::remote::PlayMoves::default(),
             song_end: crate::song_end::SongEnd::new(RATE),
+            muted: false,
             synth_turns: undo::Turns::default(),
             presets: crate::presets::TrackPresets::default(),
             mix_turns: undo::Turns::default(),
@@ -2291,6 +2295,11 @@ impl Session {
                 self.out.show(ToUi::SongEnd(n));
             }
         }
+        // Soundcheck's Muted, as main.rs: nothing leaves the outputs.
+        if self.muted {
+            l.fill(0.0);
+            r.fill(0.0);
+        }
         // The kit's pads whose mute or solo came due, as main.rs lands them.
         if let Some(h) = self.heard.as_mut() {
             h.extend(l.iter().zip(&r).flat_map(|(a, b)| [*a, *b]));
@@ -2810,6 +2819,7 @@ impl Session {
                 self.out.note(&format!("show: the song ends: {end:?}"));
             }
             FromUi::SongEndReset => self.song_end.reset(),
+            FromUi::Muted(m) => self.muted = m,
             FromUi::OpenLoops(l) => self.looper.open(*l),
             FromUi::OpenAudio(a) => self.tracks.open(*a),
             FromUi::AudioFiles(dir) => self.tracks.record_to(dir),

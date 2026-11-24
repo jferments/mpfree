@@ -171,6 +171,7 @@ mod screen_picture;
 mod script;
 // The SD card's read-only window, the pad player's side, for the Browser's "SD card" place.
 mod sd_card;
+mod set_checks;
 mod set_play;
 mod setup;
 mod shed;
@@ -179,6 +180,7 @@ mod skin_page;
 #[cfg(test)]
 mod smoke;
 mod song_end;
+mod soundcheck;
 mod status_report;
 mod status_screen;
 mod status_watch;
@@ -10731,6 +10733,8 @@ fn player_session(
     let mut meter_at = Instant::now();
     // A set's song's ending (live shows B1): its gain on the output.
     let mut song_end = song_end::SongEnd::new(RATE);
+    // Soundcheck's Muted (soundcheck.rs): silence after every measure.
+    let mut outputs_muted = false;
     out.say(&format!("mixer: the kit's 16 pads on pad channels into track 1 (drums), synth and loop on tracks 2-3, the \
                       line input on input 1 (heard with the looper's Monitor), Master safety {} at {:.1} dBFS",
                      "safe limiter", -0.3));
@@ -11573,6 +11577,13 @@ fn player_session(
                     out.note(&format!("show: the song ends: {end:?}"));
                 }
                 gui::FromUi::SongEndReset => song_end.reset(),
+                gui::FromUi::Muted(m) => {
+                    outputs_muted = m;
+                    out.note(&format!(
+                        "show: the outputs are {}",
+                        if m { "muted" } else { "on" }
+                    ));
+                }
                 // An edit on the patch screens: the keys play the song's
                 // patches as they are now; the old ones go back to be
                 // freed there.
@@ -16224,6 +16235,12 @@ fn player_session(
                     }
                 }
             }
+        }
+        // Soundcheck's Muted: everything above ran and was measured;
+        // nothing leaves the outputs (Main out and the headphones).
+        if outputs_muted {
+            left.fill(0.0);
+            right.fill(0.0);
         }
         for f in 0..PERIOD {
             frames[2 * f] = float_to_s32(left[f]);

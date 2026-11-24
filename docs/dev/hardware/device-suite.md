@@ -62,7 +62,7 @@ A tap, an expect, a mark or the title may quote the app's own characters (`Speed
 
 ## The workflows
 
-About 9 minutes in all, plus heavy-load once more on each of the four sound-core settings (about 6 minutes). `covers` names the [device checks](device-checks.md) each one stands in for.
+About 12.5 minutes in all, plus heavy-load once more on each of the four sound-core settings (about 6 minutes). `covers` names the [device checks](device-checks.md) each one stands in for.
 
 | Workflow | What a musician does | Stands in for | About |
 |---|---|---|---|
@@ -75,6 +75,7 @@ About 9 minutes in all, plus heavy-load once more on each of the four sound-core
 | `heavy-load` | A full song, a loop recorded over it, the pads rolling, and a reverb, delay and chorus on the drums: half a minute of everything at once | `load`, `fx-busy` | 1.5 min |
 | `smart-loop-end` | Free first loops with Tempo from the first loop on, each two bars of kick and snare with REC pressed a little after the next bar's first kick. On Suggest the chip's Snap, Use my tap, UNDO and SHIFT + UNDO; on Auto, REC just before the first kick: the loop closes on the end played and starts on the first hit | `smart-end` | 35 s |
 | `sets` | The three demo songs saved, made into a set on the screen (New set, Add songs, each song's Starts and Ends), and played through from the Show view: a Fade, a Let it finish and a Cut, back to the first song. Each open's line and each change's go in the report's Opens and song changes ([live shows A4](../design/live-shows.md#measuring-opens-a4)) | no hands check yet: `set-changes` and `open-times` name what it measures | 1 min |
+| `soundcheck` | The three demo songs saved and made into a set on the screen, then soundchecked Muted from the set's card: each song opened cold, its busiest part (its first 16 bars: the demo songs have no song list) played, its change into the next timed, and each song's line kept in the set ([live shows B2b](../design/live-shows.md#soundcheck-b2b-as-built)). Its `show: soundcheck kept song N:` lines are what it measured | no hands check yet: `soundcheck` names what it measures | 3.5 min |
 
 ## The round's order
 
@@ -88,7 +89,7 @@ The hardware thread builds the stick and writes the round's runbook. These are t
    cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run bench -- env MPFREE_ACCEPT_BENCH=YES python3 tools/mpc-one/host_bench_mpc.py
    ```
 
-4. **The workflows** (**RAM only**, about 17 minutes, three presses of Enter):
+4. **The workflows** (**RAM only**, about 20 minutes, three presses of Enter):
 
    ```bash
    cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/results.py run devtest -- env MPFREE_ACCEPT_DEVTEST=YES python3 tools/mpc-one/host_devtest_mpc.py
@@ -97,7 +98,7 @@ The hardware thread builds the stick and writes the round's runbook. These are t
    - **What it changes:** it talks only to the test build (port 2222, the stick's own host key) and runs the same read-only checks as the app step first, plus that the stick's kits are at `/run/mpfree-kits/kits.bin`. It copies `mpfree` and the workflows into `/run/mpfree-devtest` (RAM) and checks their hashes there. It stops our pad player and log display (`mpfree-test-app`, `mpfree-test-screen`: RAM state only; Akai's services are not running and are never touched) and starts whichever was running again at the end, also when a run fails or you press `q` or Ctrl-C. Each workflow runs `mpfree play --script … --kits /run/mpfree-kits/kits.bin --data /run/mpfree-devtest/data-NAME --gain-db -12`: its saves go to that RAM folder, so partition 4 is never opened, and the kits are only read.
    - **Hands off the MPC** while it plays: the workflows press the buttons and pads themselves. Keep the volume where you can hear it. The terminal shows each part (`mark` lines) as it starts. At the end of the default pass it asks one question: did anything click, drop out, stick or sound wrong.
    - **Then heavy-load on each sound-core setting** (`--sound-cores shared`, `core3`, `two`, `three`), the same steps each time. `s` at that prompt skips it.
-   - **Passes when** it ends `RESULT: 13 runs played.` and prints `pad player: active (started again)`. A workflow that fails is listed on a `FAILED:` line, and the next one still plays.
+   - **Passes when** it ends `RESULT: 14 runs played.` and prints `pad player: active (started again)`. A workflow that fails is listed on a `FAILED:` line, and the next one still plays.
    - **If it is cut off halfway** (the cable, `q`, Ctrl-C), it ends a workflow still running from `/run/mpfree-devtest` and starts the pad player again; if the cable is gone, the pad player starts at the next power-on. Nothing is left but RAM.
    - **Undo:** none needed. Switching the MPC off clears `/run`.
 
@@ -108,7 +109,7 @@ The hardware thread builds the stick and writes the round's runbook. These are t
    cd /home/jesse/code/mpfree-hardware-survey && python3 tools/mpc-one/devtest_report.py ~/mpfree-results/current/*-bench.log ~/mpfree-results/current/*-devtest.log --out ~/mpfree-results/current/devtest-report.md
    ```
 
-   It prints one page: each workflow's checks, the steps it couldn't do, and each part's underruns, periods, slow periods, late lanes and render means; every project open the workflows made, with each part's time, the sound files read and the memory once it was in, and each set's song change from Go to the next song in; heavy-load on each sound-core setting, with the setting the numbers favour; the NEON verdict; each asked-about engine's cost per voice and the voices that fit; `GRAIN_BUDGET` and `VOICE_COST` to set; and the presets whose note starts go over the synth budget. It exits 0 when every workflow ran with every check met and no underrun.
+   It prints one page: each workflow's checks, the steps it couldn't do, and each part's underruns, periods, slow periods, late lanes and render means; every project open the workflows made, with each part's time, the sound files read and the memory once it was in, and each set's song change from Go to the next song in; what Soundcheck kept for each song (its open, memory, CPU, disk wait, misses, xruns and change) and how each Soundcheck went; heavy-load on each sound-core setting, with the setting the numbers favour; the NEON verdict; each asked-about engine's cost per voice and the voices that fit; `GRAIN_BUDGET` and `VOICE_COST` to set; and the presets whose note starts go over the synth budget. It exits 0 when every workflow ran with every check met and no underrun.
 
 ## What stays by hand
 
