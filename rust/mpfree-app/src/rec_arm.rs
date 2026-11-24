@@ -233,6 +233,10 @@ pub enum Mover {
 pub enum Do {
     Transport(Command),
     Looper(LoopCommand),
+    /// The loop's command with the notes armed too (SHIFT + Arm): a new
+    /// loop records on the song's clock whatever Sync says, so it keeps
+    /// time with the clip it records beside.
+    LoopWithNotes(LoopCommand),
     /// Punch out and throw away the notes' take so far
     /// (`TimeAction::ThrowTake`).
     ThrowTake,
@@ -279,10 +283,19 @@ fn mode(take: Take, overdub: bool) -> Option<Do> {
 
 /// The looper's own command for `take`: Record, or Overdub.
 fn looped(take: Take) -> Do {
-    Do::Looper(match take {
+    Do::Looper(loop_command(take))
+}
+
+/// [`looped`], with the notes armed too ([`Do::LoopWithNotes`]).
+fn with_notes(take: Take) -> Do {
+    Do::LoopWithNotes(loop_command(take))
+}
+
+fn loop_command(take: Take) -> LoopCommand {
+    match take {
         Take::Replace => LoopCommand::Record,
         Take::Add => LoopCommand::Overdub,
-    })
+    }
 }
 
 impl RecArm {
@@ -390,7 +403,7 @@ impl RecArm {
             let was = self.ready;
             let mut out = self.press_notes(take, now);
             match (was, self.ready) {
-                (None, Some(_)) if !now.loop_armed => out.push(looped(take)),
+                (None, Some(_)) if !now.loop_armed => out.push(with_notes(take)),
                 (Some(_), None) => out.push(Do::StopWaiting),
                 _ => {}
             }
@@ -404,12 +417,12 @@ impl RecArm {
                 out.extend(self.press_notes(take, now));
             }
             if looping {
-                out.push(looped(take));
+                out.push(with_notes(take));
             }
             return out;
         }
         let mut out = self.press_notes(take, now);
-        out.push(looped(take));
+        out.push(with_notes(take));
         out
     }
 
@@ -535,7 +548,7 @@ impl RecArm {
         self.target = Target::Notes;
         let mut out = Vec::new();
         match (target, self.ready) {
-            (Target::Loop, Some(take)) => out.push(looped(take)),
+            (Target::Loop, Some(take)) => out.push(with_notes(take)),
             (Target::Notes, None) if now.loop_armed => self.ready = Some(Take::Replace),
             _ => {}
         }
@@ -1114,7 +1127,7 @@ mod tests {
         // Stopped: REC readies the notes and arms the loop; again lets go.
         let said = a.press(Press::Rec, &stopped);
         assert_eq!(a.ready, Some(Take::Replace));
-        assert_eq!(said.last(), Some(&Do::Looper(LoopCommand::Record)));
+        assert_eq!(said.last(), Some(&Do::LoopWithNotes(LoopCommand::Record)));
         let waiting = Now {
             loop_armed: true,
             ..stopped.clone()
@@ -1133,7 +1146,7 @@ mod tests {
         let playing = now(State::Playing);
         assert_eq!(
             a.press(Press::Rec, &playing),
-            [t(Command::Record), Do::Looper(LoopCommand::Record)]
+            [t(Command::Record), Do::LoopWithNotes(LoopCommand::Record)]
         );
         // Recording both: REC punches both out.
         let both = Now {
@@ -1142,7 +1155,7 @@ mod tests {
         };
         assert_eq!(
             a.press(Press::Rec, &both),
-            [t(Command::Record), Do::Looper(LoopCommand::Record)]
+            [t(Command::Record), Do::LoopWithNotes(LoopCommand::Record)]
         );
         // Only the loop recording (the notes punched out): only the loop.
         let looping = Now {
@@ -1151,7 +1164,7 @@ mod tests {
         };
         assert_eq!(
             a.press(Press::Rec, &looping),
-            [Do::Looper(LoopCommand::Record)]
+            [Do::LoopWithNotes(LoopCommand::Record)]
         );
         // A page or a pick finds its target armed already.
         assert!(a.move_to(Target::Loop, Mover::Page, &stopped).is_empty());
@@ -1195,7 +1208,7 @@ mod tests {
         let mut b = RecArm::default();
         b.press(Press::Overdub, &stopped);
         let said = b.add(Target::Loop, &stopped);
-        assert_eq!(said[0], Do::Looper(LoopCommand::Overdub));
+        assert_eq!(said[0], Do::LoopWithNotes(LoopCommand::Overdub));
     }
 
     #[test]

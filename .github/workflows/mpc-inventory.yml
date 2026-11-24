@@ -120,6 +120,9 @@ jobs:
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_boot_hook.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_stick_setup.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_sd_card_window.py
+          MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_sd_card_write.py
+          python3 tools/mpc-one/tests/test_repair_sd_card.py
+          python3 tools/mpc-one/tests/test_sd_card_round.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_ethernet.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_drivers.py
           MPFREE_REQUIRE_BUSYBOX=1 python3 tools/mpc-one/tests/test_read_only_sd_card.py

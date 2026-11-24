@@ -198,6 +198,14 @@
 //! from before would skip it and play on at the tempo before, so a project
 //! with one needs `scene-tempo`.
 //!
+//! A scene's `chord <length> <root> <quality> <source>` lines are its
+//! row's Harmony line (composing tools S2.5), one span each from the
+//! row's start: the root a pitch class (0 is C), the quality a chord's
+//! word (`maj`, `m`, `7`, `m7`, `maj7`, `m7b5`, `dim`, `dim7`, `sus4`,
+//! `m6`, `6`, `5`) and the source `heard`, `suggested` or `set`; a span
+//! with no clear chord is `chord <length> none <source>`. An older build
+//! skips them, and a newer word after them is skipped.
+//!
 //! Reading is careful: every number is checked, every clip and the whole
 //! project go through [`Project::check`]-level checks, and a part that
 //! doesn't hold together is refused whole (the engine keeps what it had).
@@ -206,16 +214,19 @@
 use std::fmt::Write as _;
 use std::str::FromStr;
 
+use mpfree_context::chord::{Chord, ChordAnswer, ChordSpan, ChordTimeline, Heard, Quality};
 use mpfree_moves::{Kind, Map, Moves, Point, Steps, Target};
 use mpfree_notefx::{Slot, MAX_FX};
 use mpfree_param::{ParamAddr, RelAddr};
 use mpfree_transport::time::{Swing, Tick};
 
 use crate::arrange::{FromScene, Marker, MorphRows, Placement, TempoPoint};
-use crate::scenes::{Follow, FollowAction, ListStep, Scene, MAX_LIST_STEPS, SCENES};
+use crate::scenes::{
+    Follow, FollowAction, ListStep, Scene, MAX_LIST_STEPS, MAX_ROW_CHORDS, SCENES,
+};
 use crate::{
     Clip, ClipId, Cond, Join, LaunchGrid, Lock, LoopInput, Note, Original, Project, Quantise,
-    Speed, Touch, TouchPoint, Track, TrackKind, MAX_TRACKS, ROWS,
+    Speed, Touch, TouchPoint, Track, TrackKind, MAX_CLIP_TICKS, MAX_TRACKS, ROWS,
 };
 
 /// The first line.
@@ -334,6 +345,21 @@ pub fn to_text(p: &Project) -> String {
         }
         for tp in &sc.programs {
             let _ = writeln!(s, "program {} {}", tp.track, program_text(tp.program));
+        }
+        for c in sc.chords.spans() {
+            let _ = match c.answer {
+                ChordAnswer::Chord(ch) => writeln!(
+                    s,
+                    "chord {} {} {} {}",
+                    c.len,
+                    ch.root,
+                    ch.quality.token(),
+                    c.heard.token()
+                ),
+                ChordAnswer::NoClearChord => {
+                    writeln!(s, "chord {} none {}", c.len, c.heard.token())
+                }
+            };
         }
     }
     for c in a.clips.iter() {
@@ -643,6 +669,26 @@ fn program<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<crate::ClipProgr
     };
     let p = crate::ClipProgram { program, bank };
     p.ok().then_some(p)
+}
+
+/// The words after `chord`: a span of the row's Harmony line, from tick 0
+/// (the reader places it after the one before). Its length is 1 to
+/// [`MAX_CLIP_TICKS`].
+fn chord_span<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<ChordSpan> {
+    let len: Tick = num(w.next())?;
+    if !(1..=MAX_CLIP_TICKS).contains(&len) {
+        return None;
+    }
+    let answer = match w.next()? {
+        "none" => ChordAnswer::NoClearChord,
+        root => {
+            let root: u8 = root.parse().ok().filter(|r| *r < 12)?;
+            let quality = Quality::from_token(w.next()?)?;
+            ChordAnswer::Chord(Chord::new(root, quality))
+        }
+    };
+    let heard = Heard::from_token(w.next()?)?;
+    Some(ChordSpan::new(0, len, answer, heard))
 }
 
 /// The words after `program` (and a scene's track): `4`, or `4 bank 2`.
@@ -1165,6 +1211,19 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 }
                 sc.set_program(track, Some(to))
                     .map_err(|_| bad("program"))?;
+            }
+            ("chord", At::Scene) => {
+                let span = chord_span(&mut w).ok_or_else(|| bad("chord"))?;
+                let sc = last_scene(&mut p);
+                if sc.chords.spans().len() >= MAX_ROW_CHORDS {
+                    return Err(bad("chord"));
+                }
+                let mut spans = sc.chords.spans().to_vec();
+                spans.push(ChordSpan {
+                    start: sc.chords.len(),
+                    ..span
+                });
+                sc.chords = ChordTimeline::new(spans).map_err(|_| bad("chord"))?;
             }
             ("place", At::Top | At::Track | At::Scene) => {
                 let track: usize = num(w.next()).ok_or_else(|| bad("track"))?;
@@ -2076,6 +2135,83 @@ mod tests {
         assert_eq!(from_text(&old).unwrap().scenes[2].mutes, Some(5));
         let more = text.replace("scene 0", "track Track 129\ndest 128\nscene 0");
         assert!(from_text(&more).is_err(), "129 tracks");
+    }
+
+    /// Composing tools S2.5: a row's Harmony line reads back span by span
+    /// (yours, heard, suggested and no clear chord), a newer word after a
+    /// chord line or a newer line in the scene is skipped, an older build
+    /// skips the lines (a plain scene's text is as before), and a chord
+    /// that doesn't read refuses the part.
+    #[test]
+    fn a_rows_chords_read_back_and_older_builds_skip_them() {
+        use mpfree_context::chord::{Chord, ChordAnswer, ChordSpan, ChordTimeline, Heard, Quality};
+        let bar = 4 * 960;
+        let mut p = full();
+        let plain = to_text(&p);
+        assert!(!plain.contains("\nchord "), "{plain}");
+        let line = ChordTimeline::new(vec![
+            ChordSpan::new(
+                0,
+                bar,
+                ChordAnswer::Chord(Chord::new(0, Quality::Minor7)),
+                Heard::Heard,
+            ),
+            ChordSpan::new(
+                bar,
+                bar / 2,
+                ChordAnswer::Chord(Chord::new(8, Quality::Major)),
+                Heard::Set,
+            ),
+            ChordSpan::new(
+                bar + bar / 2,
+                bar / 2,
+                ChordAnswer::NoClearChord,
+                Heard::Heard,
+            ),
+            ChordSpan::new(
+                2 * bar,
+                bar,
+                ChordAnswer::Chord(Chord::new(10, Quality::Dominant7)),
+                Heard::Suggested,
+            ),
+        ])
+        .unwrap();
+        p.scene_mut(2).unwrap().chords = line.clone();
+        let text = to_text(&p);
+        assert!(text.contains("chord 3840 0 m7 heard\nchord 1920 8 maj set\nchord 1920 none heard\nchord 3840 10 7 suggested\n"), "{text}");
+        let back = from_text(&text).unwrap();
+        assert_eq!(back, p);
+        assert_eq!(back.scene(2).unwrap().chords, line);
+        // A newer word on a chord line, and a newer line among them.
+        let newer = text
+            .replace("chord 1920 8 maj set", "chord 1920 8 maj set glow")
+            .replace(
+                "chord 1920 none heard\n",
+                "chord 1920 none heard\nchordfeel 3\n",
+            );
+        assert_eq!(from_text(&newer).unwrap(), p);
+        // A build before S2.5 skips the lines: the row as it was.
+        let older: String = text
+            .lines()
+            .filter(|l| !l.starts_with("chord "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(older, plain);
+        for (from, to) in [
+            ("chord 3840 0 m7 heard", "chord 0 0 m7 heard"),
+            ("chord 3840 0 m7 heard", "chord 3840 12 m7 heard"),
+            ("chord 3840 0 m7 heard", "chord 3840 0 m9 heard"),
+            ("chord 3840 0 m7 heard", "chord 3840 0 m7 yours"),
+            ("chord 3840 0 m7 heard", "chord 3840 0 m7"),
+            ("chord 1920 none heard", "chord 1920 none"),
+            ("chord 3840 0 m7 heard", "chord 99999999 0 m7 heard"),
+        ] {
+            assert!(from_text(&text.replace(from, to)).is_err(), "{to}");
+        }
+        // Outside a scene it says nothing, and is skipped as any line a
+        // track doesn't know.
+        let stray = text.replacen("dest 0\n", "dest 0\nchord 3840 0 m7 heard\n", 1);
+        assert_eq!(from_text(&stray).unwrap(), p);
     }
 
     #[test]

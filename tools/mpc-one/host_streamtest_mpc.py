@@ -170,7 +170,7 @@ def main(argv):
         raise Stop("opt-in required (copies mpfree and the workflows into the test build's RAM and plays them "
                    "with their data on the stick's partition 4, in its own folder, deleted after): "
                    "MPFREE_ACCEPT_STREAMTEST=YES python3 tools/mpc-one/host_streamtest_mpc.py")
-    if not app.TESTING and not sys.stdin.isatty():
+    if not app.TESTING and not app.ROUND and not sys.stdin.isatty():
         raise Stop("run this from a terminal: it asks for Enter before the copy and before the workflows")
     out = kexec.Out(args.report)
     out.say("MPFree stream test (D3) on the test build (changes RAM, and partition 4 in its own folder only)")

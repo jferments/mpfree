@@ -359,6 +359,7 @@ mod tests {
             bpm: 120.0,
             swing: Swing::default(),
             loops: true,
+            row_length: 0,
         }
     }
 

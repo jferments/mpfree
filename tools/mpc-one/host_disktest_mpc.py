@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""mpfree-disktest on the test build: how fast and how steadily the stick's partition 4 streams audio. Six ways to run it:
+"""mpfree-disktest on the test build: how fast and how steadily the stick's partition 4 streams audio. Seven ways to run it:
 
   --survey-only   READ-ONLY. Steps 1 and 2 only: nothing is copied to or run on the MPC.
   --read-only     RAM ONLY on the MPC. Copies the program into the test build's RAM and runs
@@ -20,6 +20,12 @@
   --heat          KEEPS THE PROCESSOR BUSY until the temperature settles (30 minutes at the
                   most, stopping at 75 degrees C), reading the temperatures and clocks. Writes
                   no file anywhere. Needs MPFREE_ACCEPT_DISKTEST=YES.
+  --sd-card       READS THE SD CARD IN THE MPC'S SLOT through its read-only window, then WRITES TEST
+                  FILES IN THE CARD'S MPFree FOLDER AND ON THE STICK'S PARTITION 4 through the write
+                  window, THEN DELETES THEM; the second pass keeps the processor busy (it stops at 75
+                  degrees C). The write window refuses a card that is not exFAT, is marked "not safely
+                  removed" or doesn't check clean, and checks it again after closing. Needs
+                  MPFREE_ACCEPT_DISKTEST=YES.
 
 Run it while the test build runs from the USB stick (started at power-on by
 the boot hook on the installed 3.10.1, or by `collect-over-ssh.sh --kexec-boot`
@@ -118,6 +124,33 @@ the second waits for you to press Enter:
      scaling_max_freq, cpuinfo_max_freq, scaling_governor) at the start
      and the end. It reads /sys/class/thermal and /sys/devices/system/cpu
      only and writes no file. Ctrl-C or the ssh session closing stops it.
+  4f. With --sd-card, THE SD CARD AND PARTITION 4: runs `mpfree-disktest
+     --sd-card --card-wait 900`, about 20 minutes (step S2a of
+     docs/dev/hardware/sd-card-and-internal-drive.md). It refuses (exit code
+     3) on everything 4b refuses. With no card in the slot it asks again
+     every 10 s for up to 15 minutes, so the card can go in after MPFree has
+     started (Akai's system, starting first, can mark a card it sees). Part
+     1 asks for the read-only window (step S1's, as the pad player does),
+     checks the card is mounted read-only from the SD controller with no
+     other MMC device, lists the card (counts only, never a name), reads
+     its largest files (up to 256 MiB) and runs 8 paced streams over them,
+     and needs the window to close saying nothing was written. Part 2 asks
+     for the write window (setup-sd-card-write.sh), which refuses a card
+     that is not one exFAT filesystem, carries the not-safely-removed mark
+     or fails fsck.exfat -n, and leaves only the card's MPFree folder
+     writable. In MPFree/mpfree-disktest on the card and
+     /run/mpfree-data/mpfree-disktest on the stick (files it makes itself,
+     O_EXCL and O_NOFOLLOW; at most a quarter of each side's free space, up
+     to 128 MiB a file) it runs 14 steps, idle and then with a busy thread
+     on each core: sequential writes and reads of each side, 8 streams
+     playing and a recording at 3.1 MB/s on the card, both at once,
+     copies each way, both sides written and read at once, playing one
+     side while recording to the other, and saving 40 files of 1 MiB as
+     MPFree will (written as NAME.part, fsync, renamed, the folder synced).
+     It deletes both folders at the end, after an error, on Ctrl-C, or when
+     the ssh session closes, and closes the window, which unmounts the card,
+     checks the mark is clear and runs fsck.exfat -n again. This tool then
+     prints both windows' own logs (read-only).
   Beside every set of streams (4a, 4c and 4d) it also reads the stick's
   partitions' block counters in sysfs (/sys/class/block/sdX/sdXN/stat and
   inflight, read-only) every 10 ms, and says what the other partitions
@@ -150,7 +183,8 @@ in it stops the tool). To delete it by hand on the test build:
 rm -r /run/mpfree-data/mpfree-disktest
 
 Nothing here writes to the eMMC (the test build cannot see it), the U-Boot
-environment, the SD card, or the stick's partitions 1 to 3. To go back: switch
+environment, or the stick's partitions 1 to 3, and only --sd-card writes to the
+SD card, in its MPFree folder only. To go back: switch
 the MPC off with its power switch, take out the stick, wait 10 s, switch it on.
 """
 import argparse
@@ -179,6 +213,9 @@ TIMEOUT_LOAD = 1500
 TIMEOUT_RECORDER = 1800
 # The heat run: 30 minutes at the most, and its start and end.
 TIMEOUT_HEAT = 2400
+# The SD card run: up to 15 minutes waiting for the card, the write window's two checks of the whole card, and
+# 14 steps twice (about 20 minutes).
+TIMEOUT_SD = 3600
 REFUSED = 3
 DEFAULT_SSH = {
     "ip": os.environ.get("MPC_IP", "10.42.0.141"),
@@ -227,6 +264,20 @@ exec "$R/run/mpfree-disktest/mpfree-disktest" --recorder
 RUN_HEAT = r"""R=''
 cd "$R/run/mpfree-disktest" || exit 1
 exec "$R/run/mpfree-disktest/mpfree-disktest" --heat
+"""
+# The SD card: reads the card's own files through the read-only window, then writes only its own test files in
+# the card's MPFree/mpfree-disktest and partition 4's mpfree-disktest through the write window, deleting them.
+# A card put in up to 15 minutes after the start is waited for.
+RUN_SD = r"""R=''
+cd "$R/run/mpfree-disktest" || exit 1
+exec "$R/run/mpfree-disktest/mpfree-disktest" --sd-card --card-wait 900
+"""
+# Read-only: both SD card windows' own logs and last statuses, after the SD card test.
+WINDOW_LOGS = r"""R=''
+for f in sd-card-log.txt sd-card-status sd-card-write-log.txt sd-card-write-status; do
+  echo "--- /run/mpfree-setup/$f"
+  if [ -f "$R/run/mpfree-setup/$f" ]; then tail -n 200 "$R/run/mpfree-setup/$f"; else echo "(none)"; fi
+done
 """
 # Read-only: the kernel's four writeback settings, before and after the recorder's run.
 WRITEBACK = r"""R=''
@@ -287,6 +338,10 @@ def main(argv):
     mode.add_argument("--heat", action="store_true",
                       help="copy the program to the test build's RAM and keep every core busy until the "
                            "temperature settles (30 minutes at the most, stopping at 75 degrees C); writes no file")
+    mode.add_argument("--sd-card", action="store_true",
+                      help="copy the program to the test build's RAM and run its SD card test (reads the card's "
+                           "files; writes test files in the card's MPFree folder and on partition 4, then deletes "
+                           "them; keeps the processor busy for its second pass)")
     args = p.parse_args(argv)
     accept = os.environ.get("MPFREE_ACCEPT_DISKTEST")
     if args.read_only and accept not in ("YES", "READ-ONLY"):
@@ -305,10 +360,14 @@ def main(argv):
         raise Stop("opt-in required (keeps the processor busy until the temperature settles, 30 minutes at the "
                    "most, stopping at 75 degrees C; writes no file): "
                    "MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py --heat")
+    if args.sd_card and accept != "YES":
+        raise Stop("opt-in required (reads the SD card's files, writes test files in its MPFree folder and on the "
+                   "stick's partition 4, then deletes them, and keeps the processor busy for a while): "
+                   "MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py --sd-card")
     if not args.read_only and not args.survey_only and accept != "YES":
         raise Stop("opt-in required (writes test files on the stick's partition 4, then deletes them): "
                    "MPFREE_ACCEPT_DISKTEST=YES python3 tools/mpc-one/host_disktest_mpc.py")
-    if not args.survey_only and not app.TESTING and not sys.stdin.isatty():
+    if not args.survey_only and not app.TESTING and not app.ROUND and not sys.stdin.isatty():
         raise Stop("run this from a terminal: each step waits for you to press Enter")
     out = kexec.Out(args.report)
     steps = 2 if args.survey_only else 4
@@ -325,6 +384,9 @@ def main(argv):
     elif args.heat:
         out.say("MPFree heat test on the test build (RAM, and the processor kept busy until the temperature "
                 "settles; no file written)")
+    elif args.sd_card:
+        out.say("MPFree SD card test on the test build (RAM, reads of the SD card, and test files in the card's "
+                "MPFree folder and on the stick's partition 4 that it deletes)")
     else:
         out.say("MPFree disk test on the test build (RAM, and test files on the stick's partition 4 that it deletes)")
 
@@ -399,6 +461,13 @@ def main(argv):
                     "rises less than 0.5 degrees C in 5 minutes, 30 minutes at the most, stopping at 75 degrees C; "
                     "reads the temperatures and clocks and writes no file")
             answer = app.ready(out, "Takes up to 30 minutes; the screen may answer slowly. The MPC can stay as it is.")
+        elif args.sd_card:
+            out.say("\n[4/4] The SD card test: READS the card's own files through the read-only window, then "
+                    "WRITES test files in the card's MPFree/mpfree-disktest and in /run/mpfree-data/mpfree-disktest "
+                    "(stick partition 4) through the write window and deletes them; the second pass keeps the "
+                    "processor busy (it stops at 75 degrees C). With no card in the slot it waits up to 15 minutes "
+                    "for one")
+            answer = app.ready(out, "Takes about 20 minutes; put the SD card in the MPC's slot now if it isn't.")
         else:
             out.say("\n[4/4] The disk test: WRITES test files in /run/mpfree-data/mpfree-disktest "
                     "(stick partition 4), then deletes them")
@@ -410,11 +479,22 @@ def main(argv):
             result = 0
         else:
             script = RUN_READ if args.read_only else RUN_LOAD if args.under_load \
-                else RUN_RECORDER if args.recorder else RUN_HEAT if args.heat else RUN
+                else RUN_RECORDER if args.recorder else RUN_HEAT if args.heat else RUN_SD if args.sd_card else RUN
             timeout = TIMEOUT_LOAD if args.under_load else TIMEOUT_RECORDER if args.recorder \
-                else TIMEOUT_HEAT if args.heat else TIMEOUT
+                else TIMEOUT_HEAT if args.heat else TIMEOUT_SD if args.sd_card else TIMEOUT
             rc, _ = app.stream(mpc, script, timeout, out)
-            if rc == REFUSED:
+            if args.sd_card:
+                out.say("  the SD card windows' own logs (read-only):")
+                _, text = mpc.run(WINDOW_LOGS, test=True)
+                for line in text.splitlines():
+                    out.say(f"    {line}")
+            if rc == REFUSED and args.sd_card:
+                out.say("  the SD card test refused (reason above); it wrote no test file")
+                result = 2
+            elif rc != 0 and args.sd_card:
+                raise Stop(f"mpfree-disktest --sd-card ended with exit code {rc} (reason above); if it was cut off, "
+                           "the next run deletes its folders first")
+            elif rc == REFUSED:
                 out.say("  the disk test refused (reason above); nothing was written on the stick")
                 result = 2
             elif rc != 0 and args.read_only:
@@ -443,6 +523,7 @@ def main(argv):
         else "the disk test under load ran (numbers above)." if args.under_load \
         else "the recorder test ran (numbers above)." if args.recorder \
         else "the heat test ran (numbers above); it wrote no file." if args.heat \
+        else "the SD card test ran (numbers above); the card checked clean after." if args.sd_card \
         else "the disk test ran (numbers above)."
     stopped = "stopped early; the read-only test writes nothing on the stick." if args.read_only else "stopped early."
     out.say("\nRESULT: " + {0: ran, 2: "refused by the disk test; nothing was written on the stick.",

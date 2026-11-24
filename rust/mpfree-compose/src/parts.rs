@@ -34,6 +34,7 @@ use crate::cells::{
 use crate::critic::Check;
 use crate::dice::{Dice, DiceName, Job};
 use crate::event::{Event, Role, Source};
+use crate::keep::KeepError;
 use crate::profile::{InstrumentKind, HIT};
 use crate::row::Row;
 use crate::settings::Settings;
@@ -104,14 +105,17 @@ pub enum Refused {
     NoDrumPads,
     /// Answer replies to a tune, and the row has none.
     NothingToAnswer,
+    /// Too many notes, or too long, for a clip.
+    Keep(KeepError),
 }
 
 impl Refused {
-    pub const fn words(self) -> &'static str {
+    pub fn words(self) -> String {
         match self {
-            Refused::NoChords => "No chords to play over: pick chords for the row, or keep the suggested ones",
-            Refused::NoDrumPads => "The kit has no pads named as drums (kick, snare, hats)",
-            Refused::NothingToAnswer => "Answer replies to a tune, and this row has none yet: add the tune first, or pick another role",
+            Refused::NoChords => "No chords to play over: pick chords for the row, or keep the suggested ones".to_string(),
+            Refused::NoDrumPads => "The kit has no pads named as drums (kick, snare, hats)".to_string(),
+            Refused::NothingToAnswer => "Answer replies to a tune, and this row has none yet: add the tune first, or pick another role".to_string(),
+            Refused::Keep(k) => k.words(),
         }
     }
 }

@@ -2281,7 +2281,11 @@ impl TrackHost {
     /// Undo step `step` (a [`TrackHost::take_took`]'s) becomes one of song
     /// edit `song`, the cut of the blocks under it, so either UNDO takes
     /// back both ([`Command::TieStep`]).
-    pub fn tie_step(&mut self, step: u32, song: u32) -> Result<(), String> {
+    pub fn tie_step(
+        &mut self,
+        step: u32,
+        song: mpfree_transport::TransactionId,
+    ) -> Result<(), String> {
         self.send(Command::TieStep { step, song })
     }
 
@@ -2293,7 +2297,11 @@ impl TrackHost {
     /// (phase 2, step 2d, [`Command::EraseSong`]). Only where a region
     /// plays. How many spans it erased, and how many over regions it
     /// couldn't (the queue full: it stops there).
-    pub fn replace_under(&mut self, song: u32, spans: &[(TrackId, Tick, Tick)]) -> (usize, usize) {
+    pub fn replace_under(
+        &mut self,
+        song: mpfree_transport::TransactionId,
+        spans: &[(TrackId, Tick, Tick)],
+    ) -> (usize, usize) {
         let (mut done, mut left) = (0, 0);
         for &(id, from, to) in spans {
             let Some(track) = self.slots.slot_of(id) else {
@@ -3185,7 +3193,7 @@ impl TrackHost {
     pub fn forget_song_step(
         &mut self,
         undo: bool,
-        reaches: impl FnOnce(u32) -> bool,
+        reaches: impl FnOnce(mpfree_transport::TransactionId) -> bool,
     ) -> Option<String> {
         let tr = &self.host.tracks;
         let song = if undo {
@@ -3575,16 +3583,16 @@ impl crate::time::SongAudio for TrackHost {
         (0..MAX_TRACKS).any(|t| r.changes(tr.regions(t)))
     }
 
-    fn retime(&mut self, song: u32, r: Retime) -> bool {
+    fn retime(&mut self, song: mpfree_transport::TransactionId, r: Retime) -> bool {
         // There is room: asked first (refused).
         self.moves(&r) && self.send(Command::Retime { song, retime: r }).is_ok()
     }
 
-    fn step(&self, song: u32, undo: bool) -> SongStep {
+    fn step(&self, song: mpfree_transport::TransactionId, undo: bool) -> SongStep {
         self.host.tracks.song_step(song, undo)
     }
 
-    fn song_undo(&mut self, song: u32, undo: bool) {
+    fn song_undo(&mut self, song: mpfree_transport::TransactionId, undo: bool) {
         let c = if undo {
             Command::SongUndo(song)
         } else {
@@ -3893,7 +3901,7 @@ mod tests {
             (other, 0, 3840),
         ];
         assert_eq!(
-            r.h.replace_under(7, &spans),
+            r.h.replace_under(mpfree_transport::TransactionId(7), &spans),
             (1, 0),
             "one span over a region"
         );
@@ -3910,10 +3918,10 @@ mod tests {
         r.periods(2);
         assert_eq!(r.h.host.tracks.stats().refused, refused + 1);
         assert_eq!(tr(&r), [(start, 3840)]);
-        crate::time::SongAudio::song_undo(&mut r.h, 7, true);
+        crate::time::SongAudio::song_undo(&mut r.h, mpfree_transport::TransactionId(7), true);
         r.periods(2);
         assert_eq!(tr(&r), [(start, end)], "back as recorded");
-        crate::time::SongAudio::song_undo(&mut r.h, 7, false);
+        crate::time::SongAudio::song_undo(&mut r.h, mpfree_transport::TransactionId(7), false);
         r.periods(2);
         assert_eq!(tr(&r), [(start, 3840)], "and replaced again");
     }

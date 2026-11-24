@@ -36,9 +36,9 @@ use mpfree_looper::find::{find, FindJob};
 use mpfree_looper::print::{frames_at, PrintJob};
 use mpfree_looper::save::Saved;
 use mpfree_looper::{
-    Bounce, Candidate, Clock, Command, Edit, History, LayerCommand, LayerInfo, LoopFile, Looper,
-    Memory, NoteStart, Phase, Print, Reading, Shift, SmartEnd, SmartNote, SmartOutcome, Snap,
-    SnapDone, SnapPlan, Starts, Stats, Status, Step, Sure, Take, HEARD_SECONDS, LOOP_MAX_BPM,
+    Bounce, Candidate, Clock, Command, Edit, FreeClock, History, LayerCommand, LayerInfo, LoopFile,
+    Looper, Memory, NoteStart, Phase, Print, Reading, Shift, SmartEnd, SmartNote, SmartOutcome,
+    Snap, SnapDone, SnapPlan, Starts, Stats, Status, Step, Sure, Take, HEARD_SECONDS, LOOP_MAX_BPM,
     LOOP_MIN_BPM, MAX_LAYERS, MAX_LOOPS,
 };
 use mpfree_seq::loops::{LoopNow, LoopPlan};
@@ -481,9 +481,16 @@ pub enum LoopAction {
     /// Pick loop `n` (0 to [`MAX_LOOPS`] - 1): the buttons, the layers'
     /// controls and the screens act on it from the next period.
     Select(usize),
+    /// Pick loop `n` to record into an empty Loop cell armed on the grid
+    /// (`desk::arm_loop_cell`): as [`LoopAction::Select`], on the song's
+    /// clock whatever Sync was last set to ([`LoopHost::select_for_cell`]).
+    SelectForCell(usize),
     /// STOP with the transport stopped: an overdub waiting for PLAY is
     /// let go and an armed loop disarmed ([`LoopHost::stop_waiting`]).
     StopWaiting,
+    /// SHIFT + STOP, or a set's Panic: the free loops stop too, at once
+    /// ([`LoopHost::stop_free`]).
+    StopFree,
     /// Listen: Some(None) plays the picked loop alone while the song is
     /// stopped, Some(Some(id)) one of its layers ([`LayerInfo::id`]);
     /// asked again, or None, it stops ([`LoopHost::listen`]).
@@ -1409,6 +1416,16 @@ pub struct LooperView {
     /// The pattern's length in bars as last told
     /// ([`LoopHost::set_pattern_bars`]); None: no pattern plays.
     pub pattern_bars: Option<u32>,
+    /// Sync as last set ([`LoopHost::clock`]): the clock every empty loop
+    /// records on.
+    pub clock: Clock,
+    /// The free clock while a free loop holds audio
+    /// ([`Looper::free_clock`]), where it is now ([`Looper::free_now`]),
+    /// and whether a Play for the stopped free loops waits for the song's
+    /// bar line ([`Looper::free_cued`]).
+    pub free: Option<FreeClock>,
+    pub free_now: f64,
+    pub free_cued: bool,
     /// Loops on audio tracks: each slot's loop's lasting id (0: none
     /// yet), so the grid's loop cells find their loops
     /// ([`LoopHost::loop_ids`]).
@@ -1417,6 +1434,34 @@ pub struct LooperView {
     /// 4c.3, with recordings on: [`LoopHost::unsaved_layers`]): its ring's
     /// dot.
     pub unsaved: [bool; MAX_LOOPS],
+}
+
+impl LooperView {
+    /// The free loops play: the free clock is set and runs.
+    pub fn free_runs(&self) -> bool {
+        self.free.is_some_and(|c| c.running)
+    }
+
+    /// Loop `n` is a free loop with sound, stopped with the free clock: it
+    /// waits at its place on bar 1, and PLAY, Play or its ring starts it.
+    /// Not while muted: its ring unmutes it first, as any loop's.
+    pub fn free_stopped(&self, n: usize) -> bool {
+        self.loops.get(n).is_some_and(|l| {
+            l.clock == Clock::Free
+                && l.phase == Phase::Playing
+                && !l.muted
+                && self.free.is_some_and(|c| !c.running)
+        })
+    }
+
+    /// A free loop's bar in ticks (the free clock's meter), else the
+    /// song's.
+    pub fn bar_ticks_of(&self, s: &Status) -> Tick {
+        match (s.clock, self.free) {
+            (Clock::Free, Some(c)) => c.meter.bar_ticks(),
+            _ => self.bar_ticks,
+        }
+    }
 }
 
 impl Default for LooperView {
@@ -1453,6 +1498,10 @@ impl Default for LooperView {
             ids: [0; MAX_LOOPS],
             listening: None,
             unsaved: [false; MAX_LOOPS],
+            clock: Clock::Song,
+            free: None,
+            free_now: 0.0,
+            free_cued: false,
         }
     }
 }
@@ -1581,6 +1630,10 @@ pub struct LoopHost {
     /// Sync, for every empty loop, sticking as Starts does: the song's
     /// clock at first, or the free loops' ([`Clock::Free`]).
     clock: Clock,
+    /// The loop picked was picked for a Loop cell
+    /// ([`LoopHost::select_for_cell`]): it records on the song's clock,
+    /// until another is picked or Sync is set.
+    for_cell: bool,
     /// What you played's window, moved or resized: the bar line its bars
     /// end on (None: the newest, keeping up as the song plays) and how
     /// many ([`LoopHost::set_capture_span`]). None: the Length's bars.
@@ -2161,6 +2214,7 @@ impl LoopHost {
             match_pattern: false,
             starts: Starts::Bar,
             clock: Clock::Song,
+            for_cell: false,
             capture_span: None,
             pattern_bars: None,
             last_rolling: false,
@@ -2325,6 +2379,7 @@ impl LoopHost {
             }
             self.looper.select_loop(0);
             self.picked = 0;
+            self.for_cell = false;
             self.clear_next = false;
             // The clears apply with the next period: a load before then
             // would be cleared with them.
@@ -2396,6 +2451,7 @@ impl LoopHost {
         }
         self.looper.select_loop(saved.selected);
         self.picked = saved.selected;
+        self.for_cell = false;
         let mut note = format!("looper: loading loops {}", done.join(", "));
         if done.is_empty() {
             note = "looper: no loops to load".into();
@@ -2658,6 +2714,9 @@ impl LoopHost {
                 self.capture_span = None;
             }
             self.clock = k;
+            // Set by hand, it is the picked loop's too (a Loop cell armed
+            // for it lets go on Free: `desk::cell_lets_go`).
+            self.for_cell = false;
             // A loop with sound, or sound coming in, keeps its own: the
             // looper would refuse it.
             let takes = self.looper.loop_status(self.picked).is_some_and(|s| {
@@ -2678,7 +2737,12 @@ impl LoopHost {
             }
         }
         if c == Command::Record && empty {
-            self.sticky_settings(self.picked);
+            let clock = if self.for_cell {
+                Clock::Song
+            } else {
+                self.clock
+            };
+            self.sticky_settings(self.picked, clock);
         }
         if self.match_pattern
             && c == Command::Record
@@ -3050,6 +3114,22 @@ impl LoopHost {
     /// Pick loop `n` for the presses and controls after this, with its
     /// `looper:` line for the log ("loop 2 picked (empty)").
     pub fn select(&mut self, n: usize) -> String {
+        self.for_cell = false;
+        self.select_on(n, self.clock)
+    }
+
+    /// Pick empty loop `n` to record into a Loop cell armed on the grid:
+    /// it takes Sync: Song whatever Sync was last set to, as a free loop
+    /// has no cell ([`LoopHost::grid_now`]), and Sync stays as set for
+    /// the loops picked after it.
+    pub fn select_for_cell(&mut self, n: usize) -> String {
+        let line = self.select_on(n, Clock::Song);
+        self.for_cell = self.picked == n.min(MAX_LOOPS - 1);
+        line
+    }
+
+    /// [`LoopHost::select`], an empty loop taking `clock` for its Sync.
+    fn select_on(&mut self, n: usize, clock: Clock) -> String {
         self.steps_left = 0;
         let n = n.min(MAX_LOOPS - 1);
         let what = match self.looper.loop_status(n) {
@@ -3076,15 +3156,16 @@ impl LoopHost {
             .loop_status(n)
             .is_some_and(|s| s.phase == Phase::Empty)
         {
-            self.sticky_settings(n);
+            self.sticky_settings(n, clock);
         }
         format!("looper: loop {} picked ({what})", n + 1)
     }
 
-    /// Empty loop `n`, picked, takes Starts and Sync as they were last
-    /// set, where it differs (a loop that is copying in or capturing
-    /// keeps its Sync: the looper refuses it).
-    fn sticky_settings(&mut self, n: usize) {
+    /// Empty loop `n`, picked, takes Starts as last set and `clock` for
+    /// its Sync (as last set, but for a Loop cell's), where it differs (a
+    /// loop that is copying in or capturing keeps its Sync: the looper
+    /// refuses it).
+    fn sticky_settings(&mut self, n: usize, clock: Clock) {
         let Some(s) = self.looper.loop_status(n) else {
             return;
         };
@@ -3092,8 +3173,8 @@ impl LoopHost {
             self.looper.command(Command::SetStarts(self.starts));
         }
         let busy = s.loading.is_some() || s.copying.is_some() || s.capturing.is_some();
-        if s.clock != self.clock && !busy {
-            self.looper.command(Command::SetClock(self.clock));
+        if s.clock != clock && !busy {
+            self.looper.command(Command::SetClock(clock));
         }
     }
 
@@ -3141,6 +3222,33 @@ impl LoopHost {
             said.push(format!("loop {}: {what}", n + 1));
         }
         (!said.is_empty()).then(|| format!("looper: STOP: {}", said.join("; ")))
+    }
+
+    /// SHIFT + STOP and a set's Panic stop everything, the free loops too
+    /// (Jay's review of 23 Nov, 5.4): as STOP with the song stopped stops
+    /// them ([`Command::FreeStop`]), at once and back to their bar 1. A
+    /// Play waiting for the song's bar line is called off, an overdub
+    /// ends, and a free first pass in your own time closes there, as a
+    /// tap would. None when no free loop plays, waits to or records in
+    /// your own time (STOP's [`LoopHost::stop_waiting`] lets go of the
+    /// rest).
+    pub fn stop_free(&mut self) -> Option<String> {
+        let runs = self.looper.free_clock().is_some_and(|c| c.running);
+        let own_time = (0..MAX_LOOPS).any(|n| {
+            self.looper
+                .loop_status(n)
+                .is_some_and(|s| s.clock == Clock::Free && s.phase == Phase::Recording && s.free)
+        });
+        if !(runs || own_time || self.looper.free_cued()) {
+            return None;
+        }
+        if self.looper.room() < 1 {
+            return Some(
+                "looper: the free loops NOT stopped, the command queue is full".to_string(),
+            );
+        }
+        self.looper.command(Command::FreeStop);
+        Some("looper: the free loops stopped, back to their bar 1".to_string())
     }
 
     /// Loop `n`'s level (0 to 2), leaving the picked loop picked.
@@ -4122,6 +4230,18 @@ impl LoopHost {
         self.looper.status().phase
     }
 
+    /// Loop `n` is a free loop with sound, stopped with the free clock
+    /// (as [`LooperView::free_stopped`]): its ring or key plays the free
+    /// loops.
+    pub fn free_stopped(&self, n: usize) -> bool {
+        self.looper.loop_status(n).is_some_and(|l| {
+            l.clock == Clock::Free
+                && l.phase == Phase::Playing
+                && !l.muted
+                && self.looper.free_clock().is_some_and(|c| !c.running)
+        })
+    }
+
     /// Loop `n` as the looper has it (the loop keys' lights and steps).
     pub fn loop_status(&self, n: usize) -> Option<Status> {
         self.looper.loop_status(n)
@@ -4131,6 +4251,11 @@ impl LoopHost {
     /// picked loop act on it.
     pub fn picked(&self) -> usize {
         self.picked
+    }
+
+    /// Sync as last set, for every empty loop ([`Clock::Song`] at first).
+    pub fn sync(&self) -> Clock {
+        self.clock
     }
 
     /// The loops muted, bit `n` for loop `n`, as MIDI Learn reads them.
@@ -4309,6 +4434,10 @@ impl LoopHost {
             match_pattern: self.match_pattern,
             pattern_bars: self.pattern_bars,
             listening: self.looper.listening(),
+            clock: self.clock,
+            free: self.looper.free_clock(),
+            free_now: self.looper.free_now().unwrap_or(0.0),
+            free_cued: self.looper.free_cued(),
             ids: self.on_tracks.ids(),
             unsaved: std::array::from_fn(|n| self.unsaved_layers(n) > 0),
         }
@@ -4565,10 +4694,11 @@ impl LoopHost {
                 return "looper: Capture: NOT started, the command queue is full".to_string();
             }
             self.picked = n;
+            self.for_cell = false;
         }
         // It records as a loop recorded now would: Sync as last set (the
         // bars above were counted on that clock), and Starts.
-        self.sticky_settings(n);
+        self.sticky_settings(n, self.clock);
         let c = match pinned {
             Some(end) => Command::CaptureTo(end, asked),
             None => Command::Capture(asked),

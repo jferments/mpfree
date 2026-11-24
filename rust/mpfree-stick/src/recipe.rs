@@ -261,6 +261,11 @@ pub const SETUP_FILES: &[(&str, u16, &str)] = &[
         include_str!("../../../tools/mpc-one/stick/setup-sd-card.sh"),
     ),
     (
+        "/etc/mpfree-test/setup-sd-card-write.sh",
+        0o755,
+        include_str!("../../../tools/mpc-one/stick/setup-sd-card-write.sh"),
+    ),
+    (
         "/etc/systemd/system/mpfree-setup-backup.service",
         0o644,
         include_str!("../../../tools/mpc-one/stick/mpfree-setup-backup.service"),
@@ -284,6 +289,16 @@ pub const SETUP_FILES: &[(&str, u16, &str)] = &[
         "/etc/systemd/system/mpfree-setup-sd-card.path",
         0o644,
         include_str!("../../../tools/mpc-one/stick/mpfree-setup-sd-card.path"),
+    ),
+    (
+        "/etc/systemd/system/mpfree-setup-sd-card-write.service",
+        0o644,
+        include_str!("../../../tools/mpc-one/stick/mpfree-setup-sd-card-write.service"),
+    ),
+    (
+        "/etc/systemd/system/mpfree-setup-sd-card-write.path",
+        0o644,
+        include_str!("../../../tools/mpc-one/stick/mpfree-setup-sd-card-write.path"),
     ),
     (
         "/etc/systemd/system/mpfree-test-splash.service.d/mpfree-setup.conf",
@@ -320,6 +335,10 @@ pub const SETUP_LINKS: &[(&str, &str)] = &[
     (
         "/etc/systemd/system/sysinit.target.wants/mpfree-setup-sd-card.path",
         "/etc/systemd/system/mpfree-setup-sd-card.path",
+    ),
+    (
+        "/etc/systemd/system/sysinit.target.wants/mpfree-setup-sd-card-write.path",
+        "/etc/systemd/system/mpfree-setup-sd-card-write.path",
     ),
 ];
 

@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-audiotracks rust/mpfree-time-ui/src/song.rs rust/mpfree-time-ui/src/widgets.rs rust/mpfree-app/src/audiotracks.rs
-checked: 2026-11-23 a545c383
+checked: 2026-11-24 dad871b0
 -->
 
 # Recording audio tracks

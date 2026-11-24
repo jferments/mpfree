@@ -9,6 +9,7 @@
 use mpfree_audiotracks::{
     AudioTracks, Command as A, Input, Piece, Retime, RetimeRefused, SongStep, HISTORY,
 };
+use mpfree_transport::TransactionId;
 use mpfree_transport::{Block, Command as T, Transport};
 
 const RATE: u32 = 22_050;
@@ -108,7 +109,7 @@ fn a_song_edit_moves_every_track_as_one_step_only_the_song_takes_back() {
     let mut r = two_tracks();
     let before: Vec<_> = (0..2).map(|t| r.a.regions(t).to_vec()).collect();
     r.cmd(A::Retime {
-        song: 7,
+        song: TransactionId(7),
         retime: insert_bar(0),
     });
     r.run_to(r.frame + 1);
@@ -128,21 +129,21 @@ fn a_song_edit_moves_every_track_as_one_step_only_the_song_takes_back() {
     r.at(r.frame, T::Stop);
     r.run_to(r.frame + 1);
     // The tracks' Undo stops at it; the song's takes both tracks back.
-    assert_eq!(r.a.undo_is_song(), Some(7));
+    assert_eq!(r.a.undo_is_song(), Some(TransactionId(7)));
     let refused = r.a.stats().refused;
     r.cmd(A::Undo);
     r.run_to(r.frame + 1);
     assert_eq!(r.a.stats().refused, refused + 1);
-    assert_eq!(r.a.song_step(7, true), SongStep::Next);
-    r.cmd(A::SongUndo(7));
+    assert_eq!(r.a.song_step(TransactionId(7), true), SongStep::Next);
+    r.cmd(A::SongUndo(TransactionId(7)));
     r.run_to(r.frame + 1);
     assert_eq!(
         (0..2).map(|t| r.a.regions(t).to_vec()).collect::<Vec<_>>(),
         before
     );
     // Redo stops at it too; the song's REDO brings both back.
-    assert_eq!(r.a.redo_is_song(), Some(7));
-    r.cmd(A::SongRedo(7));
+    assert_eq!(r.a.redo_is_song(), Some(TransactionId(7)));
+    r.cmd(A::SongRedo(TransactionId(7)));
     r.run_to(r.frame + 1);
     assert_eq!(r.a.regions(1)[0].start, BAR_TICKS);
     // An audio edit on top: the song's UNDO waits under it.
@@ -151,18 +152,18 @@ fn a_song_edit_moves_every_track_as_one_step_only_the_song_takes_back() {
         at: BAR_TICKS + 100,
     });
     r.run_to(r.frame + 1);
-    assert_eq!(r.a.song_step(7, true), SongStep::Under);
+    assert_eq!(r.a.song_step(TransactionId(7), true), SongStep::Under);
     let refused = r.a.stats().refused;
-    r.cmd(A::SongUndo(7));
+    r.cmd(A::SongUndo(TransactionId(7)));
     r.run_to(r.frame + 1);
     assert_eq!(r.a.stats().refused, refused + 1, "under a split: refused");
     r.cmd(A::Undo);
-    r.cmd(A::SongUndo(7));
+    r.cmd(A::SongUndo(TransactionId(7)));
     r.run_to(r.frame + 1);
     assert_eq!(r.a.regions(0), &before[0][..], "the split, then the move");
     r.cmd(A::ClearHistory);
     r.run_to(r.frame + 1);
-    assert_eq!(r.a.song_step(7, false), SongStep::Gone);
+    assert_eq!(r.a.song_step(TransactionId(7), false), SongStep::Gone);
     assert!(!r.a.has_song_steps());
 }
 
@@ -181,7 +182,7 @@ fn a_recording_refuses_a_song_edit_and_nothing_moves() {
     let regions = r.a.regions(0).to_vec();
     let refused = r.a.stats().refused;
     r.cmd(A::Retime {
-        song: 3,
+        song: TransactionId(3),
         retime: insert_bar(0),
     });
     r.run_to(r.frame + 1);
@@ -195,7 +196,7 @@ fn a_full_history_drops_a_song_edit_whole() {
     let mut r = two_tracks();
     let (recorded, _) = r.a.history();
     r.cmd(A::Retime {
-        song: 9,
+        song: TransactionId(9),
         retime: insert_bar(0),
     });
     r.run_to(r.frame + 1);
@@ -211,7 +212,7 @@ fn a_full_history_drops_a_song_edit_whole() {
         r.run_to(r.frame + 1);
     }
     assert_eq!(r.a.history(), (HISTORY - 1, 0));
-    assert_eq!(r.a.song_step(9, true), SongStep::Gone);
+    assert_eq!(r.a.song_step(TransactionId(9), true), SongStep::Gone);
     assert!(!r.a.has_song_steps());
     // Every step left is one gain: Undo takes them all back, then stops.
     for _ in 0..HISTORY - 1 {
@@ -236,7 +237,7 @@ fn a_song_edit_the_song_forgot_goes_with_every_step_beyond_it() {
         at: 1_000,
     });
     r.cmd(A::Retime {
-        song: 4,
+        song: TransactionId(4),
         retime: insert_bar(0),
     });
     r.run_to(r.frame + 1);
@@ -244,7 +245,7 @@ fn a_song_edit_the_song_forgot_goes_with_every_step_beyond_it() {
     let regions = r.a.regions(0).to_vec();
     // The song forgot it: it goes, and the split and the recordings under
     // it with it; the gain stays for Undo.
-    r.cmd(A::ForgetSong(4));
+    r.cmd(A::ForgetSong(TransactionId(4)));
     r.run_to(r.frame + 1);
     assert_eq!(r.a.history(), (1, 0));
     assert!(!r.a.has_song_steps());
@@ -257,26 +258,26 @@ fn a_song_edit_the_song_forgot_goes_with_every_step_beyond_it() {
     // redone after it.
     r.cmd(A::Redo);
     r.cmd(A::Retime {
-        song: 5,
+        song: TransactionId(5),
         retime: insert_bar(BAR_TICKS),
     });
     r.run_to(r.frame + 1);
     gain(&mut r, 1, 0.7);
     r.cmd(A::Undo);
-    r.cmd(A::SongUndo(5));
+    r.cmd(A::SongUndo(TransactionId(5)));
     r.run_to(r.frame + 1);
     assert_eq!(
         r.a.history(),
         (1, 3),
         "the gain, then the move's two tracks"
     );
-    r.cmd(A::ForgetSong(5));
+    r.cmd(A::ForgetSong(TransactionId(5)));
     r.run_to(r.frame + 1);
     assert_eq!(r.a.history(), (1, 0), "the gain over it goes too");
-    assert_eq!(r.a.song_step(5, false), SongStep::Gone);
+    assert_eq!(r.a.song_step(TransactionId(5), false), SongStep::Gone);
     // A song edit the history doesn't hold: refused.
     let refused = r.a.stats().refused;
-    r.cmd(A::ForgetSong(5));
+    r.cmd(A::ForgetSong(TransactionId(5)));
     r.run_to(r.frame + 1);
     assert_eq!(r.a.stats().refused, refused + 1);
 }

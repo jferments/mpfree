@@ -97,6 +97,7 @@ pub mod critic;
 pub mod dice;
 pub mod draft;
 pub mod event;
+pub mod fit;
 pub mod job;
 pub mod keep;
 pub mod motif;
@@ -122,10 +123,15 @@ pub mod timing;
 pub use bind::{audition, revision, revision_in, Binding, Stale};
 pub use dice::{Dice, DiceName, Job};
 pub use event::{Event, MotifRef, Motion, NoteDecision, Part, PartId, Role, Source};
-pub use job::{lane_named, Ask, ContinueJob, Done, Lanes};
+pub use fit::{fit_clip, marks, FitRefused};
+pub use job::{
+    lane_named, AddAsk, AddDone, AddPartJob, Ask, ContinueJob, Done, Lanes, PartMade, RowChords,
+};
 pub use keep::{clip_notes, continuation, KeepError};
 pub use motif::{similarity, transform, GridNote, Similarity, Transform};
-pub use parts::{add_part, add_part_again, AddPart, Added, PartVerdict, Relation};
+pub use parts::{
+    add_part, add_part_again, AddPart, Added, PartVerdict, Refused as PartRefused, Relation,
+};
 pub use phrase::{
     continue_line, try_again, try_bars as try_line_bars, try_notes as try_line_notes, Line, NoteAs,
     Phrasing,

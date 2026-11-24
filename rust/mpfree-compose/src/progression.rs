@@ -24,7 +24,7 @@ use mpfree_transport::time::{Meter, Tick};
 
 use crate::dice::{DiceName, Job};
 use crate::plan::{BarJob, BarPlan};
-use crate::settings::Ending;
+use crate::settings::{Ending, Settings};
 use crate::style::HarmonyStyle;
 
 /// The chord on scale degree `degree` (0 = I) of `key`: a triad, or a
@@ -166,6 +166,45 @@ pub fn progression_keeping(
         meter,
         locked,
         &[],
+    )
+}
+
+/// Chords suggested for a row with nothing to hear (contract 4's fourth
+/// source, S2.5): `bars` bars in `key`, in the style's harmony, from the
+/// home chord and leading back to it so the row loops; every span
+/// `Suggested`, which the screens draw dashed until the musician keeps
+/// or changes them. The same key, settings and length give the same
+/// chords.
+pub fn suggest_chords(key: Key, settings: &Settings, bars: usize, meter: Meter) -> ChordTimeline {
+    let bars = bars.max(1);
+    let plan: Vec<BarPlan> = (0..bars)
+        .map(|b| BarPlan {
+            job: if b + 1 == bars && bars > 1 {
+                BarJob::Land(Ending::LoopsBack)
+            } else {
+                BarJob::Develop
+            },
+            source: 0,
+            shift: 0,
+            tension: 0.3,
+            activity: 1.0,
+            similarity: 0.5,
+        })
+        .collect();
+    progression_led(
+        &ChordTimeline::default(),
+        Some(key),
+        &settings.style.harmony,
+        &plan,
+        settings.variation,
+        settings.seed,
+        0,
+        meter,
+        &[],
+        &[Need::Degrees {
+            at: 0,
+            degrees: vec![0],
+        }],
     )
 }
 

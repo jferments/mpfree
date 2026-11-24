@@ -127,6 +127,38 @@ pub fn learn_addr_named(
     }
 }
 
+/// A Drums try on Add a part's New track (composing tools S2.6b) plays
+/// the Drums synth made for it (app/add_sound.rs), whose pads the screen
+/// doesn't know: the first pad for each drum (kick, snare, hats, the
+/// rest), read from the pads' models there. Any other action as it was.
+fn new_track_drums(
+    app: &app::App,
+    mix: &mixing::MixHost,
+    a: mpfree_time_ui::TimeAction,
+) -> mpfree_time_ui::TimeAction {
+    use mpfree_context::groove::Lane;
+    use mpfree_synth::drum_params::{field, model_of, pad_id, MODELS, PADS};
+    use mpfree_time_ui::adding::AddAction;
+    use mpfree_time_ui::TimeAction;
+    let TimeAction::Add(AddAction::Ask(mut ask)) = a else {
+        return a;
+    };
+    if ask.new_track.is_some() && ask.part == mpfree_context::PartRole::Drums {
+        let node = app.add_sound_holder().and_then(|h| mix.instruments.node(h));
+        ask.pads = match node {
+            Some(node) => {
+                let lanes: [Option<Lane>; PADS] = std::array::from_fn(|p| {
+                    let m = model_of(node.param(pad_id(p, field::MODEL)));
+                    mpfree_compose::lane_named(MODELS[usize::from(m)])
+                });
+                Lane::ALL.map(|lane| lanes.iter().position(|l| *l == Some(lane)).map(|p| p as u8))
+            }
+            None => [None; 4],
+        };
+    }
+    TimeAction::Add(AddAction::Ask(ask))
+}
+
 /// The engines the control side reaches, borrowed for one action or effect.
 pub struct Desk<'a> {
     pub app: &'a mut app::App,
@@ -397,6 +429,7 @@ impl Desk<'_> {
                 open,
                 transpose,
             } => fx.extend(app.levels_shown(on, open, transpose)),
+            gui::FromUi::AddPartSound(s) => fx.extend(app.add_part_sound(s)),
             gui::FromUi::Time(a) => {
                 use crate::rec_arm::Press;
                 use mpfree_time_ui::TimeAction::Transport;
@@ -451,11 +484,23 @@ impl Desk<'_> {
                         return None;
                     }
                 }
+                let a = new_track_drums(app, mix, a);
                 let picked = matches!(
                     a,
                     mpfree_time_ui::TimeAction::Arm(Some(_)) | mpfree_time_ui::TimeAction::Pick(_)
                 );
+                let keep = matches!(
+                    a,
+                    mpfree_time_ui::TimeAction::Add(mpfree_time_ui::adding::AddAction::Keep)
+                );
+                let tracks_before = time.project().tracks.len();
                 fx.extend(crate::time_action(out, time, tracks, looper, app, mix, a));
+                // Keep added New track's track (composing tools S2.6b): it
+                // plays its synth on, before the period's follow could
+                // take it for a + Track.
+                if keep && time.project().tracks.len() > tracks_before {
+                    fx.extend(app.add_part_sound(app::AddSound::Kept));
+                }
                 // Picking a track arms its notes, as Bitwig's auto-arm
                 // (not while the arm is pinned: `arm` leaves it).
                 if picked {
@@ -863,6 +908,26 @@ impl Desk<'_> {
             app::Effect::QLinkBankBack => out.show(gui::ToUi::QLinkBankBack),
             app::Effect::PadCopy { from, to } => out.show(gui::ToUi::PadCopy { from, to }),
             app::Effect::PadClear { pad } => out.show(gui::ToUi::PadClear(pad)),
+            // Add a part's New track (composing tools S2.6b): the track Keep
+            // would add plays the synth made for it, or no longer; quietly,
+            // as the Synth tab shows the selected track's.
+            app::Effect::AddPartSend { track, to } => {
+                match mix.instruments.set_send(track, to) {
+                    Ok(()) => out.note(&match to {
+                        Some(h) => format!(
+                            "add a part: the new track {} plays {}",
+                            track + 1,
+                            mix.instruments.held(h).map_or("its synth", |h| h.name)
+                        ),
+                        None => format!("add a part: the new track {} plays nothing", track + 1),
+                    }),
+                    Err(why) => out.note(&format!(
+                        "add a part: the new track {} can't play its synth ({why:?})",
+                        track + 1
+                    )),
+                }
+                app.set_track_sends(&crate::sends_now(&mix.instruments));
+            }
             // SHIFT + TC: the armed track's Quantise while recording.
             app::Effect::RecordQuantiseToggle => {
                 let line = time
@@ -1015,6 +1080,7 @@ impl Desk<'_> {
                 later.extend(crate::time_action(out, time, tracks, looper, app, mix, a))
             }
             app::Effect::Looper(a) => {
+                later.extend(cell_lets_go(time, a));
                 later.extend(crate::looper_action(out, looper, app, *card, a))
             }
             // A Perform pad's throw, and its track mute.
@@ -1734,6 +1800,20 @@ pub fn perform_pad_on(
                 // Capturing: its key calls it off.
                 fx.push(app::Effect::Looper(LoopAction::Capture));
                 format!("loop keys: Loop {}'s key calls its Capture off", n + 1)
+            } else if looper.free_stopped(n) {
+                // A stopped free loop: its key plays the free loops (again
+                // while one waits for the bar line: calls it off).
+                let cued = looper.looper.free_cued();
+                fx.push(app::Effect::Looper(LoopAction::Command(if cued {
+                    mpfree_looper::Command::FreeStop
+                } else {
+                    mpfree_looper::Command::FreePlay
+                })));
+                format!(
+                    "loop keys: Loop {}'s key {} the free loops",
+                    n + 1,
+                    if cued { "calls off Play for" } else { "plays" }
+                )
             } else {
                 if !app.rec.armed(crate::rec_arm::Target::Loop) {
                     app.rec.ready = None;
@@ -2019,7 +2099,8 @@ fn arm_loop_cell(
         mpfree_time_ui::TimeAction::LoopCell(Some((t, s))),
     );
     out.show(gui::ToUi::Rec(app.rec));
-    fx.push(app::Effect::Looper(looping::LoopAction::Select(n)));
+    // On the song's clock whatever Sync says: a free loop has no cell.
+    fx.push(app::Effect::Looper(looping::LoopAction::SelectForCell(n)));
     // An audio track's cell (Dev's switch, phase 4b) records the track's
     // own input; a Loop track's, its Loop input.
     let from = match tracks.loop_input(t, mix) {
@@ -2045,6 +2126,23 @@ fn arm_loop_cell(
         )));
     }
     fx
+}
+
+/// Sync: Free set with an empty Loop cell armed on the grid: the cell lets
+/// go, saying why, as a free loop has no cell (`LoopHost::grid_now`); the
+/// loop picked for it records free, as set.
+fn cell_lets_go(time: &time::TimeHost, a: looping::LoopAction) -> Vec<app::Effect> {
+    use mpfree_looper::{Clock, Command};
+    if a != looping::LoopAction::Command(Command::SetClock(Clock::Free)) {
+        return Vec::new();
+    }
+    let Some(name) = mpfree_time_ui::view::loop_cell_name(&time.state()) else {
+        return Vec::new();
+    };
+    vec![
+        app::Effect::Time(mpfree_time_ui::TimeAction::LoopCell(None)),
+        app::Effect::Tell(format!("{name} let go: a free loop has no cell")),
+    ]
 }
 
 /// Every loop in use, an audio track's empty cell tapped (Dev's "Loops on
@@ -2226,7 +2324,8 @@ fn rec_effects(
             Do::Transport(c) => {
                 fx.push(app::Effect::Time(mpfree_time_ui::TimeAction::Transport(c)))
             }
-            Do::Looper(c) => fx.extend(loop_take(c, time, looper)),
+            Do::Looper(c) => fx.extend(loop_take(c, false, time, looper)),
+            Do::LoopWithNotes(c) => fx.extend(loop_take(c, true, time, looper)),
             Do::StopWaiting => fx.push(app::Effect::Looper(looping::LoopAction::StopWaiting)),
             Do::ThrowTake => fx.push(app::Effect::Time(mpfree_time_ui::TimeAction::ThrowTake)),
             Do::Pad(d) => fx.push(app::Effect::PadTake(d)),
@@ -2239,35 +2338,45 @@ fn rec_effects(
 }
 
 /// The loop's Record or Overdub from REC with a Loop cell armed on the
-/// grid (loop-tracks.md part 4): Record makes a new loop in an empty one,
-/// from the track's input (Resample: the other loops as heard), or says
+/// grid (loop-tracks.md part 4): Record makes a new loop in an empty one
+/// (a song loop, whatever Sync says), from the track's input (Resample:
+/// the other loops as heard), or says
 /// why it can't; Overdub layers the loop playing on that Loop track. A
 /// first pass or an overdub under way takes them as the looper does.
+/// With no cell, `with_notes` (SHIFT + Arm: the notes armed too) makes
+/// the picked empty loop's Record a song loop whatever Sync says, so it
+/// keeps time with the clip recorded beside it.
 fn loop_take(
     c: mpfree_looper::Command,
+    with_notes: bool,
     time: &time::TimeHost,
     looper: &looping::LoopHost,
 ) -> Vec<app::Effect> {
     use looping::LoopAction;
     use mpfree_looper::{Command, Phase};
     let plain = vec![app::Effect::Looper(LoopAction::Command(c))];
-    let Some((t, _)) = time.loop_cell() else {
-        return plain;
-    };
     if matches!(
         looper.phase(),
         Phase::Armed | Phase::Recording | Phase::Overdubbing
     ) {
         return plain;
     }
+    let Some((t, _)) = time.loop_cell() else {
+        if with_notes && c == Command::Record && looper.phase() == Phase::Empty {
+            return song_loop_with_notes(looper);
+        }
+        return plain;
+    };
     let track = time.project().tracks.get(t);
     match c {
         Command::Record => match looper.free_loop() {
             Ok(n) => {
                 let resample =
                     track.and_then(|tr| tr.loops()) == Some(mpfree_seq::LoopInput::Resample);
+                // On the song's clock whatever Sync says: a free loop
+                // has no cell.
                 vec![
-                    app::Effect::Looper(LoopAction::Select(n)),
+                    app::Effect::Looper(LoopAction::SelectForCell(n)),
                     app::Effect::Looper(LoopAction::Command(if resample {
                         Command::Resample
                     } else {
@@ -2289,6 +2398,27 @@ fn loop_take(
         },
         _ => plain,
     }
+}
+
+/// REC with the notes and the loop armed (SHIFT + Arm) and the picked
+/// loop empty: it records on the song's clock whatever Sync was last set
+/// to, as a Loop cell's does (`LoopAction::SelectForCell`), and Sync stays
+/// as set for the loops picked after it. With Sync: Free the hint line
+/// says why this one keeps the song's time.
+fn song_loop_with_notes(looper: &looping::LoopHost) -> Vec<app::Effect> {
+    use looping::LoopAction;
+    let n = looper.picked();
+    let mut fx = vec![
+        app::Effect::Looper(LoopAction::SelectForCell(n)),
+        app::Effect::Looper(LoopAction::Command(mpfree_looper::Command::Record)),
+    ];
+    if looper.sync() == mpfree_looper::Clock::Free {
+        fx.push(app::Effect::Tell(format!(
+            "Loop {} records with the song: the notes are armed too",
+            n + 1
+        )));
+    }
+    fx
 }
 
 /// What a Q-Link turned on the controller (`ticks` steps of knob `k`)

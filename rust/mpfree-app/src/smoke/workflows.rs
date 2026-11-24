@@ -3085,7 +3085,7 @@ mod tests {
                 rec.contains(&LIGHT_ON) && rec.contains(&LIGHT_DARK),
                 "REC blinks while recording: {rec:?}"
             );
-            // Free length: REC again closes it on the next bar line (two
+            // Until tap: REC again closes it on the next bar line (two
             // bars at 120 BPM), the loop then plays and REC goes dark.
             s.run_for(2.0);
             assert_eq!(
@@ -4636,6 +4636,129 @@ mod tests {
         });
     }
 
+    /// Free loops and Loop cells: a free loop has no cell on the grid, so a
+    /// Loop cell tapped with Sync last set to Free picks its loop on the
+    /// song's clock (Sync shows Song), REC records it there, and Sync
+    /// stays Free for the loops picked after it. Sync: Free set with a
+    /// cell armed lets the cell go, saying why, and the loop records free.
+    #[test]
+    fn a_loop_cell_records_a_song_loop_whatever_sync_was_last_set_to() {
+        use mpfree_looper::{Clock, Phase};
+        fn until(s: &mut Session, n: usize, phase: Phase) {
+            let end = s.t() + 6.0;
+            while s.looper.loop_status(n).map(|l| l.phase) != Some(phase) && s.t() < end {
+                s.run_periods(4);
+            }
+            assert_eq!(s.looper.loop_status(n).map(|l| l.phase), Some(phase));
+        }
+        fn clock(s: &Session, n: usize) -> Clock {
+            s.looper.loop_status(n).expect("a loop").clock
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            s.press("leditor", "sync", "Free").run_for(0.1);
+            assert_eq!(clock(&s, 0), Clock::Free);
+            s.press("header", "tab", "Arrange").settle();
+            s.button_edge("SHIFT", true);
+            s.press("clips", "add-track", "+ Track").settle();
+            s.button_edge("SHIFT", false);
+            s.press("clips", "pager", "Tracks after").settle();
+
+            // Row 2's cell tapped: Loop 1 picked for it, on the song.
+            s.press("clips", "slot", "Loops A slot 2").settle();
+            assert_eq!(s.time.loop_cell(), Some((8, 1)));
+            assert_eq!(s.looper.picked(), 0);
+            assert_eq!(clock(&s, 0), Clock::Song);
+            s.button("REC");
+            s.run_periods(12).settle();
+            s.button("PLAY");
+            until(&mut s, 0, Phase::Recording);
+            assert_eq!(clock(&s, 0), Clock::Song, "REC keeps the cell's clock");
+            s.pad(0, 120, 0.3);
+            s.run_for(1.4);
+            s.button("REC");
+            until(&mut s, 0, Phase::Playing);
+            s.run_periods(12).settle();
+            assert_eq!(s.time.loop_on(8), Some(0), "in its cell");
+            assert_eq!(s.time.loop_cell(), None);
+
+            // Row 3's cell: Loop 2 for it, on the song; Sync: Free set
+            // then lets the cell go, and Loop 2 records free.
+            s.press("clips", "slot", "Loops A slot 3").settle();
+            assert_eq!(s.time.loop_cell(), Some((8, 2)));
+            assert_eq!((s.looper.picked(), clock(&s, 1)), (1, Clock::Song));
+            s.press("header", "tab", "Looper");
+            s.press("leditor", "sync", "Free").run_for(0.1);
+            assert_eq!(s.time.loop_cell(), None);
+            assert_eq!(s.hint(), "Loops A · row 3 let go: a free loop has no cell");
+            assert_eq!(clock(&s, 1), Clock::Free);
+            assert_eq!(s.time.project().check(), Ok(()));
+        });
+    }
+
+    /// SHIFT + Arm with Sync last set to Free: the loop REC records beside
+    /// the notes is a song loop, so it keeps time with the clip, and the
+    /// hint line says why; Sync stays Free for the loops picked after it.
+    /// REC with the loop armed alone still records it free.
+    #[test]
+    fn shift_arm_records_a_song_loop_whatever_sync_was_last_set_to() {
+        use mpfree_looper::{Clock, Phase};
+        fn until(s: &mut Session, n: usize, phase: Phase) {
+            let end = s.t() + 6.0;
+            while s.looper.loop_status(n).map(|l| l.phase) != Some(phase) && s.t() < end {
+                s.run_periods(4);
+            }
+            assert_eq!(s.looper.loop_status(n).map(|l| l.phase), Some(phase));
+        }
+        fn clock(s: &Session, n: usize) -> Clock {
+            s.looper.loop_status(n).expect("a loop").clock
+        }
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            s.press("leditor", "sync", "Free").run_for(0.1);
+            assert_eq!((clock(&s, 0), s.looper.sync()), (Clock::Free, Clock::Free));
+
+            // The Looper tab armed the loop; SHIFT + the steps' Arm adds
+            // the notes: both armed.
+            s.press("header", "tab", "Play");
+            s.button_edge("SHIFT", true);
+            s.press("steps", "arm", "Arm").settle();
+            s.button_edge("SHIFT", false);
+            assert!(s.app.rec.both, "{:?}", s.app.rec);
+
+            // REC: the loop waits for PLAY on the song's clock.
+            s.button("REC");
+            s.run_periods(12).settle();
+            assert_eq!(s.looper.phase(), Phase::Armed);
+            assert_eq!(clock(&s, 0), Clock::Song, "a song loop beside the notes");
+            assert_eq!(
+                s.hint(),
+                "Loop 1 records with the song: the notes are armed too"
+            );
+            assert_eq!(s.looper.sync(), Clock::Free, "Sync as set stays");
+            s.button("PLAY");
+            until(&mut s, 0, Phase::Recording);
+            assert_eq!(clock(&s, 0), Clock::Song, "it records on the song");
+            s.pad(0, 120, 0.3);
+            s.run_for(1.4);
+            s.button("REC");
+            until(&mut s, 0, Phase::Playing);
+            assert_eq!(clock(&s, 0), Clock::Song);
+            s.button("STOP");
+            s.run_periods(12).settle();
+
+            // The loop armed alone on an empty loop: Sync's Free again.
+            s.looper.select(1);
+            s.run_periods(4).settle();
+            assert_eq!(s.looper.picked(), 1);
+            assert_eq!(clock(&s, 1), Clock::Free, "the next empty loop takes Sync");
+        });
+    }
+
     /// Loop tracks part 5 (loop-tracks.md): Rec song keeps a loop's launch
     /// and stop on Loops A as a block, and song mode plays it: the loop on
     /// from the block's start and off on its end's bar line.
@@ -6095,6 +6218,81 @@ mod tests {
                 "{:?}",
                 &s.lines[from..]
             );
+        });
+    }
+
+    /// Composing tools S2.6b, Add a part on New track, end to end: the
+    /// Track row's last choice makes the part's synth in a free place, and
+    /// the try waits for the new track's index to play it; Keep adds the
+    /// track with the part, which plays that synth on by its send; UNDO
+    /// takes the track away.
+    #[test]
+    fn add_a_part_on_a_new_track_makes_its_synth_and_keep_adds_the_track() {
+        use crate::instruments::TRACKS;
+        use std::time::{Duration, Instant};
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let mut riff = mpfree_seq::Clip::new("riff", 3840);
+            riff.holds = mpfree_seq::Holds::Notes;
+            riff.notes = [60u8, 63, 67, 65, 63, 62, 63, 60]
+                .iter()
+                .enumerate()
+                .map(|(i, &n)| mpfree_seq::Note::new(i as i64 * 480, 240, n, 96))
+                .collect();
+            s.time
+                .put_clips(vec![(0, riff)])
+                .expect("the riff in row 1");
+            s.press("header", "tab", "Arrange");
+            let n = s.time.project().tracks.len();
+            s.press("clips", "add-part", "Add a part");
+            for _ in 0..n {
+                if s.screen.time_page.add.as_ref().is_some_and(|p| p.new_track) {
+                    break;
+                }
+                s.press("add-part", "add-row-more", "Track ›");
+            }
+            let row = {
+                let p = s.screen.time_page.add.as_ref().expect("the panel");
+                assert!(p.new_track && p.track == n, "{p:?}");
+                p.row
+            };
+            // The synth in a free place, the new track's index playing it,
+            // and then the try.
+            let wall = Instant::now() + Duration::from_secs(20);
+            while !s
+                .screen
+                .time
+                .adding
+                .as_ref()
+                .is_some_and(|a| a.made.is_some())
+            {
+                assert!(Instant::now() < wall, "{:?}", s.lines);
+                s.run_for(0.05);
+            }
+            let holder = s.app.add_sound_holder().expect("a synth made");
+            assert!(holder >= TRACKS);
+            assert_eq!(s.mix.instruments.held(holder).map(|h| h.name), Some("Bass"));
+            assert_eq!(s.mix.instruments.send(n), Some(holder));
+            assert_eq!(s.time.project().tracks.len(), n, "no track until Keep");
+            // Keep: the track with the part, playing the synth on.
+            s.press("add-part", "add-keep", "Keep");
+            s.run_for(0.2);
+            assert_eq!(s.time.project().tracks.len(), n + 1);
+            assert_eq!(s.time.project().tracks[n].name, "Bass");
+            assert!(s.time.project().clip(n, row).is_some());
+            assert!(s.screen.time_page.add.is_none(), "the panel closed");
+            assert_eq!(s.app.add_sound_holder(), None);
+            assert_eq!(s.mix.instruments.send(n), Some(holder));
+            s.run_for(0.2);
+            assert_eq!(
+                s.mix.instruments.held(holder).map(|h| h.name),
+                Some("Bass"),
+                "the new track plays it: not put away"
+            );
+            // UNDO: the track goes with its part.
+            s.route(crate::gui::FromUi::Time(mpfree_time_ui::TimeAction::Undo));
+            s.run_for(0.1);
+            assert_eq!(s.time.project().tracks.len(), n);
         });
     }
 }

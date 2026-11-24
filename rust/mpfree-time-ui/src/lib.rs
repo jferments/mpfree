@@ -35,6 +35,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod add_view;
+pub mod adding;
+pub mod chord_strip;
 pub mod continuing;
 pub mod editor;
 pub mod inputs;

@@ -29,6 +29,7 @@
 //! Console. Prefs itself is not a tab: SHIFT + MENU opens it. The PAD BANK buttons,
 //! once found, pick banks A-H (`Effect::Bank`).
 
+mod add_sound;
 mod arp;
 pub mod mapper;
 mod pad_layers;
@@ -42,6 +43,7 @@ mod synth_pick;
 mod tuning_picks;
 mod tunings_page;
 
+pub use add_sound::AddSound;
 pub use arp::{
     built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView, ARP_HEADER,
 };
@@ -762,7 +764,7 @@ pub struct Settings {
     pub loop_latency_set: bool,
     pub loop_level_db: f32,
     /// The looper's options "Tempo from the first loop": with the song
-    /// stopped, a first loop recorded on Free length sets the tempo (and
+    /// stopped, a first loop recorded on Until tap sets the tempo (and
     /// starts the song) when it closes. Off by default; kept in Prefs.
     pub loop_tempo: bool,
     /// The looper's options "Smart loop end": when tempo from the first
@@ -1354,6 +1356,14 @@ pub enum Effect {
     TrackCopy {
         track: usize,
         from: usize,
+    },
+    /// Add a part's New track (composing tools S2.6b, app/add_sound.rs):
+    /// track `track`, the index Keep would give the new track, plays
+    /// holder `to`'s synth by a send, or no longer (None). Quietly: the
+    /// Synth tab and what the screen says stay as they are.
+    AddPartSend {
+        track: usize,
+        to: Option<usize>,
     },
     /// What the pads play changed: the synth the Synth tab shows,
     /// whichever track is selected, or the selected track's instrument
@@ -2004,6 +2014,9 @@ pub struct App {
     /// The synths MIDI routes name (step 11e, `app/route_synths.rs`), row
     /// by row, as MIDI in last said.
     route_synths: [Option<crate::instrument_list::InstrumentId>; route_synths::ROUTE_SYNTHS],
+    /// The synth Add a part made for a new track's tries (composing tools
+    /// S2.6b, app/add_sound.rs).
+    add_sound: Option<add_sound::AddSynth>,
     /// The list of synths, while open (app/synth_pick.rs).
     synth_pick: Option<synth_pick::SynthPick>,
     /// What the pads play is open over the Synth tab (sampler step 15e,
@@ -2219,6 +2232,7 @@ impl App {
             track_kits: Box::new([None; mpfree_seq::MAX_TRACKS]),
             kit_names: Vec::new(),
             pads_to: None,
+            add_sound: None,
             bank_to: [None; KIT_PAGES],
             layer_to: [None; pad_layers::MORE],
             route_synths: [None; route_synths::ROUTE_SYNTHS],
@@ -2299,6 +2313,7 @@ impl App {
         match id {
             show::PANIC => {
                 let mut fx = self.stop();
+                fx.push(Effect::Looper(LoopAction::StopFree));
                 fx.push(Effect::Time(TimeAction::Transport(Command::StopAndRewind)));
                 fx.push(Effect::Tell(
                     "Panic: stopped, every sound silenced".to_string(),
@@ -3699,9 +3714,11 @@ impl App {
                 fx.push(Effect::Quit);
             } else if shift {
                 // The MPC's SHIFT + STOP: stop, silence everything and go
-                // back to bar 1 (Jay, 20:40Z). The Console has a chord of
-                // its own: SHIFT + ERASE + TAP TEMPO.
+                // back to bar 1 (Jay, 20:40Z), the free loops too (his
+                // looper review of 23 Nov, 5.4). The Console has a chord
+                // of its own: SHIFT + ERASE + TAP TEMPO.
                 fx.extend(self.stop());
+                fx.push(Effect::Looper(LoopAction::StopFree));
                 fx.push(Effect::Time(TimeAction::Transport(Command::StopAndRewind)));
                 fx.push(Effect::Note(
                     "SHIFT + STOP: stopped, back to bar 1".to_string(),
@@ -5657,7 +5674,7 @@ impl App {
                 "On: with the song stopped, the first loop",
                 "records in your own time and its length sets",
                 "the tempo: Length's bars at the tempo you play,",
-                "or on Free the likeliest bars (a close call",
+                "or on Until tap the likeliest bars (a close call",
                 "says so). The song starts as the loop comes",
                 "round. Not while another device's clock leads,",
                 "the song has more than one tempo, or exporting.",
@@ -7426,6 +7443,10 @@ mod tests {
         assert_ne!(app.settings.metronome, click);
         let fx = app.show_press(show::PANIC).unwrap();
         assert!(fx.contains(&Effect::Time(TimeAction::Transport(Command::StopAndRewind))));
+        assert!(
+            fx.contains(&Effect::Looper(LoopAction::StopFree)),
+            "free loops too"
+        );
         assert!(app.show_press(show::GO).is_none());
         assert!(app.show_press(show::NEXT_SONG).is_none());
     }
@@ -9410,6 +9431,143 @@ mod tests {
         app.open_tab(View::Play);
         app.open_tab(View::Synth);
         assert!(view(&app.open_synth_pick()).is_some());
+    }
+
+    /// Composing tools S2.6b, Add a part's New track: a try puts the
+    /// part's synth in a free place nothing else uses, kept there while it
+    /// tries (not put away, not taken by the list of synths); once the
+    /// audio loop lists it the track Keep would add plays it, once;
+    /// another sound goes into the same place and the send stays; a track
+    /// added ends the send until Try again asks for the new index; Back
+    /// ends it and puts the synth away; Kept leaves the new track playing
+    /// it; with every place taken a try says why.
+    #[test]
+    fn new_tracks_synth_tries_in_a_free_place_and_goes_with_back() {
+        use crate::instrument_list::InstrumentList;
+        use crate::instruments::{free, Held, SLOTS};
+        use crate::synth::Engine;
+        let mut app = ready();
+        let (bass, squelch) = (Engine::Bass.node_id(), Engine::Squelch.node_id());
+        let fx = app.add_part_sound(AddSound::Try { track: 8, id: bass });
+        assert_eq!(
+            fx,
+            [Effect::TrackSound {
+                track: free(0),
+                id: Some(bass)
+            }]
+        );
+        assert_eq!(app.add_sound_holder(), Some(free(0)));
+        assert!(app.put_away_free().is_empty(), "kept while it tries");
+        assert!(app.add_sound_follow(8).is_empty(), "not in the list yet");
+        // The list of synths takes another place.
+        app.open_tab(View::Synth);
+        app.open_synth_pick();
+        assert_eq!(
+            app.pick_pads_synth(2)[0],
+            Effect::TrackSound {
+                track: free(1),
+                id: Some(Engine::Fm.node_id())
+            }
+        );
+        app.close_synth_pick(false);
+        // Listed: track 9 plays it by a send, once.
+        let mut list = InstrumentList::new();
+        list.follow_free(1);
+        app.set_instrument_list(&list);
+        let send = |to| Effect::AddPartSend { track: 8, to };
+        assert_eq!(app.add_sound_follow(8), [send(Some(free(0)))]);
+        assert_eq!(app.track_send(8), Some(free(0)));
+        assert!(app.add_sound_follow(8).is_empty(), "once");
+        assert!(app.put_away_free().iter().all(|e| !matches!(
+            e,
+            Effect::TrackSound { track, .. } if *track == free(0)
+        )));
+        // Another sound: the same place, the send stays.
+        assert_eq!(
+            app.add_part_sound(AddSound::Try {
+                track: 8,
+                id: squelch
+            }),
+            [Effect::TrackSound {
+                track: free(0),
+                id: Some(squelch)
+            }]
+        );
+        assert!(app.add_sound_follow(8).is_empty(), "still sent");
+        // A track added (+ Track): the send ends; Try again on the next
+        // index plays there.
+        assert_eq!(app.add_sound_follow(9), [send(None)]);
+        assert_eq!(app.track_send(8), None);
+        assert!(app.add_sound_follow(9).is_empty());
+        assert!(app
+            .add_part_sound(AddSound::Try {
+                track: 9,
+                id: squelch
+            })
+            .is_empty());
+        assert_eq!(
+            app.add_sound_follow(9),
+            [Effect::AddPartSend {
+                track: 9,
+                to: Some(free(0))
+            }]
+        );
+        // Back: the send ends and the synth is put away.
+        let fx = app.add_part_sound(AddSound::Back);
+        assert_eq!(
+            fx[..2],
+            [
+                Effect::AddPartSend { track: 9, to: None },
+                Effect::TrackSound {
+                    track: free(0),
+                    id: None
+                }
+            ]
+        );
+        assert_eq!(app.add_sound_holder(), None);
+        assert_eq!(app.track_sound(free(0)), None);
+        // Kept: the new track plays it on.
+        app.add_part_sound(AddSound::Try { track: 8, id: bass });
+        assert_eq!(app.add_sound_follow(8), [send(Some(free(0)))]);
+        assert!(app.add_part_sound(AddSound::Kept).is_empty());
+        assert_eq!(app.add_sound_holder(), None);
+        assert!(app.put_away_free().iter().all(|e| !matches!(
+            e,
+            Effect::TrackSound { track, .. } if *track == free(0)
+        )));
+        // Every place taken: a try says why.
+        let poly = Held {
+            id: Engine::Poly.node_id(),
+            name: "Poly",
+            instance: 0,
+        };
+        for t in 0..SLOTS {
+            app.set_track_sound(t, Some(poly));
+        }
+        let fx = app.add_part_sound(AddSound::Try { track: 9, id: bass });
+        assert!(
+            matches!(&fx[..], [Effect::Tell(t)] if t.starts_with("No room for the Bass synth")),
+            "{fx:?}"
+        );
+        assert_eq!(app.add_sound_holder(), None);
+    }
+
+    /// The synths New track offers (mpfree-time-ui's add_view lists them
+    /// by node id and name) are this app's engines, named as it names
+    /// them.
+    #[test]
+    fn new_tracks_synths_are_the_apps_engines() {
+        use crate::synth::Engine;
+        use mpfree_time_ui::add_view::{BASS_SOUNDS, CHORDS_SOUNDS, DRUMS_SOUNDS, MELODY_SOUNDS};
+        for (id, name) in BASS_SOUNDS
+            .iter()
+            .chain(&CHORDS_SOUNDS)
+            .chain(&MELODY_SOUNDS)
+            .chain(&DRUMS_SOUNDS)
+        {
+            let e = Engine::from_node_id(id).unwrap_or_else(|| panic!("{id}"));
+            assert_eq!((e.node_id(), e.name()), (*id, *name));
+        }
     }
 
     /// Step 6c, banks point at instruments (the design's rule 10): with
@@ -13317,6 +13475,10 @@ mod tests {
         let fx = held(&mut app, SHIFT, |a| press(a, button::STOP));
         assert!(fx.contains(&Effect::Time(TimeAction::Transport(Command::StopAndRewind))));
         assert!(fx.contains(&Effect::StopSounds));
+        assert!(
+            fx.contains(&Effect::Looper(LoopAction::StopFree)),
+            "free loops too"
+        );
         assert!(!fx.contains(&Effect::Show(View::Console)));
         // SHIFT + REC (90 here): Capture of notes; on the Looper tab, of
         // what the looper heard.

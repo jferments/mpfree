@@ -116,6 +116,7 @@ fn ask<'a>(
         bpm: 120.0,
         swing: Swing::default(),
         loops: true,
+        row_length: 0,
     }
 }
 
@@ -260,6 +261,7 @@ pub fn run(quick: bool, model: Option<&Model>, on_device: bool, machine: &str, b
                 meter: Meter::default(),
                 bpm: 120.0,
                 budget: ReadBudget::default(),
+                row: None,
             };
             let s = settings(GROOVE, 4, seed);
             std::hint::black_box(continue_clip(&on, &s, InstrumentKind::OneNote).ok());

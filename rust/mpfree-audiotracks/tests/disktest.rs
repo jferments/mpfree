@@ -1342,8 +1342,10 @@ fn a_fat_check_finds_a_lost_promise_a_second_name_a_hidden_one_and_a_changed_byt
         ],
     );
     std::fs::remove_file(&part).unwrap();
-    // A part file alone was in flight.
-    std::fs::write(cut.join(format!("import{}.bin.7.part", n + 1000)), b"half").unwrap();
+    // A part file alone was in flight: made, nothing written in it yet. (Any
+    // byte written could match the import's fill by chance, one in 256 for
+    // the first, and then the check says "up to byte 1".)
+    std::fs::write(cut.join(format!("import{}.bin.7.part", n + 1000)), b"").unwrap();
     check(
         &saved,
         0,
