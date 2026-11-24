@@ -3755,6 +3755,7 @@ mod tests {
                     pieces: vec![(0, 2, false)],
                     replace: None,
                     rec: 7,
+                    from: Vec::new(),
                 }),
             }],
             raw: Some(RawShape {

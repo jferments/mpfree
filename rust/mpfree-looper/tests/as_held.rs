@@ -440,7 +440,7 @@ fn a_closed_layers_audio_never_changes() {
 /// each layer made, the same through edits, mutes, undo and redo, and a
 /// new one for a layer loaded or merged; closed once all of its audio is
 /// written, and a first pass only once what it keeps after its loop is
-/// in.
+/// in. A merged layer names the layers it was made from (4c.5).
 #[test]
 fn each_layer_keeps_a_number_of_its_own() {
     let mut r = Rig::new(20, START);
@@ -484,7 +484,23 @@ fn each_layer_keeps_a_number_of_its_own() {
     let merged = born(&r);
     assert_eq!(merged.len(), 1);
     assert!(merged[0] > over.born);
+    // It names the layers it was made from, in play order (4c.5); a
+    // layer recorded names none.
+    let from = |r: &Rig, k: usize| -> Vec<u64> {
+        r.l.layer_from(0, k)
+            .unwrap()
+            .into_iter()
+            .take_while(|&b| b != 0)
+            .collect()
+    };
+    assert_eq!(from(&r, 0), both);
     // A loop loaded in has new ones, never one given before.
+    r.cmd(L::Undo);
+    r.run(r.frame + 4_096, &silence);
+    assert_eq!((from(&r, 0), from(&r, 1)), (vec![], vec![]));
+    r.cmd(L::Redo);
+    r.run(r.frame + 4_096, &silence);
+    assert_eq!(from(&r, 0), both, "redone, the same");
     r.cmd(L::Undo);
     r.run(r.frame + 4_096, &silence);
     let f = held(&r);

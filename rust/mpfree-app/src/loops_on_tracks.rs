@@ -182,6 +182,9 @@ pub struct LayerRecs {
     recs: [[(u64, u128); MAX_LAYERS]; MAX_LOOPS],
     /// And where its file stands (phase 4c.3, [`LayerWriter`]).
     files: [[FileState; MAX_LAYERS]; MAX_LOOPS],
+    /// And, for a layer a merge or a fit made, the recordings it was made
+    /// from, in play order, 0 after the last (phase 4c.5).
+    from: Box<[[[u128; MAX_LAYERS]; MAX_LAYERS]; MAX_LOOPS]>,
 }
 
 /// Where a layer's recording's file stands (phase 4c.3).
@@ -204,6 +207,7 @@ impl Default for LayerRecs {
         LayerRecs {
             recs: [[(0, 0); MAX_LAYERS]; MAX_LOOPS],
             files: [[FileState::Unwritten; MAX_LAYERS]; MAX_LOOPS],
+            from: Box::new([[[0; MAX_LAYERS]; MAX_LAYERS]; MAX_LOOPS]),
         }
     }
 }
@@ -222,6 +226,19 @@ impl LayerRecs {
                 if y.closed && y.born != 0 && self.recs[n][s].0 != y.born {
                     self.recs[n][s] = (y.born, fresh());
                     self.files[n][s] = FileState::Unwritten;
+                    // A merge's or a fit's: the recordings of the layers
+                    // it was made from, which still hold them (4c.5).
+                    let mut from = [0; MAX_LAYERS];
+                    let born = looper.layer_from(n, k).unwrap_or([0; MAX_LAYERS]);
+                    let mut j = 0;
+                    for b in born.into_iter().take_while(|&b| b != 0) {
+                        if let Some(&(_, rec)) = self.recs[n].iter().find(|r| r.0 == b && r.1 != 0)
+                        {
+                            from[j] = rec;
+                            j += 1;
+                        }
+                    }
+                    self.from[n][s] = from;
                 }
             }
         }
@@ -239,15 +256,34 @@ impl LayerRecs {
 
     /// Loop `n` loaded from a project, its layer `k` in slot `k` as the
     /// looper puts it: each keeps the recording it was saved with (0: it
-    /// gets a fresh one once it is in), whose file is in the project.
-    pub fn opened(&mut self, looper: &Looper, n: usize, recs: &[u128]) {
+    /// gets a fresh one once it is in), whose file is in the project, and
+    /// the recordings it was made from (`from`, 4c.5).
+    pub fn opened(
+        &mut self,
+        looper: &Looper,
+        n: usize,
+        recs: &[u128],
+        from: &[[u128; MAX_LAYERS]],
+    ) {
         for (k, &rec) in recs.iter().enumerate().take(MAX_LAYERS) {
             let born = looper.slot_born(n, k).unwrap_or(0);
             if rec != 0 && born != 0 {
                 self.recs[n % MAX_LOOPS][k] = (born, rec);
                 self.files[n % MAX_LOOPS][k] = FileState::Synced;
+                self.from[n % MAX_LOOPS][k] = from.get(k).copied().unwrap_or([0; MAX_LAYERS]);
             }
         }
+    }
+
+    /// The recordings layer `y` of loop `n` was made from (4c.5), in play
+    /// order: none for a layer recorded, or with no recording yet.
+    pub fn sources_of(&self, n: usize, y: &LayerInfo) -> &[u128] {
+        let (n, s) = (n % MAX_LOOPS, y.id as usize % MAX_LAYERS);
+        if self.recs[n][s].0 != y.born || y.born == 0 {
+            return &[];
+        }
+        let f = &self.from[n][s];
+        &f[..f.iter().position(|&r| r == 0).unwrap_or(MAX_LAYERS)]
     }
 
     /// Where layer `y` of loop `n`'s file stands (Unwritten for a layer

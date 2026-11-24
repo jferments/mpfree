@@ -2357,13 +2357,20 @@ impl LoopHost {
             let id = f.id;
             let on_free = f.clock == Clock::Free;
             let mut recs = [0u128; mpfree_looper::MAX_LAYERS];
-            for (r, y) in recs.iter_mut().zip(&f.layers) {
+            let mut from = [[0u128; mpfree_looper::MAX_LAYERS]; mpfree_looper::MAX_LAYERS];
+            for ((r, m), y) in recs.iter_mut().zip(from.iter_mut()).zip(&f.layers) {
                 *r = y.raw.as_ref().map_or(0, |r| r.rec);
+                for (a, &b) in m
+                    .iter_mut()
+                    .zip(y.raw.as_ref().map_or(&[][..], |r| &r.from))
+                {
+                    *a = b;
+                }
             }
             match self.looper.load(n, f) {
                 Ok(()) => {
                     self.on_tracks.set(n, id);
-                    self.layer_recs.opened(&self.looper, n, &recs);
+                    self.layer_recs.opened(&self.looper, n, &recs, &from);
                     done.push((n + 1).to_string());
                     if on_free {
                         free.push((n + 1).to_string());
@@ -2466,6 +2473,9 @@ impl LoopHost {
                                         (y.raw.as_mut(), self.looper.loop_layer_info(n, k))
                                     {
                                         r.rec = self.layer_recs.of(n, &info);
+                                        // What a merge or a fit made it
+                                        // from (4c.5).
+                                        r.from = self.layer_recs.sources_of(n, &info).to_vec();
                                         if snap
                                             && r.rec != 0
                                             && self.layer_recs.file(n, &info)
@@ -7666,6 +7676,76 @@ mod tests {
         let (text2, files2, _) = crate::project::loops_part(moved);
         assert_eq!(text2, text);
         assert!(files2 == files, "the same audio");
+    }
+
+    /// Phase 4c.5: a merged layer is a recording of its own that names
+    /// the recordings it was made from (`from=`), and keeps naming them
+    /// once opened from the project and saved again.
+    #[test]
+    fn a_merged_layer_names_the_recordings_it_was_made_from() {
+        use mpfree_looper::save::{from_text, wav};
+        let (mut h, mut t, mut b) = saving_host();
+        h.set_recordings(true);
+        let mut next = 0u128;
+        let mut fresh = || {
+            next += 1;
+            0xfeed_0000 + next
+        };
+        h.give_layer_recs(&mut fresh);
+        h.command(Command::Merge);
+        for _ in 0..2_000 {
+            if h.looper.status().layers == 1 && h.looper.layer_info(0).unwrap().closed {
+                break;
+            }
+            run_host(&mut h, &mut t, &mut b, 1);
+        }
+        assert_eq!(h.looper.status().layers, 1, "merged");
+        h.give_layer_recs(&mut fresh);
+        assert_eq!(next, 3, "the merged layer is a recording of its own");
+        h.save();
+        let (text, files, _) = crate::project::loops_part(saved_from(&mut h, &mut t, &mut b));
+        let line = format!(" rec={:032x} ", 0xfeed_0003u128);
+        let merged = text
+            .lines()
+            .find(|l| l.contains(&line))
+            .expect("the merged layer");
+        assert!(
+            merged.contains(&format!(
+                " from={:032x}+{:032x} ",
+                0xfeed_0001u128, 0xfeed_0002u128
+            )),
+            "{merged}"
+        );
+        // Opened and saved again: the same.
+        let wavs: Vec<(String, Vec<u8>)> = files
+            .iter()
+            .map(|(n, a)| (n.clone(), wav(a, 44_100)))
+            .collect();
+        let read = |name: &str| {
+            wavs.iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, b)| b.clone())
+                .ok_or_else(|| format!("no {name}"))
+        };
+        let (back, _, left) = crate::project::loops_open(&text, read).unwrap();
+        assert!(left.is_empty());
+        let (mut h2, mut t2) = (
+            LoopHost::new(44_100, 20),
+            Transport::new(44_100, 120.0).unwrap(),
+        );
+        h2.set_recordings(true);
+        let mut b2 = Block::new();
+        t2.command(0, T::Play);
+        run_host(&mut h2, &mut t2, &mut b2, 4);
+        assert!(h2.load(back).starts_with("looper: loading loops 1"));
+        run_host(&mut h2, &mut t2, &mut b2, 400);
+        h2.give_layer_recs(|| panic!("opened with its recording"));
+        h2.save();
+        let (text2, _, _) = crate::project::loops_part(saved_from(&mut h2, &mut t2, &mut b2));
+        assert_eq!(
+            from_text(&text2).unwrap().loops,
+            from_text(&text).unwrap().loops
+        );
     }
 
     /// Where a test's layers' files go (phase 4c.3): written at once, a

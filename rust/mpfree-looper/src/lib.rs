@@ -2103,6 +2103,12 @@ struct Loop {
     order: [u8; MAX_LAYERS],
     in_order: usize,
     slots: [Slot; MAX_LAYERS],
+    /// For each slot, the layers a merge or a fit made it from (audio
+    /// tracks phase 4c.5): the layer it was made as ([`Slot::born`]) and
+    /// theirs, in play order, 0 after the last. Kept for the host, which
+    /// names the recordings ([`Looper::layer_from`]); stale once the slot
+    /// holds another layer.
+    derived: [(u64, [u64; MAX_LAYERS]); MAX_LAYERS],
     done: [Act; HISTORY],
     n_done: usize,
     undone: [Act; HISTORY],
@@ -2487,6 +2493,7 @@ impl Loop {
         order: [0; MAX_LAYERS],
         in_order: 0,
         slots: [Slot::NEW; MAX_LAYERS],
+        derived: [(0, [0; MAX_LAYERS]); MAX_LAYERS],
         done: [NO_ACT; HISTORY],
         n_done: 0,
         undone: [NO_ACT; HISTORY],
@@ -3462,6 +3469,7 @@ impl Looper {
                     .collect(),
                 replace: s.replace,
                 rec: 0,
+                from: Vec::new(),
             });
         }
         Some(f)
@@ -3942,6 +3950,21 @@ impl Looper {
     /// before it is listed. 0 for none yet.
     pub fn slot_born(&self, n: usize, slot: usize) -> Option<u64> {
         Some(self.loops.get(n)?.slots.get(slot)?.born)
+    }
+
+    /// The layers layer `k` of loop `n` (in play order) was made from by
+    /// a merge or a fit, by their numbers ([`LayerInfo::born`]), in play
+    /// order then, 0 after the last; all 0 for a layer recorded or
+    /// loaded (audio tracks phase 4c.5: the host names their recordings
+    /// as its sources). Does not allocate.
+    pub fn layer_from(&self, n: usize, k: usize) -> Option<[u64; MAX_LAYERS]> {
+        let l = self.loops.get(n)?;
+        let slot = l.listed(k)?;
+        let (born, from) = l.derived[slot];
+        Some(match born == l.slots[slot].born && born != 0 {
+            true => from,
+            false => [0; MAX_LAYERS],
+        })
     }
 
     /// Layer `k` of loop `n`, counting in play order.
@@ -7281,6 +7304,7 @@ impl Loop {
         self.fitting = false;
         let (k, i) = (self.fit_slot, self.fit_shape);
         self.shapes[i] = self.shape();
+        self.note_derived(k);
         let old = self.len as f64;
         self.len = self.fit_frames;
         // The print was made at the loop's speed: its audio plays as it is.
@@ -7508,6 +7532,16 @@ impl Loop {
         }
     }
 
+    /// Slot `k`, made by a merge or a fit, is made from the layers in
+    /// the play order now (4c.5).
+    fn note_derived(&mut self, k: usize) {
+        let mut from = [0; MAX_LAYERS];
+        for (f, &s) in from.iter_mut().zip(&self.order[..self.in_order]) {
+            *f = self.slots[s as usize].born;
+        }
+        self.derived[k] = (self.slots[k].born, from);
+    }
+
     /// The merged layer takes the layers' place at once (it sounds the
     /// same); Undo brings them back.
     fn finish_merge(&mut self, store: &mut Store, me: usize) {
@@ -7515,6 +7549,7 @@ impl Loop {
         self.merging = false;
         let (k, i) = (self.mg_slot, self.mg_shape);
         self.shapes[i] = self.shape();
+        self.note_derived(k);
         self.order[0] = k as u8;
         self.in_order = 1;
         self.mixing = true;
@@ -9722,6 +9757,7 @@ mod tests {
                 pieces: vec![(0, frames as u32, false)],
                 replace,
                 rec: 0,
+                from: Vec::new(),
             }),
         };
         for (muted, duck) in [(true, 0.0), (false, 1.0)] {

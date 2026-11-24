@@ -210,6 +210,7 @@ fn a_change_to_the_layers_stops_the_print() {
 fn fit_session(period: usize) -> (Rig, Vec<u64>) {
     let mut r = Rig::new(period);
     recorded(&mut r);
+    let first = r.l.layer_info(0).unwrap().born;
     // Commands go in on frames every period size here divides.
     let next = |f: u64| f.div_ceil(4096) * 4096;
     let p = r.make_print(200.0);
@@ -235,6 +236,10 @@ fn fit_session(period: usize) -> (Rig, Vec<u64>) {
     assert_eq!(s.fitting, None);
     assert_eq!(s.phase, Phase::Overdubbing);
     assert_eq!(s.frames, SLOW_BAR);
+    // The fitted layer names the layer it was made from (audio tracks
+    // phase 4c.5).
+    let fitted = r.l.layer_from(0, 0).unwrap();
+    assert_eq!((fitted[0], fitted[1]), (first, 0), "{fitted:?}");
     marks.push(r.frame);
     let f = next(r.frame + SLOW_BAR as u64);
     r.run(f, &noise);
