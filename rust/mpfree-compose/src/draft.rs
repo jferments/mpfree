@@ -1467,7 +1467,6 @@ fn register(
             notes: clip,
             to: before.to,
             sketch: Some(sk.clone()),
-            fills: Vec::new(),
             critic: Vec::new(),
         };
         let now = verdict_for(req, &made, &sk);
