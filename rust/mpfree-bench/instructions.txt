@@ -241,7 +241,7 @@
 29520	Time: 16 tracks of ratchets, 8 locks a step
 45814	Time: 8 clips, 4 tracks 90 ms ahead
 15539	Time: recording 3 armed tracks, 8 clips
-9378	Time: transport, 8 clips, arp
+9847	Time: transport, 8 clips, arp
 61662	Track host alone, 16 tracks, 8 events each per block
 412590	Track host, 4 Poly tracks of 4 voices
 27052	Transient shaper
