@@ -229,6 +229,11 @@ pub struct Chain {
     part: Vec<Timed>,
     stats: ChainStats,
     profiling: bool,
+    /// Counting its blocks' time ([`Chain::set_spending`]), and the count
+    /// so far in ns ([`Chain::take_spent`]). Both move with the chain, to
+    /// a lane and back.
+    spend: bool,
+    spent: u64,
     /// Slots may sleep on silence (module docs); on by default.
     sleep: bool,
     /// Where the search for a free slot id starts.
@@ -255,6 +260,8 @@ impl Chain {
             part: Vec::with_capacity(MAX_SLOT_EVENTS),
             stats: ChainStats::default(),
             profiling: false,
+            spend: false,
+            spent: 0,
             sleep: true,
             next_uid: 1,
             watch: None,
@@ -607,7 +614,24 @@ impl Chain {
         F: Fn(u16) -> Option<(&'k [f32], &'k [f32])>,
     {
         let n = self.slots.len();
+        let t = (self.spend && n > 0).then(std::time::Instant::now);
         self.run_slots(0..n, false, ctx, key, left, right);
+        if let Some(t) = t {
+            let ns = t.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+            self.spent = self.spent.saturating_add(ns);
+        }
+    }
+
+    /// Counts the time of each block the chain runs from now on, while on
+    /// (two clock reads a block, none for an empty chain), for
+    /// [`Chain::take_spent`].
+    pub fn set_spending(&mut self, on: bool) {
+        self.spend = on;
+    }
+
+    /// The counted time since the last take, ns, and starts again.
+    pub fn take_spent(&mut self) -> u64 {
+        std::mem::take(&mut self.spent)
     }
 
     /// The slot that lets the chain run with its input `frames` late and

@@ -580,6 +580,26 @@ impl Session {
         self.kits
     }
 
+    /// The Sample page's kits `filled` hold the sample sounds (the
+    /// session starts with kit 1's only, the rest empty), as the list's
+    /// Kits side reads them.
+    pub fn fill_kits(&mut self, filled: &[usize]) -> &mut Session {
+        let projects = (0..self.kits)
+            .map(|k| {
+                if filled.contains(&k) {
+                    mpfree_sampler_ui::sample::project().0
+                } else {
+                    mpfree_sampler::model::Project::new()
+                }
+            })
+            .collect();
+        self.out.show(ToUi::SampleKits {
+            projects,
+            rate: mpfree_sampler_ui::sample::RATE,
+        });
+        self.settle()
+    }
+
     /// Seconds into the session.
     pub fn t(&self) -> f64 {
         self.periods as f64 * PERIOD_S
@@ -599,6 +619,7 @@ impl Session {
                 looper: &mut self.looper,
                 tracks: &mut self.tracks,
                 music: &mut self.music,
+                listed: &self.instrument_list,
                 level_db: &mut self.level_db,
                 max_db: MAX_DB,
                 card: 0,
@@ -1164,14 +1185,17 @@ impl Session {
         );
         self.fx.extend(fx);
         if presses != crate::remote::XyPresses::default() {
-            let (sounds, kits) = (&self.sounds, &self.track_kits);
-            let pads =
-                |t: u8, pad: u8, id: u16| crate::pad_describe(sounds.as_ref()?, kits, t, pad, id);
+            let (sounds, kits, listed) = (&self.sounds, &self.track_kits, &self.instrument_list);
+            let pads = |owner, id: u16| {
+                let (kit, pad) = crate::learned_kit(listed, kits, owner)?;
+                crate::pad_describe(sounds.as_ref()?, kit, pad, id)
+            };
             let mut xy = crate::XyHere {
                 song: &mut self.xy_yours,
                 mix: &mut self.mix,
                 synth: &self.synth,
                 app: &self.app,
+                listed,
                 pads: &pads,
                 time: &self.time,
             };
@@ -1654,7 +1678,7 @@ impl Session {
     /// kept (Stay, or its UNDO), as main.rs tells it.
     fn own_told(
         &mut self,
-        pads: Vec<(usize, u8, mpfree_sampler::engine::PadField, f32)>,
+        pads: Vec<(usize, u8, crate::sampler::PadParam, f32)>,
         synth_turned: bool,
     ) {
         if !pads.is_empty() {
@@ -1688,6 +1712,7 @@ impl Session {
                 own: &mut self.mix.instruments,
                 player: self.sounds.as_mut(),
                 kits: &self.track_kits,
+                listed: &self.instrument_list,
                 pads_learned: &mut pads_learned,
                 synth_turned: &mut turned,
                 app: Some(&mut self.app),
@@ -1708,14 +1733,17 @@ impl Session {
         }
         // The XY pad's Set moves record where `xy_rec.rs` says, as main.rs.
         {
-            let (sounds, kits) = (&self.sounds, &self.track_kits);
-            let pads =
-                |t: u8, pad: u8, id: u16| crate::pad_describe(sounds.as_ref()?, kits, t, pad, id);
+            let (sounds, kits, listed) = (&self.sounds, &self.track_kits, &self.instrument_list);
+            let pads = |owner, id: u16| {
+                let (kit, pad) = crate::learned_kit(listed, kits, owner)?;
+                crate::pad_describe(sounds.as_ref()?, kit, pad, id)
+            };
             crate::xy_record(
                 &mut self.xy_rec,
                 &mut self.mix,
                 &self.synth,
                 &self.app,
+                listed,
                 &pads,
                 &mut self.time,
             );
@@ -2223,6 +2251,10 @@ impl Session {
         );
         self.tracks.play_into(&mut self.mix);
         let mut played = 0;
+        // A kit no track plays on a kit strip of its own (sampler step
+        // 15d, part 2), as main.rs.
+        let homes = self.track_kits.homes(|t| !self.mix.instruments.plays(t));
+        self.mix.strip_kits(&self.app.named_kits(), &homes);
         if let Some(p) = self.sounds.as_mut() {
             p.set_tempo(self.time.info().bpm);
         }
@@ -2718,15 +2750,18 @@ impl Session {
             }
             // Your XY layouts, as main.rs.
             FromUi::Xy(act) => {
-                let (sounds, kits) = (&self.sounds, &self.track_kits);
-                let pads = |t: u8, pad: u8, id: u16| {
-                    crate::pad_describe(sounds.as_ref()?, kits, t, pad, id)
+                let (sounds, kits, listed) =
+                    (&self.sounds, &self.track_kits, &self.instrument_list);
+                let pads = |owner, id: u16| {
+                    let (kit, pad) = crate::learned_kit(listed, kits, owner)?;
+                    crate::pad_describe(sounds.as_ref()?, kit, pad, id)
                 };
                 let mut xy = crate::XyHere {
                     song: &mut self.xy_yours,
                     mix: &mut self.mix,
                     synth: &self.synth,
                     app: &self.app,
+                    listed,
                     pads: &pads,
                     time: &self.time,
                 };
@@ -2808,7 +2843,13 @@ impl Session {
                             crate::mixturns::row(t)
                         }),
                     gui::UndoOn::Xy => self.xy_turns.rows("Start: before these lifts", |t| {
-                        crate::xy_turn_row(&self.mix, &self.synth, &self.time, t)
+                        crate::xy_turn_row(
+                            &self.mix,
+                            &self.synth,
+                            &self.time,
+                            &self.instrument_list,
+                            t,
+                        )
                     }),
                 };
                 self.out.show(ToUi::UndoHistory { on, rows, now });
@@ -2857,6 +2898,7 @@ impl Session {
                                         own: &mut self.mix.instruments,
                                         player: self.sounds.as_mut(),
                                         kits: &self.track_kits,
+                                        listed: &self.instrument_list,
                                         pads_learned: &mut pads_learned,
                                         synth_turned: &mut turned,
                                         app: Some(&mut self.app),
@@ -2872,7 +2914,13 @@ impl Session {
                             format!(
                                 "{}: {}",
                                 if redo { "redo" } else { "undo" },
-                                crate::xy_turn_row(&self.mix, &self.synth, &self.time, &t)
+                                crate::xy_turn_row(
+                                    &self.mix,
+                                    &self.synth,
+                                    &self.time,
+                                    &self.instrument_list,
+                                    &t
+                                )
                             )
                         })
                     }
@@ -2891,14 +2939,17 @@ impl Session {
 
     /// Your XY layouts to the screen, as main.rs's `xy_view`.
     fn xy_show(&mut self) {
-        let (sounds, kits) = (&self.sounds, &self.track_kits);
-        let pads =
-            |t: u8, pad: u8, id: u16| crate::pad_describe(sounds.as_ref()?, kits, t, pad, id);
+        let (sounds, kits, listed) = (&self.sounds, &self.track_kits, &self.instrument_list);
+        let pads = |owner, id: u16| {
+            let (kit, pad) = crate::learned_kit(listed, kits, owner)?;
+            crate::pad_describe(sounds.as_ref()?, kit, pad, id)
+        };
         let v = crate::xy_view(
             &mut self.xy_yours,
             &self.mix,
             &self.synth,
             &self.app,
+            &self.instrument_list,
             &pads,
             &self.time,
         );

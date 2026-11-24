@@ -46,9 +46,14 @@ pub const MAX: usize = 2 * mpfree_xy::SLOTS;
 pub const SETTLE_S: f32 = 1.0;
 
 /// Whether `addr` is a synth's, a pad's or an arp's own setting: one the
-/// pad's hand reaches here, not through the mod engine.
+/// pad's hand reaches here, not through the mod engine. Named by its track
+/// (`Owner::Inst`, `Owner::Pad`, `Owner::Arp`) or, since sampler step 16,
+/// by its instrument (`Owner::Sound`, `Owner::KitPad`).
 pub fn is_own(addr: ParamAddr) -> bool {
-    matches!(addr.owner, Owner::Inst(_) | Owner::Pad(..) | Owner::Arp(_))
+    matches!(
+        addr.owner,
+        Owner::Inst(_) | Owner::Pad(..) | Owner::Sound(_) | Owner::KitPad(..) | Owner::Arp(_)
+    )
 }
 
 /// Where a synth's, a pad's and an arp's own settings live: the sound

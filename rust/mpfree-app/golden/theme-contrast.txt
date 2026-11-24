@@ -26,6 +26,7 @@ abletown clips-chord-picker 4 # new screen (composing tools S2.6): the playing r
 abletown clips-chords 3 # new screen (composing tools S2.6): the playing rings' tracks, as clips
 abletown clips-loops 3 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown clips-mutes 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown clips-pad-window 7 # the Clips grid's own runs (row 1's progress rings, faint +), as clips; the pads' window outline is no text (5.5)
 abletown clips-perform 7 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown clips-perform-song 4 # the Clips grid's runs, as clips-perform; none of the preview's own
 abletown clips-scene-card 7 # the Clips grid's runs under the scene card, the same with it closed; none of the card's own
@@ -84,7 +85,9 @@ console clips-chord-picker 4 # new screen (composing tools S2.6): the playing ri
 console clips-chords 3 # new screen (composing tools S2.6): the playing rings' tracks, as clips
 console clips-loops 3 # before the theme refactor (phase 0 baseline)
 console clips-mutes 1 # before the theme refactor (phase 0 baseline)
+console clips-pad-window 7 # the Clips grid's own runs (row 1's progress rings, faint +), as clips; the pads' window outline is no text (5.5)
 console clips-perform 16 # before the theme refactor (phase 0 baseline)
+console clips-perform-capture 18 # new screen (Arrange 5.3): clips-perform's faint runs with nothing playing (the cells' note counts, Undo and Capture), and Capture scene faint
 console clips-perform-song 16 # the Clips grid's runs, as clips-perform; none of the preview's own
 console clips-scene-card 7 # the Clips grid's runs under the scene card, the same with it closed; none of the card's own
 console clips-solo 3 # before the theme refactor (phase 0 baseline)
@@ -143,7 +146,9 @@ console pads-edit-scenes 1 # before the theme refactor (phase 0 baseline)
 console pads-edit-slices 2 # before the theme refactor (phase 0 baseline)
 console pads-pad 3 # before the theme refactor (phase 0 baseline)
 console pads-perform 6 # before the theme refactor (phase 0 baseline)
+console pads-perform-clips 14 # a window page: its empty cells' faint "empty", the faint Copy, Paste, Clear and throw buttons, the chips' sub-lines, as pads-perform (5.5)
 console pads-perform-knobs 6 # before the theme refactor (phase 0 baseline)
+console pads-perform-scenes 7 # a window page: its empty cells' faint "empty", the faint Copy, Paste, Clear and throw buttons, the chips' sub-lines, as pads-perform (5.5)
 console pads-types 17 # before the theme refactor (phase 0 baseline)
 console play 1 # before the theme refactor (phase 0 baseline)
 console play-controller 1 # before the theme refactor (phase 0 baseline)
@@ -230,7 +235,9 @@ default clips-chord-picker 4 # new screen (composing tools S2.6): the playing ri
 default clips-chords 3 # new screen (composing tools S2.6): the playing rings' tracks, as clips
 default clips-loops 3 # before the theme refactor (phase 0 baseline)
 default clips-mutes 1 # before the theme refactor (phase 0 baseline)
+default clips-pad-window 7 # the Clips grid's own runs (row 1's progress rings, faint +), as clips; the pads' window outline is no text (5.5)
 default clips-perform 16 # before the theme refactor (phase 0 baseline)
+default clips-perform-capture 18 # new screen (Arrange 5.3): clips-perform's faint runs with nothing playing (the cells' note counts, Undo and Capture), and Capture scene faint
 default clips-perform-song 16 # the Clips grid's runs, as clips-perform; none of the preview's own
 default clips-scene-card 7 # the Clips grid's runs under the scene card, the same with it closed; none of the card's own
 default clips-solo 15 # before the theme refactor (phase 0 baseline)
@@ -289,7 +296,9 @@ default pads-edit-scenes 1 # before the theme refactor (phase 0 baseline)
 default pads-edit-slices 2 # before the theme refactor (phase 0 baseline)
 default pads-pad 3 # before the theme refactor (phase 0 baseline)
 default pads-perform 6 # before the theme refactor (phase 0 baseline)
+default pads-perform-clips 14 # a window page: its empty cells' faint "empty", the faint Copy, Paste, Clear and throw buttons, the chips' sub-lines, as pads-perform (5.5)
 default pads-perform-knobs 6 # before the theme refactor (phase 0 baseline)
+default pads-perform-scenes 7 # a window page: its empty cells' faint "empty", the faint Copy, Paste, Clear and throw buttons, the chips' sub-lines, as pads-perform (5.5)
 default pads-types 17 # before the theme refactor (phase 0 baseline)
 default play 9 # before the theme refactor (phase 0 baseline)
 default play-all-loop 4 # before the theme refactor (phase 0 baseline)
@@ -360,6 +369,7 @@ light clips-chord-picker 4 # new screen (composing tools S2.6): the playing ring
 light clips-chords 3 # new screen (composing tools S2.6): the playing rings' tracks, as clips
 light clips-loops 3 # Light (phase 4): faint text, under 3:1 in Default too
 light clips-mutes 1 # Light (phase 4): faint text, under 3:1 in Default too
+light clips-pad-window 7 # the Clips grid's own runs (row 1's progress rings, faint +), as clips; the pads' window outline is no text (5.5)
 light clips-perform 7 # Light (phase 4): faint text, under 3:1 in Default too
 light clips-perform-song 4 # the Clips grid's runs, as clips-perform; none of the preview's own
 light clips-scene-card 7 # the Clips grid's runs under the scene card, the same with it closed; none of the card's own
@@ -405,6 +415,7 @@ slate clips-chord-picker 4 # new screen (composing tools S2.6): the playing ring
 slate clips-chords 3 # new screen (composing tools S2.6): the playing rings' tracks, as clips
 slate clips-loops 3 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate clips-mutes 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate clips-pad-window 7 # the Clips grid's own runs (row 1's progress rings, faint +), as clips; the pads' window outline is no text (5.5)
 slate clips-perform 7 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate clips-perform-song 4 # the Clips grid's runs, as clips-perform; none of the preview's own
 slate clips-scene-card 7 # the Clips grid's runs under the scene card, the same with it closed; none of the card's own
@@ -491,6 +502,7 @@ spaceship chain-xy 3 # as chain (the same page and runs; the XY marks add none)
 spaceship clips 43 # before the theme refactor (phase 0 baseline)
 spaceship clips-add-part 40 # new screen (composing tools S2.6): the faint + of empty cells, the playing rings and the transport's Undo, as clips (spaceship's text_faint on bg)
 spaceship clips-add-part-new-track 41 # new screen (composing tools S2.6b): as clips-add-part (the faint + of empty cells, the playing rings and the transport's Undo), with the Bass cell's + (the try plays on the new track) and the faint ‹ Try of a first try (spaceship's text_faint)
+spaceship clips-bank-b 56 # the Clips grid's runs (its empty cells' faint +), as clips; none of the bank chip's own
 spaceship clips-card 68 # before the theme refactor (phase 0 baseline)
 spaceship clips-card-continue 68 # the clip card's own runs, as clips-card (baseline before the theme refactor)
 spaceship clips-card-convert 67 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
@@ -500,7 +512,9 @@ spaceship clips-chord-picker 41 # new screen (composing tools S2.6): the faint +
 spaceship clips-chords 44 # new screen (composing tools S2.6): the faint + of empty cells, the playing rings and the transport's Undo, as clips (spaceship's text_faint on bg)
 spaceship clips-loops 44 # before the theme refactor (phase 0 baseline)
 spaceship clips-mutes 43 # before the theme refactor (phase 0 baseline)
+spaceship clips-pad-window 62 # the Clips grid's own runs (row 1's progress rings, faint +), as clips; the pads' window outline is no text (5.5)
 spaceship clips-perform 46 # before the theme refactor (phase 0 baseline)
+spaceship clips-perform-capture 49 # new screen (Arrange 5.3): clips-perform's faint runs with nothing playing (the cells' note counts, Undo and Capture), and Capture scene faint
 spaceship clips-perform-song 47 # the Clips grid's runs, as clips-perform; none of the preview's own
 spaceship clips-scene-card 62 # the Clips grid's runs under the scene card, the same with it closed; none of the card's own
 spaceship clips-solo 81 # before the theme refactor (phase 0 baseline)
@@ -561,7 +575,9 @@ spaceship pads-edit-scenes 8 # before the theme refactor (phase 0 baseline)
 spaceship pads-edit-slices 11 # before the theme refactor (phase 0 baseline)
 spaceship pads-pad 6 # before the theme refactor (phase 0 baseline)
 spaceship pads-perform 24 # before the theme refactor (phase 0 baseline)
+spaceship pads-perform-clips 23 # a window page: its empty cells' faint "empty", the faint Copy, Paste, Clear and throw buttons, the chips' sub-lines, as pads-perform (5.5)
 spaceship pads-perform-knobs 22 # before the theme refactor (phase 0 baseline)
+spaceship pads-perform-scenes 18 # a window page: its empty cells' faint "empty", the faint Copy, Paste, Clear and throw buttons, the chips' sub-lines, as pads-perform (5.5)
 spaceship pads-types 21 # before the theme refactor (phase 0 baseline)
 spaceship play 18 # before the theme refactor (phase 0 baseline)
 spaceship play-16-levels 5 # before the theme refactor (phase 0 baseline)
@@ -662,6 +678,7 @@ synthwave clips-chord-picker 4 # new screen (composing tools S2.6): the playing 
 synthwave clips-chords 3 # new screen (composing tools S2.6): the playing rings' tracks, as clips
 synthwave clips-loops 3 # before the theme refactor (phase 0 baseline)
 synthwave clips-mutes 1 # before the theme refactor (phase 0 baseline)
+synthwave clips-pad-window 7 # the Clips grid's own runs (row 1's progress rings, faint +), as clips; the pads' window outline is no text (5.5)
 synthwave clips-perform 7 # before the theme refactor (phase 0 baseline)
 synthwave clips-perform-song 4 # the Clips grid's runs, as clips-perform; none of the preview's own
 synthwave clips-scene-card 7 # the Clips grid's runs under the scene card, the same with it closed; none of the card's own

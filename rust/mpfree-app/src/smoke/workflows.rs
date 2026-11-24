@@ -2188,9 +2188,13 @@ mod tests {
             s.pad_edge(3, 0, false);
             s.run_periods(1);
             assert!(!s.layer_synth_held(), "ended where it started");
-            // Keep, then Follow track: the layers go too.
+            // Keep, then Follow track (the chip opens What the pads play,
+            // whose first row holds it): the layers go too.
             s.press("synth-pick", "keep", "").run_periods(2).settle();
             s.press("header", "chip", "Pads: FM + Poly")
+                .run_periods(2)
+                .settle();
+            s.press(mpfree_synth_ui::pad_map::PANEL, "base", "Follow track")
                 .run_periods(2)
                 .settle();
             assert!(!s.app.has_layers() && s.mix.instruments.layer_at(0).is_none());
@@ -2328,9 +2332,13 @@ mod tests {
             let fm = s.instrument_list.free_of(0).expect("FM has an id").number();
             s.name_route_synths([Some(fm), None, None, None]);
             assert_eq!(s.mix.instruments.routed_at(0), Some(free(0)));
-            // Follow track: the pads play Track 1's kit; FM stays.
-            s.press("header", "chip", "Pads: FM")
+            // Follow track (the chip opens What the pads play, whose first
+            // row holds it): the pads play Track 1's kit; FM stays.
+            s.press("header", "chip", "Pads: FM").settle();
+            s.press(mpfree_synth_ui::pad_map::PANEL, "base", "Follow track")
                 .run_periods(4)
+                .settle();
+            s.press(mpfree_synth_ui::pad_map::PANEL, "done", "Done")
                 .settle();
             assert!(!s.app.pads_chose_synth());
             assert!(s.mix.instruments.holds(free(0)), "{:?}", s.said());
@@ -2472,8 +2480,11 @@ mod tests {
             // Follow track, then the shared synth chosen for the pads: the
             // keys play it, and still not the kit.
             s.button("STOP").settle();
-            s.press("header", "chip", "Pads: FM")
+            s.press("header", "chip", "Pads: FM").settle();
+            s.press(mpfree_synth_ui::pad_map::PANEL, "base", "Follow track")
                 .run_periods(2)
+                .settle();
+            s.press(mpfree_synth_ui::pad_map::PANEL, "done", "Done")
                 .settle();
             s.route(crate::gui::FromUi::Time(mpfree_time_ui::TimeAction::Arm(
                 Some(0),
@@ -2868,9 +2879,13 @@ mod tests {
             let before = s.previewed.len();
             s.pad(1, 90, 0.05);
             assert_eq!(s.previewed.len(), before + 1, "the pads still play Poly");
-            // The header's chip: Follow track.
+            // The header's chip opens What the pads play: Follow track.
             s.press("header", "tab", "Synth").settle();
             s.press("header", "chip", "Pads: Poly").settle();
+            s.press(mpfree_synth_ui::pad_map::PANEL, "base", "Follow track")
+                .settle();
+            s.press(mpfree_synth_ui::pad_map::PANEL, "done", "Done")
+                .settle();
             assert_eq!(s.app.pads_focus(), PadFocus::Track);
             assert!(s.control("header", "chip", "Pads: Poly").is_none());
             let before = s.previewed.len();

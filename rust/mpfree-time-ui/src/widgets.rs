@@ -686,6 +686,21 @@ pub struct ClipGrid {
     pub strip: Option<ChordStrip>,
     /// The chord picker, open under one of the strip's chips.
     pub picker: Option<PickerView>,
+    /// Scene banks (the Arrange refactor's 5.6): a bank of
+    /// [`mpfree_seq::SLOTS`] rows each, true where one of its rows has a
+    /// clip or a named scene. With more than one, the bank chip shows
+    /// them right of the view chip; empty, it isn't there.
+    pub banks: Vec<bool>,
+    /// The Perform pads' clip window (the Arrange refactor's 5.5), while
+    /// one is on the pads: its first track and row. Four tracks by four
+    /// rows from there are outlined in the accent, where they are in view.
+    pub pad_window: Option<(usize, usize)>,
+    /// Capture scene can keep something (the Arrange refactor's 5.3): a
+    /// track plays a clip, or the song plays. Perform's title line has
+    /// the button, left of "Back to song", the pager or "+ Track". It
+    /// gives `Toggle(slots + `[`CAPTURE`]`)`, and is faint while this is
+    /// off.
+    pub can_capture: bool,
     /// An audio track's input list is open over the grid (phase 4, board
     /// 4; [`crate::inputs`]): the grid is veiled but for this track's
     /// column head, outlined, and a touch anywhere on it gives
@@ -762,6 +777,9 @@ struct Drawn {
     dragged: Option<(Held, (i32, i32))>,
     /// The scene card was drawn over it.
     card: bool,
+    banks: Vec<bool>,
+    pad_window: Option<(usize, usize)>,
+    can_capture: bool,
 }
 
 /// `Toggle(slots + ADD_TRACK)`: "+ Track".
@@ -827,6 +845,19 @@ pub const REC_SONG_W: i32 = 112;
 
 /// `Toggle(slots + LIST_VIEW)`: the view chip's List.
 pub const LIST_VIEW: usize = 14;
+/// `Toggle(slots + BANK + k)`: the bank chip's bank `k`, A to D (scene
+/// banks, the Arrange refactor's 5.6): the grid scrolls to its first row.
+/// After audio tracks' [`VEIL_TAP`].
+pub const BANK: usize = 17;
+/// The bank chip's letters, a part each.
+pub const BANK_LETTERS: [&str; 4] = ["A", "B", "C", "D"];
+/// A part of the bank chip.
+pub const BANK_PART_W: i32 = 28;
+/// `Toggle(slots + CAPTURE)`: Perform's Capture scene (the Arrange
+/// refactor's 5.3), after the bank chip's four.
+pub const CAPTURE: usize = 21;
+/// Capture scene's width.
+const CAPTURE_W: i32 = 128;
 
 /// Arrange's three views of one song, in the order the view chip shows
 /// them (the Arrange refactor's 5.7).
@@ -901,11 +932,16 @@ pub fn paint_view_chip(cx: &mut PaintCx, chip: Rect, on: ArrangeView) {
 /// title's words after it (in capitals, as a panel's title is), up to
 /// `end` (the buttons on its right).
 pub fn view_title(cx: &mut PaintCx, r: Rect, on: ArrangeView, title: &str, end: i32) {
+    view_title_at(cx, r, on, title, view_title_x(r), end);
+}
+
+/// An Arrange view's title line as [`view_title`] draws it, with the
+/// title's words from `x` (right of a chip of the view's own).
+pub fn view_title_at(cx: &mut PaintCx, r: Rect, on: ArrangeView, title: &str, x: i32, end: i32) {
     let t = cx.theme.clone();
     cx.titled_panel(r, "", "");
     paint_view_chip(cx, view_chip_rect(r), on);
     let head = r.inset(14).take_top(26).0;
-    let x = view_title_x(r);
     cx.text(
         FontId::Bold,
         t.size_small,
@@ -1049,6 +1085,9 @@ impl ClipGrid {
             outlined: None,
             strip: None,
             picker: None,
+            banks: Vec::new(),
+            pad_window: None,
+            can_capture: false,
             veil: None,
             drawn: RefCell::new(None),
             press: None,
@@ -1262,6 +1301,72 @@ impl ClipGrid {
         Rect::new(head.right() - REC_SONG_W, head.y - 4, REC_SONG_W, 30)
     }
 
+    /// Where the title line's left side ends: before Capture scene,
+    /// "Back to song", the pager, Add a part or "+ Track".
+    fn left_end(&self, r: Rect) -> i32 {
+        self.show_rect(r)
+            .or(self.capture_rect(r))
+            .or(self.back_rect(r))
+            .or(self.pager_rects(r).map(|(b, _)| b))
+            .map_or(self.adds_left(r).x, |b| b.x)
+            - 12
+    }
+
+    /// Where Capture scene is (the Arrange refactor's 5.3): in Perform,
+    /// left of "Back to song", the pager, Add a part or "+ Track", with Show (while a
+    /// set is open) left of it. Where that leaves it no room right of the
+    /// view chip ("Back to song" beside the pager, or Show beside the
+    /// pager) it isn't there, and the scene card's Capture is the way.
+    pub fn capture_rect(&self, r: Rect) -> Option<Rect> {
+        if !self.big {
+            return None;
+        }
+        let right = self
+            .back_rect(r)
+            .or(self.pager_rects(r).map(|(b, _)| b))
+            .unwrap_or(self.adds_left(r));
+        let x = right.x - 8 - CAPTURE_W;
+        let show = if self.show_button { SHOW_W + 8 } else { 0 };
+        (x >= self.view_rect(r).right() + 10 + show)
+            .then(|| Rect::new(x, right.y, CAPTURE_W, right.h))
+    }
+
+    /// Where the bank chip is (scene banks, the Arrange refactor's 5.6):
+    /// right of the view chip, a part for each bank, while there is more
+    /// than one. "Back to song" beside the pager (more than 8 tracks)
+    /// leaves it no room: then it isn't there, and the row numbers' bank
+    /// letters and SHIFT + wheel are the way between banks.
+    pub fn bank_chip_rect(&self, r: Rect) -> Option<Rect> {
+        if self.banks.len() < 2 {
+            return None;
+        }
+        let v = self.view_rect(r);
+        let x = v.right() + 10;
+        let w = self.banks.len() as i32 * BANK_PART_W;
+        (x + w <= self.left_end(r)).then(|| Rect::new(x, v.y, w, v.h))
+    }
+
+    /// The bank chip's part for bank `k`.
+    pub fn bank_part_rect(&self, r: Rect, k: usize) -> Option<Rect> {
+        let chip = self.bank_chip_rect(r)?;
+        (k < self.banks.len())
+            .then(|| Rect::new(chip.x + k as i32 * BANK_PART_W, chip.y, BANK_PART_W, chip.h))
+    }
+
+    /// The bank the grid shows, lit on the bank chip: the bank of the
+    /// middle row in view (rows `rows` in view; of two, the lower).
+    pub fn bank_shown(&self, rows: usize) -> usize {
+        let middle = self.first_row + rows / 2;
+        (middle / mpfree_seq::SLOTS).min(self.banks.len().saturating_sub(1))
+    }
+
+    /// Where the title's words start: right of the bank chip, else of
+    /// the view chip.
+    fn title_x(&self, r: Rect) -> i32 {
+        self.bank_chip_rect(r)
+            .map_or(view_title_x(r), |c| c.right() + 12)
+    }
+
     /// Where the Edit button is (the note editor): left of Rec song.
     pub fn edit_rect(&self, r: Rect) -> Rect {
         let rec = self.rec_rect(r);
@@ -1287,13 +1392,35 @@ impl ClipGrid {
 
     /// Where Add a part is: left of "+ Track", unless two of the pager,
     /// "Back to song" and Show (live shows) show, which leave it no room.
+    /// Arrange's buttons keep their places: where Perform's Capture scene
+    /// or the bank chip would have to give way to it, it steps aside too.
     pub fn add_part_rect(&self, r: Rect) -> Option<Rect> {
         let others = [self.paged(), self.back_to_song, self.show_button];
         if others.iter().filter(|&&on| on).count() >= 2 {
             return None;
         }
         let add = self.add_rect(r);
-        Some(Rect::new(add.x - 8 - PART_W, add.y, PART_W, add.h))
+        let part = Rect::new(add.x - 8 - PART_W, add.y, PART_W, add.h);
+        // The title line's buttons left of it, at their usual widths (the
+        // narrow ones are only for all three of the above).
+        let mut left = part.x;
+        if self.paged() {
+            left -= 8 + 2 * ARROW_W + PAGER_LABEL_W;
+        }
+        if self.back_to_song {
+            left -= 8 + BACK_W;
+        }
+        if self.big {
+            left -= 8 + CAPTURE_W;
+        }
+        if self.show_button {
+            left -= 8 + SHOW_W;
+        }
+        let mut need = self.view_rect(r).right() + 10;
+        if self.banks.len() >= 2 {
+            need += self.banks.len() as i32 * BANK_PART_W + 12;
+        }
+        (left >= need).then_some(part)
     }
 
     /// The leftmost of Add a part and "+ Track".
@@ -1341,13 +1468,15 @@ impl ClipGrid {
     }
 
     /// Where Show is, while a set is open: left of the title line's other
-    /// buttons ("Back to song", the pager, Add a part or "+ Track").
+    /// buttons (Perform's Capture scene, "Back to song", the pager, Add a
+    /// part or "+ Track").
     pub fn show_rect(&self, r: Rect) -> Option<Rect> {
         if !self.show_button {
             return None;
         }
         let right = self
-            .back_rect(r)
+            .capture_rect(r)
+            .or(self.back_rect(r))
             .or(self.pager_rects(r).map(|(b, _)| b))
             .unwrap_or(self.adds_left(r));
         Some(Rect::new(right.x - 8 - SHOW_W, right.y, SHOW_W, right.h))
@@ -1492,6 +1621,34 @@ impl ClipGrid {
         Some(Rect::new(h.x, h.y + h.h / 2, h.w, h.h - h.h / 2))
     }
 
+    /// The outline of the Perform pads' clip window ([`ClipGrid::pad_window`]):
+    /// round the cells of it in view, in the gaps between cells, so a cell
+    /// drawn again leaves it be. None with no window, or none of it in
+    /// view.
+    pub fn pad_window_rect(&self, r: Rect) -> Option<Rect> {
+        let (track, row) = self.pad_window?;
+        let cells: Vec<Rect> = (track..track + 4)
+            .flat_map(|t| (row..row + 4).map(move |s| (t, s)))
+            .filter(|&(t, _)| t < self.tracks.len())
+            .filter_map(|(t, s)| self.cell_rect(r, t, s))
+            .collect();
+        let first = cells.first()?;
+        let (mut x0, mut y0, mut x1, mut y1) = (first.x, first.y, first.right(), first.bottom());
+        for c in &cells {
+            x0 = x0.min(c.x);
+            y0 = y0.min(c.y);
+            x1 = x1.max(c.right());
+            y1 = y1.max(c.bottom());
+        }
+        let pad = CELL_GAP / 2;
+        Some(Rect::new(
+            x0 - pad,
+            y0 - pad,
+            x1 - x0 + 2 * pad,
+            y1 - y0 + 2 * pad,
+        ))
+    }
+
     /// Where slot `slot` of track `track` is, if it is in view.
     pub fn cell_rect(&self, r: Rect, track: usize, slot: usize) -> Option<Rect> {
         let g = self.geo(r);
@@ -1534,6 +1691,9 @@ impl Widget for ClipGrid {
             || self.dragged_now().is_some()
             || d.card
             || self.scene_card.is_some()
+            || d.banks != self.banks
+            || d.pad_window != self.pad_window
+            || d.can_capture != self.can_capture
         {
             return None;
         }
@@ -1580,24 +1740,64 @@ impl Widget for ClipGrid {
             veil: self.veil,
             dragged: self.dragged_now(),
             card: self.scene_card.is_some(),
+            banks: self.banks.clone(),
+            pad_window: self.pad_window,
+            can_capture: self.can_capture,
         });
         // The view chip, then the title, shortened to what comes before
         // " · " where the buttons on its line leave it no room.
         let head = r.inset(14).take_top(26).0;
-        let title_x = view_title_x(r);
+        let title_x = self.title_x(r);
         let back = self.back_rect(r);
         let show = self.show_rect(r);
-        let leftmost = show
-            .or(back)
-            .or(self.pager_rects(r).map(|(b, _)| b))
-            .unwrap_or(self.adds_left(r));
+        let capture = self.capture_rect(r);
         let mut title = self.title.as_str();
-        let wide = cx.measure(FontId::Bold, t.size_small, &title.to_uppercase());
-        if title_x + wide + 12 > leftmost.x {
-            title = title.split(" · ").next().unwrap_or(title);
+        // What the title has before it: Show, Capture scene, "Back to
+        // song", the pager or Add a part.
+        if show.is_some()
+            || capture.is_some()
+            || back.is_some()
+            || self.paged()
+            || self.add_part_rect(r).is_some()
+        {
+            let x = self.left_end(r);
+            let mut wide = |s: &str| cx.measure(FontId::Bold, t.size_small, &s.to_uppercase());
+            if title_x + wide(title) > x {
+                title = title.split(" · ").next().unwrap_or(title);
+            }
+            if title_x + wide(title) > x {
+                // The bank chip and the row numbers say which rows show.
+                title = "";
+            }
         }
-        let end = show.or(back).map_or(self.add_rect(r).x, |b| b.x) - 12;
-        view_title(cx, r, ArrangeView::Clips, title, end);
+        let end = show
+            .or(capture)
+            .or(back)
+            .map_or(self.adds_left(r).x, |b| b.x)
+            - 12;
+        view_title_at(cx, r, ArrangeView::Clips, title, title_x, end);
+        if let Some(chip) = self.bank_chip_rect(r) {
+            // The bank chip: A to D, the bank shown filled in the accent,
+            // a bank with nothing in it dim.
+            let shown = self.bank_shown(self.geo(r).rows);
+            cx.canvas.fill_round_rect(chip, t.round(10), t.raised);
+            for (k, used) in self.banks.iter().enumerate() {
+                let Some(b) = self.bank_part_rect(r, k) else {
+                    continue;
+                };
+                let ink = if k == shown {
+                    cx.canvas
+                        .fill_round_rect(b.inset_xy(2, 2), t.round(8), t.accent);
+                    t.ink_on(t.accent)
+                } else if *used {
+                    t.text
+                } else {
+                    t.text_dim
+                };
+                let letter = BANK_LETTERS.get(k).copied().unwrap_or("?");
+                cx.text(FontId::Bold, t.size_small, b, Align::Center, ink, letter);
+            }
+        }
         // The legend (or the pager), "+ Track", Edit and Rec song.
         let rec = self.rec_rect(r);
         let edit = self.edit_rect(r);
@@ -1605,6 +1805,22 @@ impl Widget for ClipGrid {
         if let Some(b) = show {
             cx.canvas.fill_round_rect(b, t.round(10), t.raised);
             cx.text(FontId::Bold, t.size_small, b, Align::Center, t.text, "Show");
+        }
+        if let Some(b) = capture {
+            cx.canvas.fill_round_rect(b, t.round(10), t.raised);
+            let ink = if self.can_capture {
+                t.text
+            } else {
+                t.text_faint
+            };
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                b,
+                Align::Center,
+                ink,
+                "Capture scene",
+            );
         }
         if let Some(b) = back {
             cx.canvas
@@ -1645,7 +1861,10 @@ impl Widget for ClipGrid {
             // The legend's parts that fit between the title and the
             // buttons, dropping the first ones when it is too wide.
             let title_w = cx.measure(FontId::Bold, t.size_small, &title.to_uppercase());
-            let end = show.or(back).map_or(self.adds_left(r).x, |b| b.x);
+            let end = show
+                .or(capture)
+                .or(back)
+                .map_or(self.adds_left(r).x, |b| b.x);
             let room = end - 12 - (title_x + title_w + 16);
             let mut legend = self.legend.as_str();
             while !legend.is_empty() && cx.measure(FontId::Sans, t.size_small, legend) > room {
@@ -1727,6 +1946,28 @@ impl Widget for ClipGrid {
             cx.canvas.fill_round_rect(b, t.round(10), fill);
             if self.scene_cued == Some(slot) {
                 cx.canvas.stroke_round_rect(b, t.round(10), 2, t.warn);
+            }
+            if !self.banks.is_empty() && slot.is_multiple_of(mpfree_seq::SLOTS) {
+                // A bank's first row: its letter in the button's corner,
+                // and under the rows before it a line across the grid.
+                let k = slot / mpfree_seq::SLOTS;
+                let letter = BANK_LETTERS.get(k).copied().unwrap_or("?");
+                let ink = if playing { ink } else { t.accent };
+                cx.text(
+                    FontId::Bold,
+                    t.size_small,
+                    Rect::new(b.x + 5, b.y + 2, 16, 18),
+                    Align::Left,
+                    ink,
+                    letter,
+                );
+                if row > 0 {
+                    let y = b.y - CELL_GAP / 2 - 1;
+                    cx.canvas.fill_rect(
+                        Rect::new(b.x, y, g.body.right() - b.x, 2),
+                        t.accent.with_alpha(140),
+                    );
+                }
             }
             let mx = b.x + b.w / 2;
             let top = b.y + (b.h / 2 - 18).max(4);
@@ -1882,6 +2123,9 @@ impl Widget for ClipGrid {
                 cx.canvas.stroke_round_rect(o, t.round(12), 2, t.accent);
             }
         }
+        if let Some(w) = self.pad_window_rect(r) {
+            cx.canvas.stroke_round_rect(w, t.round(8), 2, t.accent);
+        }
         if let Some(gr) = self.grip.filter(|g| g.lifted) {
             self.paint_drag(cx, r, &gr);
         }
@@ -1964,6 +2208,22 @@ impl Widget for ClipGrid {
                 Target::tap("add-part", 0, "Add a part", b)
                     .disabled_if(self.add_part == PartButton::Faint),
             );
+        }
+        if let Some(b) = self.capture_rect(r) {
+            out.push(
+                Target::tap("capture-scene", 0, "Capture scene", b).disabled_if(!self.can_capture),
+            );
+        }
+        // The bank shown is lit and faint as a target: a tap there takes
+        // the grid where it is (as the zoom chip's lit part).
+        let shown = self.bank_shown(self.geo(r).rows);
+        for k in 0..self.banks.len() {
+            if let Some(b) = self.bank_part_rect(r, k) {
+                let letter = BANK_LETTERS.get(k).copied().unwrap_or("?");
+                out.push(
+                    Target::tap("bank", k, format!("Bank {letter}"), b).disabled_if(k == shown),
+                );
+            }
         }
         if let Some((back, on)) = self.pager_rects(r) {
             let last = self.first_track + GRID_COLS >= self.tracks.len();
@@ -2159,6 +2419,11 @@ impl Widget for ClipGrid {
             Some(ArrangeView::Clips) => return None,
             None => {}
         }
+        for k in 0..self.banks.len() {
+            if self.bank_part_rect(r, k).is_some_and(|b| b.contains(x, y)) {
+                return Some(EventKind::Toggle(self.slots + BANK + k));
+            }
+        }
         if self.rec_rect(r).contains(x, y) {
             return Some(EventKind::Toggle(self.slots + 2));
         }
@@ -2174,6 +2439,11 @@ impl Widget for ClipGrid {
         if self.add_part_rect(r).is_some_and(|b| b.contains(x, y)) {
             // Faint too: the page says why.
             return Some(EventKind::Toggle(self.slots + ADD_PART));
+        }
+        // Faint, it still gives its toggle, for SHIFT + tap's Learn; the
+        // page acts on it only while it is lit.
+        if self.capture_rect(r).is_some_and(|b| b.contains(x, y)) {
+            return Some(EventKind::Toggle(self.slots + CAPTURE));
         }
         if self.add_rect(r).contains(x, y) {
             return self
@@ -3283,7 +3553,8 @@ mod tests {
 
     /// Composing tools S2.6 (layout spec 4r): Add a part on the title
     /// line, left of "+ Track"; with the pager and "Back to song" both
-    /// showing it steps aside. Faint, it still answers, so the page can
+    /// showing it steps aside, and where Capture scene or the bank chip
+    /// would lose their room. Faint, it still answers, so the page can
     /// say why.
     #[test]
     fn add_a_part_sits_left_of_plus_track_and_steps_aside() {
@@ -3315,6 +3586,32 @@ mod tests {
         assert!(g.targets(r).iter().all(|t| t.id != "add-part"));
         let (_, on) = g.pager_rects(r).unwrap();
         assert!(on.right() < g.add_rect(r).x);
+        // Arrange's buttons keep their places: Perform's Capture scene
+        // with 8 tracks fits beside it; with the bank chip too, or with
+        // the pager, Add a part steps aside.
+        let r = Rect::new(12, 128, 814, 610);
+        let mut g = ClipGrid {
+            big: true,
+            ..grid(8)
+        };
+        let part = g.add_part_rect(r).unwrap();
+        assert!(g.capture_rect(r).unwrap().right() + 8 <= part.x);
+        g.banks = vec![true, true, false, false];
+        assert!(g.add_part_rect(r).is_none());
+        assert!(g.capture_rect(r).is_some() && g.bank_chip_rect(r).is_some());
+        let g = ClipGrid {
+            big: true,
+            ..grid(24)
+        };
+        assert!(g.add_part_rect(r).is_none());
+        // Make with the pager and four banks: the bank chip keeps its room.
+        let g = ClipGrid {
+            slots: 64,
+            banks: vec![true, true, false, false],
+            ..grid(24)
+        };
+        assert!(g.add_part_rect(r).is_none());
+        assert!(g.bank_chip_rect(r).is_some());
     }
 
     /// The row's chords take one row's place under their row: the rows
@@ -3580,6 +3877,164 @@ mod tests {
         }
     }
 
+    /// Scene banks (the Arrange refactor's 5.6): with 64 rows the bank
+    /// chip sits right of the view chip, clear of the pager and "Back to
+    /// song", lights the bank in view and taps for a bank's rows; the
+    /// title's words start after it. Without banks there is no chip.
+    #[test]
+    fn the_bank_chip_lights_the_bank_in_view_and_taps_for_another() {
+        let r = Rect::new(12, 128, 814, 610);
+        let mut g = grid(8);
+        assert_eq!(g.bank_chip_rect(r), None);
+        assert!(g.targets(r).iter().all(|t| t.id != "bank"));
+        assert_eq!(g.title_x(r), view_title_x(r));
+        g = ClipGrid {
+            slots: 64,
+            banks: vec![true, true, false, false],
+            ..grid(24)
+        };
+        for t in &mut g.tracks {
+            t.cells.resize(64, GridCell::default());
+        }
+        // Clear of the pager, and of "Back to song" with 8 tracks; with
+        // both, no room.
+        let chip = g.bank_chip_rect(r).unwrap();
+        assert!(chip.x > g.view_rect(r).right(), "{chip:?}");
+        let (back, _) = g.pager_rects(r).unwrap();
+        assert!(chip.right() + 12 <= back.x, "{chip:?} {back:?}");
+        assert_eq!(g.title_x(r), chip.right() + 12);
+        g.back_to_song = true;
+        assert_eq!(g.bank_chip_rect(r), None);
+        g.tracks.truncate(8);
+        let b = g.back_rect(r).unwrap();
+        assert!(g.bank_chip_rect(r).unwrap().right() + 12 <= b.x);
+        let c = g.bank_part_rect(r, 2).unwrap();
+        assert_eq!(
+            g.touch(1, Touch::Down, c.x + 4, c.y + 4, r),
+            Some(EventKind::Toggle(64 + BANK + 2))
+        );
+        let banks: Vec<String> = g
+            .targets(r)
+            .into_iter()
+            .filter(|t| t.id == "bank")
+            .map(|t| t.label)
+            .collect();
+        assert_eq!(banks, ["Bank A", "Bank B", "Bank C", "Bank D"]);
+        // The bank shown is faint as a target: a tap there changes nothing.
+        let lit: Vec<usize> = g
+            .targets(r)
+            .into_iter()
+            .filter(|t| t.id == "bank" && !t.enabled)
+            .map(|t| t.index)
+            .collect();
+        assert_eq!(lit, [g.bank_shown(g.geo(r).rows)]);
+        // The bank of the middle row in view; of an even split, the lower.
+        assert_eq!(g.bank_shown(8), 0);
+        g.first_row = 12;
+        assert_eq!(g.bank_shown(8), 1, "rows 13 to 20");
+        g.first_row = 56;
+        assert_eq!(g.bank_shown(8), 3);
+        // Row 17's number is a row like any other: it launches its scene.
+        g.first_row = 14;
+        let b = g.scene_rect(r, 16).unwrap();
+        g.touch(1, Touch::Down, b.x + 4, b.y + 4, r);
+        assert_eq!(
+            g.touch(1, Touch::Up, b.x + 4, b.y + 4, r),
+            Some(EventKind::Toggle(16))
+        );
+        // A cell of row 18 is track * 64 + 17.
+        let cell = g.cell_rect(r, 5, 17).unwrap();
+        g.touch(1, Touch::Down, cell.x + 4, cell.y + 4, r);
+        assert_eq!(
+            g.touch(1, Touch::Up, cell.x + 4, cell.y + 4, r),
+            Some(EventKind::Select(5 * 64 + 17))
+        );
+    }
+
+    /// Capture scene (the Arrange refactor's 5.3) is Perform's: left of
+    /// "Back to song", the pager or "+ Track", clear of the view chip,
+    /// faint while there is nothing to keep but still giving its toggle
+    /// (SHIFT + tap learns it). Beside both the pager and "Back to song"
+    /// it has no room and isn't there; it moves the bank chip out where
+    /// the chip no longer fits.
+    #[test]
+    fn capture_scene_is_on_performs_title_line_where_it_fits() {
+        // Perform's grid, beside the Record panel.
+        let r = Rect::new(12, 140, 854, 534);
+        let mut g = grid(8);
+        assert_eq!(g.capture_rect(r), None, "Make has none");
+        g.big = true;
+        let c = g.capture_rect(r).unwrap();
+        assert!(c.right() + 8 <= g.add_rect(r).x, "{c:?}");
+        assert!(c.x > g.view_rect(r).right(), "{c:?}");
+        let target = g
+            .targets(r)
+            .into_iter()
+            .find(|t| t.id == "capture-scene")
+            .unwrap();
+        assert!(!target.enabled, "faint: nothing plays");
+        assert_eq!(
+            g.touch(1, Touch::Down, c.x + 4, c.y + 4, r),
+            Some(EventKind::Toggle(16 + CAPTURE)),
+            "faint, it still gives its toggle for Learn"
+        );
+        g.can_capture = true;
+        assert!(g
+            .targets(r)
+            .iter()
+            .any(|t| t.id == "capture-scene" && t.enabled));
+        // "Back to song" shows: Capture scene moves left of it.
+        g.back_to_song = true;
+        let b = g.back_rect(r).unwrap();
+        let c = g.capture_rect(r).unwrap();
+        assert!(c.right() + 8 <= b.x, "{c:?} {b:?}");
+        assert_eq!(
+            g.touch(1, Touch::Down, b.x + 4, b.y + 4, r),
+            Some(EventKind::Toggle(16 + BACK_TO_SONG))
+        );
+        // With the pager and "Back to song", no room.
+        let mut g = ClipGrid {
+            big: true,
+            back_to_song: true,
+            ..grid(24)
+        };
+        assert_eq!(g.capture_rect(r), None);
+        assert!(g.targets(r).iter().all(|t| t.id != "capture-scene"));
+        g.back_to_song = false;
+        let (pager, _) = g.pager_rects(r).unwrap();
+        assert!(g.capture_rect(r).unwrap().right() + 8 <= pager.x);
+        // Four banks: the chip fits beside Capture scene alone, not beside
+        // it and "Back to song" too.
+        let mut g = ClipGrid {
+            slots: 64,
+            banks: vec![true, true, false, false],
+            big: true,
+            ..grid(8)
+        };
+        let chip = g.bank_chip_rect(r).unwrap();
+        assert!(chip.right() + 12 <= g.capture_rect(r).unwrap().x);
+        g.back_to_song = true;
+        assert_eq!(g.bank_chip_rect(r), None);
+        // A set open: Show left of Capture scene, both clear of the view
+        // chip; beside the pager, Capture scene gives Show its room.
+        for (tracks, back) in [(8, false), (8, true), (24, false), (24, true)] {
+            let mut g = ClipGrid {
+                big: true,
+                show_button: true,
+                back_to_song: back,
+                ..grid(tracks)
+            };
+            let s = g.show_rect(r).unwrap();
+            assert!(s.x > g.view_rect(r).right(), "{tracks} {back}: {s:?}");
+            match g.capture_rect(r) {
+                Some(c) => assert!(s.right() + 8 <= c.x, "{s:?} {c:?}"),
+                None => assert!(tracks > GRID_COLS, "{tracks} {back}"),
+            }
+            g.show_button = false;
+            assert!(g.capture_rect(r).is_some() || (tracks > GRID_COLS && back));
+        }
+    }
+
     /// While a set is open, Show sits left of the title line's other
     /// buttons, whatever else shows, and taps.
     #[test]
@@ -3637,7 +4092,20 @@ mod tests {
     #[test]
     fn the_grid_s_ids_after_the_slots_are_all_different() {
         let mut ids = vec![1, 2, 3, ADD_TRACK, PAGE_BACK, PAGE_ON, ROWS_BACK, ROWS_ON];
-        ids.extend([BACK_TO_SONG, ADD_DISMISS, LIST_VIEW, SHOW_VIEW]);
+        ids.extend([
+            BACK_TO_SONG,
+            ADD_DISMISS,
+            LIST_VIEW,
+            SHOW_VIEW,
+            VEIL_TAP,
+            CAPTURE,
+            ADD_PART,
+        ]);
+        ids.extend((0..BANK_LETTERS.len()).map(|k| BANK + k));
+        // The row's chords (a chip or a bar each) and the chord picker.
+        ids.extend((0..STRIP_BAR - STRIP_CHIP).map(|k| STRIP_CHIP + k));
+        ids.extend((0..PICKER - STRIP_BAR).map(|b| STRIP_BAR + b));
+        ids.extend((0..PICKS).map(|k| PICKER + k));
         ids.extend((0..crate::song::ADD_KINDS.len()).map(|k| ADD_KIND + k));
         let mut seen = ids.clone();
         seen.sort();

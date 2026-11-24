@@ -10,7 +10,7 @@ use mpfree_node::{Ctx, Kind, NodeInfo, ParamInfo, Smooth};
 
 use crate::adaa::{log_cosh, Adaa};
 use crate::kit::{node_impl, param, Choice, Db, Glide, Hz, Linear, Log, Ms, Percent, NONE};
-use crate::oversample::{IirDown2, IirUp2};
+use crate::oversample::IirPair;
 use crate::svf::{Svf, SvfMode};
 use crate::{db_to_gain, defaults, fast_tanh, flush, lerp, Preset};
 
@@ -457,8 +457,18 @@ pub static AMP_PRESETS: &[Preset] = &[
     },
 ];
 
-const HB1: (usize, f64) = (5, 0.06);
-const HB2: (usize, f64) = (4, 0.12);
+/// The half-bands: the first stage (the base rate to twice it) five
+/// sections with a transition half-width of 0.06, the second (twice to four
+/// times) four with 0.12. Each [`IirPair`] holds one design's up-sampler
+/// and its down-sampler.
+const HB1_N: usize = 5;
+const HB1_TBW: f64 = 0.06;
+const HB2_N: usize = 4;
+const HB2_TBW: f64 = 0.12;
+
+/// The half-bands drop what is too small to hear every this many frames
+/// from the stream's start (the same in any block size).
+const SETTLE: u32 = 32;
 
 /// A one-pole coefficient at `hz` for a stream at `rate`: the low-pass's
 /// step `1 - e^(-2 pi f / fs)` and the high-pass's `e^(-2 pi f / fs)`.
@@ -795,8 +805,10 @@ pub struct Amp {
     rate: u32,
     c: Coefs,
     gate: InGate,
-    up: [IirUp2; 2],
-    down: [IirDown2; 2],
+    /// The first stage's half-bands (up first, down last) and the
+    /// second's.
+    hb1: IirPair<HB1_N>,
+    hb2: IirPair<HB2_N>,
     boost: usize,
     boosts: [Boost; 2],
     boost_old: usize,
@@ -841,8 +853,8 @@ impl Amp {
             rate: 48_000,
             c: Coefs::default(),
             gate: InGate::default(),
-            up: [IirUp2::new(HB1.0, HB1.1), IirUp2::new(HB2.0, HB2.1)],
-            down: [IirDown2::new(HB2.0, HB2.1), IirDown2::new(HB1.0, HB1.1)],
+            hb1: IirPair::new(HB1_TBW),
+            hb2: IirPair::new(HB2_TBW),
             boost: 0,
             boosts: [Boost::default(); 2],
             boost_old: 0,
@@ -1003,11 +1015,15 @@ impl Amp {
             }
             self.frame = self.frame.wrapping_add(1);
 
+            if self.frame.is_multiple_of(SETTLE) {
+                self.hb1.settle();
+                self.hb2.settle();
+            }
             let x = self.gate.run(0.5 * (l[i] + r[i]));
             let mut quad = [0.0f32; 4];
-            let [a, b] = self.up[0].run(x);
+            let [a, b] = self.hb1.up(x);
             for (h, v) in [a, b].into_iter().enumerate() {
-                let [c0, c1] = self.up[1].run(v);
+                let [c0, c1] = self.hb2.up(v);
                 quad[2 * h] = c0;
                 quad[2 * h + 1] = c1;
             }
@@ -1060,9 +1076,9 @@ impl Amp {
                 self.sag_up,
                 self.sag_down,
             );
-            let h0 = self.down[0].run([quad[0], quad[1]]);
-            let h1 = self.down[0].run([quad[2], quad[3]]);
-            let mut y = self.down[1].run([h0, h1]);
+            let h0 = self.hb2.down([quad[0], quad[1]]);
+            let h1 = self.hb2.down([quad[2], quad[3]]);
+            let mut y = self.hb1.down([h0, h1]);
             y = self.presence.run(0, y);
             // The cab, crossfaded for 10 ms after a change.
             let mut wet = y;
@@ -1145,12 +1161,8 @@ impl Amp {
 
     fn clear(&mut self) {
         self.gate.reset();
-        for u in &mut self.up {
-            u.reset();
-        }
-        for d in &mut self.down {
-            d.reset();
-        }
+        self.hb1.reset();
+        self.hb2.reset();
         for (k, b) in self.boosts.iter_mut().enumerate() {
             b.reset(k + 1);
         }
@@ -1258,8 +1270,10 @@ pub struct Exciter {
     rate: u32,
     hp_in: Svf,
     hp_out: Svf,
-    up: [IirUp2; 2],
-    down: [IirDown2; 2],
+    /// Each side's half-bands round the shaper (the first stage's design).
+    hb: [IirPair<HB1_N>; 2],
+    /// Frames since the stream started, modulo [`SETTLE`].
+    settle: u32,
     drive: Smooth,
     colour: Smooth,
     amount: Smooth,
@@ -1279,8 +1293,8 @@ impl Exciter {
             rate: 48_000,
             hp_in: Svf::default(),
             hp_out: Svf::default(),
-            up: [IirUp2::new(HB1.0, HB1.1), IirUp2::new(HB1.0, HB1.1)],
-            down: [IirDown2::new(HB1.0, HB1.1), IirDown2::new(HB1.0, HB1.1)],
+            hb: [IirPair::new(HB1_TBW), IirPair::new(HB1_TBW)],
+            settle: 0,
             drive: Smooth::new(0.5),
             colour: Smooth::new(0.5),
             amount: Smooth::new(0.3),
@@ -1304,13 +1318,19 @@ impl Exciter {
     fn begin(&mut self, _ctx: &Ctx) {}
     fn run(&mut self, _ctx: &Ctx, _from: usize, l: &mut [f32], r: &mut [f32]) {
         for i in 0..l.len() {
+            if self.settle == 0 {
+                for h in &mut self.hb {
+                    h.settle();
+                }
+            }
+            self.settle = (self.settle + 1) % SETTLE;
             let drive = 1.0 + 9.0 * self.drive.glide();
             let undo = 1.0 / drive;
             let colour = self.colour.glide();
             let amount = self.amount.glide();
             for (ch, x) in [&mut l[i], &mut r[i]].into_iter().enumerate() {
                 let band = self.hp_in.run(ch, *x);
-                let two = self.up[ch].run(band * drive);
+                let two = self.hb[ch].up(band * drive);
                 let shaped = two.map(|v| {
                     // Odd: a symmetric curve less its straight part. Even:
                     // a rectified one (its DC goes in the high-pass after),
@@ -1318,7 +1338,7 @@ impl Exciter {
                     let t = fast_tanh(v);
                     lerp(t - v * 0.5, t.abs(), colour)
                 });
-                let h = self.down[ch].run(shaped) * undo;
+                let h = self.hb[ch].down(shaped) * undo;
                 let h = self.hp_out.run(ch, h);
                 *x += amount * h;
             }
@@ -1337,12 +1357,10 @@ impl Exciter {
     fn clear(&mut self) {
         self.hp_in.reset();
         self.hp_out.reset();
-        for u in &mut self.up {
-            u.reset();
+        for h in &mut self.hb {
+            h.reset();
         }
-        for d in &mut self.down {
-            d.reset();
-        }
+        self.settle = 0;
         for s in [&mut self.drive, &mut self.colour, &mut self.amount] {
             s.snap(s.target);
         }

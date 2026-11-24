@@ -177,6 +177,19 @@ pub const PATCHES_NEED: &str = "patches";
 /// build would skip the scene's `keep` line and stop those tracks at the
 /// scene change, so it must not open it.
 pub const SCENE_KEEP: &str = "scene-keep";
+
+/// A project with a learned control that names a kit's pad or a synth by
+/// its number in the list of instruments (sampler step 16,
+/// `Owner::KitPad`, `Owner::Sound`): an older build can't read those
+/// `learn` lines, and would drop them at its next save.
+pub const LEARN_BY_INSTRUMENT: &str = "learn-by-instrument";
+
+/// A project with settings on a kit strip (sampler step 15d, part 2: the
+/// mixer strip of a kit no track plays): an older build would play the
+/// kit on the pad channels and lose the strip's settings at its next
+/// save, so it must not open it.
+pub const KIT_STRIPS_NEED: &str = "kit-strips";
+
 /// A project with a free loop (Sync: Free, [`mpfree_looper::Clock::Free`]):
 /// an older build would read its loop line's `clock=free` as nothing and
 /// play it as a song loop, in the song's time and at its tempo, and lose
@@ -207,6 +220,8 @@ pub const KNOWN_NEEDS: &[&str] = &[
     LINKED_SONG_LIST,
     PATCHES_NEED,
     SCENE_KEEP,
+    LEARN_BY_INSTRUMENT,
+    KIT_STRIPS_NEED,
     FREE_LOOPS,
     SCENE_TEMPO,
     OWN_TUNINGS,
@@ -377,6 +392,19 @@ fn parse_swing(v: &str) -> Option<mpfree_transport::time::Swing> {
     mpfree_transport::time::Swing::new(g.trim().parse().ok()?, a.trim().parse().ok()?)
 }
 
+/// Whether the MIDI part `text` has a learned control that names a kit's
+/// pad or a synth by its number in the list (sampler step 16): what the
+/// [`LEARN_BY_INSTRUMENT`] need is written for.
+pub fn learns_by_instrument(text: &str) -> bool {
+    use mpfree_play::mpfree_param::Owner;
+    text.lines()
+        .filter_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            (k.trim() == "learn").then(|| mpfree_midi::learn::Saved::parse(v.trim()))?
+        })
+        .any(|l| matches!(l.target.owner, Owner::KitPad(..) | Owner::Sound(_)))
+}
+
 /// The project as text, from what the loop collected and the screen's own
 /// parts (`extra`: the sampler's, the I/O setup's, the loops').
 pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
@@ -437,6 +465,16 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     }
     if c.clips.scenes.iter().any(|s| s.keep != 0) {
         needs.push(SCENE_KEEP);
+    }
+    let midi = parts
+        .iter()
+        .find(|(k, _)| k == MIDI)
+        .map(|(_, t)| t.as_str());
+    if midi.is_some_and(learns_by_instrument) {
+        needs.push(LEARN_BY_INSTRUMENT);
+    }
+    if kit_strip_settings(&c.mixer) {
+        needs.push(KIT_STRIPS_NEED);
     }
     if parts
         .iter()
@@ -926,6 +964,74 @@ pub fn opening(
         patches: Some(crate::patch_in::PatchRig::of(&patch_list)),
         patch_list,
     })
+}
+
+// ------------------------------------------------------------ learned controls
+
+/// The MIDI part `text` as the project opens, with each learned
+/// control kept with the project that names a kit's pad or a synth by its
+/// track (`t3.pad5.2`, `t3.inst.12`: a project saved before sampler step
+/// 16) moved up to name what that track plays (the opening's
+/// [`Opening::track_kits`], [`Opening::sends`] and list), by its number in
+/// the list
+/// (`kit9.pad5.2`, `i9.12`), so it stays on that sound when the track
+/// picks another. A pad's setting names the track's kit (none for a track
+/// on the synth); a synth's knob the track's own instrument, the one it
+/// plays by a send, else the shared synth, as Learn turned it before.
+/// Controls kept for every project, and every other line, stay as they
+/// are. Gives how many moved.
+pub fn learns_moved_up(
+    text: &str,
+    track_kits: &[(usize, Option<usize>)],
+    sends: &[(usize, usize)],
+    list: &InstrumentList,
+) -> (String, usize) {
+    use mpfree_midi::learn::Saved;
+    use mpfree_play::mpfree_param::{Owner, ParamAddr};
+    let number = |id: Option<InstrumentId>| id.and_then(|id| u16::try_from(id.number()).ok());
+    let up = |target: ParamAddr| -> Option<ParamAddr> {
+        let owner = match target.owner {
+            Owner::Pad(t, pad) => {
+                let t = usize::from(t);
+                let kit = match track_kits.iter().rev().find(|(tt, _)| *tt == t) {
+                    Some((_, kit)) => (*kit)?,
+                    None => 0,
+                };
+                Owner::KitPad(number(list.of_kit(kit))?, pad)
+            }
+            Owner::Inst(t) => {
+                let t = usize::from(t);
+                let sent = sends.iter().find(|(tt, _)| *tt == t).map(|&(_, h)| h);
+                let id = match (list.own_of(t), sent) {
+                    (Some(id), _) => Some(id),
+                    (None, Some(h)) => list.of_holder(h),
+                    (None, None) => Some(InstrumentId::SHARED_SYNTH),
+                };
+                Owner::Sound(number(id)?)
+            }
+            _ => return None,
+        };
+        Some(ParamAddr::new(owner, target.param))
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut moved = 0;
+    for line in text.lines() {
+        let saved = line
+            .split_once('=')
+            .filter(|(k, _)| k.trim() == "learn")
+            .and_then(|(_, v)| Saved::parse(v.trim()));
+        match saved.and_then(|l| up(l.target).map(|t| (l, t))) {
+            Some((mut l, target)) => {
+                l.target = target;
+                out.push_str("learn = ");
+                out.push_str(&l.text());
+                moved += 1;
+            }
+            None => out.push_str(line),
+        }
+        out.push('\n');
+    }
+    (out, moved)
 }
 
 // ------------------------------------------------------------ what the tracks play
@@ -1584,18 +1690,37 @@ pub fn untouched_channel(mixer: &Mixer, st: StripId) -> bool {
 /// ```
 pub fn mixer_text(mixer: &Mixer, pad_mutes: u16) -> String {
     let drums = StripId::Track(crate::mixing::DRUMS);
-    mixer_text_lent(mixer, pad_mutes, &[], drums)
+    mixer_text_lent(mixer, pad_mutes, &[], drums, &[])
+}
+
+/// Whether mixer text `text` has settings on a kit strip a kit holds (a
+/// `kitstrip` line's strip with a `strip` or `insert` line of its own):
+/// what the [`KIT_STRIPS_NEED`] need is written for. A plain strip isn't: an
+/// older build plays its kit on the pad channels and loses nothing.
+pub fn kit_strip_settings(text: &str) -> bool {
+    text.lines()
+        .filter_map(|l| l.strip_prefix("kitstrip "))
+        .filter_map(|l| l.split(' ').next())
+        .any(|st| {
+            text.lines().any(|l| {
+                let mut w = l.split(' ');
+                matches!(w.next(), Some("strip" | "insert")) && w.next() == Some(st)
+            })
+        })
 }
 
 /// [`mixer_text`], with a `lent` line for each pad channel lent to a pad
-/// (its strip, kit and pad): `lent ps16 1 20` is kit 2's pad B5; and the
+/// (its strip, kit and pad): `lent ps16 1 20` is kit 2's pad B5; the
 /// `track1` line, the strip track 1 plays into (`t0`, Drums, or `t4`, its
-/// old own channel: [`MixLoad::track1`]).
+/// old own channel: [`MixLoad::track1`]); and a `kitstrip` line for each
+/// kit strip a kit holds (its strip and kit, sampler step 15d):
+/// `kitstrip t148 6` is kit 7's.
 pub fn mixer_text_lent(
     mixer: &Mixer,
     pad_mutes: u16,
     lent: &[(StripId, usize, usize)],
     track1: StripId,
+    places: &[Option<u8>],
 ) -> String {
     let mut s = String::with_capacity(4096);
     s.push_str(MIXER_FORMAT);
@@ -1610,6 +1735,12 @@ pub fn mixer_text_lent(
     let _ = writeln!(s, "track1 {}", strip_text(track1));
     for &(st, kit, pad) in lent {
         let _ = writeln!(s, "lent {} {kit} {pad}", strip_text(st));
+    }
+    for (n, kit) in places.iter().enumerate() {
+        if let Some(kit) = kit {
+            let st = StripId::Track(crate::mixing::kit_channel(n));
+            let _ = writeln!(s, "kitstrip {} {kit}", strip_text(st));
+        }
     }
     let strips: Vec<StripId> = mixer
         .strips()
@@ -1685,6 +1816,9 @@ pub struct MixLoad {
     pub old_pad_solos: u16,
     /// The pad channels lent to pads: strip, kit and pad.
     pub lent: Vec<(StripId, u8, u8)>,
+    /// The kit each kit strip held (`kitstrip`, sampler step 15d), so a
+    /// kit opens on the strip, and with the settings, it had.
+    pub kit_strips: [Option<u8>; crate::mixing::KIT_STRIPS],
     /// The strip track 1 played into when the project was saved (its
     /// `track1` line): Drums, or its old own channel (`MixHost::old_first`).
     /// None for a project saved before Drums was track 1's strip (sampler
@@ -1774,6 +1908,7 @@ pub fn mixer_load(
         old_pad_mutes: 0,
         old_pad_solos: 0,
         lent: Vec::new(),
+        kit_strips: [None; crate::mixing::KIT_STRIPS],
         track1: None,
         track1_own: false,
         strips: Vec::new(),
@@ -1837,6 +1972,22 @@ pub fn mixer_load(
                 let pad: u8 = w.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?;
                 if pad < 128 && kit < 128 {
                     out.lent.push((st, kit, pad));
+                }
+            }
+            Some("kitstrip") => {
+                let st = w.next().and_then(parse_strip).ok_or_else(bad)?;
+                let kit: u8 = w.next().and_then(|x| x.parse().ok()).ok_or_else(bad)?;
+                let place = match st {
+                    StripId::Track(t) => t.checked_sub(crate::mixing::KIT_FIRST),
+                    _ => None,
+                };
+                // Kit 1 never takes one; a strip past the mixer's is left
+                // out.
+                let fresh = kit > 0 && kit < 128 && !out.kit_strips.contains(&Some(kit));
+                if let Some(at) = place.and_then(|n| out.kit_strips.get_mut(n)) {
+                    if fresh {
+                        *at = Some(kit);
+                    }
                 }
             }
             Some("strip") => {
@@ -2612,6 +2763,58 @@ mod tests {
         assert_eq!(b.mixer.param(s, mx::PAN), 30.0);
         let track = crate::instruments::first_track() + 1;
         assert_eq!(b.mixer.param(s, mx::OUTPUT_TRACK), track as f32);
+    }
+
+    /// A kit strip a kit holds (sampler step 15d, part 2) is saved with
+    /// its kit, and opens holding it, with its settings, so the kit comes
+    /// back to the strip it had; a line for kit 1, for a kit a strip
+    /// already has, or past the strips is left out. Settings on a strip
+    /// say the project needs kit strips; a plain one doesn't.
+    #[test]
+    fn a_kit_strip_is_saved_with_its_kit_and_opens_holding_it() {
+        use crate::mixing::{kit_channel, KIT_STRIPS};
+        let homeless = [0u8; 8];
+        let mut a = MixHost::new(44_100, -6.0, 0.0);
+        a.strip_kits(&[Some(6)], &homeless);
+        let strip = StripId::Track(kit_channel(0));
+        let plain = a.mixer_text();
+        assert!(
+            plain.contains(&format!("kitstrip {} 6\n", strip_text(strip))),
+            "{plain}"
+        );
+        assert!(!kit_strip_settings(&plain), "a plain strip needs nothing");
+        a.mixer.set_now(strip, mx::PAN, 30.0);
+        let mut text = a.mixer_text();
+        assert!(kit_strip_settings(&text));
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        c.mixer = text.clone();
+        let snap = snapshot(&c, Vec::new());
+        assert!(snap
+            .meta
+            .extra
+            .contains(&(NEEDS_KEY.to_string(), KIT_STRIPS_NEED.to_string())));
+        assert_eq!(check(&snap), Ok(FORMAT));
+        for (n, kit) in [(1, 0), (2, 6), (KIT_STRIPS, 9)] {
+            let st = StripId::Track(kit_channel(n));
+            text.push_str(&format!("kitstrip {} {kit}\n", strip_text(st)));
+        }
+        let load = mixer_load(&text, None, 44_100, &crate::plugins::Plugins::none()).unwrap();
+        let mut want = [None; KIT_STRIPS];
+        want[0] = Some(6);
+        assert_eq!(load.kit_strips, want);
+        let mut b = MixHost::new(44_100, -6.0, 0.0);
+        b.open(Box::new(load));
+        for _ in 0..400 {
+            b.tend_open();
+            b.run_silent_period();
+        }
+        assert!(!b.opening());
+        assert_eq!(b.kit_strips(), want);
+        assert_eq!(b.mixer.param(strip, mx::PAN), 30.0);
+        // Named again with no track: kit 7 on its strip, as it was.
+        b.strip_kits(&[Some(6)], &homeless);
+        assert_eq!(b.kit_strip(6), Some(0));
+        assert_eq!(b.strip_name(strip), "Kit 7");
     }
 
     #[test]
@@ -3576,6 +3779,100 @@ mod tests {
                 "it needs audio-loops, which this MPFree hasn't got. Update MPFree to open it"
                     .to_string()
             )
+        );
+    }
+
+    /// Sampler step 16: a learned control that names a kit's pad or a
+    /// synth by its number in the list (`kit9.pad5.2`, `i9.12`) makes the
+    /// project need `learn-by-instrument`, since an older build can't read
+    /// those lines; one by track, or kept for every project, doesn't.
+    #[test]
+    fn a_control_learned_by_instrument_says_the_project_needs_it() {
+        let line = |target: &str| {
+            format!("learn = any | ch 1 | cc 74 | {target} | 0.0000 1.0000 | absolute | jump\n")
+        };
+        let midi = |lines: &str| (MIDI.to_string(), format!("mpfree-midi 1\n{lines}"));
+        let needs = |extra: Vec<(String, String)>| {
+            let c = collected(String::new(), InstrumentList::new().text());
+            let snap = snapshot(&c, extra);
+            let line = snap
+                .meta
+                .extra
+                .iter()
+                .find(|(k, _)| k == NEEDS_KEY)
+                .map(|(_, v)| v.clone());
+            (snap, line)
+        };
+        assert_eq!(needs(vec![midi(&line("t3.pad5.2"))]).1, None);
+        assert_eq!(needs(vec![midi(&line("t3.inst.12"))]).1, None);
+        let rig = line("i9.12").replace("learn =", "learn-rig =");
+        assert_eq!(needs(vec![midi(&rig)]).1, None, "only the project's own");
+        for target in ["kit9.pad5.2", "i9.12"] {
+            let (snap, line) = needs(vec![midi(&line(target))]);
+            assert_eq!(line.as_deref(), Some(LEARN_BY_INSTRUMENT), "{target}");
+            assert_eq!(check(&snap), Ok(FORMAT));
+        }
+        assert!(mpfree_midi::learn::Saved::parse(
+            "any | ch 1 | cc 74 | kit9.pad5.2 | 0.0000 1.0000 | absolute | jump"
+        )
+        .is_some());
+    }
+
+    /// Sampler step 16, part b: a project saved before it has its learned
+    /// pad settings and synth knobs by track. As it opens, each names what
+    /// its track plays then, by its number in the list: the track's kit
+    /// (kit 1 for a track the part doesn't name), the track's own
+    /// instrument, the one it plays by a send, else the shared synth. A
+    /// pad on a track that plays the synth, a strip's control and a
+    /// control kept for every project stay as they are.
+    #[test]
+    fn learned_controls_by_track_move_up_to_what_the_track_plays() {
+        use crate::instruments::free;
+        let mut list = InstrumentList::new();
+        list.follow_kits(3);
+        list.follow(1 << 2);
+        list.follow_free(1);
+        let n = |id: Option<InstrumentId>| id.unwrap().number();
+        let (kit_1, kit_3) = (n(list.of_kit(0)), n(list.of_kit(2)));
+        let (own_3, free_1) = (n(list.own_of(2)), n(list.free_of(0)));
+        // Track 2 plays kit 3, track 4 the synth; track 5 plays free place
+        // 1's synth by a send, track 6 track 3's own.
+        let track_kits = [(1, Some(2)), (3, None)];
+        let sends = [(4, free(0)), (5, 2)];
+        let line = |key: &str, target: &str| {
+            format!("{key} = any | ch 1 | cc 74 | {target} | 0.0000 1.0000 | absolute | jump")
+        };
+        let targets = [
+            ("t0.pad4.2", format!("kit{kit_1}.pad4.2")),
+            ("t1.pad4.2", format!("kit{kit_3}.pad4.2")),
+            ("t3.pad4.2", "t3.pad4.2".to_string()),
+            ("t2.inst.12", format!("i{own_3}.12")),
+            ("t4.inst.12", format!("i{free_1}.12")),
+            ("t5.inst.12", format!("i{own_3}.12")),
+            ("t0.inst.12", "i1.12".to_string()),
+            ("t0.mix.0", "t0.mix.0".to_string()),
+        ];
+        let mut text = String::from("mpfree-midi 1\nfollow.start-stop = off\n");
+        for (old, _) in &targets {
+            text.push_str(&line("learn", old));
+            text.push('\n');
+        }
+        let rig = line("learn-rig", "t0.pad4.2");
+        text.push_str(&rig);
+        text.push('\n');
+        let (moved, count) = learns_moved_up(&text, &track_kits, &sends, &list);
+        assert_eq!(count, 6, "{moved}");
+        let lines: Vec<&str> = moved.lines().collect();
+        assert_eq!(lines[..2], ["mpfree-midi 1", "follow.start-stop = off"]);
+        for (i, (old, new)) in targets.iter().enumerate() {
+            assert_eq!(lines[2 + i], line("learn", new), "{old}");
+        }
+        assert_eq!(lines[2 + targets.len()], rig, "kept for every project");
+        assert!(learns_by_instrument(&moved));
+        // Opening it again moves nothing more.
+        assert_eq!(
+            learns_moved_up(&moved, &track_kits, &sends, &list),
+            (moved.clone(), 0)
         );
     }
 

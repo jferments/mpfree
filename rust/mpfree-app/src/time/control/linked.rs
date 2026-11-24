@@ -63,7 +63,7 @@ use mpfree_play::SongChange;
 use mpfree_seq::arrange::{scene_length, scene_title, song_sections, FromScene, SongSection};
 use mpfree_seq::scenes::{MAX_LIST_STEPS, MAX_TIMES};
 use mpfree_seq::time_edit::Refused;
-use mpfree_seq::{TimeEdit, SLOTS};
+use mpfree_seq::{TimeEdit, ROWS};
 use mpfree_time_ui::view::LinkFrom;
 use mpfree_time_ui::view::TimeAction;
 use mpfree_transport::time::Tick;
@@ -190,7 +190,7 @@ impl TimeControl {
         let n = parts.len();
         let part = |k: usize| parts.get(k).ok_or("song list: no such step");
         let lead = usize::from(parts.first().is_some_and(|s| s.marker.is_none()));
-        let filled: Vec<usize> = (0..SLOTS).filter(|&r| p.row_filled(r)).collect();
+        let filled: Vec<usize> = (0..ROWS).filter(|&r| p.row_filled(r)).collect();
         const NO_CLIPS: &str =
             "song list: make a clip on the grid first: a step plays a row with clips";
         match *a {

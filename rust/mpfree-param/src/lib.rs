@@ -29,6 +29,9 @@
 //! |---|---|
 //! | track 3's instrument, parameter 12 | `t3.inst.12` |
 //! | track 3, sampler pad 5, parameter 2 | `t3.pad5.2` |
+//! | kit 9's pad 5 (the kit's instrument number), parameter 2, whichever track plays it (MIDI Learn) | `kit9.pad5.2` |
+//! | kit 9's pad 5, its third layer's grain setting 12 ([`pad::layer`]: 256 + 2 × 64 + 12) | `kit9.pad5.396` |
+//! | instrument 9's parameter 12, whichever track plays it (MIDI Learn) | `i9.12` |
 //! | mixer track 7's strip, volume (0): sequencer track 3's own ([`track_strip`]; the Drums strip, `t0`, is track 0's) | `t7.mix.0` |
 //! | bus 2, the insert with slot id 7, parameter 4 | `bus2.fx7.4` |
 //! | input 0 / pad channel 9 / return 1 / master strip | `in0.mix.0` / `ps9.mix.0` / `ret1.mix.0` / `master.mix.0` |
@@ -105,8 +108,19 @@ pub enum Owner {
     /// A track's instrument node (Poly, FM, ...).
     Inst(u8),
     /// A sampler pad's sound on a drum track: `(track, pad)`. A value set
-    /// here applies to the voice that starts on that frame.
+    /// here applies to the voice that starts on that frame. Its parameters
+    /// are the pad's own settings and its layers' grain settings ([`pad`]).
     Pad(u8, u8),
+    /// A kit's pad by the kit's instrument number in its project's list
+    /// and the pad, whichever track plays the kit (sampler step 16): what
+    /// MIDI Learn names a pad's setting by, so a learned knob stays on its
+    /// kit when a track picks another. Its parameters are [`Owner::Pad`]'s.
+    KitPad(u16, u8),
+    /// An instrument of the project's list by its number, whichever track
+    /// plays it (sampler step 16): what MIDI Learn names a synth's knob by,
+    /// so it stays on that synth when a track picks another. Its
+    /// parameters are [`Owner::Inst`]'s.
+    Sound(u16),
     /// A mixer strip's own controls (volume, pan, sends ...).
     Strip(Strip),
     /// An insert on a strip, named by its slot id: a number the chain
@@ -259,22 +273,34 @@ pub mod clips {
     pub const STOP_ALL: u16 = 0;
     /// Every track back to the arrangement (the grid's Back to song).
     pub const BACK_TO_SONG: u16 = 1;
+    /// Capture scene: the clips playing now into a new row (the grid's
+    /// Capture scene in Perform, the Arrange refactor's 5.3).
+    pub const CAPTURE_SCENE: u16 = 2;
     /// The tracks the ids below count to (`mpfree_seq::MAX_TRACKS`).
     pub const TRACKS: u16 = 128;
-    /// The rows of the grid (`mpfree_seq::SLOTS`).
+    /// The rows of the grid's bank A (`mpfree_seq::SLOTS`): its cells'
+    /// ids, as learned before scene banks.
     pub const ROWS: u16 = 16;
+    /// All the grid's rows, banks A to D (`mpfree_seq::ROWS`; the Arrange
+    /// refactor's 5.6). The cells of rows 17 to 64 have ids of their own
+    /// from [`CLIP_MORE`], so a cell learned in bank A keeps its id.
+    pub const ALL_ROWS: u16 = 64;
     const SCENE: u16 = 0x100;
     const STOP: u16 = 0x200;
     const MUTE: u16 = 0x300;
     const SOLO: u16 = 0x400;
     const ARM: u16 = 0x500;
     const CLIP: u16 = 0x1000;
+    /// The cells of rows 17 to 64: `CLIP_MORE + track * ALL_ROWS + row`.
+    pub const CLIP_MORE: u16 = 0x3000;
 
     /// What a [`Owner::Clips`](super::Owner::Clips) parameter does.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum Clips {
         StopAll,
         BackToSong,
+        /// Keep the clips playing now as a new row (Capture scene).
+        CaptureScene,
         /// Launch row `row` as a scene (the row's button).
         Scene(u8),
         /// The cell at `(track, row)`, as a tap on it: launch its clip,
@@ -294,9 +320,13 @@ pub mod clips {
     pub const fn scene(row: u8) -> u16 {
         SCENE + row as u16
     }
-    /// The cell of track `track`, row `row`.
+    /// The cell of track `track`, row `row` (0 to 63).
     pub const fn clip(track: u8, row: u8) -> u16 {
-        CLIP + track as u16 * ROWS + row as u16
+        if (row as u16) < ROWS {
+            CLIP + track as u16 * ROWS + row as u16
+        } else {
+            CLIP_MORE + track as u16 * ALL_ROWS + row as u16
+        }
     }
     pub const fn stop(track: u8) -> u16 {
         STOP + track as u16
@@ -313,6 +343,12 @@ pub mod clips {
 
     /// What parameter `id` does, if it is one.
     pub fn of(id: u16) -> Option<Clips> {
+        if id >= CLIP_MORE {
+            let i = id - CLIP_MORE;
+            let (track, row) = ((i / ALL_ROWS) as u8, (i % ALL_ROWS) as u8);
+            return (i < TRACKS * ALL_ROWS && u16::from(row) >= ROWS)
+                .then_some(Clips::Clip(track, row));
+        }
         if id >= CLIP {
             let i = id - CLIP;
             let (track, row) = ((i / ROWS) as u8, (i % ROWS) as u8);
@@ -323,9 +359,10 @@ pub mod clips {
             0 => match id {
                 STOP_ALL => Some(Clips::StopAll),
                 BACK_TO_SONG => Some(Clips::BackToSong),
+                CAPTURE_SCENE => Some(Clips::CaptureScene),
                 _ => None,
             },
-            SCENE => (n < ROWS).then_some(Clips::Scene(n as u8)),
+            SCENE => (n < ALL_ROWS).then_some(Clips::Scene(n as u8)),
             STOP | MUTE | SOLO | ARM if n < TRACKS => {
                 let t = n as u8;
                 Some(match kind {
@@ -573,6 +610,45 @@ pub mod arp {
             return Some("Modifier");
         }
         ALL.iter().find(|(i, _)| *i == id).map(|(_, n)| *n)
+    }
+}
+
+/// [`Owner::Pad`]'s and [`Owner::KitPad`]'s parameters, as far as this
+/// crate names them (sampler step 17). Ids below [`LAYER_BASE`] are the
+/// pad's own settings (the sampler's `PadField` numbers). From it, each of
+/// the pad's layers has [`LAYER_SETTINGS`] ids for its grain settings (the
+/// sampler's `GrainField` numbers): layer `l`'s setting `g` is
+/// `LAYER_BASE + l × LAYER_SETTINGS + g`. The text form is the number, so
+/// a build that doesn't know an id reads and keeps it, moving nothing.
+pub mod pad {
+    /// The first layer id: layer 0's setting 0.
+    pub const LAYER_BASE: u16 = 256;
+    /// Ids a layer has, one a grain setting.
+    pub const LAYER_SETTINGS: u16 = 64;
+    /// Layers a pad can have (the sampler's `MAX_LAYERS`).
+    pub const LAYERS: u8 = 16;
+
+    /// Layer `layer`'s setting `setting`; None past the last layer or
+    /// setting.
+    pub const fn layer(layer: u8, setting: u8) -> Option<u16> {
+        if layer >= LAYERS || setting as u16 >= LAYER_SETTINGS {
+            return None;
+        }
+        Some(LAYER_BASE + layer as u16 * LAYER_SETTINGS + setting as u16)
+    }
+
+    /// The layer and setting id `id` names ([`layer`]'s inverse); None for
+    /// one of the pad's own settings, or past the last layer.
+    pub const fn layer_of(id: u16) -> Option<(u8, u8)> {
+        if id < LAYER_BASE {
+            return None;
+        }
+        let n = id - LAYER_BASE;
+        let l = n / LAYER_SETTINGS;
+        if l >= LAYERS as u16 {
+            return None;
+        }
+        Some((l as u8, (n % LAYER_SETTINGS) as u8))
     }
 }
 
@@ -891,6 +967,8 @@ impl fmt::Display for Owner {
             Owner::Perform => f.write_str("perform"),
             Owner::Play => f.write_str("play"),
             Owner::Show => f.write_str("show"),
+            Owner::KitPad(k, p) => write!(f, "kit{k}.pad{p}"),
+            Owner::Sound(n) => write!(f, "i{n}"),
             o => {
                 let (t, on) = o.split().expect("every other owner is on a track");
                 write!(f, "t{t}.{on}")
@@ -980,8 +1058,12 @@ fn owner(words: &[&str]) -> Option<Owner> {
         [w] => num(w, "macro")
             .map(Owner::Macro)
             .or_else(|| num(w, "mod").map(Owner::Mod))
-            .or_else(|| num(w, "morph").map(Owner::Morph)),
+            .or_else(|| num(w, "morph").map(Owner::Morph))
+            .or_else(|| num(w, "i").map(Owner::Sound)),
         [s, what] => {
+            if let Some(k) = num(s, "kit") {
+                return Some(Owner::KitPad(k, num(what, "pad")?));
+            }
             let s = strip(s)?;
             if what == "mix" {
                 return Some(Owner::Strip(s));
@@ -1041,6 +1123,10 @@ mod tests {
             Owner::Inst(0),
             Owner::Inst(63),
             Owner::Pad(3, 5),
+            Owner::KitPad(1, 0),
+            Owner::KitPad(u16::MAX, 127),
+            Owner::Sound(1),
+            Owner::Sound(u16::MAX),
             Owner::Arp(1),
             Owner::Seq(2),
             Owner::NoteFx(3, 2),
@@ -1076,10 +1162,35 @@ mod tests {
     }
 
     #[test]
+    fn a_pads_layer_ids_follow_its_own_settings_and_come_back() {
+        assert_eq!(pad::layer(0, 0), Some(pad::LAYER_BASE));
+        assert_eq!(pad::layer(2, 12), Some(396));
+        assert_eq!(pad::layer(15, 63), Some(1279));
+        assert_eq!(pad::layer(16, 0), None, "a pad has 16 layers");
+        assert_eq!(pad::layer(0, 64), None, "a layer has 64 ids");
+        for id in 0..pad::LAYER_BASE {
+            assert_eq!(pad::layer_of(id), None, "{id} is the pad's own");
+        }
+        for l in 0..pad::LAYERS {
+            for g in 0..pad::LAYER_SETTINGS as u8 {
+                let id = pad::layer(l, g).unwrap();
+                assert_eq!(pad::layer_of(id), Some((l, g)));
+            }
+        }
+        assert_eq!(pad::layer_of(1280), None, "past the last layer");
+    }
+
+    #[test]
     fn text_examples() {
         let cases = [
             (ParamAddr::new(Owner::Inst(3), 12), "t3.inst.12"),
             (ParamAddr::new(Owner::Pad(3, 5), 2), "t3.pad5.2"),
+            (ParamAddr::new(Owner::KitPad(9, 5), 2), "kit9.pad5.2"),
+            (ParamAddr::new(Owner::Sound(9), 12), "i9.12"),
+            (
+                ParamAddr::new(Owner::KitPad(9, 5), pad::layer(2, 12).unwrap()),
+                "kit9.pad5.396",
+            ),
             (ParamAddr::new(Owner::Strip(Strip::Track(3)), 0), "t3.mix.0"),
             (
                 ParamAddr::new(Owner::Insert(Strip::Bus(2), 7), 4),
@@ -1173,11 +1284,27 @@ mod tests {
         use clips::Clips;
         assert_eq!(clips::of(clips::STOP_ALL), Some(Clips::StopAll));
         assert_eq!(clips::of(clips::BACK_TO_SONG), Some(Clips::BackToSong));
+        assert_eq!(clips::of(clips::CAPTURE_SCENE), Some(Clips::CaptureScene));
         assert_eq!(clips::of(clips::scene(15)), Some(Clips::Scene(15)));
-        assert_eq!(clips::of(clips::scene(16)), None, "16 rows");
+        // Scene banks (5.6): 64 rows, bank A's cells keeping their ids.
+        assert_eq!(clips::of(clips::scene(63)), Some(Clips::Scene(63)));
+        assert_eq!(clips::of(clips::scene(64)), None, "64 rows");
         assert_eq!(clips::of(clips::clip(0, 0)), Some(Clips::Clip(0, 0)));
+        assert_eq!(
+            clips::clip(1, 2),
+            0x1000 + 16 + 2,
+            "as learned before banks"
+        );
         assert_eq!(clips::of(clips::clip(127, 15)), Some(Clips::Clip(127, 15)));
         assert_eq!(clips::of(clips::clip(127, 15) + 1), None);
+        assert_eq!(clips::of(clips::clip(0, 16)), Some(Clips::Clip(0, 16)));
+        assert_eq!(clips::of(clips::clip(127, 63)), Some(Clips::Clip(127, 63)));
+        assert_eq!(clips::of(clips::clip(127, 63) + 1), None);
+        assert_eq!(
+            clips::of(clips::CLIP_MORE + 3),
+            None,
+            "bank A's ids are below"
+        );
         for t in [0u8, 7, 127] {
             assert_eq!(clips::of(clips::stop(t)), Some(Clips::Stop(t)));
             assert_eq!(clips::of(clips::mute(t)), Some(Clips::Mute(t)));
@@ -1187,7 +1314,7 @@ mod tests {
             assert!(!clips::is_value(clips::arm(t)) && !clips::is_value(clips::stop(t)));
         }
         assert_eq!(clips::of(clips::mute(127) + 1), None, "128 tracks");
-        assert_eq!(clips::of(2), None);
+        assert_eq!(clips::of(3), None);
         // No two say the same.
         let mut seen = std::collections::HashSet::new();
         for id in 0..=u16::MAX {
@@ -1195,7 +1322,7 @@ mod tests {
                 assert!(seen.insert(c), "{id}");
             }
         }
-        assert_eq!(seen.len(), 2 + 16 + 4 * 128 + 128 * 16);
+        assert_eq!(seen.len(), 3 + 64 + 4 * 128 + 128 * 64);
     }
 
     /// The looper's footswitch ids are fixed numbers (a rig keeps its
@@ -1352,6 +1479,14 @@ mod tests {
             "t3.midi3.7",
             "play0.1",
             "t1.play.0",
+            "kit9.inst.1",
+            "kit.pad1.0",
+            "kit9.pad.0",
+            "kit70000.pad1.0",
+            "kit9.pad1",
+            "i.1",
+            "i9.pad1.0",
+            "i70000.1",
         ] {
             assert!(s.parse::<ParamAddr>().is_err(), "{s:?} should not parse");
         }

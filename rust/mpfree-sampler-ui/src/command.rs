@@ -25,8 +25,8 @@ use std::ops::Range;
 use mpfree_sampler::autosample::Instrument;
 use mpfree_sampler::engine::PadField;
 use mpfree_sampler::model::{
-    ChopMode, ChopSet, Fade, GrainParams, Layer, ModelError, Pad, PadsPlay, PlayMode, Project,
-    Region, Source, SourceId, Warp, KEPT_CHOP, MAX_LAYERS,
+    ChopMode, ChopSet, Fade, GrainParams, KeysPlay, Layer, ModelError, Pad, PadsPlay, PlayMode,
+    Project, Region, Source, SourceId, Warp, KEPT_CHOP, MAX_LAYERS,
 };
 use mpfree_sampler::scene;
 
@@ -140,6 +140,11 @@ pub enum Change {
     },
     /// What the kit's pads play: their own sounds, notes or 16 Levels.
     PadsPlay(PadsPlay),
+    /// What a key (a MIDI keyboard's, a route's, a layer's) plays on the
+    /// kit: its pad, the keygroups that hold it, or both; None: by what
+    /// the kit holds (sampler step K1; picked on the pads picker's Kits
+    /// side, step 15e).
+    KeysPlay(Option<KeysPlay>),
     /// The kit's key fade, in notes: every keygroup fades over it and the
     /// zones that meet overlap by it.
     KeyFade(u8),
@@ -491,6 +496,7 @@ impl Change {
                 )?;
             }
             Change::PadsPlay(play) => p.set_pads_play(*play)?,
+            Change::KeysPlay(play) => p.set_keys_play(*play),
             Change::KeyFade(fade) => p.set_key_fade(*fade)?,
             Change::MapToKeys { roots } => {
                 p.map_to_keys(roots)?;
@@ -677,6 +683,7 @@ impl Change {
             | Change::LoadPad { pad, .. }
             | Change::Processed { pad, .. } => Some(*pad),
             Change::PadsPlay(_)
+            | Change::KeysPlay(_)
             | Change::KeyFade(_)
             | Change::MapToKeys { .. }
             | Change::Chop { .. }
@@ -905,6 +912,10 @@ mod tests {
             (
                 Change::PadsPlay(PadsPlay::Keys { from: 48 }),
                 Box::new(|p: &Project| p.pads_play() == PadsPlay::Keys { from: 48 }),
+            ),
+            (
+                Change::KeysPlay(Some(KeysPlay::Both)),
+                Box::new(|p: &Project| p.keys_play() == KeysPlay::Both),
             ),
             (
                 Change::KeyFade(3),
@@ -1533,6 +1544,7 @@ mod tests {
         );
         assert_eq!(crate::PlayAction::Pick(3).change(), None);
         assert_eq!(Change::KeyFade(2).pad(), None);
+        assert_eq!(Change::KeysPlay(None).pad(), None);
         assert_eq!(Change::RemoveLayer { pad: 4, layer: 0 }.pad(), Some(4));
         let name = |pad_name: Option<&str>| Change::Name {
             pad: 0,

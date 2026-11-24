@@ -235,6 +235,10 @@ pub struct Engine {
     /// How many voices may be full voices (not plain one-shots) at once
     /// ([`Engine::set_full_voices`]); the whole pool unless set.
     full_limit: usize,
+    /// Counting what each kit's voices cost ([`Engine::count_kits`]), and
+    /// each kit's count so far ([`Engine::take_kit_counts`]).
+    counting: bool,
+    kit_counts: Vec<u64>,
 }
 
 impl Engine {
@@ -242,6 +246,24 @@ impl Engine {
     /// One kit, kit 0.
     pub fn new(rate: u32, voices: usize) -> Engine {
         Engine::with_kits(rate, voices, 1)
+    }
+
+    /// Counts what each kit's voices cost from the next render on, while
+    /// on: each playing voice's cost in grains (a voice about 8, a plain
+    /// one-shot 2, each live grain 1) by the frames it plays, for
+    /// [`Engine::take_kit_counts`]. No voice is timed (profiling.md: never
+    /// time per voice); the pads' measured time is shared out by these
+    /// counts. A look over the voices each part of a block.
+    pub fn count_kits(&mut self, on: bool) {
+        self.counting = on;
+    }
+
+    /// Each kit's count since the last take ([`Engine::count_kits`]),
+    /// added into `out` by kit, and starts again. Never allocates.
+    pub fn take_kit_counts(&mut self, out: &mut [u64]) {
+        for (o, n) in out.iter_mut().zip(self.kit_counts.iter_mut()) {
+            *o = o.saturating_add(std::mem::take(n));
+        }
     }
 
     /// An engine playing `kits` kits at once (1 to [`MAX_KITS`]) from one
@@ -301,6 +323,8 @@ impl Engine {
             marks: [0; MAX_MARKS],
             marks_made: 0,
             full_limit: voices.max(1),
+            counting: false,
+            kit_counts: vec![0; kits],
         }
     }
 
@@ -426,6 +450,13 @@ impl Engine {
             self.follow_tape(b - a);
             self.pool.share_budget();
             self.share_grains(b - a, master);
+            if self.counting {
+                let frames = (b - a) as u64;
+                self.pool.a.count_kits(frames, &mut self.kit_counts);
+                if let Some(p) = self.pool.b.as_ref() {
+                    p.count_kits(frames, &mut self.kit_counts);
+                }
+            }
             let rate = self.rate;
             let lane_busy = self
                 .pool

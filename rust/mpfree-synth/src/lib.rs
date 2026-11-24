@@ -100,6 +100,7 @@ pub mod params;
 pub mod pluck;
 pub mod pluck_params;
 pub mod poly;
+pub mod poly_filter;
 pub mod pressure;
 pub mod squelch;
 pub mod squelch_params;

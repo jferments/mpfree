@@ -1,85 +1,85 @@
 # The grain engine's quality ratchet: every number may stay or get better, never worse.
 # Written by `MPFREE_QUALITY_BLESS=1 cargo test --locked -p mpfree-fxlab --test grain`;
 # see docs/dev/design/fx-quality.md ("The grain engine"). key<TAB>value
-grain/cap[2 s grains, 50 a second]/level_change_lu	0.1701
-grain/cap[2 s grains, 80 a second]/level_change_lu	0.2227
-grain/coherent[pink, overlap 16]/stretch_over_sprayed_lu	0.3802
-grain/coherent[pink, overlap 64]/stretch_over_sprayed_lu	0.4197
-grain/feedback[pink -14 dBFS, full]/growth_db	-2.1923
-grain/feedback[pink -14 dBFS, full]/peak_dbfs	2.2067
-grain/filter[pink, band 1 kHz, Q 12, full spray]/octave_spread_db	1.4527
-grain/filter[pink, high pass 1 kHz]/pass_db	0.0265
-grain/filter[pink, high pass 1 kHz]/stop_db	-22.2151
-grain/filter[pink, low pass 1 kHz, Q 12]/peak_gain_db	3.954
-grain/filter[pink, low pass 1 kHz]/pass_db	-0.0652
-grain/filter[pink, low pass 1 kHz]/stop_db	-24.542
+grain/cap[2 s grains, 50 a second]/level_change_lu	0.1638
+grain/cap[2 s grains, 80 a second]/level_change_lu	0.1476
+grain/coherent[pink, overlap 16]/stretch_over_sprayed_lu	0.1254
+grain/coherent[pink, overlap 64]/stretch_over_sprayed_lu	0.1523
+grain/feedback[pink -14 dBFS, full]/growth_db	-2.1191
+grain/feedback[pink -14 dBFS, full]/peak_dbfs	2.2149
+grain/filter[pink, band 1 kHz, Q 12, full spray]/octave_spread_db	1.453
+grain/filter[pink, high pass 1 kHz]/pass_db	0.0268
+grain/filter[pink, high pass 1 kHz]/stop_db	-22.2147
+grain/filter[pink, low pass 1 kHz, Q 12]/peak_gain_db	3.9876
+grain/filter[pink, low pass 1 kHz]/pass_db	-0.0643
+grain/filter[pink, low pass 1 kHz]/stop_db	-24.5398
 grain/frozen[1 kHz, density 15 to 60]/swing_db	2.4223
-grain/frozen[pad, density 15 to 60]/swing_db	2.7254
+grain/frozen[pad, density 15 to 60]/swing_db	2.7256
 grain/hits[drums, double speed]/attack_ms	0.4989
-grain/hits[drums, double speed]/flam_db	0.3936
-grain/hits[drums, double speed]/pre_db	-30.1024
+grain/hits[drums, double speed]/flam_db	0.3759
+grain/hits[drums, double speed]/pre_db	-30.2044
 grain/hits[drums, half speed]/attack_ms	0.4989
-grain/hits[drums, half speed]/flam_db	1.934
-grain/hits[drums, half speed]/pre_db	-70.7699
-grain/level[pad, defaults]/offset_lu	-0.5097
-grain/level[pad]/range_lu	0.6416
-grain/level[pink, defaults]/offset_lu	0.3452
-grain/level[pink]/range_lu	0.6294
-grain/move[pad, env size]/extra_swing_db	0.0918
-grain/move[pad, env size]/level_change_lu	-0.1127
-grain/move[pad, lfo density]/extra_swing_db	-0.1856
-grain/move[pad, lfo density]/level_change_lu	-0.0319
-grain/move[pad, lfo pitch]/extra_swing_db	-0.3396
-grain/move[pad, lfo pitch]/level_change_lu	-0.0079
-grain/move[pad, lfo position]/extra_swing_db	-0.1433
-grain/move[pad, lfo position]/level_change_lu	-0.2262
-grain/move[pad, lfo size]/extra_swing_db	0.2115
-grain/move[pad, lfo size]/level_change_lu	-0.0346
-grain/move[pad, lfo spray]/extra_swing_db	-0.0232
-grain/move[pad, lfo spray]/level_change_lu	-0.1082
-grain/move[pink, env size]/extra_swing_db	-0.2643
-grain/move[pink, env size]/level_change_lu	-0.0696
-grain/move[pink, lfo density]/extra_swing_db	-0.0539
-grain/move[pink, lfo density]/level_change_lu	-0.0567
-grain/move[pink, lfo pitch]/extra_swing_db	-0.0787
-grain/move[pink, lfo pitch]/level_change_lu	-0.0011
-grain/move[pink, lfo position]/extra_swing_db	-0.2556
-grain/move[pink, lfo position]/level_change_lu	0.0286
-grain/move[pink, lfo size]/extra_swing_db	0.057
-grain/move[pink, lfo size]/level_change_lu	0.0723
-grain/move[pink, lfo spray]/extra_swing_db	1.2451
-grain/move[pink, lfo spray]/level_change_lu	-0.1204
+grain/hits[drums, half speed]/flam_db	1.918
+grain/hits[drums, half speed]/pre_db	-70.7528
+grain/level[pad, defaults]/offset_lu	-0.5219
+grain/level[pad]/range_lu	0.6402
+grain/level[pink, defaults]/offset_lu	0.1198
+grain/level[pink]/range_lu	0.3707
+grain/move[pad, env size]/extra_swing_db	0.0906
+grain/move[pad, env size]/level_change_lu	-0.1126
+grain/move[pad, lfo density]/extra_swing_db	-0.1859
+grain/move[pad, lfo density]/level_change_lu	-0.0336
+grain/move[pad, lfo pitch]/extra_swing_db	-0.3401
+grain/move[pad, lfo pitch]/level_change_lu	-0.0114
+grain/move[pad, lfo position]/extra_swing_db	0.0876
+grain/move[pad, lfo position]/level_change_lu	-0.2462
+grain/move[pad, lfo size]/extra_swing_db	0.2125
+grain/move[pad, lfo size]/level_change_lu	-0.0344
+grain/move[pad, lfo spray]/extra_swing_db	-0.1202
+grain/move[pad, lfo spray]/level_change_lu	-0.1615
+grain/move[pink, env size]/extra_swing_db	-0.2494
+grain/move[pink, env size]/level_change_lu	-0.0685
+grain/move[pink, lfo density]/extra_swing_db	-0.0208
+grain/move[pink, lfo density]/level_change_lu	-0.0859
+grain/move[pink, lfo pitch]/extra_swing_db	-0.056
+grain/move[pink, lfo pitch]/level_change_lu	-0.0393
+grain/move[pink, lfo position]/extra_swing_db	-0.1485
+grain/move[pink, lfo position]/level_change_lu	0.0217
+grain/move[pink, lfo size]/extra_swing_db	0.0667
+grain/move[pink, lfo size]/level_change_lu	0.0712
+grain/move[pink, lfo spray]/extra_swing_db	0.7928
+grain/move[pink, lfo spray]/level_change_lu	-0.2297
 grain/onset[pad, 1000 ms grains]/ms	10
 grain/onset[pad, 200 ms grains]/ms	10
 grain/onset[pad, 500 ms grains]/ms	10
-grain/pitch[13.5 kHz a fifth down]/spur_db	-44.1886
-grain/pitch[15 kHz an octave up]/heard_db	-82.462
-grain/pitch[2 kHz three octaves up]/spur_db	-85.6694
-grain/pitch[6 kHz two octaves up]/heard_db	-86.0717
-grain/pitch[9 kHz a fifth up]/spur_db	-70.9836
-grain/pitch[9 kHz a semitone up]/spur_db	-29.0479
-grain/preset[pad, Frozen choir]/level_change_lu	0.0447
-grain/preset[pad, Glass pad]/level_change_lu	0.6495
-grain/preset[pad, Grit cloud]/level_change_lu	-0.0605
-grain/preset[pad, Shimmer fifths]/level_change_lu	1.0708
-grain/preset[pad, Stutter 1/16]/level_change_lu	-3.6554
-grain/preset[pad, Sub drone]/level_change_lu	-1.0199
-grain/preset[pad, Swarm]/level_change_lu	0.2089
-grain/preset[pad, Tape stretch]/level_change_lu	-0.6532
-grain/preset[pink, Frozen choir]/level_change_lu	-0.7346
-grain/preset[pink, Glass pad]/level_change_lu	-0.4995
-grain/preset[pink, Grit cloud]/level_change_lu	-0.9617
-grain/preset[pink, Shimmer fifths]/level_change_lu	-0.4181
-grain/preset[pink, Stutter 1/16]/level_change_lu	-4.4319
-grain/preset[pink, Sub drone]/level_change_lu	-1.2707
-grain/preset[pink, Swarm]/level_change_lu	-0.8313
-grain/preset[pink, Tape stretch]/level_change_lu	-1.2813
-grain/quality[feedback pink -14 dBFS, full, tape]/growth_db	-3.418
-grain/quality[feedback pink -14 dBFS, full, tape]/peak_dbfs	-1.5127
-grain/quality[pad, lofi]/level_lu	0.0093
-grain/quality[pad, tape]/level_lu	-0.1563
-grain/quality[pink, lofi]/level_lu	-0.2219
-grain/quality[pink, tape]/level_lu	-0.8207
+grain/pitch[13.5 kHz a fifth down]/spur_db	-56.9346
+grain/pitch[15 kHz an octave up]/heard_db	-82.6849
+grain/pitch[2 kHz three octaves up]/spur_db	-85.6608
+grain/pitch[6 kHz two octaves up]/heard_db	-86.0949
+grain/pitch[9 kHz a fifth up]/spur_db	-71.2048
+grain/pitch[9 kHz a semitone up]/spur_db	-66.0634
+grain/preset[pad, Frozen choir]/level_change_lu	0.0626
+grain/preset[pad, Glass pad]/level_change_lu	0.6614
+grain/preset[pad, Grit cloud]/level_change_lu	-0.0427
+grain/preset[pad, Shimmer fifths]/level_change_lu	1.0828
+grain/preset[pad, Stutter 1/16]/level_change_lu	-3.6414
+grain/preset[pad, Sub drone]/level_change_lu	-0.9985
+grain/preset[pad, Swarm]/level_change_lu	0.2268
+grain/preset[pad, Tape stretch]/level_change_lu	-0.6338
+grain/preset[pink, Frozen choir]/level_change_lu	-0.4857
+grain/preset[pink, Glass pad]/level_change_lu	-0.2748
+grain/preset[pink, Grit cloud]/level_change_lu	-0.71
+grain/preset[pink, Shimmer fifths]/level_change_lu	-0.1976
+grain/preset[pink, Stutter 1/16]/level_change_lu	-4.2443
+grain/preset[pink, Sub drone]/level_change_lu	-0.995
+grain/preset[pink, Swarm]/level_change_lu	-0.5768
+grain/preset[pink, Tape stretch]/level_change_lu	-1.0221
+grain/quality[feedback pink -14 dBFS, full, tape]/growth_db	-3.4499
+grain/quality[feedback pink -14 dBFS, full, tape]/peak_dbfs	-1.5473
+grain/quality[pad, lofi]/level_lu	0.0094
+grain/quality[pad, tape]/level_lu	-0.1537
+grain/quality[pink, lofi]/level_lu	-0.1914
+grain/quality[pink, tape]/level_lu	-0.6844
 grain/repeat[pink, 1/16]/level_change_db	-0.0521
 grain/repeat[pink, 1/4]/level_change_db	-0.0202
 grain/repeat[tone 110 Hz, 1/16]/join_step_ratio	1.3958
@@ -101,15 +101,15 @@ grain/smooth[shape 80 %, swell, overlap 2]/modulation_db	-85.9917
 grain/smooth[shape 80 %, swell, overlap 2]/ripple_db	0.0041
 grain/smooth[trapezoid 0.1, overlap 2]/modulation_db	-83.83
 grain/smooth[trapezoid 0.1, overlap 2]/ripple_db	0.004
-grain/spread[full]/correlation	0.441
-grain/spread[full]/level_change_lu	0.0482
-grain/spread[full]/mono_fold_lu	1.3834
+grain/spread[full]/correlation	0.4412
+grain/spread[full]/level_change_lu	0.0486
+grain/spread[full]/mono_fold_lu	1.3809
 grain/tone[A2]/pitch_cents	0.0098
 grain/tone[A4]/pitch_cents	-0.0052
 grain/tone[B5]/pitch_cents	-0.0019
-grain/vary[pad, level spray full]/level_change_lu	-0.0137
-grain/vary[pad, peaked spray]/level_change_lu	-0.2522
-grain/vary[pad, size spray full]/level_change_lu	0.1402
-grain/vary[pink, level spray full]/level_change_lu	-0.0771
-grain/vary[pink, peaked spray]/level_change_lu	0.1088
-grain/vary[pink, size spray full]/level_change_lu	-0.0527
+grain/vary[pad, level spray full]/level_change_lu	-0.0143
+grain/vary[pad, peaked spray]/level_change_lu	-0.253
+grain/vary[pad, size spray full]/level_change_lu	0.139
+grain/vary[pink, level spray full]/level_change_lu	-0.0869
+grain/vary[pink, peaked spray]/level_change_lu	0.0788
+grain/vary[pink, size spray full]/level_change_lu	-0.0727

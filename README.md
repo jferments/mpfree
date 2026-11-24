@@ -104,6 +104,9 @@ MPFree is laid out as eight tabs across the top of the screen. Each name below l
 
 Beyond the tabs:
 
+- **[Note Repeat and the arpeggiator](docs/user/src/making-music/note-repeat-and-arp.md).** Hold NOTE REPEAT for rolls in time, latch it, or turn a held chord into a moving line with 74 [ready-made patterns](docs/user/src/reference/arp-patterns.md) in nine groups, from chord stabs and gates to bass lines, polymeters and chance.
+- **[Your own XY layouts](docs/user/src/making-music/xy-layouts.md).** Put any settings you like on the XY pad, up to eight across and eight up: a synth's filter, an effect's drive, a send, a track's arp. What you move on the pad can record, into a clip or into the song.
+- **Gigs: [patches](docs/user/src/making-music/patches.md) and [set lists](docs/user/src/making-music/set-lists.md).** A song keeps its keyboard splits and layers as patches you switch while you play. A set list plays your songs in order on the Show view, which says what comes next and whether it's ready, and moves on with a footswitch.
 - **[Other gear](docs/user/src/making-music/midi-and-cv.md).** Play it from MIDI keyboards over 5-pin MIDI or USB, including MPE. Turn a knob on your controller and MIDI Learn hands it the setting you touched. Sync to MIDI clock or send it, and play modular synths with CV and gate.
 - **[Plugins](docs/user/src/making-music/plugins.md).** It hosts CLAP plugins and the MPC-format plugins people share. Each one runs apart from the rest of MPFree, so a plugin that crashes can't stop the music.
 - **[Saving](docs/user/src/making-music/saving.md) and [exporting](docs/user/src/making-music/exporting.md).** Projects save with their samples and recordings, autosave every two minutes and keep the last ten saves. Songs export as a mixdown, as stems or as a MIDI file.

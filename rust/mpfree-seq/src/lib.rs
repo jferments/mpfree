@@ -90,15 +90,17 @@ pub use mpfree_scale;
 pub use mpfree_scale::Scale;
 use mpfree_transport::time::{Swing, Tick, PPQ};
 
-/// The rows the Clips grid shows: one bank of clip slots per track, one
-/// per pad. A project keeps up to [`ROWS`]; the grid shows these until
-/// scene banks come (the Arrange refactor's phase 5), and what looks for
-/// a free row on the grid (recording, a capture, Song → scenes) and a row
-/// dragged stay within them.
+/// A bank of rows: 16, one per pad. Scene banks (the Arrange refactor's
+/// 5.6) are A to D, rows 1 to 16, 17 to 32 and so on: follow actions
+/// move within a clip's or a scene's bank ([`bank`]), and a page of
+/// scene pads holds one.
 pub const SLOTS: usize = 16;
-/// The most rows a project keeps clips and scenes in (the Arrange
-/// refactor's 1.2): four banks of [`SLOTS`]. A track keeps its clips by
-/// row number ([`Rows`]), so rows past its last clip cost nothing.
+/// The rows a project keeps clips and scenes in and the Clips grid
+/// shows (the Arrange refactor's 1.2 and 5.6): four banks of [`SLOTS`].
+/// A track keeps its clips by row number ([`Rows`]), so rows past its
+/// last clip cost nothing. What looks for a free row (recording, a
+/// capture) looks through them all, and a row dragged or copied shifts
+/// the rows under it as far as the last.
 pub const ROWS: usize = 4 * SLOTS;
 
 /// The rows of the bank of [`SLOTS`] that holds `row`: 0 to 15 for the
@@ -1697,9 +1699,9 @@ impl Rows {
         self.cells.iter_mut().flatten()
     }
 
-    /// The rows the Clips grid shows ([`SLOTS`]), empty ones too, in order.
+    /// The rows the Clips grid shows ([`ROWS`]), empty ones too, in order.
     pub fn shown(&self) -> impl Iterator<Item = &Option<Clip>> + '_ {
-        (0..SLOTS).map(|r| &self[r])
+        (0..ROWS).map(|r| &self[r])
     }
 
     /// The row of the clip with id `id`, if this track has it.
@@ -2413,8 +2415,8 @@ mod track_id_tests {
 
     /// Arrange 1.2: a track keeps its clips by row, up to ROWS; a row
     /// past its last clip reads empty; two tracks' rows are equal when
-    /// they hold the same clips in the same rows; the grid's rows are
-    /// the first SLOTS, and a free one is looked for there.
+    /// they hold the same clips in the same rows; the grid shows all
+    /// ROWS (scene banks, 5.6), and a free one is looked for in them all.
     #[test]
     fn a_track_keeps_its_clips_by_row_up_to_64() {
         let mut r = Rows::default();
@@ -2424,7 +2426,7 @@ mod track_id_tests {
         r[2] = Some(Clip::new("near", 3840));
         let rows: Vec<(usize, &str)> = r.iter().map(|(k, c)| (k, c.name.as_str())).collect();
         assert_eq!(rows, [(2, "near"), (40, "far")]);
-        assert_eq!(r.shown().count(), SLOTS);
+        assert_eq!(r.shown().count(), ROWS);
         assert_eq!(r.first_free(), Some(0));
         assert!(r.get_mut(ROWS).is_none());
         // An empty row written and left empty changes nothing.
@@ -2432,12 +2434,19 @@ mod track_id_tests {
         *same.get_mut(63).unwrap() = None;
         assert_eq!(same, r);
         assert_eq!(format!("{r:?}").matches("Clip {").count(), 2);
-        // The grid full, past its rows is not a free one.
+        // Bank A full, the first free row is in bank B; all 64 full,
+        // there is none.
         for k in 0..SLOTS {
             r[k] = Some(Clip::new("x", 960));
         }
+        assert_eq!(r.first_free(), Some(SLOTS));
+        for k in SLOTS..ROWS {
+            if k != 40 {
+                r[k] = Some(Clip::new("x", 960));
+            }
+        }
         assert_eq!(r.first_free(), None);
-        assert_eq!(r.empty_where(|c| c.name == "x"), SLOTS);
+        assert_eq!(r.empty_where(|c| c.name == "x"), ROWS - 1);
         assert_eq!(r.clips().count(), 1);
         // Banks of SLOTS rows.
         assert_eq!((bank(0), bank(15), bank(40)), (0..16, 0..16, 32..48));

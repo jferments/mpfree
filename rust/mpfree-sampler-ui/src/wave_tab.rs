@@ -1517,6 +1517,33 @@ impl WaveTab {
         a
     }
 
+    /// The Grain tool's row under touch `t` on widget `widget`, for a
+    /// touch with SHIFT held (MIDI Learn, sampler refactor step 17): a row
+    /// of the panel with a value, or a Q-Link card's (position, size,
+    /// density, pitch: [`grain_tab::QLINK_ROWS`]). [`grain_tab::Row::field`]
+    /// says which turn as parameters. None on another widget, or with
+    /// another tool open.
+    pub fn grain_row_at(
+        &self,
+        st: &WaveState,
+        widget: &str,
+        t: &mpfree_ui::Target,
+    ) -> Option<grain_tab::Row> {
+        if self.tool != Tool::Grain {
+            return None;
+        }
+        if let Some(k) = QLINKS.iter().position(|q| *q == widget) {
+            return grain_tab::QLINK_ROWS.get(k).copied();
+        }
+        if widget != REGION || !crate::play_tab::is_value_target(t) {
+            return None;
+        }
+        self.grain_part
+            .rows(&st.region)
+            .get(t.index.checked_sub(1)?)
+            .copied()
+    }
+
     /// The Grain tool's row picked on the panel, if one is.
     fn grain_row(&self, ui: &Ui, st: &WaveState) -> Option<grain_tab::Row> {
         let i = ui.get::<SettingList>(REGION)?.selected;
