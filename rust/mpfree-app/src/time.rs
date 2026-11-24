@@ -7281,6 +7281,94 @@ mod tests {
         assert!(!h.set_through_arp(99, true));
     }
 
+    /// Records (the Phrase tab's live tools, contract 8): with mpfree or
+    /// Both, a through track records what its arp played, not the chord,
+    /// each note marked to play as heard, and its clip plays them as
+    /// recorded, past the arp that would arpeggiate the chord; with You,
+    /// the chord as pressed, through the arp, as the switch alone does.
+    #[test]
+    fn records_both_keeps_what_was_heard_on_a_through_track_and_plays_it_past_the_arp() {
+        use mpfree_play::Keeps;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        assert!(h.set_through_arp(2, true));
+        let mut arps = arp_up(2);
+        arps.set_keeps(2, Keeps::Both);
+        let hits = record_a_chord(&mut h, &mut arps);
+        let clip = h.control.project.tracks[2].slots[0].as_ref().unwrap();
+        let kept: Vec<(u8, bool)> = clip.notes.iter().map(|n| (n.note, n.heard)).collect();
+        assert_eq!(kept, [(20, true), (21, true)], "what was heard, marked");
+        let pads: Vec<usize> = hits.iter().map(|&(_, p)| p).collect();
+        assert_eq!(pads, [20, 21], "as heard, not arpeggiated again: {hits:?}");
+        assert!(hits[0].0.abs_diff(2 * BAR + 1000) <= 23);
+        // You: the chord, unmarked, through the arp.
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        assert!(h.set_through_arp(2, true));
+        let mut arps = arp_up(2);
+        arps.set_keeps(2, Keeps::Yours);
+        let hits = record_a_chord(&mut h, &mut arps);
+        let clip = h.control.project.tracks[2].slots[0].as_ref().unwrap();
+        let mut kept: Vec<(u8, bool)> = clip.notes.iter().map(|n| (n.note, n.heard)).collect();
+        kept.sort();
+        assert_eq!(kept, [(4, false), (7, false), (9, false)]);
+        assert_eq!(
+            hits.iter().take(3).map(|h| h.1).collect::<Vec<_>>(),
+            [4, 7, 9]
+        );
+    }
+
+    /// Records mpfree on When I stop: the arp plays your call as pressed
+    /// and its answer; REC keeps the answer alone, as heard, and leaves
+    /// out your notes with their ends. Both keeps the two.
+    #[test]
+    fn records_mpfree_leaves_out_the_notes_you_play_through_the_arp() {
+        use mpfree_play::Keeps;
+        let take = |keeps: Keeps| {
+            let mut h = TimeHost::new(RATE, 120.0).unwrap();
+            let mut pads = Fake::default();
+            // Direct: the arp plays what it is given, as Answer plays your call.
+            let mut arps = TrackArps::new(RATE, 120.0);
+            arps.set_keeps(2, keeps);
+            h.command(Command::SetLoop(Some((0, 3840))));
+            h.act(TimeAction::NewClip { track: 2, slot: 0 }).unwrap();
+            let on = |note| Event::NoteOn {
+                note,
+                velocity: 100,
+            };
+            let mut n = 0u64;
+            while pads.frame < BAR - 1000 {
+                // Your pad 4, pressed and let go; then a note of the arp's
+                // own (no pad holds it), as an answer is.
+                match n {
+                    10 => {
+                        h.pad_pressed(0, on(4));
+                        arps.pad(2, 0, on(4));
+                    }
+                    30 => {
+                        h.pad_pressed(0, Event::NoteOff { note: 4 });
+                        arps.pad(2, 0, Event::NoteOff { note: 4 });
+                    }
+                    50 => {
+                        arps.pad(2, 0, on(9));
+                    }
+                    70 => {
+                        arps.pad(2, 0, Event::NoteOff { note: 9 });
+                    }
+                    _ => {}
+                }
+                h.period_arps(PERIOD, &mut pads, &mut arps);
+                pads.frame += u64::from(PERIOD);
+                n += 1;
+            }
+            let clip = h.project().clip(2, 0).unwrap();
+            let mut kept: Vec<(u8, bool)> = clip.notes.iter().map(|n| (n.note, n.heard)).collect();
+            kept.sort();
+            kept
+        };
+        assert_eq!(take(Keeps::Its), [(9, true)], "the answer alone");
+        assert_eq!(take(Keeps::Both), [(4, true), (9, true)]);
+        assert_eq!(take(Keeps::Switch), [(4, false), (9, false)], "as before");
+    }
+
     /// The switch off (the default, for drums): the track records what was
     /// heard, and its clip plays as recorded even though its arp is set
     /// to arpeggiate.
@@ -7321,6 +7409,7 @@ mod tests {
                     ramp: 0,
                     join: mpfree_seq::Join::Attack,
                     group: 0,
+                    heard: false,
                 })
                 .collect();
             c
@@ -15272,6 +15361,7 @@ mod tests {
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
                 group: 0,
+                heard: false,
             })
             .collect();
         h.control.project.tracks[0].slots[0] = Some(c);

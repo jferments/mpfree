@@ -278,6 +278,7 @@ impl Session {
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
                 group: 0,
+                heard: false,
             })
             .expect("in range");
         }
@@ -295,6 +296,7 @@ impl Session {
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
                 group: 0,
+                heard: false,
             })
             .expect("in range");
         }

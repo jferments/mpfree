@@ -127,6 +127,7 @@ fn playing_never_allocates() {
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
                 group: 0,
+                heard: false,
             })
             .collect();
         // Pressure on every note: four values over its length.

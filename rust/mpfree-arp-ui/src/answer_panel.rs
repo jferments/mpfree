@@ -12,16 +12,18 @@
 //! - [`AnswerPanel`], in the detail's place: the Plays row (When I stop
 //!   lit), Mode (Echo, Answer, Trade), Answers for (Like mine, 1, 2 or 4
 //!   bars; in Trade, each turn's bars), the key the call was read in, when
-//!   it starts, **Answer now** and **Capture both as a clip**, and the
-//!   reply's Q-Links (Variation, Activity, Range) as sliders.
+//!   it starts, Records (You, mpfree, Both: what REC keeps) with a line
+//!   saying it, **Answer now** and **Capture both as a clip**. The reply's
+//!   Q-Links (Variation, Activity, Range) are on the Q-Link cards beside
+//!   it, as the board draws.
 //!
-//! What they show is worked out from an [`ArpState`] by [`call_show`],
-//! [`answer_show`] and [`answer_sliders`], which draw nothing, so the
-//! tests read those.
+//! What they show is worked out from an [`ArpState`] by [`call_show`] and
+//! [`answer_show`], which draw nothing, so the tests read those; the
+//! cards' words and values are [`answer_sliders`]', kept on the panel.
 
-use crate::phrase_tab::WHEN;
-use crate::view::{AnswerMode, AnswerNow, ArpState, HeardNote, PlaysWhen, ANSWERS_FOR};
-use crate::widgets::{Slider, SliderStack};
+use crate::phrase_tab::{self, WHEN};
+use crate::view::{AnswerMode, AnswerNow, ArpState, HeardNote, PlaysWhen, Records, ANSWERS_FOR};
+use crate::widgets::Slider;
 use mpfree_arp::{Light, PPQ};
 use mpfree_ui::text::FontId;
 use mpfree_ui::{Align, Color, EventKind, PaintCx, Rect, Target, Touch, Widget};
@@ -382,35 +384,20 @@ pub struct AnswerShow {
     pub starts: String,
     /// Answer now can be pressed: you are playing a call (not in Trade).
     pub can_answer_now: bool,
+    /// The Records row: a place in `Records::ALL`.
+    pub records: usize,
 }
 
-/// How Answer replies, Answer now and Capture, and the reply's sliders. A
-/// tap on the Plays row gives `Tab(WHEN + i)`, on Mode `Tab(MODE + i)`, on
-/// Answers for `Tab(FOR + i)`, on Answer now `Toggle(NOW)`, on Capture
-/// `Toggle(CAPTURE)`; a finger on slider `i` gives `Select(i)`, then
-/// `Value(v)` ([`SliderStack`]).
+/// How Answer replies, what REC keeps, Answer now and Capture. A tap on
+/// the Plays row gives `Tab(WHEN + i)`, on Mode `Tab(MODE + i)`, on Answers
+/// for `Tab(FOR + i)`, on Records `Tab(phrase_tab::RECORDS + i)`, on Answer
+/// now `Toggle(NOW)`, on Capture `Toggle(CAPTURE)`.
+#[derive(Default, PartialEq)]
 pub struct AnswerPanel {
     pub show: AnswerShow,
-    pub sliders: SliderStack,
-}
-
-impl Default for AnswerPanel {
-    fn default() -> Self {
-        let mut sliders = SliderStack::new("", &ANSWER_QLINK_LABELS);
-        sliders.columns = 2;
-        AnswerPanel {
-            show: AnswerShow::default(),
-            sliders,
-        }
-    }
-}
-
-impl PartialEq for AnswerPanel {
-    fn eq(&self, other: &Self) -> bool {
-        self.show == other.show
-            && self.sliders.rows == other.sliders.rows
-            && self.sliders.active == other.sliders.active
-    }
+    /// The reply's Q-Links ([`answer_sliders`]), which the Q-Link cards
+    /// beside the panel show; the panel draws none.
+    pub qlinks: Vec<Slider>,
 }
 
 const ROW_H: i32 = 44;
@@ -425,10 +412,12 @@ struct PanelParts {
     key: Rect,
     starts: Rect,
     rule: Rect,
+    records_label: Rect,
+    records: Rect,
+    records_says: Rect,
     now: Rect,
     capture: Rect,
     capture_says: Rect,
-    sliders: Rect,
 }
 
 impl AnswerPanel {
@@ -437,7 +426,7 @@ impl AnswerPanel {
         let w = (r.w - 28).max(1);
         let half = (w - 10) / 2;
         let label = |y: i32| Rect::new(r.x + 16, y, (r.w - 32).max(1), 20);
-        let sliders = Rect::new(r.x + 16, r.bottom() - 12 - 84, (r.w - 32).max(1), 84);
+        let records = phrase_tab::records_row(r, r.y + 314);
         PanelParts {
             plays: Rect::new(x, r.y + 34, w, ROW_H),
             mode_label: label(r.y + 88),
@@ -447,10 +436,12 @@ impl AnswerPanel {
             key: label(r.y + 242),
             starts: label(r.y + 270),
             rule: Rect::new(x, r.y + 302, w, 1),
-            now: Rect::new(x, r.y + 316, half, 52),
-            capture: Rect::new(x + half + 10, r.y + 316, w - half - 10, 52),
-            capture_says: label(r.y + 376),
-            sliders,
+            records_label: Rect::new(r.x + 16, records.y, phrase_tab::RECORDS_X - 24, records.h),
+            records,
+            records_says: label(records.bottom() + 8),
+            now: Rect::new(x, r.y + 394, half, 52),
+            capture: Rect::new(x + half + 10, r.y + 394, w - half - 10, 52),
+            capture_says: label(r.y + 454),
         }
     }
 
@@ -484,9 +475,9 @@ impl AnswerPanel {
         }
     }
 
-    /// Slider `i`'s area and its track.
-    pub fn slider(&self, r: Rect, i: usize) -> (Rect, Rect) {
-        self.sliders.row_rects_in(AnswerPanel::parts(r).sliders, i)
+    /// Place `i` of the Records row (`Records::ALL`).
+    pub fn records_place(r: Rect, i: usize) -> Rect {
+        phrase_tab::records_place(AnswerPanel::parts(r).records, i)
     }
 }
 
@@ -600,6 +591,17 @@ impl Widget for AnswerPanel {
             &s.starts,
         );
         cx.canvas.fill_rect(p.rule, t.outline);
+        // What REC keeps, and a line saying it.
+        phrase_tab::paint_records(cx, p.records_label, p.records, s.records);
+        let keeps = Records::ALL.get(s.records).copied().unwrap_or_default();
+        cx.text(
+            FontId::Sans,
+            t.size_small - 1.0,
+            p.records_says,
+            Align::Center,
+            t.text_dim,
+            keeps.says(),
+        );
         // Answer now (outlined) and Capture.
         let ink = if s.can_answer_now {
             cx.canvas.stroke_round_rect(p.now, t.round(10), 2, t.accent);
@@ -633,7 +635,6 @@ impl Widget for AnswerPanel {
             t.text_dim,
             "Capture: your call and its answer as one clip",
         );
-        self.sliders.paint_in(cx, p.sliders);
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
@@ -664,12 +665,19 @@ impl Widget for AnswerPanel {
             "Capture both as a clip",
             AnswerPanel::button(r, CAPTURE),
         ));
-        out.extend(self.sliders.targets_in(AnswerPanel::parts(r).sliders));
+        out.extend(phrase_tab::records_targets(
+            AnswerPanel::parts(r).records,
+            self.show.records,
+        ));
         out
     }
 
-    fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+    fn touch(&mut self, _finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase == Touch::Down {
+            let row = AnswerPanel::parts(r).records;
+            if row.contains(x, y) {
+                return phrase_tab::records_touch(row, &mut self.show.records, x, y);
+            }
             if AnswerPanel::when_half(r, 0).contains(x, y) {
                 return Some(EventKind::Tab(WHEN));
             }
@@ -699,8 +707,7 @@ impl Widget for AnswerPanel {
                 return Some(EventKind::Toggle(CAPTURE));
             }
         }
-        self.sliders
-            .touch_in(finger, phase, x, y, AnswerPanel::parts(r).sliders)
+        None
     }
 }
 
@@ -736,10 +743,15 @@ pub fn answer_show(st: &ArpState) -> AnswerShow {
             "on the next bar line after a beat of quiet".to_string()
         },
         can_answer_now: !trade && matches!(a.light, Some(Light::You | Light::Quiet)),
+        records: Records::ALL
+            .iter()
+            .position(|r| *r == st.improvise.records)
+            .unwrap_or(2),
     }
 }
 
-/// The reply's sliders for `st`: Variation, Activity and Range.
+/// The reply's Q-Links for `st` (Variation, Activity and Range): their
+/// cards' words.
 pub fn answer_sliders(st: &ArpState) -> [Slider; 3] {
     let a = &st.improvise.answer;
     let variation = match a.variation {
@@ -877,23 +889,27 @@ mod tests {
                 PlaysWhen::WhileIHold
             )))
         );
-        // A finger on Activity, moved to its right end.
-        let w = s.ui.get::<AnswerPanel>(ANSWER).unwrap();
-        let (_, track) = w.slider(r, 1);
-        let mut qlink = None;
-        let ev = s.ui.touch(2, Touch::Down, track.x + 5, track.y).unwrap();
-        assert_eq!(s.page.action(&ev, &s.state, &mut qlink), None);
-        let ev =
-            s.ui.touch(2, Touch::Move, track.right() + 40, track.y)
-                .unwrap();
+        // Records: Both lit (Answer's start), and a line saying it; a tap
+        // on mpfree picks it, and Both is not tapped again.
+        assert_eq!(answer_show(&s.state).records, 2);
         assert_eq!(
-            s.page.action(&ev, &s.state, &mut qlink),
-            Some(ArpAction::Answer(AnswerAction::Set {
-                knob: 1,
-                value: 1000
-            }))
+            act(&mut s, AnswerPanel::records_place(r, 1)),
+            Some(ArpAction::Improvise(ImproviseAction::Records(
+                Records::Mpfree
+            )))
         );
-        s.ui.touch(2, Touch::Up, 0, 0);
+        assert_eq!(
+            act(&mut s, AnswerPanel::records_place(r, 0)),
+            Some(ArpAction::Improvise(ImproviseAction::Records(Records::You)))
+        );
+        assert_eq!(
+            Records::Both.says(),
+            "REC keeps both parts as you hear them"
+        );
+        // The reply's Q-Links are on the cards beside the panel, not on it.
+        let w = s.ui.get::<AnswerPanel>(ANSWER).unwrap();
+        assert_eq!(w.qlinks, answer_sliders(&s.state).to_vec());
+        assert!(w.targets(r).iter().all(|t| t.id != "slider"));
     }
 
     /// In Trade the row is each turn's bars, and the turn light names

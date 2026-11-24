@@ -174,6 +174,11 @@ pub struct Note {
     /// condition and `on` ([`Clip::groups_ok`]). A clip of pad hits has
     /// none. See [`groups`].
     pub group: u8,
+    /// It plays as heard (the composing tools' contract 8): what a live
+    /// tool played (Improvise or Answer, the Phrase tab's Records row), so
+    /// it skips its track's arp and MIDI effects on playback even with
+    /// [`Track::through_arp`] on, and is never played over again.
+    pub heard: bool,
 }
 
 /// How a note starts ([`Note::join`]): with its own attack, or joined to
@@ -472,6 +477,7 @@ impl Note {
             ramp: 0,
             join: Join::Attack,
             group: 0,
+            heard: false,
         }
     }
 
@@ -2605,6 +2611,7 @@ mod tests {
             ramp: 0,
             join: Join::Attack,
             group: 0,
+            heard: false,
         });
         assert_eq!(c.check(), Ok(()));
         c.notes.push(Note {
@@ -2620,6 +2627,7 @@ mod tests {
             ramp: 0,
             join: Join::Attack,
             group: 0,
+            heard: false,
         });
         assert_eq!(c.check(), Err(ModelError::BadNote(1)));
         c.notes[1].tick = 100;
@@ -2750,6 +2758,7 @@ mod tests {
                 ramp: 0,
                 join: Join::Attack,
                 group: 0,
+                heard: false,
             }),
             Ok(())
         );
@@ -2767,6 +2776,7 @@ mod tests {
                 ramp: 0,
                 join: Join::Attack,
                 group: 0,
+                heard: false,
             }),
             Err(ModelError::BadNote(1))
         );
@@ -2784,6 +2794,7 @@ mod tests {
                 ramp: 0,
                 join: Join::Attack,
                 group: 0,
+                heard: false,
             }),
             Err(ModelError::BadNote(1))
         );
@@ -2802,6 +2813,7 @@ mod tests {
                 ramp: 0,
                 join: Join::Attack,
                 group: 0,
+                heard: false,
             };
             MAX_NOTES
         ];
@@ -2819,6 +2831,7 @@ mod tests {
                 ramp: 0,
                 join: Join::Attack,
                 group: 0,
+                heard: false,
             }),
             Err(ModelError::TooManyNotes)
         );
@@ -2837,6 +2850,7 @@ mod tests {
             ramp: 0,
             join: Join::Attack,
             group: 0,
+            heard: false,
         }));
         assert_eq!(c.notes.len(), MAX_NOTES - 1);
         assert!(!c.remove_note(&Note {
@@ -2852,6 +2866,7 @@ mod tests {
             ramp: 0,
             join: Join::Attack,
             group: 0,
+            heard: false,
         }));
     }
 

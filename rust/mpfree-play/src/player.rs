@@ -276,6 +276,11 @@ pub struct Out {
     /// not a pad. False for a clip of pad hits, the live pads and every
     /// event that isn't a note's.
     pub notes: bool,
+    /// A note-on of a note that plays as heard ([`mpfree_seq::Note::heard`],
+    /// what a live tool played): it skips its track's arp and MIDI effects
+    /// even with "Clips through the arp" on ([`crate::TrackArps`]). False
+    /// for every other event; its note-off goes where its note-on went.
+    pub heard: bool,
 }
 
 // Out fills the room tables' fixed lists (`room`): it took the kind of
@@ -386,6 +391,8 @@ struct Start {
     ramp: i8,
     /// With its own attack, or tied or sliding into the note before it.
     join: Join,
+    /// It plays as heard ([`Out::heard`]).
+    heard: bool,
     /// Not a note: the track's clip starts here, so its last result
     /// (for PRE and NEI) starts again at "not played".
     reset: bool,
@@ -448,6 +455,8 @@ struct Hit {
     notes: bool,
     velocity: u8,
     off: Tick,
+    /// Its note plays as heard ([`Out::heard`]).
+    heard: bool,
 }
 
 const NO_HIT: Hit = Hit {
@@ -458,6 +467,7 @@ const NO_HIT: Hit = Hit {
     notes: false,
     velocity: 0,
     off: 0,
+    heard: false,
 };
 
 /// What a [`LockStart`] is.
@@ -575,6 +585,7 @@ const NO_START: Start = Start {
     slot: 0,
     speed: Speed::NORMAL,
     until: 0,
+    heard: false,
 };
 
 pub struct Player {
@@ -1270,6 +1281,7 @@ impl Player {
                     dest: ALL,
                     event: Event::AllOff,
                     notes: false,
+                    heard: false,
                 });
             }
             _ => {}
@@ -1291,6 +1303,7 @@ impl Player {
                 dest: s.dest,
                 event: Event::NoteOff { note: s.note },
                 notes: s.notes,
+                heard: false,
             });
         }
         self.n_sounding = 0;
@@ -1415,6 +1428,7 @@ impl Player {
                         bank: p.bank,
                     },
                     notes: false,
+                    heard: false,
                 });
             }
             if s.reset || s.scene || !s.plays {
@@ -1438,6 +1452,7 @@ impl Player {
                     dest: s.dest,
                     event: Event::NoteOff { note: s.note },
                     notes: s.notes,
+                    heard: false,
                 });
                 self.remove(j);
             }
@@ -1466,6 +1481,7 @@ impl Player {
                     velocity: s.velocity,
                 },
                 notes: s.notes,
+                heard: s.heard,
             });
             self.sounding[self.n_sounding] = Sounding {
                 track: s.track,
@@ -2027,6 +2043,7 @@ impl Player {
                 notes: s.notes,
                 velocity: mpfree_seq::ramped(s.velocity, s.ramp, h as u8, s.ratchet),
                 off: at(h + 1).max(tick + 1).min(cut),
+                heard: s.heard,
             });
         }
     }
@@ -2092,6 +2109,7 @@ impl Player {
                     dest: h.dest,
                     event: Event::NoteOff { note: h.note },
                     notes: h.notes,
+                    heard: false,
                 });
                 self.remove(j);
             }
@@ -2109,6 +2127,7 @@ impl Player {
                     velocity: h.velocity,
                 },
                 notes: h.notes,
+                heard: h.heard,
             });
             self.sounding[self.n_sounding] = Sounding {
                 track: h.track,
@@ -2167,6 +2186,7 @@ impl Player {
             dest: l.dest,
             event,
             notes: false,
+            heard: false,
         };
         match l.kind {
             LockKind::Step => {
@@ -2260,6 +2280,7 @@ impl Player {
                         dest: h.dest,
                         event: Event::Unlock { addr },
                         notes: false,
+                        heard: false,
                     });
                 }
                 // Under a step's lock: when it ends, the parameter is free.
@@ -2303,6 +2324,7 @@ impl Player {
                             value,
                         },
                         notes: false,
+                        heard: false,
                     });
                     self.stats.lanes += 1;
                     (h.lane, h.value, h.under) = (true, value, None);
@@ -2316,6 +2338,7 @@ impl Player {
                     dest: h.dest,
                     event: Event::Unlock { addr: h.addr },
                     notes: false,
+                    heard: false,
                 }),
             }
         }
@@ -2736,6 +2759,7 @@ impl Player {
                 len: n.len as f32,
                 ramp: n.src.ramp,
                 join: n.src.join,
+                heard: n.src.heard,
                 reset: false,
                 program: None,
                 scene: false,
@@ -2843,6 +2867,7 @@ impl Player {
                 dest: s.dest,
                 event: Event::NoteOff { note: s.note },
                 notes: s.notes,
+                heard: false,
             });
             self.remove(i);
         }
@@ -2904,6 +2929,7 @@ impl Player {
                 value: p.value.min(127),
             },
             notes: t.notes,
+            heard: false,
         });
         self.stats.pressure += 1;
         let next = t.next + 1;

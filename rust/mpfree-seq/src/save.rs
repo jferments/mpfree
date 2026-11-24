@@ -133,8 +133,10 @@
 //! A note's words after its pressure are the step's own settings, written
 //! only when set (sequencer S6): `off` (the step is off), `ramp:<n>` (its
 //! ratchet's velocity ramp), `tie` or `slide` ([`crate::Join`]), and
-//! `group:<n>`, its trigger group in a clip of notes ([`crate::groups`]).
-//! An older build reads the note and skips them. A clip whose trigger has
+//! `group:<n>`, its trigger group in a clip of notes ([`crate::groups`]),
+//! and `heard` when it plays as heard ([`crate::Note::heard`]: what a live
+//! tool played, which skips the track's arp). An older build reads the
+//! note and skips them. A clip whose trigger has
 //! two chances, conditions or on states, or a clip of pad hits with a
 //! group, is refused (`ModelError::BadGroup`, from the clip's check).
 //!
@@ -546,6 +548,9 @@ fn notes_text(s: &mut String, prefix: &str, notes: &[Note], keep: &crate::TouchK
         }
         if n.group != 0 {
             let _ = write!(s, " group:{}", n.group);
+        }
+        if n.heard {
+            s.push_str(" heard");
         }
         s.push('\n');
     }
@@ -1495,8 +1500,8 @@ fn follow<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<Follow> {
 }
 
 /// A note line's words after its pressure: the step's own settings
-/// (`off`, `ramp:<n>`, `tie`, `slide`) and its trigger group
-/// (`group:<n>`). A ramp or group out of range or not a number refuses
+/// (`off`, `ramp:<n>`, `tie`, `slide`), its trigger group (`group:<n>`)
+/// and `heard`. A ramp or group out of range or not a number refuses
 /// the line (None); a word this build doesn't know is
 /// skipped, as unknown lines are, so a newer build's notes still open.
 /// A `note` line's words after `note`.
@@ -1517,6 +1522,7 @@ fn note<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<Note> {
         ramp: 0,
         join: Join::Attack,
         group: 0,
+        heard: false,
     };
     step_words(n, w)
 }
@@ -1556,6 +1562,7 @@ fn step_words<'a>(mut n: Note, w: impl Iterator<Item = &'a str>) -> Option<Note>
             "off" => n.on = false,
             "tie" => n.join = Join::Tie,
             "slide" => n.join = Join::Slide,
+            "heard" => n.heard = true,
             x => {
                 if let Some(r) = x.strip_prefix("ramp:") {
                     n.ramp = r.parse().ok()?;
@@ -2794,6 +2801,33 @@ mod tests {
             let t = text.replace("ramp:-40", bad);
             assert!(from_text(&t).is_err(), "{bad}");
         }
+    }
+
+    /// A note that plays as heard (what a live tool played) is written
+    /// with `heard` and reads back so; a note without it doesn't; and an
+    /// older build's reading skips the word, so the note opens.
+    #[test]
+    fn a_note_that_plays_as_heard_reads_back() {
+        let mut p = Project::new();
+        p.tracks.push(Track::new("lead", 0));
+        let mut c = Clip::new("phrase", 3840);
+        c.holds = crate::Holds::Notes;
+        c.add_note(Note::new(0, 240, 60, 100)).unwrap();
+        c.add_note(Note {
+            heard: true,
+            ..Note::new(480, 240, 63, 90)
+        })
+        .unwrap();
+        p.tracks[0].slots[0] = Some(c);
+        let text = to_text(&p);
+        assert_eq!(text.matches(" heard\n").count(), 1, "{text}");
+        let back = from_text(&text).unwrap();
+        let notes = &back.tracks[0].slots[0].as_ref().unwrap().notes;
+        assert_eq!(
+            notes.iter().map(|n| (n.note, n.heard)).collect::<Vec<_>>(),
+            [(60, false), (63, true)]
+        );
+        assert_eq!(back, p);
     }
 
     /// Trigger groups: `group:<n>` round-trips and is written only when

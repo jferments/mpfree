@@ -150,6 +150,84 @@ fn a_through_track_arpeggiates_its_clip_and_a_drum_track_plays_as_recorded() {
     assert!(arps.records_pads(KEYS) && !arps.records_pads(DRUMS));
 }
 
+/// A note that plays as heard (what a live tool played, `Note::heard`)
+/// skips the arp on a through track, on its frame and once, while the
+/// clip's other notes are arpeggiated; Records sets what REC keeps of the
+/// track (You: the pads; mpfree and Both: the arp's notes, as heard).
+#[test]
+fn a_note_that_plays_as_heard_skips_the_arp_with_the_switch_on() {
+    use mpfree_play::Keeps;
+    let mut p = Project::new();
+    let mut keys = Track::new("keys", 0);
+    let mut c = Clip::new("take", 3840);
+    c.notes = vec![
+        Note::new(0, 3840, 60, 100),
+        Note::new(0, 3840, 64, 100),
+        Note {
+            heard: true,
+            ..Note::new(960, 240, 79, 90)
+        },
+    ];
+    keys.slots[0] = Some(c);
+    p.tracks = vec![keys];
+    let launch = Launch {
+        track: 0,
+        slot: 0,
+        origin: 0,
+        start: 0,
+    };
+    let view = PlayView::compile(&p, &[launch]).unwrap();
+    let mut arps = TrackArps::new(44_100, 120.0);
+    arps.engine(KEYS).unwrap().set_settings(up_sixteenths());
+    arps.set_through(KEYS, true);
+    let mut t = Transport::new(44_100, 120.0).unwrap();
+    t.command(0, Command::Play);
+    let (mut player, mut block, mut log) = (Player::new(), Block::new(), Log::default());
+    while t.frame() < 44_100 {
+        t.process(128, &mut block);
+        player.process(&view, &block, &mut arps.through_sink());
+        arps.finish(&block, &mut log);
+    }
+    let at = |k: u64| (k as f64 * 5512.5).round() as u64;
+    let ons = ons(&log.0, KEYS);
+    // The held two arpeggiated on the sixteenths; the heard note on beat 2
+    // (frame 22 050) as it is, once.
+    assert_eq!(&ons[..3], &[(at(0), 60), (at(1), 64), (at(2), 60)]);
+    assert_eq!(ons.iter().filter(|o| o.1 == 79).count(), 1);
+    assert!(ons.contains(&(22_050, 79)));
+    let off = log
+        .0
+        .iter()
+        .find(|o| o.event == Event::NoteOff { note: 79 });
+    assert_eq!(
+        off.map(|o| o.frame),
+        Some(27_563),
+        "its own end, a sixteenth on"
+    );
+    assert_eq!(arps.dropped(), 0);
+    // What REC keeps: the switch's say until Records says otherwise.
+    assert_eq!(arps.keeps(KEYS), Keeps::Switch);
+    assert!(arps.records_pads(KEYS));
+    for (k, pads, heard) in [
+        (Keeps::Yours, true, false),
+        (Keeps::Its, false, true),
+        (Keeps::Both, false, true),
+    ] {
+        arps.set_keeps(KEYS, k);
+        assert_eq!(
+            (arps.records_pads(KEYS), k.as_heard()),
+            (pads, heard),
+            "{k:?}"
+        );
+    }
+    arps.set_through(KEYS, false);
+    arps.set_keeps(KEYS, Keeps::Yours);
+    assert!(
+        arps.records_pads(KEYS),
+        "You keeps the pads with the switch off too"
+    );
+}
+
 #[test]
 fn switch_off_the_clip_plays_its_notes_as_they_are() {
     let mut arps = TrackArps::new(44_100, 120.0);
@@ -269,6 +347,7 @@ fn a_panic_clears_every_arp_and_passes_through() {
         dest: ALL,
         event: Event::AllOff,
         notes: false,
+        heard: false,
     });
     let mut log = Log::default();
     arps.finish(&block, &mut log);
@@ -306,6 +385,7 @@ fn a_through_tracks_locks_go_around_its_arp() {
         dest: 0,
         event,
         notes: false,
+        heard: false,
     };
     let mut sink = arps.through_sink();
     sink.send(out(0, Event::Lock { addr, value: 0.25 }));
@@ -707,6 +787,7 @@ fn a_mute_cuts_the_echoes_waiting_and_a_panic_ends_what_the_effects_added() {
         dest: ALL,
         event: Event::AllOff,
         notes: false,
+        heard: false,
     });
     arps.finish(&block, &mut log);
     t.process(44_100, &mut block);

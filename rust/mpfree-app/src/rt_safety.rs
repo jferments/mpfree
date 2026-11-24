@@ -881,6 +881,7 @@ fn slow_gear_moves_on(delay_tenths: u16, lane: bool, lfo: bool) -> Vec<(u64, u64
             ramp: 0,
             join: Join::Attack,
             group: 0,
+            heard: false,
         })
         .collect();
     clip.locks = vec![Lock::new(
@@ -1120,6 +1121,7 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
         dest: 0,
         event,
         notes: false,
+        heard: false,
     };
     let on = Event::NoteOn {
         note: 2,
@@ -1201,6 +1203,7 @@ fn a_tracks_transpose_moves_its_notes_and_a_sounding_note_ends_where_it_went() {
         dest: track,
         event,
         notes: false,
+        heard: false,
     };
     let on = Event::NoteOn {
         note: 0,
@@ -1528,6 +1531,7 @@ fn live_pads_on_a_track_with_its_own_instrument_play_it() {
         dest: track,
         event,
         notes: false,
+        heard: false,
     };
     let on = Event::NoteOn {
         note: 2,
