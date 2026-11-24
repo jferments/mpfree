@@ -10,8 +10,15 @@
 //! a waiting phrase comes in on) is the [`Playhead`]'s business
 //! ([`crate::phrase`]): it counts in ticks and knows nothing of frames or
 //! of sound. This file turns what the playhead says is due into notes:
-//! the pitch from the newest held note, the velocity, the gate, swing,
-//! and who ends what.
+//! the pitch from the newest held note or the chord held, the velocity,
+//! the gate, swing, and who ends what.
+//!
+//! **A chord held (P3).** Three or more pitch classes held are a chord, and
+//! the phrase plays over it, its notes kept as parts of the chord
+//! ([`Phrase::pitch_over`]); one or two lead from the newest as before.
+//! A change to or from a chord counts once it has been held for
+//! [`CHORD_SETTLE`]: until then the notes due play over what was held
+//! before. A change from one note to another counts at once.
 //!
 //! **Who ends what.** A step mode's note is a few steps long at most, so
 //! the engine lets every note it started run out. A phrase's note can be
@@ -27,11 +34,24 @@
 //! [`Playhead`]: crate::phrase::Playhead
 
 use super::{Engine, EventKind, Hit, Mode, Settings, SyncStart, PPQ};
-use crate::phrase::{self, Feel, Join, Phrase, Turn, MAX_PHRASE_NOTES};
+use crate::notes::MAX_NOTES;
+use crate::phrase::{self, Feel, HeldChord, Join, Phrase, Turn, MAX_PHRASE_NOTES};
 use crate::scale::Scale;
 
 /// The 1/16 a phrase starts on and swings on, in ticks.
 const SIXTEENTH: u32 = PPQ / 4;
+
+/// How long a new chord is held before a phrase follows it, in seconds
+/// (contract 9): a chord played a little unevenly is one change, not three
+/// ([`Engine::set_settle`]).
+pub const CHORD_SETTLE: f64 = 0.030;
+
+/// What a phrase plays from: the newest note held, or the chord held (P3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Lead {
+    Note(u8),
+    Chord(HeldChord),
+}
 
 /// How late a press may be for a start line and still count for it, in
 /// seconds (and never more than half a 1/16): about as late as a hand
@@ -192,6 +212,41 @@ impl Engine {
     /// sounding ends now.
     pub(super) fn stop_phrase(&mut self) {
         self.end_notes_by(self.now as f64);
+        self.lead = None;
+    }
+
+    /// How long a new chord is held before a phrase follows it, in
+    /// seconds (0 to 0.2; [`CHORD_SETTLE`] at first).
+    pub fn set_settle(&mut self, seconds: f64) {
+        self.settle = seconds.clamp(0.0, 0.2);
+    }
+
+    /// What a note due at `frame` plays from: what is held, once a change
+    /// to or from a chord has settled ([`CHORD_SETTLE`]).
+    fn lead_at(&mut self, frame: f64) -> Option<Lead> {
+        let held = self.notes.active().as_slice();
+        let newest = held.last()?.note;
+        let mut pitches = [0u8; MAX_NOTES];
+        for (p, h) in pitches.iter_mut().zip(held) {
+            *p = h.note;
+        }
+        let now = match HeldChord::of(&pitches[..held.len().min(MAX_NOTES)]) {
+            Some(c) => Lead::Chord(c),
+            None => Lead::Note(newest),
+        };
+        let lead = match self.lead {
+            Some(old) if old != now => {
+                let chordy = matches!(old, Lead::Chord(_)) || matches!(now, Lead::Chord(_));
+                if chordy && frame < self.held_since + self.settle * self.sample_rate {
+                    old
+                } else {
+                    now
+                }
+            }
+            _ => now,
+        };
+        self.lead = Some(lead);
+        Some(lead)
     }
 
     /// A new speed keeps the phrase's place: from now on it plays at the
@@ -254,10 +309,22 @@ impl Engine {
         let n = self.phrase.notes()[i];
         let live = self.live;
         let scale = live.scale.or(self.key);
-        let Some(pitch) = self
-            .phrase
-            .pitch(&n, held.note, live.follow, scale, live.snap)
-        else {
+        // Its start and its end go through the same sums, so a note held
+        // to the next one ends on the very frame that one starts.
+        let t = self.playhead.tick_of(w);
+        let t_off = self.playhead.tick_of(w + self.phrase.gated(i, live.gate));
+        let mut at = self.clock_frame(self.phrase_swung(t));
+        let mut off = self.clock_frame(self.phrase_swung(t_off));
+        let Some(lead) = self.lead_at(at.max(self.now as f64)) else {
+            return;
+        };
+        let pitch = match lead {
+            Lead::Note(from) => self.phrase.pitch(&n, from, live.follow, scale, live.snap),
+            Lead::Chord(chord) => self
+                .phrase
+                .pitch_over(&n, &chord, live.follow, scale, live.snap),
+        };
+        let Some(pitch) = pitch else {
             return;
         };
         let octave = (pass % u64::from(live.octaves.max(1))) as i16;
@@ -266,12 +333,6 @@ impl Engine {
             return;
         }
         let note = note as u8;
-        // Its start and its end go through the same sums, so a note held
-        // to the next one ends on the very frame that one starts.
-        let t = self.playhead.tick_of(w);
-        let t_off = self.playhead.tick_of(w + self.phrase.gated(i, live.gate));
-        let mut at = self.clock_frame(self.phrase_swung(t));
-        let mut off = self.clock_frame(self.phrase_swung(t_off));
         let now = self.now as f64;
         if at < now {
             let t_next = self.playhead.tick_of(w + self.phrase.gated(i, 100));
@@ -513,6 +574,59 @@ mod tests {
                 (5 * STEP, 60)
             ]
         );
+    }
+
+    /// A chord held plays the phrase over its own tones (P3); two notes
+    /// held still lead from the newest.
+    #[test]
+    fn a_held_chord_plays_the_phrase_over_its_own_tones() {
+        let line = "line minor : 1 b3 5 1+";
+        let mut e = phrase_engine(line, Settings::default());
+        for n in [65, 69, 72] {
+            e.press(n, 100);
+        }
+        assert_eq!(notes_of(&mut e, 4), [65, 69, 72, 77], "F major");
+        let mut e = phrase_engine(line, Settings::default());
+        for n in [64, 67, 72] {
+            e.press(n, 100);
+        }
+        assert_eq!(notes_of(&mut e, 4), [60, 64, 67, 72], "C major from E");
+        let mut e = phrase_engine(line, Settings::default());
+        e.press(60, 100);
+        e.press(67, 100);
+        assert_eq!(
+            notes_of(&mut e, 4),
+            [67, 70, 74, 79],
+            "two notes: the newest leads"
+        );
+    }
+
+    /// A chord played a little unevenly is one change: the notes due
+    /// before it has been held for the settle time play over what was
+    /// held before.
+    #[test]
+    fn an_uneven_chord_settles_before_the_phrase_follows_it() {
+        let thirds = "line either : 3 3 3 3 3 3 3 3";
+        let mut e = phrase_engine(thirds, Settings::default());
+        e.press(60, 100);
+        let mut got = ons(&run(&mut e, 2 * STEP - 960, 64));
+        // Eb and G, 10 ms apart, the last 10 ms before the third note.
+        e.press(63, 100);
+        got.extend(ons(&run(&mut e, 480, 64)));
+        e.press(67, 100);
+        got.extend(ons(&run(&mut e, 480 + 2 * STEP, 64)));
+        assert_eq!(
+            got,
+            [(0, 64), (STEP, 64), (2 * STEP, 64), (3 * STEP, 63)],
+            "the chord counts from the note after it settled"
+        );
+        // With no settle time the chord counts at once.
+        let mut e = phrase_engine(thirds, Settings::default());
+        e.set_settle(0.0);
+        e.press(60, 100);
+        e.press(63, 100);
+        e.press(67, 100);
+        assert_eq!(notes_of(&mut e, 2), [63, 63]);
     }
 
     /// Letting go stops the phrase and ends what it plays; Latch keeps it
