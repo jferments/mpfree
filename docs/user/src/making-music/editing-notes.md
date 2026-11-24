@@ -110,7 +110,7 @@ With the drawer open, the wheel, – and + work the Edit options as before.
 
 ### Hold a note and turn the wheel
 
-Rest a finger on a note and turn the data wheel: the note gets louder or softer, one step of velocity a click, and the hint line shows the velocity it has now. **–** and **+** step it the same way while your finger is there, and pushing the wheel does nothing, so a slip of the thumb changes nothing. This works with the drawer open or closed and with Draw on or off, but not while **ERASE** is held.
+Rest a finger on a note and turn the data wheel: the note gets louder or softer, one step of velocity a click, and the hint line shows the velocity it has now. **–** and **+** step it the same way while your finger is there, and pushing the wheel does nothing, so a slip of the thumb changes nothing. **SHIFT + push** puts its velocity back to 100, the velocity a note you draw gets (the picked notes' too, when the note is one of them), and one **UNDO** takes back everything that hold did. This works with the drawer open or closed and with Draw on or off, but not while **ERASE** is held.
 
 - **A picked note** turns with all the picks, as **Q4** turns them: each keeps its difference from the others. Hold **SHIFT** as you turn to widen or narrow the gap between the softest and the loudest instead.
 - **A note that isn't picked** is picked on its own as you start turning (or added to the picks, with **Add to pick** on).

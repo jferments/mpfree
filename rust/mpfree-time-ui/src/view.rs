@@ -35,9 +35,9 @@ use crate::editor::{
     sound_name, step_name, ChordShape, EditAction, Editor, Fold, GhostLayer, Hearing, LaneShow,
     Lens, LockMark, LockSetting, NoteBox, NoteGrid, NoteTool, ShowOffer, Tool, ToolAct, ToolBar,
     ToolKind, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, CLIP_END, EDIT_BUTTON, ERASE_SWEEP,
-    FIELDS, GHOST_MOST, GHOST_TAP, HELD_FINE, HELD_FIRST, HELD_TURN, LOCK_LANES, MENU, PADS_WRITE,
-    PEN, PRESSURE_END, PRESSURE_LANE, ROOT_MENU, SCALE_MENU, SHOW_MENU, SHOW_NONE, SNAP_AUTO_T,
-    START_HANDLE, STEP_FALLBACK, TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
+    FIELDS, GHOST_MOST, GHOST_TAP, HELD_FINE, HELD_FIRST, HELD_RESET, HELD_TURN, LOCK_LANES, MENU,
+    PADS_WRITE, PEN, PRESSURE_END, PRESSURE_LANE, ROOT_MENU, SCALE_MENU, SHOW_MENU, SHOW_NONE,
+    SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK, TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LINK, LIST_LINK_CLOSE, LIST_LINK_FROM_LIST,
@@ -2590,6 +2590,19 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 }
                 // A finger on a note and the wheel (plan 1C.3): its
                 // velocity, the hold's first detent naming the note.
+                // SHIFT + the push on it: its velocity back to a drawn
+                // note's (Jay's card, 23 Nov 2026).
+                EventKind::Values { index, ref set }
+                    if index & !(HELD_FIRST | HELD_FINE) == HELD_TURN + HELD_RESET =>
+                {
+                    let (&(note, _), &(turn, _)) = (set.first()?, set.get(1)?);
+                    EditAction::HeldReset {
+                        index: note,
+                        rev,
+                        turn: turn as u64,
+                        first: index & HELD_FIRST != 0,
+                    }
+                }
                 EventKind::Values { index, ref set }
                     if index & !(HELD_FIRST | HELD_FINE) == HELD_TURN =>
                 {
@@ -7509,6 +7522,19 @@ mod tests {
             }),
             None,
             "no hold's number"
+        );
+        // SHIFT + the push on a held note: back to a drawn note's velocity.
+        assert_eq!(
+            ev(EventKind::Values {
+                index: HELD_TURN + HELD_RESET + HELD_FIRST,
+                set: vec![(3, 0), (7, 0)]
+            }),
+            edit(EditAction::HeldReset {
+                index: 3,
+                rev: 0,
+                turn: 7,
+                first: true
+            })
         );
         // ERASE + a drag (plan 1B.5): the notes it crossed.
         assert_eq!(
