@@ -847,6 +847,19 @@ fn the_keys_wheel_on_a_midi_out_track_records_and_never_allocates() {
 /// eighth. With `lfo`, an LFO row moves CC 74 too. Each message as (the
 /// first frame of the period it was handed over in, its frame, bytes).
 fn slow_gear_moves(delay_tenths: u16, lane: bool, lfo: bool) -> Vec<(u64, u64, Vec<u8>)> {
+    // A debug build copies the rig (some hundreds of KB) through each frame
+    // that builds it, more than a test thread's 2 MiB holds here; the
+    // device builds it once, optimised, on the main thread.
+    std::thread::Builder::new()
+        .name("slow gear".into())
+        .stack_size(16 << 20)
+        .spawn(move || slow_gear_moves_on(delay_tenths, lane, lfo))
+        .expect("spawn the slow gear rig")
+        .join()
+        .expect("the slow gear rig ran")
+}
+
+fn slow_gear_moves_on(delay_tenths: u16, lane: bool, lfo: bool) -> Vec<(u64, u64, Vec<u8>)> {
     use mpfree_midi::setup::{TrackOut, DIN_NAME};
     use mpfree_play::mpfree_param::{OnTrack, Owner, ParamAddr, RelAddr};
     use mpfree_seq::mpfree_moves::{Kind, Map, Steps, Target};

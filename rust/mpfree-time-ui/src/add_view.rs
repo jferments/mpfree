@@ -10,7 +10,9 @@
 //! design is docs/dev/design/compose.md (S2.6).
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
+use mpfree_arp::{Phrase, PhraseKind};
 use mpfree_compose::{InstrumentKind, Lanes, Relation, Settings, STYLES};
 use mpfree_context::chord::{Chord, ChordAnswer, ChordSpan, ChordTimeline, Heard, Quality};
 use mpfree_context::PartRole;
@@ -51,6 +53,18 @@ pub const KIND_QUALITIES: [Quality; 12] = [
     Quality::HalfDiminished7,
     Quality::Power,
 ];
+
+/// The kinds of phrase a part can play (the Style row run on into
+/// phrases, P2): a bass line for Bass, chords for Chords, a riff or an
+/// arp line for a second line. Drums take none: a phrase plays notes.
+pub fn phrase_kinds(part: PartRole) -> &'static [PhraseKind] {
+    match part {
+        PartRole::Bass => &[PhraseKind::Bass],
+        PartRole::Chords => &[PhraseKind::Chords],
+        PartRole::Melody => &[PhraseKind::Riff, PhraseKind::Line],
+        _ => &[],
+    }
+}
 
 /// The panel's rows of ‹ › steppers, top to bottom. Sound is a stepper
 /// only for New track; on a track it reads what the track plays.
@@ -232,6 +246,14 @@ pub struct AddPick {
     /// synth…"), and whether it warns. The app sets it
     /// ([`crate::view::TimePage::set_add_waiting`]).
     pub waiting: Option<(String, bool)>,
+    /// The phrases the Style row runs on into after its styles (P2): the
+    /// app's list, MPFree's then the owner's
+    /// ([`crate::view::TimePage::phrases`]).
+    pub phrases: Arc<[(String, Phrase)]>,
+    /// The phrase picked on the Style row, an index into `phrases`: the
+    /// part plays it over the row's chords in place of one the composer
+    /// writes. None: the style.
+    pub phrase: Option<usize>,
 }
 
 impl AddPick {
@@ -263,6 +285,8 @@ impl AddPick {
             new_name: String::new(),
             sound: 0,
             waiting: None,
+            phrases: Arc::default(),
+            phrase: None,
         };
         // No track has room in the row: New track.
         if tracks.is_empty() {
@@ -305,6 +329,14 @@ impl AddPick {
         };
         if part == self.part {
             return false;
+        }
+        // A phrase of another kind than the new part takes: the style
+        // again.
+        if self
+            .phrase_of()
+            .is_some_and(|(_, p)| !phrase_kinds(part).contains(&p.kind))
+        {
+            self.phrase = None;
         }
         if self.new_track {
             self.part = part;
@@ -363,10 +395,29 @@ impl AddPick {
                 Ok(changed)
             }
             ROW_STYLE => {
-                let to = by(self.style, STYLES.len());
-                let changed = to != self.style;
-                self.style = to;
-                Ok(changed)
+                // The styles, then the phrases of the part's kind.
+                let phrases = self.part_phrases();
+                let at = match self.phrase {
+                    Some(i) => STYLES.len() + phrases.iter().position(|&p| p == i).unwrap_or(0),
+                    None => self.style.min(STYLES.len() - 1),
+                };
+                let to = by(at, STYLES.len() + phrases.len());
+                if to == at && delta > 0 && phrases.is_empty() {
+                    return Err(match self.part {
+                        PartRole::Drums => "Drums take no phrase: a phrase plays notes".to_string(),
+                        _ => format!(
+                            "{} is the last style, and there's no phrase of this kind yet",
+                            STYLES[STYLES.len() - 1].name
+                        ),
+                    });
+                }
+                if to < STYLES.len() {
+                    self.style = to;
+                    self.phrase = None;
+                } else {
+                    self.phrase = Some(phrases[to - STYLES.len()]);
+                }
+                Ok(to != at)
             }
             ROW_BARS => {
                 let at = PART_BARS.iter().position(|&b| b == self.bars).unwrap_or(0);
@@ -471,7 +522,10 @@ impl AddPick {
     pub fn value(&self, st: &TimeState, row: usize) -> String {
         match row {
             ROW_ROLE => self.relation.words().to_string(),
-            ROW_STYLE => STYLES[self.style.min(STYLES.len() - 1)].name.to_string(),
+            ROW_STYLE => match self.phrase_of() {
+                Some((name, _)) => name,
+                None => STYLES[self.style.min(STYLES.len() - 1)].name.to_string(),
+            },
             ROW_BARS => match self.bars {
                 None => format!("{} · the row", row_bars(st, self.row)),
                 Some(b) => format!("{b}"),
@@ -517,7 +571,39 @@ impl AddPick {
             pads: [None; 4],
             bars: self.bars,
             new_track,
+            phrase: self.phrase_of(),
         }
+    }
+
+    /// The phrases of the part's kind, as places in `phrases`, in the
+    /// list's order: MPFree's, then the owner's.
+    pub fn part_phrases(&self) -> Vec<usize> {
+        let kinds = phrase_kinds(self.part);
+        self.phrases
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, p))| kinds.contains(&p.kind))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// The phrase picked on the Style row, and its name.
+    pub fn phrase_of(&self) -> Option<(String, Phrase)> {
+        let (name, p) = self.phrases.get(self.phrase?)?;
+        Some((name.clone(), *p))
+    }
+
+    /// The app's list of phrases changed (one kept, a project opened):
+    /// the pick follows its phrase by name, or goes back to the style.
+    pub fn set_phrases(&mut self, phrases: Arc<[(String, Phrase)]>) -> bool {
+        if Arc::ptr_eq(&self.phrases, &phrases) || self.phrases == phrases {
+            return false;
+        }
+        let was = self.phrase_of();
+        self.phrases = phrases;
+        self.phrase =
+            was.and_then(|(name, p)| self.phrases.iter().position(|(n, q)| *n == name && *q == p));
+        true
     }
 
     /// Q-Link `k` turned `ticks` detents: true when it changed.
@@ -534,9 +620,16 @@ impl AddPick {
         *v != was
     }
 
-    /// The Q-Links' cards: names and values.
+    /// The Q-Links' cards: names and values; "–" while a phrase is
+    /// picked (it plays as written, so they shape nothing).
     pub fn cards(&self) -> [(&'static str, String); 4] {
-        cards(self.q)
+        let mut c = cards(self.q);
+        if self.phrase.is_some() {
+            for (_, v) in &mut c {
+                *v = "–".to_string();
+            }
+        }
+        c
     }
 
     /// Where each Q-Link stands, 0 to 1.
@@ -714,6 +807,9 @@ pub struct AddPanelView {
     /// The try stepper: "‹ Try 1" or "Try 3 ›", and whether there is one.
     pub step: (String, bool),
     pub can_keep: bool,
+    /// The Style row is on a phrase: it reads Phrase, and Try again is
+    /// faint (a phrase plays one way).
+    pub phrase: bool,
 }
 
 /// The panel for `pick` and the time engine's state.
@@ -765,6 +861,13 @@ pub fn panel_view(st: &TimeState, pick: &AddPick) -> AddPanelView {
                     ),
                     None => (format!("Try {n} · plays once the row plays"), false),
                 },
+                AddState::Playing if pick.phrase.is_some() => (
+                    format!(
+                        "Try {n} · {}, with the row",
+                        pick.phrase_of().map(|(name, _)| name).unwrap_or_default()
+                    ),
+                    false,
+                ),
                 AddState::Playing if pick.new_track => {
                     (format!("Try {n} · plays on the new track"), false)
                 }
@@ -790,6 +893,7 @@ pub fn panel_view(st: &TimeState, pick: &AddPick) -> AddPanelView {
         status_warn,
         step,
         can_keep: a.is_some_and(|a| a.made.is_some() && a.state != AddState::Nothing),
+        phrase: pick.phrase.is_some(),
     }
 }
 
@@ -1087,6 +1191,15 @@ impl AddPanel {
         }
     }
 
+    /// Row `k`'s name: the Style row reads Phrase while it is on one.
+    fn row_name(&self, k: usize) -> &'static str {
+        if k == ROW_STYLE && self.view.phrase {
+            "Phrase"
+        } else {
+            PANEL_ROWS[k]
+        }
+    }
+
     /// The steppers that answer: Sound's only on New track.
     fn live_steppers(&self) -> usize {
         if self.view.new_track {
@@ -1256,7 +1369,7 @@ impl Widget for AddPanel {
                 Rect::new(x, s.y, s.x - x, s.h),
                 Align::Left,
                 t.text,
-                PANEL_ROWS[k],
+                self.row_name(k),
             );
             cx.canvas.fill_round_rect(*s, t.round(10), t.raised);
             let ends = s.inset_xy(10, 0);
@@ -1276,7 +1389,7 @@ impl Widget for AddPanel {
                 t.text_dim,
                 "›",
             );
-            let ink = if k == ROW_ROLE {
+            let ink = if k == ROW_ROLE || (k == ROW_STYLE && v.phrase) {
                 t.readable(t.accent, t.raised)
             } else {
                 t.text
@@ -1329,7 +1442,7 @@ impl Widget for AddPanel {
             ink,
             &v.status,
         );
-        button(cx, g.buttons[0], "Try again", false, true);
+        button(cx, g.buttons[0], "Try again", false, !v.phrase);
         button(cx, g.buttons[1], &v.step.0, false, v.step.1);
         button(cx, g.buttons[2], "Back", false, true);
         button(cx, g.buttons[3], "Keep", true, v.can_keep);
@@ -1349,23 +1462,21 @@ impl Widget for AddPanel {
             out.push(Target::tap(
                 "add-row-less",
                 k,
-                format!("{} ‹", PANEL_ROWS[k]),
+                format!("{} ‹", self.row_name(k)),
                 less,
             ));
             out.push(Target::tap(
                 "add-row-more",
                 k,
-                format!("{} ›", PANEL_ROWS[k]),
+                format!("{} ›", self.row_name(k)),
                 more,
             ));
         }
         let v = &self.view;
-        out.push(Target::tap(
-            "add-try-again",
-            PANEL_TRY_AGAIN,
-            "Try again",
-            g.buttons[0],
-        ));
+        out.push(
+            Target::tap("add-try-again", PANEL_TRY_AGAIN, "Try again", g.buttons[0])
+                .disabled_if(v.phrase),
+        );
         out.push(
             Target::tap("add-step", PANEL_STEP, v.step.0.clone(), g.buttons[1])
                 .disabled_if(!v.step.1),
@@ -1399,6 +1510,7 @@ impl Widget for AddPanel {
             return Some(EventKind::Step { index: k, delta });
         }
         let v = &self.view;
+        // Try again faint on a phrase still answers: the page says why.
         let live = [true, v.step.1, true, v.can_keep];
         let index = [PANEL_TRY_AGAIN, PANEL_STEP, PANEL_BACK, PANEL_KEEP];
         g.buttons

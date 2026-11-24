@@ -145,6 +145,11 @@ impl Ears {
         self.turns
     }
 
+    /// Ticks in a bar, as made.
+    pub fn bar(&self) -> i64 {
+        self.bar
+    }
+
     /// Change when the answer comes; takes effect from your next call.
     pub fn set_turns(&mut self, turns: Turns) {
         self.turns = turns;

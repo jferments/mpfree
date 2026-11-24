@@ -65,6 +65,7 @@ pub mod flutter;
 pub mod grain;
 pub mod harmonics;
 pub mod knob;
+pub mod ladder_study;
 pub mod listening;
 pub mod loudness;
 pub mod mixlaw;

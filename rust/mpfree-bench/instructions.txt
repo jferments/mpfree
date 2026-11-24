@@ -196,7 +196,8 @@
 669942	Sampler x16 held, 16-bit sound
 1489849	Sampler x16 held, LFO and pitch envelope
 881875	Sampler x16 held, comb
-1794930	Sampler x16 held, driven ladder
+3353015	Sampler x16 held, driven ladder
+3126470	Sampler x16 held, ladder
 721696	Sampler x16 held, vowel
 488150	Sampler x4 held, 4 layers each
 1402092	Sampler, 20 pads
@@ -241,7 +242,7 @@
 29520	Time: 16 tracks of ratchets, 8 locks a step
 45814	Time: 8 clips, 4 tracks 90 ms ahead
 15539	Time: recording 3 armed tracks, 8 clips
-9378	Time: transport, 8 clips, arp
+9847	Time: transport, 8 clips, arp
 61662	Track host alone, 16 tracks, 8 events each per block
 412590	Track host, 4 Poly tracks of 4 voices
 27052	Transient shaper

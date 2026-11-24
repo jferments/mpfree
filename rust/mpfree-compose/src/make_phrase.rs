@@ -31,7 +31,10 @@ use mpfree_arp::phrase::{Kind, Written, MAX_BARS};
 use mpfree_arp::{Phrase, Rate};
 use mpfree_context::key::{Key, Mode};
 use mpfree_context::listen::{self, Played};
-use mpfree_transport::time::{Meter, Tick};
+use mpfree_seq::{Clip, Holds};
+use mpfree_transport::time::{Meter, Swing, Tick};
+
+use crate::timing::{heard, Playback};
 
 /// A phrase made from notes, with what was read to write it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -144,6 +147,39 @@ pub fn phrase_of_as(
     };
     phrase.bars = ((span + bar - 1) / bar).clamp(1, Tick::from(MAX_BARS)) as u8;
     Ok(Made { phrase, key, home })
+}
+
+/// A clip's notes as one pass of it plays them, on the song's beats (after
+/// its quantise and speed, before swing), and that pass's length in song
+/// ticks: what [`phrase_of`] reads from a clip. A clip of pad hits has no
+/// notes to it (a pad's pitch is the kit's), nor has a loop's cell.
+pub fn clip_played(c: &Clip) -> (Vec<Played>, Tick) {
+    let len = c.speed.to_song(c.length as f64).round() as Tick;
+    if c.holds != Holds::Notes || c.looped.is_some() {
+        return (Vec::new(), len);
+    }
+    let pb = Playback {
+        quantise: c.quantise,
+        speed: c.speed,
+        swing: Swing::default(),
+        length: c.length,
+        start: 0,
+    };
+    let mut notes: Vec<Played> = c
+        .notes
+        .iter()
+        .filter(|n| n.on)
+        .map(|n| {
+            Played::new(
+                heard(n.tick, &pb).round() as Tick,
+                c.speed.to_song(n.len as f64).round() as Tick,
+                n.note,
+                n.velocity,
+            )
+        })
+        .collect();
+    notes.sort_by_key(|n| (n.at, n.pitch));
+    (notes, len)
 }
 
 /// Chords where most starts are two notes or more together; bass under
@@ -319,6 +355,26 @@ mod tests {
         assert_eq!((made.home, made.phrase.kind), (48, Kind::Riff));
         let semis: Vec<i8> = made.phrase.notes().iter().map(|n| n.semis).collect();
         assert_eq!(semis, [-12, -12, -5, -9, -12, -2]);
+    }
+
+    /// A clip is read as it plays: at half speed its notes come twice as
+    /// late and last twice as long, its pass is twice its own length, and
+    /// a clip of pad hits gives no notes.
+    #[test]
+    fn a_clip_is_read_as_it_plays() {
+        use mpfree_seq::{Clip, Holds, Note, Speed};
+        let mut c = Clip::new("Clip 1", 4 * Q);
+        c.holds = Holds::Notes;
+        c.notes = vec![Note::new(Q, Q / 2, 40, 90), Note::new(0, Q / 2, 36, 100)];
+        c.speed = Speed::new(1, 2).unwrap();
+        let (notes, len) = clip_played(&c);
+        assert_eq!(len, 8 * Q);
+        assert_eq!(
+            notes,
+            [Played::new(0, Q, 36, 100), Played::new(2 * Q, Q, 40, 90)]
+        );
+        c.holds = Holds::Hits;
+        assert!(clip_played(&c).0.is_empty());
     }
 
     /// Stabs of three notes together are chords; a run of 1/16s is an

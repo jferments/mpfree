@@ -5,6 +5,7 @@
 
 use std::f32::consts::{FRAC_PI_2, PI};
 
+use mpfree_filter::ladder::{self, LadderCore};
 use mpfree_filter::multi::Multi;
 use mpfree_filter::svf::SvfMode;
 
@@ -451,59 +452,54 @@ fn ap(a: f32, s: &mut [f32; 2], x: f32) -> f32 {
     y
 }
 
-/// The Drive for one channel (sampler R5.6): its curve
-/// ([`drive_curve`]) at twice the rate through an IIR half-band each way,
-/// each sample the curve's average over the straight line from the last
-/// (first-order antiderivative antialiasing, Parker, Zavalishin and Le
-/// Bihan, DAFx 2016, as mpfree-fx's Drive does it). A 5 kHz sine at 0 dBFS
-/// driven 12 dB aliases about 84 dB under the tone; the bare curve at the
-/// base rate gives -18 dB. The average is half a step late and a little
-/// dull at the very top (about -2.4 dB at 20 kHz), under a low-pass anyway.
+/// The Ladder's twice-the-rate path for one channel: an IIR half-band up,
+/// the Drive's curve when Drive is on ([`drive_curve`]; each sample the
+/// curve's average over the straight line from the last, first-order
+/// antiderivative antialiasing, Parker, Zavalishin and Le Bihan, DAFx
+/// 2016, as mpfree-fx's Drive does it), the ladder twice, and the
+/// half-band down. A 5 kHz sine at 0 dBFS driven 12 dB aliases about 84
+/// dB under the tone through the curve; the bare curve at the base rate
+/// gives -18 dB. The average is half a step late and a little dull at the
+/// very top (about -2.4 dB at 20 kHz), under a low-pass anyway.
 #[derive(Clone, Copy, Debug, Default)]
-struct DriveOs {
+struct LadderOs {
     /// The up-sampler's sections (even then odd) and the down-sampler's.
     up: [[f32; 2]; 6],
     down: [[f32; 2]; 6],
     /// The curve's last input, in units of [`DRIVE_KNEE`].
     w: f32,
-    /// Running: it starts from the first sample as if that had been there
-    /// all along, so turning Drive up on a sounding note doesn't click.
+    /// The curve has run since Drive came on: it starts from its first
+    /// sample as if that had been there all along.
     live: bool,
 }
 
-impl DriveOs {
-    /// Settles the up-sampler on `x` held steady and the down-sampler on
-    /// `y` (all-pass sections pass a steady value as it is).
-    fn seed(&mut self, x: f32, y: f32) {
-        self.up = [[x, x]; 6];
-        self.down = [[y, y]; 6];
-        self.w = x / DRIVE_KNEE;
-        self.live = true;
-    }
-
+impl LadderOs {
     /// The curve's average from the last input to `x`.
     #[inline(always)]
     fn curve(&mut self, x: f32) -> f32 {
         let u = x * (1.0 / DRIVE_KNEE);
+        if !self.live {
+            self.w = u;
+            self.live = true;
+        }
         let y = drive_average_u(u, self.w);
         self.w = u;
         y
     }
 
-    /// `x` (already times the drive's gain) through the curve, then each
-    /// of the two samples at twice the rate through `then` (the ladder, so
-    /// its loop runs oversampled too), the earlier first, and back down.
-    /// Starting, the down-sampler settles on `out`, about what `then` gives
-    /// now (the ladder's last stage), so turning Drive up doesn't click.
+    /// `x` up to twice the rate, through the curve if `driven` (`x`
+    /// already times the drive's gain), each of the two samples through
+    /// `then` (the ladder), the earlier first, and back down.
     #[inline(always)]
-    fn run_through(&mut self, x: f32, out: f32, mut then: impl FnMut(f32) -> f32) -> f32 {
-        if !self.live {
-            self.seed(x, out);
-        }
+    fn run(&mut self, x: f32, driven: bool, mut then: impl FnMut(f32) -> f32) -> f32 {
         let [u0, u1, u2, u3, u4, u5] = &mut self.up;
         let e = ap(HB_EVEN[2], u2, ap(HB_EVEN[1], u1, ap(HB_EVEN[0], u0, x)));
         let o = ap(HB_ODD[2], u5, ap(HB_ODD[1], u4, ap(HB_ODD[0], u3, x)));
-        let (a, b) = (self.curve(e), self.curve(o));
+        let (a, b) = if driven {
+            (self.curve(e), self.curve(o))
+        } else {
+            (e, o)
+        };
         let a = then(a);
         let b = then(b);
         // Down: the later sample through the even sections, the earlier
@@ -523,42 +519,56 @@ impl DriveOs {
     }
 }
 
-/// A 4-pole ladder low-pass, Moog style (sampler R5.6): four one-pole
-/// stages in a loop, solved without a delay in the loop (Zavalishin's TPT
-/// ladder), the feedback taken through [`soft_clip`], so a high Resonance
-/// sings at a steady level instead of running away while the sound itself
-/// passes straight. Drive goes before it ([`DriveOs`]); with Drive the
-/// ladder runs inside the drive's twice-the-rate path, so the harmonics
-/// its curve makes near the top fold far less (the filter gap plan, F2).
-/// Both channels; one per voice.
+/// A 4-pole transistor ladder low-pass, Moog style (sampler R5.6, rebuilt
+/// in the filter gap plan's step F6): four one-pole stages in a loop with
+/// a curve in every stage, as the circuit has ([`LadderCore`], its design
+/// and measures in mpfree-filter's `ladder`), at twice the rate between
+/// IIR half-bands. Its unit is full scale: a full-scale sound bends a
+/// little at the input pair, as a hot signal into a real ladder does, and
+/// at full Resonance it sings at the level its stages allow (with the
+/// make-up, about 3 dB louder than the Ladder before F6). Drive goes
+/// first, its curve at twice the rate too ([`LadderOs`]), and its scale
+/// before the ladder (after it, the ladder heard the curve's full level
+/// and aliased about 12 dB more), so a driven sound reaches the ladder
+/// about as loud as a full-scale one and keeps its loudness. A singing
+/// ladder falls flat as it gets louder (20 cents at full Resonance); the
+/// cutoff is raised to make up for it ([`mpfree_filter::ladder::tuned`])
+/// unless [`Ladder::authentic`] is set. Both channels; one per voice.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Ladder {
-    s: [[f32; 4]; 2],
-    /// One stage's `g / (1 + g)` now, at the rate and at twice it (with
-    /// Drive); `1 / (1 + g)` is one minus it.
-    big_g: f32,
-    big_g2: f32,
-    /// The feedback (0 to [`LADDER_K`]; from 4 it sings) and the gain that
-    /// gives back part of the bass a resonant ladder loses.
+    core: [LadderCore; 2],
+    /// One stage's prewarped gain at twice the rate, and the feedback (0
+    /// to [`LADDER_K`]; past 4 it sings) and the gain that gives back part
+    /// of the bass a resonant ladder loses.
+    g: f32,
     k: f32,
     makeup: f32,
-    /// A glide to a new setting ([`Ladder::set`]): where `big_g`, `big_g2`
-    /// and `k` are heading, each frame's step, and the frames left.
-    to: [f32; 3],
-    step: [f32; 3],
+    /// A glide to a new setting ([`Ladder::set`]): where `g` and `k` are
+    /// heading, each frame's step, and the frames left.
+    to: [f32; 2],
+    step: [f32; 2],
     left: u32,
     /// Set at least once (the first setting lands at once).
     set: bool,
-    /// Drive's gain into the curve and its scale after it; gain 0: none.
-    /// The Drive (dB) they are for.
+    /// Drive's gain into the curve and its scale after the ladder; gain 0:
+    /// none. The Drive (dB) they are for.
     drive: f32,
     norm: f32,
     drive_db: f32,
-    os: [DriveOs; 2],
+    os: [LadderOs; 2],
+    /// The DC blocker after it, each channel: its last input and output.
+    dc: [[f32; 2]; 2],
+    /// Sing where the circuit does, flat by up to 20 cents at full
+    /// Resonance, instead of at the cutoff.
+    pub authentic: bool,
 }
 
 /// The ladder's feedback at Resonance 1: past 4, where it sings.
 pub const LADDER_K: f32 = 4.2;
+
+/// The pole of the DC blocker after the Ladder: about 3 Hz at 44.1 kHz
+/// (`1 - 2π × 3 / 44,100`; at 48 kHz, 2.8 Hz).
+const LADDER_DC_R: f32 = 0.999_573;
 
 /// The ladder's make-up gain at feedback `k`: half the bass it loses
 /// (a ladder's gain at 0 Hz is `1 / (1 + k)`).
@@ -571,44 +581,33 @@ impl Ladder {
     /// cutoff and resonance glide there over `frames` frames (the first
     /// setting, or 0 frames: at once); Drive changes at once.
     pub fn set(&mut self, cutoff_hz: f32, resonance: f32, drive_db: f32, rate: f32, frames: u32) {
-        let fc = cutoff_hz.clamp(10.0, rate * 0.45);
-        let stage = |rate: f32| {
-            let g = (PI * fc / rate).tan();
-            g / (1.0 + g)
-        };
-        let big_g = stage(rate);
         let k = LADDER_K * resonance.clamp(0.0, 1.0);
-        let was_driven = self.drive > 0.0;
+        let fc = if self.authentic {
+            cutoff_hz
+        } else {
+            cutoff_hz * ladder::tuned(k)
+        };
+        let g = ladder::stage_gain(fc.clamp(10.0, rate * 0.45), 2.0 * rate);
         let drive_db = drive_db.clamp(0.0, MAX_DRIVE_DB);
-        let big_g2 = if drive_db > 0.0 {
+        if drive_db > 0.0 {
             if drive_db != self.drive_db || self.drive == 0.0 {
                 self.drive = db_to_gain(drive_db);
                 self.norm = drive_norm(self.drive);
                 self.drive_db = drive_db;
             }
-            stage(2.0 * rate)
         } else {
-            (self.drive, self.norm) = (0.0, 1.0);
-            // Off: it starts afresh when it next comes on.
+            (self.drive, self.norm, self.drive_db) = (0.0, 1.0, 0.0);
+            // Off: the curve starts afresh when it next comes on.
             self.os[0].live = false;
             self.os[1].live = false;
-            self.big_g2
-        };
+        }
         if !self.set || frames == 0 {
-            (self.big_g, self.big_g2, self.k) = (big_g, big_g2, k);
+            (self.g, self.k) = (g, k);
             self.left = 0;
         } else {
-            // The twice-the-rate path comes in at its setting.
-            if drive_db > 0.0 && !was_driven {
-                self.big_g2 = big_g2;
-            }
             let n = frames as f32;
-            self.to = [big_g, big_g2, k];
-            self.step = [
-                (big_g - self.big_g) / n,
-                (big_g2 - self.big_g2) / n,
-                (k - self.k) / n,
-            ];
+            self.to = [g, k];
+            self.step = [(g - self.g) / n, (k - self.k) / n];
             self.left = frames;
         }
         self.makeup = ladder_makeup(self.k);
@@ -623,11 +622,10 @@ impl Ladder {
         }
         self.left -= 1;
         if self.left == 0 {
-            [self.big_g, self.big_g2, self.k] = self.to;
+            [self.g, self.k] = self.to;
         } else {
-            self.big_g += self.step[0];
-            self.big_g2 += self.step[1];
-            self.k += self.step[2];
+            self.g += self.step[0];
+            self.k += self.step[1];
         }
         self.makeup = ladder_makeup(self.k);
     }
@@ -635,16 +633,14 @@ impl Ladder {
     /// Zeros a state too small to hear (see [`Svf::flush`]).
     #[inline]
     pub fn flush(&mut self) {
-        for ch in &mut self.s {
-            for x in ch.iter_mut() {
+        for ch in 0..2 {
+            self.core[ch].flush();
+            self.os[ch].flush();
+            for x in &mut self.dc[ch] {
                 if x.abs() < TINY {
                     *x = 0.0;
                 }
             }
-        }
-        if self.drive > 0.0 {
-            self.os[0].flush();
-            self.os[1].flush();
         }
     }
 
@@ -657,38 +653,21 @@ impl Ladder {
 
     #[inline(always)]
     fn channel(&mut self, ch: usize, x: f32) -> f32 {
-        let y = if self.drive > 0.0 {
-            let (g, k, norm) = (self.big_g2, self.k, self.norm);
-            let s = &mut self.s[ch];
-            let out = s[3];
-            self.os[ch].run_through(x * self.drive, out, |u| {
-                ladder_step(s, u * norm, g, 1.0 - g, k)
-            })
-        } else {
-            let g = self.big_g;
-            ladder_step(&mut self.s[ch], x, g, 1.0 - g, self.k)
-        };
-        y * self.makeup
+        let (g, k, norm) = (self.g, self.k, self.norm);
+        let driven = self.drive > 0.0;
+        let gain = if driven { self.drive } else { 1.0 };
+        let core = &mut self.core[ch];
+        let y = self.os[ch].run(x * gain, driven, |u| core.step(u * norm, g, k));
+        // A loud, lopsided wave through the bending stages leaves a little
+        // DC (a full-scale sawtooth about -40 dB, where the exact circuit
+        // gives -83 at Resonance 0 and -47 at 0.5), as the Drive's curve
+        // does: a one-pole high-pass at 3 Hz takes it out, as a real
+        // ladder's output coupling does (-0.1 dB at 20 Hz).
+        let [x1, y1] = self.dc[ch];
+        let out = y - x1 + LADDER_DC_R * y1;
+        self.dc[ch] = [y, out];
+        out * self.makeup
     }
-}
-
-/// One sample through the ladder's loop: states `s`, a stage's `g / (1 +
-/// g)` and `1 / (1 + g)`, feedback `k`. The loop's output is solved as if
-/// the feedback were straight; then the feedback goes through the curve.
-#[inline(always)]
-fn ladder_step(s: &mut [f32; 4], x: f32, g: f32, inv_1g: f32, k: f32) -> f32 {
-    let (g2, g3) = (g * g, g * g * g);
-    let g4 = g2 * g2;
-    let sig = inv_1g * (g3 * s[0] + g2 * s[1] + g * s[2] + s[3]);
-    let y4 = (g4 * x + sig) / (1.0 + k * g4);
-    let mut u = x - soft_clip(k * y4);
-    for st in s.iter_mut() {
-        let v = (u - *st) * g;
-        let y = v + *st;
-        *st = y + v;
-        u = y;
-    }
-    u
 }
 
 /// The comb's lowest pitch: its delay line holds one cycle of it.
@@ -950,7 +929,7 @@ pub fn vowel_db(cutoff_hz: f32, resonance: f32, hz: f32) -> f32 {
 /// `m / ((1 + s)^4 + k)`. For the Play page's picture.
 pub fn ladder_db(cutoff_hz: f32, resonance: f32, hz: f32) -> f32 {
     let k = LADDER_K * resonance.clamp(0.0, 1.0);
-    let x = hz / cutoff_hz.max(1.0);
+    let x = hz / (cutoff_hz * ladder::tuned(k)).max(1.0);
     // (1 + jx)^4 = 1 - 6x² + x⁴ + j(4x - 4x³).
     let x2 = x * x;
     let (re, im) = (1.0 - 6.0 * x2 + x2 * x2 + k, 4.0 * x - 4.0 * x * x2);

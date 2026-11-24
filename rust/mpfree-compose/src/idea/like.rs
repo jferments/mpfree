@@ -166,6 +166,21 @@ fn read(of: &Phrase, req: &NewIdea) -> Option<Read> {
     })
 }
 
+/// Whether More like this can make `of` again keeping its rhythm or its
+/// notes ([`rework`]); a phrase it cannot read can still be developed.
+pub fn reworkable(of: &Phrase) -> bool {
+    let req = NewIdea {
+        kind: of.kind,
+        style: crate::style::MINIMAL,
+        minor: false,
+        bars: of.bars,
+        activity: 0.5,
+        seed: 0,
+        attempt: 0,
+    };
+    read(of, &req).is_some()
+}
+
 /// The request a rework of `of` makes: its kind, length and scale, the
 /// rest as asked.
 fn request_of(of: &Phrase, r: &Read, req: &NewIdea) -> NewIdea {
@@ -803,7 +818,10 @@ mod tests {
     fn a_phrase_in_three_is_developed_but_not_reworked() {
         let of = Phrase::parse("riff minor 3/4 : 1 . 3 5 . 3").unwrap();
         assert!(rework(&of, Rework::NewNotes, &req(PhraseKind::Riff, 1, 1)).is_none());
+        assert!(!reworkable(&of));
         assert!(develop(&of, Develop::Up).is_some());
+        let four = Phrase::parse("riff minor : 1 . 3 5 . 3 . .").unwrap();
+        assert!(reworkable(&four));
     }
 
     /// Up a step, upside down and first half twice, on a written phrase.

@@ -157,14 +157,14 @@ pub use dice::{Dice, DiceName, Job};
 pub use event::{Event, MotifRef, Motion, NoteDecision, Part, PartId, Role, Source};
 pub use fit::{fit_clip, marks, FitRefused};
 pub use idea::{
-    develop, evolve, new_idea, next_idea, next_rework, rework, Develop, Idea, IdeaVerdict, NewIdea,
-    Rework,
+    develop, evolve, new_idea, next_idea, next_rework, rework, reworkable, Develop, Idea,
+    IdeaVerdict, NewIdea, Rework,
 };
 pub use job::{
     lane_named, AddAsk, AddDone, AddPartJob, Ask, ContinueJob, Done, Lanes, PartMade, RowChords,
 };
 pub use keep::{clip_notes, continuation, KeepError};
-pub use make_phrase::{phrase_of, phrase_of_as, Asked, Made, MakeRefused};
+pub use make_phrase::{clip_played, phrase_of, phrase_of_as, Asked, Made, MakeRefused};
 pub use motif::{similarity, transform, GridNote, Similarity, Transform};
 pub use parts::{
     add_part, add_part_again, AddPart, Added, PartVerdict, Refused as PartRefused, Relation,

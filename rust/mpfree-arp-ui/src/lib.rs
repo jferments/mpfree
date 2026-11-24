@@ -20,12 +20,18 @@
 //!   kind's phrases with a picture of each, and the phrase that plays with
 //!   a cursor where it is, how it follows the held note and the Q-Link
 //!   sliders.
+//! - [`maker`]: New idea and More like this, one panel in the Phrase tab's
+//!   list's place: the rows, the try's status and Try again, ‹ Try N, Back
+//!   and Keep.
 //! - [`sample`]: sample screens for the workstation preview and the tests.
 //!
 //! No device I/O: the pad player draws the screens and feeds them touches.
 
 #![forbid(unsafe_code)]
 
+pub mod answer_panel;
+pub mod make_sheet;
+pub mod maker;
 pub mod phrase_tab;
 pub mod phrases;
 pub mod sample;

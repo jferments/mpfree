@@ -29,9 +29,10 @@
 //!   the Vowel's two band-passes in parallel), from 30 Hz to 8 kHz
 //!   wherever the prototype is above −30 dB; and with no filter, how flat
 //!   the read is. The sweep is at −12 dBFS, but at −48 dBFS for a
-//!   state-variable type with resonance: under where its resonance bends,
-//!   so the row holds the linear filter to its prototype (PF5 and PF6
-//!   measure the bend).
+//!   state-variable type with resonance and for the Ladder with
+//!   resonance (whose stages bend a loud ring since the filter gap plan's
+//!   F6): under where its resonance bends, so the row holds the linear
+//!   filter to its prototype (PF5 and PF6 measure the bend).
 //! - **S6, Drive's aliases:** a 2.5 and a 5 kHz sine at 0 dBFS on a pad
 //!   whose Ladder is open (20 kHz) and driven 12 and 24 dB: the loudest
 //!   bin that is no harmonic of the tone, from 20 Hz to 20 kHz, against
@@ -901,6 +902,7 @@ fn filters(rows: &mut Vec<Row>, rate: u32) {
                     | FilterKind::BandPass
                     | FilterKind::Notch
                     | FilterKind::Peak
+                    | FilterKind::Ladder
             );
         let (sweep, dry) = if bends {
             (&quiet, &plain_quiet)

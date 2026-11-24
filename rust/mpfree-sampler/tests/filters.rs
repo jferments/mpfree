@@ -76,7 +76,12 @@ fn db(x: f32) -> f32 {
 
 /// The level of a sine at `hz` through `f`, against the same with none.
 fn gain_db(hz: f32, f: Filter) -> f32 {
-    let s = sine(hz, 0.25);
+    gain_db_at(hz, f, 0.25)
+}
+
+/// [`gain_db`] for a sine peaking at `amp`.
+fn gain_db_at(hz: f32, f: Filter, amp: f32) -> f32 {
+    let s = sine(hz, amp);
     let off = filter(FilterKind::Off, 2, 20_000.0, 0.0, 0.0);
     db(rms(steady(&played(&s, f, 1.0))) / rms(steady(&played(&s, off, 1.0))))
 }
@@ -293,12 +298,15 @@ fn a_saw_through_any_vowel_keeps_near_its_level() {
 
 #[test]
 fn the_ladder_is_as_its_picture() {
+    // The picture is a quiet sound's: since step F6 the ladder bends a
+    // loud one in every stage, as the circuit does (a -12 dBFS sine at a
+    // resonant cutoff comes out a little under it).
     for res in [0.0, 0.5] {
         let f = filter(FilterKind::Ladder, 4, 1_000.0, res, 0.0);
         for hz in [100.0, 700.0, 1_000.0, 1_400.0, 3_000.0] {
             let picture = ladder_db(1_000.0, res, hz);
             assert!(
-                (gain_db(hz, f) - picture).abs() < 1.0,
+                (gain_db_at(hz, f, 0.01) - picture).abs() < 1.0,
                 "{res} {hz} {picture}"
             );
         }

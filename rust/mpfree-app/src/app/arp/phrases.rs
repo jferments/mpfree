@@ -94,7 +94,7 @@ impl App {
     /// The key the armed track's phrase follows In key now: the arp's own
     /// scale, or with that off the scale the pads play. The list is in the
     /// order that suits it.
-    fn phrase_key(&self) -> Option<Scale> {
+    pub(super) fn phrase_key(&self) -> Option<Scale> {
         let e = self.arps.engine_at(self.track);
         e.settings().scale.or(e.key())
     }
@@ -197,14 +197,20 @@ impl App {
     }
 
     /// The armed track's engine takes the track's pick (after a pick, or
-    /// when the track or the project changed). The engine leaves a phrase
-    /// that already plays alone. Allocates nothing.
+    /// when the track or the project changed), or while New idea or More
+    /// like this is open the try it shows (`arp/maker.rs`). The engine
+    /// leaves a phrase that already plays alone. Allocates nothing.
     pub(super) fn send_phrase(&mut self) {
         if self.phrase_index >= self.phrases.len() {
             self.phrase_index = 0;
         }
-        if let Some((_, phrase)) = self.phrases.get(self.phrase_index) {
-            self.arps.engine_at_mut(self.track).set_phrase(*phrase);
+        let phrase = self
+            .maker_try()
+            .or_else(|| self.sheet_try())
+            .or_else(|| self.improvised())
+            .or_else(|| self.phrases.get(self.phrase_index).map(|(_, p)| *p));
+        if let Some(phrase) = phrase {
+            self.arps.engine_at_mut(self.track).set_phrase(phrase);
         }
         self.arp_dirty = true;
     }
@@ -243,7 +249,7 @@ impl App {
     /// one then, and every track's pick on them moves with them. Returns
     /// whether it took a place. The engines hear of it from
     /// [`App::send_all_phrases`].
-    fn own_phrase(&mut self, name: &str, phrase: Phrase) -> bool {
+    pub(super) fn own_phrase(&mut self, name: &str, phrase: Phrase) -> bool {
         if let Some(slot) = self.phrases[..self.phrases_own]
             .iter_mut()
             .find(|(n, _)| n.eq_ignore_ascii_case(name))
@@ -299,7 +305,9 @@ impl App {
                 e.set_phrase(*phrase);
             }
         }
-        self.arp_dirty = true;
+        // The armed track's try, while New idea, More like this or Make a
+        // phrase is open.
+        self.send_phrase();
     }
 
     /// The owner's phrases as a library file, for the store's

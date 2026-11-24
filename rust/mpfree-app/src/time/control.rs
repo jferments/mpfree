@@ -719,6 +719,9 @@ pub struct TimeControl {
     tell_every: u64,
     /// The steps changed since [`TimeControl::take_steps_changed`].
     steps_changed: bool,
+    /// The Continue result the steps show in place of its clip, as
+    /// [`super::compose::Composing::heard_key`] names it.
+    steps_heard: Option<(usize, usize, u32)>,
     /// Recorded pressure a clip had no room for (`MAX_TOUCH_POINTS`).
     touch_lost: u64,
     /// Recorded moves of an instrument's controls left out of clips whose
@@ -911,6 +914,7 @@ impl TimeControl {
             since_told: 0,
             tell_every: u64::from(rate / 4),
             steps_changed: true,
+            steps_heard: None,
             touch_lost: 0,
             inst_refused: 0,
             inst_told: Vec::new(),
@@ -2818,8 +2822,15 @@ impl TimeControl {
             .get(track)
             .map_or(String::new(), |t| t.name.clone());
         let clip = slot.and_then(|slot| {
-            let c = self.project.clip(track, slot)?;
+            // While Continue's result for the clip is shown: the clip as
+            // heard with it (composing step 4).
+            let heard = self.compose.heard().filter(|h| (h.0, h.1) == (track, slot));
+            let c = match heard {
+                Some(h) => h.2,
+                None => self.project.clip(track, slot)?,
+            };
             let grid = grid_of(c);
+            let new_from = heard.map(|h| (h.3 / grid.size().max(1)) as usize);
             let launch = self
                 .launches
                 .iter()
@@ -2877,6 +2888,7 @@ impl TimeControl {
                     .map(|(p, i, a, v)| (pad_of(p), i, a, v))
                     .collect(),
                 silent,
+                new_from,
             })
         });
         let playing = self
@@ -4802,6 +4814,9 @@ impl TimeControl {
             } => self.mutate(track, slot, more, melodic),
             TimeAction::Restore { track, slot } => self.restore(track, slot),
             TimeAction::ConvertPreview { track, slot } => self.convert_preview(track, slot),
+            // The Make a phrase sheet is the arp's: the app opens it
+            // (desk.rs), and nothing here changes.
+            TimeAction::MakePhrase { .. } => Ok(String::new()),
             TimeAction::Convert { track, slot } => self.convert(track, slot),
             TimeAction::ConvertCancel => {
                 self.convert_asked = None;
@@ -7603,7 +7618,9 @@ impl TimeControl {
                 if c.looped.is_some() {
                     return Err("continue: a loop's cell has no notes to carry on".into());
                 }
-                if c.holds != Holds::Notes {
+                // A clip of pad hits carries on as a beat (composing step
+                // 4): on a kit, never as a tune.
+                if c.holds != Holds::Notes && kind != InstrumentKind::Percussive {
                     return Err(format!("continue: {}", Refused::PadHits.words()));
                 }
                 let name = c.name.clone();
@@ -7943,6 +7960,12 @@ impl TimeControl {
     /// changed the clip or what it listened to, and a change coming due on
     /// its line. True if the view is to be compiled.
     fn continue_period(&mut self, frames: u32) -> bool {
+        // The Steps show the shown result in place of its clip.
+        let heard = self.compose.heard_key();
+        if heard != self.steps_heard {
+            self.steps_heard = heard;
+            self.steps_changed = true;
+        }
         if !self.compose.active() {
             self.compose_from_editor = false;
             return false;
@@ -8114,11 +8137,12 @@ impl TimeControl {
                     meter: self.info.meter,
                     bpm: self.info.bpm,
                 };
-                let what = format!(
-                    "{} on {}",
-                    format!("{:?}", ask.part).to_lowercase(),
-                    ask.relation.words()
-                );
+                let part = format!("{:?}", ask.part).to_lowercase();
+                let what = match &ask.phrase {
+                    // A phrase as the part (P2, board H).
+                    Some((name, _)) => format!("{name} as the {part}"),
+                    None => format!("{part} on {}", ask.relation.words()),
+                };
                 let playing = self.add.in_view.is_some();
                 self.add.ask(&self.project, *ask, hearing)?;
                 self.changed = true;

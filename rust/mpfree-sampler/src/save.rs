@@ -48,11 +48,13 @@ pub const FORMAT: &str = "mpfree-sampler 1";
 /// linearly to Q 20 with nothing holding a loud sound back, and the filter
 /// came after the amp envelope. 2: a 4-pole band-pass was two resonant
 /// stages, so its centre rang up twice the 2-pole's in dB (64 dB at full
-/// Resonance). 3: the filters as they are now, a band-pass's centre the
-/// 2-pole's at every slope. An older kit opens with its settings as they
-/// were (the knobs mean what they say now), and a note says which of its
-/// filtered pads may sound different.
-pub const FILTERS_VERSION: u32 = 3;
+/// Resonance). 3: a band-pass's centre the 2-pole's at every slope, and
+/// the Ladder bending only at its loop's input. 4 (F6, 24 Nov 2026): the
+/// filters as they are now, the Ladder bending in every stage as the
+/// circuit does. An older kit opens with its settings as they were (the
+/// knobs mean what they say now), and a note says which of its filtered
+/// pads may sound different.
+pub const FILTERS_VERSION: u32 = 4;
 
 /// Whether the sampler's part `text` has a layer with grain routes (step
 /// 17c): what the app's `grain-routes` need is written for, since an
@@ -215,12 +217,21 @@ pub fn from_text(
                  pads may sound brighter (a Cutoff is now where the sound is 3 dB down) \
                  and more resonant, with a loud sound's ring held back; check them by ear"
             ));
-        } else if filters < 3 && has_steep_band_pass(&p) {
-            r.notes.push(format!(
-                "{name}: saved before the band-pass slopes were reworked, so its 4-pole \
-                 band-pass pads ring less at high Resonance (their centre now peaks as \
-                 the 2-pole's does); check them by ear"
-            ));
+        } else {
+            if filters < 3 && has_steep_band_pass(&p) {
+                r.notes.push(format!(
+                    "{name}: saved before the band-pass slopes were reworked, so its 4-pole \
+                     band-pass pads ring less at high Resonance (their centre now peaks as \
+                     the 2-pole's does); check them by ear"
+                ));
+            }
+            if filters < 4 && has_kind(&p, FilterKind::Ladder) {
+                r.notes.push(format!(
+                    "{name}: saved before the Ladder was rebuilt, so its Ladder pads may \
+                     sound brighter, with a loud sound's resonant peaks a little softer; \
+                     check them by ear"
+                ));
+            }
         }
         out.kits.push((name, p));
     }
@@ -243,6 +254,13 @@ fn has_changed_filter(p: &Project) -> bool {
                 | FilterKind::Ladder
         )
     })
+}
+
+/// Whether a pad of `p` has a filter of `kind` (F6 rebuilt the Ladder).
+fn has_kind(p: &Project, kind: FilterKind) -> bool {
+    (0..PADS)
+        .filter_map(|i| p.pad(i))
+        .any(|pad| pad.filter.kind == kind)
 }
 
 /// Whether a pad of `p` has a 4-pole band-pass, which F4 changed: its
