@@ -122,6 +122,13 @@ pub struct PlayingStyle {
     pub velocity_range: f32,
     /// Chance of a ghost note where one fits.
     pub ghosts: f32,
+    /// How far the playing follows the phrase and the instrument (S3,
+    /// [`crate::perform`]): 0 plays as phase 0C did, 1 as planned.
+    pub gesture: f32,
+    /// Every new note this many ms behind the beat (ahead below 0) where
+    /// no played groove sets the feel: a style made from a clip leans as
+    /// the clip did ([`crate::clip_style`]); 0 in the built-in three.
+    pub lean_ms: f32,
 }
 
 /// A plan shape: how tension and repetition run over a phrase.
@@ -241,6 +248,8 @@ pub const MINIMAL: Style = Style {
         velocity: 92,
         velocity_range: 10.0,
         ghosts: 0.0,
+        gesture: 0.7,
+        lean_ms: 0.0,
     },
     development: DevelopmentStyle {
         plans: &[PlanShape::Loop, PlanShape::Waves, PlanShape::SlowBuild],
@@ -305,6 +314,8 @@ pub const GROOVE: Style = Style {
         velocity: 96,
         velocity_range: 14.0,
         ghosts: 0.35,
+        gesture: 1.0,
+        lean_ms: 0.0,
     },
     development: DevelopmentStyle {
         plans: &[
@@ -373,6 +384,8 @@ pub const JAZZISH: Style = Style {
         velocity: 88,
         velocity_range: 16.0,
         ghosts: 0.2,
+        gesture: 1.2,
+        lean_ms: 0.0,
     },
     development: DevelopmentStyle {
         plans: &[
