@@ -786,6 +786,13 @@ pub struct Settings {
     /// default (live test 3), Play's options or SHIFT + PLAY START. How
     /// you like to work, so kept in Prefs, not the project.
     pub metronome: bool,
+    /// The Looper's options "Tempo follows" (the looper refactor's R2,
+    /// tempo context): Song (false, the default) or Free loops (true):
+    /// while the free loops' clock runs, the arps, Note Repeat and the
+    /// effects, synths and plugins that keep time follow it, not the
+    /// song's. The sequencer, audio tracks, metronome and MIDI clock out
+    /// keep the song's. How you like to work, so kept in Prefs.
+    pub tempo_follows_free: bool,
     /// The click's level, dBFS: [`METRONOME_DBS`].
     pub metronome_db: i8,
     /// The velocity every hit plays at with Half Level on: 64, until a
@@ -901,6 +908,7 @@ impl Default for Settings {
             sound_cores: SoundCores::Shared,
             loop_memory: LoopMemory::default(),
             metronome: false,
+            tempo_follows_free: false,
             metronome_db: crate::time::CLICK_DB as i8,
             half_level: HALF_LEVEL,
             timing_strip: true,
@@ -1012,6 +1020,9 @@ pub enum Item {
     LoopTempo,
     /// The looper's options: smart loop end, Off, Suggest or Auto.
     SmartEnd,
+    /// The looper's options: what keeps time follows, the song's clock or
+    /// the free loops' (the looper refactor's R2, tempo context).
+    TempoFollows,
     /// Prefs and the looper's options: the looper's size from the next
     /// start.
     LoopMemory,
@@ -5212,6 +5223,7 @@ impl App {
                 Item::LoopLevel,
                 Item::LoopTempo,
                 Item::SmartEnd,
+                Item::TempoFollows,
                 Item::LoopMemory,
             ],
             (
@@ -5430,6 +5442,15 @@ impl App {
                 if s.loop_tempo { "On" } else { "Off" }.to_string(),
             ),
             Item::SmartEnd => ("Smart loop end", smart_end_name(s.smart_end).to_string()),
+            Item::TempoFollows => (
+                "Tempo follows",
+                if s.tempo_follows_free {
+                    "Free loops"
+                } else {
+                    "Song"
+                }
+                .to_string(),
+            ),
             Item::LoopMemory => (
                 "Loop memory",
                 if s.loop_memory == self.loop_memory_now {
@@ -5738,6 +5759,15 @@ impl App {
                 "it. Auto: it listens a moment past your tap",
                 "and closes on the downbeat you played; the",
                 "song starts in step. Off: your tap stands.",
+            ],
+            Item::TempoFollows => vec![
+                "What keeps time: the arps, Note Repeat and",
+                "synced effects, synths and plugins. Song:",
+                "the song's tempo and beats. Free loops: while",
+                "the free loops play, their tempo and beats;",
+                "the song's again once they stop. The sequencer,",
+                "audio tracks, frozen tracks, metronome, MIDI",
+                "clock out and exports keep the song's.",
             ],
             Item::LoopMemory => vec![
                 "How much sound the loops can hold, all",
@@ -6382,6 +6412,7 @@ impl App {
                 )));
             }
             Item::LoopTempo => s.loop_tempo = d > 0,
+            Item::TempoFollows => s.tempo_follows_free = d > 0,
             Item::SmartEnd => s.smart_end = cycle(&SMART_ENDS, s.smart_end, d),
             Item::LoopLevel => {
                 s.loop_level_db = (s.loop_level_db + d as f32).clamp(-24.0, 6.0);
@@ -7991,6 +8022,38 @@ mod tests {
         app.step_item(at, -1);
         app.step_item(at, -1);
         assert_eq!(app.item_text(Item::SmartEnd).1, "Off");
+    }
+
+    /// Tempo context (the looper refactor's R2): the looper's options pick
+    /// what keeps time, Song (at first) or Free loops, under Smart loop
+    /// end, kept between starts.
+    #[test]
+    fn tempo_follows_is_in_the_looper_options_and_kept() {
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        app.open_tab(View::Looper);
+        press(&mut app, MENU);
+        let at = row(&app, Item::TempoFollows);
+        assert_eq!(at, row(&app, Item::SmartEnd) + 1);
+        assert_eq!(
+            app.item_text(Item::TempoFollows),
+            ("Tempo follows", "Song".to_string())
+        );
+        assert!(!app.settings.tempo_follows_free);
+        let fx = app.step_item(at, 1);
+        assert!(app.settings.tempo_follows_free);
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::Settings(s) if s.tempo_follows_free)));
+        assert_eq!(app.item_text(Item::TempoFollows).1, "Free loops");
+        let kept = app.app_settings();
+        assert_eq!(kept.get_str("tempo-follows"), Some("free loops"));
+        let mut next = App::new(44_100, false);
+        next.restore(&kept, &mpfree_store::Settings::default());
+        assert!(next.settings.tempo_follows_free);
+        app.step_item(at, -1);
+        assert!(!app.settings.tempo_follows_free);
+        assert_eq!(app.app_settings().get_str("tempo-follows"), Some("song"));
     }
 
     /// Live test 2: a minute of loops was too little. Prefs (and the

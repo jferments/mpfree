@@ -179,7 +179,7 @@ A few things to know about where a loop records from:
 - **Nothing else in its place.** If the looper can't get the sound you picked (for example, the Loop or Audio track goes to a submix while you record Master), it records silence and says why, and a new take or overdub won't start until it can.
 - **Master and the loop's own sound.** While the Loop track sends to a return (louder than the -60 dB "off" the Play page leaves it at), or goes to a submix, the looper won't record **Master**: the loop would record its own echoes, and every overdub would add them again. Turn that send down (or send the Loop track to the master), or record a track or submix instead. After the send comes down, Master waits until that return's echoes of the loop have died away (a delay's repeats, a reverb's tail), and the screen says so.
 
-Press **MENU** on the Looper tab for the rarer settings as a list, with an explanation beside each: the line input itself, the latency to make up for, **Loop level** (-24 to +6 dB), **Tempo from the first loop** ([above](#tempo-from-the-first-loop)), **Smart loop end** ([below](#smart-loop-end)) and **Loop memory**. The Loop level, Tempo from the first loop, Smart loop end, and the latency once you set it by hand, are kept for you whatever project is open; the line input is off at every start, so the Looper records the pads until you turn it on.
+Press **MENU** on the Looper tab for the rarer settings as a list, with an explanation beside each: the line input itself, the latency to make up for, **Loop level** (-24 to +6 dB), **Tempo from the first loop** ([above](#tempo-from-the-first-loop)), **Smart loop end** ([below](#smart-loop-end)), **Tempo follows** ([with free loops](#what-keeps-time-with-the-free-loops)) and **Loop memory**. The Loop level, Tempo from the first loop, Smart loop end, Tempo follows, and the latency once you set it by hand, are kept for you whatever project is open; the line input is off at every start, so the Looper records the pads until you turn it on.
 
 #### Smart loop end
 
@@ -359,6 +359,16 @@ The free loops stop at their **tops**: each waits at its place on the free loops
 {{shot: looper-free-picked | A free loop picked while the song plays: Loops 1 and 3 say free on their cards, Free ▶ over the loops, Stop free in Listen's place, and the hint line says STOP stops the song.}}
 
 {{shot: looper-free-stopped | After STOP, STOP: Song stopped and Free ■ over the loops, the free loops wait at their tops with ▶ on their rings, Play free in Listen's place, and the hint line says PLAY starts the song and the free loops.}}
+
+### What keeps time with the free loops
+
+Out of the box, the arps, Note Repeat and the effects and synths that keep time follow the song: with the song stopped, an arp runs at the song's tempo, beside the free loops rather than with them. To play along with the free loops instead, set **Tempo follows: Free loops** in the Looper tab's MENU. While the free loops play, these then keep their tempo and their beats, so an arp's sixteenths, a synced delay's echoes and an LFO's sweeps fall on the free loops' grid:
+
+| Follows the free loops | Keeps the song's |
+|---|---|
+| The arps and Note Repeat (the clips' and the pads'), synced delays and other effects with a note-length rate, synths' and pads' synced LFOs, plugins' tempo and position, and warped pads. | The sequencer and its clips, the audio tracks, frozen tracks (and a Freeze or Print as it records), the metronome, MIDI clock out, and everything while an export runs. |
+
+Whenever the free loops are stopped, or there are none, everything follows the song again. With **Tempo follows: Free loops** and the song playing too, what's in the left column still follows the free loops. **Song** (the default) leaves everything on the song. The setting is kept for you whatever project is open.
 
 ### What else to know
 

@@ -99,6 +99,14 @@ impl App {
         out.set_str("sound-cores", s.sound_cores.name());
         out.set_i64("loop-memory", i64::from(s.loop_memory.minutes()));
         out.set_bool("metronome", s.metronome);
+        out.set_str(
+            "tempo-follows",
+            if s.tempo_follows_free {
+                "free loops"
+            } else {
+                "song"
+            },
+        );
         out.set_i64("metronome-level", i64::from(s.metronome_db));
         out.set_i64("half-level", i64::from(s.half_level));
         out.set_bool("timing-strip", s.timing_strip);
@@ -211,6 +219,17 @@ impl App {
                     .map(|m| s.loop_memory = m)
                     .is_some(),
                 "metronome" => app.get_bool(k).map(|b| s.metronome = b).is_some(),
+                "tempo-follows" => match v {
+                    "song" => {
+                        s.tempo_follows_free = false;
+                        true
+                    }
+                    "free loops" => {
+                        s.tempo_follows_free = true;
+                        true
+                    }
+                    _ => false,
+                },
                 "metronome-level" => app
                     .get_i64(k)
                     .and_then(|n| super::METRONOME_DBS.iter().find(|&&d| i64::from(d) == n))

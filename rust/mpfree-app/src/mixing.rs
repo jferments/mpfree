@@ -3991,6 +3991,17 @@ pub fn ctx(rate: u32, frame: u64, bpm: f64, block: &mpfree_transport::Block) -> 
     c
 }
 
+/// The song's clock from its context (`ctx` over the time engine's own
+/// block), for frozen audio while the mixer's context keeps the free
+/// loops' time (Tempo follows: `Mixer::set_song_clock`).
+pub fn song_clock(song: &Ctx) -> mpfree_fx::SongClock {
+    mpfree_fx::SongClock {
+        bpm: song.bpm,
+        beats: song.beats,
+        playing: song.playing,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
