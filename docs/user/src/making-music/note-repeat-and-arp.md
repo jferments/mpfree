@@ -62,7 +62,7 @@ Note Repeat, Latch and the arpeggiator play whatever the pads play, and turning 
 - **On a synth** the arp plays the notes of the pads you hold, chords too, as the synth's pad layout has them.
 - **On a kit** it plays the kit's pads on the bank the pads are on.
 - **When the pads move to something else** (Follow track, another bank with its own pick, another synth or kit), what the arp was playing there stops, latched notes too. Play again to start it on what the pads play now.
-- **A phrase stays with its track.** A [phrase](#phrases) moves the notes of the selected track's synth, so the synth or kit the pads play on their own never plays one: with the Arp panel on Phrase the pads play it as pressed, and NOTE REPEAT and Latch repeat it.
+- **A phrase stays with its track.** A [phrase](#phrases) moves notes, so a kit or an instrument plugin the pads play on their own never plays one: with the Arp panel on Phrase the pads play it as pressed, and NOTE REPEAT and Latch repeat it. The synth chosen for the pads (**Pads: Poly**, say) does play the selected track's phrase, from the pad you hold, even while the track plays a kit; the Phrase tab then shows its list, and its cursor follows what the pads play. The track's own phrase plays on meanwhile, whether the track plays the synth or a synth of its own.
 - **Layers** play each hit once, as you press it; the repeats play the pads' first sound.
 - **Recording:** REC records the synth or kit on a free track as usual (see [Synths](synths.md)), and the arp's notes record as you hear them. Once that track is selected the pads play through it and its arp. While the pads play a bank's own synth or kit, the arp's notes go into that sound's own track (see [Recording every bank](synths.md#recording-every-bank)).
 
@@ -162,7 +162,7 @@ In the list, each phrase shows its length and its notes drawn small. The phrases
 - **In key** moves the phrase onto a scale, so every note belongs. It follows the arp's own **Scale** if you set one (see [Arp options](#arp-options)), otherwise the scale the pads play; the key is named beside the switch. With no scale anywhere it plays by semitones, as Exact does.
 - **Exact** plays the phrase's notes as written, counted in semitones from the note you hold, whatever the key.
 
-A phrase written in triplets is never swung: its Swing slider goes faint and reads "straight". Gate, Swing and Octaves learn a knob as on the other tabs; **Speed** can't learn one yet. The same goes for the [XY pad](xy-layouts.md#the-arp-on-the-pad): a layout of yours can hold a phrase's Gate, Swing and Octaves, but not its Speed yet. A layout that holds the arp's Rate plays a phrase faster or slower while your finger is down, and the phrase goes back to its own speed when you lift, even with Let go: Stay.
+A phrase written in triplets is never swung: its Swing slider goes faint and reads "straight". **Speed**, Gate, Swing and Octaves each learn a knob: hold **SHIFT**, touch the slider, then move the knob, and the knob steps Speed through half, as written and double. The same goes for the [XY pad](xy-layouts.md#the-arp-on-the-pad): a layout of yours can hold a phrase's Speed, Gate, Swing and Octaves, and Let go: Stay keeps the speed your finger left. A layout that holds the arp's Rate also plays a phrase faster or slower while your finger is down, and the phrase goes back to its own speed when you lift, even with Let go: Stay.
 
 #### Changing phrase while one plays
 

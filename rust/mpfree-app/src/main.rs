@@ -5871,11 +5871,13 @@ impl PadsArp {
 
     /// Takes the selected track's arp as the app set it (`armed`, the
     /// engine the pads play through on a track): its settings, latch,
-    /// pattern, tempo and swing (`own_swing`: its own, not the
-    /// transport's), and STOP's hush. The mode is `mode`, the app's word
-    /// for what the pads play on their own (`App::pads_own_mode`): the
-    /// track's, but never Phrase, since a phrase stays with the track and
-    /// none is taken here. Allocates nothing.
+    /// pattern, phrase and key, tempo and swing (`own_swing`: its own, not
+    /// the transport's), and STOP's hush. The mode is `mode`, the app's
+    /// word for what the pads play on their own (`App::pads_own_mode`):
+    /// the track's, but Phrase only on the shared synth, whose pads press
+    /// notes; on a kit or a host's pads they play as pressed. A phrase the
+    /// track picked comes in here on its line, as on the track. Allocates
+    /// nothing.
     fn follow(&mut self, armed: &mpfree_arp::Engine, mode: mpfree_arp::Mode, own_swing: bool) {
         let e = &mut self.host.engine;
         let settings = mpfree_arp::Settings {
@@ -5884,6 +5886,12 @@ impl PadsArp {
         };
         if e.settings() != settings {
             e.set_settings(settings);
+        }
+        if e.phrase_picked() != armed.phrase_picked() {
+            e.set_phrase(*armed.phrase_picked());
+        }
+        if e.key() != armed.key() {
+            e.set_key(armed.key());
         }
         if e.latch() != armed.latch() {
             e.set_latch(armed.latch());
@@ -5898,6 +5906,12 @@ impl PadsArp {
         } else if !armed.hushed() {
             e.resume();
         }
+    }
+
+    /// Where its phrase is, in the phrase's ticks, while it plays one (for
+    /// the Phrase tab's cursor, `App::set_pads_own`).
+    fn phrase_at(&self) -> Option<f64> {
+        self.host.engine.phrase_at()
     }
 
     /// Whether pad `pad`'s hit went into the arp: its let-go and pressure
@@ -13432,8 +13446,9 @@ fn player_session(
                 {
                     let pad = pad as usize;
                     let v = app.velocity(velocity);
-                    // Phrase is the track's: here the pads play as
-                    // pressed, or repeat (`App::pads_own_mode`).
+                    // On a kit or a host's pads a phrase is the track's:
+                    // here they play as pressed, or repeat; on the shared
+                    // synth the pads' arp plays it (`App::pads_own_mode`).
                     let arp_on = app.pads_own_mode() != mpfree_arp::Mode::Direct;
                     let arp_to = pads_preview.filter(|_| arp_on);
                     if let Some(to) = arp_to {
@@ -15168,7 +15183,13 @@ fn player_session(
         let seq_flashes = seq.flashes;
         // The pads' arp (sampler step 15c): the selected track's arp as the
         // app set it, on the period the clips' arps had, playing where the
-        // pads play on their own; its notes flash their pads.
+        // pads play on their own; its notes flash their pads. On the shared
+        // synth, whose pads press notes, it plays the track's phrase, and
+        // the Phrase tab's cursor follows it.
+        app.set_pads_own(
+            matches!(pads_preview, Some(PadsPreview::Synth)),
+            pads_arp.phrase_at(),
+        );
         pads_arp.follow(
             app.arps.engine_at(app.track()),
             app.pads_own_mode(),

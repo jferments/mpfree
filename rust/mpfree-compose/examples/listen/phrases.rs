@@ -39,6 +39,11 @@ use mpfree_transport::time::{Meter, Swing, Tick, PPQ};
 use std::fmt::Write as _;
 use std::path::Path;
 
+// The composer's ideas are heard as phrases are, so their set is this
+// module's child: it uses the setting and the render here as they are.
+#[path = "ideas.rs"]
+pub(super) mod ideas;
+
 /// The drummer under a phrase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Beat {
@@ -283,6 +288,11 @@ fn setting(name: &str, phrase: &Phrase) -> Setting {
         .copied()
         .find(|r| r.name == name)
         .unwrap_or_else(|| usual(phrase));
+    setting_as(name, phrase, heard)
+}
+
+/// A phrase's setting when it is heard as `heard` says.
+fn setting_as(name: &str, phrase: &Phrase, heard: Heard) -> Setting {
     let major = match phrase.written {
         Written::Major => true,
         Written::Minor => false,
@@ -360,6 +370,33 @@ impl Setting {
 
     fn end(&self) -> u64 {
         self.frame(self.held.len() as Tick * self.bar_ticks())
+    }
+
+    /// The key the file is heard in.
+    fn key(&self) -> &'static str {
+        if self.major {
+            "C major"
+        } else {
+            "A minor"
+        }
+    }
+
+    /// The transport's swing in words, after a comma; nothing when it is
+    /// straight.
+    fn swing_words(&self) -> String {
+        if self.swing.amount > 50 {
+            format!(
+                ", swing {} at {} %",
+                if self.swing.grid == PPQ / 2 {
+                    "1/8"
+                } else {
+                    "1/16"
+                },
+                self.swing.amount
+            )
+        } else {
+            String::new()
+        }
     }
 }
 
@@ -580,6 +617,17 @@ fn explain(name: &str, s: &Setting, played: &Played) {
     }
 }
 
+/// The phrase as written, for a picture: each note's start and length in
+/// ticks and its semitones from the home note, as a JSON list's inside.
+fn shape(phrase: &Phrase) -> String {
+    phrase
+        .notes()
+        .iter()
+        .map(|n| format!("[{}, {}, {}]", n.start, n.len, n.semis))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The held notes as words: "A3 for 2 bars, F3 for 1 bar, G3 for 1 bar".
 fn held_words(held: &[u8]) -> String {
     let mut runs: Vec<(u8, usize)> = Vec::new();
@@ -679,20 +727,8 @@ pub(super) fn run(file: Option<&Path>, only: Option<&str>, dir: &Path) -> Result
         let path = dir.join(format!("{stem}.wav"));
         std::fs::write(&path, bytes).map_err(|e| format!("can't write {}: {e}", path.display()))?;
         let seconds = left.len() as f64 / f64::from(RATE);
-        let key = if s.major { "C major" } else { "A minor" };
-        let swing = if s.swing.amount > 50 {
-            format!(
-                ", swing {} at {} %",
-                if s.swing.grid == PPQ / 2 {
-                    "1/8"
-                } else {
-                    "1/16"
-                },
-                s.swing.amount
-            )
-        } else {
-            String::new()
-        };
+        let key = s.key();
+        let swing = s.swing_words();
         let _ = writeln!(
             report,
             "{:<34} {:<9} {:<18} {} bpm{swing}, {}, {} ({}); {key}, held {}; {} notes, {seconds:.1} s, peak {:.1} dBFS",
@@ -732,14 +768,7 @@ pub(super) fn run(file: Option<&Path>, only: Option<&str>, dir: &Path) -> Result
             json(&stem),
             played.notes,
             phrase.ticks(),
-            // The phrase as written, for a picture: each note's start and
-            // length in ticks and its semitones from the home note.
-            phrase
-                .notes()
-                .iter()
-                .map(|n| format!("[{}, {}, {}]", n.start, n.len, n.semis))
-                .collect::<Vec<_>>()
-                .join(", ")
+            shape(phrase)
         ));
     }
     let _ = writeln!(

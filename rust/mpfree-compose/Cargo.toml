@@ -3,7 +3,7 @@ name = "mpfree-compose"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "The composer behind Continue, Add a part, Improvise and Answer: phrases of events with roles and sources, decisions kept apart from notes so a chord change re-fits instead of rewriting, stable dice, the timing contract, rule kinds, style components and instrument profiles; a pure library with no screen and no sound"
+description = "The composer behind Continue, Add a part, Improvise and Answer, and the arp's phrases made to order: phrases of events with roles and sources, decisions kept apart from notes so a chord change re-fits instead of rewriting, stable dice, the timing contract, rule kinds, style components and instrument profiles; a pure library with no screen and no sound"
 
 [lib]
 name = "mpfree_compose"
@@ -13,6 +13,9 @@ path = "src/lib.rs"
 mpfree-context = { path = "../mpfree-context" }
 mpfree-transport = { path = "../mpfree-transport" }
 mpfree-seq = { path = "../mpfree-seq" }
+# The phrase an idea becomes (src/idea.rs): the arp's own, so the app and
+# the listening tool play the same one.
+mpfree-arp = { path = "../mpfree-arp" }
 
 [dev-dependencies]
 mpfree-play = { path = "../mpfree-play" }
@@ -21,5 +24,3 @@ mpfree-midi = { path = "../mpfree-midi" }
 mpfree-node = { path = "../mpfree-node" }
 mpfree-synth = { path = "../mpfree-synth" }
 mpfree-fx = { path = "../mpfree-fx" }
-# Its --phrases: the arp's engine plays its phrases, to be heard.
-mpfree-arp = { path = "../mpfree-arp" }
