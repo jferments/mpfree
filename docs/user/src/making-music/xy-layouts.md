@@ -8,7 +8,7 @@ checked: 2026-11-23 a9ea20d
 
 The [XY pad](playing-live.md#the-xy-pad) comes with ten ready-made layouts: Filter + echo and the nine XY FX. You can also make your own. A layout of yours puts any settings you like on the pad: up to eight move as your finger goes across, and up to eight more as it goes up. For example, a filter's cutoff and a distortion's drive across, and a send and an echo's mix up, so one finger opens up a bass line and throws it into the echo. Your layouts are kept in the song, so they come back when you open it.
 
-A layout can hold a synth's settings (the synth on the pads, or a track's own instrument), a pad's own settings (its level, pan, tune, filter and envelope), the mixer's settings (a strip's volume, pan and sends), any effect's settings, the macros, outside gear's knobs and a track's arp (its rate, gate, swing, octaves and Modifier).
+A layout can hold a synth's settings (the synth on the pads, or a track's own instrument), a pad's own settings (its level, pan, tune, filter and envelope), the mixer's settings (a strip's volume, pan and sends), any effect's settings, the macros, outside gear's knobs and a track's arp (its rate, gate, swing, octaves and Modifier, and a phrase's speed).
 
 ## Making a layout
 
@@ -52,7 +52,7 @@ Open the Arp panel (**NOTE REPEAT + MENU**) while the banner waits, and **hold S
 - **While your finger is down** the arp plays what the pad says, from its next step, and the panel shows it with a ring, as it does for the Modifier. The settings you set stay as they are: lift, and Go back plays them again.
 - **The Modifier** on the pad pushes the arp by the Modifier's amounts (two rates faster and an octave up, unless you've changed them), even with no controller picked. While the pad holds it, the Modifier's own controller waits; lift, and the controller has it back.
 - **Turning a held setting** (its Q-Link or the panel) takes it from the pad until you lift.
-- **Stay** keeps the pad's rate, gate, swing or octaves as the arp's own, and **UNDO** puts them back. The Modifier's push stays where you left it until its controller moves (with no controller picked, it ends when you lift).
+- **Stay** keeps the pad's rate, gate, swing, octaves or a phrase's speed as the arp's own, and **UNDO** puts them back. The Modifier's push stays where you left it until its controller moves (with no controller picked, it ends when you lift).
 - Swing held by the pad is the arp's own swing, even while the sequencer swings.
 
 ## Setup
