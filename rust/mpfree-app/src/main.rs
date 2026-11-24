@@ -136,6 +136,7 @@ mod mixing;
 mod mixturns;
 mod modmix;
 mod modpanels;
+mod one_undo;
 mod open_clock;
 mod pace;
 mod pad_synths;
@@ -10603,6 +10604,9 @@ fn player_session(
     time.set_loops_on(loops_on);
     // Layers as recordings (phase 4c.2) come with the same switch.
     looper.set_recordings(loops_on);
+    // And the one UNDO across the takes, the loops and the audio tracks
+    // (phase 4d.1), followed once a period.
+    let mut one_undo = one_undo::OneUndo::default();
     // With takes streaming, a cue that launches audio waits until the
     // start of its audio is in memory (the audio tracks rethink's phase
     // 2): the needs go to the tracks whenever they change.
@@ -11067,6 +11071,7 @@ fn player_session(
                 level_db: &mut level_db,
                 max_db,
                 card: audio,
+                undo: &one_undo,
             };
             if step_turn(&a) {
                 step_keys.turned();
@@ -14004,6 +14009,7 @@ fn player_session(
                 level_db: &mut level_db,
                 max_db,
                 card: audio,
+                undo: &one_undo,
             };
             let Some(e) = desk.effect(e, out, &mut later) else {
                 parts.item_named(parts::APP, t_item, &item);
@@ -16213,6 +16219,12 @@ fn player_session(
         // A loop's copy onto another Loop track ended.
         if let Some(end) = looper.copy_ended() {
             fx.extend(desk::copy_ended(&mut time, end));
+        }
+        // The one UNDO follows each engine's steps (phase 4d.1).
+        if loops_on {
+            if let Some(next) = one_undo.follow(&time, &tracks, &looper) {
+                out.show(gui::ToUi::OneUndo(next));
+            }
         }
         if let Some(wave) = loop_wave {
             out.show(gui::ToUi::LoopWave(wave));
@@ -20100,6 +20112,131 @@ mod tests {
         r.act(TimeAction::Undo);
         r.period();
         assert_eq!((b_at(&r), r.audio()), (2 * bar, 2 * bar));
+    }
+
+    /// The one history (audio tracks phase 4d.1), as the roadmap tests
+    /// it: a take, an overdub, a region edit, then a song edit over the
+    /// regions; UNDO four times takes them back newest first, each from
+    /// its own engine (the song edit with its regions), and REDO brings
+    /// them back in order. Nothing is left to undo but what was there
+    /// before; with REDO done there is nothing to redo.
+    #[test]
+    fn the_one_undo_takes_back_the_newest_step_in_any_engine_and_redo_brings_it_back() {
+        use mpfree_looper::{Command as L, Phase};
+        use mpfree_time_ui::view::BarsEdit;
+        use one_undo::{OneUndo, Part};
+        let bar = SongRig::BAR;
+        let mut r = SongRig::new(false);
+        r.looper = looping::LoopHost::new(RATE, 20);
+        let mut one = OneUndo::default();
+        // Periods as the audio loop runs them, the looper too (the pads
+        // give it a steady 0.25 while `sound`), then the one history
+        // follows.
+        let run = |r: &mut SongRig, one: &mut OneUndo, n: usize, sound: bool| {
+            for _ in 0..n {
+                r.period();
+                for line in r.looper.follow_plan(&r.time.loop_plan()) {
+                    assert!(!line.contains("refused"), "{line}");
+                }
+                let x = if sound { 0.25 } else { 0.0 };
+                r.looper.take_pads(&[x; PERIOD], &[-x; PERIOD]);
+                let (mut left, mut right) = ([0.0; PERIOD], [0.0; PERIOD]);
+                r.looper.run(r.time.block(), &mut left, &mut right);
+                one.follow(&r.time, &r.tracks, &r.looper);
+            }
+        };
+        run(&mut r, &mut one, 2, false);
+        let before = one.next(false).map(|e| e.txn);
+        let tracks = r.time.project().tracks.len();
+        // A take: + Audio track.
+        r.act(TimeAction::AddAudioTrack);
+        run(&mut r, &mut one, 2, false);
+        assert_eq!(r.time.project().tracks.len(), tracks + 1);
+        // An overdub on a loop of one bar.
+        assert!(r.time.command(mpfree_transport::Command::Play));
+        r.looper.command(L::SetBars(Some(1)));
+        r.looper.command(L::Record);
+        let bar_periods = 2 * RATE as usize / PERIOD + 1;
+        for _ in 0..3 * bar_periods {
+            run(&mut r, &mut one, 1, true);
+            if r.looper.looper.status().phase == Phase::Playing {
+                break;
+            }
+        }
+        assert_eq!(r.looper.looper.status().phase, Phase::Playing);
+        r.looper.command(L::Overdub);
+        run(&mut r, &mut one, 50, true);
+        r.looper.command(L::Overdub);
+        run(&mut r, &mut one, 20, false);
+        assert!(r.time.command(mpfree_transport::Command::Stop));
+        run(&mut r, &mut one, 2, false);
+        let layers = |r: &SongRig| r.looper.looper.status().layers;
+        assert_eq!(layers(&r), 2);
+        // A region edit, then a song edit over the regions.
+        assert!(r.tracks.host.command(mpfree_audiotracks::Command::SetGain {
+            track: 0,
+            at: 2 * bar + 10,
+            gain: 0.5,
+        }));
+        run(&mut r, &mut one, 2, false);
+        let gain_steps = |r: &SongRig| r.tracks.host.tracks.history();
+        let (gains_done, _) = gain_steps(&r);
+        r.act(TimeAction::SongBars(BarsEdit::RoomBefore(1)));
+        run(&mut r, &mut one, 2, false);
+        let b_at = |r: &SongRig| r.time.project().arrangement.markers[1].at;
+        assert_eq!((b_at(&r), r.audio()), (3 * bar, 3 * bar));
+
+        // UNDO four times: newest first, wherever each is.
+        let press = |r: &mut SongRig, one: &mut OneUndo, redo: bool| {
+            let fx = one_undo::press(
+                one,
+                redo,
+                &mut r.out,
+                &mut r.time,
+                &mut r.tracks,
+                &mut r.looper,
+                &mut r.app,
+                &mut r.mix,
+            );
+            run(r, one, 3, false);
+            SongRig::told(&fx)
+        };
+        let next = |one: &OneUndo, redo: bool| one.next(redo).map(|e| e.part);
+        assert_eq!(next(&one, false), Some(Part::Time));
+        assert!(press(&mut r, &mut one, false).starts_with("Undid "));
+        assert_eq!(
+            (b_at(&r), r.audio()),
+            (2 * bar, 2 * bar),
+            "with its regions"
+        );
+        assert_eq!(next(&one, false), Some(Part::Audio));
+        let said = press(&mut r, &mut one, false);
+        assert!(said.starts_with("Undid region edit"), "{said}");
+        assert_eq!(gain_steps(&r).0, gains_done - 1);
+        assert_eq!(next(&one, false), Some(Part::Loop(0)));
+        let said = press(&mut r, &mut one, false);
+        assert_eq!(said, "Undid Overdub · Layer 2 · Loop 1");
+        assert_eq!(layers(&r), 1);
+        assert_eq!(next(&one, false), Some(Part::Time));
+        assert!(press(&mut r, &mut one, false).starts_with("Undid new track"));
+        assert_eq!(r.time.project().tracks.len(), tracks);
+        // What was there before is next; the four are to redo.
+        assert_eq!(one.next(false).map(|e| e.txn), before);
+        // REDO: in the order they were made.
+        assert!(press(&mut r, &mut one, true).starts_with("Redid new track"));
+        assert_eq!(r.time.project().tracks.len(), tracks + 1);
+        assert_eq!(
+            press(&mut r, &mut one, true),
+            "Redid Overdub · Layer 2 · Loop 1"
+        );
+        assert_eq!(layers(&r), 2);
+        assert!(press(&mut r, &mut one, true).starts_with("Redid region edit"));
+        assert_eq!(gain_steps(&r).0, gains_done);
+        assert!(press(&mut r, &mut one, true).starts_with("Redid "));
+        assert_eq!((b_at(&r), r.audio()), (3 * bar, 3 * bar));
+        assert_eq!(gain_steps(&r).1, 0, "the song edit's regions with it");
+        assert_eq!(next(&one, true), None);
+        assert_eq!(press(&mut r, &mut one, true), "Nothing to redo");
     }
 
     /// The same apart (--time-thread): the control half is lent for the

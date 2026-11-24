@@ -2363,6 +2363,48 @@ impl TimeHost {
         }
     }
 
+    /// The takes by their transactions, for the one UNDO across the
+    /// engines (audio tracks phase 4d): those UNDO takes back into
+    /// `done`, oldest first, and those REDO brings back into `redo`, the
+    /// next first; returns the newest the list let go of
+    /// ([`mpfree_play::Takes::let_go`]). Apart, as last published. Both
+    /// lists are cleared first; they allocate only to grow.
+    pub fn take_steps(
+        &self,
+        done: &mut Vec<mpfree_transport::TransactionId>,
+        redo: &mut Vec<mpfree_transport::TransactionId>,
+    ) -> mpfree_transport::TransactionId {
+        done.clear();
+        redo.clear();
+        match &self.control {
+            Half::Here(c) => c.take_steps(done, redo),
+            Half::Apart(a) => {
+                let t = &a.heavy.state.take_txns;
+                done.extend_from_slice(&t.done);
+                redo.extend(t.undone.iter().rev());
+                t.let_go
+            }
+        }
+    }
+
+    /// What take `txn` is, as UNDO says it ("take 3 · Drums / 1"). Apart,
+    /// as last published, shorter ("take 3").
+    pub fn take_words(&self, txn: mpfree_transport::TransactionId) -> Option<String> {
+        match &self.control {
+            Half::Here(c) => c.take_words(txn),
+            Half::Apart(a) => {
+                let st = &a.heavy.state;
+                let at =
+                    |ids: &[mpfree_transport::TransactionId]| ids.iter().position(|&t| t == txn);
+                let row = match at(&st.take_txns.done) {
+                    Some(i) => st.done.get(i),
+                    None => at(&st.take_txns.undone).and_then(|i| st.undone.get(i)),
+                };
+                row.map(|r| r.short())
+            }
+        }
+    }
+
     /// Everything the screens show.
     pub fn state(&self) -> TimeState {
         match &self.control {

@@ -132,7 +132,7 @@ use std::ops::Index;
 
 use mpfree_transport::time::{ticks_in, Tick, PPQ};
 use mpfree_transport::transport::MAX_PERIOD;
-use mpfree_transport::{Block, Mark, Meter, Span, State, Swing};
+use mpfree_transport::{Block, Mark, Meter, Span, State, Swing, TransactionId};
 
 /// Frames of every fade: the loop point, punch in and out, start, stop,
 /// mute, undo and clear (about 5.8 ms at 44.1 kHz).
@@ -602,6 +602,15 @@ impl History {
     pub fn redo(&self) -> &[Step] {
         &self.redo[..self.n_redo]
     }
+}
+
+/// A step of a loop's history by its transaction, for the one UNDO
+/// across the engines (audio tracks phase 4d: [`Looper::loop_steps`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StepTxn {
+    pub txn: TransactionId,
+    /// The step; None for the loop's Clear, kept for Undo.
+    pub step: Option<Step>,
 }
 
 /// One layer as the screen shows it, in play order (the first pass first).
@@ -1539,6 +1548,10 @@ struct Act {
     shift: Shift,
     /// The bars Read as made ([`Kind::Bars`]).
     bars: u32,
+    /// The step's transaction (audio tracks phase 4d): given as it goes
+    /// on the history ([`Loop::push_done`]), kept through Undo and Redo,
+    /// so the one UNDO across the engines knows it ([`Looper::loop_steps`]).
+    txn: TransactionId,
 }
 
 const NO_ACT: Act = Act {
@@ -1550,6 +1563,7 @@ const NO_ACT: Act = Act {
     link: None,
     shift: Shift::NONE,
     bars: 0,
+    txn: TransactionId::NONE,
 };
 
 impl Act {
@@ -1769,6 +1783,9 @@ struct Store {
     kept_mask: [u16; MAX_LOOPS],
     kept_at: [u64; MAX_LOOPS],
     kept_seq: u64,
+    /// Each kept loop's Clear as a step of its own, by its transaction
+    /// (audio tracks phase 4d: [`Looper::loop_steps`]).
+    kept_txn: [TransactionId; MAX_LOOPS],
     /// The last layer number given ([`Store::born`]).
     born: u64,
 }
@@ -1786,6 +1803,7 @@ impl Store {
             kept_mask: [0; MAX_LOOPS],
             kept_at: [0; MAX_LOOPS],
             kept_seq: 0,
+            kept_txn: [TransactionId::NONE; MAX_LOOPS],
             born: 0,
         }
     }
@@ -1926,6 +1944,7 @@ impl Store {
         self.kept_seq += 1;
         self.kept_mask[lp] = mask;
         self.kept_at[lp] = self.kept_seq;
+        self.kept_txn[lp] = TransactionId::next();
     }
 
     /// Loop `lp` is kept for Undo.
@@ -2159,6 +2178,10 @@ struct Loop {
     n_done: usize,
     undone: [Act; HISTORY],
     n_undone: usize,
+    /// The newest step's transaction the history let go of from its
+    /// oldest end (full, or for a shape's place or a layer's memory:
+    /// [`Looper::loop_steps`]).
+    let_go: TransactionId,
     // The first pass.
     start_frame: u64,
     /// Frames of the first pass written so far, while it records.
@@ -2547,6 +2570,7 @@ impl Loop {
         n_done: 0,
         undone: [NO_ACT; HISTORY],
         n_undone: 0,
+        let_go: TransactionId::NONE,
         start_frame: 0,
         written: 0,
         end_tick: None,
@@ -4007,6 +4031,46 @@ impl Looper {
             *to = a.step();
         }
         Some(h)
+    }
+
+    /// Loop `n`'s steps by their transactions (audio tracks phase 4d):
+    /// those Undo takes back into `done`, oldest first, and those Redo
+    /// brings back into `redo`, the next first, as of the last period.
+    /// Each step keeps its transaction through Undo and Redo. A loop
+    /// cleared and kept for Undo lists the steps it was cleared with and
+    /// then its Clear (`step` None), which Undo takes back next; and the
+    /// steps it had undone (Redo brings them back once it is back). Both
+    /// lists are cleared first; they allocate only to grow. Returns the
+    /// newest step's transaction the loop's history let go of from its
+    /// oldest end (none if it never did).
+    pub fn loop_steps(
+        &self,
+        n: usize,
+        done: &mut Vec<StepTxn>,
+        redo: &mut Vec<TransactionId>,
+    ) -> TransactionId {
+        done.clear();
+        redo.clear();
+        let Some(l) = self.loops.get(n) else {
+            return TransactionId::NONE;
+        };
+        let of = |a: &Act| StepTxn {
+            txn: a.txn,
+            step: Some(a.step()),
+        };
+        if l.phase == Phase::Empty && self.store.has_kept(n) {
+            let k = &self.store.kept[n];
+            done.extend(k.done[..k.n_done].iter().map(of));
+            done.push(StepTxn {
+                txn: self.store.kept_txn[n],
+                step: None,
+            });
+            redo.extend(k.undone[..k.n_undone].iter().rev().map(|a| a.txn));
+            return l.let_go.max(k.let_go);
+        }
+        done.extend(l.done[..l.n_done].iter().map(of));
+        redo.extend(l.undone[..l.n_undone].iter().rev().map(|a| a.txn));
+        l.let_go
     }
 
     /// Layer `k` of the selected loop's id and mix, counting in play order.
@@ -6612,6 +6676,7 @@ impl Loop {
                     link: None,
                     shift: Shift::NONE,
                     bars: 0,
+                    txn: TransactionId::NONE,
                 });
                 self.slots[slot].leaving = true;
             }
@@ -7086,6 +7151,7 @@ impl Loop {
             let i = self.done[..self.n_done]
                 .iter()
                 .position(|a| a.shape().is_some())?;
+            self.let_go = self.done[i].txn;
             self.done.copy_within(i + 1..self.n_done, 0);
             self.n_done -= i + 1;
         }
@@ -7367,6 +7433,7 @@ impl Loop {
             }),
             shift: Shift::NONE,
             bars: 0,
+            txn: TransactionId::NONE,
         });
         self.in_order += 1;
         self.mixing = true;
@@ -7401,6 +7468,7 @@ impl Loop {
             }),
             shift: Shift::NONE,
             bars: 0,
+            txn: TransactionId::NONE,
         });
         self.slots[l.slot as usize].leaving = true;
         self.mixing = true;
@@ -7483,6 +7551,7 @@ impl Loop {
             link: None,
             shift: Shift::NONE,
             bars: 0,
+            txn: TransactionId::NONE,
         });
         if std::mem::take(&mut self.fit_overdub) {
             self.open_overdub(store, stats, me, FADE);
@@ -7721,6 +7790,7 @@ impl Loop {
             link: None,
             shift: Shift::NONE,
             bars: 0,
+            txn: TransactionId::NONE,
         });
     }
 
@@ -7756,11 +7826,7 @@ impl Loop {
             kind: Kind::Overdub,
             slot: a.slot,
             index: n as u8,
-            edit: None,
-            ages: [1.0; MAX_LAYERS],
-            link: None,
-            shift: Shift::NONE,
-            bars: 0,
+            ..NO_ACT
         });
     }
 
@@ -7855,9 +7921,13 @@ impl Loop {
 
     /// Remember an act for Undo; the oldest is forgotten when the history
     /// is full.
-    fn push_done(&mut self, a: Act) {
+    fn push_done(&mut self, mut a: Act) {
+        // A new step takes a transaction; one undone and redone keeps its.
+        if !a.txn.is_some() {
+            a.txn = TransactionId::next();
+        }
         if self.n_done == HISTORY {
-            self.take_done(0);
+            self.let_go = self.take_done(0).txn;
         }
         self.done[self.n_done] = a;
         self.n_done += 1;
@@ -8684,6 +8754,7 @@ impl Loop {
             let i = self.done[..self.n_done]
                 .iter()
                 .position(|a| matches!(a.kind, Kind::Delete | Kind::Merge | Kind::Fit))?;
+            self.let_go = self.done[i].txn;
             self.done.copy_within(i + 1..self.n_done, 0);
             self.n_done -= i + 1;
         }
@@ -8721,6 +8792,7 @@ impl Loop {
             link: None,
             shift: Shift::NONE,
             bars: 0,
+            txn: TransactionId::NONE,
         });
 
         self.in_order += 1;

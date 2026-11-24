@@ -181,6 +181,9 @@ pub struct Session {
     pub time: time::TimeHost,
     pub panels: modpanels::Panels,
     pub looper: looping::LoopHost,
+    /// The one history across the engines (Dev's "Loops on audio
+    /// tracks"; these sessions run with it off, so it stays empty).
+    one_undo: crate::one_undo::OneUndo,
     /// The tempo a free first loop set, for the app at the next period
     /// (main.rs's `loop_tempo`).
     loop_tempo: Option<f64>,
@@ -424,6 +427,7 @@ impl Session {
             // one more Redo can bring back, and what each first pass keeps
             // around it, with one more layer to move.
             looper: looping::LoopHost::new(RATE, 22),
+            one_undo: crate::one_undo::OneUndo::default(),
             tracks: audiotracks::TrackHost::new(RATE, 2),
             recorded_audio: None,
             music,
@@ -631,6 +635,7 @@ impl Session {
                 level_db: &mut self.level_db,
                 max_db: MAX_DB,
                 card: 0,
+                undo: &self.one_undo,
             },
             &mut self.out,
         )

@@ -1030,6 +1030,10 @@ struct Snap {
     /// song edit's): see
     /// [`Command::Retime`].
     song: TransactionId,
+    /// The step's transaction (audio tracks phase 4d): its song edit's
+    /// when made as one, else its own, given with its number
+    /// ([`AudioTracks::own_steps`]).
+    txn: TransactionId,
     regions: [Region; MAX_REGIONS],
 }
 
@@ -1040,9 +1044,21 @@ impl Snap {
             n: 0,
             step: 0,
             song: TransactionId::NONE,
+            txn: TransactionId::NONE,
             regions: [Region::EMPTY; MAX_REGIONS],
         }
     }
+}
+
+/// A step of the audio tracks' history that is their own (no song
+/// edit's), by its transaction, for the one UNDO across the engines
+/// (audio tracks phase 4d: [`AudioTracks::own_steps`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwnStep {
+    pub txn: TransactionId,
+    /// The track of its first snap, and how many tracks it changed.
+    pub track: usize,
+    pub tracks: usize,
 }
 
 /// Frames from tick `a` to tick `b` (fractional) along the tempo map, as
@@ -1378,8 +1394,13 @@ pub struct AudioTracks {
     h_base: usize,
     h_done: usize,
     h_redo: usize,
-    /// The last step's number ([`Snap::step`]).
+    /// The last step's number ([`Snap::step`]), and its transaction
+    /// when it is no song edit's ([`Snap::txn`]).
     step: u32,
+    step_txn: TransactionId,
+    /// The newest step's transaction the history let go of from its
+    /// oldest end ([`AudioTracks::own_steps`]).
+    let_go_txn: TransactionId,
     /// The tempo map of the last period run: the one the regions were
     /// placed on, for a song time edit whose view brings a new one.
     last_map: TempoMap,
@@ -1441,6 +1462,8 @@ impl AudioTracks {
             hist,
             scratch: Box::new(Snap::new()),
             step: 0,
+            step_txn: TransactionId::NONE,
+            let_go_txn: TransactionId::NONE,
             took: [Took::default(); TOOK],
             took_n: 0,
             took_lost: 0,
@@ -1711,6 +1734,43 @@ impl AudioTracks {
         (self.h_done, self.h_redo)
     }
 
+    /// The history's own steps (audio tracks phase 4d), each by its
+    /// transaction, for the one UNDO across the engines: those Undo takes
+    /// back into `done`, oldest first, and those Redo brings back into
+    /// `redo`, the next first. A song edit's steps are left out: they are
+    /// the song's, and its UNDO takes them back ([`Command::Retime`]).
+    /// Returns the newest step's transaction the history let go of from
+    /// its oldest end (full, or a song edit's steps forgotten with those
+    /// under them: [`Command::ForgetSong`]); none if it never did. Both
+    /// lists are cleared first; they allocate only to grow.
+    pub fn own_steps(&self, done: &mut Vec<OwnStep>, redo: &mut Vec<OwnStep>) -> TransactionId {
+        done.clear();
+        redo.clear();
+        let put = |to: &mut Vec<OwnStep>, from: usize, n: usize| {
+            let mut last = None;
+            for i in from..from + n {
+                let s = &self.hist[(self.h_base + i) % HISTORY];
+                if last == Some(s.step) {
+                    if let Some(o) = to.last_mut().filter(|o| o.txn == s.txn) {
+                        o.tracks += 1;
+                    }
+                    continue;
+                }
+                last = Some(s.step);
+                if !s.song.is_some() {
+                    to.push(OwnStep {
+                        txn: s.txn,
+                        track: s.track,
+                        tracks: 1,
+                    });
+                }
+            }
+        };
+        put(done, 0, self.h_done);
+        put(redo, self.h_done, self.h_redo);
+        self.let_go_txn
+    }
+
     /// Whether a region, or a step of the history, plays this take, or a
     /// clip keeps it ([`Command::Keep`]).
     pub fn in_use(&self, id: u16) -> bool {
@@ -1776,6 +1836,7 @@ impl AudioTracks {
     /// puts in it.
     fn next_step(&mut self) -> u32 {
         self.step = self.step.wrapping_add(1);
+        self.step_txn = TransactionId::next();
         self.step
     }
 
@@ -1786,6 +1847,7 @@ impl AudioTracks {
     fn push_history(&mut self, step: u32, song: TransactionId) {
         if self.h_done == HISTORY {
             let oldest = self.hist[self.h_base].step;
+            self.let_go_txn = self.hist[self.h_base].txn;
             while self.h_done > 0 && self.hist[self.h_base].step == oldest {
                 self.h_base = (self.h_base + 1) % HISTORY;
                 self.h_done -= 1;
@@ -1797,6 +1859,7 @@ impl AudioTracks {
         dst.n = src.n;
         dst.step = step;
         dst.song = song;
+        dst.txn = if song.is_some() { song } else { self.step_txn };
         dst.regions[..src.n].copy_from_slice(&src.regions[..src.n]);
         self.h_done += 1;
         self.h_redo = 0;
@@ -1899,6 +1962,7 @@ impl AudioTracks {
             self.h_redo = j - self.h_done;
         }
         if let Some(i) = undo {
+            self.let_go_txn = self.hist[(self.h_base + i) % HISTORY].txn;
             self.h_base = (self.h_base + i + 1) % HISTORY;
             self.h_done -= i + 1;
         }

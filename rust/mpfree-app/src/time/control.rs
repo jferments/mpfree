@@ -68,7 +68,7 @@ use mpfree_time_ui::view::{
     TempoEdit, TimeAction, TimeState, TransportInfo, AUDIO_GAIN, SCENE_NAME,
 };
 use mpfree_transport::time::{TempoMap, Tick, PPQ};
-use mpfree_transport::{Block, Command, State};
+use mpfree_transport::{Block, Command, State, TransactionId};
 
 use super::audio_wait::{AudioNeed, AudioWaits, Ctx as WaitCtx, CueKey, Wait};
 use super::follow::FollowCounts;
@@ -2641,6 +2641,29 @@ impl TimeControl {
         self.perform.rows_moved(&to);
         self.scene_pick = self.scene_pick.and_then(&to);
         self.changed = true;
+    }
+
+    /// The takes by their transactions ([`crate::time::TimeHost::take_steps`]).
+    pub fn take_steps(
+        &self,
+        done: &mut Vec<TransactionId>,
+        redo: &mut Vec<TransactionId>,
+    ) -> TransactionId {
+        done.extend(self.takes.done().iter().map(|t| t.txn));
+        redo.extend(self.takes.undone().iter().rev().map(|t| t.txn));
+        self.takes.let_go()
+    }
+
+    /// What take `txn` is, as UNDO says it
+    /// ([`crate::time::TimeHost::take_words`]).
+    pub fn take_words(&self, txn: TransactionId) -> Option<String> {
+        let t = self
+            .takes
+            .done()
+            .iter()
+            .chain(self.takes.undone())
+            .find(|t| t.txn == txn)?;
+        Some(self.take_said(Some(TakeRow::of(t))))
     }
 
     fn take_said(&self, row: Option<TakeRow>) -> String {
