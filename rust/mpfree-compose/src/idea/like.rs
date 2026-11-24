@@ -577,6 +577,86 @@ pub fn develop(of: &Phrase, how: Develop) -> Option<Phrase> {
     (p.notes() != of.notes()).then_some(p)
 }
 
+/// Improvise's Evolve (S5): `of` with a little of it changed, for the
+/// `generation`th time (1 on). A run of about a quarter of its places (a
+/// place is a start, a chord counting once; at least one, never the
+/// last, so it comes round as it did) takes the notes More like this's
+/// new notes give those places ([`Rework::NewNotes`], which keeps the
+/// rhythm), or, where it has none (a phrase the composer cannot read),
+/// moves a step up or down its scale. The rhythm stays. Each generation
+/// rolls its own place, so Evolve every few bars wanders a little at a
+/// time, and Return goes back to the first phrase. None for a phrase of
+/// one place.
+pub fn evolve(of: &Phrase, req: &NewIdea, generation: u32) -> Option<Phrase> {
+    let notes = of.notes();
+    let mut places: Vec<u32> = notes.iter().map(|n| n.start).collect();
+    places.dedup();
+    if places.len() < 2 {
+        return None;
+    }
+    let free = places.len() - 1;
+    let run = ((places.len() as f64 / 4.0).round() as usize).clamp(1, free);
+    let attempt = req.attempt.wrapping_add(generation as u16);
+    let fresh = rework(of, Rework::NewNotes, &NewIdea { attempt, ..*req }).map(|i| i.phrase());
+    let scale = scale_of(of.written);
+    let mut d = dice(req, Job::Variation, generation as u16);
+    let first = d.below(free - run + 1);
+    let up = d.chance(0.5);
+    for shift in 0..=free - run {
+        let from = (first + shift) % (free - run + 1);
+        let changed: Vec<u32> = places[from..from + run].to_vec();
+        let mut out: Vec<(u32, u32, i32, u8)> = Vec::new();
+        for &start in &places {
+            let group: Vec<&PhraseNote> = notes.iter().filter(|n| n.start == start).collect();
+            let theirs: Vec<&PhraseNote> = fresh
+                .as_ref()
+                .map(|p| p.notes().iter().filter(|n| n.start == start).collect())
+                .unwrap_or_default();
+            if !changed.contains(&start) {
+                out.extend(
+                    group
+                        .iter()
+                        .map(|n| (n.start, n.len, i32::from(n.semis), n.velocity)),
+                );
+            } else if !theirs.is_empty()
+                && theirs
+                    .iter()
+                    .map(|n| n.semis)
+                    .ne(group.iter().map(|n| n.semis))
+            {
+                let (len, velocity) = (group[0].len, group[0].velocity);
+                out.extend(
+                    theirs
+                        .iter()
+                        .map(|n| (start, len, i32::from(n.semis), velocity)),
+                );
+            } else {
+                let step = if up { 1 } else { -1 };
+                out.extend(group.iter().map(|n| {
+                    let semis = semis_of(&scale, i32::from(n.steps) + step, i32::from(n.alt));
+                    (n.start, n.len, semis, n.velocity)
+                }));
+            }
+        }
+        if out.iter().any(|&(_, _, s, _)| s.abs() > REACH) {
+            continue;
+        }
+        let home: i32 = 60;
+        let played: Vec<(u32, u32, u8, u8)> = out
+            .iter()
+            .map(|&(start, len, s, v)| (start, len, (home + s) as u8, v))
+            .collect();
+        let mut p = Phrase::from_notes(&played, home as u8, of.written, of.unit, of.beats);
+        p.kind = of.kind;
+        p.bars = of.bars;
+        p.swung = of.swung;
+        if p.notes() != of.notes() {
+            return Some(p);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -603,6 +683,69 @@ mod tests {
 
     fn pitches(p: &Phrase) -> Vec<i8> {
         p.notes().iter().map(|n| n.semis).collect()
+    }
+
+    /// Evolve changes a little at a time: a run of about a quarter of the
+    /// places, never the last, the rhythm kept, each generation its own.
+    #[test]
+    fn evolve_changes_a_little_of_the_phrase_each_time() {
+        for kind in PhraseKind::ALL {
+            for bars in [1u8, 2, 4] {
+                let of = new_idea(&req(kind, bars, 3)).phrase();
+                let places = starts(&of);
+                let mut moved = Vec::new();
+                for g in 1..=6 {
+                    let p = evolve(&of, &req(kind, bars, 5), g).expect("evolves");
+                    let what = format!("{kind:?} {bars} bars, generation {g}");
+                    assert_eq!(starts(&p), places, "{what}: the rhythm");
+                    let changed: Vec<u32> = places
+                        .iter()
+                        .copied()
+                        .filter(|&s| {
+                            let at = |q: &Phrase| -> Vec<i8> {
+                                q.notes()
+                                    .iter()
+                                    .filter(|n| n.start == s)
+                                    .map(|n| n.semis)
+                                    .collect()
+                            };
+                            at(&p) != at(&of)
+                        })
+                        .collect();
+                    assert!(!changed.is_empty(), "{what}: nothing changed");
+                    let most = (places.len() as f64 / 4.0).round().max(1.0) as usize;
+                    assert!(
+                        changed.len() <= most,
+                        "{what}: {} of {} places",
+                        changed.len(),
+                        places.len()
+                    );
+                    assert!(
+                        !changed.contains(places.last().unwrap()),
+                        "{what}: the last place"
+                    );
+                    moved.push(changed[0]);
+                }
+                moved.sort_unstable();
+                moved.dedup();
+                // Unless only one run fits before the last place.
+                let run = (places.len() as f64 / 4.0).round().max(1.0) as usize;
+                if places.len() - 1 > run {
+                    assert!(
+                        moved.len() >= 2,
+                        "{kind:?} {bars} bars: always the same place"
+                    );
+                }
+            }
+        }
+        // A phrase the composer can't read (triplets) moves by steps.
+        let t = Phrase::parse("riff minor 1/8T : 1 b3 5 b3 1 5-").unwrap();
+        let p = evolve(&t, &req(PhraseKind::Riff, 1, 5), 1).expect("evolves");
+        assert_eq!(starts(&p), starts(&t));
+        assert_ne!(pitches(&p), pitches(&t));
+        // One place: nothing to evolve.
+        let one = Phrase::parse("bass minor : 1 _ _ _").unwrap();
+        assert_eq!(evolve(&one, &req(PhraseKind::Bass, 1, 5), 1), None);
     }
 
     /// Its rhythm, new notes: every kind keeps the phrase's starts and

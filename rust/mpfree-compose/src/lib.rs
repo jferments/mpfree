@@ -157,7 +157,8 @@ pub use dice::{Dice, DiceName, Job};
 pub use event::{Event, MotifRef, Motion, NoteDecision, Part, PartId, Role, Source};
 pub use fit::{fit_clip, marks, FitRefused};
 pub use idea::{
-    develop, new_idea, next_idea, next_rework, rework, Develop, Idea, IdeaVerdict, NewIdea, Rework,
+    develop, evolve, new_idea, next_idea, next_rework, rework, Develop, Idea, IdeaVerdict, NewIdea,
+    Rework,
 };
 pub use job::{
     lane_named, AddAsk, AddDone, AddPartJob, Ask, ContinueJob, Done, Lanes, PartMade, RowChords,
