@@ -81,6 +81,9 @@ enum Write {
     Refuse,
     /// Open, but closing without a clean check.
     Unclean,
+    /// A marked card: refused, unless the request's second line asks for a
+    /// repair; then repaired and opened.
+    Marked,
 }
 
 /// How the stand-in answers the read-only window's request.
@@ -151,6 +154,13 @@ impl Services {
                             .take(32)
                             .filter(|c| c.is_ascii_hexdigit())
                             .collect();
+                        let repair = text.lines().nth(1) == Some("repair");
+                        if i == 1 {
+                            log.push(format!(
+                                "write asked{}",
+                                if repair { " with repair" } else { "" }
+                            ));
+                        }
                         let _ = std::fs::remove_file(&req);
                         let _ = std::fs::remove_file(app.join(w.close));
                         if i == 0 {
@@ -162,12 +172,13 @@ impl Services {
                                 ReadOnly::LateCard(n) => reads <= n,
                                 ReadOnly::Open => false,
                             })
-                            || (i == 1 && write == Write::Refuse);
+                            || (i == 1 && write == Write::Refuse)
+                            || (i == 1 && write == Write::Marked && !repair);
                         if refused {
                             let (state, msg) = if i == 0 {
                                 ("none", "There is no card in the SD slot.")
                             } else {
-                                ("refused", "The card wasn't safely removed last time: repair it on a computer first.")
+                                ("refused", "the card wasn't safely removed last time (its exFAT is marked in use): check it on a computer first, or ask for a repair in the MPC")
                             };
                             status(w, &format!("state={state}\nmessage={msg}\nask={ask}\n"));
                             log.push(format!("{} {state}", w.name));
@@ -177,10 +188,15 @@ impl Services {
                             std::fs::create_dir_all(root.join("run/mpfree-sd/MPFree")).unwrap();
                         }
                         let alive = std::fs::read_to_string(app.join(w.alive)).unwrap_or_default();
+                        let repaired = if i == 1 && write == Write::Marked {
+                            "repaired=the card wasn't safely removed last time (its exFAT is marked in use)\n"
+                        } else {
+                            ""
+                        };
                         status(
                             w,
                             &format!(
-                                "state=open\nmessage=The SD card is open.\nask={ask}\ncard=mmcblk1\nfs=exfat\nsectors=62521344\nfsck=exfatprogs 1.2.2\n"
+                                "state=open\nmessage=The SD card is open.\nask={ask}\ncard=mmcblk1\nfs=exfat\nsectors=62521344\nfsck=exfatprogs 1.2.2\n{repaired}"
                             ),
                         );
                         log.push(format!("{} open", w.name));
@@ -315,6 +331,7 @@ fn a_quick_sd_card_run_reports_every_step_and_leaves_nothing() {
             "read open",
             "read alive moved",
             "read closed",
+            "write asked",
             "write open",
             "write alive moved",
             "write closed"
@@ -391,10 +408,11 @@ fn a_refused_write_window_writes_nothing() {
     assert_eq!(code, Some(3), "{text}\n{err}");
     assert!(
         err.contains(
-            "refused: the card can't be written: The card wasn't safely removed last time"
+            "refused: the card can't be written: the card wasn't safely removed last time"
         ),
         "{err}"
     );
+    assert!(err.contains("(--repair-card asks for it)"), "{err}");
     assert!(
         text.contains("S2. 8 streams read the card's own files"),
         "{text}"
@@ -406,6 +424,7 @@ fn a_refused_write_window_writes_nothing() {
             "read open",
             "read alive moved",
             "read closed",
+            "write asked",
             "write refused"
         ]
     );
@@ -458,6 +477,68 @@ fn with_card_wait_a_card_put_in_late_is_waited_for() {
         "{log:?}"
     );
     std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[test]
+fn with_repair_card_a_marked_card_is_repaired_in_the_mpc_then_written() {
+    let d = scratch("repair");
+    let card = d.join("run/mpfree-sd");
+    card_files(&card);
+    let before = snapshot(&card, &card.join("MPFree"));
+    let svc = Services::start(&d, ReadOnly::Open, Write::Marked);
+    let (code, text, err) = run_with(&d, &["--repair-card"]);
+    let log = svc.log();
+    assert_eq!(code, Some(0), "{text}\n{err}");
+    assert_eq!(
+        log,
+        [
+            "read open",
+            "read alive moved",
+            "read closed",
+            "write asked with repair",
+            "write open",
+            "write alive moved",
+            "write closed"
+        ],
+        "{text}"
+    );
+    assert!(
+        text.contains("asked for the write window (")
+            && text.contains(", and a repair if the card needs one)"),
+        "{text}"
+    );
+    assert!(
+        text.contains("repaired in the MPC first (fsck.exfat -y, then checked again: clean, the mark clear); it had: the card wasn't safely removed last time"),
+        "{text}"
+    );
+    assert!(
+        text.contains("14. Saving 4 files of 64 KiB to SD"),
+        "{text}"
+    );
+    assert_eq!(snapshot(&card, &card.join("MPFree")), before);
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[test]
+fn without_repair_card_no_repair_is_asked() {
+    let d = scratch("norepair");
+    card_files(&d.join("run/mpfree-sd"));
+    let svc = Services::start(&d, ReadOnly::Open, Write::Marked);
+    let (code, text, err) = run(&d);
+    let log = svc.log();
+    assert_eq!(code, Some(3), "{text}\n{err}");
+    assert_eq!(log[3..], ["write asked", "write refused"], "{log:?}");
+    assert!(!text.contains("and a repair"), "{text}");
+    std::fs::remove_dir_all(&d).unwrap();
+}
+
+#[test]
+fn repair_card_goes_only_with_the_sd_card_run() {
+    let out = bin().args(["--repair-card"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--repair-card goes with --sd-card"));
+    let out = bin().args(["--heat", "--repair-card"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
 }
 
 #[test]
