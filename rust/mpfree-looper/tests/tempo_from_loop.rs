@@ -1275,3 +1275,129 @@ fn with_loop_memory_full_your_tap_after_autos_end_is_out_of_reach() {
     assert!(!r.l.status().bounds.expect("bounds").short);
     assert!(r.l.snap_plan(0, Snap::Tap, r.frame).is_ok());
 }
+
+/// A/B on the seam (the owner's looper review, 5.6): from half way, the
+/// loop's last beat runs into its downbeat as the snap has it, the next
+/// time round as your tap has it, one cut's crossfade a beat before the
+/// seam; the loop's length, the song's tempo, the offer and the version
+/// stay, and nothing is asked of the time engine. Off, it goes off at
+/// the next half way, on the loop's own side.
+#[test]
+fn ab_on_the_seam_swaps_the_last_beat_and_never_the_tempo() {
+    let (mut r, rec_from, tap) = late_tap(SmartEnd::Suggest, true);
+    r.until_playing(512);
+    let (_, bpm, at) = r.tempo.expect("a tempo");
+    r.run(tap + 2_205 + 256);
+    let s0 = r.l.status();
+    let by = s0.offer.expect("the end found, on offer");
+    assert!(by.end < 0 && by.start == 0, "{by:?}");
+    let len = s0.frames as u64;
+    assert_eq!(len, tap - rec_from);
+    // A quarter of two bars, and where each round's downbeat is.
+    let beat = len / 8;
+    let down = |k: u64| at + k * len;
+    assert!(r.frame < down(0) + len / 2, "before the first half way");
+    let refused = r.l.stats().refused;
+    r.cmd(L::AbSeam(true));
+    r.run(r.frame + 256);
+    assert_eq!(r.l.status().ab, Some(false), "its own side till half way");
+    // Round 0's last beat is the snap's; round 1's your tap's; round 2's
+    // the snap's again. Away from the crossfade and the loop point's.
+    let seam = s0.seam as u64;
+    let snap_beat = |r: &Rig, k: u64| {
+        (len - beat + seam + 10..len - seam - 10)
+            .step_by(97)
+            .all(|p| {
+                close(
+                    r.out_at(down(k) + p),
+                    sound(rec_from + (p as i64 + by.end) as u64),
+                )
+            })
+    };
+    let tap_beat = |r: &Rig, k: u64| {
+        (len - beat + seam + 10..len - seam - 10)
+            .step_by(97)
+            .all(|p| close(r.out_at(down(k) + p), sound(rec_from + p)))
+    };
+    r.run(down(1) + 256);
+    assert!(snap_beat(&r, 0), "the snap's last beat into the downbeat");
+    assert!(!tap_beat(&r, 0));
+    // The first half of a round is the same either way.
+    r.run(down(1) + len / 4);
+    for p in (FADE as u64 * 2..len / 4).step_by(101) {
+        assert!(
+            close(r.out_at(down(1) + p), sound(rec_from + p)),
+            "frame {p}"
+        );
+    }
+    r.run(down(2) + 256);
+    assert!(tap_beat(&r, 1), "your tap's the next time round");
+    r.run(down(3) + 256);
+    assert!(snap_beat(&r, 2));
+    // Nothing else changed.
+    let s = r.l.status();
+    assert_eq!((s.frames as u64, s.offer, s.moved), (len, Some(by), None));
+    assert_eq!((s.version, s.ticks), (s0.version, s0.ticks));
+    assert_eq!(r.t.bpm(), bpm);
+    assert_eq!(r.l.stats().refused, refused);
+    assert!(r.l.take_snap().is_none());
+    // Off in round 3's first half (on the snap's side since round 2's
+    // half way): its own side from half way, and A/B is off.
+    assert_eq!(s.ab, Some(true));
+    r.cmd(L::AbSeam(false));
+    r.run(r.frame + 256);
+    assert_eq!(r.l.status().ab, Some(true), "till half way");
+    r.run(down(4) + 256);
+    assert_eq!(r.l.status().ab, None);
+    assert!(tap_beat(&r, 3));
+    r.run(down(5) + 256);
+    assert!(tap_beat(&r, 4));
+}
+
+/// A/B on the seam needs another side: with nothing found (smart loop
+/// end Off) it is refused, counted.
+#[test]
+fn ab_on_the_seam_needs_another_side() {
+    let (mut r, _, tap) = late_tap(SmartEnd::Off, true);
+    r.until_playing(512);
+    r.run(tap + 2_205 + 256);
+    assert_eq!(r.l.status().offer, None);
+    let refused = r.l.stats().refused;
+    r.cmd(L::AbSeam(true));
+    r.run(r.frame + 256);
+    assert_eq!(r.l.status().ab, None);
+    assert_eq!(r.l.stats().refused, refused + 1);
+}
+
+/// A/B on the seam from the snap: the other side is your tap, its last
+/// beat (later in what was played) into the snap's downbeat.
+#[test]
+fn ab_on_the_seam_from_the_snap_plays_your_taps_last_beat() {
+    let (mut r, rec_from, tap) = late_tap(SmartEnd::Suggest, true);
+    r.until_playing(512);
+    r.run(tap + 2_205 + 256);
+    let by = r.l.status().offer.expect("on offer");
+    let p = r.l.snap_plan(0, Snap::Found, r.frame).unwrap();
+    r.snap = Some(p);
+    r.run(p.at + 256);
+    assert_eq!(r.l.take_snap().map(|d| d.landed), Some(true));
+    let s0 = r.l.status();
+    assert_eq!((s0.frames, s0.moved), (88_200, Some(by)));
+    let bpm = r.t.bpm();
+    r.cmd(L::AbSeam(true));
+    r.run(r.frame + 256);
+    assert_eq!(r.l.status().ab, Some(false));
+    let (len, beat, seam) = (88_200u64, 88_200u64 / 8, s0.seam as u64);
+    let down = |k: u64| p.at + k * len;
+    r.run(down(1) + 256);
+    for q in (len - beat + seam + 10..len - seam - 10).step_by(97) {
+        let want = sound(rec_from + (q as i64 - by.end) as u64);
+        assert!(close(r.out_at(down(0) + q), want), "frame {q}");
+    }
+    let s = r.l.status();
+    assert_eq!(
+        (s.frames, s.moved, s.version),
+        (88_200, Some(by), s0.version)
+    );
+    assert_eq!(r.t.bpm(), bpm);
+}

@@ -271,6 +271,19 @@ pub enum Command {
     /// starts it ([`Looper::take_tempo`]), on the next period's first
     /// frame. Refused (counted) with nothing waiting.
     UseReading,
+    /// A/B on the seam, on or off, for the picked loop while smart loop
+    /// end has another side to play ([`Status::offer`], or
+    /// [`Status::moved`]: the snap from your tap, or your tap from the
+    /// snap). Each time round, from half way, the loop plays the other
+    /// side's last beat (and its first, when the start moves) at its own
+    /// length and tempo, one cut's crossfade a beat before the seam; the
+    /// next time round its own. Nothing else changes: no snap, no tempo,
+    /// no clock, and the version stays ([`Status::ab`]). Off at the next
+    /// half way, on its own side; it ends at once when the loop changes
+    /// in any other way (a snap ends it as it lands). Refused (counted)
+    /// with no other side, while busy or overdubbing, at another speed,
+    /// with a print playing, or in a loop shorter than three beats.
+    AbSeam(bool),
     /// A note played on song frame `frame` (a pad hit, which the host
     /// sees before the looper hears it): starts a loop armed to start
     /// when you play ([`Starts::Play`]) that isn't listening by ear
@@ -1348,6 +1361,9 @@ pub struct Status {
     /// (Length's bars are final: the looper asks; the looper refactor's
     /// Finding C).
     pub asks: Option<Reading>,
+    /// A/B on the seam runs ([`Command::AbSeam`]): whether this time
+    /// round plays the other side's seam. None while it is off.
+    pub ab: Option<bool>,
 }
 
 /// The memory gauge: all the loops together.
@@ -2205,6 +2221,21 @@ struct Loop {
     /// overdubbing.
     fade_old: f32,
 
+    /// A/B on the seam ([`Command::AbSeam`]) runs.
+    ab_on: bool,
+    /// This time round plays the other side's seam: through `ab_views`.
+    ab_other: bool,
+    /// A/B goes off at the next half way.
+    ab_off: bool,
+    /// The loop's place the frame before, for the half way.
+    ab_last: f64,
+    /// The loop's version when A/B started: any change ends it.
+    ab_version: u64,
+    /// The views the rounds on the other side play through: the layers'
+    /// own, but the first pass's last beat (and first, when the start
+    /// moves) is the other side's.
+    ab_views: [View; MAX_LAYERS],
+
     /// The first pass's writer is still at work (it runs `latency` frames
     /// behind).
     first_open: bool,
@@ -2579,6 +2610,12 @@ impl Loop {
         handoffs: 0,
         after: After::Play,
         fade_old: 1.0,
+        ab_on: false,
+        ab_other: false,
+        ab_off: false,
+        ab_last: 0.0,
+        ab_version: 0,
+        ab_views: [View::EMPTY; MAX_LAYERS],
         first_open: false,
         tail: false,
         short: false,
@@ -3460,6 +3497,7 @@ impl Looper {
             moved: l.smart_now().map(|(_, m)| m).filter(|m| !m.is_none()),
             snapping: l.snap.map(|p| p.at),
             asks: l.asks,
+            ab: l.ab_on.then_some(l.ab_other),
         })
     }
 
@@ -6662,6 +6700,7 @@ impl Loop {
                 | Command::FreeStop
                 | Command::FreePlay
                 | Command::UseReading
+                | Command::AbSeam(_)
                 | Command::Played(_)
                 | Command::StartsByEar(_)
                 | Command::TempoFromLoop(_)
@@ -6780,6 +6819,15 @@ impl Loop {
             // (Started in the next `close_free`, on its frame.)
             Command::UseReading if self.asks.is_some() => self.asks_yes = true,
             Command::UseReading => stats.refused += 1,
+            Command::AbSeam(true) if self.ab_on => self.ab_off = false,
+            Command::AbSeam(true) => {
+                if !self.ab_start() {
+                    stats.refused += 1;
+                }
+            }
+            // On its own side it ends now; on the other, at half way.
+            Command::AbSeam(false) if self.ab_other => self.ab_off = true,
+            Command::AbSeam(false) => self.ab_end(),
             Command::SetFadeOld(k) if k.is_finite() => self.fade_old = k.clamp(0.0, 1.0),
             Command::SetFadeOld(_) => {}
             Command::SetLatency(l) => self.latency = l,
@@ -6930,6 +6978,93 @@ impl Loop {
     /// it kept, its start moved and its length changed by `by` (an
     /// [`Edit::Move`] and an [`Edit::Resize`] at once). None if it can't
     /// be made.
+    /// A/B on the seam ([`Command::AbSeam`]) starts: the other side's
+    /// seam made, played from the next half way. False if it can't.
+    fn ab_start(&mut self) -> bool {
+        let Some((found, moved)) = self.smart_now() else {
+            return false;
+        };
+        if self.od_open || self.busy() || self.speed != 0 || self.rate != 0 || self.print_on > 0.0 {
+            return false;
+        }
+        // The other side: the snap from your tap (what Snap would make);
+        // from the snap, your tap, or your press if only the start moved
+        // (what Use my tap or Use my press would).
+        let by = match found {
+            Some(f) if f != moved => f - moved,
+            _ if moved.end != 0 => Shift {
+                start: 0,
+                end: -moved.end,
+            },
+            _ if moved.start != 0 => Shift {
+                start: -moved.start,
+                end: 0,
+            },
+            _ => return false,
+        };
+        let Some(other) = self.shifted(by) else {
+            return false;
+        };
+        // A beat (a quarter) of the loop, in frames.
+        let ticks = i128::from(self.len_ticks.max(1));
+        let beat = ((i128::from(PPQ) * self.len as i128 + ticks / 2) / ticks) as usize;
+        let (v, w) = (self.views[0], other.views[0]);
+        let (len, wl) = (v.len(), w.len());
+        if beat == 0 || 3 * beat > len || 3 * beat > wl {
+            return false;
+        }
+        let seam = || {
+            let end = w.cut(wl - beat, wl)?;
+            if by.start == 0 {
+                v.cut(0, len - beat)?.then(&end)
+            } else {
+                w.cut(0, beat)?.then(&v.cut(beat, len - beat)?)?.then(&end)
+            }
+        };
+        let Some(seam) = seam().filter(|s| s.len() == len) else {
+            return false;
+        };
+        self.ab_views = self.views;
+        self.ab_views[0] = seam;
+        self.ab_on = true;
+        self.ab_other = false;
+        self.ab_off = false;
+        self.ab_last = self.pos;
+        self.ab_version = self.version;
+        true
+    }
+
+    /// A/B on the seam, each frame while it runs: from half way round
+    /// (where both sides play the same), the other side's seam the next
+    /// time round, then the loop's own; off there when asked. It ends at
+    /// once when the loop changes in any other way: a snap as it lands,
+    /// an edit, an overdub, a merge or a fit, a print coming in.
+    #[inline(never)]
+    fn ab_turn(&mut self) {
+        if !self.ab_on {
+            return;
+        }
+        let half = self.len as f64 * 0.5;
+        let crossed = self.ab_last < half && self.pos >= half;
+        self.ab_last = self.pos;
+        let changed = self.version != self.ab_version
+            || self.phase != Phase::Playing
+            || self.od_open
+            || self.print_on > 0.0
+            || (self.busy() && self.snap.is_none());
+        if changed || (crossed && self.ab_off) {
+            self.ab_end();
+        } else if crossed {
+            self.ab_other = !self.ab_other;
+        }
+    }
+
+    fn ab_end(&mut self) {
+        self.ab_on = false;
+        self.ab_other = false;
+        self.ab_off = false;
+    }
+
     fn shifted(&self, by: Shift) -> Option<Shape> {
         let (start, src) = self.bounds_now()?;
         let mut s = self.shape();
@@ -7931,6 +8066,7 @@ impl Loop {
         self.first_open = false;
         self.tail = false;
         self.short = false;
+        self.ab_end();
         self.before = None;
         self.region = None;
         self.captured = (0, 0);
@@ -9251,6 +9387,9 @@ impl Loop {
         // frames looked for, so an overdub, which goes a frame at a time,
         // doesn't pay for them.
         let copying = self.adding || self.lend.is_some();
+        // A/B on the seam the same way: it starts only between periods
+        // (it may end in the run: `ab_turn` says).
+        let ab = self.ab_on;
         // The run's frames, as long as `ys`, so that indexing them by a
         // frame of it needs no check.
         let n = ys.len();
@@ -9329,6 +9468,9 @@ impl Loop {
             let x = input[j];
             self.write_first(store, stats, me, f, x);
             self.follow(ticks[j], r.playing, first);
+            if ab {
+                self.ab_turn();
+            }
             let v = self.read(store, me, r.playing, print, live);
             ys[j][0] += v[0];
             ys[j][1] += v[1];
@@ -9361,6 +9503,7 @@ impl Loop {
             && self.len > 0
             && self.print_on == settled
             && !self.swapping
+            && !self.ab_on
             && !self.replacing()
     }
 
@@ -9673,7 +9816,13 @@ impl Loop {
     /// The layers at the loop's place, through a jump's or an edit's
     /// crossfade.
     fn layers_at(&self, store: &Store, me: usize) -> [f32; 2] {
-        let now = (self.len, self.seam, &self.views, None);
+        // (A/B on the seam: the other side's rounds through its views.)
+        let views = if self.ab_other {
+            &self.ab_views
+        } else {
+            &self.views
+        };
+        let now = (self.len, self.seam, views, None);
         let mut y = self.sample_at(store, me, self.pos, now);
         if self.jump > 0 {
             let w = self.jump as f32 * STEP;

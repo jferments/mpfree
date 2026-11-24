@@ -2131,15 +2131,23 @@ pub(crate) fn point_look(v: &LooperView) -> Option<PointLook> {
     let at_end = |f: i64| ((ms(f) - POINT_END_FROM_MS) / POINT_MS) as f32;
     let found_end = moved.end + offer.end;
     let way = if found_end < 0 { "before" } else { "after" };
+    // A/B on the seam: whose end runs into the start this time round
+    // (the looper plays the other side's from half way, every other
+    // time round): true, the snap's.
+    let ab_snaps = s.ab.filter(|_| v.smart.ab).map(|other| other != snap_side);
     let end = PointPane {
         title: "End".to_string(),
-        note: match (found_end != 0, snap_side) {
-            (false, _) => "on your tap".to_string(),
-            (true, false) => format!(
+        note: match (ab_snaps, found_end != 0, snap_side) {
+            (Some(true), ..) => "now: the snap's end, into the start".to_string(),
+            (Some(false), ..) => "now: your tap, into the start".to_string(),
+            (None, false, _) => "on your tap".to_string(),
+            (None, true, false) => format!(
                 "your first hit again, {} ms {way} your tap",
                 ms_of(found_end, rate)
             ),
-            (true, true) => format!("snapped {} ms {way} your tap", ms_of(found_end, rate)),
+            (None, true, true) => {
+                format!("snapped {} ms {way} your tap", ms_of(found_end, rate))
+            }
         },
         peaks: audio.end,
         edge: (at_end(moved.end), false),
@@ -2158,9 +2166,16 @@ pub(crate) fn point_look(v: &LooperView) -> Option<PointLook> {
         "Use my press"
     };
     let (line, pick) = if v.smart.ab {
+        let (now, other) = if snap_side {
+            ("the snap has it", "your tap would")
+        } else {
+            ("your tap has it", "Snap would")
+        };
         (
-            "A/B: the loop swaps your tap and the snap on each downbeat. Keep one to stop."
-                .to_string(),
+            format!(
+                "A/B: each time round, the end runs into the start as {now}, then as {other}. \
+                 The tempo stays {bpm_now:.2} BPM."
+            ),
             vec![
                 ("Keep the snap".to_string(), Side::Snap, true),
                 ("Keep my tap".to_string(), Side::Tap, true),
@@ -2682,12 +2697,41 @@ mod tests {
         );
         assert_eq!(p.pick[1], ("Keep the snap".into(), Side::Snap, true));
         assert_eq!(p.end.found.unwrap().1, "snapped");
-        // A/B: keep one.
+        // A/B on the seam, from the snap: keep one; the End's note says
+        // whose end runs into the start this time round.
         v.smart.ab = true;
+        v.status.ab = Some(false);
         let p = point_look(&v).unwrap();
         assert_eq!(p.ab, Some(true));
         assert_eq!(p.pick[0].0, "Keep the snap");
         assert_eq!(p.pick[1].0, "Keep my tap");
+        assert_eq!(
+            p.line,
+            "A/B: each time round, the end runs into the start as the snap has it, then as \
+             your tap would. The tempo stays 92.00 BPM."
+        );
+        assert_eq!(p.end.note, "now: the snap's end, into the start");
+        v.status.ab = Some(true);
+        assert_eq!(
+            point_look(&v).unwrap().end.note,
+            "now: your tap, into the start"
+        );
+        // From your tap.
+        v.status.moved = None;
+        v.status.offer = Some(Shift {
+            start: 0,
+            end: -2117,
+        });
+        let p = point_look(&v).unwrap();
+        assert!(
+            p.line.starts_with(
+                "A/B: each time round, the end runs into the start as your tap has it, then \
+                 as Snap would."
+            ),
+            "{}",
+            p.line
+        );
+        assert_eq!(p.end.note, "now: the snap's end, into the start");
         // A close call alone: nothing to snap, no A/B, Read as.
         let mut v = two_loops();
         v.smart.close_call = Some(8);

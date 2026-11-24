@@ -21837,6 +21837,11 @@ fn sample_smart_loop_end(p: &mut Player, name: &str, open: bool) {
     if name == "looper-smart-ask" {
         v.smart.asking = Some((Snap::Found, false));
     }
+    // A/B on the seam, the round that plays the snap's end.
+    if name == "looper-smart-point-ab" {
+        v.smart.ab = true;
+        v.status.ab = Some(true);
+    }
     v.loops[v.selected] = v.status;
     // A hit 3 ms after the press, and again 48 ms before the tap: each
     // a sharp attack that dies away, over a little noise.
@@ -25069,6 +25074,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         ("looper-smart-snapped", false),
         ("looper-smart-point-snapped", true),
         ("looper-smart-point-memory-full", true),
+        ("looper-smart-point-ab", true),
         ("looper-smart-start", false),
         ("looper-smart-close-call", false),
         ("looper-smart-ask", false),
