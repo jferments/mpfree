@@ -279,6 +279,23 @@ pub(crate) fn draft(req: &AddPart, d: u16, attempt: u16) -> Added {
     }
 }
 
+/// Draft `d` of a part on a rhythm given (More like this: a phrase's
+/// rhythm with new notes): its notes and what its checks found.
+pub(crate) fn draft_on(req: &AddPart, strokes: Vec<Stroke>, d: u16, attempt: u16) -> Added {
+    let mut pd = dice(req, Job::AddPart, d, attempt);
+    let events = sound(req, &strokes, &mut pd);
+    let verdict = judge(req, &strokes, &events);
+    Added {
+        part: req.part,
+        relation: req.relation,
+        strokes,
+        changes: Vec::new(),
+        events,
+        verdict,
+        draft: d,
+    }
+}
+
 // ---------------------------------------------------------------- rhythm
 
 /// The cells a part draws from: the style's, except a walking bass plays

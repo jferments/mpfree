@@ -21,7 +21,7 @@ use mpfree_context::key::Key;
 use mpfree_context::PartRole;
 use mpfree_transport::time::{Swing, Tick};
 
-use super::{dice, moves_off, pushed_ticks, Draft, IdeaVerdict, Made, NewIdea};
+use super::{dice, moves_off, pushed_ticks, Draft, Given, IdeaVerdict, Made, NewIdea};
 use crate::cells::{lengths, Stroke};
 use crate::critic::{copy_bars, moves, repeats, Check, Heard as CriticHeard};
 use crate::dice::{Dice, Job};
@@ -196,6 +196,19 @@ fn spread(notes: &[i32]) -> (usize, usize) {
 
 /// One draft of a riff.
 pub(super) fn riff(req: &NewIdea, row: &Row, settings: &Settings, swung: bool, d: u16) -> Made {
+    riff_on(req, row, settings, swung, d, None)
+}
+
+/// Draft `d` of a riff, on `given`'s rhythm when there is one (More like
+/// this: its rhythm with new notes), else on one of its own.
+pub(super) fn riff_on(
+    req: &NewIdea,
+    row: &Row,
+    settings: &Settings,
+    swung: bool,
+    d: u16,
+    given: Option<&Given>,
+) -> Made {
     let band = AddPart {
         row,
         part: PartRole::Melody,
@@ -205,14 +218,28 @@ pub(super) fn riff(req: &NewIdea, row: &Row, settings: &Settings, swung: bool, d
         pads: [None; 4],
         swing: Swing::default(),
     };
-    let (mut strokes, _) = rhythm(&band, d, &mut dice(req, Job::Cells, d));
-    let period = riff_bars(&band, d);
     let marks = marks_of(row);
     let unit = unit_of(&req.style);
+    let (mut strokes, period) = match given {
+        // A rhythm of its own is one tune over the whole phrase: it need
+        // not repeat.
+        Some(g) => (
+            g.strokes.clone(),
+            (row.steps / row.grid.bar.max(1)).max(1) as usize,
+        ),
+        None => (
+            rhythm(&band, d, &mut dice(req, Job::Cells, d)).0,
+            riff_bars(&band, d),
+        ),
+    };
     // A part under a tune only plays more at the plan's high point. A
     // riff is the tune, so it has a note there, as a part has one on
-    // every landing.
-    if let Some(m) = marks.iter().find(|m| m.kind == AnchorKind::Peak) {
+    // every landing (but a rhythm given is kept as it is).
+    if let Some(m) = marks
+        .iter()
+        .find(|m| m.kind == AnchorKind::Peak)
+        .filter(|_| given.is_none())
+    {
         if stroke_at(&strokes, m.at, unit).is_none() {
             strokes.push(Stroke::at(m.at));
             lengths(&mut strokes, row.steps);
@@ -267,8 +294,14 @@ pub(super) fn riff(req: &NewIdea, row: &Row, settings: &Settings, swung: bool, d
             timing: Timing::default(),
         });
     }
-    let mut accents = pushed_ticks(&strokes);
-    accents.extend(accent.map(|i| row.tick(strokes[i].at)));
+    let accents = match given {
+        Some(g) => g.accents.clone(),
+        None => {
+            let mut a = pushed_ticks(&strokes);
+            a.extend(accent.map(|i| row.tick(strokes[i].at)));
+            a
+        }
+    };
     Draft {
         strokes,
         events,

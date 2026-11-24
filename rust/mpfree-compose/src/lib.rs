@@ -132,7 +132,9 @@ pub mod timing;
 pub use bind::{audition, revision, revision_in, Binding, Stale};
 pub use dice::{Dice, DiceName, Job};
 pub use event::{Event, MotifRef, Motion, NoteDecision, Part, PartId, Role, Source};
-pub use idea::{new_idea, next_idea, Idea, IdeaVerdict, NewIdea};
+pub use idea::{
+    develop, new_idea, next_idea, next_rework, rework, Develop, Idea, IdeaVerdict, NewIdea, Rework,
+};
 pub use job::{lane_named, Ask, ContinueJob, Done, Lanes};
 pub use keep::{clip_notes, continuation, KeepError};
 pub use motif::{similarity, transform, GridNote, Similarity, Transform};

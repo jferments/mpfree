@@ -67,10 +67,13 @@ use crate::row::{DrumHit, Heard, Row, RowPart, ToHear};
 use crate::settings::{Ending, Settings};
 use crate::style::{BassLine, Feel, Style};
 
+mod like;
 mod line;
 mod riff;
 mod simple;
 mod written;
+
+pub use like::{develop, next_rework, rework, Develop, Rework};
 
 use line::line;
 use riff::riff;
@@ -328,6 +331,13 @@ impl Draft {
             verdict,
         }
     }
+}
+
+/// A rhythm a maker is given (More like this: a phrase's rhythm with new
+/// notes) and the ticks it accents, which it keeps.
+struct Given {
+    strokes: Vec<Stroke>,
+    accents: Vec<Tick>,
 }
 
 /// A draft written and judged.

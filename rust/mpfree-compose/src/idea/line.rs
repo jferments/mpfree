@@ -9,7 +9,7 @@ use mpfree_context::chord::{Chord, Tone};
 use mpfree_context::groove::STEP;
 use mpfree_transport::time::Tick;
 
-use super::{dice, moves_off, Draft, IdeaVerdict, Made, NewIdea};
+use super::{dice, moves_off, Draft, Given, IdeaVerdict, Made, NewIdea};
 use crate::cells::{lengths, starts_of, Stroke};
 use crate::critic::{copy_bars, judge, Check, Heard as CriticHeard};
 use crate::dice::{Dice, Job};
@@ -154,12 +154,14 @@ fn fall(places: &mut [i32]) {
 
 /// One draft of a line.
 pub(super) fn line(req: &NewIdea, row: &Row, settings: &Settings, swung: bool, d: u16) -> Made {
+    line_on(req, row, settings, swung, d, None)
+}
+
+/// A line's pulse: one beat's rhythm on every beat, all the 1/16s or some
+/// of them, as busy as asked; on swung 1/8s, the beat and its "and".
+pub(super) fn pulse(req: &NewIdea, row: &Row, settings: &Settings, dice: &mut Dice) -> Vec<Stroke> {
     let g = row.grid;
-    let st = &req.style;
-    let swing = st.rhythm.feel == Feel::Swing8;
-    let mut dice = dice(req, Job::Pitch, d);
-    // One beat's rhythm, on every beat: all the 1/16s, or some of them;
-    // on swung 1/8s, the beat and its "and".
+    let swing = req.style.rhythm.feel == Feel::Swing8;
     let cell: u8 = if swing || g.beat != 4 {
         0b0101
     } else {
@@ -175,6 +177,26 @@ pub(super) fn line(req: &NewIdea, row: &Row, settings: &Settings, swung: bool, d
         .flat_map(|b| starts_of(cell, g.beat).map(move |s| Stroke::at(b * g.beat + s)))
         .collect();
     lengths(&mut strokes, row.steps);
+    strokes
+}
+
+/// Draft `d` of a line, on `given`'s rhythm when there is one (More like
+/// this: its rhythm with new notes), else on a pulse of its own.
+pub(super) fn line_on(
+    req: &NewIdea,
+    row: &Row,
+    settings: &Settings,
+    swung: bool,
+    d: u16,
+    given: Option<&Given>,
+) -> Made {
+    let g = row.grid;
+    let st = &req.style;
+    let mut dice = dice(req, Job::Pitch, d);
+    let strokes = match given {
+        Some(gv) => gv.strokes.clone(),
+        None => pulse(req, row, settings, &mut dice),
+    };
     let per_bar = strokes.iter().filter(|s| s.at < g.bar).count().max(1);
     let len = {
         let lens: &[usize] = if per_bar >= 12 {
@@ -280,10 +302,14 @@ pub(super) fn line(req: &NewIdea, row: &Row, settings: &Settings, swung: bool, d
             }
         }
     }
+    let accents = match given {
+        Some(gv) => gv.accents.clone(),
+        None => peak_at.into_iter().collect(),
+    };
     Draft {
         strokes,
         events,
-        accents: peak_at.into_iter().collect(),
+        accents,
     }
     .heard(row, swung, |_, heard| judge_line(row, st, heard))
 }
