@@ -4240,13 +4240,6 @@ impl Looper {
         }
     }
 
-    /// No layer may leave memory from now on, until the app says again
-    /// which are synced ([`Looper::set_synced`]): the host can no longer
-    /// bring one back (phase 4d.4). Layers away stay away.
-    pub fn forget_synced(&mut self) {
-        self.store.synced = [[0; MAX_LAYERS]; MAX_LOOPS];
-    }
-
     /// Whether loop `n`'s layer numbered `born` is away: its blocks gone
     /// back, its audio in its file (phase 4d.4).
     pub fn is_away(&self, n: usize, born: u64) -> bool {
@@ -4267,6 +4260,47 @@ impl Looper {
         let c = if redo { Command::Redo } else { Command::Undo };
         let (lp, k) = self.needs_back(n, c)?;
         Some((lp, k, self.loops[lp].slots[k].born))
+    }
+
+    /// How many of loop `n`'s next `want` Undos (or Redos, `redo`), from
+    /// its history as it is now, need no layer that is away (phase 4d.4):
+    /// the Looper tab's history list goes that far, then waits for the
+    /// layer to be brought back. Does not allocate.
+    pub fn steps_before_away(&self, n: usize, redo: bool, want: usize) -> usize {
+        let Some(l) = self.loops.get(n) else {
+            return 0;
+        };
+        let acts = if redo {
+            &l.undone[..l.n_undone]
+        } else {
+            &l.done[..l.n_done]
+        };
+        acts.iter()
+            .rev()
+            .take(want)
+            .take_while(|a| {
+                (0..MAX_LAYERS).all(|k| !(self.store.is_away(n, k) && l.brings_back(a, k)))
+            })
+            .count()
+    }
+
+    /// Whether loop `n`'s Undo (or Redo, `redo`) would wait now: a layer
+    /// fading out, a crossfade, a clear (phase 4d.4: a layer is brought
+    /// back for it once nothing is fading, so that a layer an Undo just
+    /// took out of the play order can make room).
+    pub fn step_waits(&self, n: usize, redo: bool) -> bool {
+        let c = if redo { Command::Redo } else { Command::Undo };
+        self.loops
+            .get(n)
+            .is_some_and(|l| l.must_wait(Queued::Loop(c)))
+    }
+
+    /// Undos and Redos in the command queue, not applied yet.
+    pub fn steps_queued(&self) -> usize {
+        self.queue[..self.queued]
+            .iter()
+            .filter(|q| matches!(q, Queued::Loop(Command::Undo | Command::Redo)))
+            .count()
     }
 
     /// Start bringing loop `n`'s away slot `slot` back (phase 4d.4): it

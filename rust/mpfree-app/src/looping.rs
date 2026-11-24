@@ -2685,6 +2685,16 @@ impl LoopHost {
         match c {
             Command::Undo if tempo(h.done().last()) => return self.snap(Snap::Undo),
             Command::Redo if tempo(h.redo().first()) => return self.snap(Snap::Redo),
+            // One whose layer is away (phase 4d.4) waits for it, as the
+            // undo history's presses do.
+            Command::Undo | Command::Redo
+                if self
+                    .looper
+                    .away_for(self.looper.selected(), c == Command::Redo)
+                    .is_some() =>
+            {
+                return self.steps(if c == Command::Redo { 1 } else { -1 });
+            }
             _ => {}
         }
         // The app's latency is the line input's; the pads have their own.
@@ -3158,19 +3168,48 @@ impl LoopHost {
         crate::looper_page::step_text(s, &layers, self.rate)
     }
 
-    /// As many of the undo history's presses as the queue takes.
+    /// As many of the undo history's presses as the queue takes, up to
+    /// the first whose layer is away (audio tracks phase 4d.4): that one
+    /// and those after it wait until it is brought back
+    /// ([`LoopHost::waits_for_layer`]).
     fn queue_steps(&mut self) {
-        while self.steps_left != 0 {
-            let c = if self.steps_left < 0 {
-                Command::Undo
-            } else {
-                Command::Redo
-            };
+        if self.steps_left == 0 {
+            return;
+        }
+        let redo = self.steps_left > 0;
+        let c = if redo { Command::Redo } else { Command::Undo };
+        let left = self.steps_left.unsigned_abs() as usize;
+        let queued = self.looper.steps_queued();
+        let n = self.looper.selected();
+        let free = self
+            .looper
+            .steps_before_away(n, redo, queued + left)
+            .saturating_sub(queued);
+        for _ in 0..free.min(left) {
             if !self.looper.command(c) {
                 break;
             }
             self.steps_left -= self.steps_left.signum();
         }
+    }
+
+    /// The undo history's presses still to go are called off.
+    pub fn stop_steps(&mut self) {
+        self.steps_left = 0;
+    }
+
+    /// The loop and way (Redo: true) the undo history's presses wait on
+    /// for a layer that is away to be brought back from its file (audio
+    /// tracks phase 4d.4: the one UNDO's [`crate::one_undo::OneUndo`]
+    /// brings it back). None if they don't wait.
+    pub fn waits_for_layer(&self) -> Option<(usize, bool)> {
+        let redo = self.steps_left > 0;
+        let n = self.looper.selected();
+        let waits = self.steps_left != 0
+            && self.looper.steps_queued() == 0
+            && !self.looper.step_waits(n, redo)
+            && self.looper.away_for(n, redo).is_some();
+        waits.then_some((n, redo))
     }
 
     /// Pick loop `n` for the presses and controls after this, with its
@@ -3803,11 +3842,6 @@ impl LoopHost {
     /// exactly and its edits can be taken further; off, each layer as it
     /// plays, as before. A project opens either way.
     pub fn set_recordings(&mut self, on: bool) {
-        if self.recordings && !on {
-            // Only the one UNDO brings a layer back from its file (phase
-            // 4d.4), so none leaves memory with the switch off.
-            self.looper.forget_synced();
-        }
         self.recordings = on;
     }
 

@@ -16231,12 +16231,16 @@ fn player_session(
             fx.extend(desk::copy_ended(&mut time, end));
         }
         // The one UNDO follows each engine's steps (phase 4d.1), and asks
-        // them to forget what it can no longer reach (4d.3).
+        // them to forget what it can no longer reach (4d.3). With the
+        // switch off it still brings back a layer that left memory while
+        // it was on, for the loop's own UNDO (4d.4).
         if loops_on {
             if let Some(next) = one_undo.follow(&time, &tracks, &looper) {
                 out.show(gui::ToUi::OneUndo(next));
             }
             fx.extend(one_undo.tend(out, &mut time, &mut tracks, &mut looper));
+        } else {
+            fx.extend(one_undo.tend_back(out, &mut tracks, &mut looper));
         }
         if let Some(wave) = loop_wave {
             out.show(gui::ToUi::LoopWave(wave));
@@ -20454,6 +20458,71 @@ mod tests {
         run(&mut *r, &mut one, 3);
         assert_eq!(layers(r), 3, "the overdub is back on top");
         assert_eq!(one.next(true).map(|e| e.txn), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase 4d.4: the Looper tab's history list (holding UNDO) goes back
+    /// two steps at once: the overdub, then, once the deleted layer it
+    /// waits for is brought back from its file, the Delete; and forward
+    /// again, the overdub coming back in turn. With Dev's switch turned
+    /// off, the loop's own UNDO of a step whose layer is away waits for it
+    /// the same way rather than being refused.
+    #[test]
+    fn the_looper_tabs_history_list_waits_for_a_layer_away_and_goes_on() {
+        use mpfree_looper::Command as L;
+        let dir = std::env::temp_dir().join(format!("mpfree-one-undo-list-{}", std::process::id()));
+        let (mut rig, mut one, second, size, raw) = a_layer_in_its_file_only(&dir);
+        let r = &mut *rig;
+        let layers = |r: &SongRig| r.looper.looper.status().layers;
+        // Until loop 1's history has `done` steps to undo and nothing is
+        // coming back: the worker is a thread; what is said on the way
+        // comes back.
+        let settle = |r: &mut SongRig, one: &mut one_undo::OneUndo, done: usize| {
+            let t0 = Instant::now();
+            let mut told = Vec::new();
+            while r.looper.looper.history().done().len() != done
+                || r.looper.looper.bringing_back()
+                || r.looper.waits_for_layer().is_some()
+            {
+                assert!(t0.elapsed() < Duration::from_secs(30), "{told:?}");
+                told.extend(period_with_files(r, one, 0.0));
+                std::thread::sleep(Duration::from_micros(200));
+            }
+            for _ in 0..20 {
+                told.extend(period_with_files(r, one, 0.0));
+            }
+            told
+        };
+        // Back two: the overdub, then the Delete, which waits.
+        assert_eq!(r.looper.steps(-2), "looper: undo history: back 2 steps");
+        let told = settle(r, &mut one, 2);
+        assert_eq!(layers(r), 3);
+        assert_eq!(told, ["Bringing back Loop 1's layer"]);
+        let mut again = vec![0.0; 2 * size];
+        assert_eq!(
+            r.looper.looper.raw_of(0, second.born, 0, &mut again),
+            Some(size)
+        );
+        assert_eq!(again, raw, "the deleted layer, exactly as it was");
+        // Forward two: the Delete, then the overdub, which made room and
+        // comes back from its file in turn.
+        assert_eq!(r.looper.steps(2), "looper: undo history: forward 2 steps");
+        let told = settle(r, &mut one, 4);
+        assert_eq!(layers(r), 3);
+        assert_eq!(told, ["Bringing back Loop 1's layer"]);
+        assert_eq!(r.looper.looper.history().redo().len(), 0);
+        assert!(r.looper.looper.is_away(0, second.born), "it made room");
+        // The switch off: the loop's own UNDO of the Delete waits for its
+        // layer as the list does, rather than being refused.
+        r.looper.set_recordings(false);
+        r.looper.command(L::Undo);
+        settle(r, &mut one, 3);
+        assert_eq!(layers(r), 2);
+        r.looper.command(L::Undo);
+        let told = settle(r, &mut one, 2);
+        assert_eq!(layers(r), 3);
+        assert_eq!(told, ["Bringing back Loop 1's layer"]);
+        assert!(!r.looper.looper.is_away(0, second.born));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
