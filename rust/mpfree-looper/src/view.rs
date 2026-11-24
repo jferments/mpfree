@@ -56,6 +56,30 @@ impl View {
         v
     }
 
+    /// A view of audio of `size` frames from its pieces as saved (first
+    /// frame, frames, backwards: [`View::pieces`]), joined where they follow
+    /// on as an edit joins them. None if one starts past the audio or has
+    /// no frames, if there are none or more than [`MAX_PIECES`], or if it
+    /// would play more than `u32::MAX` frames.
+    pub fn from_pieces(size: usize, pieces: &[(u32, u32, bool)]) -> Option<View> {
+        if size == 0 || size > u32::MAX as usize || pieces.is_empty() {
+            return None;
+        }
+        let mut v = View {
+            size: size as u32,
+            ..View::EMPTY
+        };
+        for &(start, len, back) in pieces {
+            if start as usize >= size || len == 0 || v.len.checked_add(len).is_none() {
+                return None;
+            }
+            if !v.push(Piece { start, len, back }) {
+                return None;
+            }
+        }
+        Some(v)
+    }
+
     /// `len` frames of audio of `size` frames, from frame `start`,
     /// forwards, played from frame `src` (in them) on and round to
     /// `start`: a loop over part of a longer recording whose bar 1 is

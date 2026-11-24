@@ -1106,6 +1106,9 @@ const DRUMS_ENGINE: &str = "mpfree.drums";
 
 /// A tap on the Looper tab's Records into, loops in audio cells (phase 4,
 /// board 5): a loop records from its track's input.
+/// Projects' samples folders kept for loop layers' files ([`Player::keep_layer_dir`]).
+const LAYER_DIRS: usize = 8;
+
 pub const ON_TRACKS_INPUT: &str = "A loop records from its track's input: tap the input under an audio track's name on Clips to change it";
 
 /// The loops as the Loop tracks' cells show them, from the Looper's view:
@@ -1124,6 +1127,8 @@ fn loops_info(v: &crate::looping::LooperView) -> mpfree_time_ui::view::LoopsInfo
         f.overdubbing = s.phase == Phase::Overdubbing;
         f.copying = v.copy_into == Some(n) || s.copying.is_some();
         f.wave = *w;
+        // A closed layer not on the stick yet (4c.3): the cell's amber dot.
+        f.writing = v.unsaved[n];
     }
     info.in_use = v.loops.iter().filter(|s| s.phase != Phase::Empty).count();
     info.waiting = v.loops.iter().any(|s| s.phase == Phase::Armed);
@@ -2681,6 +2686,11 @@ pub struct Player {
     audio_load: Option<std::sync::mpsc::Receiver<AudioRead>>,
     /// The audio tracks' recovery at start, on its own thread: their work
     /// folder and the lines it says ([`Player::recover_audio_files`]).
+    /// The samples folders of the projects this run opened or saved
+    /// into, oldest first: where a loop layer's synced file may be once
+    /// the work folder's copy has gone (phase 4c.4,
+    /// [`crate::project::find_layer_file`]). A few at most.
+    layer_dirs: Vec<std::path::PathBuf>,
     #[allow(clippy::type_complexity)]
     audio_recover: Option<
         std::sync::mpsc::Receiver<(
@@ -3418,6 +3428,7 @@ impl Player {
             loops_load: None,
             file_saves: Vec::new(),
             audio_load: None,
+            layer_dirs: Vec::new(),
             audio_recover: None,
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
@@ -13564,12 +13575,14 @@ impl Player {
             A::ProjectSaved { loc } => {
                 self.say(format!("project: saved {}", loc.name()));
                 // The audio tracks' takes copied into it are kept from
-                // there now; their copies in the work folder go.
+                // there now; their copies in the work folder go. So do
+                // the loop layers' (4c.3), found there from now on.
                 if let Some(dir) = self
                     .browser
                     .as_ref()
                     .and_then(|b| b.library().samples_dir(&loc).ok())
                 {
+                    self.keep_layer_dir(dir.clone());
                     self.outbox.push(FromUi::AudioSavedInto(dir));
                 }
                 if let Some((at, sounds, parts)) = self.save_sent.take() {
@@ -14128,6 +14141,16 @@ impl Player {
 
     /// Whether the project can be saved now: Err says why not, in a few
     /// words ("the loops are still opening (try again in a moment)").
+    /// A project's samples folder where loop layers' files may be from
+    /// now on (opened or saved into, phase 4c.4): newest last, a few kept.
+    fn keep_layer_dir(&mut self, dir: std::path::PathBuf) {
+        self.layer_dirs.retain(|d| *d != dir);
+        self.layer_dirs.push(dir);
+        if self.layer_dirs.len() > LAYER_DIRS {
+            self.layer_dirs.remove(0);
+        }
+    }
+
     fn save_ready(&self) -> Result<(), String> {
         if self.browser.is_none() {
             return Err("there is no library (the app was started without --data)".into());
@@ -14205,7 +14228,7 @@ impl Player {
         // The loops: their part, and a WAV a layer.
         if let Some(loops) = c.loops.take() {
             let rate = loops.rate;
-            let (text, files) = crate::project::loops_part(loops);
+            let (text, files, copies) = crate::project::loops_part(loops);
             extra.push((crate::project::LOOPER.to_string(), text));
             samples.extend(files.into_iter().map(|(file, audio)| {
                 mpfree_library::NewSample::new(
@@ -14214,6 +14237,25 @@ impl Player {
                         w.write_all(&mpfree_looper::save::wav(&audio, rate))
                     }),
                 )
+            }));
+            // Layers in their recordings' synced files (4c.4): each copied
+            // whole. One that can't be found fails the save, unless the
+            // project has it already (then it isn't written).
+            let lib = self.browser.as_ref().map(|b| b.library());
+            let work = lib.and_then(|l| l.work_dir(crate::project::AUDIOTRACKS).ok());
+            samples.extend(copies.into_iter().map(|file| {
+                match crate::project::find_layer_file(&file, work.as_deref(), &self.layer_dirs) {
+                    Some(from) => mpfree_library::NewSample::file(file, from),
+                    None => {
+                        let why = format!("loop layer {file}'s file is missing");
+                        mpfree_library::NewSample::new(
+                            file,
+                            std::sync::Arc::new(move |_: &mut dyn std::io::Write| {
+                                Err(std::io::Error::other(why.clone()))
+                            }),
+                        )
+                    }
+                }
             }));
         }
         // The audio tracks: their part, and a take's file copied whole
@@ -14353,6 +14395,10 @@ impl Player {
             snap.part(crate::project::LOOPER),
             self.browser.as_ref().map(|b| b.library().clone()),
         ) {
+            // Its layers' files stay there for later saves to copy (4c.4).
+            if let Ok(dir) = lib.samples_dir(loc) {
+                self.keep_layer_dir(dir);
+            }
             let (text, loc) = (text.to_string(), loc.clone());
             let (tx, rx) = std::sync::mpsc::channel();
             let read = std::thread::Builder::new()
@@ -33871,6 +33917,22 @@ mod tests {
         assert_eq!(p.rec_chip().alert, RecAlert::None);
     }
 
+    /// The audio tracks rethink's phase 4c.3 and board 2: a loop holding a
+    /// closed layer not yet on the stick gives its cells the writing dot;
+    /// the others don't.
+    #[test]
+    fn a_loop_with_a_layer_not_on_the_stick_gives_its_cells_the_writing_dot() {
+        let mut v = crate::looping::LooperView::default();
+        v.unsaved[2] = true;
+        let info = loops_info(&v);
+        assert!(info.loops[2].writing);
+        assert!(info
+            .loops
+            .iter()
+            .enumerate()
+            .all(|(n, f)| f.writing == (n == 2)));
+    }
+
     /// The audio tracks rethink's phase 4, board 6: with Dev's "Loops on
     /// audio tracks" on, an audio track's strip says its input and, while
     /// it plays one, what ("loop · row 2" over the clip's name, or a take
@@ -36488,10 +36550,13 @@ mod tests {
                         faded: 1.0,
                         file: String::new(),
                         audio: layer.clone(),
+                        raw: None,
                     }],
+                    raw: None,
                 },
             )],
             free_clock: None,
+            kept: Vec::new(),
         };
         // Audio 2 with a region of a mono take, as the tracks' save gives it.
         let take: Vec<f32> = (0..4410).map(|k| (k % 89) as f32 / 300.0).collect();

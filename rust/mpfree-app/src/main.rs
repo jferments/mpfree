@@ -10565,6 +10565,8 @@ fn player_session(
     }
     let loops_on = app.settings.loops_on;
     time.set_loops_on(loops_on);
+    // Layers as recordings (phase 4c.2) come with the same switch.
+    looper.set_recordings(loops_on);
     // With takes streaming, a cue that launches audio waits until the
     // start of its audio is in memory (the audio tracks rethink's phase
     // 2): the needs go to the tracks whenever they change.
@@ -15689,6 +15691,11 @@ fn player_session(
             tracks.loops_moving(&looper.moving_ids());
             tracks.plan_loops(time.block(), &|p| time.audio(p));
             looper.give_loop_id(|| tracks.fresh_loop_id());
+            looper.give_layer_recs(|| tracks.fresh_recording_id());
+            // Closed layers to their files soon after they close (4c.3).
+            if let Some(line) = looper.write_layers(&mut tracks, time.block().frames as usize) {
+                out.note(&line);
+            }
             looper.tell_tracks(time.project(), tracks.loop_player());
         }
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);

@@ -1413,6 +1413,10 @@ pub struct LooperView {
     /// yet), so the grid's loop cells find their loops
     /// ([`LoopHost::loop_ids`]).
     pub ids: [u128; MAX_LOOPS],
+    /// Each loop holds a layer not yet on the stick (audio tracks phase
+    /// 4c.3, with recordings on: [`LoopHost::unsaved_layers`]): its ring's
+    /// dot.
+    pub unsaved: [bool; MAX_LOOPS],
 }
 
 impl Default for LooperView {
@@ -1448,6 +1452,7 @@ impl Default for LooperView {
             pattern_bars: None,
             ids: [0; MAX_LOOPS],
             listening: None,
+            unsaved: [false; MAX_LOOPS],
         }
     }
 }
@@ -1644,6 +1649,15 @@ pub struct LoopHost {
     /// Loops on audio tracks (phase 4b, behind Dev's switch): each slot's
     /// loop's lasting id, and which are on tracks.
     pub on_tracks: crate::loops_on_tracks::OnTracks,
+    /// Layers as recordings (phase 4c.2, behind the same switch): saves
+    /// keep each loop as the looper holds it (`mpfree-looper 2`), each
+    /// layer named by its recording ([`LoopHost::set_recordings`]).
+    recordings: bool,
+    /// Each closed layer's recording ([`LoopHost::give_layer_recs`]).
+    layer_recs: crate::loops_on_tracks::LayerRecs,
+    /// Closed layers written to their recordings' files soon after they
+    /// close (phase 4c.3, [`LoopHost::write_layers`]).
+    layer_writer: crate::loops_on_tracks::LayerWriter,
 }
 
 /// A whole loop copying into an empty one, a layer at a time
@@ -1682,19 +1696,44 @@ enum Saving {
     Sizing {
         /// Each loop's (version, layers, frames) when the save began.
         at: [(u64, usize, usize); MAX_LOOPS],
+        /// A snapshot (phase 4c.4, recordings on): each layer's number,
+        /// by loop and play order, read by it whatever the loop does.
+        snap: Option<Borns>,
     },
     /// Reading layer `k` of `saved.loops[i]` from `frame`.
     Reading {
         saved: Saved,
         at: [(u64, usize, usize); MAX_LOOPS],
+        snap: Option<Borns>,
         i: usize,
         k: usize,
         frame: usize,
     },
 }
 
+/// Each loop's layers' numbers ([`LayerInfo::born`]), by loop and play
+/// order, as a snapshot save took them (phase 4c.4).
+type Borns = [[u64; MAX_LAYERS]; MAX_LOOPS];
+
 /// Frames of the loops' layers a save reads for each frame that plays.
 pub const SAVE_SPEED: usize = 64;
+
+/// Frames a save reads of layer `k` of `f`: the loop's length as it
+/// plays, or as the looper holds it, its audio's size (phase 4c.2).
+fn layer_frames(f: &LoopFile, k: usize) -> usize {
+    match copied(f, k) {
+        true => 0,
+        false => f.layers[k].raw.as_ref().map_or(f.frames, |r| r.size),
+    }
+}
+
+/// Layer `k` of `f` is in its recording's synced file, which a snapshot
+/// save named (phase 4c.4): the project copies the file, and nothing of
+/// it is read or held for the save.
+pub fn copied(f: &LoopFile, k: usize) -> bool {
+    let y = &f.layers[k];
+    !y.file.is_empty() && y.raw.as_ref().is_some_and(|r| r.rec != 0)
+}
 
 /// What the worker is asked: a buffer for a bounce, a print, room for a
 /// save's audio, or to drop what the audio loop is done with.
@@ -1881,8 +1920,12 @@ impl Printer {
                         }
                         ToPrinter::Size(mut saved) => {
                             for (_, f) in &mut saved.loops {
-                                for y in &mut f.layers {
-                                    y.audio = vec![0.0; 2 * f.frames];
+                                for k in 0..f.layers.len() {
+                                    // A copied layer's file holds it (4c.4).
+                                    let size = layer_frames(f, k);
+                                    if size > 0 {
+                                        f.layers[k].audio = vec![0.0; 2 * size];
+                                    }
                                 }
                             }
                             FromPrinter::Sized(saved)
@@ -2149,6 +2192,9 @@ impl LoopHost {
             copy: None,
             copy_end: None,
             on_tracks: Default::default(),
+            recordings: false,
+            layer_recs: Default::default(),
+            layer_writer: Default::default(),
             heard_peaks: vec![
                 0.0;
                 if seconds > 0 {
@@ -2190,16 +2236,22 @@ impl LoopHost {
             Saving::Reading {
                 saved, i, k, frame, ..
             } => {
+                // Frames of a loop's first `upto` layers.
+                let frames = |f: &LoopFile, upto: usize| -> usize {
+                    (0..upto.min(f.layers.len()))
+                        .map(|j| layer_frames(f, j))
+                        .sum()
+                };
                 let all: usize = saved
                     .loops
                     .iter()
-                    .map(|(_, f)| f.layers.len() * f.frames)
+                    .map(|(_, f)| frames(f, f.layers.len()))
                     .sum();
                 let done: usize = saved.loops[..*i]
                     .iter()
-                    .map(|(_, f)| f.layers.len() * f.frames)
+                    .map(|(_, f)| frames(f, f.layers.len()))
                     .sum::<usize>()
-                    + saved.loops.get(*i).map_or(0, |(_, f)| k * f.frames)
+                    + saved.loops.get(*i).map_or(0, |(_, f)| frames(f, *k))
                     + frame;
                 Some(done as f32 / all.max(1) as f32)
             }
@@ -2312,9 +2364,21 @@ impl LoopHost {
         for (n, f) in saved.loops {
             let id = f.id;
             let on_free = f.clock == Clock::Free;
+            let mut recs = [0u128; mpfree_looper::MAX_LAYERS];
+            let mut from = [[0u128; mpfree_looper::MAX_LAYERS]; mpfree_looper::MAX_LAYERS];
+            for ((r, m), y) in recs.iter_mut().zip(from.iter_mut()).zip(&f.layers) {
+                *r = y.raw.as_ref().map_or(0, |r| r.rec);
+                for (a, &b) in m
+                    .iter_mut()
+                    .zip(y.raw.as_ref().map_or(&[][..], |r| &r.from))
+                {
+                    *a = b;
+                }
+            }
             match self.looper.load(n, f) {
                 Ok(()) => {
                     self.on_tracks.set(n, id);
+                    self.layer_recs.opened(&self.looper, n, &recs, &from);
                     done.push((n + 1).to_string());
                     if on_free {
                         free.push((n + 1).to_string());
@@ -2385,21 +2449,50 @@ impl LoopHost {
         };
         self.saving = match state {
             Saving::Waiting => {
-                // Every loop empty (or armed) or still enough to read.
+                // Every loop empty (or armed) or still enough to read; with
+                // recordings on, every layer closed too (a first pass's
+                // tail in), so a snapshot can read each by its number.
+                let snap = self.recordings;
                 let ready = (0..MAX_LOOPS).all(|n| {
                     let s = self.looper.loop_status(n).expect("a loop");
                     matches!(s.phase, Phase::Empty | Phase::Armed) && s.loading.is_none()
                         || self.looper.read_layer(n, 0, 0, &mut []).is_some()
+                            && (!snap
+                                || (0..MAX_LAYERS)
+                                    .map_while(|k| self.looper.loop_layer_info(n, k))
+                                    .all(|y| y.closed))
                 });
                 if ready {
-                    let saved = Saved {
+                    let mut saved = Saved {
                         rate: self.rate,
                         selected: self.looper.selected(),
                         loops: (0..MAX_LOOPS)
                             .filter_map(|n| {
-                                let mut f = self.looper.loop_file(n)?;
+                                let mut f = match self.recordings {
+                                    true => self.looper.loop_file_raw(n)?,
+                                    false => self.looper.loop_file(n)?,
+                                };
                                 // Its lasting id, if it has one (phase 4b).
                                 f.id = self.on_tracks.id(n).map_or(0, |i| i.0);
+                                // Each layer's recording (4c.2); one whose
+                                // file is synced is copied from it (4c.4).
+                                for (k, y) in f.layers.iter_mut().enumerate() {
+                                    if let (Some(r), Some(info)) =
+                                        (y.raw.as_mut(), self.looper.loop_layer_info(n, k))
+                                    {
+                                        r.rec = self.layer_recs.of(n, &info);
+                                        // What a merge or a fit made it
+                                        // from (4c.5).
+                                        r.from = self.layer_recs.sources_of(n, &info).to_vec();
+                                        if snap
+                                            && r.rec != 0
+                                            && self.layer_recs.file(n, &info)
+                                                == crate::loops_on_tracks::FileState::Synced
+                                        {
+                                            y.file = format!("loop_{:032x}.wav", r.rec);
+                                        }
+                                    }
+                                }
                                 Some((n, f))
                             })
                             .collect(),
@@ -2407,31 +2500,64 @@ impl LoopHost {
                             .looper
                             .free_clock()
                             .map(|c| mpfree_looper::save::ClockFile::of(&c)),
+                        kept: Vec::new(),
                     };
+                    // Recordings held for an Undo that no layer names
+                    // (4c.6): named, so the project keeps their files.
+                    if snap {
+                        saved.kept = self.layer_recs.held_files(&self.looper);
+                        saved.kept.retain(|f| {
+                            !saved
+                                .loops
+                                .iter()
+                                .any(|(_, l)| l.layers.iter().any(|y| y.file == *f))
+                        });
+                    }
+                    // The snapshot: each layer by its number.
+                    let borns = snap.then(|| {
+                        let mut b = [[0; MAX_LAYERS]; MAX_LOOPS];
+                        for (n, row) in b.iter_mut().enumerate() {
+                            for (k, x) in row.iter_mut().enumerate() {
+                                match self.looper.loop_layer_info(n, k) {
+                                    Some(y) => *x = y.born,
+                                    None => break,
+                                }
+                            }
+                        }
+                        b
+                    });
                     self.printer.send(ToPrinter::Size(saved));
-                    Some(Saving::Sizing { at: self.shapes() })
+                    Some(Saving::Sizing {
+                        at: self.shapes(),
+                        snap: borns,
+                    })
                 } else {
                     Some(Saving::Waiting)
                 }
             }
-            Saving::Sizing { at } => match self.printer.sized.take() {
+            Saving::Sizing { at, snap } => match self.printer.sized.take() {
                 Some(saved) => Some(Saving::Reading {
                     saved,
                     at,
+                    snap,
                     i: 0,
                     k: 0,
                     frame: 0,
                 }),
-                None => Some(Saving::Sizing { at }),
+                None => Some(Saving::Sizing { at, snap }),
             },
             Saving::Reading {
                 mut saved,
                 at,
+                snap,
                 mut i,
                 mut k,
                 mut frame,
             } => {
-                if self.shapes() != at {
+                // A snapshot reads closed layers by their numbers, which
+                // never change, so the loops may go on; without one, a
+                // loop that changes starts the save again.
+                if snap.is_none() && self.shapes() != at {
                     // A loop changed: start again.
                     self.save_restarts += 1;
                     self.printer.send(ToPrinter::DropSaved(saved));
@@ -2441,15 +2567,33 @@ impl LoopHost {
                 let mut budget = SAVE_SPEED * PERIOD;
                 while budget > 0 && i < saved.loops.len() {
                     let (n, f) = &mut saved.loops[i];
-                    let take = budget.min(f.frames - frame);
+                    let size = layer_frames(f, k);
+                    let take = budget.min(size - frame);
+                    let raw = f.layers[k].raw.is_some();
                     let out = &mut f.layers[k].audio[2 * frame..2 * (frame + take)];
-                    if self.looper.read_layer(*n, k, frame, out).is_none() {
+                    // By its number (a snapshot, 4c.4), as written (4c.2)
+                    // or as it plays.
+                    let read = match (snap.as_ref(), raw) {
+                        _ if take == 0 => Some(0),
+                        (Some(b), _) => self.looper.raw_of(*n, b[*n][k], frame, out).map(|_| 0),
+                        (None, true) => self.looper.raw_layer(*n, k, frame, out),
+                        (None, false) => self.looper.read_layer(*n, k, frame, out),
+                    };
+                    if read.is_none() && snap.is_some() {
+                        // The layer went from memory before it was read
+                        // (cleared, undone): start again.
+                        self.save_restarts += 1;
+                        self.printer.send(ToPrinter::DropSaved(saved));
+                        self.saving = Some(Saving::Waiting);
+                        return;
+                    }
+                    if read.is_none() {
                         // Busy for now (a merge or a fit starting): wait.
                         break;
                     }
                     budget -= take;
                     frame += take;
-                    if frame == f.frames {
+                    if frame == size {
                         frame = 0;
                         k += 1;
                         if k == f.layers.len() {
@@ -2465,6 +2609,7 @@ impl LoopHost {
                     Some(Saving::Reading {
                         saved,
                         at,
+                        snap,
                         i,
                         k,
                         frame,
@@ -3481,6 +3626,65 @@ impl LoopHost {
         (&self.input_l, &self.input_r)
     }
 
+    /// Layers as recordings (audio tracks phase 4c.2, behind Dev's "Loops
+    /// on audio tracks"): with it on, a save keeps each loop as the looper
+    /// holds it (`mpfree_looper::Looper::loop_file_raw`, read with
+    /// `raw_layer`), each layer with its recording's id, so it opens
+    /// exactly and its edits can be taken further; off, each layer as it
+    /// plays, as before. A project opens either way.
+    pub fn set_recordings(&mut self, on: bool) {
+        self.recordings = on;
+    }
+
+    /// With recordings on, each closed layer with no recording yet gets
+    /// one, `fresh()` (the audio tracks' id maker). Each period; does not
+    /// allocate.
+    pub fn give_layer_recs(&mut self, fresh: impl FnMut() -> u128) {
+        if self.recordings {
+            self.layer_recs.give(&self.looper, fresh);
+        }
+    }
+
+    /// With recordings on, closed layers go to their recordings' files
+    /// soon after they close (phase 4c.3, docs/dev/design/loops-on-audio-tracks.md
+    /// rule 4): up to [`SAVE_SPEED`] frames of them for each of the
+    /// period's `frames`, through `files` (the audio tracks' worker), one
+    /// layer at a time. Each period, after
+    /// [`LoopHost::give_layer_recs`]; allocates only the log's line when
+    /// a file couldn't be written (the layer stays in memory, and a save
+    /// writes it with the project).
+    pub fn write_layers(
+        &mut self,
+        files: &mut dyn crate::loops_on_tracks::LayerFiles,
+        frames: usize,
+    ) -> Option<String> {
+        if !self.recordings {
+            return None;
+        }
+        self.layer_writer.tend(
+            &mut self.layer_recs,
+            &self.looper,
+            files,
+            frames * SAVE_SPEED,
+        );
+        let why = self.layer_writer.take_failure()?;
+        Some(format!(
+            "looper: a layer's file couldn't be written ({why}); its audio stays in memory \
+             and is saved with the project"
+        ))
+    }
+
+    /// Layers of loop `n` whose audio is only in memory, not yet in a
+    /// synced file (phase 4c.3); 0 with recordings off, where saves are
+    /// what keep the audio.
+    pub fn unsaved_layers(&self, n: usize) -> usize {
+        if self.recordings {
+            self.layer_recs.unsaved(&self.looper, n)
+        } else {
+            0
+        }
+    }
+
     /// Loops on audio tracks (phase 4b, behind Dev's switch): a loop with
     /// sound and no lasting id yet gets one, `fresh()` (the audio tracks'
     /// id maker), one a period at most; a first pass starting is a new
@@ -4004,6 +4208,19 @@ impl LoopHost {
             } else {
                 String::new()
             }
+            + &{
+                // Layers as recordings (phase 4c.3): layers only in memory
+                // so far, and files that couldn't be written.
+                let only = (0..MAX_LOOPS).map(|n| self.unsaved_layers(n)).sum::<usize>();
+                let failed = self.layer_writer.failed;
+                match (only, failed) {
+                    (0, 0) => String::new(),
+                    (only, 0) => format!("; {only} layers only in memory"),
+                    (only, failed) => format!(
+                        "; {only} layers only in memory, {failed} layers' files couldn't be written"
+                    ),
+                }
+            }
             + &if self.notes_lost > 0 {
                 format!(
                     "; {} periods with more notes than smart loop end could follow",
@@ -4093,6 +4310,7 @@ impl LoopHost {
             pattern_bars: self.pattern_bars,
             listening: self.looper.listening(),
             ids: self.on_tracks.ids(),
+            unsaved: std::array::from_fn(|n| self.unsaved_layers(n) > 0),
         }
     }
 
@@ -7492,6 +7710,471 @@ mod tests {
             .map(|i| (a[i] - c[i]).abs())
             .fold(0.0, f32::max);
         assert!(worst < 1e-5, "differs by {worst}");
+    }
+
+    /// Layers as recordings (audio tracks phase 4c.2, behind Dev's "Loops
+    /// on audio tracks"): with recordings on, each closed layer gets a
+    /// recording once; a save keeps each loop as the looper holds it
+    /// (`mpfree-looper 2`), each layer with its recording and its file
+    /// named by it; it opens in a fresh host playing the same, and keeps
+    /// its recordings, so saved again it names the same files and nothing
+    /// is written twice.
+    #[test]
+    fn loops_saved_as_recordings_open_the_same_and_keep_their_recordings() {
+        use mpfree_looper::save::{from_text, wav};
+        let (mut h, mut t, mut b) = saving_host();
+        h.set_recordings(true);
+        let mut next = 0u128;
+        let mut fresh = || {
+            next += 1;
+            0xfeed_0000 + next
+        };
+        h.give_layer_recs(&mut fresh);
+        h.give_layer_recs(&mut fresh);
+        assert_eq!(next, 2, "a recording a layer, once");
+        h.save();
+        let saved = saved_from(&mut h, &mut t, &mut b);
+        let (text, files, copies) = crate::project::loops_part(saved);
+        assert!(copies.is_empty(), "no file is written here");
+        assert!(text.starts_with("mpfree-looper 2\n"), "{text}");
+        let names: Vec<String> = files.iter().map(|(n, _)| n.clone()).collect();
+        assert_eq!(
+            names,
+            [
+                format!("loop_{:032x}.wav", 0xfeed_0001u128),
+                format!("loop_{:032x}.wav", 0xfeed_0002u128)
+            ]
+        );
+        // The first pass's audio as written: more than its loop.
+        let frames = from_text(&text).unwrap().loops[0].1.frames;
+        assert!(files[0].1.len() > 2 * frames);
+        let wavs: Vec<(String, Vec<u8>)> = files
+            .iter()
+            .map(|(n, a)| (n.clone(), wav(a, 44_100)))
+            .collect();
+        let read = |name: &str| {
+            wavs.iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, b)| b.clone())
+                .ok_or_else(|| format!("no {name}"))
+        };
+        let (back, notes, left) = crate::project::loops_open(&text, read).unwrap();
+        assert!(notes.is_empty() && left.is_empty(), "{notes:?}");
+        // Into a fresh host at the same song frame: it plays as the first
+        // one does, a bar on.
+        let (mut h2, mut t2) = (
+            LoopHost::new(44_100, 20),
+            Transport::new(44_100, 120.0).unwrap(),
+        );
+        h2.set_recordings(true);
+        let mut b2 = Block::new();
+        t2.command(0, T::Play);
+        let skip = (t.frame() / PERIOD as u64) as usize;
+        run_host(&mut h2, &mut t2, &mut b2, skip);
+        assert!(h2.load(back).starts_with("looper: loading loops 1"));
+        let a = run_host(&mut h, &mut t, &mut b, 1500);
+        let c = run_host(&mut h2, &mut t2, &mut b2, 1500);
+        let n = a.len();
+        let worst = (n - 2 * 88_200..n)
+            .map(|i| (a[i] - c[i]).abs())
+            .fold(0.0, f32::max);
+        assert!(worst < 1e-5, "differs by {worst}");
+        // Its layers keep the recordings they opened with: saved again,
+        // the same files.
+        h2.give_layer_recs(|| panic!("a layer opened with its recording got another"));
+        h2.save();
+        let again = saved_from(&mut h2, &mut t2, &mut b2);
+        // Opened from the project, their files are there: a save copies
+        // them (4c.4), reading none of their audio.
+        let (text2, files2, copies2) = crate::project::loops_part(again);
+        assert!(files2.is_empty());
+        assert_eq!(copies2, names);
+        assert_eq!(
+            from_text(&text2).unwrap().loops,
+            from_text(&text).unwrap().loops
+        );
+        // With recordings off, a save is as before: each layer as it plays.
+        h2.set_recordings(false);
+        h2.save();
+        let (text3, _, _) = crate::project::loops_part(saved_from(&mut h2, &mut t2, &mut b2));
+        assert!(text3.starts_with("mpfree-looper 1\n"), "{text3}");
+    }
+
+    /// Phase 4c.4: with recordings on, a save is a snapshot. The loops
+    /// are kept as they were when it began, each layer read by its
+    /// number, while the loop goes on: a level turned and an overdub
+    /// started during the save start nothing again, and it gives the same
+    /// text and audio as a save with nothing changing.
+    #[test]
+    fn a_snapshot_save_keeps_the_loops_as_they_were_while_they_change() {
+        let (mut h, mut t, mut b) = saving_host();
+        h.set_recordings(true);
+        let mut next = 0u128;
+        h.give_layer_recs(|| {
+            next += 1;
+            0xfeed_0000 + next
+        });
+        h.save();
+        let (text, files, copies) = crate::project::loops_part(saved_from(&mut h, &mut t, &mut b));
+        assert!(copies.is_empty(), "no file is written here");
+        let restarts = h.save_restarts;
+        h.save();
+        // Into the reading, then the loop changes.
+        let start = std::time::Instant::now();
+        while !h.saving().is_some_and(|p| p > 0.0) {
+            run_host(&mut h, &mut t, &mut b, 1);
+            std::thread::sleep(std::time::Duration::from_micros(100));
+            assert!(start.elapsed().as_secs() < 60, "the save never read");
+        }
+        let before = h.looper.loop_status(0).unwrap().version;
+        let id = h.looper.layer_info(1).unwrap().id;
+        h.looper.layer_command(id, LayerCommand::Level(0.75));
+        h.command(Command::Overdub);
+        let moved = saved_from(&mut h, &mut t, &mut b);
+        assert_ne!(h.looper.loop_status(0).unwrap().version, before);
+        assert_eq!(h.save_restarts, restarts, "nothing started again");
+        let (text2, files2, _) = crate::project::loops_part(moved);
+        assert_eq!(text2, text);
+        assert!(files2 == files, "the same audio");
+    }
+
+    /// Phase 4c.5: a merged layer is a recording of its own that names
+    /// the recordings it was made from (`from=`), and keeps naming them
+    /// once opened from the project and saved again.
+    #[test]
+    fn a_merged_layer_names_the_recordings_it_was_made_from() {
+        use mpfree_looper::save::{from_text, wav};
+        let (mut h, mut t, mut b) = saving_host();
+        h.set_recordings(true);
+        let mut next = 0u128;
+        let mut fresh = || {
+            next += 1;
+            0xfeed_0000 + next
+        };
+        h.give_layer_recs(&mut fresh);
+        h.command(Command::Merge);
+        for _ in 0..2_000 {
+            if h.looper.status().layers == 1 && h.looper.layer_info(0).unwrap().closed {
+                break;
+            }
+            run_host(&mut h, &mut t, &mut b, 1);
+        }
+        assert_eq!(h.looper.status().layers, 1, "merged");
+        h.give_layer_recs(&mut fresh);
+        assert_eq!(next, 3, "the merged layer is a recording of its own");
+        h.save();
+        let (text, files, _) = crate::project::loops_part(saved_from(&mut h, &mut t, &mut b));
+        let line = format!(" rec={:032x} ", 0xfeed_0003u128);
+        let merged = text
+            .lines()
+            .find(|l| l.contains(&line))
+            .expect("the merged layer");
+        assert!(
+            merged.contains(&format!(
+                " from={:032x}+{:032x} ",
+                0xfeed_0001u128, 0xfeed_0002u128
+            )),
+            "{merged}"
+        );
+        // Opened and saved again: the same.
+        let wavs: Vec<(String, Vec<u8>)> = files
+            .iter()
+            .map(|(n, a)| (n.clone(), wav(a, 44_100)))
+            .collect();
+        let read = |name: &str| {
+            wavs.iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, b)| b.clone())
+                .ok_or_else(|| format!("no {name}"))
+        };
+        let (back, _, left) = crate::project::loops_open(&text, read).unwrap();
+        assert!(left.is_empty());
+        let (mut h2, mut t2) = (
+            LoopHost::new(44_100, 20),
+            Transport::new(44_100, 120.0).unwrap(),
+        );
+        h2.set_recordings(true);
+        let mut b2 = Block::new();
+        t2.command(0, T::Play);
+        run_host(&mut h2, &mut t2, &mut b2, 4);
+        assert!(h2.load(back).starts_with("looper: loading loops 1"));
+        run_host(&mut h2, &mut t2, &mut b2, 400);
+        h2.give_layer_recs(|| panic!("opened with its recording"));
+        h2.save();
+        let (text2, _, _) = crate::project::loops_part(saved_from(&mut h2, &mut t2, &mut b2));
+        assert_eq!(
+            from_text(&text2).unwrap().loops,
+            from_text(&text).unwrap().loops
+        );
+    }
+
+    /// Where a test's layers' files go (phase 4c.3): written at once, a
+    /// piece at a time, each buffer back as soon as it is given.
+    struct FakeFiles {
+        on: bool,
+        spare: Vec<Vec<f32>>,
+        open: std::collections::HashMap<u128, (usize, Vec<f32>)>,
+        done: std::collections::HashMap<u128, Vec<f32>>,
+        said: Vec<(u128, Option<String>)>,
+        dropped: Vec<u128>,
+        fail: Option<String>,
+    }
+
+    impl FakeFiles {
+        fn new() -> FakeFiles {
+            FakeFiles {
+                on: true,
+                spare: (0..2).map(|_| vec![0.0; 8_192]).collect(),
+                open: Default::default(),
+                done: Default::default(),
+                said: Vec::new(),
+                dropped: Vec::new(),
+                fail: None,
+            }
+        }
+    }
+
+    impl crate::loops_on_tracks::LayerFiles for FakeFiles {
+        fn can_write(&self) -> bool {
+            self.on
+        }
+        fn begin(&mut self, rec: u128, frames: usize) -> bool {
+            assert!(self.open.is_empty(), "one at a time");
+            self.open.insert(rec, (frames, Vec::new()));
+            true
+        }
+        fn buffer(&mut self) -> Option<Vec<f32>> {
+            self.spare.pop()
+        }
+        fn piece(&mut self, rec: u128, buf: Vec<f32>, len: usize) {
+            if let Some((_, v)) = self.open.get_mut(&rec) {
+                v.extend_from_slice(&buf[..len]);
+            }
+            self.spare.push(buf);
+        }
+        fn end(&mut self, rec: u128) {
+            let (frames, v) = self.open.remove(&rec).expect("begun");
+            assert_eq!(v.len(), 2 * frames, "all of it, once");
+            match &self.fail {
+                Some(why) => self.said.push((rec, Some(why.clone()))),
+                None => {
+                    self.done.insert(rec, v);
+                    self.said.push((rec, None));
+                }
+            }
+        }
+        fn drop_layer(&mut self, rec: u128) {
+            self.open.remove(&rec);
+            self.dropped.push(rec);
+        }
+        fn written(&mut self) -> Option<(u128, Option<String>)> {
+            (!self.said.is_empty()).then(|| self.said.remove(0))
+        }
+    }
+
+    /// Phase 4c.3: with recordings on, each closed layer goes to its
+    /// recording's file soon after it closes, a piece at a time while the
+    /// loops play on, the same audio a save keeps; a layer still
+    /// recording waits; one that goes while it is written is dropped and
+    /// written again if it comes back; a file that can't be written is
+    /// said once and not tried again.
+    #[test]
+    fn closed_layers_go_to_their_files_soon_after_they_close() {
+        let (mut h, mut t, mut b) = saving_host();
+        let mut files = FakeFiles::new();
+        // Recordings off: nothing is written, nothing counts.
+        h.give_layer_recs(|| panic!("off"));
+        assert_eq!(h.write_layers(&mut files, PERIOD), None);
+        assert!(files.open.is_empty() && h.unsaved_layers(0) == 0);
+        h.set_recordings(true);
+        let next = std::cell::Cell::new(0u128);
+        let fresh = || {
+            next.set(next.get() + 1);
+            0xfeed_0000 + next.get()
+        };
+        h.give_layer_recs(fresh);
+        assert_eq!(h.unsaved_layers(0), 2);
+        let write = |h: &mut LoopHost, files: &mut FakeFiles, t: &mut Transport, b: &mut Block| {
+            let mut periods = 0;
+            while h.unsaved_layers(0) > 0 {
+                assert_eq!(h.write_layers(files, PERIOD), None);
+                run_host(h, t, b, 1);
+                periods += 1;
+                assert!(periods < 400, "still {} unsaved", h.unsaved_layers(0));
+            }
+            periods
+        };
+        // Two layers of about two seconds at 64 times the period: a few
+        // dozen periods, not one.
+        let periods = write(&mut h, &mut files, &mut t, &mut b);
+        assert!(periods > 10, "{periods}");
+        assert_eq!(files.done.len(), 2);
+        // A save copies both files (4c.4): none of their audio is read.
+        h.save();
+        let (_, kept, copies) = crate::project::loops_part(saved_from(&mut h, &mut t, &mut b));
+        assert!(kept.is_empty());
+        let mut written: Vec<String> = files
+            .done
+            .keys()
+            .map(|rec| format!("loop_{rec:032x}.wav"))
+            .collect();
+        written.sort();
+        let mut copies = copies;
+        copies.sort();
+        assert_eq!(copies, written);
+        // Periods with a tone on the pads, for an overdub to keep.
+        let play = |h: &mut LoopHost, t: &mut Transport, b: &mut Block, periods: usize| {
+            for k in 0..periods {
+                assert!(t.process(PERIOD as u32, b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                for i in 0..PERIOD {
+                    let f = (k * PERIOD + i) as f64;
+                    l[i] = 0.2 * (f * 660.0 * std::f64::consts::TAU / 44_100.0).sin() as f32;
+                    r[i] = -l[i];
+                }
+                h.take_pads(&l, &r);
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.period(b, &mut l, &mut r);
+            }
+        };
+        // Run until the loop's newest layer is closed.
+        let close = |h: &mut LoopHost, t: &mut Transport, b: &mut Block| {
+            for _ in 0..2_000 {
+                let s = h.looper.status();
+                let last = h.looper.layer_info(s.layers.saturating_sub(1)).unwrap();
+                if last.closed && s.phase == Phase::Playing {
+                    return;
+                }
+                run_host(h, t, b, 1);
+            }
+            panic!("the overdub never closed");
+        };
+        // An overdub: counted while it records, written once it closes.
+        h.command(Command::Overdub);
+        play(&mut h, &mut t, &mut b, 100);
+        h.give_layer_recs(fresh);
+        assert_eq!(h.write_layers(&mut files, PERIOD), None);
+        assert_eq!((h.unsaved_layers(0), files.open.len()), (1, 0));
+        h.command(Command::Overdub);
+        close(&mut h, &mut t, &mut b);
+        h.give_layer_recs(fresh);
+        assert_eq!(next.get(), 3);
+        // Undone after its first piece: dropped, and its memory is the
+        // only copy again.
+        assert_eq!(h.write_layers(&mut files, PERIOD), None);
+        assert_eq!(h.write_layers(&mut files, PERIOD), None);
+        assert!(files.open.contains_key(&0xfeed_0003));
+        h.command(Command::Undo);
+        run_host(&mut h, &mut t, &mut b, 40);
+        assert_eq!(h.write_layers(&mut files, PERIOD), None);
+        assert_eq!(files.dropped, [0xfeed_0003]);
+        assert!(
+            files.open.is_empty() && files.spare.len() == 2,
+            "the buffers back"
+        );
+        assert_eq!(h.unsaved_layers(0), 0);
+        // Redone, it is written after all, under the same recording.
+        h.command(Command::Redo);
+        run_host(&mut h, &mut t, &mut b, 40);
+        h.give_layer_recs(|| panic!("it has its recording"));
+        write(&mut h, &mut files, &mut t, &mut b);
+        assert!(files.done.contains_key(&0xfeed_0003));
+        // A file that can't be written: said once, counted, not tried
+        // again; the layer stays only in memory.
+        files.fail = Some("the stick is full".into());
+        h.command(Command::Overdub);
+        play(&mut h, &mut t, &mut b, 100);
+        h.command(Command::Overdub);
+        close(&mut h, &mut t, &mut b);
+        h.give_layer_recs(fresh);
+        let mut said = Vec::new();
+        for _ in 0..40 {
+            said.extend(h.write_layers(&mut files, PERIOD));
+            run_host(&mut h, &mut t, &mut b, 1);
+        }
+        assert_eq!(
+            said,
+            [
+                "looper: a layer's file couldn't be written (the stick is full); its audio stays \
+              in memory and is saved with the project"
+            ]
+        );
+        assert_eq!(h.unsaved_layers(0), 1);
+        assert!(h
+            .describe()
+            .contains("1 layers only in memory, 1 layers' files couldn't be written"));
+        assert!(!files.done.contains_key(&0xfeed_0004));
+        // No folder to write to: nothing starts.
+        files.on = false;
+        files.fail = None;
+        h.command(Command::Overdub);
+        play(&mut h, &mut t, &mut b, 100);
+        h.command(Command::Overdub);
+        close(&mut h, &mut t, &mut b);
+        h.give_layer_recs(fresh);
+        assert_eq!(h.write_layers(&mut files, PERIOD), None);
+        assert!(files.open.is_empty());
+        assert_eq!(h.unsaved_layers(0), 2);
+    }
+
+    /// Phase 4c.6: a layer's recording the looper still holds but no
+    /// layer line names (undone, kept for Redo; in a loop a Clear kept for
+    /// Undo) is named on a `kept` line, so the project keeps its file;
+    /// one nothing holds any more (the loop forgotten) is not.
+    #[test]
+    fn recordings_held_for_an_undo_are_named_by_the_save() {
+        let (mut h, mut t, mut b) = saving_host();
+        let mut files = FakeFiles::new();
+        h.set_recordings(true);
+        let next = std::cell::Cell::new(0u128);
+        h.give_layer_recs(|| {
+            next.set(next.get() + 1);
+            0xbead_0000 + next.get()
+        });
+        let mut periods = 0;
+        while h.unsaved_layers(0) > 0 {
+            assert_eq!(h.write_layers(&mut files, PERIOD), None);
+            run_host(&mut h, &mut t, &mut b, 1);
+            periods += 1;
+            assert!(periods < 400, "still {} unsaved", h.unsaved_layers(0));
+        }
+        let name = |rec: u128| format!("loop_{rec:032x}.wav");
+        let (first, over) = (name(0xbead_0001), name(0xbead_0002));
+        let save = |h: &mut LoopHost, t: &mut Transport, b: &mut Block| {
+            h.save();
+            let s = saved_from(h, t, b);
+            let layers: Vec<String> = s
+                .loops
+                .iter()
+                .flat_map(|(_, l)| l.layers.iter().map(|y| y.file.clone()))
+                .collect();
+            let text = crate::project::loops_part(s.clone()).0;
+            assert_eq!(text.matches("\nkept file=").count(), s.kept.len(), "{text}");
+            (layers, s.kept)
+        };
+        // Both on their layer lines: nothing kept beside them.
+        assert_eq!(
+            save(&mut h, &mut t, &mut b),
+            (vec![first.clone(), over.clone()], vec![])
+        );
+        // The overdub undone: Redo can bring it back.
+        h.command(Command::Undo);
+        run_host(&mut h, &mut t, &mut b, 40);
+        assert_eq!(
+            save(&mut h, &mut t, &mut b),
+            (vec![first.clone()], vec![over.clone()])
+        );
+        // The loop cleared: Undo can bring both back.
+        h.command(Command::Clear);
+        run_host(&mut h, &mut t, &mut b, 40);
+        assert_eq!(h.looper.loop_status(0).unwrap().phase, Phase::Empty);
+        let (layers, mut kept) = save(&mut h, &mut t, &mut b);
+        kept.sort();
+        assert_eq!((layers, kept), (vec![], vec![first.clone(), over.clone()]));
+        // Forgotten (no Undo): nothing holds them.
+        h.command(Command::Forget);
+        run_host(&mut h, &mut t, &mut b, 40);
+        assert_eq!(save(&mut h, &mut t, &mut b), (vec![], vec![]));
     }
 
     #[test]

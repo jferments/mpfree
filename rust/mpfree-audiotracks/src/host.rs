@@ -62,8 +62,8 @@ use mpfree_transport::time::TempoMap;
 use mpfree_transport::{Block, Mark, Tick};
 
 use crate::files::{
-    self, DriveProbe, DriveSeen, FileEvent, FileView, Files, Growing, Name, Problem, Said,
-    WriterConfig,
+    self, DriveProbe, DriveSeen, FileEvent, FileView, Files, Growing, LayerWrite, Name, Problem,
+    Said, WriterConfig,
 };
 use crate::save::{Saved, TakeFile};
 use crate::streaming::{self, FromStream, Head, Read, Stream, StreamConfig, ToStream};
@@ -106,6 +106,12 @@ pub const COPY_SAMPLES: usize = 8192;
 /// out to the worker (made once; each comes back once the writer has its
 /// frames).
 const SPARE: usize = 32;
+/// Loop layers' files (phase 4c.3): buffers of [`CHUNK`] samples kept
+/// for the looper's closed layers on their way to the worker (made once;
+/// each comes back once written).
+const LAYER_SPARE: usize = 4;
+/// Loop layers' files' outcomes waiting to be taken, at most.
+const LAYERS_DONE: usize = 64;
 /// Events for the log waiting to be taken, at most.
 const EVENTS: usize = 64;
 /// Room for System status's reports between looks (made at start).
@@ -156,6 +162,10 @@ struct FileSide {
     events: Vec<FileEvent>,
     /// Reports for System status not taken yet ([`AudioHost::take_problem`]).
     problems: Vec<Problem>,
+    /// Loop layers' files (phase 4c.3): the buffers for their pieces, and
+    /// what came of each file, not taken yet ([`AudioHost::layer_written`]).
+    layer_spare: Vec<Vec<f32>>,
+    layers_done: Vec<(RecordingId, Option<String>)>,
 }
 
 /// Frames of a take a save or a fit reads for each frame that plays.
@@ -271,6 +281,25 @@ enum ToWorker {
     LetCueGo {
         cue: u32,
     },
+    /// A loop's closed layer to write as recording `rec`'s file in the
+    /// work folder (phase 4c.3, [`crate::files::LayerWrite`]): `frames`
+    /// frames of `channels`, its pieces to follow.
+    LayerBegin {
+        rec: RecordingId,
+        frames: usize,
+        channels: usize,
+    },
+    /// The next piece of it: the first `len` samples of `buf`, which
+    /// comes back.
+    LayerPiece {
+        rec: RecordingId,
+        buf: Vec<f32>,
+        len: usize,
+    },
+    /// Every piece of it has been sent: finish its file.
+    LayerEnd(RecordingId),
+    /// Stop writing it: its part file goes.
+    LayerDrop(RecordingId),
     /// Write a sound brought in, or a stretched copy, as recording
     /// `rec`'s take file in the work folder, for the tracks of generation
     /// `gen` (the audio is dropped once written, or comes back).
@@ -321,6 +350,14 @@ enum FromWorker {
     Wave(Vec<(f32, f32)>),
     /// A buffer the writer has the frames of.
     Spare(Vec<f32>),
+    /// A buffer a loop layer's file has the samples of (phase 4c.3).
+    LayerSpare(Vec<f32>),
+    /// A loop layer's file is whole in the work folder (None), or
+    /// couldn't be written: why.
+    LayerWritten {
+        rec: RecordingId,
+        why: Option<String>,
+    },
     Files(Said),
     /// A take started with no file: why.
     NoFile {
@@ -536,6 +573,8 @@ impl AudioHost {
                 armed: [None; MAX_TRACKS],
                 events: Vec::with_capacity(EVENTS),
                 problems: Vec::with_capacity(PROBLEMS),
+                layer_spare: (0..LAYER_SPARE).map(|_| vec![0.0; CHUNK]).collect(),
+                layers_done: Vec::with_capacity(LAYERS_DONE),
             },
             watch: Watch::new(),
             problems_lost: 0,
@@ -749,6 +788,68 @@ impl AudioHost {
             None
         } else {
             Some(self.files.events.remove(0))
+        }
+    }
+
+    /// Loop layers' files (phase 4c.3, docs/dev/design/loops-on-audio-tracks.md
+    /// rule 4): whether a closed layer can be written now. Takes record to
+    /// files, so there is a work folder.
+    pub fn layer_files(&self) -> bool {
+        self.tx.is_some() && self.tracks.records_to_files()
+    }
+
+    /// Start writing a loop's closed layer as recording `rec`'s file in
+    /// the work folder: `frames` frames of `channels`, given a piece at a
+    /// time ([`AudioHost::layer_piece`]), then ended
+    /// ([`AudioHost::layer_end`]). False if it can't be written now
+    /// ([`AudioHost::layer_files`]). Does not allocate.
+    pub fn layer_begin(&mut self, rec: RecordingId, frames: usize, channels: usize) -> bool {
+        if !self.layer_files() {
+            return false;
+        }
+        self.send(ToWorker::LayerBegin {
+            rec,
+            frames,
+            channels,
+        });
+        true
+    }
+
+    /// A buffer of [`CHUNK`] samples for a layer's next piece, if one is
+    /// back from the worker (None: wait, the worker is behind).
+    pub fn layer_buffer(&mut self) -> Option<Vec<f32>> {
+        self.files.layer_spare.pop()
+    }
+
+    /// The first `len` samples of `buf` (from [`AudioHost::layer_buffer`])
+    /// are recording `rec`'s next piece.
+    pub fn layer_piece(&mut self, rec: RecordingId, buf: Vec<f32>, len: usize) {
+        if self.tx.is_some() {
+            self.send(ToWorker::LayerPiece { rec, buf, len });
+        } else {
+            self.files.layer_spare.push(buf);
+        }
+    }
+
+    /// Every piece of recording `rec`'s file has been given: it is synced
+    /// and named, and [`AudioHost::layer_written`] says so.
+    pub fn layer_end(&mut self, rec: RecordingId) {
+        self.send(ToWorker::LayerEnd(rec));
+    }
+
+    /// Stop writing recording `rec`'s file (its layer went): nothing of it
+    /// is kept.
+    pub fn layer_drop(&mut self, rec: RecordingId) {
+        self.send(ToWorker::LayerDrop(rec));
+    }
+
+    /// What came of a loop layer's file, oldest first: whole in the work
+    /// folder (None), or why not.
+    pub fn layer_written(&mut self) -> Option<(RecordingId, Option<String>)> {
+        if self.files.layers_done.is_empty() {
+            None
+        } else {
+            Some(self.files.layers_done.remove(0))
         }
     }
 
@@ -1490,6 +1591,12 @@ impl AudioHost {
                     });
                 }
                 FromWorker::Spare(buf) => self.files.spare.push(buf),
+                FromWorker::LayerSpare(buf) => self.files.layer_spare.push(buf),
+                FromWorker::LayerWritten { rec, why } => {
+                    if self.files.layers_done.len() < LAYERS_DONE {
+                        self.files.layers_done.push((rec, why));
+                    }
+                }
                 FromWorker::Files(said) => self.heard(said),
                 FromWorker::Problem(p) => self.problem(p),
                 FromWorker::NoFile { rec, why } => {
@@ -2283,9 +2390,10 @@ fn work(rate: u32, jobs: &Receiver<ToWorker>, done: &Sender<FromWorker>, back: &
         era: 0,
         drive: None,
         drive_stop: None,
+        layers: Vec::new(),
     };
     loop {
-        let m = if w.files.writing() {
+        let m = if w.files.writing() || !w.layers.is_empty() {
             match jobs.recv_timeout(Duration::from_millis(20)) {
                 Ok(m) => Some(m),
                 Err(RecvTimeoutError::Timeout) => None,
@@ -2314,6 +2422,9 @@ fn work(rate: u32, jobs: &Receiver<ToWorker>, done: &Sender<FromWorker>, back: &
             }
         }
         w.open_finished();
+        if !w.tend_layers(done) {
+            return;
+        }
     }
 }
 
@@ -2348,9 +2459,56 @@ struct Worker {
     /// the thread looking at it (dropped, it stops).
     drive: Option<(DriveProbe, Arc<DriveSeen>)>,
     drive_stop: Option<Sender<()>>,
+    /// Loop layers' files being written (phase 4c.3).
+    layers: Vec<LayerWrite>,
 }
 
 impl Worker {
+    /// Write what the loop layers' files have waiting, as playback's
+    /// cushion allows; each finished, or failed, is said and its buffers
+    /// go back. False once the audio thread has gone.
+    fn tend_layers(&mut self, done: &Sender<FromWorker>) -> bool {
+        let cushion = self.stream.as_ref().map(|st| st.gate.cushion());
+        let mut spent = Vec::new();
+        let mut i = 0;
+        while i < self.layers.len() {
+            let l = &mut self.layers[i];
+            let rec = l.rec;
+            let out = match l.tend(cushion, &mut spent) {
+                Err(e) => Some(Err(e)),
+                Ok(()) if l.done() => Some(Ok(())),
+                Ok(()) => None,
+            };
+            let Some(out) = out else {
+                i += 1;
+                continue;
+            };
+            let l = self.layers.swap_remove(i);
+            let why = match out {
+                Ok(()) => match l.finish() {
+                    Ok((name, path)) => {
+                        self.files.layer_written(name, path);
+                        None
+                    }
+                    Err(e) => Some(e.to_string()),
+                },
+                Err(e) => {
+                    l.abandon(&mut spent);
+                    Some(e.to_string())
+                }
+            };
+            if done.send(FromWorker::LayerWritten { rec, why }).is_err() {
+                return false;
+            }
+        }
+        for b in spent {
+            if done.send(FromWorker::LayerSpare(b)).is_err() {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Look at the drive the takes record to, once there is a folder and
     /// a way to look: a thread of its own (any earlier one stops).
     fn look_at_drive(&mut self, done: &Sender<FromWorker>) {
@@ -2655,6 +2813,54 @@ impl Worker {
                     Err(why) => Err((why, audio)),
                 };
                 FromWorker::TakeWritten { rec, gen, out }
+            }
+            ToWorker::LayerBegin {
+                rec,
+                frames,
+                channels,
+            } => {
+                let begun = match files.work_dir() {
+                    Some(dir) => LayerWrite::begin(dir, rec, frames, channels, rate)
+                        .map_err(|e| e.to_string()),
+                    None => Err("there is no folder to record into".into()),
+                };
+                match begun {
+                    Ok(w) => {
+                        self.layers.retain(|l| l.rec != rec);
+                        self.layers.push(w);
+                        return None;
+                    }
+                    Err(why) => FromWorker::LayerWritten {
+                        rec,
+                        why: Some(why),
+                    },
+                }
+            }
+            ToWorker::LayerPiece { rec, buf, len } => {
+                match self.layers.iter_mut().find(|l| l.rec == rec) {
+                    Some(l) => {
+                        l.give(buf, len);
+                        return None;
+                    }
+                    // Its file failed, or was dropped: the buffer goes back.
+                    None => FromWorker::LayerSpare(buf),
+                }
+            }
+            ToWorker::LayerEnd(rec) => {
+                if let Some(l) = self.layers.iter_mut().find(|l| l.rec == rec) {
+                    l.end();
+                }
+                return None;
+            }
+            ToWorker::LayerDrop(rec) => {
+                let mut spent = Vec::new();
+                if let Some(i) = self.layers.iter().position(|l| l.rec == rec) {
+                    self.layers.swap_remove(i).abandon(&mut spent);
+                }
+                for b in spent {
+                    let _ = done.send(FromWorker::LayerSpare(b));
+                }
+                return None;
             }
             ToWorker::Close { take, gen } => {
                 self.to_stream(ToStream::Close { take, gen });
