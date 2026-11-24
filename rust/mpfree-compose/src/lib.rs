@@ -100,6 +100,7 @@
 #![forbid(unsafe_code)]
 
 pub mod baseline;
+pub mod beat;
 pub mod bind;
 pub mod cells;
 pub mod critic;
@@ -132,6 +133,7 @@ pub mod sketch;
 pub mod style;
 pub mod timing;
 
+pub use beat::{continue_drums, Drummed, DrumsAsk, DrumsRefused, Hit as BeatHit};
 pub use bind::{audition, revision, revision_in, Binding, Stale};
 pub use dice::{Dice, DiceName, Job};
 pub use event::{Event, MotifRef, Motion, NoteDecision, Part, PartId, Role, Source};

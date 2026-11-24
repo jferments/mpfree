@@ -95,6 +95,8 @@ pub enum Refused {
     Keep(KeepError),
     /// Try again on notes with none of the new notes among them.
     NoNewNotes,
+    /// A beat carried on made nothing ([`crate::beat`]).
+    Drums(crate::beat::DrumsRefused),
 }
 
 impl Refused {
@@ -107,6 +109,7 @@ impl Refused {
             Refused::NoNewNotes => {
                 "Pick some of the new notes to try them again: your own never change.".to_string()
             }
+            Refused::Drums(d) => d.words(),
         }
     }
 }
@@ -589,6 +592,13 @@ pub fn continue_clip_how(
     let Some(clip) = on.project.clip(on.track, on.slot) else {
         return (Err(Refused::NoClip), 0);
     };
+    if clip.holds == Holds::Hits && on.role == PartRole::Drums {
+        // A beat is carried on from itself: the row isn't read.
+        return (
+            crate::beat::continue_drum_clip_how(on, settings, kind, how),
+            0,
+        );
+    }
     if clip.holds != Holds::Notes {
         return (Err(Refused::PadHits), 0);
     }
