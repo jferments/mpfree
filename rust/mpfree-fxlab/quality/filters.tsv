@@ -1,81 +1,81 @@
 # The filter measures' ratchet (DSP quality Y1a, Y1c, Y2a, Y2b): every number may stay or get better, never worse.
 # Written by `MPFREE_QUALITY_BLESS=1 cargo test --release --locked -p mpfree-fxlab --test filters`;
 # see docs/dev/design/dsp-quality.md. key<TAB>value
-filters/Analog BP 12[10 kHz, resonance 0.5]/below_cutoff_err_db	2.0175
-filters/Analog BP 12[10 kHz, resonance 0.5]/err_18_20k_db	13.6653
-filters/Analog BP 12[10 kHz, resonance 0.9]/below_cutoff_err_db	2.587
-filters/Analog BP 12[10 kHz, resonance 0.9]/err_18_20k_db	13.8715
-filters/Analog BP 12[10 kHz, resonance 0]/below_cutoff_err_db	1.6641
-filters/Analog BP 12[10 kHz, resonance 0]/err_18_20k_db	9.7097
+filters/Analog BP 12[10 kHz, resonance 0.5]/below_cutoff_err_db	0.0986
+filters/Analog BP 12[10 kHz, resonance 0.5]/err_18_20k_db	1.321
+filters/Analog BP 12[10 kHz, resonance 0.9]/below_cutoff_err_db	0.0935
+filters/Analog BP 12[10 kHz, resonance 0.9]/err_18_20k_db	1.3531
+filters/Analog BP 12[10 kHz, resonance 0]/below_cutoff_err_db	0.0741
+filters/Analog BP 12[10 kHz, resonance 0]/err_18_20k_db	0.7242
 filters/Analog BP 12[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	0.0048
-filters/Analog BP 12[15 kHz, resonance 0.5]/below_cutoff_err_db	5.352
-filters/Analog BP 12[15 kHz, resonance 0.5]/err_18_20k_db	13.8299
-filters/Analog BP 12[15 kHz, resonance 0.9]/below_cutoff_err_db	6.679
-filters/Analog BP 12[15 kHz, resonance 0.9]/err_18_20k_db	15.044
-filters/Analog BP 12[15 kHz, resonance 0]/below_cutoff_err_db	4.611
-filters/Analog BP 12[15 kHz, resonance 0]/err_18_20k_db	5.3095
-filters/Analog BP 12[5 kHz, resonance 0.5]/below_cutoff_err_db	0.4652
-filters/Analog BP 12[5 kHz, resonance 0.5]/err_18_20k_db	13.3089
-filters/Analog BP 12[5 kHz, resonance 0.9]/below_cutoff_err_db	0.6047
-filters/Analog BP 12[5 kHz, resonance 0.9]/err_18_20k_db	13.3423
-filters/Analog BP 12[5 kHz, resonance 0]/below_cutoff_err_db	0.3764
-filters/Analog BP 12[5 kHz, resonance 0]/err_18_20k_db	12.3034
-filters/Analog BP 12[LFO]/over_held_peak_db	0.089
-filters/Analog BP 12[LFO]/step_noise_db	0.0001
-filters/Analog BP 12[audio-rate cutoff]/over_held_peak_db	0.9981
+filters/Analog BP 12[15 kHz, resonance 0.5]/below_cutoff_err_db	0.6891
+filters/Analog BP 12[15 kHz, resonance 0.5]/err_18_20k_db	0.9049
+filters/Analog BP 12[15 kHz, resonance 0.9]/below_cutoff_err_db	0.6714
+filters/Analog BP 12[15 kHz, resonance 0.9]/err_18_20k_db	0.9971
+filters/Analog BP 12[15 kHz, resonance 0]/below_cutoff_err_db	0.3708
+filters/Analog BP 12[15 kHz, resonance 0]/err_18_20k_db	0.2142
+filters/Analog BP 12[5 kHz, resonance 0.5]/below_cutoff_err_db	0.0049
+filters/Analog BP 12[5 kHz, resonance 0.5]/err_18_20k_db	1.4111
+filters/Analog BP 12[5 kHz, resonance 0.9]/below_cutoff_err_db	0.0046
+filters/Analog BP 12[5 kHz, resonance 0.9]/err_18_20k_db	1.4176
+filters/Analog BP 12[5 kHz, resonance 0]/below_cutoff_err_db	0.0046
+filters/Analog BP 12[5 kHz, resonance 0]/err_18_20k_db	1.2195
+filters/Analog BP 12[LFO]/over_held_peak_db	0.3053
+filters/Analog BP 12[LFO]/step_noise_db	0.001
+filters/Analog BP 12[audio-rate cutoff]/over_held_peak_db	0.6072
 filters/Analog BP 12[audio-rate resonance]/over_held_peak_db	2.7823
-filters/Analog BP 12[envelope]/over_held_peak_db	2.3083
-filters/Analog BP 12[envelope]/step_noise_db	1.6128
-filters/Analog HP 12[10 kHz, resonance 0.5]/below_cutoff_err_db	3.3241
-filters/Analog HP 12[10 kHz, resonance 0.5]/err_18_20k_db	2.3127
-filters/Analog HP 12[10 kHz, resonance 0.9]/below_cutoff_err_db	3.3351
-filters/Analog HP 12[10 kHz, resonance 0.9]/err_18_20k_db	2.5704
-filters/Analog HP 12[10 kHz, resonance 0]/below_cutoff_err_db	2.9773
-filters/Analog HP 12[10 kHz, resonance 0]/err_18_20k_db	1.8141
-filters/Analog HP 12[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	-0.9632
-filters/Analog HP 12[15 kHz, resonance 0.5]/below_cutoff_err_db	9.1795
-filters/Analog HP 12[15 kHz, resonance 0.5]/err_18_20k_db	5.2844
-filters/Analog HP 12[15 kHz, resonance 0.9]/below_cutoff_err_db	9.2015
-filters/Analog HP 12[15 kHz, resonance 0.9]/err_18_20k_db	7.034
-filters/Analog HP 12[15 kHz, resonance 0]/below_cutoff_err_db	8.4262
-filters/Analog HP 12[15 kHz, resonance 0]/err_18_20k_db	3.2464
-filters/Analog HP 12[5 kHz, resonance 0.5]/below_cutoff_err_db	0.7535
-filters/Analog HP 12[5 kHz, resonance 0.5]/err_18_20k_db	0.5449
-filters/Analog HP 12[5 kHz, resonance 0.9]/below_cutoff_err_db	0.7565
-filters/Analog HP 12[5 kHz, resonance 0.9]/err_18_20k_db	0.5823
-filters/Analog HP 12[5 kHz, resonance 0]/below_cutoff_err_db	0.6645
-filters/Analog HP 12[5 kHz, resonance 0]/err_18_20k_db	0.5366
+filters/Analog BP 12[envelope]/over_held_peak_db	3.5386
+filters/Analog BP 12[envelope]/step_noise_db	0.7086
+filters/Analog HP 12[10 kHz, resonance 0.5]/below_cutoff_err_db	0.1549
+filters/Analog HP 12[10 kHz, resonance 0.5]/err_18_20k_db	0.7242
+filters/Analog HP 12[10 kHz, resonance 0.9]/below_cutoff_err_db	0.1672
+filters/Analog HP 12[10 kHz, resonance 0.9]/err_18_20k_db	0.7907
+filters/Analog HP 12[10 kHz, resonance 0]/below_cutoff_err_db	0.1393
+filters/Analog HP 12[10 kHz, resonance 0]/err_18_20k_db	0.6062
+filters/Analog HP 12[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	0.1415
+filters/Analog HP 12[15 kHz, resonance 0.5]/below_cutoff_err_db	0.9984
+filters/Analog HP 12[15 kHz, resonance 0.5]/err_18_20k_db	1.2451
+filters/Analog HP 12[15 kHz, resonance 0.9]/below_cutoff_err_db	1.1235
+filters/Analog HP 12[15 kHz, resonance 0.9]/err_18_20k_db	1.4747
+filters/Analog HP 12[15 kHz, resonance 0]/below_cutoff_err_db	0.6999
+filters/Analog HP 12[15 kHz, resonance 0]/err_18_20k_db	0.7457
+filters/Analog HP 12[5 kHz, resonance 0.5]/below_cutoff_err_db	0.0086
+filters/Analog HP 12[5 kHz, resonance 0.5]/err_18_20k_db	0.1959
+filters/Analog HP 12[5 kHz, resonance 0.9]/below_cutoff_err_db	0.0091
+filters/Analog HP 12[5 kHz, resonance 0.9]/err_18_20k_db	0.2088
+filters/Analog HP 12[5 kHz, resonance 0]/below_cutoff_err_db	0.0087
+filters/Analog HP 12[5 kHz, resonance 0]/err_18_20k_db	0.1967
 filters/Analog HP 12[LFO]/over_held_peak_db	0.2808
-filters/Analog HP 12[LFO]/step_noise_db	0.0001
-filters/Analog HP 12[audio-rate cutoff]/over_held_peak_db	0.9226
+filters/Analog HP 12[LFO]/step_noise_db	0
+filters/Analog HP 12[audio-rate cutoff]/over_held_peak_db	0.913
 filters/Analog HP 12[audio-rate resonance]/over_held_peak_db	-3.5459
-filters/Analog HP 12[envelope]/over_held_peak_db	1.1754
-filters/Analog HP 12[envelope]/step_noise_db	1.616
-filters/Analog LP 12[10 kHz, resonance 0.5]/below_cutoff_err_db	1.1611
-filters/Analog LP 12[10 kHz, resonance 0.5]/err_18_20k_db	25.1778
-filters/Analog LP 12[10 kHz, resonance 0.9]/below_cutoff_err_db	2.1941
-filters/Analog LP 12[10 kHz, resonance 0.9]/err_18_20k_db	25.384
-filters/Analog LP 12[10 kHz, resonance 0]/below_cutoff_err_db	0.5592
-filters/Analog LP 12[10 kHz, resonance 0]/err_18_20k_db	21.2222
-filters/Analog LP 12[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	0.9612
-filters/Analog LP 12[15 kHz, resonance 0.5]/below_cutoff_err_db	2.976
-filters/Analog LP 12[15 kHz, resonance 0.5]/err_18_20k_db	22.3858
-filters/Analog LP 12[15 kHz, resonance 0.9]/below_cutoff_err_db	5.5822
-filters/Analog LP 12[15 kHz, resonance 0.9]/err_18_20k_db	23.5999
-filters/Analog LP 12[15 kHz, resonance 0]/below_cutoff_err_db	1.464
-filters/Analog LP 12[15 kHz, resonance 0]/err_18_20k_db	13.8654
-filters/Analog LP 12[5 kHz, resonance 0.5]/below_cutoff_err_db	0.2703
-filters/Analog LP 12[5 kHz, resonance 0.5]/err_18_20k_db	26.1155
-filters/Analog LP 12[5 kHz, resonance 0.9]/below_cutoff_err_db	0.5146
-filters/Analog LP 12[5 kHz, resonance 0.9]/err_18_20k_db	26.1489
-filters/Analog LP 12[5 kHz, resonance 0]/below_cutoff_err_db	0.1292
-filters/Analog LP 12[5 kHz, resonance 0]/err_18_20k_db	25.1101
-filters/Analog LP 12[LFO]/over_held_peak_db	-0.3632
-filters/Analog LP 12[LFO]/step_noise_db	0.0001
-filters/Analog LP 12[audio-rate cutoff]/over_held_peak_db	0.3471
+filters/Analog HP 12[envelope]/over_held_peak_db	1.7541
+filters/Analog HP 12[envelope]/step_noise_db	0.791
+filters/Analog LP 12[10 kHz, resonance 0.5]/below_cutoff_err_db	0.0066
+filters/Analog LP 12[10 kHz, resonance 0.5]/err_18_20k_db	1.5337
+filters/Analog LP 12[10 kHz, resonance 0.9]/below_cutoff_err_db	0.0063
+filters/Analog LP 12[10 kHz, resonance 0.9]/err_18_20k_db	1.5391
+filters/Analog LP 12[10 kHz, resonance 0]/below_cutoff_err_db	0.0129
+filters/Analog LP 12[10 kHz, resonance 0]/err_18_20k_db	1.4282
+filters/Analog LP 12[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	0.0243
+filters/Analog LP 12[15 kHz, resonance 0.5]/below_cutoff_err_db	0.037
+filters/Analog LP 12[15 kHz, resonance 0.5]/err_18_20k_db	1.1312
+filters/Analog LP 12[15 kHz, resonance 0.9]/below_cutoff_err_db	0.0322
+filters/Analog LP 12[15 kHz, resonance 0.9]/err_18_20k_db	1.1577
+filters/Analog LP 12[15 kHz, resonance 0]/below_cutoff_err_db	0.1055
+filters/Analog LP 12[15 kHz, resonance 0]/err_18_20k_db	0.9225
+filters/Analog LP 12[5 kHz, resonance 0.5]/below_cutoff_err_db	0.0004
+filters/Analog LP 12[5 kHz, resonance 0.5]/err_18_20k_db	1.6615
+filters/Analog LP 12[5 kHz, resonance 0.9]/below_cutoff_err_db	0.0004
+filters/Analog LP 12[5 kHz, resonance 0.9]/err_18_20k_db	1.6621
+filters/Analog LP 12[5 kHz, resonance 0]/below_cutoff_err_db	0.0005
+filters/Analog LP 12[5 kHz, resonance 0]/err_18_20k_db	1.6433
+filters/Analog LP 12[LFO]/over_held_peak_db	-0.4625
+filters/Analog LP 12[LFO]/step_noise_db	0.0049
+filters/Analog LP 12[audio-rate cutoff]/over_held_peak_db	0.279
 filters/Analog LP 12[audio-rate resonance]/over_held_peak_db	-5.8021
-filters/Analog LP 12[envelope]/over_held_peak_db	2.2257
-filters/Analog LP 12[envelope]/step_noise_db	1.6154
+filters/Analog LP 12[envelope]/over_held_peak_db	3.6192
+filters/Analog LP 12[envelope]/step_noise_db	0.2996
 filters/Analog LP 24[10 kHz, resonance 0.5]/below_cutoff_err_db	1.4023
 filters/Analog LP 24[10 kHz, resonance 0.5]/err_18_20k_db	42.631
 filters/Analog LP 24[10 kHz, resonance 0.9]/below_cutoff_err_db	3.3281
@@ -221,27 +221,27 @@ filters/Poly LP 24[audio-rate cutoff]/over_held_peak_db	-0.2329
 filters/Poly LP 24[audio-rate resonance]/over_held_peak_db	-11.7695
 filters/Poly LP 24[envelope]/over_held_peak_db	2.2376
 filters/Poly LP 24[envelope]/step_noise_db	0.0156
-filters/Squelch[10 kHz, resonance 0.5]/below_cutoff_err_db	0.7667
-filters/Squelch[10 kHz, resonance 0.5]/err_18_20k_db	4.436
-filters/Squelch[10 kHz, resonance 0.9]/below_cutoff_err_db	7.8227
-filters/Squelch[10 kHz, resonance 0.9]/err_18_20k_db	4.6855
-filters/Squelch[10 kHz, resonance 0]/below_cutoff_err_db	0.2876
-filters/Squelch[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	-34.7259
-filters/Squelch[15 kHz, resonance 0.5]/below_cutoff_err_db	1.8114
-filters/Squelch[15 kHz, resonance 0.5]/err_18_20k_db	3.9055
-filters/Squelch[15 kHz, resonance 0.9]/below_cutoff_err_db	16.4983
-filters/Squelch[15 kHz, resonance 0.9]/err_18_20k_db	5.2327
-filters/Squelch[15 kHz, resonance 0]/below_cutoff_err_db	0.6847
-filters/Squelch[15 kHz, resonance 0]/err_18_20k_db	2.7966
-filters/Squelch[5 kHz, resonance 0.5]/below_cutoff_err_db	0.1838
-filters/Squelch[5 kHz, resonance 0.9]/below_cutoff_err_db	1.5236
-filters/Squelch[5 kHz, resonance 0]/below_cutoff_err_db	0.0695
-filters/Squelch[LFO]/over_held_peak_db	0.1671
+filters/Squelch[10 kHz, resonance 0.5]/below_cutoff_err_db	0.299
+filters/Squelch[10 kHz, resonance 0.5]/err_18_20k_db	3.9844
+filters/Squelch[10 kHz, resonance 0.9]/below_cutoff_err_db	0.5476
+filters/Squelch[10 kHz, resonance 0.9]/err_18_20k_db	4.1012
+filters/Squelch[10 kHz, resonance 0]/below_cutoff_err_db	0.2131
+filters/Squelch[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	-1.0488
+filters/Squelch[15 kHz, resonance 0.5]/below_cutoff_err_db	0.7081
+filters/Squelch[15 kHz, resonance 0.5]/err_18_20k_db	2.8097
+filters/Squelch[15 kHz, resonance 0.9]/below_cutoff_err_db	1.3081
+filters/Squelch[15 kHz, resonance 0.9]/err_18_20k_db	3.4921
+filters/Squelch[15 kHz, resonance 0]/below_cutoff_err_db	0.4901
+filters/Squelch[15 kHz, resonance 0]/err_18_20k_db	2.5014
+filters/Squelch[5 kHz, resonance 0.5]/below_cutoff_err_db	0.0682
+filters/Squelch[5 kHz, resonance 0.9]/below_cutoff_err_db	0.1226
+filters/Squelch[5 kHz, resonance 0]/below_cutoff_err_db	0.0528
+filters/Squelch[LFO]/over_held_peak_db	-0.0066
 filters/Squelch[LFO]/step_noise_db	0.0001
-filters/Squelch[audio-rate cutoff]/over_held_peak_db	0.961
-filters/Squelch[audio-rate resonance]/over_held_peak_db	-2.3698
-filters/Squelch[envelope]/over_held_peak_db	4.8851
-filters/Squelch[envelope]/step_noise_db	1.7112
+filters/Squelch[audio-rate cutoff]/over_held_peak_db	0.9535
+filters/Squelch[audio-rate resonance]/over_held_peak_db	-2.3756
+filters/Squelch[envelope]/over_held_peak_db	4.9069
+filters/Squelch[envelope]/step_noise_db	1.1819
 filters/sampler Comb[10 kHz, resonance 0.5]/below_cutoff_err_db	0.595
 filters/sampler Comb[10 kHz, resonance 0.5]/err_18_20k_db	4.5649
 filters/sampler Comb[10 kHz, resonance 0.9]/below_cutoff_err_db	3.6487
