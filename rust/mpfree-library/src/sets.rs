@@ -18,7 +18,12 @@
 //! not-ready = <why, from that check>
 //! limit = <what it plays without, from that check>
 //! unchecked = yes
+//! soundcheck = <seconds since 1970> <open ms> <peak kB> <CPU, tenths of a %>
+//!              <longest disk wait ms> <misses> <xruns> <change ms, or -> <part>
 //! ```
+//!
+//! Before the first song, `media = <seconds since 1970> <files> <bytes>`
+//! says the set plays from show media copied to the stick (live shows B2).
 //!
 //! - **Saved whole.** [`Library::save_set`] writes `<name>.set.part`,
 //!   makes it durable and renames it over the set, so a power cut leaves
@@ -31,7 +36,7 @@
 //!   connected. Each song keeps its last check (`checked` and the lines
 //!   after it), so the Sets place shows it after a restart.
 
-use crate::project::{write_synced, NewSample, Snapshot, PARTS, SAMPLES};
+use crate::project::{write_synced, NewSample, Snapshot, SAMPLES};
 use crate::{clean_name, unique_name, Entry, Library, Loc, Place};
 use std::fs;
 use std::io;
@@ -137,6 +142,8 @@ pub struct SetSong {
     pub notes: String,
     /// Its last check: when (seconds since 1970) and what it said.
     pub check: Option<(u64, SongCheck)>,
+    /// What Soundcheck last measured of it on this MPC (live shows B2).
+    pub soundcheck: Option<Soundcheck>,
     /// It changed on stage (live shows B1): the recovery copies of its
     /// changes, each a project in Projects ([`Library::on_stage_copy`]),
     /// oldest first, until the musician keeps or throws them away.
@@ -166,10 +173,128 @@ impl SetSong {
     }
 }
 
+/// What Soundcheck measured of one song on this MPC (live shows B2): its
+/// cold open, then its busiest part played, then its change into the next
+/// song. These numbers take the place of estimates in the set check and in
+/// the Show view's COLD LOAD pause.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Soundcheck {
+    /// When it ran, in seconds since 1970.
+    pub at: u64,
+    /// How long its cold open took, in milliseconds.
+    pub open_ms: u32,
+    /// Memory in use at its peak while it played, in kB.
+    pub peak_kb: u64,
+    /// The worst CPU in its busiest part, in tenths of a percent.
+    pub cpu_x10: u16,
+    /// The longest a stream's read waited, in milliseconds.
+    pub disk_wait_ms: u32,
+    /// Times a stream ran dry.
+    pub misses: u32,
+    /// Times the sound card ran out of sound.
+    pub xruns: u32,
+    /// The pause in its change into the next song, in milliseconds: from
+    /// Go to the next song's first period. None for the set's last song,
+    /// or if Soundcheck stopped before it.
+    pub change_ms: Option<u32>,
+    /// Its busiest part's name ("Chorus 2").
+    pub part: String,
+}
+
+impl Soundcheck {
+    /// It glitched: a stream ran dry or the sound card ran out of sound.
+    /// The song still plays, with that as its limit.
+    pub fn glitched(&self) -> bool {
+        self.misses > 0 || self.xruns > 0
+    }
+
+    /// Its line in the check view: "opens in 3.1 s · 540 MB · CPU 71 % in
+    /// Chorus 2".
+    pub fn line(&self) -> String {
+        // Megabytes as the Memory line says them (kB of 1024 bytes, then
+        // MB of 1 000 000), so the two agree.
+        let mut s = format!(
+            "opens in {} s \u{b7} {} \u{b7} CPU {} %",
+            tenths(self.open_ms / 100),
+            crate::preflight::size_word(self.peak_kb * 1024),
+            (self.cpu_x10 + 5) / 10
+        );
+        if !self.part.is_empty() {
+            s.push_str(&format!(" in {}", self.part));
+        }
+        s
+    }
+
+    fn to_line(&self) -> String {
+        let change = self.change_ms.map_or("-".to_string(), |c| c.to_string());
+        format!(
+            "soundcheck = {} {} {} {} {} {} {} {change} {}",
+            self.at,
+            self.open_ms,
+            self.peak_kb,
+            self.cpu_x10,
+            self.disk_wait_ms,
+            self.misses,
+            self.xruns,
+            one_line(&self.part)
+        )
+    }
+
+    /// Reads a `soundcheck` line's value; None if a number doesn't read.
+    fn parse(value: &str) -> Option<Soundcheck> {
+        let mut words = value.splitn(9, ' ');
+        let mut next = || words.next();
+        let at = next()?.parse().ok()?;
+        let open_ms = next()?.parse().ok()?;
+        let peak_kb = next()?.parse().ok()?;
+        let cpu_x10 = next()?.parse::<u16>().ok()?.min(1000);
+        let disk_wait_ms = next()?.parse().ok()?;
+        let misses = next()?.parse().ok()?;
+        let xruns = next()?.parse().ok()?;
+        let change_ms = match next()? {
+            "-" => None,
+            c => Some(c.parse().ok()?),
+        };
+        let part = next().unwrap_or("").trim().to_string();
+        Some(Soundcheck {
+            at,
+            open_ms,
+            peak_kb,
+            cpu_x10,
+            disk_wait_ms,
+            misses,
+            xruns,
+            change_ms,
+            part,
+        })
+    }
+}
+
+/// A count of tenths as words: "3.1", "12".
+fn tenths(x10: u32) -> String {
+    if x10.is_multiple_of(10) {
+        (x10 / 10).to_string()
+    } else {
+        format!("{}.{}", x10 / 10, x10 % 10)
+    }
+}
+
+/// A set's show media (live shows B2): what Prepare show media copied to
+/// the stick, and when. The set plays from those copies.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShowMedia {
+    /// When the copies were made and checked, in seconds since 1970.
+    pub at: u64,
+    pub files: u32,
+    pub bytes: u64,
+}
+
 /// A set: its songs, in the order they play.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Set {
     pub songs: Vec<SetSong>,
+    /// Its show media, once Prepare show media has run (live shows B2).
+    pub media: Option<ShowMedia>,
     /// Lines before the first song that this build doesn't know.
     pub extra: Vec<String>,
 }
@@ -178,6 +303,9 @@ impl Set {
     pub fn to_text(&self) -> String {
         let mut s = String::from(SET_FORMAT);
         s.push('\n');
+        if let Some(m) = self.media {
+            s.push_str(&format!("media = {} {} {}\n", m.at, m.files, m.bytes));
+        }
         for l in &self.extra {
             s.push_str(l);
             s.push('\n');
@@ -211,6 +339,10 @@ impl Set {
                 if c.unchecked {
                     s.push_str("unchecked = yes\n");
                 }
+            }
+            if let Some(sc) = &song.soundcheck {
+                s.push_str(&sc.to_line());
+                s.push('\n');
             }
             for c in &song.on_stage {
                 s.push_str(&format!("changed = {}\n", one_line(c)));
@@ -262,7 +394,17 @@ impl Set {
                 continue;
             }
             let Some(song) = set.songs.last_mut() else {
-                set.extra.push(line.to_string());
+                let mut words = value.split(' ').map(str::parse::<u64>);
+                match (key, words.next(), words.next(), words.next()) {
+                    ("media", Some(Ok(at)), Some(Ok(files)), Some(Ok(bytes))) => {
+                        set.media = Some(ShowMedia {
+                            at,
+                            files: u32::try_from(files).unwrap_or(u32::MAX),
+                            bytes,
+                        })
+                    }
+                    _ => set.extra.push(line.to_string()),
+                }
                 continue;
             };
             match key {
@@ -312,6 +454,10 @@ impl Set {
                         Err(_) => song.check = None,
                     }
                 }
+                "soundcheck" => match Soundcheck::parse(value) {
+                    Some(sc) => song.soundcheck = Some(sc),
+                    None => song.extra.push(line.to_string()),
+                },
                 "not-ready" | "limit" | "unchecked" if song.check.is_some() => {
                     let c = &mut song.check.as_mut().expect("checked").1;
                     match key {
@@ -559,71 +705,17 @@ impl Library {
     }
 
     /// [`Library::check_song`], reading every file in full when `deep`
-    /// (Check every file, for the day of the show).
+    /// (Check every file, for the day of the show). Made from the same
+    /// facts as B2's preflight ([`Library::preflight_song`]).
     pub fn check_song_with(
         &self,
         song: &SetSong,
         connected: &dyn Fn(&str) -> bool,
         deep: bool,
     ) -> (Found, SongCheck) {
-        let found = self.find_song(song);
-        let mut c = SongCheck::default();
-        for n in &song.needs {
-            if !connected(&n.name) {
-                let why = format!("{} isn\u{2019}t connected", n.name);
-                if n.needed {
-                    c.not_ready.push(why);
-                } else {
-                    c.limits.push(why);
-                }
-            }
-        }
-        let Some(loc) = found.loc() else {
-            c.not_ready.insert(
-                0,
-                format!("the project {} isn\u{2019}t in Projects", song.name),
-            );
-            return (found, c);
-        };
-        match self.open_project(loc) {
-            Ok(snap) => c.tempo_x10 = (snap.meta.tempo.clamp(0.0, 999.9) * 10.0).round() as u32,
-            Err(e) => {
-                c.not_ready
-                    .insert(0, format!("it doesn\u{2019}t read: {e}"));
-                return (found, c);
-            }
-        }
-        match self.check_project(loc, deep) {
-            Ok(check) if check.no_manifest => c.unchecked = true,
-            Ok(check) => {
-                let (missing, changed) = check.gaps();
-                let mut gaps: Vec<String> = missing
-                    .iter()
-                    .map(|p| format!("the file {p} is missing"))
-                    .chain(changed.iter().map(|p| format!("the file {p} changed")))
-                    .collect();
-                // A part that changed reads differently from the song that
-                // was checked; it still opens, so it only limits.
-                let parts = check
-                    .changed
-                    .iter()
-                    .filter(|p| p.starts_with(&format!("{PARTS}/")))
-                    .count();
-                if parts > 0 {
-                    c.limits.push(if parts == 1 {
-                        "a part changed since its last save".to_string()
-                    } else {
-                        format!("{parts} parts changed since its last save")
-                    });
-                }
-                gaps.append(&mut c.not_ready);
-                c.not_ready = gaps;
-            }
-            Err(e) => c
-                .not_ready
-                .insert(0, format!("its files couldn\u{2019}t be checked: {e}")),
-        }
-        (found, c)
+        let f = self.song_facts(song, connected, deep);
+        let check = f.song_check(song);
+        (f.found, check)
     }
 }
 
@@ -734,14 +826,56 @@ mod tests {
                 tempo_x10: 925,
             },
         ));
+        a.soundcheck = Some(Soundcheck {
+            at: 1_763_836_900,
+            open_ms: 3_140,
+            peak_kb: 527_344,
+            cpu_x10: 712,
+            disk_wait_ms: 14,
+            misses: 0,
+            xruns: 0,
+            change_ms: Some(4_200),
+            part: "Chorus 2".into(),
+        });
         let b = SetSong::new("", "Old song");
         let set = Set {
             songs: vec![a, b],
+            media: Some(ShowMedia {
+                at: 1_763_837_000,
+                files: 13,
+                bytes: 2_576_980_378,
+            }),
             extra: vec![],
         };
         let text = set.to_text();
         assert_eq!(Set::parse(&text).unwrap(), set);
         assert!(text.contains("song = - Old song\n"), "{text}");
+        assert!(
+            text.contains("soundcheck = 1763836900 3140 527344 712 14 0 0 4200 Chorus 2\n"),
+            "{text}"
+        );
+        assert!(text.starts_with("mpfree-set 1\nmedia = 1763837000 13 2576980378\n"));
+        let sc = set.songs[0].soundcheck.as_ref().unwrap();
+        assert_eq!(
+            sc.line(),
+            "opens in 3.1 s \u{b7} 540 MB \u{b7} CPU 71 % in Chorus 2"
+        );
+        assert!(!sc.glitched());
+        // A soundcheck that stopped before the change, and one with a
+        // number it can't read (kept as it was, for a newer build).
+        let last = "mpfree-set 1\nsong = - A\nsoundcheck = 5 2000 1024 905 9 1 0 - Outro\nsong = - B\nsoundcheck = 5 x\n";
+        let back = Set::parse(last).unwrap();
+        let sc = back.songs[0].soundcheck.as_ref().unwrap();
+        assert_eq!(
+            (sc.change_ms, sc.glitched(), sc.line().as_str()),
+            (
+                None,
+                true,
+                "opens in 2 s \u{b7} 1.0 MB \u{b7} CPU 91 % in Outro"
+            )
+        );
+        assert_eq!(back.songs[1].soundcheck, None);
+        assert_eq!(back.songs[1].extra, vec!["soundcheck = 5 x".to_string()]);
 
         let newer = format!("{text}colour = 3\n");
         let back = Set::parse(&newer).unwrap();
@@ -774,6 +908,7 @@ mod tests {
         assert_eq!(loc.name(), "Friday.set");
         assert_eq!(lib.new_set("Friday.set").unwrap().name(), "Friday 2.set");
         let set = Set {
+            media: None,
             songs: vec![SetSong::new("", "Night drive")],
             extra: vec![],
         };
@@ -885,6 +1020,7 @@ mod tests {
 
         let friday = lib.new_set("Friday").unwrap();
         let set = Set {
+            media: None,
             songs: vec![SetSong::new(&saved.id, "Night drive")],
             extra: vec![],
         };
@@ -935,6 +1071,7 @@ mod tests {
         let mut song = SetSong::new(&saved.id, "Night drive");
         song.on_stage = vec![copy.name().to_string(), again.name().to_string()];
         let set = Set {
+            media: None,
             songs: vec![song],
             extra: vec![],
         };

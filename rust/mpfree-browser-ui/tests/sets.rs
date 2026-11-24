@@ -2,12 +2,16 @@
 //! real library in a scratch folder, and what taps, the dial and the
 //! buttons do to its sets.
 
-use mpfree_browser_ui::sample::{fill, fill_sets, sample_rig};
+use mpfree_browser_ui::sample::{
+    fill, fill_set_files, fill_sets, sample_rig, SAMPLE_CHECKED, SAMPLE_MACHINE,
+};
 use mpfree_browser_ui::state::{Key, Modal, SOURCES};
+use mpfree_browser_ui::CheckMark;
 use mpfree_browser_ui::{
     step, BrowseAction, Browser, Input, RigThing, SetButton, SetField, SetInput, SetsScreen,
     SetsView, BROWSER,
 };
+use mpfree_library::preflight::{AppChecks, AppSong, Area, CheckLine, Mark};
 use mpfree_library::{Ends, Library, Loc, Need, Place, Set, SetSong, Starts};
 use mpfree_ui::{Fonts, SoftCanvas, Touch};
 use std::path::PathBuf;
@@ -227,6 +231,7 @@ fn a_songs_needs_come_from_the_rig_and_the_check_marks_every_song() {
     lib.save_set(
         &loc,
         &Set {
+            media: None,
             songs: vec![
                 SetSong::new(&id("Night drive"), "Night drive"),
                 SetSong::new(&id("Live set"), "Live set"),
@@ -278,21 +283,32 @@ fn a_songs_needs_come_from_the_rig_and_the_check_marks_every_song() {
     press(&mut b, SetButton::NeedsDone);
     assert_eq!(sets(&b).detail.steppers[3].value, "Keystep 37 and 1 more");
 
-    // Check set: the needed keyboard isn't connected, so song 1 isn't
-    // ready; song 2 is.
+    // Check set opens the check view (live shows B2): the needed keyboard
+    // isn't connected, so song 1 isn't ready; song 2 is.
     press(&mut b, SetButton::CheckSet);
     let s = sets(&b);
+    assert_eq!(s.view, SetsView::Check);
     let chips: Vec<String> = s
         .rows
         .iter()
         .map(|r| r.chip.as_ref().unwrap().0.clone())
         .collect();
     assert_eq!(chips, ["NOT READY", "READY"]);
+    assert_eq!(s.selected, Some(0), "the song not ready is picked");
+    assert!(s
+        .detail
+        .checks
+        .iter()
+        .any(|c| c.word == "Keyboards" && c.text == "Keystep 37 isn\u{2019}t connected"));
+    assert!(s.detail.line.contains("92 BPM"), "{}", s.detail.line);
+    // Back goes to the set's songs, where the song says why.
+    tap(&mut b, SetInput::Back);
+    let s = sets(&b);
+    assert_eq!(s.view, SetsView::Edit);
     assert_eq!(
         s.detail.reason.as_ref().unwrap().0,
         "Keystep 37 isn\u{2019}t connected"
     );
-    assert!(s.detail.line.contains("92 BPM"), "{}", s.detail.line);
 
     // The check is kept with the set: the place shows it after a restart.
     let mut again = Browser::inline(lib.clone());
@@ -328,6 +344,344 @@ fn a_songs_needs_come_from_the_rig_and_the_check_marks_every_song() {
     let song = &set_at(&lib, "Friday.set").songs[1];
     assert_eq!(song.name, "Live set (encore)");
     assert!(song.check.as_ref().unwrap().1.ready());
+}
+
+/// The app's half of the check, as the app gives it for songs with no
+/// plugins (mpfree-app's set_checks.rs).
+struct AppHalf;
+
+impl AppChecks for AppHalf {
+    fn song(&self, _: &mpfree_library::Snapshot) -> AppSong {
+        AppSong {
+            lines: vec![
+                CheckLine::new(Area::Plugins, Mark::Fine, "it uses none"),
+                CheckLine::new(
+                    Area::Outputs,
+                    Mark::Fine,
+                    "the stereo mix on Main out, as this MPC has it",
+                ),
+            ],
+            plugins: 0,
+        }
+    }
+}
+
+/// The check view's short times: today, yesterday, else the date in full
+/// (and in full for a check the clock hasn't reached).
+#[test]
+fn the_check_views_times_say_today_or_yesterday() {
+    use mpfree_browser_ui::state::when_short;
+    let at = SAMPLE_CHECKED; // 2026-11-23 19:04 UTC
+    assert_eq!(when_short(at, at + 3600), "today 19:04 UTC");
+    assert_eq!(when_short(at, at + 86_400), "yesterday 19:04 UTC");
+    assert_eq!(when_short(at, at + 3 * 86_400), "2026-11-23 19:04 UTC");
+    assert_eq!(when_short(at + 86_400, at), "2026-11-24 19:04 UTC");
+}
+
+/// Live shows B2: Check set opens the check view, each song with its chip
+/// and numbers, the first song not ready picked with every check; the
+/// dial picks another, Check every file reads them all in full, and Back
+/// goes back to the sets.
+#[test]
+fn the_check_view_shows_every_songs_checks() {
+    let lib = fill(&temp()).unwrap();
+    fill_sets(&lib).unwrap();
+    fill_set_files(&lib).unwrap();
+    let mut b = Browser::inline(lib.clone());
+    b.set_rig(sample_rig());
+    b.set_app_checks(std::sync::Arc::new(AppHalf));
+    b.set_machine(SAMPLE_MACHINE);
+    b.fix_set_clock(SAMPLE_CHECKED);
+    b.go_source(src("Sets"));
+    let friday = row_of(&b, "Friday at the Lantern");
+    tap(&mut b, SetInput::Row(friday));
+    assert!(
+        !sets(&b).detail.buttons.contains(&SetButton::CheckEveryFile),
+        "Check every file moved to the check view"
+    );
+    assert!(!b.set_check_shown());
+    press(&mut b, SetButton::CheckSet);
+    assert!(b.set_check_shown());
+    let s = sets(&b);
+    assert_eq!(s.view, SetsView::Check);
+    assert_eq!(s.title, "Check \u{b7} Friday at the Lantern");
+    assert!(s.back);
+    assert_eq!(s.head_buttons, [SetButton::CheckEveryFile]);
+    let (chip, words) = s.sub.clone().unwrap();
+    assert_eq!(chip.unwrap().0, "NOT READY");
+    // No soundcheck yet, so the line doesn't name one (each row does).
+    assert_eq!(
+        words,
+        "7 ready, 1 with limits, 1 not ready \u{b7} quick check today 19:04 UTC"
+    );
+    assert_eq!(s.rows.len(), 9);
+    let chips: Vec<&str> = s
+        .rows
+        .iter()
+        .map(|r| r.chip.as_ref().unwrap().0.as_str())
+        .collect();
+    assert_eq!(
+        chips,
+        [
+            "READY",
+            "READY",
+            "READY",
+            "READY",
+            "NOT READY",
+            "LIMITS",
+            "READY",
+            "READY",
+            "READY"
+        ]
+    );
+    // A row's numbers: its estimate until Soundcheck measures it; the
+    // song not ready says why first, in red.
+    assert!(
+        s.rows[0].sub.starts_with("about 1 s \u{b7} about 24 MB"),
+        "{}",
+        s.rows[0].sub
+    );
+    assert!(s.rows[0].sub.ends_with("not soundchecked yet"));
+    assert!(
+        s.rows[4].sub.starts_with("samples/strings.wav is missing"),
+        "{}",
+        s.rows[4].sub
+    );
+    // Song 5 picked: every check, in order, the missing file in red.
+    assert_eq!(s.selected, Some(4));
+    let d = &s.detail;
+    assert_eq!(d.eyebrow, "Song 5 of 9");
+    assert_eq!(d.title, "Glass harbour");
+    assert_eq!(d.chip.as_ref().unwrap().0, "NOT READY");
+    assert_eq!(d.line, "110 BPM \u{b7} checked today 19:04 UTC");
+    let words: Vec<&str> = d.checks.iter().map(|c| c.word.as_str()).collect();
+    assert_eq!(
+        words,
+        [
+            "Files",
+            "Parts",
+            "Plugins",
+            "Keyboards",
+            "Outputs",
+            "Memory",
+            "Stick",
+            "Streams",
+            "Soundcheck"
+        ],
+        "{:#?}",
+        d.checks
+    );
+    assert_eq!(d.checks[0].mark, CheckMark::NotReady);
+    assert_eq!(d.checks[0].text, "samples/strings.wav is missing");
+    assert_eq!(
+        d.checks[6].text,
+        "11.8 GB free for takes and recovery copies"
+    );
+    assert_eq!(d.checks[8].mark, CheckMark::Note);
+    assert_eq!(
+        d.buttons,
+        [SetButton::SoundcheckSong, SetButton::OpenInMake]
+    );
+    // The quick check's answer went into the set, as B1's does.
+    let glass = &set_at(&lib, "Friday at the Lantern.set").songs[4];
+    let (at, check) = glass.check.as_ref().unwrap();
+    assert_eq!(*at, SAMPLE_CHECKED);
+    assert_eq!(check.not_ready, ["the file samples/strings.wav is missing"]);
+
+    // The dial picks the next song: Paper moons, with limits.
+    b.dial(1);
+    let s = sets(&b);
+    assert_eq!(s.selected, Some(5));
+    assert_eq!(s.detail.title, "Paper moons");
+    assert!(s.detail.checks.iter().any(|c| c.mark == CheckMark::Limits
+        && c.text == "Nord Electro isn\u{2019}t connected: it plays without it"));
+
+    // Check every file reads each file in full; the pick stays.
+    press(&mut b, SetButton::CheckEveryFile);
+    let s = sets(&b);
+    assert!(s.sub.unwrap().1.contains("every file read"));
+    assert_eq!(s.selected, Some(5));
+    assert!(s.rows[0].sub.contains("about"));
+
+    // Back (‹ or –) goes back to the sets, Friday still picked.
+    b.input(Input::Back);
+    let s = sets(&b);
+    assert_eq!(s.view, SetsView::List);
+    assert!(!b.set_check_shown());
+    assert_eq!(s.selected, Some(friday));
+}
+
+/// Soundcheck (live shows B2b): the card's Soundcheck asks first (every
+/// song, Out loud or Muted, about how long), Start hands it to the app,
+/// the check view follows the song it's on with its three steps, each
+/// song's line goes into the set, and at the end it says how it went.
+#[test]
+fn soundcheck_asks_runs_and_says_how_it_went() {
+    use mpfree_browser_ui::{CheckRow, SoundcheckNow, SOUNDCHECK_HINT};
+    let lib = fill(&temp()).unwrap();
+    fill_sets(&lib).unwrap();
+    fill_set_files(&lib).unwrap();
+    let mut b = Browser::inline(lib.clone());
+    b.set_rig(sample_rig());
+    b.set_app_checks(std::sync::Arc::new(AppHalf));
+    b.set_machine(SAMPLE_MACHINE);
+    b.fix_set_clock(SAMPLE_CHECKED);
+    b.go_source(src("Sets"));
+    let friday = row_of(&b, "Friday at the Lantern");
+    tap(&mut b, SetInput::Row(friday));
+    let card = sets(&b).detail.buttons;
+    assert_eq!(card.len(), 7);
+    assert_eq!(card[3], SetButton::Soundcheck);
+    assert!(!SOUNDCHECK_HINT.is_empty());
+
+    // The question, in the check view's Selected column.
+    press(&mut b, SetButton::Soundcheck);
+    assert!(b.set_check_shown());
+    let d = sets(&b).detail;
+    assert_eq!(d.eyebrow, "Soundcheck");
+    assert_eq!(d.title, "Friday at the Lantern");
+    assert_eq!(d.line, "9 songs");
+    let para = d.para.clone().unwrap();
+    assert!(
+        para.starts_with("Opens each of the 9 songs in turn"),
+        "{para}"
+    );
+    assert!(para.contains("minutes"), "{para}");
+    assert_eq!(d.steppers[0].field, SetField::Sound);
+    assert_eq!(d.steppers[0].value, "Out loud");
+    assert_eq!(
+        d.buttons,
+        [SetButton::StartSoundcheck, SetButton::CancelSoundcheck]
+    );
+    tap(&mut b, SetInput::Step(SetField::Sound, 1));
+    assert_eq!(sets(&b).detail.steppers[0].value, "Muted");
+    // Cancel puts the song's checks back; asking again keeps Muted.
+    press(&mut b, SetButton::CancelSoundcheck);
+    assert_ne!(sets(&b).detail.eyebrow, "Soundcheck");
+    press(&mut b, SetButton::SoundcheckSong);
+    let d = sets(&b).detail;
+    assert_eq!(d.title, "Glass harbour");
+    assert_eq!(d.line, "Song 5 of 9");
+    assert!(d.para.unwrap().contains("then its change into Paper moons"));
+    assert_eq!(d.steppers[0].value, "Muted");
+    let _ = b.take_actions();
+    press(&mut b, SetButton::StartSoundcheck);
+    let started = b
+        .take_actions()
+        .into_iter()
+        .find_map(|a| match a {
+            BrowseAction::Soundcheck {
+                loc,
+                set,
+                only,
+                muted,
+            } => Some((loc, set, only, muted)),
+            _ => None,
+        })
+        .expect("Start soundcheck hands it to the app");
+    let (loc, set, only, muted) = started;
+    assert_eq!(loc.name(), "Friday at the Lantern.set");
+    assert_eq!((set.songs.len(), only, muted), (9, Some(4), true));
+
+    // Running: the app says where it is, and the view follows it.
+    let row = |mark, word: &str, text: &str| CheckRow {
+        mark,
+        word: word.into(),
+        text: text.into(),
+    };
+    b.set_soundcheck(Some(SoundcheckNow {
+        loc: loc.clone(),
+        songs: vec![4],
+        song: 4,
+        pos: 0,
+        left_s: 50,
+        steps: vec![
+            row(CheckMark::Fine, "Opened cold", "3.1 s \u{b7} 540 MB"),
+            row(CheckMark::Now, "Busiest part", "Chorus \u{b7} bar 3 of 16"),
+            row(CheckMark::Later, "Change", "into Paper moons"),
+        ],
+        meter: Some((48.0, 63.0)),
+        meter_facts: vec![("Longest disk wait".into(), "9 ms".into())],
+        row_line: "opened in 3.1 s \u{b7} 540 MB \u{b7} now playing Chorus".into(),
+        out_loud: false,
+    }));
+    assert!(b.soundcheck_running());
+    let s = sets(&b);
+    assert_eq!(s.head_buttons, [SetButton::StopSoundcheck]);
+    let (chip, words) = s.sub.clone().unwrap();
+    assert_eq!(chip.unwrap().0, "SOUNDCHECK");
+    assert_eq!(words, "song 1 of 1 \u{b7} about a minute left \u{b7} muted");
+    assert!(s.rows[4].lit);
+    assert_eq!(
+        s.rows[4].sub,
+        "opened in 3.1 s \u{b7} 540 MB \u{b7} now playing Chorus"
+    );
+    assert_eq!(s.rows[4].chip.as_ref().unwrap().0, "SOUNDCHECK");
+    let d = &s.detail;
+    assert_eq!(d.eyebrow, "Soundcheck \u{b7} song 5 of 9");
+    assert_eq!(d.line, "110 BPM \u{b7} ends: Let it finish");
+    assert_eq!(d.meter_at, 2);
+    assert_eq!(d.after, None, "muted: nothing to warn of");
+    assert_eq!(d.checks.len(), 3);
+    assert_eq!(d.checks[1].mark, CheckMark::Now);
+    assert_eq!(d.meter, Some((48.0, 63.0)));
+    assert_eq!(d.buttons, [SetButton::StopSoundcheck, SetButton::SkipSong]);
+    // A song row tapped while it runs: the song being checked stays shown.
+    tap(&mut b, SetInput::Row(1));
+    assert_eq!(
+        b.screen().status.unwrap().0,
+        "Soundcheck is running: Stop soundcheck first"
+    );
+    assert!(sets(&b).rows[4].lit);
+    // While it runs, Play set and another Soundcheck wait.
+    b.input(Input::Back);
+    let _ = b.take_actions();
+    let s = sets(&b);
+    assert_eq!(s.view, SetsView::List);
+    let d = s.detail;
+    assert!(d.faint.contains(&SetButton::PlaySet));
+    assert!(d.faint.contains(&SetButton::Soundcheck));
+    press(&mut b, SetButton::CheckSet);
+    press(&mut b, SetButton::SkipSong);
+    press(&mut b, SetButton::StopSoundcheck);
+    let acts = b.take_actions();
+    assert!(acts.contains(&BrowseAction::SkipSoundcheckSong));
+    assert!(acts.contains(&BrowseAction::StopSoundcheck));
+
+    // Its line goes into the set; at the end, how it went, and the set is
+    // checked again with it.
+    let line = mpfree_library::Soundcheck {
+        at: SAMPLE_CHECKED,
+        open_ms: 3_100,
+        peak_kb: 527_344,
+        cpu_x10: 630,
+        disk_wait_ms: 0,
+        misses: 0,
+        xruns: 0,
+        change_ms: Some(4_200),
+        part: "Chorus".into(),
+    };
+    b.soundchecked(&loc, 4, line.clone(), &set);
+    assert_eq!(
+        set_at(&lib, "Friday at the Lantern.set").songs[4].soundcheck,
+        Some(line)
+    );
+    let went = vec![row(CheckMark::Fine, "", "1 song in 52 s. All opened.")];
+    b.soundcheck_over(&loc, went.clone(), "Night drive is open again.".into());
+    assert!(!b.soundcheck_running());
+    let d = sets(&b).detail;
+    assert_eq!(d.eyebrow, "Soundcheck");
+    assert_eq!(d.checks, went);
+    assert_eq!(d.after.as_ref().unwrap().0, "Night drive is open again.");
+    assert_eq!(d.buttons, [SetButton::SoundcheckDone]);
+    let s = sets(&b);
+    assert!(
+        !s.rows[4].sub.contains("not soundchecked yet"),
+        "{}",
+        s.rows[4].sub
+    );
+    press(&mut b, SetButton::SoundcheckDone);
+    assert_eq!(sets(&b).detail.eyebrow, "Song 5 of 9");
 }
 
 #[test]

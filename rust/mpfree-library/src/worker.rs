@@ -111,14 +111,17 @@ pub enum Job {
         loc: Loc,
         set: crate::Set,
     },
-    /// The check of every song in a set ([`Library::check_song`]; every
-    /// file read in full when `deep`), with the names of the keyboards and
-    /// controls connected now.
+    /// The check of every song in a set as a preflight
+    /// ([`Library::preflight_set`]; every file read in full when `deep`),
+    /// with the names of the keyboards and controls connected now, what the
+    /// app knows of this MPC and the app's half of the check.
     CheckSet {
         loc: Loc,
         set: crate::Set,
         connected: Vec<String>,
         deep: bool,
+        machine: crate::preflight::Machine,
+        app: Option<crate::preflight::AppCheck>,
     },
     /// Every set, read ([`Library::all_sets`]).
     Sets,
@@ -184,9 +187,9 @@ pub enum Outcome {
     Set(Loc, crate::Set),
     /// A set saved.
     SetSaved(Loc),
-    /// A set checked: where each song is and what its check says, in the
-    /// set's order.
-    SetChecked(Loc, Vec<(crate::Found, crate::SongCheck)>),
+    /// A set checked: where each song is, its quick check, its check
+    /// view's lines and its estimate, in the set's order.
+    SetChecked(Loc, Vec<crate::preflight::SongPreflight>),
     /// Every set: its entry and its songs, or why it couldn't be read.
     Sets(Vec<(Entry, Result<crate::Set, String>)>),
     /// The projects a set can hold: folder name and lasting id.
@@ -416,14 +419,12 @@ pub fn run(lib: &Library, job: Job) -> std::io::Result<Outcome> {
             set,
             connected,
             deep,
+            machine,
+            app,
         } => {
             let on = |n: &str| connected.iter().any(|c| c == n);
-            let checks = set
-                .songs
-                .iter()
-                .map(|s| lib.check_song_with(s, &on, deep))
-                .collect();
-            Outcome::SetChecked(loc, checks)
+            let app = app.as_ref().map(|a| &*a.0);
+            Outcome::SetChecked(loc, lib.preflight_set(&set, &on, deep, machine, app))
         }
         Job::Sets => Outcome::Sets(lib.all_sets()?),
         Job::Songs => Outcome::Songs(lib.songs()?),
