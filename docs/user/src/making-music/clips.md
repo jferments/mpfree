@@ -189,7 +189,7 @@ When converting couldn't keep exactly what the clip plays, nothing changes, only
 
 A kit's clips always follow the pads, so their row has no **›**. There is no way yet to turn a clip of notes back into one that follows the pads. **Reload** brings a saved state back as you saved it, so a state saved before converting follows the pads again: save it again after converting.
 
-Coming: the clip's name and colour, and its step size.
+A clip's step size is set on the Sequencer (see [Change the step size](sequencer.md#change-the-step-size)). Coming: the clip's name and colour on this tab.
 
 ## Takes
 
