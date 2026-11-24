@@ -2455,7 +2455,7 @@ impl LoopHost {
                                     .all(|y| y.closed))
                 });
                 if ready {
-                    let saved = Saved {
+                    let mut saved = Saved {
                         rate: self.rate,
                         selected: self.looper.selected(),
                         loops: (0..MAX_LOOPS)
@@ -2492,7 +2492,19 @@ impl LoopHost {
                             .looper
                             .free_clock()
                             .map(|c| mpfree_looper::save::ClockFile::of(&c)),
+                        kept: Vec::new(),
                     };
+                    // Recordings held for an Undo that no layer names
+                    // (4c.6): named, so the project keeps their files.
+                    if snap {
+                        saved.kept = self.layer_recs.held_files(&self.looper);
+                        saved.kept.retain(|f| {
+                            !saved
+                                .loops
+                                .iter()
+                                .any(|(_, l)| l.layers.iter().any(|y| y.file == *f))
+                        });
+                    }
                     // The snapshot: each layer by its number.
                     let borns = snap.then(|| {
                         let mut b = [[0; MAX_LAYERS]; MAX_LOOPS];
@@ -7955,6 +7967,66 @@ mod tests {
         assert_eq!(h.write_layers(&mut files, PERIOD), None);
         assert!(files.open.is_empty());
         assert_eq!(h.unsaved_layers(0), 2);
+    }
+
+    /// Phase 4c.6: a layer's recording the looper still holds but no
+    /// layer line names (undone, kept for Redo; in a loop a Clear kept for
+    /// Undo) is named on a `kept` line, so the project keeps its file;
+    /// one nothing holds any more (the loop forgotten) is not.
+    #[test]
+    fn recordings_held_for_an_undo_are_named_by_the_save() {
+        let (mut h, mut t, mut b) = saving_host();
+        let mut files = FakeFiles::new();
+        h.set_recordings(true);
+        let next = std::cell::Cell::new(0u128);
+        h.give_layer_recs(|| {
+            next.set(next.get() + 1);
+            0xbead_0000 + next.get()
+        });
+        let mut periods = 0;
+        while h.unsaved_layers(0) > 0 {
+            assert_eq!(h.write_layers(&mut files, PERIOD), None);
+            run_host(&mut h, &mut t, &mut b, 1);
+            periods += 1;
+            assert!(periods < 400, "still {} unsaved", h.unsaved_layers(0));
+        }
+        let name = |rec: u128| format!("loop_{rec:032x}.wav");
+        let (first, over) = (name(0xbead_0001), name(0xbead_0002));
+        let save = |h: &mut LoopHost, t: &mut Transport, b: &mut Block| {
+            h.save();
+            let s = saved_from(h, t, b);
+            let layers: Vec<String> = s
+                .loops
+                .iter()
+                .flat_map(|(_, l)| l.layers.iter().map(|y| y.file.clone()))
+                .collect();
+            let text = crate::project::loops_part(s.clone()).0;
+            assert_eq!(text.matches("\nkept file=").count(), s.kept.len(), "{text}");
+            (layers, s.kept)
+        };
+        // Both on their layer lines: nothing kept beside them.
+        assert_eq!(
+            save(&mut h, &mut t, &mut b),
+            (vec![first.clone(), over.clone()], vec![])
+        );
+        // The overdub undone: Redo can bring it back.
+        h.command(Command::Undo);
+        run_host(&mut h, &mut t, &mut b, 40);
+        assert_eq!(
+            save(&mut h, &mut t, &mut b),
+            (vec![first.clone()], vec![over.clone()])
+        );
+        // The loop cleared: Undo can bring both back.
+        h.command(Command::Clear);
+        run_host(&mut h, &mut t, &mut b, 40);
+        assert_eq!(h.looper.loop_status(0).unwrap().phase, Phase::Empty);
+        let (layers, mut kept) = save(&mut h, &mut t, &mut b);
+        kept.sort();
+        assert_eq!((layers, kept), (vec![], vec![first.clone(), over.clone()]));
+        // Forgotten (no Undo): nothing holds them.
+        h.command(Command::Forget);
+        run_host(&mut h, &mut t, &mut b, 40);
+        assert_eq!(save(&mut h, &mut t, &mut b), (vec![], vec![]));
     }
 
     #[test]

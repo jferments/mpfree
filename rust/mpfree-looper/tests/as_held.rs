@@ -183,6 +183,7 @@ fn held(r: &Rig) -> LoopFile {
         selected: 0,
         loops: vec![(0, f)],
         free_clock: None,
+        kept: Vec::new(),
     };
     for (k, y) in s.loops[0].1.layers.iter_mut().enumerate() {
         y.file = format!("layer {k}.wav");

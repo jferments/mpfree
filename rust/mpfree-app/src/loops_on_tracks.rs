@@ -307,6 +307,28 @@ impl LayerRecs {
             .count()
     }
 
+    /// The files of the recordings whose layers the looper still holds
+    /// (in play order, kept for an Undo or Redo, or in a loop a Clear
+    /// kept: [`Looper::holds_layer`]) and that are synced, so may be in a
+    /// project: `loop_<rec>.wav` each (phase 4c.6). A save names those no
+    /// layer line names on its `kept` lines, so the project's clean-up
+    /// leaves them be while they can still come back.
+    pub fn held_files(&self, looper: &Looper) -> Vec<String> {
+        let mut out = Vec::new();
+        for n in 0..MAX_LOOPS {
+            for s in 0..MAX_LAYERS {
+                let (born, rec) = self.recs[n][s];
+                if rec != 0
+                    && self.files[n][s] == FileState::Synced
+                    && looper.holds_layer(n, s, born)
+                {
+                    out.push(format!("loop_{rec:032x}.wav"));
+                }
+            }
+        }
+        out
+    }
+
     /// The slot holding recording `rec`, by loop and slot.
     fn find(&self, rec: u128) -> Option<(usize, usize)> {
         (0..MAX_LOOPS)

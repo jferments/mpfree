@@ -3952,6 +3952,21 @@ impl Looper {
         Some(self.loops.get(n)?.slots.get(slot)?.born)
     }
 
+    /// Whether loop `n` still holds the audio of the layer numbered `born`
+    /// ([`LayerInfo::born`]) in slot `slot`: in play order, kept for its
+    /// Undo or Redo, or in the loop a Clear kept for Undo. False once its
+    /// blocks have gone (the slot made into another layer, the cleared
+    /// loop forgotten). Audio tracks phase 4c.6: the host keeps the
+    /// layer's recording named while this holds. Does not allocate.
+    pub fn holds_layer(&self, n: usize, slot: usize, born: u64) -> bool {
+        let (Some(l), true) = (self.loops.get(n), slot < MAX_LAYERS && born != 0) else {
+            return false;
+        };
+        let live = l.slots[slot].born == born && self.store.held[n][slot] > 0;
+        let kept = self.store.kept_holds(n, slot) && self.store.kept[n].slots[slot].born == born;
+        live || kept
+    }
+
     /// The layers layer `k` of loop `n` (in play order) was made from by
     /// a merge or a fit, by their numbers ([`LayerInfo::born`]), in play
     /// order then, 0 after the last; all 0 for a layer recorded or

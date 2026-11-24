@@ -55,6 +55,16 @@
 //! layer level=1 pan=0 muted=0 solo=0 faded=1 size=92808 valid=0,92808 view=1536:88200 replace=- file=3f0c...e1.wav
 //! ```
 //!
+//! A layer's recording that the looper still holds but no layer line
+//! names (kept for an Undo, or in a loop a Clear kept: audio tracks phase
+//! 4c.6) gets a line of its own after the loops, so that the project's
+//! clean-up, which moves to the Trash the recordings no kept save names,
+//! leaves its file be ([`Saved::kept`]). Nothing opens from it.
+//!
+//! ```text
+//! kept file=loop_5b2f0d9c41e8a7763c0f12ab9e4d8c01.wav
+//! ```
+//!
 //! A line is `key=value` words; `file=` comes last and takes the rest of
 //! the line. Unknown keys and lines are skipped, so a newer build's text
 //! still loads.
@@ -185,6 +195,12 @@ pub struct Saved {
     pub loops: Vec<(usize, LoopFile)>,
     /// The free clock, when a free loop is saved.
     pub free_clock: Option<ClockFile>,
+    /// Files of layers' recordings the looper still holds that no layer
+    /// line here names: kept for an Undo, or in a loop a Clear kept
+    /// (audio tracks phase 4c.6). A `kept file=<name>` line each, after
+    /// the loops, so that a kept save names them and the project's
+    /// clean-up leaves them be; nothing opens from them.
+    pub kept: Vec<String>,
 }
 
 fn flag(b: bool) -> u8 {
@@ -284,6 +300,9 @@ pub fn to_text(saved: &Saved) -> String {
                 y.file
             ));
         }
+    }
+    for f in &saved.kept {
+        s.push_str(&format!("kept file={f}\n"));
     }
     if let Some(c) = &saved.free_clock {
         s.push_str(&format!(
@@ -443,6 +462,7 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
         selected: 0,
         loops: Vec::new(),
         free_clock: None,
+        kept: Vec::new(),
     };
     for (i, line) in lines {
         let n = i + 1;
@@ -528,6 +548,11 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                     },
                 },
             ));
+        } else if line.starts_with("kept ") {
+            match file {
+                Some(f) if !f.is_empty() => saved.kept.push(f.to_string()),
+                _ => return Err(format!("line {n}: kept with no file")),
+            }
         } else if line.starts_with("layer") {
             let Some((_, l)) = saved.loops.last_mut() else {
                 return Err(format!("line {n}: a layer before any loop"));
@@ -705,6 +730,7 @@ mod tests {
                 meter: Meter { beats: 7, unit: 8 },
                 top: -3360,
             }),
+            kept: Vec::new(),
         }
     }
 
@@ -714,6 +740,29 @@ mod tests {
         let t = to_text(&s);
         assert!(t.starts_with("mpfree-looper 1\n"));
         assert_eq!(from_text(&t), Ok(s));
+    }
+
+    /// Recordings the looper holds that no layer names (4c.6): a line
+    /// each, read back as they were; one with no file is refused.
+    #[test]
+    fn recordings_held_but_not_on_a_layer_are_named_on_kept_lines() {
+        let mut s = saved();
+        s.kept = vec![
+            "loop_0123456789abcdef0000000000000009.wav".into(),
+            "loop_0123456789abcdef000000000000000a.wav".into(),
+        ];
+        let t = to_text(&s);
+        assert!(
+            t.contains("\nkept file=loop_0123456789abcdef0000000000000009.wav\n"),
+            "{t}"
+        );
+        assert_eq!(from_text(&t), Ok(s));
+        assert!(from_text(&t.replace(
+            "kept file=loop_0123456789abcdef000000000000000a.wav",
+            "kept file="
+        ))
+        .is_err());
+        assert!(!to_text(&saved()).contains("kept"));
     }
 
     #[test]

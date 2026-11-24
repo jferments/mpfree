@@ -35514,6 +35514,7 @@ mod tests {
                 },
             )],
             free_clock: None,
+            kept: Vec::new(),
         };
         // Audio 2 with a region of a mono take, as the tracks' save gives it.
         let take: Vec<f32> = (0..4410).map(|k| (k % 89) as f32 / 300.0).collect();

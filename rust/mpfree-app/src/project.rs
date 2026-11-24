@@ -2789,6 +2789,7 @@ mod tests {
                 one(3, vec![layer(vec![0.5; 4])]),
             ],
             free_clock: None,
+            kept: Vec::new(),
         };
         let (text, files, _) = loops_part(saved.clone());
         assert_eq!(files.len(), 2);
@@ -3704,6 +3705,7 @@ mod tests {
                     meter: mpfree_transport::Meter::new(4, 4).unwrap(),
                     top: 0,
                 }),
+                kept: Vec::new(),
             };
             snapshot(&c, vec![(LOOPER.to_string(), to_text(&saved))])
         };
@@ -3770,6 +3772,7 @@ mod tests {
             selected: 0,
             loops: vec![(0, file)],
             free_clock: None,
+            kept: Vec::new(),
         };
         let snap = snapshot(&c, vec![(LOOPER.to_string(), to_text(&saved))]);
         let needs = snap.meta.extra.iter().find(|(k, _)| k == NEEDS_KEY);

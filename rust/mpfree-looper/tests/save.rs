@@ -128,6 +128,7 @@ fn through_files(f: LoopFile) -> LoopFile {
         selected: 0,
         loops: vec![(3, f)],
         free_clock: None,
+        kept: Vec::new(),
     };
     for (k, y) in s.loops[0].1.layers.iter_mut().enumerate() {
         y.file = format!("layer {k}.wav");

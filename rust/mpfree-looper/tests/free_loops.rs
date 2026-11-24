@@ -609,6 +609,7 @@ fn free_loops_open_stopped_at_their_tops() {
         selected: 0,
         loops: vec![(0, f)],
         free_clock: r.l.free_clock().map(|c| ClockFile::of(&c)),
+        kept: Vec::new(),
     };
     let text = to_text(&saved);
     assert!(text.contains(" clock=free"), "{text}");
@@ -668,6 +669,7 @@ fn a_free_loop_kept_as_held_opens_stopped_with_its_bounds() {
         selected: 0,
         loops: vec![(0, f)],
         free_clock: r.l.free_clock().map(|c| ClockFile::of(&c)),
+        kept: Vec::new(),
     };
     let text = to_text(&saved);
     assert!(text.starts_with("mpfree-looper 2\n"), "{text}");
