@@ -11,7 +11,10 @@
 //!    must close saying nothing was written to the card.
 //! 2. **The write window** (step S2a, `setup-sd-card-write.sh`), which
 //!    refuses a card that is not exFAT, is marked "not safely removed" or
-//!    doesn't check clean. Then the steps below, twice: idle, then with a
+//!    doesn't check clean. With `--repair-card` (the SD card round passes
+//!    it, on the owner's go) it asks the window to repair such a card in
+//!    the MPC first (`fsck.exfat -y`, then checked again; the window
+//!    refuses if that doesn't leave it clean). Then the steps below, twice: idle, then with a
 //!    busy thread on every core (stopping at 75 °C). It writes only in its
 //!    own folders, `MPFree/mpfree-disktest` on the card and
 //!    `mpfree-disktest` on the stick's partition 4, deletes both at the
@@ -111,6 +114,8 @@ pub(super) struct Places {
     /// With no card in the slot, how long to keep asking (every
     /// [`CARD_AGAIN`]).
     card_wait: Duration,
+    /// Ask the write window to repair a marked or unclean card first.
+    repair: bool,
 }
 
 const CARD_AGAIN: Duration = Duration::from_secs(10);
@@ -135,6 +140,7 @@ impl Places {
             desktop,
             quick,
             card_wait: Duration::ZERO,
+            repair: false,
         }
     }
 
@@ -143,6 +149,10 @@ impl Places {
             card_wait: wait,
             ..self
         }
+    }
+
+    pub(super) fn repair(self, repair: bool) -> Places {
+        Places { repair, ..self }
     }
 }
 
@@ -234,11 +244,13 @@ struct NotOpen {
 }
 
 impl<'a> Window<'a> {
-    /// Ask for the window and wait for its answer to this request.
+    /// Ask for the window and wait for its answer to this request. `more`:
+    /// the request's lines after the word (the write window's `repair`).
     fn ask(
         p: &'a Places,
         proto: &'static Proto,
         wait: Duration,
+        more: &str,
     ) -> Result<(Window<'a>, BTreeMap<String, String>), NotOpen> {
         let word = new_word();
         let on = std::sync::Arc::new(AtomicBool::new(true));
@@ -265,7 +277,7 @@ impl<'a> Window<'a> {
             beat: Some(beat),
             closed: false,
         };
-        if let Err(e) = put(&p.app.join(proto.request), &format!("{}\n", w.word)) {
+        if let Err(e) = put(&p.app.join(proto.request), &format!("{}\n{more}", w.word)) {
             w.closed = true;
             w.stop_beat();
             return Err(NotOpen {
@@ -273,7 +285,16 @@ impl<'a> Window<'a> {
                 message: format!("{}: {e}", p.app.join(proto.request).display()),
             });
         }
-        say!("asked for the {} ({})", proto.what, w.word);
+        say!(
+            "asked for the {} ({}{})",
+            proto.what,
+            w.word,
+            if more.is_empty() {
+                ""
+            } else {
+                ", and a repair if the card needs one"
+            }
+        );
         let start = Instant::now();
         while start.elapsed() < wait {
             if STOP.load(Ordering::Relaxed) {
@@ -455,7 +476,7 @@ fn read_part(p: &Places, rows: &mut Rows) -> Result<(), read::Fail> {
     say!("\n== Part 1: the SD card read-only (step S1's window) ==");
     let start = Instant::now();
     let asked = loop {
-        match Window::ask(p, &READ_WINDOW, READ_OPEN) {
+        match Window::ask(p, &READ_WINDOW, READ_OPEN, "") {
             Err(n) if n.state == "none" && start.elapsed() + CARD_AGAIN <= p.card_wait => {
                 say!(
                     "no card in the SD slot yet: put it in now (asking again in {} s, for up to {} s more)",
@@ -1151,12 +1172,18 @@ fn print_summary(
 /// Part 2: the write window and the steps.
 fn write_part(p: &Places, own_rows: &[(String, String)]) -> Result<(), read::Fail> {
     say!("\n== Part 2: the SD card written in its MPFree folder (step S2a's window) ==");
-    let (w, st) = match Window::ask(p, &WRITE_WINDOW, WRITE_OPEN) {
+    let more = if p.repair { "repair\n" } else { "" };
+    let (w, st) = match Window::ask(p, &WRITE_WINDOW, WRITE_OPEN, more) {
         Ok(x) => x,
         Err(n) if n.state == "refused" || n.state == "none" => {
             return Err(read::Fail::Refused(format!(
-                "the card can't be written: {}",
-                n.message
+                "the card can't be written: {}{}",
+                n.message,
+                if p.repair || !n.message.contains("ask for a repair") {
+                    ""
+                } else {
+                    " (--repair-card asks for it)"
+                }
             )))
         }
         Err(n) => {
@@ -1166,6 +1193,9 @@ fn write_part(p: &Places, own_rows: &[(String, String)]) -> Result<(), read::Fai
             )))
         }
     };
+    if let Some(what) = st.get("repaired") {
+        say!("repaired in the MPC first (fsck.exfat -y, then checked again: clean, the mark clear); it had: {what}");
+    }
     say!(
         "open: {} ({}, {} sectors; {})",
         st.get("message").map(String::as_str).unwrap_or(""),

@@ -26,6 +26,11 @@
                   degrees C). The write window refuses a card that is not exFAT, is marked "not safely
                   removed" or doesn't check clean, and checks it again after closing. Needs
                   MPFREE_ACCEPT_DISKTEST=YES.
+  --repair-card   With --sd-card: REPAIRS THE CARD IN THE MPC if it is marked "not safely removed"
+                  or doesn't check clean, before the write steps (STATE-CHANGING, the card's
+                  filesystem records only: fsck.exfat -y, then checked again; no undo, the records
+                  it mends were wrong). A card that checks clean is not touched. The SD card round
+                  passes it.
 
 Run it while the test build runs from the USB stick (started at power-on by
 the boot hook on the installed 3.10.1, or by `collect-over-ssh.sh --kexec-boot`
@@ -125,11 +130,11 @@ the second waits for you to press Enter:
      and the end. It reads /sys/class/thermal and /sys/devices/system/cpu
      only and writes no file. Ctrl-C or the ssh session closing stops it.
   4f. With --sd-card, THE SD CARD AND PARTITION 4: runs `mpfree-disktest
-     --sd-card --card-wait 900`, about 20 minutes (step S2a of
+     --sd-card --card-wait 120` (and `--repair-card` with --repair-card),
+     about 20 minutes (step S2a of
      docs/dev/hardware/sd-card-and-internal-drive.md). It refuses (exit code
-     3) on everything 4b refuses. With no card in the slot it asks again
-     every 10 s for up to 15 minutes, so the card can go in after MPFree has
-     started (Akai's system, starting first, can mark a card it sees). Part
+     3) on everything 4b refuses. The card stays in the MPC's slot the whole
+     time; with no card there it asks again every 10 s for up to 2 minutes. Part
      1 asks for the read-only window (step S1's, as the pad player does),
      checks the card is mounted read-only from the SD controller with no
      other MMC device, lists the card (counts only, never a name), reads
@@ -137,8 +142,11 @@ the second waits for you to press Enter:
      and needs the window to close saying nothing was written. Part 2 asks
      for the write window (setup-sd-card-write.sh), which refuses a card
      that is not one exFAT filesystem, carries the not-safely-removed mark
-     or fails fsck.exfat -n, and leaves only the card's MPFree folder
-     writable. In MPFree/mpfree-disktest on the card and
+     or fails fsck.exfat -n (with --repair-card it repairs such a card
+     first, in the MPC: fsck.exfat -y on the card alone, then the mark and
+     fsck.exfat -n checked again, refusing if either isn't clean; Akai's
+     system, which starts first, can leave the mark on a card it sees), and
+     leaves only the card's MPFree folder writable. In MPFree/mpfree-disktest on the card and
      /run/mpfree-data/mpfree-disktest on the stick (files it makes itself,
      O_EXCL and O_NOFOLLOW; at most a quarter of each side's free space, up
      to 128 MiB a file) it runs 14 steps, idle and then with a busy thread
@@ -267,11 +275,13 @@ exec "$R/run/mpfree-disktest/mpfree-disktest" --heat
 """
 # The SD card: reads the card's own files through the read-only window, then writes only its own test files in
 # the card's MPFree/mpfree-disktest and partition 4's mpfree-disktest through the write window, deleting them.
-# A card put in up to 15 minutes after the start is waited for.
+# The card stays in the slot; a card not there yet is waited for up to 2 minutes.
 RUN_SD = r"""R=''
 cd "$R/run/mpfree-disktest" || exit 1
-exec "$R/run/mpfree-disktest/mpfree-disktest" --sd-card --card-wait 900
+exec "$R/run/mpfree-disktest/mpfree-disktest" --sd-card --card-wait 120
 """
+# The same, with a repair in the MPC first if the card is marked or doesn't check clean (--repair-card).
+RUN_SD_REPAIR = RUN_SD.replace("--card-wait 120\n", "--card-wait 120 --repair-card\n")
 # Read-only: both SD card windows' own logs and last statuses, after the SD card test.
 WINDOW_LOGS = r"""R=''
 for f in sd-card-log.txt sd-card-status sd-card-write-log.txt sd-card-write-status; do
@@ -342,7 +352,12 @@ def main(argv):
                       help="copy the program to the test build's RAM and run its SD card test (reads the card's "
                            "files; writes test files in the card's MPFree folder and on partition 4, then deletes "
                            "them; keeps the processor busy for its second pass)")
+    p.add_argument("--repair-card", action="store_true",
+                   help="with --sd-card: repair the card in the MPC first if it is marked \"not safely removed\" "
+                        "or doesn't check clean (fsck.exfat -y, the card's filesystem records only)")
     args = p.parse_args(argv)
+    if args.repair_card and not args.sd_card:
+        raise Stop("--repair-card goes with --sd-card")
     accept = os.environ.get("MPFREE_ACCEPT_DISKTEST")
     if args.read_only and accept not in ("YES", "READ-ONLY"):
         raise Stop("opt-in required (copies a program into the test build's RAM; reads audio on the stick's "
@@ -386,7 +401,8 @@ def main(argv):
                 "settles; no file written)")
     elif args.sd_card:
         out.say("MPFree SD card test on the test build (RAM, reads of the SD card, and test files in the card's "
-                "MPFree folder and on the stick's partition 4 that it deletes)")
+                "MPFree folder and on the stick's partition 4 that it deletes"
+                + ("; the card repaired first if it is marked or doesn't check clean)" if args.repair_card else ")"))
     else:
         out.say("MPFree disk test on the test build (RAM, and test files on the stick's partition 4 that it deletes)")
 
@@ -465,9 +481,11 @@ def main(argv):
             out.say("\n[4/4] The SD card test: READS the card's own files through the read-only window, then "
                     "WRITES test files in the card's MPFree/mpfree-disktest and in /run/mpfree-data/mpfree-disktest "
                     "(stick partition 4) through the write window and deletes them; the second pass keeps the "
-                    "processor busy (it stops at 75 degrees C). With no card in the slot it waits up to 15 minutes "
-                    "for one")
-            answer = app.ready(out, "Takes about 20 minutes; put the SD card in the MPC's slot now if it isn't.")
+                    "processor busy (it stops at 75 degrees C)"
+                    + (". If the card is marked \"not safely removed\" or doesn't check clean, it REPAIRS IT FIRST "
+                       "(fsck.exfat -y on the card's filesystem records, then checked again)" if args.repair_card
+                       else "") + ". With no card in the slot it waits up to 2 minutes for one")
+            answer = app.ready(out, "Takes about 20 minutes; the SD card stays in the MPC's slot.")
         else:
             out.say("\n[4/4] The disk test: WRITES test files in /run/mpfree-data/mpfree-disktest "
                     "(stick partition 4), then deletes them")
@@ -479,7 +497,8 @@ def main(argv):
             result = 0
         else:
             script = RUN_READ if args.read_only else RUN_LOAD if args.under_load \
-                else RUN_RECORDER if args.recorder else RUN_HEAT if args.heat else RUN_SD if args.sd_card else RUN
+                else RUN_RECORDER if args.recorder else RUN_HEAT if args.heat \
+                else (RUN_SD_REPAIR if args.repair_card else RUN_SD) if args.sd_card else RUN
             timeout = TIMEOUT_LOAD if args.under_load else TIMEOUT_RECORDER if args.recorder \
                 else TIMEOUT_HEAT if args.heat else TIMEOUT_SD if args.sd_card else TIMEOUT
             rc, _ = app.stream(mpc, script, timeout, out)

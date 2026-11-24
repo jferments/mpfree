@@ -58,8 +58,10 @@ class WriteKernel(FakeSdKernel):
         write(os.path.join(self.root, CARD_DIR, "stat"), STAT.format(w=sectors // 8, ws=sectors, d=0))
 
 
-# fsck.exfat -V | -n DEVICE: logs whether the card's disk was read-only, answers FAKE_FSCK (the first -n)
-# and FAKE_FSCK_AFTER (the second); FAKE_FSCK_WRITES makes it bump the card's write counter.
+# fsck.exfat -V | -n DEVICE | -y DEVICE: logs whether the card's disk was read-only, answers FAKE_FSCK (the
+# first -n) and FAKE_FSCK_AFTER (the later ones), or FAKE_FSCK_SEQ (one code per -n, in order: "4,0,0");
+# FAKE_FSCK_WRITES makes it bump the card's write counter. -y (the repair) clears the in-use mark and the
+# disk-error bit (byte 106, bits 1 and 2) unless FAKE_REPAIR_KEEPS, and answers FAKE_REPAIR (default 1, "mended").
 FAKE_FSCK = """#!{python}
 import os, sys
 root = os.environ["FAKE_ROOT"]
@@ -67,8 +69,20 @@ card = root + "/{card_dir}"
 if sys.argv[1:] == ["-V"]:
     print("exfatprogs version : 1.2.2")
     sys.exit(16)
-assert sys.argv[1] == "-n" and len(sys.argv) == 3, sys.argv
+assert sys.argv[1] in ("-n", "-y") and len(sys.argv) == 3, sys.argv
 ro = open(card + "/ro").read().strip()
+if sys.argv[1] == "-y":
+    with open(os.environ["FAKE_LOG"], "a") as log:
+        log.write(f"fsck.exfat: -y {{sys.argv[2][len(root):]}} ro={{ro}}\\n")
+    assert ro == "0", "the repair runs on the writable disk"
+    if not os.environ.get("FAKE_REPAIR_KEEPS"):
+        with open(sys.argv[2], "r+b") as fh:
+            fh.seek(106)
+            b = fh.read(1)[0]
+            fh.seek(106)
+            fh.write(bytes([b & ~6]))
+    print("mended: the volume's dirty flag cleared")
+    sys.exit(int(os.environ.get("FAKE_REPAIR", "1")))
 runs = os.path.join(root, "fsck-runs")
 n = int(open(runs).read()) if os.path.exists(runs) else 0
 open(runs, "w").write(str(n + 1))
@@ -77,6 +91,9 @@ with open(os.environ["FAKE_LOG"], "a") as log:
 if os.environ.get("FAKE_FSCK_WRITES"):
     open(card + "/mmcblk1p1/stat", "w").write({stat!r})
 print(f"{{sys.argv[2][len(root):]}}: clean. directories 7, files 40")
+seq = [int(c) for c in os.environ.get("FAKE_FSCK_SEQ", "").split(",") if c]
+if seq:
+    sys.exit(seq[n] if n < len(seq) else 0)
 sys.exit(int(os.environ.get("FAKE_FSCK_AFTER" if n else "FAKE_FSCK", "0")))
 """
 
@@ -236,6 +253,7 @@ class WriteWindowTests(unittest.TestCase):
         return text
 
     def start(self, kernel=None, request=ASK + "\n", **env):
+        """The window, asked with `request` (the word; a second line `repair` asks for a repair)."""
         self.make_bin()
         self.kernel = kernel or WriteKernel(self.root)
         write(os.path.join(self.root, "run/mpfree-app/sd-card-write.request"), request)
@@ -404,6 +422,93 @@ class WriteWindowTests(unittest.TestCase):
         self.assertEqual(self.calls("mount: "), [])
         self.assertFalse(os.path.exists(os.path.join(self.root, "card-fs/MPFree")))
         self.assert_closed()
+
+    # A repair asked for (the SD card round's --repair-card): in the MPC, then everything checked again.
+
+    def test_a_marked_card_is_repaired_when_asked_then_opened(self):
+        for flags, words in ((0x02, "the card wasn't safely removed last time (its exFAT is marked in use)"),
+                             (0x06, "the card wasn't safely removed last time (its exFAT is marked in use); the "
+                                    "card's exFAT says a disk error was seen")):
+            with self.subTest(flags=flags):
+                self.tearDown()
+                self.setUp()
+                self.start(WriteKernel(self.root, flags=flags), request=ASK + "\nrepair\n")
+                st = self.wait_state("open")
+                self.assertEqual(st["repaired"], words)
+                self.assertEqual(self.card_byte() & 6, 0, "the mark and the bit are clear")
+                # Checked read-only, repaired on the writable disk, checked read-only again, then opened.
+                self.assertEqual(self.calls("fsck.exfat: "), ["-n /dev/mmcblk1p1 ro=1", "-y /dev/mmcblk1p1 ro=0",
+                                                              "-n /dev/mmcblk1p1 ro=1"])
+                self.assertIn(f"repairing the card, as asked: {words}", self.notes())
+                self.assertIn("fsck.exfat -y: exit code 1", self.notes())
+                self.assertIn("repaired: the mark is clear and the card checks clean", self.notes())
+                self.assertIn("--- fsck.exfat -y /dev/mmcblk1p1 (the repair)", self.notes())
+                self.assertEqual(self.calls("mount: ")[0], f"-t exfat -o {RW} /dev/mmcblk1p1 {PRIV}")
+                code, out = self.close_card()
+                self.assertEqual(code, 0, out + self.notes())
+                self.assertEqual(self.status(), {"state": "closed", "message": "Closed cleanly: 0 MiB written; the "
+                                                                               "card checks clean.",
+                                                 "written": "0", "repaired": words})
+                self.assert_closed()
+
+    def test_a_card_whose_check_finds_problems_is_repaired_when_asked(self):
+        self.start(request=ASK + "\nrepair\n", FAKE_FSCK_SEQ="4,0,0")
+        st = self.wait_state("open")
+        self.assertEqual(st["repaired"], "its check found problems (fsck.exfat -n)")
+        self.assertEqual(self.calls("fsck.exfat: "), ["-n /dev/mmcblk1p1 ro=1", "-y /dev/mmcblk1p1 ro=0",
+                                                      "-n /dev/mmcblk1p1 ro=1"])
+        code, out = self.close_card()
+        self.assertEqual(code, 0, out + self.notes())
+        self.assert_closed()
+
+    def test_a_clean_card_is_not_repaired_even_when_asked(self):
+        self.start(request=ASK + "\nrepair\n")
+        st = self.wait_state("open")
+        self.assertNotIn("repaired", st)
+        self.assertEqual(self.calls("fsck.exfat: "), ["-n /dev/mmcblk1p1 ro=1"])
+        self.assertNotIn("repairing", self.notes())
+        code, out = self.close_card()
+        self.assertEqual(code, 0, out + self.notes())
+
+    def test_a_repair_that_does_not_leave_it_clean_is_refused_and_the_card_stays_read_only(self):
+        for env, words in ((dict(FAKE_REPAIR_KEEPS="1", FAKE_REPAIR="4"),
+                            "the repair ran (fsck.exfat -y exit code 4, see the notes), but still: the card wasn't "
+                            "safely removed last time (its exFAT is marked in use); it stays read-only"),
+                           (dict(FAKE_FSCK_SEQ="0,4"),
+                            "the repair ran (fsck.exfat -y exit code 1), but the card's check after it found "
+                            "problems (fsck.exfat -n, see the notes); it stays read-only")):
+            with self.subTest(env=env):
+                self.tearDown()
+                self.setUp()
+                code, out = self.run_window(WriteKernel(self.root, flags=0x02), request=ASK + "\nrepair\n", **env)
+                self.assertEqual(code, 3, out + self.notes())
+                st = self.status()
+                self.assertEqual(st, {"state": "refused", "message": words,
+                                      "repaired": "the card wasn't safely removed last time (its exFAT is marked "
+                                                  "in use)"})
+                self.assertEqual(self.calls("mount: "), [], "never mounted")
+                self.assertFalse(os.path.exists(os.path.join(self.root, "card-fs/MPFree")))
+                self.assertEqual(self.calls("fsck.exfat: ")[1], "-y /dev/mmcblk1p1 ro=0")
+                self.assert_closed()
+
+    def test_a_locked_card_is_not_repaired(self):
+        code, out = self.run_window(WriteKernel(self.root, flags=0x02, locked=True), request=ASK + "\nrepair\n")
+        self.assertEqual(code, 3, out + self.notes())
+        self.assertEqual(self.status()["message"], "the card stays read-only: its lock switch is on (slide it up, "
+                                                   "away from LOCK)")
+        self.assertEqual(self.calls("fsck.exfat: "), ["-n /dev/mmcblk1p1 ro=1"], "no repair on a locked card")
+        self.assert_closed()
+
+    def test_only_the_word_repair_on_the_second_line_asks_for_one(self):
+        for request in (ASK + "repair\n", ASK + "\nREPAIR\n", ASK + "\nrepair now\n", ASK + " repair\n"):
+            with self.subTest(request=request):
+                self.tearDown()
+                self.setUp()
+                code, out = self.run_window(WriteKernel(self.root, flags=0x02), request=request)
+                self.assertEqual(code, 3, out + self.notes())
+                self.assertIn("check it on a computer first, or ask for a repair in the MPC",
+                              self.status()["message"])
+                self.assertEqual(self.calls("fsck.exfat: "), [])
 
     def test_a_system_without_fsck_exfat_is_refused_before_anything(self):
         self.fsck = False
@@ -626,15 +731,23 @@ class StaticTests(unittest.TestCase):
 
     def test_what_it_can_change(self):
         code = self.code()
-        # The card's device is only read: one sector, before and after; nothing written to a device.
+        # The card's device is only read: one sector, before, after a repair and after the close; nothing
+        # written to a device (the repair's writes are fsck.exfat's).
         self.assertEqual([m.strip("(\n ") for m in re.findall(r"(?:^|[\s;|&(])dd\s[^\n|]*", code)],
-                         ['dd if="$SECTOR" bs=1 skip="$1" count=1 2>/dev/null',
-                          'dd if="$R/dev/$dev" bs=512 count=1 2>/dev/null > "$SECTOR"',
-                          'dd if="$R/dev/$dev" bs=512 count=1 2>/dev/null > "$SECTOR"'])
+                         ['dd if="$SECTOR" bs=1 skip="$1" count=1 2>/dev/null'] +
+                         ['dd if="$R/dev/$dev" bs=512 count=1 2>/dev/null > "$SECTOR"'] * 3)
         self.assertEqual(re.findall(r"\bof=\S+", code), [])
         self.assertEqual(re.findall(r'>\s*"?\$R/dev/[^\s;]+', code), ['> "$R/dev/kmsg"'])
-        # fsck.exfat only ever with -n (and -V for its version); no other tool that changes a filesystem.
-        self.assertEqual(sorted(re.findall(r"(?m)(?:^\s*|\$\()fsck\.exfat (-\w)", code)), ["-V", "-n"])
+        # fsck.exfat with -n (and -V for its version), and -y once: the repair, only when asked for and only
+        # after the read-only check; no other tool that changes a filesystem.
+        self.assertEqual(sorted(re.findall(r"(?m)(?:^\s*|\$\()fsck\.exfat (-\w)", code)), ["-V", "-n", "-y"])
+        self.assertLess(code.index('fsck_card "before writing"'), code.index("fsck.exfat -y"))
+        self.assertLess(code.index("fsck.exfat -y"), code.index('fsck_card "after the repair"'))
+        self.assertEqual(re.findall(r'(?m)^repair=\S+|\[ "\$how" = repair \] && repair=\S+', code),
+                         ["repair=''", '[ "$how" = repair ] && repair=yes'])
+        # What needs a repair is refused unless one was asked for.
+        self.assertIn('need=$(marks)\nif [ -n "$need" ]; then\n  [ -n "$repair" ] || refuse "$need: ', code)
+        self.assertIn('elif [ -n "$repair" ]; then\n  need="${need:+$need; }its check found problems', code)
         for word in ("mkfs", "mke2fs", "mkfs.vfat", "mkfs.exfat", "fsck.vfat", "blkdiscard", "hdparm", "sfdisk",
                      "sgdisk", "parted", "wipefs", "tune2fs", "e2fsck", "debugfs", "truncate", "fallocate",
                      "fatlabel", "exfatlabel", "dosfslabel", "blockdev", "chown", "chmod", "rm -r", "umount -l"):

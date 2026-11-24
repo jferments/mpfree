@@ -183,6 +183,9 @@ struct Opts {
     sd_card: bool,
     /// `--card-wait SECS`: how long `--sd-card` waits for a card in the slot.
     card_wait: u64,
+    /// `--repair-card`: `--sd-card` asks the write window to repair a marked
+    /// or unclean card in the MPC first.
+    repair_card: bool,
     cut_test: bool,
     /// `--fat` or `--fat-hidden`: the cut test on a FAT stick.
     fat: Option<cut::Way>,
@@ -201,6 +204,7 @@ fn parse() -> Result<Opts, String> {
         heat: false,
         sd_card: false,
         card_wait: 0,
+        repair_card: false,
         cut_test: false,
         fat: None,
         after_cut: None,
@@ -225,6 +229,7 @@ fn parse() -> Result<Opts, String> {
                     .filter(|&s| s <= 3600)
                     .ok_or("--card-wait needs a number of seconds, at most 3600")?;
             }
+            "--repair-card" => o.repair_card = true,
             "--cut-test" => o.cut_test = true,
             "--fat" | "--fat-hidden" => {
                 if o.fat.is_some() {
@@ -261,7 +266,9 @@ fn parse() -> Result<Opts, String> {
                 );
                 say!("write window, idle and with busy cores, deleting them; with --desktop-test DIR the");
                 say!("windows' files are under DIR/run and a test answers them. --card-wait SECS: with no");
-                say!("card in the slot, ask again every 10 s for that long (the round puts the card in late).");
+                say!("card in the slot, ask again every 10 s for that long. --repair-card: the write window");
+                say!("repairs a card marked \"not safely removed\" or not checking clean first, in the MPC");
+                say!("(fsck.exfat -y on the card, then checked again; refused if that doesn't leave it clean).");
                 say!("--cut-test records 4 takes and writes imports beside them in its own folder until");
                 say!("the stick is pulled; --after-cut FILE recovers them and checks every promise in");
                 say!("FILE (the cut run's saved text), then deletes the folder. Only with --desktop-test.");
@@ -294,6 +301,9 @@ fn parse() -> Result<Opts, String> {
     }
     if o.card_wait > 0 && !o.sd_card {
         return Err("--card-wait goes with --sd-card".into());
+    }
+    if o.repair_card && !o.sd_card {
+        return Err("--repair-card goes with --sd-card".into());
     }
     if o.fat.is_some() && !o.cut_test {
         return Err("--fat and --fat-hidden go with --cut-test; --after-cut takes the way from the saved text".into());
@@ -887,7 +897,8 @@ fn sd_card_main(base: &Path, o: &Opts) -> ExitCode {
     } else {
         sdcard::Places::mpc()
     }
-    .card_wait(Duration::from_secs(o.card_wait));
+    .card_wait(Duration::from_secs(o.card_wait))
+    .repair(o.repair_card);
     match sdcard::run(&places) {
         Ok(()) => {
             say!("done");
