@@ -235,6 +235,68 @@ fn own_steps_keep_their_transactions_and_leave_a_song_edits_out() {
     assert_eq!(txns(&done)[..full.len() - 1], full[1..]);
 }
 
+/// The one UNDO across the engines (audio tracks phase 4d.3): Redo is
+/// forgotten, a song edit's step too, and whole steps made at or before a
+/// transaction let go from the oldest; no region moves.
+#[test]
+fn redo_is_forgotten_and_older_steps_retire_and_no_region_moves() {
+    let mut r = two_tracks();
+    let (mut done, mut redo) = (Vec::new(), Vec::new());
+    let txns = |v: &[OwnStep]| v.iter().map(|o| o.txn).collect::<Vec<_>>();
+    let gain = |r: &mut Rig, track: usize, gain: f32| {
+        r.cmd(A::SetGain {
+            track,
+            at: BAR_TICKS,
+            gain,
+        });
+        r.run_to(r.frame + 1);
+    };
+    gain(&mut r, 0, 0.5);
+    gain(&mut r, 1, 0.25);
+    r.a.own_steps(&mut done, &mut redo);
+    let steps = txns(&done);
+    let (a, b) = (steps[steps.len() - 2], steps[steps.len() - 1]);
+    r.cmd(A::Undo);
+    r.run_to(r.frame + 1);
+    r.a.own_steps(&mut done, &mut redo);
+    assert_eq!(txns(&redo), [b]);
+    let regions = [r.a.regions(0).to_vec(), r.a.regions(1).to_vec()];
+    r.cmd(A::ForgetRedo);
+    r.run_to(r.frame + 1);
+    r.a.own_steps(&mut done, &mut redo);
+    assert!(redo.is_empty());
+    assert_eq!(r.a.history().1, 0);
+    r.cmd(A::Redo);
+    r.run_to(r.frame + 1);
+    assert_eq!(
+        [r.a.regions(0), r.a.regions(1)],
+        [&regions[0][..], &regions[1][..]]
+    );
+    // A song edit's step after it, then everything up to `a` retires.
+    let song = TransactionId::next();
+    r.cmd(A::Retime {
+        song,
+        retime: insert_bar(0),
+    });
+    r.run_to(r.frame + 1);
+    assert!(r.a.has_song_steps());
+    let moved = [r.a.regions(0).to_vec(), r.a.regions(1).to_vec()];
+    r.cmd(A::RetireThrough(a));
+    r.run_to(r.frame + 1);
+    assert_eq!(r.a.own_steps(&mut done, &mut redo), a);
+    assert!(done.is_empty(), "only the song edit's step is left");
+    assert!(r.a.has_song_steps());
+    assert_eq!(
+        [r.a.regions(0), r.a.regions(1)],
+        [&moved[0][..], &moved[1][..]]
+    );
+    // And through the song edit: nothing is left to undo.
+    r.cmd(A::RetireThrough(song));
+    r.run_to(r.frame + 1);
+    assert_eq!(r.a.history().0, 0);
+    assert!(!r.a.has_song_steps());
+}
+
 #[test]
 fn a_recording_refuses_a_song_edit_and_nothing_moves() {
     let mut r = two_tracks();

@@ -2541,6 +2541,78 @@ fn a_full_history_says_the_newest_step_it_let_go_of() {
     assert_ne!(let_go, TransactionId::NONE);
 }
 
+/// The one UNDO across the engines (audio tracks phase 4d.3): Redo is
+/// forgotten in every loop, a cleared one's too, and steps made at or
+/// before a transaction let go from each loop's oldest, a loop cleared
+/// before it with them; what plays stays as it is, and the memory only
+/// those steps held goes back.
+#[test]
+fn redo_is_forgotten_and_older_steps_retire_in_every_loop() {
+    use mpfree_transport::TransactionId;
+    let mut r = Rig::new(10, 128);
+    let z = dc(0.0);
+    let wait = |r: &mut Rig| r.run(r.frame + 4 * FADE as u64, &z);
+    let (mut done, mut redo) = (Vec::new(), Vec::new());
+    let txns = |d: &[mpfree_looper::StepTxn]| d.iter().map(|s| s.txn).collect::<Vec<_>>();
+    record_one_bar(&mut r, &dc(0.25));
+    r.overdub(2_000, &dc(0.1));
+    r.overdub(2_000, &dc(0.05));
+    r.cmd(L::Undo);
+    wait(&mut r);
+    r.l.loop_steps(0, &mut done, &mut redo);
+    let a = done[0].txn;
+    assert_eq!(redo.len(), 1);
+    let held = r.l.memory();
+    // Loop 2: a first pass and an overdub, then cleared and kept for Undo.
+    r.select(1);
+    r.cmd(L::SetBars(Some(1)));
+    r.cmd(L::Record);
+    r.run(r.frame + 3 * BAR as u64, &dc(0.2));
+    assert_eq!(r.phase(1), Phase::Playing);
+    r.overdub(2_000, &dc(0.1));
+    r.cmd(L::Clear);
+    wait(&mut r);
+    r.l.loop_steps(1, &mut done, &mut redo);
+    let (b, clear) = (done[0].txn, done[1].txn);
+    assert!(b > a && clear > b && done[1].step.is_none());
+    // Redo goes in every loop.
+    r.cmd(L::ForgetRedo);
+    wait(&mut r);
+    r.l.loop_steps(0, &mut done, &mut redo);
+    assert_eq!((txns(&done), redo.len()), (vec![a], 0));
+    assert!(r.l.memory().used < held.used, "the overdub undone lets go");
+    r.select(0);
+    r.cmd(L::Redo);
+    wait(&mut r);
+    r.l.loop_steps(0, &mut done, &mut redo);
+    assert_eq!(txns(&done), [a], "nothing to bring back");
+    // Retired through `a`: loop 1 keeps its layers but not the step.
+    r.cmd(L::RetireThrough(a));
+    wait(&mut r);
+    assert_eq!(r.l.loop_steps(0, &mut done, &mut redo), a);
+    assert!(done.is_empty());
+    assert_eq!(r.l.status().layers, 2, "plays as it did");
+    // Loop 2's steps under its Clear: the step first, then the Clear,
+    // and the kept loop's memory with it.
+    r.l.loop_steps(1, &mut done, &mut redo);
+    assert_eq!(txns(&done), [b, clear]);
+    r.cmd(L::RetireThrough(b));
+    wait(&mut r);
+    r.l.loop_steps(1, &mut done, &mut redo);
+    assert_eq!(txns(&done), [clear]);
+    assert!(r.l.loop_status(1).unwrap().kept);
+    r.cmd(L::RetireThrough(clear));
+    wait(&mut r);
+    r.l.loop_steps(1, &mut done, &mut redo);
+    assert!(done.is_empty());
+    assert!(!r.l.loop_status(1).unwrap().kept, "the cleared loop goes");
+    r.select(1);
+    r.cmd(L::Undo);
+    wait(&mut r);
+    assert_eq!(r.l.status().phase, Phase::Empty, "no Clear to undo");
+    assert_ne!(clear, TransactionId::NONE);
+}
+
 /// A clear during an overdub (a loop key held to clear started one on its
 /// press): the overdub is undone first, so UNDO brings the loop back as it
 /// was before it, and Redo brings what the overdub recorded.

@@ -2654,6 +2654,21 @@ impl TimeControl {
         self.takes.let_go()
     }
 
+    /// The one UNDO across the engines (audio tracks phase 4d.3): forget
+    /// the takes REDO could bring back (`redo`), else let go of those UNDO
+    /// could take back made at or before `through`
+    /// ([`mpfree_play::Takes::forget_redo`],
+    /// [`mpfree_play::Takes::retire_through`]). True if any went.
+    pub fn forget_takes(&mut self, redo: bool, through: TransactionId) -> bool {
+        let any = if redo {
+            self.takes.forget_redo()
+        } else {
+            self.takes.retire_through(through) > 0
+        };
+        self.changed |= any;
+        any
+    }
+
     /// What take `txn` is, as UNDO says it
     /// ([`crate::time::TimeHost::take_words`]).
     pub fn take_words(&self, txn: TransactionId) -> Option<String> {

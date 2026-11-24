@@ -2055,6 +2055,31 @@ impl Takes {
         self.let_go.0
     }
 
+    /// Forget every take redo could bring back: a new step in another
+    /// engine took their place in the one UNDO across the engines (audio
+    /// tracks phase 4d.3). True if there were any.
+    pub fn forget_redo(&mut self) -> bool {
+        let any = !self.undone.is_empty() || !self.cleared.is_empty();
+        self.undone.clear();
+        self.cleared.clear();
+        any
+    }
+
+    /// Let go of every take UNDO could take back made at or before
+    /// transaction `txn`, from the oldest: another engine let go of a step
+    /// that old, so the one UNDO stops there (audio tracks phase 4d.3).
+    /// What stays is the project as it is. The number let go.
+    pub fn retire_through(&mut self, txn: TransactionId) -> usize {
+        let n = self.done.iter().take_while(|t| t.txn <= txn).count();
+        if n > 0 {
+            let newest = self.done[n - 1].txn;
+            self.done.drain(..n);
+            self.let_go = (self.let_go.0.max(newest), self.let_go.0);
+            self.evicted = None;
+        }
+        n
+    }
+
     /// Free the pressure values clip `slot` of `track` holds that nothing
     /// can play again (refactor B4b): what none of its notes names, nor
     /// a note its Restore would bring back, nor a note an undo or redo
@@ -3521,6 +3546,38 @@ mod tests {
         t.withdraw(&mut p, (0, 0), &e, None, true).unwrap();
         assert_eq!(t.done()[0].txn, second);
         assert_eq!(t.let_go(), first);
+    }
+
+    /// The one UNDO across the engines (audio tracks phase 4d.3): a new
+    /// step elsewhere forgets what redo could bring, and a step let go
+    /// elsewhere lets go of every take made at or before it, the project
+    /// staying as it is.
+    #[test]
+    fn redo_is_forgotten_and_older_takes_retire_on_the_one_historys_word() {
+        let mut p = project();
+        let mut t = Takes::new(8);
+        for take in 1..=4 {
+            t.add(&mut p, &taken(i64::from(take) * 100, take)).unwrap();
+        }
+        let txns: Vec<TransactionId> = t.done().iter().map(|k| k.txn).collect();
+        t.undo(&mut p);
+        assert_eq!(t.undone().len(), 1);
+        assert!(t.forget_redo());
+        assert!(t.undone().is_empty());
+        assert_eq!(t.redo(&mut p), None, "nothing to bring back");
+        assert!(!t.forget_redo(), "nothing left to forget");
+        let before = p.clone();
+        assert_eq!(t.retire_through(TransactionId::NONE), 0);
+        assert_eq!(t.retire_through(txns[1]), 2);
+        assert_eq!(t.let_go(), txns[1]);
+        assert_eq!(p, before, "the project stays as it is");
+        assert_eq!(
+            t.done().iter().map(|k| k.txn).collect::<Vec<_>>(),
+            [txns[2]]
+        );
+        // UNDO stops at the oldest kept.
+        assert!(t.undo(&mut p).is_some());
+        assert_eq!(t.undo(&mut p), None);
     }
 
     #[test]
