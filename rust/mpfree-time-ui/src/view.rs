@@ -42,7 +42,13 @@ use crate::continuing::{ContinueAction, Continuing};
 use crate::editor::zoom::RollView;
 use crate::editor::{
     box_of, chord_name, drop_of, edit_rows, knob_name, length_name, lit_scale, pads, position_name,
-    sound_name, step_name, ChordShape, EditAction, Editor, Fold, GhostLayer, Hearing, LaneShow, Lens, LockMark, LockSetting, NoteBox, NoteGrid, NoteTool, ShowOffer, Tool, ToolAct, ToolBar, ToolKind, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, CLIP_END, EDIT_BUTTON, ERASE_SWEEP, FIELDS, GHOST_MOST, GHOST_TAP, HELD_FINE, HELD_FIRST, HELD_TURN, LOCK_LANES, MENU, PADS_WRITE, PEN, PRESSURE_END, PRESSURE_LANE, ROOT_MENU, SCALE_MENU, SHOW_MENU, SHOW_NONE, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK, TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION, ChordMark, CONTINUE_BAR, CONTINUE_NOTE,
+    sound_name, step_name, ChordMark, ChordShape, EditAction, Editor, Fold, GhostLayer, Hearing,
+    LaneShow, Lens, LockMark, LockSetting, NoteBox, NoteGrid, NoteTool, ShowOffer, Tool, ToolAct,
+    ToolBar, ToolKind, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, CLIP_END, CONTINUE_BAR,
+    CONTINUE_NOTE, EDIT_BUTTON, ERASE_SWEEP, FIELDS, GHOST_MOST, GHOST_TAP, HELD_FINE, HELD_FIRST,
+    HELD_TURN, LOCK_LANES, MENU, PADS_WRITE, PEN, PRESSURE_END, PRESSURE_LANE, ROOT_MENU,
+    SCALE_MENU, SHOW_MENU, SHOW_NONE, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK, TOOL_BUTTONS,
+    TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LINK, LIST_LINK_CLOSE, LIST_LINK_FROM_LIST,

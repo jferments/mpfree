@@ -2373,7 +2373,12 @@ mod tests {
             crate::project::track_kits_parse(&text),
             Ok(vec![(1, id(4)), (2, id(4)), (4, id(1)), (5, id(3))])
         );
-        let none = crate::project::track_kits_text(&TrackKits::new(3), &inst, &list, crate::instruments::TRACKS);
+        let none = crate::project::track_kits_text(
+            &TrackKits::new(3),
+            &inst,
+            &list,
+            crate::instruments::TRACKS,
+        );
         assert_eq!(none.lines().count(), 1);
     }
 

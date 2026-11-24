@@ -69,11 +69,11 @@ pub mod scenes;
 pub mod steps;
 pub mod time_edit;
 
+pub use arrange::{row_harmony, scene_length};
 pub use arrange::{
     Arrangement, FromScene, Marker, MorphRows, Placement, SongClips, SongSection, TempoPoint,
 };
 pub use audio::{AudioClip, ClipRegion, RecId, MAX_CLIP_REGIONS};
-pub use arrange::{row_harmony, scene_length};
 pub use mutate::{Amount, Original, Pitches};
 pub use scenes::{
     Follow, FollowAction, ListStep, Scene, SceneSettings, SongList, TrackProgram, MAX_SCENE_NAME,
