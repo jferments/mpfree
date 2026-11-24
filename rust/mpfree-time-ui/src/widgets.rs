@@ -793,8 +793,9 @@ pub const VEIL_TAP: usize = 16;
 /// The Show button's width, on the grid, the Song view and the song list
 /// (layout spec 4p).
 pub const SHOW_W: i32 = 72;
-/// `Toggle(slots + ADD_PART)`: Add a part.
-pub const ADD_PART: usize = 17;
+/// `Toggle(slots + ADD_PART)`: Add a part. Past the grid's other toggles
+/// (Arrange's take 16 to 31), under the strip's.
+pub const ADD_PART: usize = 32;
 /// `Toggle(slots + STRIP_CHIP + k)`: chip `k` of the row's chords.
 pub const STRIP_CHIP: usize = 64;
 /// `Toggle(slots + STRIP_BAR + bar)`: a bar of a strip with no chords yet.
