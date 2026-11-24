@@ -17157,6 +17157,147 @@ mod tests {
     /// a setting changed asks again; Done keeps it as one take, closes
     /// the tool and the editor follows the kept clip. Cancel goes back and
     /// closes it, and the editor opening again on the clip goes back too.
+    /// Make a style (composing step 6, board D): the clip card's Style
+    /// row opens the sheet read from the clip; Plan and Name change before
+    /// Keep; Keep puts the style in the song as one edit UNDO takes back,
+    /// and every Style row runs on into it; a second of the same name
+    /// replaces it; a built-in style's name is refused; Back keeps nothing.
+    #[test]
+    fn make_a_style_keeps_it_with_the_song_and_undo_takes_it_back() {
+        use mpfree_compose::{style_count, style_name, STYLES};
+        use mpfree_time_ui::editor::compose::{ContinueSet, STYLE_ROW};
+        use mpfree_time_ui::style_sheet::{StyleAction as S, NAME_ROW, PLAN_ROW};
+        let mut h = riff_host();
+        let said = h.act(TimeAction::MakeStyle { track: 0, slot: 0 }).unwrap();
+        assert_eq!(
+            said,
+            "style: read from riff: change Name and Plan, then Keep"
+        );
+        let st = h.state();
+        let sheet = st.style_sheet.as_deref().unwrap();
+        assert_eq!(sheet.made.name, "riff groove");
+        assert_eq!(sheet.from, "From riff · Track 1 · 1 bar");
+        assert_eq!(sheet.hits.len(), 8);
+        assert_eq!(sheet.row, PLAN_ROW);
+        // Plan steps among the built-in styles and stops at its ends.
+        let plan = sheet.made.plan;
+        let at = STYLES.iter().position(|s| s.name == plan).unwrap();
+        let toward = if at == 0 { 1 } else { -1 };
+        let said = h.act(TimeAction::Style(S::Step {
+            row: PLAN_ROW,
+            delta: toward,
+        }));
+        let moved = STYLES[(at as i32 + toward) as usize].name;
+        assert_eq!(
+            said.unwrap(),
+            format!("style: phrase plan and chords from {moved}")
+        );
+        let end = h.act(TimeAction::Style(S::Step {
+            row: PLAN_ROW,
+            delta: -9,
+        }));
+        let end = h
+            .act(TimeAction::Style(S::Step {
+                row: PLAN_ROW,
+                delta: -1,
+            }))
+            .or(end);
+        assert_eq!(
+            end.unwrap_err(),
+            format!("Plan: {} is the first", STYLES[0].name)
+        );
+        assert!(h
+            .act(TimeAction::Style(S::Step {
+                row: NAME_ROW,
+                delta: 1
+            }))
+            .is_err());
+        // Name: trimmed; empty or a built-in style's name refused.
+        assert!(h.act(TimeAction::Style(S::Name("  ".into()))).is_err());
+        let built_in = STYLES[0].name.to_uppercase();
+        assert!(h.act(TimeAction::Style(S::Name(built_in))).is_err());
+        let said = h.act(TimeAction::Style(S::Name(" Night riff ".into())));
+        assert_eq!(said.unwrap(), "style: named Night riff");
+        // Keep: in the song, the sheet closed, one edit.
+        let edits = h.state().done.len();
+        let said = h.act(TimeAction::Style(S::Keep)).unwrap();
+        assert_eq!(
+            said,
+            "style: Night riff kept: in every Style row (UNDO takes it back)"
+        );
+        assert_eq!(h.state().done.len(), edits + 1);
+        let st = h.state();
+        assert!(st.style_sheet.is_none());
+        assert_eq!(h.project().styles.len(), 1);
+        assert_eq!(st.styles.len(), 1);
+        assert_eq!(st.styles[0].name, "Night riff");
+        assert_eq!(st.styles[0].plan, STYLES[0].name);
+        assert_eq!(st.done.last().map(|t| t.style), Some(true));
+        // Continue's Style row runs on into it after the built-in ones.
+        let mut set = ContinueSet::default();
+        for _ in 0..style_count(&st.styles) {
+            set.step(STYLE_ROW, 1, &st.styles);
+        }
+        assert_eq!(set.value(STYLE_ROW, &st.styles), "Night riff");
+        assert_eq!(set.settings(set.q, &st.styles).style.name, "Night riff");
+        assert_eq!(style_name(STYLES.len(), &st.styles), "Night riff");
+        // The note editor's Style row has it too.
+        h.act(TimeAction::Edit(mpfree_time_ui::editor::EditAction::Open))
+            .unwrap();
+        let st = h.state();
+        assert_eq!(st.edit.as_ref().unwrap().editor.styles.len(), 1);
+        // UNDO takes it back, REDO brings it back; the editor follows.
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.project().styles.is_empty());
+        let st = h.state();
+        assert!(st.styles.is_empty());
+        assert!(st.edit.as_ref().unwrap().editor.styles.is_empty());
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(h.state().styles.len(), 1);
+        // Again under the same name: replaced, still one.
+        h.act(TimeAction::MakeStyle { track: 0, slot: 0 }).unwrap();
+        h.act(TimeAction::Style(S::Name("Night riff".into())))
+            .unwrap();
+        let said = h.act(TimeAction::Style(S::Keep)).unwrap();
+        assert_eq!(
+            said,
+            "style: Night riff replaced: in every Style row (UNDO takes it back)"
+        );
+        assert_eq!(h.project().styles.len(), 1);
+        // Back: nothing kept.
+        h.act(TimeAction::MakeStyle { track: 0, slot: 0 }).unwrap();
+        let edits = h.state().done.len();
+        assert_eq!(
+            h.act(TimeAction::Style(S::Back)).unwrap(),
+            "style: nothing kept"
+        );
+        assert!(h.state().style_sheet.is_none());
+        assert_eq!(h.state().done.len(), edits);
+        assert!(h.act(TimeAction::Style(S::Keep)).is_err());
+    }
+
+    /// The song holds 16 styles made from clips: a 17th is refused,
+    /// nothing changes, and the sheet stays open to rename it.
+    #[test]
+    fn a_seventeenth_style_is_refused() {
+        use mpfree_time_ui::style_sheet::StyleAction as S;
+        let mut h = riff_host();
+        for k in 0..mpfree_seq::MAX_STYLES {
+            h.act(TimeAction::MakeStyle { track: 0, slot: 0 }).unwrap();
+            h.act(TimeAction::Style(S::Name(format!("Riff {k}"))))
+                .unwrap();
+            h.act(TimeAction::Style(S::Keep)).unwrap();
+        }
+        h.act(TimeAction::MakeStyle { track: 0, slot: 0 }).unwrap();
+        let why = h.act(TimeAction::Style(S::Keep)).unwrap_err();
+        assert!(why.starts_with("The song holds 16 styles"), "{why}");
+        assert_eq!(h.project().styles.len(), mpfree_seq::MAX_STYLES);
+        assert!(h.state().style_sheet.is_some());
+        // Under an existing name it replaces that one.
+        h.act(TimeAction::Style(S::Name("Riff 3".into()))).unwrap();
+        assert!(h.act(TimeAction::Style(S::Keep)).is_ok());
+    }
+
     #[test]
     fn continue_from_the_note_editor_keeps_and_goes_back() {
         use mpfree_compose::{InstrumentKind, Lanes};

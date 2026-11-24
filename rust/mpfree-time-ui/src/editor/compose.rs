@@ -17,7 +17,10 @@
 //!
 //! The design is docs/dev/design/compose.md.
 
-use mpfree_compose::{Aim, Character, Ending, Keeps, RangeSetting, Settings, STYLES};
+use mpfree_compose::{
+    style_at, style_count, style_name, Aim, Character, ClipStyle, Ending, Keeps, RangeSetting,
+    Settings, STYLES,
+};
 use mpfree_transport::time::Tick;
 use mpfree_ui::widgets::OptionRow;
 
@@ -60,7 +63,8 @@ pub const RANGES: [RangeSetting; 3] = [
 /// tool's own): kept by the editor from one Continue to the next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ContinueSet {
-    /// An index into [`STYLES`].
+    /// An index into the Style row's list: [`STYLES`], then the project's
+    /// made styles ([`mpfree_compose::style_at`]).
     pub style: usize,
     /// One of [`BARS`].
     pub bars: u8,
@@ -277,11 +281,12 @@ fn bars_named(bars: &[u16]) -> String {
 }
 
 impl ContinueSet {
-    /// The settings an ask carries, with the Q-Links' `q`.
-    pub fn settings(&self, q: [i32; 4]) -> Settings {
+    /// The settings an ask carries, with the Q-Links' `q`; `made` is the
+    /// project's made styles, which the Style row runs on into.
+    pub fn settings(&self, q: [i32; 4], made: &[ClipStyle]) -> Settings {
         let pct = |v: i32| v.clamp(0, 100) as f32 / 100.0;
         Settings {
-            style: STYLES[self.style.min(STYLES.len() - 1)],
+            style: style_at(self.style.min(style_count(made) - 1), made),
             similarity: pct(q[0]),
             variation: pct(q[1]),
             activity: pct(q[2]),
@@ -309,12 +314,12 @@ impl ContinueSet {
     /// Row `row` stepped `delta`: true when a setting changed. Style,
     /// Character, Bars and Ending stop at their ends; a Keep is "yours"
     /// with a step up and "free" with a step down.
-    pub fn step(&mut self, row: usize, delta: i32) -> bool {
+    pub fn step(&mut self, row: usize, delta: i32, made: &[ClipStyle]) -> bool {
         let by = |i: usize, n: usize| (i as i64 + i64::from(delta)).clamp(0, n as i64 - 1) as usize;
         match row {
             STYLE_ROW => {
                 let was = self.style;
-                self.style = by(self.style, STYLES.len());
+                self.style = by(self.style, style_count(made));
                 self.style != was
             }
             CHARACTER_ROW => {
@@ -350,11 +355,11 @@ impl ContinueSet {
 
     /// Row `row`'s value as the drawer shows it (short, to fit the 250
     /// px drawer).
-    pub fn value(&self, row: usize) -> String {
+    pub fn value(&self, row: usize, made: &[ClipStyle]) -> String {
         let on = |b: bool| if b { "yours" } else { "free" }.to_string();
         let k = self.keeps;
         match row {
-            STYLE_ROW => STYLES[self.style.min(STYLES.len() - 1)].name.to_string(),
+            STYLE_ROW => style_name(self.style.min(style_count(made) - 1), made).to_string(),
             // "As the style" is wider than a row's value: the row says
             // "As style", the line under the roll says it in full.
             CHARACTER_ROW => match self.character {
@@ -381,13 +386,13 @@ impl ContinueSet {
     }
 
     /// The drawer's rows while Continue is open.
-    pub fn rows(&self) -> Vec<OptionRow> {
+    pub fn rows(&self, made: &[ClipStyle]) -> Vec<OptionRow> {
         CONTINUE_ROWS
             .iter()
             .enumerate()
             .map(|(r, name)| OptionRow {
                 name: name.to_string(),
-                value: self.value(r),
+                value: self.value(r, made),
                 ..OptionRow::default()
             })
             .collect()
@@ -396,9 +401,9 @@ impl ContinueSet {
     /// Row `row` as the log says it once stepped: "style Groove",
     /// "yearning: reaches up, leans on the high notes, lands a little
     /// late", "2 more bars", "leaves it open", "rhythm kept as yours".
-    pub fn said(&self, row: usize) -> String {
+    pub fn said(&self, row: usize, made: &[ClipStyle]) -> String {
         match row {
-            STYLE_ROW => format!("style {}", self.value(STYLE_ROW)),
+            STYLE_ROW => format!("style {}", self.value(STYLE_ROW, made)),
             CHARACTER_ROW => format!(
                 "{}: {}",
                 self.character.words().to_lowercase(),
@@ -408,7 +413,7 @@ impl ContinueSet {
             ENDING_ROW => self.ending.words().to_lowercase(),
             r => {
                 let name = CONTINUE_ROWS.get(r).copied().unwrap_or("").to_lowercase();
-                match self.value(r).as_str() {
+                match self.value(r, made).as_str() {
                     "yours" => format!("{name} kept as yours"),
                     _ => format!("{name} free"),
                 }
@@ -451,7 +456,7 @@ mod tests {
     #[test]
     fn the_settings_open_as_the_composers_own_and_go_back_whole() {
         let set = ContinueSet::default();
-        let s = set.settings(opening_q());
+        let s = set.settings(opening_q(), &[]);
         let d = Settings::default();
         assert_eq!(s.style.name, d.style.name);
         assert_eq!(
@@ -466,42 +471,42 @@ mod tests {
     #[test]
     fn rows_step_and_stop_at_their_ends() {
         let mut set = ContinueSet::default();
-        assert_eq!(set.value(0), "Minimal");
-        assert!(set.step(0, 1));
-        assert_eq!(set.value(0), STYLES[1].name);
-        assert!(set.step(0, 9));
-        assert!(!set.step(0, 1), "the last style stays");
-        assert_eq!(set.value(CHARACTER_ROW), "As style");
-        assert!(set.step(CHARACTER_ROW, 2));
-        assert_eq!(set.value(CHARACTER_ROW), "Yearning");
-        assert!(set.said(CHARACTER_ROW).starts_with("yearning: "));
-        assert!(set.step(CHARACTER_ROW, 9));
-        assert!(!set.step(CHARACTER_ROW, 1), "the last character stays");
-        assert!(set.step(CHARACTER_ROW, -9));
+        assert_eq!(set.value(0, &[]), "Minimal");
+        assert!(set.step(0, 1, &[]));
+        assert_eq!(set.value(0, &[]), STYLES[1].name);
+        assert!(set.step(0, 9, &[]));
+        assert!(!set.step(0, 1, &[]), "the last style stays");
+        assert_eq!(set.value(CHARACTER_ROW, &[]), "As style");
+        assert!(set.step(CHARACTER_ROW, 2, &[]));
+        assert_eq!(set.value(CHARACTER_ROW, &[]), "Yearning");
+        assert!(set.said(CHARACTER_ROW, &[]).starts_with("yearning: "));
+        assert!(set.step(CHARACTER_ROW, 9, &[]));
+        assert!(!set.step(CHARACTER_ROW, 1, &[]), "the last character stays");
+        assert!(set.step(CHARACTER_ROW, -9, &[]));
         assert_eq!(set.character, Character::AsStyle);
-        assert_eq!(set.value(BARS_ROW), "+4 bars");
-        assert!(set.step(BARS_ROW, -1));
+        assert_eq!(set.value(BARS_ROW, &[]), "+4 bars");
+        assert!(set.step(BARS_ROW, -1, &[]));
         assert_eq!(set.bars, 2);
-        assert_eq!(set.said(BARS_ROW), "2 more bars");
-        assert!(set.step(BARS_ROW, -5));
-        assert_eq!(set.value(BARS_ROW), "+1 bar");
-        assert!(!set.step(BARS_ROW, -1));
-        assert!(set.step(ENDING_ROW, 1));
-        assert_eq!(set.value(ENDING_ROW), "Open");
-        assert_eq!(set.said(ENDING_ROW), "leaves it open");
+        assert_eq!(set.said(BARS_ROW, &[]), "2 more bars");
+        assert!(set.step(BARS_ROW, -5, &[]));
+        assert_eq!(set.value(BARS_ROW, &[]), "+1 bar");
+        assert!(!set.step(BARS_ROW, -1, &[]));
+        assert!(set.step(ENDING_ROW, 1, &[]));
+        assert_eq!(set.value(ENDING_ROW, &[]), "Open");
+        assert_eq!(set.said(ENDING_ROW, &[]), "leaves it open");
         assert_eq!(
-            set.said(0),
+            set.said(0, &[]),
             format!("style {}", STYLES.last().unwrap().name)
         );
         // A Keep is yours with a step up and free with a step down.
-        assert_eq!(set.value(KEEP_ROW), "free");
-        assert!(set.step(KEEP_ROW, 1));
-        assert!(!set.step(KEEP_ROW, 1));
-        assert!(set.settings(opening_q()).keeps.rhythm);
-        assert_eq!(set.said(KEEP_ROW), "rhythm kept as yours");
-        assert!(set.step(KEEP_ROW, -1));
-        assert!(!set.step(9, 1));
-        assert_eq!(set.rows().len(), CONTINUE_ROWS.len());
+        assert_eq!(set.value(KEEP_ROW, &[]), "free");
+        assert!(set.step(KEEP_ROW, 1, &[]));
+        assert!(!set.step(KEEP_ROW, 1, &[]));
+        assert!(set.settings(opening_q(), &[]).keeps.rhythm);
+        assert_eq!(set.said(KEEP_ROW, &[]), "rhythm kept as yours");
+        assert!(set.step(KEEP_ROW, -1, &[]));
+        assert!(!set.step(9, 1, &[]));
+        assert_eq!(set.rows(&[]).len(), CONTINUE_ROWS.len());
     }
 
     /// Bars and notes are picked one at a time, never both; Lock locks

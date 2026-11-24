@@ -61,6 +61,7 @@ use crate::song::{
     PANEL_MUTE, PANEL_SOLO, PANEL_TAKES, REC, REGION_SLOTS, RULER_ROW, SECTION_TAP, SLIDE_ROW,
     START_ROW, TEMPO_ROW,
 };
+use crate::style_sheet::{StyleSheetView, STYLE_SHEET};
 use crate::widgets::{
     BarButton, BarItem, CellAlert, CellMark, CellState, ClipGrid, GridCell, GridTrack, MorphBar,
     PartButton, Run, SongMark, TakeItem, TakeList, TransportBar, ADD_DISMISS, ADD_KIND, ADD_PART,
@@ -167,6 +168,15 @@ pub const SONG_MAKE_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, make-phrase:250):*):*, qlinks:128):*, hint:26)";
 pub const LIST_MAKE_LAYOUT: &str =
     "col(header:60, row(col(transport:44, row(song-list:*, make-phrase:250):*):*, qlinks:128):*, hint:26)";
+/// The three views with the Make a style sheet open from the clip card
+/// (composing step 6, board D): the sheet in the clip card's and the
+/// takes' place, as Make a phrase's.
+pub const CLIPS_STYLE_LAYOUT: &str =
+    "col(header:60, row(col(transport:44, row(col(clips:*, morph:64):*, make-style:250):*):*, qlinks:128):*, hint:26)";
+pub const SONG_STYLE_LAYOUT: &str =
+    "col(header:60, row(col(transport:44, row(col(song:*, morph:64):*, make-style:250):*):*, qlinks:128):*, hint:26)";
+pub const LIST_STYLE_LAYOUT: &str =
+    "col(header:60, row(col(transport:44, row(song-list:*, make-style:250):*):*, qlinks:128):*, hint:26)";
 /// The three views with the Record panel on its Chords tab: the row's
 /// chords in the record settings' place.
 pub const CLIPS_CHORDS_LAYOUT: &str =
@@ -229,7 +239,10 @@ pub fn note_cards(e: &EditInfo) -> Option<(String, [QLinkCard; 4])> {
         });
         let notes = if n == 1 { "note" } else { "notes" };
         if t.kind == ToolKind::Continue {
-            let more = e.editor.continuing.value(crate::editor::compose::BARS_ROW);
+            let more = e
+                .editor
+                .continuing
+                .value(crate::editor::compose::BARS_ROW, &e.editor.styles);
             return Some((format!("Continue · {more}"), cards));
         }
         return Some((format!("{} · {n} {notes}", t.kind.name()), cards));
@@ -524,7 +537,7 @@ pub const OTHERS: [FollowAction; 9] = [
     FollowAction::Stop,
 ];
 /// The clip settings card's rows, top to bottom.
-pub const CLIP_ROWS: [&str; 16] = [
+pub const CLIP_ROWS: [&str; 17] = [
     "Length",
     "Speed",
     "Swing",
@@ -541,6 +554,7 @@ pub const CLIP_ROWS: [&str; 16] = [
     "Melody",
     "Continue",
     "Phrase",
+    "Style",
 ];
 /// The clip card's Direction row (S6).
 pub const CLIP_DIRECTION: usize = 11;
@@ -590,6 +604,9 @@ pub const CLIP_CONTINUE: usize = 14;
 /// The clip card's Phrase row (composing tools, step 3 of the phrases):
 /// either arrow opens the Make a phrase sheet on the clip's notes.
 pub const CLIP_PHRASE: usize = 15;
+/// The clip card's Style row (composing step 6, board D): either arrow
+/// opens the Make a style sheet on the clip, read from its notes.
+pub const CLIP_STYLE: usize = 16;
 
 /// A play direction (S6) as the clip card names it.
 pub fn direction_name(d: Direction) -> &'static str {
@@ -959,6 +976,8 @@ pub struct TakeRow {
     pub chords: Option<usize>,
     /// Add a part added a part.
     pub part: bool,
+    /// Make a style kept a style (composing step 6).
+    pub style: bool,
 }
 
 impl TakeRow {
@@ -1015,6 +1034,7 @@ impl TakeRow {
             }),
             chords: t.chords.as_ref().map(|e| e.row),
             part: t.part,
+            style: t.styles.is_some(),
         }
     }
 
@@ -1026,7 +1046,8 @@ impl TakeRow {
     /// blocks under it),
     /// "list" for the
     /// song list, "scene" for the scene editor and "song → scenes"; for
-    /// the composing tools "continue", "fit", "add part" and "chords".
+    /// the composing tools "continue", "fit", "add part", "chords" and
+    /// "style".
     pub fn word(&self) -> &'static str {
         if let Some((word, _)) = self.row_tool {
             return word;
@@ -1039,6 +1060,9 @@ impl TakeRow {
         }
         if self.chords.is_some() {
             return "chords";
+        }
+        if self.style {
+            return "style";
         }
         if let Some(c) = self.song {
             return match c {
@@ -1336,6 +1360,13 @@ pub struct TimeState {
     /// chords as it plays: its line heard again with its clips, or what
     /// they say when it has none. None until heard.
     pub row_chords: Option<(usize, Arc<mpfree_compose::RowChords>)>,
+    /// The project's styles made from clips (composing step 6), read from
+    /// its lines: every Style row runs on into them after the built-in
+    /// ones.
+    pub styles: Arc<[mpfree_compose::ClipStyle]>,
+    /// Make a style, open on a clip (composing step 6): in the clip
+    /// card's place on Arrange's Clips.
+    pub style_sheet: Option<Box<crate::style_sheet::StyleSheet>>,
 }
 
 /// What a conversion (Scenes → song, List → song, Song → scenes) made
@@ -1675,6 +1706,8 @@ impl TimeState {
             adding: None,
             unfit: Arc::from(Vec::new()),
             row_chords: None,
+            styles: Arc::from(Vec::new()),
+            style_sheet: None,
         }
     }
 
@@ -1955,6 +1988,15 @@ pub enum TimeAction {
         track: usize,
         slot: usize,
     },
+    /// The clip card's Style row (composing step 6, board D): the Make a
+    /// style sheet opens on the clip, read from its notes.
+    MakeStyle {
+        track: usize,
+        slot: usize,
+    },
+    /// A touch on the Make a style sheet, its naming keyboard's Enter, or
+    /// the wheel and - / + while it shows.
+    Style(crate::style_sheet::StyleAction),
     /// Convert to notes' preview (step sequencer refactor E1,
     /// `mpfree_seq::convert`): what converting a clip that follows the
     /// pads would make, or every reason it can't; nothing changes.
@@ -2633,6 +2675,9 @@ pub fn action(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
 fn action_of(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
     let t = &st.transport;
     match (ev.widget.as_str(), &ev.kind) {
+        // The Make a style sheet: its Name button is the app's (its naming
+        // keyboard).
+        (STYLE_SHEET, kind) => crate::style_sheet::StyleAction::of(kind).map(TimeAction::Style),
         (TRANSPORT, EventKind::Tab(i)) => Some(match BarButton::ALL.get(*i)? {
             BarButton::Stop => TimeAction::Transport(Command::Stop),
             BarButton::Play => TimeAction::Transport(Command::Play),
@@ -4158,6 +4203,11 @@ pub fn clip_rows(st: &TimeState) -> Vec<OptionRow> {
                 value: phrase_card_value(c),
                 ..OptionRow::default()
             });
+            rows.push(OptionRow {
+                name: CLIP_ROWS[CLIP_STYLE].to_string(),
+                value: style_card_value(c),
+                ..OptionRow::default()
+            });
             rows
         }
         None => Vec::new(),
@@ -4199,7 +4249,7 @@ pub fn continue_card_value(c: &ClipInfo) -> String {
     } else if c.notes == 0 {
         "no notes".to_string()
     } else {
-        crate::editor::compose::ContinueSet::default().value(crate::editor::compose::BARS_ROW)
+        crate::editor::compose::ContinueSet::default().value(crate::editor::compose::BARS_ROW, &[])
     }
 }
 
@@ -4210,6 +4260,20 @@ pub fn phrase_card_value(c: &ClipInfo) -> String {
     match continue_card_value(c) {
         why if c.looped.is_some() || c.holds == mpfree_seq::Holds::Hits || c.notes == 0 => why,
         _ => "Make ›".to_string(),
+    }
+}
+
+/// The clip card's Style row's value (composing step 6): "Make ›", which
+/// opens the Make a style sheet, "no notes" on a clip with none, "—" on a
+/// loop's cell. A clip of pad hits makes a style too: its feel and accents
+/// are in when its hits are played, whatever the pads play.
+pub fn style_card_value(c: &ClipInfo) -> String {
+    if c.looped.is_some() {
+        "—".to_string()
+    } else if c.notes == 0 {
+        "no notes".to_string()
+    } else {
+        "Make ›".to_string()
     }
 }
 
@@ -4745,6 +4809,17 @@ fn settings_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction,
             Err("Continue: play or draw some notes to carry on first".into())
         } else {
             Ok(TimeAction::Continue(ContinueAction::Open { track, slot }))
+        };
+    }
+    // Style: the Make a style sheet opens on the clip (composing step 6),
+    // or why it can't.
+    if index == CLIP_STYLE {
+        return if c.looped.is_some() {
+            Err("A loop's cell has no notes to make a style of".into())
+        } else if c.notes == 0 {
+            Err("Make a style: play or draw some notes first".into())
+        } else {
+            Ok(TimeAction::MakeStyle { track, slot })
         };
     }
     // Phrase: the Make a phrase sheet opens on the clip's notes (step 3
@@ -5342,6 +5417,9 @@ fn take_said(st: &TimeState, row: &TakeRow) -> String {
     }
     if let Some(r) = row.chords {
         return format!("row {}'s chords", r + 1);
+    }
+    if row.style {
+        return "a style from a clip".into();
     }
     match (row.replaced, row.variant) {
         (Some(Replaced::Reload), _) => return "saved state".into(),
@@ -7234,6 +7312,7 @@ impl TimePage {
         ui.add(CHORDS_CARD, chords);
         ui.add(ADD_PANEL, AddPanel::new());
         ui.add(MAKE_SHEET, MakeSheet::new());
+        ui.add(STYLE_SHEET, StyleSheetView::default());
         ui.add(TAKES, TakeList::new("Takes"));
         ui.add(MORPH, MorphBar::new());
         ui.add(SONG, SongLanes::new());
@@ -7532,14 +7611,26 @@ impl TimePage {
         }
         if matches!(
             ui.layout_of(CLIPS_PAGE),
-            Some(SONG_LAYOUT | SONG_CARD_LAYOUT | SONG_CHORDS_LAYOUT | SONG_MAKE_LAYOUT)
+            Some(
+                SONG_LAYOUT
+                    | SONG_CARD_LAYOUT
+                    | SONG_CHORDS_LAYOUT
+                    | SONG_MAKE_LAYOUT
+                    | SONG_STYLE_LAYOUT
+            )
         ) {
             self.first_bar = (self.first_bar + i64::from(delta) * self.bars_step()).max(0);
             return None;
         }
         if matches!(
             ui.layout_of(CLIPS_PAGE),
-            Some(LIST_LAYOUT | LIST_CARD_LAYOUT | LIST_CHORDS_LAYOUT | LIST_MAKE_LAYOUT)
+            Some(
+                LIST_LAYOUT
+                    | LIST_CARD_LAYOUT
+                    | LIST_CHORDS_LAYOUT
+                    | LIST_MAKE_LAYOUT
+                    | LIST_STYLE_LAYOUT
+            )
         ) {
             // The list scrolls with a drag.
             return None;
@@ -8047,6 +8138,9 @@ impl TimePage {
             _ if self.make.is_some() && st.list_view => LIST_MAKE_LAYOUT,
             (false, true, _) if self.make.is_some() => SONG_MAKE_LAYOUT,
             (false, false, _) if self.make.is_some() => CLIPS_MAKE_LAYOUT,
+            _ if st.style_sheet.is_some() && st.list_view => LIST_STYLE_LAYOUT,
+            (false, true, _) if st.style_sheet.is_some() => SONG_STYLE_LAYOUT,
+            (false, false, _) if st.style_sheet.is_some() => CLIPS_STYLE_LAYOUT,
             _ if st.list_view && self.chords_card => LIST_CHORDS_LAYOUT,
             _ if st.list_view && self.clip_card => LIST_CARD_LAYOUT,
             _ if st.list_view => LIST_LAYOUT,
@@ -8072,6 +8166,7 @@ impl TimePage {
                 CLIPS_ADD_LAYOUT,
                 CLIPS_CHORDS_LAYOUT,
                 CLIPS_MAKE_LAYOUT,
+                CLIPS_STYLE_LAYOUT,
             ]
             .contains(&l)
         });
@@ -8568,6 +8663,16 @@ impl TimePage {
                 if let Some(w) = ui.get_mut::<MakeSheet>(MAKE_SHEET) {
                     w.view = v.clone();
                 }
+            }
+        }
+        // The Make a style sheet, while it shows (the time engine's).
+        let sheet = st.style_sheet.as_deref();
+        if ui
+            .get::<StyleSheetView>(STYLE_SHEET)
+            .is_some_and(|w| w.sheet.as_ref() != sheet)
+        {
+            if let Some(w) = ui.get_mut::<StyleSheetView>(STYLE_SHEET) {
+                w.sheet = sheet.cloned();
             }
         }
         // Add a part's panel and the Chords tab, while they show.
@@ -9224,6 +9329,8 @@ mod tests {
             (SONG_CARD_LAYOUT, SONG, CLIP_CARD),
             (CLIPS_MAKE_LAYOUT, CLIPS, MAKE_SHEET),
             (SONG_MAKE_LAYOUT, SONG, MAKE_SHEET),
+            (CLIPS_STYLE_LAYOUT, CLIPS, STYLE_SHEET),
+            (SONG_STYLE_LAYOUT, SONG, STYLE_SHEET),
             (EDIT_DRAWER_LAYOUT, NOTES, EDIT_OPTIONS),
         ] {
             ui.set_layout(CLIPS_PAGE, layout).unwrap();
@@ -9237,7 +9344,7 @@ mod tests {
             let s = ui.rect_of(side).unwrap();
             assert_eq!((s.x, s.w), (878, SIDE_W), "{layout}");
             // The Make a phrase sheet runs down the whole column: no takes.
-            let takes = (side != MAKE_SHEET).then_some((878, SIDE_W));
+            let takes = (side != MAKE_SHEET && side != STYLE_SHEET).then_some((878, SIDE_W));
             assert_eq!(ui.rect_of(TAKES).map(|t| (t.x, t.w)), takes, "{layout}");
             let b = ui.rect_of(body).unwrap();
             assert_eq!((b.x, b.right()), (12, 866), "{layout}");
@@ -9351,11 +9458,11 @@ mod tests {
         let mut set = crate::editor::compose::ContinueSet::default();
         for row in 0..crate::editor::compose::CONTINUE_ROWS.len() {
             for d in [-9, 9] {
-                set.step(row, d);
-                values.push(set.value(row));
+                set.step(row, d, &[]);
+                values.push(set.value(row, &[]));
             }
-            set.step(row, 1);
-            values.push(set.value(row));
+            set.step(row, 1, &[]);
+            values.push(set.value(row, &[]));
         }
         values.extend(["no tune", "no notes"].map(String::from));
         for name in RECORD_ROWS
@@ -11807,6 +11914,7 @@ mod tests {
             followed: None,
             chords: None,
             part: false,
+            style: false,
         };
         let mut st = st;
         st.done = vec![take];
@@ -12082,7 +12190,8 @@ mod tests {
                 "Mutate —",
                 "Melody pads",
                 "Continue no tune",
-                "Phrase no tune"
+                "Phrase no tune",
+                "Style no notes"
             ]
         );
         let step = |st: &TimeState, index: usize, delta: i32| {
@@ -12598,6 +12707,74 @@ mod tests {
         assert!(why(&st).contains("loop's cell"), "{}", why(&st));
     }
 
+    /// The card's Style row (composing step 6, board D): "Make ›" on a
+    /// clip with notes, pad hits too, either arrow asking for the Make a
+    /// style sheet (the time engine's); on an empty clip or a loop's cell
+    /// it says why.
+    #[test]
+    fn the_clip_cards_style_row_opens_the_make_a_style_sheet() {
+        let mut st = state();
+        st.armed = Some(1);
+        let c = st.tracks[1].slots[1].as_mut().unwrap();
+        c.notes = 4;
+        c.holds = mpfree_seq::Holds::Hits;
+        let shown = |st: &TimeState| clip_rows(st)[CLIP_STYLE].clone();
+        let row = shown(&st);
+        assert_eq!((row.name.as_str(), row.value.as_str()), ("Style", "Make ›"));
+        let open = Ok(TimeAction::MakeStyle { track: 1, slot: 1 });
+        assert_eq!(card_action(&st, CLIP_STYLE, 1, false), open);
+        assert_eq!(card_action(&st, CLIP_STYLE, -1, false), open);
+        let why = |st: &TimeState| card_action(st, CLIP_STYLE, 1, false).unwrap_err();
+        st.tracks[1].slots[1].as_mut().unwrap().notes = 0;
+        assert_eq!(shown(&st).value, "no notes");
+        assert!(why(&st).contains("some notes"), "{}", why(&st));
+        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
+        assert_eq!(shown(&st).value, "—");
+        assert!(why(&st).contains("loop's cell"), "{}", why(&st));
+    }
+
+    /// The sheet open, the page shows it in the card's column, and its
+    /// touches but Name are the time engine's.
+    #[test]
+    fn the_make_a_style_sheet_takes_the_cards_column() {
+        use crate::style_sheet::{StyleAction, STYLE_BACK, STYLE_KEEP, STYLE_NAME};
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add("header", Header::new(&["Play", "Clips"]));
+        ui.add("hint", Label::new("", Tone::Dim, Align::Center));
+        let mut page = TimePage::add_to(&mut ui).unwrap();
+        ui.show(CLIPS_PAGE).unwrap();
+        let mut st = state();
+        st.style_sheet = Some(Box::new(crate::sample::style_sheet_sample()));
+        page.update(&mut ui, &st);
+        assert_eq!(ui.layout_of(CLIPS_PAGE), Some(CLIPS_STYLE_LAYOUT));
+        assert_eq!(
+            ui.get::<StyleSheetView>(STYLE_SHEET)
+                .unwrap()
+                .sheet
+                .as_ref(),
+            st.style_sheet.as_deref()
+        );
+        let ev = |k| UiEvent {
+            widget: STYLE_SHEET.to_string(),
+            kind: EventKind::Toggle(k),
+        };
+        assert_eq!(action(&ev(STYLE_NAME), &st), None);
+        assert_eq!(
+            action(&ev(STYLE_BACK), &st),
+            Some(TimeAction::Style(StyleAction::Back))
+        );
+        assert_eq!(
+            action(&ev(STYLE_KEEP), &st),
+            Some(TimeAction::Style(StyleAction::Keep))
+        );
+        st.song_view = true;
+        page.update(&mut ui, &st);
+        assert_eq!(ui.layout_of(CLIPS_PAGE), Some(SONG_STYLE_LAYOUT));
+        st.style_sheet = None;
+        page.update(&mut ui, &st);
+        assert_eq!(ui.layout_of(CLIPS_PAGE), Some(SONG_LAYOUT));
+    }
+
     #[test]
     fn shift_doubles_or_halves_the_cards_length_and_speed() {
         let mut st = state();
@@ -12955,6 +13132,27 @@ mod tests {
     /// only reads; a part picked there takes its name and first synth; a
     /// track added while it is open moves it on; and with the project
     /// full a full row says why.
+    /// Add a part's Style row runs on into the song's styles made from
+    /// clips after the built-in ones (composing step 6), and a try asks
+    /// with the made style; with none, the last built-in one is the end.
+    #[test]
+    fn add_a_parts_style_row_runs_on_into_the_made_styles() {
+        use crate::add_view::{AddPick, ROW_STYLE};
+        use mpfree_compose::STYLES;
+        let mut st = state();
+        let mut p = AddPick::open(&st, 2, None).unwrap();
+        while p.step(&st, ROW_STYLE, 1).unwrap_or(false) {}
+        assert_eq!(p.value(&st, ROW_STYLE), STYLES[STYLES.len() - 1].name);
+        let sheet = crate::sample::style_sheet_sample();
+        st.styles = Arc::from(vec![sheet.made.clone()]);
+        let mut p = AddPick::open(&st, 2, None).unwrap();
+        while p.step(&st, ROW_STYLE, 1).unwrap_or(false) {}
+        assert_eq!(p.value(&st, ROW_STYLE), "Clip 1 groove");
+        assert_eq!(p.settings().style.name, "Clip 1 groove");
+        assert!(p.step(&st, ROW_STYLE, -1).unwrap());
+        assert_eq!(p.value(&st, ROW_STYLE), STYLES[STYLES.len() - 1].name);
+    }
+
     #[test]
     fn new_track_is_the_track_rows_last_choice_and_its_sound_row_picks_a_synth() {
         use crate::add_view::{AddPick, PARTS, ROW_SOUND, ROW_TRACK};
@@ -13992,6 +14190,7 @@ mod tests {
             followed: None,
             chords: None,
             part: false,
+            style: false,
         };
         st.done = vec![row(1), row(2)];
         st.undone = vec![row(4), row(3)];
@@ -14039,6 +14238,7 @@ mod tests {
             followed: None,
             chords: None,
             part: false,
+            style: false,
         };
         let (items, _) = take_items(&st);
         assert_eq!(
@@ -14071,6 +14271,7 @@ mod tests {
             followed: None,
             chords: None,
             part: false,
+            style: false,
         };
         assert_eq!(take_items(&st).0[2].title, "Edit 5 · Bass / 1");
         assert_eq!(st.done[1].short(), "edit 5");

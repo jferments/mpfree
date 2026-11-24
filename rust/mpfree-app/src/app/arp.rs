@@ -621,6 +621,15 @@ impl App {
         ))]
     }
 
+    /// The song's style lines (composing step 6), for New idea's Style
+    /// row: read again when they changed.
+    pub fn styles_from(&mut self, lines: &[String]) {
+        if self.made_lines != lines {
+            self.made_lines = lines.to_vec();
+            self.made_styles = std::sync::Arc::from(mpfree_compose::clip_styles(lines));
+        }
+    }
+
     /// A touch on the Arp panel or the quick band.
     pub fn arp_action(&mut self, a: ArpAction) -> Vec<Effect> {
         match a {

@@ -1659,7 +1659,7 @@ fn continue_sample(picks: bool, yearning: bool) -> Result<TimeState, String> {
     }
     let settings = mpfree_compose::Settings {
         seed: 2,
-        ..set.settings(set.q)
+        ..set.settings(set.q, &[])
     };
     let on = OnClip {
         project: &s.project,
@@ -2481,6 +2481,59 @@ pub fn empty_clip_state() -> Result<TimeState, String> {
         ghosts: Default::default(),
     }));
     Ok(state)
+}
+
+/// Make a style open (composing step 6, board D): a made-up two-bar drum
+/// groove on Clip 1 of a Drums track, read as Keep would keep it: kick on
+/// 1 and the "and" of 3, the snare loud on 2 and 4, 1/16 hats with their
+/// 8ths accented and soft ghost notes between, swung 56 %.
+pub fn style_sheet_sample() -> crate::style_sheet::StyleSheet {
+    use mpfree_compose::{read_clip, realize::PlainNote, ClipStyle};
+    use mpfree_transport::time::{Meter, Swing, PPQ};
+    let meter = Meter::default();
+    let bar = meter.bar_ticks();
+    let step = Tick::from(PPQ) / 4;
+    let mut notes: Vec<PlainNote> = Vec::new();
+    let mut hit = |at: Tick, pitch: u8, velocity: u8| {
+        notes.push(PlainNote {
+            at,
+            len: step / 2,
+            pitch,
+            velocity,
+        })
+    };
+    for b in 0..2 {
+        let start = b * bar;
+        for s in 0..16 {
+            let at = start + Tick::from(s) * step;
+            match s {
+                0 | 10 => hit(at, 36, 110),
+                4 | 12 => hit(at, 38, 118),
+                _ => {}
+            }
+            let hat = match s % 4 {
+                0 => 96,
+                2 => 84,
+                _ => 52,
+            };
+            hit(at, 42, hat);
+        }
+    }
+    notes.sort_by_key(|n| n.at);
+    let swing = Swing::new(PPQ / 4, 56).unwrap_or_default();
+    let made = read_clip(&notes, 2 * bar, meter, 96.0, swing)
+        .map(|read| ClipStyle::new("Clip 1", read, meter))
+        .expect("a groove with notes reads");
+    crate::style_sheet::StyleSheet {
+        track: 0,
+        slot: 0,
+        made,
+        from: "From Clip 1 · Drums · 2 bars".to_string(),
+        hits: notes.iter().map(|n| (n.at, n.velocity)).collect(),
+        length: 2 * bar,
+        bar,
+        row: crate::style_sheet::PLAN_ROW,
+    }
 }
 
 #[cfg(test)]

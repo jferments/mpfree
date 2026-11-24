@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use mpfree_arp::{Phrase, PhraseKind};
+use mpfree_compose::{style_at, style_count, style_name, ClipStyle};
 use mpfree_compose::{InstrumentKind, Lanes, Relation, Settings, STYLES};
 use mpfree_context::chord::{Chord, ChordAnswer, ChordSpan, ChordTimeline, Heard, Quality};
 use mpfree_context::PartRole;
@@ -228,8 +229,13 @@ pub struct AddPick {
     pub track: usize,
     pub part: PartRole,
     pub relation: Relation,
-    /// An index into [`STYLES`].
+    /// An index into [`STYLES`], then the styles made from clips
+    /// ([`mpfree_compose::style_at`]).
     pub style: usize,
+    /// The styles made from clips (composing step 6), the song's as the
+    /// panel opened: the Style row runs on into them after the built-in
+    /// ones, before the phrases.
+    pub made: Arc<[ClipStyle]>,
     /// One of [`PART_BARS`].
     pub bars: Option<u32>,
     /// The Q-Links: Similarity, Variation and Activity in %, Range 0 to 2
@@ -279,6 +285,7 @@ impl AddPick {
                 .iter()
                 .position(|s| s.name == Settings::default().style.name)
                 .unwrap_or(0),
+            made: Arc::clone(&st.styles),
             bars: None,
             q: opening_q(),
             new_track: false,
@@ -395,27 +402,29 @@ impl AddPick {
                 Ok(changed)
             }
             ROW_STYLE => {
-                // The styles, then the phrases of the part's kind.
+                // The styles (the built-in ones, then those made from
+                // clips), then the phrases of the part's kind.
                 let phrases = self.part_phrases();
+                let styles = style_count(&self.made);
                 let at = match self.phrase {
-                    Some(i) => STYLES.len() + phrases.iter().position(|&p| p == i).unwrap_or(0),
-                    None => self.style.min(STYLES.len() - 1),
+                    Some(i) => styles + phrases.iter().position(|&p| p == i).unwrap_or(0),
+                    None => self.style.min(styles - 1),
                 };
-                let to = by(at, STYLES.len() + phrases.len());
+                let to = by(at, styles + phrases.len());
                 if to == at && delta > 0 && phrases.is_empty() {
                     return Err(match self.part {
                         PartRole::Drums => "Drums take no phrase: a phrase plays notes".to_string(),
                         _ => format!(
                             "{} is the last style, and there's no phrase of this kind yet",
-                            STYLES[STYLES.len() - 1].name
+                            style_name(styles - 1, &self.made)
                         ),
                     });
                 }
-                if to < STYLES.len() {
+                if to < styles {
                     self.style = to;
                     self.phrase = None;
                 } else {
-                    self.phrase = Some(phrases[to - STYLES.len()]);
+                    self.phrase = Some(phrases[to - styles]);
                 }
                 Ok(to != at)
             }
@@ -524,7 +533,7 @@ impl AddPick {
             ROW_ROLE => self.relation.words().to_string(),
             ROW_STYLE => match self.phrase_of() {
                 Some((name, _)) => name,
-                None => STYLES[self.style.min(STYLES.len() - 1)].name.to_string(),
+                None => style_name(self.style, &self.made).to_string(),
             },
             ROW_BARS => match self.bars {
                 None => format!("{} · the row", row_bars(st, self.row)),
@@ -540,7 +549,7 @@ impl AddPick {
     pub fn settings(&self) -> Settings {
         let pct = |v: i32| v.clamp(0, 100) as f32 / 100.0;
         Settings {
-            style: STYLES[self.style.min(STYLES.len() - 1)],
+            style: style_at(self.style, &self.made),
             similarity: pct(self.q[0]),
             variation: pct(self.q[1]),
             activity: pct(self.q[2]),
