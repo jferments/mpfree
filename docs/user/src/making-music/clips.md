@@ -1,7 +1,7 @@
 <!--
 status: changing
 covers: rust/mpfree-seq rust/mpfree-play rust/mpfree-capture rust/mpfree-time-ui/src/view.rs rust/mpfree-time-ui/src/widgets.rs rust/mpfree-transport
-checked: 2026-11-19 f0b39161
+checked: 2026-11-23 07e17c50
 -->
 
 # Clips and patterns
@@ -19,6 +19,24 @@ The grid has a column per **track** and a row per **slot**. Each track plays one
 - **Drag a clip** to move it: once your finger moves, it lifts and follows you, and the slot it will land in is outlined. Lift your finger to drop it. In an empty slot it moves there; onto another clip, the two change places, so nothing is lost. In another track's column it plays that track's sound. A clip that is playing keeps playing where it lands, and the song's blocks that use it go with it. Hold **SHIFT** as you lift to drop a copy instead (into an empty slot). Lift it where it started to leave it be.
 - **Drag a row's number** to move the whole row, every track's clip in it: a line shows where it will go, and the rows in between move up or down one, so nothing is written over. With **SHIFT** held as you lift, a copy of the row goes in at the line and the rows under it move down one (the last row has to be empty). A tap on the number still plays the row.
 - Dragged to the grid's edge, a clip or a row turns the page: the tracks before or after, or the slots above or below.
+
+### Scene banks
+
+The grid has 64 rows, in four **banks** of 16: **A** is rows 1 to 16, **B** rows 17 to 32, **C** 33 to 48 and **D** 49 to 64. Keep a set of scenes in each bank, say one song per bank, and go from one to the next on stage.
+
+- **The bank chip**, **A B C D** beside **Clips · List · Song** at the top of the grid, shows which bank you're looking at. Tap a letter to go to that bank's first row. A bank with something in it (a clip or a named scene) has its letter bright, an empty one dim. With more than 8 tracks and **Back to song** showing, the chip has no room and steps aside; SHIFT + the wheel still scrolls.
+- **SHIFT + the wheel** scrolls the rows one at a time, straight on from one bank into the next. A line across the grid marks where a bank starts, with its letter by the row's number.
+- Rows past 16 work like the first 16: tap a row's number to play it, hold it for its scene card, drag it, record into its slots.
+- **A row's follow action stays in its bank:** **Next** from row 16 goes round to row 1, and from row 32 to row 17. So each bank plays as its own set.
+- **What looks for room looks in all 64 rows:** a new clip you record, a phrase, a MIDI file's clips and **Capture** take the first empty slot or row; **Copy row** and **Insert row** need row 64 empty. **Song → scenes** puts the song's parts in the first bank with enough empty rows in a row, never across two banks, since they follow each other with Next.
+
+{{shot: clips-bank-b | The grid scrolled to rows 13 to 20: bank A's last rows, then a line and bank B's first rows with a second set of clips, B lit on the bank chip.}}
+
+### Clips and scenes on the pads
+
+A page of the [Perform set](pads.md#clip-windows-and-scenes-on-the-pads) can be a **clip window**, four tracks by four rows of the grid, or a **scenes** page, a bank's 16 rows. With it on the pads you launch clips and scenes without looking at the screen: each pad is a cell or a row's button, lit dim green with a clip, green while it plays and blinking while it waits for its line. While a clip window is on the pads, the grid outlines its 16 cells.
+
+{{shot: clips-pad-window | The grid with Tracks 1 to 4, rows 1 to 4 outlined: the Perform set's clip window on the pads.}}
 - **UNDO** takes back any drop, and the Takes list names it ("Move 7 · Drums / 2, to Bass / 4").
 - **Tap a track's name** to **arm** it: the pads record into that track. The track arms when you lift your finger.
 - **Hold ERASE and tap a clip** to delete it. **UNDO** brings it back. A clip the song uses leaves the grid, and the song keeps it and plays on; **UNDO** puts it back on the grid.

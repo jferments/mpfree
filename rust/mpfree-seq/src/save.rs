@@ -1621,7 +1621,7 @@ mod track_id_tests {
         assert_eq!(back.tracks[1].pad_mutes | back.tracks[1].pad_solos, 0);
     }
 
-    /// Arrange 1.2: a clip and a scene in row 40, past the grid's 16, are
+    /// Arrange 1.2: a clip and a scene in row 40, in bank C, are
     /// kept through the text; a row past the 64 a project keeps is
     /// refused.
     #[test]

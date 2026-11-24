@@ -398,6 +398,7 @@ A pad, key or button on your controller can do what a tap on the Clips grid does
 - **A clip** (or an empty cell): the control does what a tap there does at that moment. It launches the clip, stops it while it plays, takes back a launch that is waiting, or in an empty cell makes a clip and starts recording into it. The control belongs to the cell, not to the clip: whatever clip you put in that track's row later, the same pad launches it.
 - **A row's number**: the control launches that whole row as a scene.
 - **Stop all** or **Back to song**.
+- **Capture scene**, on the title line in Perform: the control keeps the clips playing now as a new row, as a tap does (see [Make and Perform](playing-live.md#make-and-perform)). SHIFT and a tap learns it even while it is faint.
 - **A track's name**: the control arms the track, as a tap on its name does (pressed again, it lets go).
 
 Launches land where a tap's would: on the next **Launch** line (the Record tab's, or the clip's own). While MIDI Learn waits, the line under the screen says what for, then what the control launches; SHIFT and the same tap again cancels. SHIFT and a drag still copies a clip or a row, and SHIFT + **+ Track** still adds a Loop track.

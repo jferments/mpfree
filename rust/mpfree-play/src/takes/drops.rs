@@ -10,7 +10,7 @@
 //! them out again from the drop ([`ClipDrop::after`] and
 //! [`ClipDrop::before`]).
 
-use mpfree_seq::{ModelError, Project, Scene, SCENES, SLOTS};
+use mpfree_seq::{ModelError, Project, Scene, ROWS, SCENES};
 
 use super::{slot_mut, Take, Takes};
 
@@ -28,7 +28,7 @@ pub enum ClipDrop {
     /// was empty.
     Copied(Cell, Cell),
     /// Row `from`, every track's clip in it and its scene, went in before
-    /// row `to` (`to` is a gap, 0 to [`SLOTS`]); the rows between moved
+    /// row `to` (`to` is a gap, 0 to [`ROWS`]); the rows between moved
     /// up or down one.
     RowMoved { from: usize, to: usize },
     /// A copy of row `from` went in before row `to`, and the rows from
@@ -43,9 +43,9 @@ impl ClipDrop {
             ClipDrop::Moved(a, b) | ClipDrop::Swapped(a, b) if (t, s) == a => b,
             ClipDrop::Swapped(a, b) if (t, s) == b => a,
             ClipDrop::RowMoved { from, to } => (t, moved(s, from, landing(from, to))),
-            // The grid's rows from `to` move down one; its last row, empty,
-            // and the rows past the grid stay (Arrange 1.2).
-            ClipDrop::RowCopied { to, .. } if s >= to && s + 1 < SLOTS => (t, s + 1),
+            // The rows from `to` move down one; the last row was empty
+            // (scene banks, the Arrange refactor's 5.6: all 64 rows).
+            ClipDrop::RowCopied { to, .. } if s >= to && s + 1 < ROWS => (t, s + 1),
             _ => (t, s),
         }
     }
@@ -59,7 +59,7 @@ impl ClipDrop {
             ClipDrop::Copied(_, b) if (t, s) == b => None,
             ClipDrop::RowMoved { from, to } => Some((t, moved(s, landing(from, to), from))),
             ClipDrop::RowCopied { to, .. } if s == to => None,
-            ClipDrop::RowCopied { to, .. } if s > to && s < SLOTS => Some((t, s - 1)),
+            ClipDrop::RowCopied { to, .. } if s > to && s < ROWS => Some((t, s - 1)),
             _ => Some((t, s)),
         }
     }
@@ -151,11 +151,12 @@ impl Takes {
 
     /// A row's number dragged on the Clips grid: row `from` (every
     /// track's clip in it, and its scene) goes in before row `to`, a gap
-    /// from 0 to [`SLOTS`]. Moved, the rows between move up or down one;
+    /// from 0 to [`ROWS`]. Moved, the rows between move up or down one;
     /// with `copy`, a copy goes in and the rows from `to` on move down
     /// one, so the last row must be empty. Nothing is written over. Its
     /// number and what it did. Nothing changes on an error: `BadSlot`
-    /// for a row out of range or a move that lands where it started;
+    /// for a row out of range, a copy after the last row or a move that
+    /// lands where it started;
     /// `NoRoom` for a copy with the last row in use.
     pub fn drop_row(
         &mut self,
@@ -164,13 +165,18 @@ impl Takes {
         to: usize,
         copy: bool,
     ) -> Result<(u32, ClipDrop), ModelError> {
-        if from >= SLOTS || to > SLOTS || (!copy && (to == from || to == from + 1)) {
+        // A copy goes into a row, so not after the last one.
+        if from >= ROWS
+            || to > ROWS
+            || (copy && to == ROWS)
+            || (!copy && (to == from || to == from + 1))
+        {
             return Err(ModelError::BadSlot);
         }
-        // A row moves within the grid's rows ([`SLOTS`]); the rows past
-        // them stay where they are (Arrange 1.2). A copy needs the grid's
-        // last row empty.
-        if copy && !project.row_empty(SLOTS - 1) {
+        // A row moves within all the grid's rows, its four banks ([`ROWS`]:
+        // scene banks, the Arrange refactor's 5.6). A copy needs the last
+        // row empty.
+        if copy && !project.row_empty(ROWS - 1) {
             return Err(ModelError::NoRoom);
         }
         let drop = if copy {
@@ -503,9 +509,9 @@ mod tests {
         assert_eq!(name(&p, 1, 2), Some("Bass C"));
         assert_eq!(p.scene(2).map(|s| s.name.as_str()), Some("Drop"));
         // With the last row in use, a copy has no room.
-        p.tracks[2].slots[SLOTS - 1] = Some(Clip::new("End", 480));
+        p.tracks[2].slots[ROWS - 1] = Some(Clip::new("End", 480));
         assert_eq!(takes.drop_row(&mut p, 0, 0, true), Err(ModelError::NoRoom));
-        p.tracks[2].slots[SLOTS - 1] = None;
+        p.tracks[2].slots[ROWS - 1] = None;
         takes.undo(&mut p);
         takes.undo(&mut p);
         let mut want = project();
@@ -519,11 +525,13 @@ mod tests {
         assert_eq!(p, want);
     }
 
-    /// Arrange 1.2: a row moves or is copied within the grid's 16 rows; a
-    /// clip and a scene in row 40, and the song's block of it, stay where
-    /// they are, through UNDO and REDO too.
+    /// Scene banks (the Arrange refactor's 5.6): the rows are one list of
+    /// 64 across banks A to D. A row moved within bank A leaves a clip
+    /// and a scene in row 41 (bank C) where they are; a row copied above
+    /// them moves them down one, the song's block of the clip with them,
+    /// and UNDO and REDO put them back.
     #[test]
-    fn rows_past_the_grid_stay_put_when_a_row_moves() {
+    fn rows_in_other_banks_move_down_when_a_row_goes_in_above() {
         let mut p = project();
         p.tracks[1].slots[40] = Some(Clip::new("Far", 1920));
         p.give_clip_ids();
@@ -533,11 +541,12 @@ mod tests {
             .unwrap();
         let mut takes = Takes::default();
         takes.drop_row(&mut p, 0, 3, false).unwrap();
-        takes.drop_row(&mut p, 1, 0, true).unwrap();
+        // Where the clip is, where the scene is, and the row the song's
+        // block of it plays from.
         let far = |p: &Project| {
             (
-                name(p, 1, 40).map(str::to_string),
-                p.scene(40).map(|s| s.name.clone()),
+                (0..ROWS).find(|&r| name(p, 1, r) == Some("Far")),
+                (0..ROWS).find(|&r| p.scene(r).is_some_and(|s| s.name == "Bank C")),
                 p.arrangement
                     .placements
                     .iter()
@@ -545,17 +554,18 @@ mod tests {
                     .and_then(|b| p.tracks[1].slots.row_of(b.clip)),
             )
         };
-        let want = (
-            Some("Far".to_string()),
-            Some("Bank C".to_string()),
-            Some(40),
-        );
-        assert_eq!(far(&p), want);
+        let at = |row: usize| (Some(row), Some(row), Some(row));
+        assert_eq!(far(&p), at(40));
+        takes.drop_row(&mut p, 1, 0, true).unwrap();
+        assert_eq!(far(&p), at(41), "down one, under the copy");
+        p.check().unwrap();
         takes.undo(&mut p);
+        assert_eq!(far(&p), at(40));
         takes.undo(&mut p);
-        assert_eq!(far(&p), want);
+        assert_eq!(far(&p), at(40));
         takes.redo(&mut p);
-        assert_eq!(far(&p), want);
+        takes.redo(&mut p);
+        assert_eq!(far(&p), at(41));
     }
 
     #[test]
@@ -568,7 +578,7 @@ mod tests {
             ClipDrop::RowCopied { from: 4, to: 1 },
         ] {
             for t in 0..3 {
-                for s in 0..SLOTS - 1 {
+                for s in 0..ROWS - 1 {
                     if matches!(d, ClipDrop::Moved(_, b) if b == (t, s)) {
                         continue; // empty before the drop
                     }
