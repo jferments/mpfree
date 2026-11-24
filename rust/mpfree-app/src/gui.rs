@@ -27606,6 +27606,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
 /// The sample screens of the Arp panel's Phrase tab ([`sample_phrase`]).
 /// The Sets place's sample screens (live shows B1, B2a, B2b), for a test
 /// that sweeps them without building every screen.
+#[cfg(test)]
 pub const SETS_SAMPLES: [&str; 4] = [
     "browser-sets",
     "browser-set-song",
@@ -27614,6 +27615,7 @@ pub const SETS_SAMPLES: [&str; 4] = [
 ];
 
 /// Sample screen `name` of [`SETS_SAMPLES`], as `sample_screens` draws it.
+#[cfg(test)]
 pub fn sample_sets(name: &str, fonts: Fonts) -> Result<Player, String> {
     match name {
         "browser-sets" => browser_sets(fonts, false),
