@@ -3375,7 +3375,7 @@ pub fn panel_tabs(st: &TimeState) -> Vec<String> {
 
 /// The Record panel's tab widths but the last's (Chords): Record, and
 /// Clip with its name (cut with "…" when it is long).
-pub const PANEL_TAB_WIDTHS: [i32; 2] = [66, 100];
+pub const PANEL_TAB_WIDTHS: [i32; 2] = [66, 90];
 
 /// The scene editor's rows for the scene in focus.
 pub fn scene_rows(st: &TimeState) -> Vec<OptionRow> {
