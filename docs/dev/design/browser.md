@@ -159,6 +159,8 @@ for a in mpfree_browser_ui::step(&mut ui, &mut browser) { /* BrowseAction */ }
 browser.save(Snapshot::from_parts(meta, &[&transport, ...]), now_utc);
 ```
 
+**Drawing:** `step` and `show` (after a hardware press, or a card opening) give the widget the browser's screen and mark it changed only when that screen differs from the one it has (`Ui::get_mut` then; `Ui::get_mut_quiet` otherwise), so an idle browser draws nothing and anything that changes what it shows is drawn at the next paint, touched or not. Until 24 Nov `show` reached the widget quietly, so only a touch drew it again: a listing that came back after the finger lifted, a wheel turn or a card that opened stayed off the screen until the next touch. The owner's first run of the SD card place found it (every folder on the card stayed on "Reading…"). Test: the pad player's `the_browser_draws_what_changes_without_a_touch` (a worker on its own thread, as on the MPC, each frame ticked and painted).
+
 The sampler's part comes with the sounds it names, which the save writes into the project's `samples/` first where they aren't there yet (`Library::save_project_with`; a sound that can't be written leaves the last save standing):
 
 ```rust
