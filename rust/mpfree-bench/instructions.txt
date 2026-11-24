@@ -200,7 +200,7 @@
 721696	Sampler x16 held, vowel
 488150	Sampler x4 held, 4 layers each
 1402092	Sampler, 20 pads
-1985137	Sampler, 20 pads + master grains
+2086100	Sampler, 20 pads + master grains
 80602	Sampler, 4 drum kits, 64 voices
 81951	Sampler, 4 drum kits, 64 voices, counted for System status
 42339	Sampler, drum kit, 24 voices
