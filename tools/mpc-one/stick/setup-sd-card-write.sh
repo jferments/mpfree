@@ -210,7 +210,10 @@ stopped() {
 }
 only_the_card() {
   for b in $(devices); do
-    case "$(readlink "$R/sys/block/$b" 2>/dev/null)" in
+    l=$(readlink "$R/sys/block/$b" 2>/dev/null)
+    # Gone between the listing and the look: the card going out, never a stranger (the loop sees it next).
+    [ -n "$l" ] || [ -e "$R/sys/block/$b" ] || [ -L "$R/sys/block/$b" ] || continue
+    case "$l" in
       */"$name"/*) ;;
       *) fail "a block device that is not the SD card's appeared: $b" ;;
     esac
