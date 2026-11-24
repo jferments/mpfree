@@ -177,6 +177,9 @@ pub struct Desk<'a> {
     pub max_db: f32,
     /// The sound card the looper's line input opens.
     pub card: u32,
+    /// The one history across the engines, for UNDO with Dev's "Loops on
+    /// audio tracks" on (audio tracks phase 4d.1).
+    pub undo: &'a crate::one_undo::OneUndo,
 }
 
 impl Desk<'_> {
@@ -201,6 +204,7 @@ impl Desk<'_> {
             listed,
             level_db,
             max_db,
+            undo,
             ..
         } = self;
         let max_db = *max_db;
@@ -749,6 +753,9 @@ impl Desk<'_> {
             gui::FromUi::LoopCommand(c) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Command(c)))
             }
+            gui::FromUi::OneUndo { redo } => fx.extend(crate::one_undo::press(
+                undo, redo, out, time, tracks, looper, app, mix,
+            )),
             gui::FromUi::LoopListen(what) => {
                 fx.push(app::Effect::Looper(looping::LoopAction::Listen(what)))
             }
