@@ -55,12 +55,20 @@ fn close(what: &str, drawn: f32, measured: f32, tol: f32) {
 #[test]
 fn the_multi_filter_draws_what_it_does() {
     for (ty, slope, res, gain) in [
-        (0.0, 0.0, 0.0, 0.0),
-        (0.0, 1.0, 60.0, 0.0),
-        (1.0, 1.0, 30.0, 0.0),
-        (2.0, 0.0, 50.0, 0.0),
-        (4.0, 0.0, 20.0, 9.0),
-        (6.0, 0.0, 0.0, -6.0),
+        (0.0, filter::SLOPE_12, 0.0, 0.0),
+        (0.0, filter::SLOPE_24, 60.0, 0.0),
+        (1.0, filter::SLOPE_24, 30.0, 0.0),
+        (2.0, filter::SLOPE_12, 50.0, 0.0),
+        (4.0, filter::SLOPE_12, 20.0, 9.0),
+        (6.0, filter::SLOPE_12, 0.0, -6.0),
+        // The slopes the pads have too (the filter gap plan's F4b).
+        (0.0, filter::SLOPE_6, 40.0, 0.0),
+        (1.0, filter::SLOPE_18, 30.0, 0.0),
+        (0.0, filter::SLOPE_36, 50.0, 0.0),
+        (1.0, filter::SLOPE_48, 20.0, 0.0),
+        (2.0, filter::SLOPE_24, 50.0, 0.0),
+        (2.0, filter::SLOPE_48, 70.0, 0.0),
+        (3.0, filter::SLOPE_24, 30.0, 0.0),
     ] {
         let mut f = set(
             MultiFilter::new(),

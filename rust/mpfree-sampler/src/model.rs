@@ -2248,6 +2248,11 @@ pub struct Pad {
     pub latch: bool,
     pub amp: Ahdsr,
     pub filter: Filter,
+    /// The filter bypassed (Edit pad's On, the filter gap plan's F5): a
+    /// hit plays as if the filter were off, every setting kept, so On
+    /// brings it back as it was. Like a type change, it reaches the next
+    /// hit.
+    pub filter_bypass: bool,
     pub filter_env: Ahdsr,
     /// 0 = every hit at full level, 1 = level follows velocity fully.
     pub vel_to_level: f32,
@@ -2587,6 +2592,7 @@ impl Pad {
             latch: false,
             amp: Ahdsr::OPEN,
             filter: Filter::default(),
+            filter_bypass: false,
             filter_env: Ahdsr::OPEN,
             vel_to_level: 1.0,
             vel_to_start: 0.0,

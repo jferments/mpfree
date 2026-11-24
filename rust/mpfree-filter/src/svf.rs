@@ -439,6 +439,23 @@ impl Svf {
         }
     }
 
+    /// Its low-pass state, each channel's: what the stage has heard, under
+    /// its cutoff.
+    #[inline]
+    pub fn low_state(&self) -> [f32; 2] {
+        self.ic2
+    }
+
+    /// Starts as if it had been hearing a sound whose low part is `low` for
+    /// a while: its low-pass state there and its band-pass state at rest,
+    /// so a stage that comes into a running filter (a steeper slope) takes
+    /// up the sound without a dip or a jump.
+    #[inline]
+    pub fn start_from(&mut self, low: [f32; 2]) {
+        self.ic1 = [0.0; 2];
+        self.ic2 = low;
+    }
+
     /// Carries on from `from`'s states (its band-pass and low-pass, which
     /// mean nearly the same at any rate or setting).
     #[inline]

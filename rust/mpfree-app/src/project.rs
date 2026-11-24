@@ -96,7 +96,12 @@ pub const TUNINGS: &str = "tunings";
 pub const PATCHES: &str = "patches";
 
 /// The mixer part's first line.
-pub const MIXER_FORMAT: &str = "mpfree-mixer 1";
+/// Version 1 was saved before the Filter effect's 6 to 48 dB slopes (23 Nov
+/// 2026), when its Slope's 0 was 12 dB and 1 was 24 dB: such a part is
+/// read with each effect setting converted ([`mpfree_fx::mixer_upgrade`]).
+pub const MIXER_FORMAT: &str = "mpfree-mixer 2";
+/// The words before the version on the mixer part's first line.
+const MIXER_WORD: &str = "mpfree-mixer";
 /// The synth part's first line.
 pub const SYNTH_FORMAT: &str = "mpfree-synth 1";
 /// The first line of the instruments part.
@@ -1685,7 +1690,7 @@ pub fn untouched_channel(mixer: &Mixer, st: StripId) -> bool {
 /// into Drums.
 ///
 /// ```text
-/// mpfree-mixer 1
+/// mpfree-mixer 2
 /// chanmutes 5
 /// track1 t0
 /// strip t0 0=-3 1=0 3=0 4=0 5=0 6=-80 ...
@@ -1905,10 +1910,17 @@ pub fn mixer_load(
     plugins: &crate::plugins::Plugins,
 ) -> Result<MixLoad, String> {
     let mut lines = text.lines().enumerate();
-    match lines.next() {
-        Some((_, l)) if l.trim() == MIXER_FORMAT => {}
-        _ => return Err(format!("not an {MIXER_FORMAT} part")),
-    }
+    let version = lines
+        .next()
+        .and_then(|(_, l)| {
+            l.trim()
+                .strip_prefix(MIXER_WORD)?
+                .trim()
+                .parse::<u32>()
+                .ok()
+        })
+        .filter(|v| (1..=mpfree_fx::MIXER_VERSION).contains(v))
+        .ok_or_else(|| format!("not an {MIXER_FORMAT} part"))?;
     let mut out = MixLoad {
         pad_mutes: 0,
         old_pad_mutes: 0,
@@ -2052,7 +2064,10 @@ pub fn mixer_load(
                 if let Some((_, _, _, node, _)) = o.as_mut() {
                     // An unknown id (a newer build's) is skipped by the node.
                     if v.is_finite() && node.params().iter().any(|p| p.id == id && !p.readonly) {
-                        node.set_param(id, v);
+                        node.set_param(
+                            id,
+                            mpfree_fx::mixer_upgrade(version, node.info().id, id, v),
+                        );
                     }
                 }
             }
@@ -2901,6 +2916,33 @@ mod tests {
             &crate::plugins::Plugins::none()
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_filter_effect_saved_before_its_six_slopes_keeps_its_slope() {
+        // Version 1 had the Filter effect's Slope as 0 for 12 dB and 1 for
+        // 24 dB; it opens on the same slopes in the new list, and a part of
+        // this version keeps what it says.
+        use mpfree_fx::ids::filter as f;
+        assert_eq!(
+            MIXER_FORMAT,
+            format!("{MIXER_WORD} {}", mpfree_fx::MIXER_VERSION)
+        );
+        let slopes = |text: &str| {
+            let load = mixer_load(text, None, 44_100, &crate::plugins::Plugins::none()).unwrap();
+            load.chains[0]
+                .1
+                .iter()
+                .map(|(ins, _)| ins.node().param(f::SLOPE))
+                .collect::<Vec<f32>>()
+        };
+        let insert = "insert t0 1 1 mpfree.fx.filter";
+        let old = format!(
+            "mpfree-mixer 1\n{insert}\nparam 1 0\nparam 2 800\n{insert}\nparam 1 1\ninsert t0 2 1 mpfree.fx.drive\nparam 1 1\n"
+        );
+        assert_eq!(slopes(&old), [f::SLOPE_12, f::SLOPE_24, 1.0]);
+        let new = format!("{MIXER_FORMAT}\n{insert}\nparam 1 0\n{insert}\nparam 1 5\n");
+        assert_eq!(slopes(&new), [f::SLOPE_6, f::SLOPE_48]);
     }
 
     #[test]
@@ -4008,7 +4050,7 @@ mod tests {
         };
         for (name, text, why) in [
             (CLIPS, "mpfree-clips 9\n", "its clips can't be read ("),
-            (MIXER, "mpfree-mixer 2\n", "its mixer can't be read ("),
+            (MIXER, "mpfree-mixer 9\n", "its mixer can't be read ("),
             (SYNTH, "mpfree-synth 2\n", "its synth can't be read ("),
             (SAMPLER, "mpfree-sampler 2\n", "its kits can't be read ("),
             (LOOPER, "mpfree-looper 2\n", "its loops can't be read ("),

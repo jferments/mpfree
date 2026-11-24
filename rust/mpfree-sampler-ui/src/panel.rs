@@ -893,7 +893,14 @@ fn fit(cx: &mut PaintCx, font: FontId, px: f32, min: f32, s: &str, w: i32) -> f3
 
 /// A knob in the Synth tab's style: the track, the lit arc and the
 /// pointer (`colors`: track, arc, pointer).
-fn knob(cx: &mut PaintCx, (x, y): (f32, f32), d: f32, pos: f32, bipolar: bool, colors: [Color; 3]) {
+pub(crate) fn knob(
+    cx: &mut PaintCx,
+    (x, y): (f32, f32),
+    d: f32,
+    pos: f32,
+    bipolar: bool,
+    colors: [Color; 3],
+) {
     let [track, lit, pointer] = colors;
     let rad = d * 0.5 - 3.0;
     let width = (d / 9.0).clamp(3.0, 5.0);

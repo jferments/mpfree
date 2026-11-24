@@ -625,7 +625,15 @@ impl EngineView {
                 latch: p.latch,
                 on_launch: p.on_launch,
                 amp: p.amp,
-                filter: p.filter,
+                // Bypassed, a hit plays as if the filter were off.
+                filter: if p.filter_bypass {
+                    Filter {
+                        kind: FilterKind::Off,
+                        ..p.filter
+                    }
+                } else {
+                    p.filter
+                },
                 filter_env: p.filter_env,
                 vel_to_level: p.vel_to_level.clamp(0.0, 1.0),
                 vel_to_start: p.vel_to_start.clamp(0.0, 1.0),

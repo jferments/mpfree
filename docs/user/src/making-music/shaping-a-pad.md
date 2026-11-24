@@ -18,7 +18,7 @@ Once a sound is on a pad (see [Sampling](sampling.md)), the Pads tab's **Edit pa
 
 - **Layers:** different sounds for soft and hard hits. Drag a layer's edges to set its velocity range.
 - **Envelope:** how the volume rises and falls: **attack**, **hold**, **decay**, **sustain** and **release**. Drag the points on the drawing, or use the Q-Links.
-- **Filter:** darken or thin out the sound. Drag the dot.
+- **Filter:** darken or thin out the sound. Drag across its graph.
 - **Movement:** an LFO that wobbles the pitch, filter, level or pan, and a pitch envelope that drops or rises at each hit.
 
 Its settings come in **sections**, a button each across the top of the page, with what is in each one written under its name: **Layers**, **Amp**, **Filter**, **Pitch**, **Mod**, **Movement** and **Pad**, and **Slices** for a sliced pad (see [Sampling](sampling.md)). Tap one and the page shows that section:
@@ -31,7 +31,7 @@ Its settings come in **sections**, a button each across the top of the page, wit
 | --- | --- | --- |
 | **Layers** | how a hit picks layers, Vel fade, the picked layer's Sound, Vel low, Vel high, Level, Pan and Tune, and Add layer and Remove layer | the layer's level, pan, tune and lowest velocity |
 | **Amp** | the pad's Level and Pan, Attack, Hold, Decay, Sustain and Release | attack, decay, sustain, release |
-| **Filter** | the filter's type, Cutoff, Resonance, Drive (the Ladder's), and its envelope: Env depth, Env attack, Env decay, Env sustain, Env release | cutoff, resonance, env depth, env decay |
+| **Filter** | the filter's Type and Slope, Cutoff, Resonance, Drive (on the Ladder only), Env depth and the filter envelope: Env attack, Env decay, Env sustain, Env release; **Moves** opens what moves the filter | cutoff, resonance, env depth, env decay (drive on the Ladder) |
 | **Pitch** | Tune, Wow & flutter, Vintage, and the keys: Keys, Low key, High key, Root key, Key fade, and Mono, Legato, Glide and Glide on | tune, wow, low key, high key |
 | **Mod** | Vel → level, Vel → start, Vel → cutoff, Vel → pitch, Pressure and its Depth | vel → level, vel → start, pressure, depth |
 | **Movement** | LFO to, LFO wave, LFO rate, LFO depth, Sync to tempo, Retrigger, Pitch env and Pitch decay | LFO rate, LFO depth, pitch env, pitch decay |
@@ -39,7 +39,9 @@ Its settings come in **sections**, a button each across the top of the page, wit
 
 On a Q-Link, SHIFT turns finer. Hold **SHIFT** and touch a knob to give it a knob on your MIDI controller instead (see [MIDI Learn](midi-and-cv.md#midi-learn)). A setting that has nothing to change right now (the filter's while it is off, the keys' while the pad isn't a keygroup) shows its control and its card faint, and a tap on it says why.
 
-On the **Filter** section the drawing shows the filter's own envelope instead of the volume's: how far and how fast the cutoff moves on each hit. **Env depth** says how far, up to 4 octaves up or down; drag the points for its times, or turn their knobs.
+On the **Filter** section the drawing shows the filter's own envelope instead of the volume's: how far and how fast the cutoff moves on each hit. **Env depth** says how far, up to 4 octaves up or down; drag the points for its times, or turn their knobs. While Env depth isn't Off, the filter's graph shows where the envelope's peak takes it, dashed, with the band between shaded and the target in Hz ("env +2.0 oct → 4.00 kHz"), and the envelope is labelled down its right edge with the cutoff in Hz at its peak, its sustain and at rest.
+
+{{shot: pads-edit-filter | The Filter section: a 24 dB low pass at 1.26 kHz whose envelope opens it two octaves, shown dashed on the graph and in Hz beside the envelope.}}
 
 A cutoff, resonance or Env depth change reaches a sound that is still playing, gliding there, and so does Drive; the envelope's times and a new filter type play from the next hit. Drive and Env depth take [MIDI Learn](midi-and-cv.md#midi-learn), step locks and the scenes as Cutoff does. The filter comes before the volume envelope and the pad's level and pan, so how hard a sound drives the filter (its Drive, and how loud its resonance gets) doesn't change as the envelope falls, as you hit softer or as you turn the pad down; a Comb comes after them, so it can ring on.
 
@@ -49,17 +51,43 @@ A kit saved before 23 November 2026 opens with a note if its pads use a low pass
 
 ### Filter types: low pass to comb
 
-The **Filter** selector steps through the types: Off, the low passes from gentle to steep, the high passes the same way, the band passes, the notches, Peak, Ladder, Vowel and Comb.
+The **Type** selector steps through the types: Off, Low-pass, High-pass, Band-pass, Notch, Peak, Ladder, Vowel and Comb (from Off, a 12 dB low pass). **Slope** beside it sets how steeply the type cuts, in dB an octave, for the types that have more than one; a type change keeps the slope where the new type has it, else the nearest it has. The Ladder (24 dB) and the Peak (12 dB) show theirs as fixed, and the Vowel and the Comb have none.
 
-- **LP** and **HP** (low pass and high pass) at **1**, **2**, **3**, **4**, **6** or **8 poles**: each pole makes the slope 6 dB an octave steeper, from a gentle 1-pole (6 dB an octave) to a steep 8-pole (48 dB, a brick wall). 2-pole (12 dB) is the usual synth filter and 4-pole (24 dB) the classic steep one. Low pass darkens, high pass thins. The Cutoff is where the filter starts to bite: with Resonance at 0, a low pass or high pass set to 1 kHz is 3 dB down at 1 kHz at any slope, so the number is what you hear. Resonance adds a peak at the Cutoff, up to a long ring at 100 %, and it peaks as high at every slope: a steeper slope rings longer, not louder. On a 1-pole, Resonance is a boost at the Cutoff, since one pole can't ring. A loud sound's ring is held back near full scale instead of running past it, cleanly, without adding grit or pushing the sound off centre, while a quiet one still rings out in full. The filter envelope and the LFO move the Cutoff smoothly, sample by sample.
-- **BP** (band pass) at 2, 4, 6 or 8 poles: keeps a slice around the cutoff. More poles cut away the sound either side of it more steeply, while its peak and its ring stay the 2-pole's.
-- **Notch** (2-pole or 4-pole): the opposite of band pass. It takes out a band around the cutoff and leaves the rest, for a hollow, phasey sound; sweep it with the envelope or the LFO. 4-pole takes out a wider band.
+Tap the Type's name to see all the types at once, over the pictures: each with its curve and what it is for. A tap on one puts it on the pad straight away, so hit the pads while you tap through them; the slopes sit under them as six buttons, those the type lacks greyed. The wheel steps through the types too. **Done**, or the Filter button at the top, closes them.
+
+{{shot: pads-edit-filter-types | The filter types over the Filter section's pictures, a 24 dB low pass picked.}}
+
+- **Low-pass** and **High-pass** at **6**, **12**, **18**, **24**, **36** or **48 dB** an octave: from gentle to a brick wall. 12 dB is the usual synth filter and 24 dB the classic steep one. Low pass darkens, high pass thins. The Cutoff is where the filter starts to bite: with Resonance at 0, a low pass or high pass set to 1 kHz is 3 dB down at 1 kHz at any slope, so the number is what you hear. Resonance adds a peak at the Cutoff, up to a long ring at 100 %, and it peaks as high at every slope: a steeper slope rings longer, not louder. On a 1-pole, Resonance is a boost at the Cutoff, since one pole can't ring. A loud sound's ring is held back near full scale instead of running past it, cleanly, without adding grit or pushing the sound off centre, while a quiet one still rings out in full. The filter envelope and the LFO move the Cutoff smoothly, sample by sample.
+- **Band-pass** at 12, 24, 36 or 48 dB: keeps a slice around the cutoff. A steeper slope cuts away the sound either side of it more steeply, while its peak and its ring stay the 12 dB one's.
+- **Notch** (12 or 24 dB): the opposite of band pass. It takes out a band around the cutoff and leaves the rest, for a hollow, phasey sound; sweep it with the envelope or the LFO. 24 dB takes out a wider band.
 - **Peak**: a boost around the Cutoff, like an EQ band, that leaves the rest of the sound as it is. Resonance is how big the boost is: nothing at 0, about 14 dB at 40 % and 35 dB at 100 %, and narrower as it rises; the Resonance shows it ("40 % · +14.0 dB"). Sweep it with the filter envelope or the LFO for a vocal, wah-like sweep that keeps the lows and the highs. A loud sound's boost is held back as a ring is, but the sound itself passes whole, so a big boost on a loud sound comes out loud: turn the pad down to match.
-- **Ladder**: a 4-pole low pass in the style of the classic analog synth filter, warm and round. Its Resonance sings: turned right up, it rings at the cutoff on its own, at a steady level, however long you hold the note. **Drive** pushes the sound into the filter harder, from Off up to 24 dB, for grit and growl. It keeps the level of an ordinary sound about the same as you turn it, so turning it up adds bite rather than volume, and it stays clean of the harsh, out-of-tune fizz cheap drives add on high notes. Drive is the Ladder's alone: on another type its knob is faint and says so.
-- **Vowel**: two narrow peaks where a voice has them, so the sound "says" a vowel. Cutoff picks the vowel: from 200 Hz and below it says "oo", then "oh", "ah" and "eh", up to "ee" from 5 kHz, sliding smoothly between them, and the Cutoff's value names the vowel ("1.00 kHz · ah"). Resonance makes the peaks narrower and more nasal. Sweep the Cutoff with the filter envelope or the LFO and a pad talks: "oo-ah" on each hit. It works best on rich sounds (pads, saws, choirs, breaks); a pure tone right on a peak comes out louder.
-- **Comb**: the sound plus an echo of itself one cycle of the Cutoff later, over and over, so the pad rings at a pitch: the Cutoff's note, with its overtones. The Cutoff's value names the note ("220 Hz · A3"), so you can tune the ring to your song's key. Resonance is how long it rings: low, a metallic tint; turned right up, a hit rings on like a plucked string for about a second (longer on low notes), even after the sample itself has ended. Sweep the Cutoff with the filter envelope for a zap or a flanged hit. Noise and full sounds keep about their level; a tone right on the comb's note comes out louder. Hitting another pad of the same mute group, or the same pad again at Polyphony 1, stops the ringing.
+- **Ladder**: a 24 dB low pass in the style of the classic analog synth filter, warm and round. Its Resonance sings: turned right up, it rings at the cutoff on its own, at a steady level, however long you hold the note. **Drive** pushes the sound into the filter harder, from Off up to 24 dB, for grit and growl. It keeps the level of an ordinary sound about the same as you turn it, so turning it up adds bite rather than volume, and it stays clean of the harsh, out-of-tune fizz cheap drives add on high notes. Drive is the Ladder's alone: on another type its knob is faint and says so.
+- **Vowel**: two narrow peaks where a voice has them, so the sound "says" a vowel. Its knobs are called **Vowel** and **Sharpness**. Cutoff picks the vowel: from 200 Hz and below it says "oo", then "oh", "ah" and "eh", up to "ee" from 5 kHz, sliding smoothly between them, and the Cutoff's value names the vowel ("1.00 kHz · ah"). Resonance makes the peaks narrower and more nasal. Sweep the Cutoff with the filter envelope or the LFO and a pad talks: "oo-ah" on each hit. It works best on rich sounds (pads, saws, choirs, breaks); a pure tone right on a peak comes out louder.
+- **Comb** (its knobs **Pitch** and **Feedback**): the sound plus an echo of itself one cycle of the Cutoff later, over and over, so the pad rings at a pitch: the Cutoff's note, with its overtones. The Cutoff's value names the note ("220 Hz · A3"), so you can tune the ring to your song's key. Resonance is how long it rings: low, a metallic tint; turned right up, a hit rings on like a plucked string for about a second (longer on low notes), even after the sample itself has ended. Sweep the Cutoff with the filter envelope for a zap or a flanged hit. Noise and full sounds keep about their level; a tone right on the comb's note comes out louder. Hitting another pad of the same mute group, or the same pad again at Polyphony 1, stops the ringing.
 
 {{shot: pads-edit-ladder | The Filter section with the Ladder: a 1 kHz cutoff, Resonance at 70 %, so the curve peaks at the cutoff, and 12 dB of Drive.}}
+
+### On, Compare, Copy, Paste and Reset
+
+Over the filter's graph:
+
+- **On** bypasses the filter: the pad plays as if it had none, and every setting waits, so a second tap brings it back exactly as it was (from the next hit). The Filter button at the top says "Bypassed · LP 24". It is saved with the kit.
+- **Compare** plays the filter as it was when you opened the Filter section, so you can hear what your changes did; the graph shows your changes dashed. Tap it again to go back to them. Leaving the section keeps your changes, and any change you make while comparing is made on the earlier version, which becomes your changes. Picking another pad while comparing leaves this one as it was; **UNDO** brings your changes back.
+- **Copy** keeps the whole filter: type, slope, knobs, its envelope and its moves. **Paste** puts it on the pad you are editing, and **Reset** gives the pad a new pad's filter (Off).
+
+Each is one step for **UNDO**, and the hint line says what it did ("Pasted A5's filter onto A7 · UNDO puts A7's back").
+
+### What moves the filter
+
+The Filter panel's **Moves** button ("3 moves ›", how many are set) opens everything that moves the filter in one place, in place of the pictures and panels:
+
+- **The cutoff's moves**, each with a knob and a bar of how far it can take the cutoff, on one scale of octaves around it: **Envelope** (Env depth), **Velocity** (Vel → cutoff: at 100 % the softest hit is 4 octaves darker; below 0 soft hits are brighter instead), **Key** (Key track: at 100 % a key an octave up doubles the cutoff, keys two octaves either side of the root shown; a hit on the pad itself plays at the root) and **Random** (each hit a little different, up to two octaves either way at 100 %, the same each time the song plays). The **LFO** and **Pressure** rows show what the Movement and Mod sections set, with a button to go there.
+- **Resonance**: its **Random**, up to half its range either way on each hit.
+- **Envelope**: **Vel → depth** (a soft hit opens the filter less) and **Vel → attack** (a soft hit opens it more slowly, up to a second).
+
+The line at the bottom says where a hit takes the filter now: how far the hardest opens it, and where the softest starts and opens to. Q-Links turn Key track, Velocity, Random and Env depth here. **Done**, or the Filter button at the top, goes back.
+
+{{shot: pads-edit-filter-moves | What moves the filter: the envelope opens a 24 dB low pass two octaves, soft hits are darker, the cutoff follows the keys and wanders a little on each hit.}}
 
 > [!MPC]
 > The MPC also has three **Model** filters after vintage synths, three **Vocal** formant filters, the MPC3000's low-pass, and band-stop and band-boost at more slopes. MPFree's low pass and high pass go from 1 to 8 poles as the MPC's do, with a 3-pole between; its band pass goes from 2 to 8 poles, and its **Peak** does the MPC band boost's job. For the rest it has the Ladder, the Vowel and the Comb, and it measures each type in its quality lab against the analog filter it follows.
@@ -120,7 +148,7 @@ The **Movement** section makes a pad move while it plays, the way the LFO and th
 
 **The pitch envelope** bends each hit: **Pitch env** sets where it starts, up to 24 semitones up or down, and **Pitch decay** how long it takes to come back to the pad's pitch, from 1 ms to 10 s. A few semitones down over 50 ms gives a kick its punch; an octave up over a second makes a riser out of any sound.
 
-Velocity can move the pitch and the filter too, on the **Mod** section: **Vel → pitch** sets how many semitones lower the softest hit plays than the hardest (a minus value plays soft hits higher), and **Vel → cutoff** how much darker a soft hit is, up to 4 octaves at 100 %.
+Velocity can move the pitch and the filter too, on the **Mod** section: **Vel → pitch** sets how many semitones lower the softest hit plays than the hardest (a minus value plays soft hits higher), and **Vel → cutoff** how much darker a soft hit is, up to 4 octaves at 100 % (a minus value makes soft hits brighter); it is also on the Filter section's **Moves**, with the filter's other moves.
 
 A pad that keeps its pitch (warped to the tempo, or played as grains) doesn't follow the pitch envelope, Vel → pitch or an LFO on Pitch, and those controls show faint. A change to the LFO reaches a sound that is still playing; the pitch envelope and the velocity settings play from the next hit. Scenes morph the LFO depth and the pitch envelope with the rest.
 

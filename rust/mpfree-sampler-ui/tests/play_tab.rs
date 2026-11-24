@@ -57,7 +57,7 @@ fn open(s: &mut PlaySample, section: Section) {
 fn row_value(s: &mut PlaySample, row: Row) -> String {
     open(s, row.section());
     let list = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
-    assert_eq!(list.rows[row.place()].name, row.label());
+    assert_eq!(list.rows[row.place()].name, row.name_on(&s.state.settings));
     list.rows[row.place()].value.clone()
 }
 
@@ -143,7 +143,7 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
         vec![
             ("Layers", "3 · stacked"),
             ("Amp", "A2 D310 S60%"),
-            ("Filter", "LP2 · 2.40 kHz"),
+            ("Filter", "LP 12 dB · 2.40 kHz"),
             ("Pitch", "+0 st"),
             ("Mod", "pressure → filter cutoff"),
             ("Movement", "Off"),
@@ -157,7 +157,9 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
             .iter()
             .filter(|x| x.rows().contains(&row))
             .count();
-        assert_eq!(n, 1, "{row:?} is in one section");
+        // What moves the filter has the rows no section has (F5).
+        let moves = play_tab::MOVES.contains(&row) && n == 0;
+        assert!(n == 1 || moves, "{row:?} is in one section");
     }
     let env = s.ui.get::<EnvelopeView>(play_tab::ENV).unwrap();
     assert_eq!(
@@ -171,8 +173,11 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
         env.length_ms()
     );
     let filter = s.ui.get::<FilterCurve>(play_tab::FILTER).unwrap();
-    assert_eq!(filter.title, "Filter · LP 2-pole");
-    assert_eq!(filter.caption, "cutoff 2.40 kHz · res 35 % · env +0.50 oct");
+    assert_eq!(filter.title, "Filter · Low-pass");
+    assert_eq!(
+        filter.caption,
+        "cutoff 2.40 kHz · res 35 % · drag across the graph"
+    );
     let cards = |s: &PlaySample| -> Vec<(String, String, String, bool)> {
         play_tab::QLINKS
             .iter()
@@ -212,7 +217,8 @@ fn the_tab_shows_the_pads_layers_envelope_filter_and_settings() {
         (Row::Pressure, "Filter cutoff"),
         (Row::Depth, "+60 %"),
         (Row::Release, "900 ms"),
-        (Row::Filter, "LP 2-pole"),
+        (Row::Filter, "Low-pass"),
+        (Row::Slope, "12 dB"),
         (Row::Cutoff, "2.40 kHz"),
         (Row::FilterEnv, "+0.50 oct"),
     ] {
@@ -263,7 +269,8 @@ fn arrows_change_the_pad_and_a_run_of_taps_on_one_row_is_one_undo_step() {
     let a = step(&mut s, Row::Filter, 1).unwrap();
     assert_eq!(gesture(&a), g, "a second tap on the row merges");
     apply(&mut s, &a);
-    assert_eq!(row_value(&mut s, Row::Filter), "LP 2-pole");
+    assert_eq!(row_value(&mut s, Row::Filter), "High-pass");
+    assert_eq!(row_value(&mut s, Row::Slope), "12 dB");
     // A lift ends the step; another row is another step anyway.
     s.tab.lift();
     let a = step(&mut s, Row::Cutoff, -3).unwrap();
@@ -1477,14 +1484,19 @@ fn each_section_shows_its_picture_across_the_page_and_its_controls_on_the_panel(
         assert_eq!(l.rows.len(), section.rows().len());
         assert_eq!(l.controls.len(), l.rows.len());
         let placed: Vec<_> = (0..l.rows.len())
-            .map(|k| {
-                let c = l.control_rect(r, k).expect("on the panel");
+            .filter_map(|k| {
                 let row = section.rows()[k];
+                // The type's own knobs show only on that type: Drive on the
+                // Ladder (F5).
+                let Some(c) = l.control_rect(r, k) else {
+                    assert_eq!(row, Row::Drive, "{row:?} on the panel");
+                    return None;
+                };
                 assert!(
                     c.x >= r.x && c.right() <= r.right() && c.y >= r.y && c.bottom() <= r.bottom(),
                     "{row:?} inside the panel"
                 );
-                c
+                Some(c)
             })
             .collect();
         for (i, a) in placed.iter().enumerate() {
@@ -1910,20 +1922,23 @@ fn the_filter_section_offers_a_notch_a_driven_ladder_a_vowel_and_a_comb() {
         let i = Section::ALL.iter().position(|x| *x == Section::Filter);
         c.chips[i.unwrap()].sub.clone()
     };
-    // Off, the low-passes, high-passes and band-passes at each slope,
-    // then the notches.
-    step_apply(&mut s, Row::Filter, 17);
+    // Off, Low-pass, High-pass, Band-pass, then the Notch (F5: the Type
+    // row steps the types, the Slope row their slopes).
+    step_apply(&mut s, Row::Filter, 4);
     assert_eq!(s.state.settings.filter.kind, FilterKind::Notch);
-    assert_eq!(row_value(&mut s, Row::Filter), "Notch 2-pole");
-    assert!(chip(&s).starts_with("Notch2 · "), "{}", chip(&s));
+    assert_eq!(row_value(&mut s, Row::Filter), "Notch");
+    assert_eq!(row_value(&mut s, Row::Slope), "12 dB");
+    assert!(chip(&s).starts_with("Notch 12 dB · "), "{}", chip(&s));
     assert_eq!(
         why(&s, Row::Drive),
-        "Drive is the Ladder's: pick Ladder in the Filter row"
+        "Drive is the Ladder's: pick Ladder in the Type row"
     );
-    // Past the 4-pole notch and the Peak.
-    step_apply(&mut s, Row::Filter, 3);
+    // Past the Peak.
+    step_apply(&mut s, Row::Filter, 2);
     assert_eq!(s.state.settings.filter.kind, FilterKind::Ladder);
     assert_eq!(row_value(&mut s, Row::Filter), "Ladder");
+    assert_eq!(row_value(&mut s, Row::Slope), "24 dB, fixed");
+    assert_eq!(why(&s, Row::Slope), "The Ladder is 24 dB, fixed");
     assert_eq!(why(&s, Row::Drive), "");
     assert_eq!(row_value(&mut s, Row::Drive), "Off");
     // The arrows go 3 dB a step, up to 24 dB.
@@ -1932,9 +1947,12 @@ fn the_filter_section_offers_a_notch_a_driven_ladder_a_vowel_and_a_comb() {
     assert_eq!(row_value(&mut s, Row::Drive), "6.0 dB");
     step_apply(&mut s, Row::Drive, 20);
     assert_eq!(row_value(&mut s, Row::Drive), "24.0 dB");
-    // The vowel: its cutoff names the vowel it makes.
+    // The vowel: its cutoff names the vowel it makes, and its knobs take
+    // its names.
     step_apply(&mut s, Row::Filter, 1);
     assert_eq!(s.state.settings.filter.kind, FilterKind::Vowel);
+    assert_eq!(Row::Cutoff.name_on(&s.state.settings), "Vowel");
+    assert_eq!(Row::Resonance.name_on(&s.state.settings), "Sharpness");
     let cutoff = row_value(&mut s, Row::Cutoff);
     assert!(
         ["oo", "oh", "ah", "eh", "ee"]
@@ -1943,27 +1961,32 @@ fn the_filter_section_offers_a_notch_a_driven_ladder_a_vowel_and_a_comb() {
         "{cutoff}"
     );
     assert!(chip(&s).starts_with("Vowel · "), "{}", chip(&s));
-    // The comb: its cutoff is the note it rings at.
+    assert_eq!(row_value(&mut s, Row::Slope), "–");
+    // The comb: its cutoff is the note it rings at, its Pitch.
     step_apply(&mut s, Row::Filter, 1);
     assert_eq!(s.state.settings.filter.kind, FilterKind::Comb);
     assert_eq!(row_value(&mut s, Row::Filter), "Comb");
+    let l = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
+    assert_eq!(l.rows[Row::Cutoff.place()].name, "Pitch");
+    assert_eq!(l.rows[Row::Resonance.place()].name, "Feedback");
     let cutoff = row_value(&mut s, Row::Cutoff);
     assert!(
         cutoff.contains(" Hz · ") || cutoff.contains(" kHz · "),
         "{cutoff}"
     );
     assert!(chip(&s).starts_with("Comb · "), "{}", chip(&s));
-    // The last; back down to Off.
-    step_apply(&mut s, Row::Filter, -22);
+    // The last: the arrow stays; back down to Off.
+    assert!(step(&mut s, Row::Filter, 1).is_none());
+    step_apply(&mut s, Row::Filter, -8);
     assert_eq!(s.state.settings.filter.kind, FilterKind::Off);
     assert_eq!(
         why(&s, Row::Drive),
-        "The filter is off: pick one in the Filter row"
+        "The filter is off: pick one in the Type row"
     );
 }
 
 #[test]
-fn the_filter_row_steps_through_every_slope_and_the_peak() {
+fn the_type_and_slope_rows_step_through_every_type_and_slope() {
     let mut s = play(false);
     open(&mut s, Section::Filter);
     let chip = |s: &PlaySample| {
@@ -1971,47 +1994,51 @@ fn the_filter_row_steps_through_every_slope_and_the_peak() {
         let i = Section::ALL.iter().position(|x| *x == Section::Filter);
         c.chips[i.unwrap()].sub.clone()
     };
-    let want = [
-        "LP 1-pole",
-        "LP 2-pole",
-        "LP 3-pole",
-        "LP 4-pole",
-        "LP 6-pole",
-        "LP 8-pole",
-        "HP 1-pole",
-        "HP 2-pole",
-        "HP 3-pole",
-        "HP 4-pole",
-        "HP 6-pole",
-        "HP 8-pole",
-        "BP 2-pole",
-        "BP 4-pole",
-        "BP 6-pole",
-        "BP 8-pole",
-        "Notch 2-pole",
-        "Notch 4-pole",
-        "Peak",
-        "Ladder",
-        "Vowel",
-        "Comb",
-    ];
-    for name in want {
-        step_apply(&mut s, Row::Filter, 1);
-        assert_eq!(row_value(&mut s, Row::Filter), name);
-        // "LP 6-pole" is "LP6" on the section's chip.
-        let short = name.replace("-pole", "").replace(' ', "");
-        assert!(chip(&s).starts_with(&format!("{short} · ")), "{}", chip(&s));
-    }
-    // A pad saved with a slope its type doesn't have shows the one it
-    // plays: a 5-pole low-pass is a 4-pole, and steps on from there.
-    step_apply(&mut s, Row::Filter, -22);
+    // From Off, a low-pass at the pad's slope (12 dB); down to 6 dB, then
+    // up through every slope it has.
     step_apply(&mut s, Row::Filter, 1);
+    assert_eq!(row_value(&mut s, Row::Slope), "12 dB");
+    step_apply(&mut s, Row::Slope, -5);
+    assert_eq!(row_value(&mut s, Row::Slope), "6 dB");
+    assert!(chip(&s).starts_with("LP 6 dB · "), "{}", chip(&s));
+    for db in [12, 18, 24, 36, 48] {
+        step_apply(&mut s, Row::Slope, 1);
+        assert_eq!(row_value(&mut s, Row::Slope), format!("{db} dB"));
+        assert!(
+            chip(&s).starts_with(&format!("LP {db} dB · ")),
+            "{}",
+            chip(&s)
+        );
+    }
+    assert!(step(&mut s, Row::Slope, 1).is_none(), "48 dB is the last");
+    // A type change keeps the slope where the new type has it, else the
+    // nearest; the fixed types and those without one leave it be.
+    for (kind, slope) in [
+        ("High-pass", "48 dB"),
+        ("Band-pass", "48 dB"),
+        ("Notch", "24 dB"),
+        ("Peak", "12 dB, fixed"),
+        ("Ladder", "24 dB, fixed"),
+        ("Vowel", "–"),
+        ("Comb", "–"),
+    ] {
+        step_apply(&mut s, Row::Filter, 1);
+        assert_eq!(row_value(&mut s, Row::Filter), kind);
+        assert_eq!(row_value(&mut s, Row::Slope), slope, "{kind}");
+    }
+    assert!(step(&mut s, Row::Slope, 1).is_none(), "the Comb has none");
+    step_apply(&mut s, Row::Filter, -7);
+    assert_eq!(row_value(&mut s, Row::Filter), "Low-pass");
+    assert_eq!(row_value(&mut s, Row::Slope), "24 dB", "the notch's, kept");
+    // A pad saved with a slope its type doesn't have shows the one it
+    // plays: a 5-pole low-pass is 24 dB, and steps on from there.
     let mut p = s.state.settings.clone();
     p.filter.poles = 5;
-    let p = play_tab::stepped(&p, Row::Filter, 1, false);
+    assert_eq!(play_tab::value_text(&p, Row::Slope), "24 dB");
+    let p = play_tab::stepped(&p, Row::Slope, 1, false);
     assert_eq!((p.filter.kind, p.filter.poles), (FilterKind::LowPass, 6));
     // The Peak's Resonance is its boost, from nothing at 0 to 35 dB.
-    step_apply(&mut s, Row::Filter, 18);
+    step_apply(&mut s, Row::Filter, 4);
     assert_eq!(s.state.settings.filter.kind, FilterKind::Peak);
     let res = row_value(&mut s, Row::Resonance);
     assert!(res.contains(" % · +") && res.ends_with(" dB"), "{res}");
@@ -2033,4 +2060,361 @@ fn a_comb_names_the_note_it_rings_at() {
     assert_eq!(note_of(261.63), "C4");
     assert_eq!(note_of(277.18), "C#4");
     assert_eq!(note_of(20.0), "D#0");
+}
+
+// ------------------------------------------------ the pad filter screen (F5)
+
+/// Event `kind` on widget `widget`: what the tab asks for, and what it
+/// says on the hint line.
+fn on(s: &mut PlaySample, widget: &str, kind: EventKind) -> (Option<PlayAction>, Option<String>) {
+    let ev = UiEvent {
+        widget: widget.into(),
+        kind,
+    };
+    let st = s.state.clone();
+    let a = s.tab.action(&mut s.ui, &ev, &st);
+    (a, s.tab.take_note())
+}
+
+/// The pad shown again as the project has it (after an undo).
+fn resync(s: &mut PlaySample) {
+    let view = s.state.sounds[0].view.clone();
+    s.state = PlayState::from_project(&s.project, PAD, |_| view.clone()).unwrap();
+    let st = s.state.clone();
+    s.tab.update(&mut s.ui, &st);
+}
+
+/// The pad's settings changed as `shape` says, as one edit.
+fn shape(s: &mut PlaySample, shape: impl FnOnce(&mut Pad)) {
+    let mut p = s.state.settings.clone();
+    shape(&mut p);
+    let a = PlayAction::Pad {
+        pad: PAD,
+        after: Box::new(p),
+        gesture: 0xF5,
+    };
+    apply(s, &a);
+}
+
+fn filter_chip(s: &PlaySample) -> String {
+    let c = s.ui.get::<SectionChips>(play_tab::SECTIONS).unwrap();
+    let i = Section::ALL.iter().position(|x| *x == Section::Filter);
+    c.chips[i.unwrap()].sub.clone()
+}
+
+/// Over the graph: On bypasses (its own undo step, every setting kept),
+/// Compare plays the filter as it was when the section opened until it is
+/// tapped again, an edit is made or the section is left (keeping the
+/// changes), and Copy, Paste and Reset take the whole filter, each saying
+/// what it did on the hint line.
+#[test]
+fn the_filter_header_bypasses_compares_copies_pastes_and_resets() {
+    let mut s = play(false);
+    open(&mut s, Section::Filter);
+    // Nothing copied, nothing changed: Paste and Compare say why.
+    let (a, note) = on(&mut s, play_tab::FILTER, EventKind::Select(3));
+    assert_eq!(a, None);
+    assert_eq!(
+        note.as_deref(),
+        Some("Paste: nothing copied yet. Copy a pad's filter first")
+    );
+    let f = s.ui.get::<FilterCurve>(play_tab::FILTER).unwrap();
+    let texts: Vec<&str> = f.buttons.iter().map(|b| b.text.as_str()).collect();
+    assert_eq!(texts, ["● On", "Compare", "Copy", "Paste", "Reset"]);
+    assert!(f.buttons[0].faint, "the filter is off: nothing to bypass");
+    assert!(f.buttons[1].faint && f.buttons[3].faint);
+    step_apply(&mut s, Row::Filter, 1);
+    s.tab.lift();
+    assert_eq!(filter_chip(&s), "LP 12 dB · 2.00 kHz");
+
+    // On: bypassed, one undo step, the settings kept.
+    let (a, note) = on(&mut s, play_tab::FILTER, EventKind::Tab(0));
+    apply(&mut s, &a.unwrap());
+    assert!(s.state.settings.filter_bypass);
+    assert_eq!(s.state.settings.filter.kind, FilterKind::LowPass);
+    assert_eq!(
+        note.as_deref(),
+        Some("Bypassed: the pad plays unfiltered · Low-pass 12 dB at 2.00 kHz waits")
+    );
+    assert_eq!(filter_chip(&s), "Bypassed · LP 12");
+    let f = s.ui.get::<FilterCurve>(play_tab::FILTER).unwrap();
+    assert!(f.bypassed);
+    assert_eq!(f.buttons[0].text, "○ Off");
+    assert_eq!(f.title, "Filter · bypassed");
+    assert!(s.project.undo());
+    resync(&mut s);
+    assert!(!s.state.settings.filter_bypass, "UNDO puts it back on");
+    assert_eq!(s.state.settings.filter.kind, FilterKind::LowPass);
+
+    // Compare: the filter as it was (Off), the changes dashed; again: back.
+    let (a, note) = on(&mut s, play_tab::FILTER, EventKind::Tab(1));
+    apply(&mut s, &a.unwrap());
+    assert_eq!(s.state.settings.filter.kind, FilterKind::Off);
+    assert!(s.tab.comparing());
+    assert!(note.unwrap().starts_with("Comparing: "));
+    assert_eq!(filter_chip(&s), "Comparing");
+    let f = s.ui.get::<FilterCurve>(play_tab::FILTER).unwrap();
+    assert_eq!(f.title, "Filter · as it was");
+    assert_eq!(f.buttons[1].text, "Comparing");
+    assert_eq!(f.ghost.map(|g| g.kind), Some(FilterKind::LowPass));
+    let (a, note) = on(&mut s, play_tab::FILTER, EventKind::Tab(1));
+    apply(&mut s, &a.unwrap());
+    assert_eq!(s.state.settings.filter.kind, FilterKind::LowPass);
+    assert!(!s.tab.comparing());
+    assert_eq!(note.as_deref(), Some("Back to your changes"));
+    // An edit while comparing is made on the earlier version.
+    let (a, _) = on(&mut s, play_tab::FILTER, EventKind::Tab(1));
+    apply(&mut s, &a.unwrap());
+    s.tab.lift();
+    step_apply(&mut s, Row::Filter, 2);
+    assert!(!s.tab.comparing());
+    assert_eq!(s.state.settings.filter.kind, FilterKind::HighPass);
+    s.tab.lift();
+    // Leaving the section while comparing keeps the changes.
+    let (a, _) = on(&mut s, play_tab::FILTER, EventKind::Tab(1));
+    apply(&mut s, &a.unwrap());
+    assert_eq!(s.state.settings.filter.kind, FilterKind::Off);
+    let amp = Section::ALL
+        .iter()
+        .position(|x| *x == Section::Amp)
+        .unwrap();
+    let (a, _) = on(&mut s, play_tab::SECTIONS, EventKind::Tab(amp));
+    apply(&mut s, &a.expect("the changes go back"));
+    assert_eq!(s.tab.section(), Section::Amp);
+    assert_eq!(s.state.settings.filter.kind, FilterKind::HighPass);
+    assert!(!s.tab.comparing());
+    open(&mut s, Section::Filter);
+
+    // Copy, Reset, Paste.
+    let (a, note) = on(&mut s, play_tab::FILTER, EventKind::Tab(2));
+    assert_eq!(a, None, "Copy changes nothing");
+    assert_eq!(
+        note.as_deref(),
+        Some("Copied A5's filter: High-pass 12 dB, 200 Hz and its envelope")
+    );
+    let (a, note) = on(&mut s, play_tab::FILTER, EventKind::Tab(4));
+    apply(&mut s, &a.unwrap());
+    assert_eq!(s.state.settings.filter.kind, FilterKind::Off);
+    assert_eq!(
+        note.as_deref(),
+        Some("Reset A5's filter to a new pad's: Off · UNDO puts it back")
+    );
+    let (a, note) = on(&mut s, play_tab::FILTER, EventKind::Tab(3));
+    apply(&mut s, &a.unwrap());
+    assert_eq!(s.state.settings.filter.kind, FilterKind::HighPass);
+    assert_eq!(
+        note.as_deref(),
+        Some("Pasted A5's filter back · UNDO puts it as it was")
+    );
+    assert!(s.project.undo());
+    assert_eq!(
+        s.project.pad(PAD).unwrap().filter.kind,
+        FilterKind::Off,
+        "Paste is one undo step"
+    );
+    let mut bypassed = s.state.settings.clone();
+    bypassed.filter_bypass = true;
+    let d = describe(&s.state.settings, &bypassed);
+    assert_eq!(d, "filter bypass Off -> On");
+}
+
+/// A tap on the Type chip's name opens the types over the pictures: a tap
+/// on a tile puts it on at once, the slope chips set the slope (those the
+/// type lacks faint, saying why), the wheel steps the types, and Done or
+/// the Filter chip close them.
+#[test]
+fn the_types_open_over_the_pictures_and_put_a_type_on_at_once() {
+    use mpfree_sampler_ui::play_widgets::{FilterTypes, DONE, SLOPE_BASE};
+    let mut s = play(false);
+    open(&mut s, Section::Filter);
+    let (a, _) = on(
+        &mut s,
+        play_tab::LIST,
+        EventKind::Select(Row::Filter.place()),
+    );
+    assert_eq!(a, None);
+    assert_eq!(s.tab.view(), play_tab::View::Types);
+    assert!(s.ui.rect_of(play_tab::TYPES_VIEW).is_some());
+    assert_eq!(s.ui.rect_of(play_tab::FILTER), None, "over the pictures");
+    assert!(s.ui.rect_of(play_tab::LIST).is_some(), "the panel stays");
+    let t = s.ui.get::<FilterTypes>(play_tab::TYPES_VIEW).unwrap();
+    let names: Vec<&str> = t.tiles.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Off",
+            "Low-pass",
+            "High-pass",
+            "Band-pass",
+            "Notch",
+            "Peak",
+            "Ladder",
+            "Vowel",
+            "Comb"
+        ]
+    );
+    let (a, _) = on(&mut s, play_tab::TYPES_VIEW, EventKind::Tab(3));
+    apply(&mut s, &a.unwrap());
+    assert_eq!(s.state.settings.filter.kind, FilterKind::BandPass);
+    let t = s.ui.get::<FilterTypes>(play_tab::TYPES_VIEW).unwrap();
+    assert_eq!(t.picked, 3);
+    let chips: Vec<(&str, bool, bool)> = t
+        .slopes
+        .iter()
+        .map(|c| (c.text.as_str(), c.lit, c.faint))
+        .collect();
+    assert_eq!(
+        chips,
+        [
+            ("6", false, true),
+            ("12", true, false),
+            ("18", false, true),
+            ("24", false, false),
+            ("36", false, false),
+            ("48", false, false)
+        ]
+    );
+    let (a, note) = on(&mut s, play_tab::TYPES_VIEW, EventKind::Select(SLOPE_BASE));
+    assert_eq!(a, None);
+    assert_eq!(note.as_deref(), Some("The band-pass has no 6 dB slope"));
+    let (a, _) = on(&mut s, play_tab::TYPES_VIEW, EventKind::Tab(SLOPE_BASE + 5));
+    apply(&mut s, &a.unwrap());
+    assert_eq!(s.state.settings.filter.poles, 8);
+    // The wheel steps the types.
+    let st = s.state.clone();
+    let a = s.tab.wheel(&mut s.ui, &st, 1).unwrap();
+    apply(&mut s, &a);
+    assert_eq!(s.state.settings.filter.kind, FilterKind::Notch);
+    let (_, _) = on(&mut s, play_tab::TYPES_VIEW, EventKind::Tab(DONE));
+    assert_eq!(s.tab.view(), play_tab::View::Main);
+    assert!(s.ui.rect_of(play_tab::FILTER).is_some());
+    // The Filter chip closes them too.
+    on(
+        &mut s,
+        play_tab::LIST,
+        EventKind::Select(Row::Filter.place()),
+    );
+    assert_eq!(s.tab.view(), play_tab::View::Types);
+    let filter = Section::ALL
+        .iter()
+        .position(|x| *x == Section::Filter)
+        .unwrap();
+    on(&mut s, play_tab::SECTIONS, EventKind::Tab(filter));
+    assert_eq!(s.tab.view(), play_tab::View::Main);
+    assert_eq!(s.tab.section(), Section::Filter);
+}
+
+/// The Moves button opens what moves the filter in place of the pictures
+/// and panels: the cutoff's moves with their reach, the resonance's and
+/// the envelope's, where a hit takes it, Q-Links on key track, velocity,
+/// random and env depth, and jumps to the LFO's and pressure's sections.
+#[test]
+fn what_moves_the_filter_shows_every_move_and_turns_them() {
+    use mpfree_sampler_ui::play_widgets::{FilterMoves, DONE};
+    let mut s = play(false);
+    open(&mut s, Section::Filter);
+    shape(&mut s, |p| {
+        p.filter.kind = FilterKind::LowPass;
+        p.filter.poles = 4;
+        p.filter.cutoff_hz = 1000.0;
+        p.filter.env_octaves = 2.0;
+        p.vel_to_cutoff = 0.5;
+        p.vel_to_env = 0.6;
+        p.pressure.target = PressureTarget::Off;
+    });
+    s.tab.lift();
+    let l = s.ui.get::<SettingList>(play_tab::LIST).unwrap();
+    assert_eq!(
+        l.controls[Row::Moves.place()].look,
+        mpfree_sampler_ui::panel::Look::Button("3 moves ›".into())
+    );
+    let (a, _) = on(&mut s, play_tab::LIST, EventKind::Tab(Row::Moves.place()));
+    assert_eq!(a, None);
+    assert_eq!(s.tab.view(), play_tab::View::Moves);
+    assert!(s.ui.rect_of(play_tab::MOVES_VIEW).is_some());
+    assert_eq!(s.ui.rect_of(play_tab::LIST), None, "in place of the panels");
+    assert_eq!(s.tab.rows(), &play_tab::MOVES);
+    assert_eq!(
+        s.tab.qlinks_text(),
+        "key track, vel → cutoff, random, env depth"
+    );
+    let m = s.ui.get::<FilterMoves>(play_tab::MOVES_VIEW).unwrap();
+    let names: Vec<&str> = m.cutoff.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["Envelope", "Velocity", "Key", "Random", "LFO", "Pressure"]
+    );
+    assert_eq!(m.cutoff[0].span, Some((0.0, 2.0)));
+    assert_eq!(m.cutoff[1].span, Some((-2.0, 0.0)), "soft hits darker");
+    assert!(m.cutoff[4].faint && m.cutoff[5].faint, "set elsewhere, off");
+    assert_eq!(
+        m.hits,
+        "A hit now: the hardest opens to 4.00 kHz, the softest starts at 250 Hz and \
+         opens to 435 Hz (key at the root, before the random)."
+    );
+    // Q-Link 1 turns key track, a knob's drag the row it is on.
+    let st = s.state.clone();
+    let a = s.tab.qlink(&mut s.ui, &st, 0, 10, false).unwrap();
+    apply(&mut s, &a);
+    assert!((s.state.settings.key_track - 0.1).abs() < 1e-6);
+    s.tab.lift();
+    let (a, _) = on(
+        &mut s,
+        play_tab::MOVES_VIEW,
+        EventKind::Step { index: 3, delta: 5 },
+    );
+    apply(&mut s, &a.unwrap());
+    assert!((s.state.settings.cutoff_random - 0.25).abs() < 1e-6);
+    let m = s.ui.get::<FilterMoves>(play_tab::MOVES_VIEW).unwrap();
+    assert_eq!(m.cutoff[3].value, "25 %");
+    assert_eq!(m.cutoff[3].aside, "± 0.5 oct a hit");
+    assert!(m.cutoff[3].picked);
+    // Done: back to the pictures, the Moves button picked.
+    on(&mut s, play_tab::MOVES_VIEW, EventKind::Tab(DONE));
+    assert_eq!(s.tab.view(), play_tab::View::Main);
+    assert_eq!(s.tab.row(&s.ui), Row::Moves);
+    // The LFO's jump opens Movement.
+    on(&mut s, play_tab::LIST, EventKind::Tab(Row::Moves.place()));
+    on(&mut s, play_tab::MOVES_VIEW, EventKind::Tab(1));
+    assert_eq!(s.tab.section(), Section::Movement);
+    assert_eq!(s.tab.view(), play_tab::View::Main);
+}
+
+/// The Filter section's Q-Links follow the type (the Ladder's Drive in
+/// place of Env decay) and take its names; the envelope is labelled with
+/// the cutoff it takes the filter to, and the graph shows its reach.
+#[test]
+fn the_filter_q_links_follow_the_type_and_the_envelope_shows_its_hz() {
+    let mut s = play(false);
+    open(&mut s, Section::Filter);
+    shape(&mut s, |p| {
+        p.filter.kind = FilterKind::Ladder;
+        p.filter.cutoff_hz = 1000.0;
+        p.filter.env_octaves = 2.0;
+        p.filter_env.sustain = 0.5;
+    });
+    let card = |s: &PlaySample, k: usize| {
+        s.ui.get::<KnobCard>(play_tab::QLINKS[k])
+            .unwrap()
+            .label
+            .clone()
+    };
+    assert_eq!(card(&s, 3), "Q-Link 4 · Drive");
+    assert_eq!(s.tab.qlinks_text(), "cutoff, resonance, env depth, drive");
+    let env = s.ui.get::<EnvelopeView>(play_tab::ENV).unwrap();
+    let marks: Vec<(f32, &str)> = env.marks.iter().map(|(l, t)| (*l, t.as_str())).collect();
+    assert_eq!(
+        marks,
+        [(1.0, "4.00 kHz"), (0.5, "2.00 kHz"), (0.0, "1.00 kHz")]
+    );
+    let f = s.ui.get::<FilterCurve>(play_tab::FILTER).unwrap();
+    assert_eq!(f.env_target(), Some(4000.0));
+    shape(&mut s, |p| p.filter.kind = FilterKind::Comb);
+    assert_eq!(card(&s, 0), "Q-Link 1 · Pitch");
+    assert_eq!(card(&s, 1), "Q-Link 2 · Feedback");
+    assert_eq!(card(&s, 3), "Q-Link 4 · Env decay");
+    // Bypassed, the envelope has nothing to label.
+    shape(&mut s, |p| p.filter_bypass = true);
+    let env = s.ui.get::<EnvelopeView>(play_tab::ENV).unwrap();
+    assert!(env.marks.is_empty());
 }

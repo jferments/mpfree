@@ -70,6 +70,7 @@
 //! its Sound row picks another sound ([`PlayAction::LayerSound`], the whole
 //! sound with the old region's gain and tune); the rest is the Wave tab's.
 
+use std::cell::Cell;
 use std::sync::Arc;
 
 use mpfree_analysis::note_name;
@@ -89,7 +90,10 @@ use crate::command::Change;
 use crate::keys_widgets::{KeyZones, Zone};
 use crate::pads_tab::Sound;
 use crate::panel::{self, Control, Item, Look, Panel};
-use crate::play_widgets::{EnvelopeView, FilterCurve, LayerBar, LayerMap, MotionView};
+use crate::play_widgets::{
+    EnvelopeView, FilterCurve, FilterMoves, FilterTypes, HeadButton, LayerBar, LayerMap,
+    MotionView, MoveRow, SlopeChip, TypeTile, DONE, SLOPE_BASE,
+};
 use crate::slice_tool::pad_text;
 use crate::source::SourceView;
 use crate::wave_tab::{duration_text, mode_label, pad_color};
@@ -110,6 +114,12 @@ pub const SLICES: &str = "smp-play-slices";
 /// The Movement section's picture: the LFO's wave and the pitch
 /// envelope (sampler R5 part 4).
 pub const MOTION: &str = "smp-play-motion";
+/// The Filter section's types, over its pictures (the filter gap plan's
+/// F5, [`View::Types`]).
+pub const TYPES_VIEW: &str = "smp-play-types";
+/// What moves the filter, in place of the Filter section's pictures and
+/// panels (F5, [`View::Moves`]).
+pub const MOVES_VIEW: &str = "smp-play-moves";
 pub const QLINKS: [&str; 4] = ["smp-play-q1", "smp-play-q2", "smp-play-q3", "smp-play-q4"];
 /// The scenes, beside the section's controls: Store A, Store B and
 /// Return to A, and the crossfader (a panel of its own, [`SCENE_ROWS`]).
@@ -139,6 +149,21 @@ pub fn layout(s: Section, keys: bool) -> String {
     LAYOUT.replace("smp-play-layers:*", &format!("{}:*", s.view(keys)))
 }
 
+/// The page with the Filter section's types over its pictures
+/// ([`View::Types`]) or what moves the filter in place of its pictures
+/// and panels ([`View::Moves`]); [`layout`] for [`View::Main`]. A layout
+/// file sets them as `.filter.types` and `.filter.moves`.
+pub fn view_layout(s: Section, keys: bool, view: View) -> String {
+    match view {
+        View::Main => layout(s, keys),
+        View::Types => LAYOUT.replace("smp-play-layers:*", &format!("{TYPES_VIEW}:*")),
+        View::Moves => LAYOUT.replace(
+            "col(smp-play-sections:56, smp-play-layers:*, row(smp-play-list:*, smp-play-scenes:356):242)",
+            &format!("col(smp-play-sections:56, {MOVES_VIEW}:*)"),
+        ),
+    }
+}
+
 /// The velocity a key pressed on the keyboard plays at.
 pub const KEY_VELOCITY: u8 = 100;
 
@@ -153,6 +178,14 @@ pub const HINT: &str = "Tap a section for its controls · drag a layer's edges f
 pub const KEYS_HINT: &str =
     "Drag the pad's zone edges and root dot · tap a zone to pick its pad · press keys to hear \
                              them · the wheel picks a control, - / + change it";
+
+/// The hint line over the filter types ([`View::Types`]).
+pub const TYPES_HINT: &str = "Tap a type to hear it on the pads · the wheel steps the types · \
+                              tap a slope under them · Done or the Filter chip: close";
+
+/// The hint line over what moves the filter ([`View::Moves`]).
+pub const MOVES_HINT: &str = "Hit pads softly and hard to hear the moves · drag a knob, or the \
+                              wheel turns the one picked · Done or the Filter chip: back";
 
 /// Under the kit's Tuning (tunings step T6): what follows it.
 pub const TUNING_FOOT: &str = "keys, notes and 16 Levels follow; hits don't";
@@ -313,6 +346,21 @@ pub enum Row {
     Legato,
     Glide,
     GlideOn,
+    /// The filter's slope in dB an octave, for a type with more than one
+    /// (the filter gap plan's F5, [`slopes_of`]).
+    Slope,
+    /// A button showing how many moves the filter has, which opens what
+    /// moves it ([`View::Moves`], F5).
+    Moves,
+    /// What else moves the filter (F3, set on [`View::Moves`]): how far the
+    /// cutoff follows the key, how far each hit's cutoff and resonance
+    /// wander, and how much a soft hit lessens the envelope's depth and
+    /// slows its attack.
+    KeyTrack,
+    CutoffRandom,
+    ResRandom,
+    VelToEnv,
+    VelToAttack,
 }
 
 impl Row {
@@ -352,7 +400,7 @@ pub fn is_value_target(t: &mpfree_ui::Target) -> bool {
 }
 
 impl Row {
-    pub const ALL: [Row; 69] = [
+    pub const ALL: [Row; 76] = [
         Row::Polyphony,
         Row::MuteGroup,
         Row::Chokes,
@@ -422,6 +470,13 @@ impl Row {
         Row::Legato,
         Row::Glide,
         Row::GlideOn,
+        Row::Slope,
+        Row::Moves,
+        Row::KeyTrack,
+        Row::CutoffRandom,
+        Row::ResRandom,
+        Row::VelToEnv,
+        Row::VelToAttack,
     ];
 
     pub fn label(self) -> &'static str {
@@ -457,7 +512,7 @@ impl Row {
             Row::Decay => "Decay",
             Row::Sustain => "Sustain",
             Row::Release => "Release",
-            Row::Filter => "Filter",
+            Row::Filter => "Type",
             Row::Cutoff => "Cutoff",
             Row::Resonance => "Resonance",
             Row::Drive => "Drive",
@@ -495,15 +550,40 @@ impl Row {
             Row::Legato => "Legato",
             Row::Glide => "Glide",
             Row::GlideOn => "Glide on",
+            Row::Slope => "Slope",
+            Row::Moves => "Moves",
+            Row::KeyTrack => "Key track",
+            Row::CutoffRandom => "Random",
+            Row::ResRandom => "Res random",
+            Row::VelToEnv => "Vel → depth",
+            Row::VelToAttack => "Vel → attack",
         }
     }
 
-    /// The section the row is in.
+    /// The row's name on pad `p`'s panel and Q-Link card: the filter's
+    /// knobs take its type's names (the Comb's Pitch and Feedback, the
+    /// Vowel's Vowel and Sharpness, F5).
+    pub fn name_on(self, p: &Pad) -> &'static str {
+        match (self, p.filter.kind) {
+            (Row::Cutoff, FilterKind::Comb) => "Pitch",
+            (Row::Resonance, FilterKind::Comb) => "Feedback",
+            (Row::Cutoff, FilterKind::Vowel) => "Vowel",
+            (Row::Resonance, FilterKind::Vowel) => "Sharpness",
+            _ => self.label(),
+        }
+    }
+
+    /// The section the row is in (Filter for the rows only its moves
+    /// view has, [`MOVES`]).
     pub fn section(self) -> Section {
         Section::ALL
             .into_iter()
             .find(|s| s.rows().contains(&self))
-            .unwrap_or(Section::Pad)
+            .unwrap_or(if MOVES.contains(&self) {
+                Section::Filter
+            } else {
+                Section::Pad
+            })
     }
 
     /// The row's place in its section's list.
@@ -625,6 +705,8 @@ impl Section {
             ],
             Section::Filter => &[
                 Row::Filter,
+                Row::Slope,
+                Row::Moves,
                 Row::Cutoff,
                 Row::Resonance,
                 Row::Drive,
@@ -733,34 +815,83 @@ const SELECTS: [LayerSelect; 3] = [LayerSelect::All, LayerSelect::Cycle, LayerSe
 /// What the kit's pads play, as the Pads play row steps through them.
 const PADS_PLAY: [&str; 3] = ["Their sounds", "Notes", "16 Levels"];
 
-/// The filter types the Filter row steps through, each at its slopes
-/// (the filter gap plan's F4; the Ladder is 4-pole, the Vowel two
-/// formants, the Comb a delay and the Peak a boost, whatever the poles).
-const FILTERS: [(FilterKind, u8); 23] = [
-    (FilterKind::Off, 2),
-    (FilterKind::LowPass, 1),
-    (FilterKind::LowPass, 2),
-    (FilterKind::LowPass, 3),
-    (FilterKind::LowPass, 4),
-    (FilterKind::LowPass, 6),
-    (FilterKind::LowPass, 8),
-    (FilterKind::HighPass, 1),
-    (FilterKind::HighPass, 2),
-    (FilterKind::HighPass, 3),
-    (FilterKind::HighPass, 4),
-    (FilterKind::HighPass, 6),
-    (FilterKind::HighPass, 8),
-    (FilterKind::BandPass, 2),
-    (FilterKind::BandPass, 4),
-    (FilterKind::BandPass, 6),
-    (FilterKind::BandPass, 8),
-    (FilterKind::Notch, 2),
-    (FilterKind::Notch, 4),
-    (FilterKind::Peak, 2),
-    (FilterKind::Ladder, 4),
-    (FilterKind::Vowel, 2),
-    (FilterKind::Comb, 2),
+/// The filter types the Type row steps through and the picker shows,
+/// in order (the filter gap plan's F5).
+pub const TYPES: [FilterKind; 9] = [
+    FilterKind::Off,
+    FilterKind::LowPass,
+    FilterKind::HighPass,
+    FilterKind::BandPass,
+    FilterKind::Notch,
+    FilterKind::Peak,
+    FilterKind::Ladder,
+    FilterKind::Vowel,
+    FilterKind::Comb,
 ];
+
+/// What each of [`TYPES`] is for, on its tile in the picker.
+const TYPE_LINES: [&str; 9] = [
+    "the sound as it is",
+    "darker, warmer",
+    "thinner, clears the lows",
+    "one band: radio, phone",
+    "cuts one band out",
+    "boosts one band",
+    "a driven low-pass that sings",
+    "talks, from oo to ee",
+    "rings at a pitch",
+];
+
+/// Every slope the picker shows, in poles (6 dB an octave each).
+pub const ALL_SLOPES: [u8; 6] = [1, 2, 3, 4, 6, 8];
+
+/// The slopes type `kind` plays, in poles: the low-pass and high-pass six,
+/// the band-pass four, the notch two; the Ladder and the Peak one each
+/// (fixed); none for Off, the Vowel and the Comb (filter gap plan F4).
+pub fn slopes_of(kind: FilterKind) -> &'static [u8] {
+    match kind {
+        FilterKind::LowPass | FilterKind::HighPass => &ALL_SLOPES,
+        FilterKind::BandPass => &[2, 4, 6, 8],
+        FilterKind::Notch => &[2, 4],
+        FilterKind::Ladder => &[4],
+        FilterKind::Peak => &[2],
+        FilterKind::Off | FilterKind::Vowel | FilterKind::Comb => &[],
+    }
+}
+
+/// The rows of what moves the filter ([`View::Moves`]): the cutoff's
+/// envelope, velocity, key and random, the resonance's random, and
+/// velocity on the envelope's depth and attack. Its list and wheel step
+/// them in this order.
+pub const MOVES: [Row; 7] = [
+    Row::FilterEnv,
+    Row::VelToCutoff,
+    Row::KeyTrack,
+    Row::CutoffRandom,
+    Row::ResRandom,
+    Row::VelToEnv,
+    Row::VelToAttack,
+];
+
+/// What Q-Links 1 to 4 turn while what moves the filter shows.
+const MOVES_QLINKS: [Row; 4] = [
+    Row::KeyTrack,
+    Row::VelToCutoff,
+    Row::CutoffRandom,
+    Row::FilterEnv,
+];
+
+/// The filter header's buttons, in order ([`FilterCurve`]'s).
+const HEAD_ON: usize = 0;
+const HEAD_COMPARE: usize = 1;
+const HEAD_COPY: usize = 2;
+const HEAD_PASTE: usize = 3;
+const HEAD_RESET: usize = 4;
+
+/// What moves the filter's jumps to the sections that set the LFO and
+/// pressure ([`FilterMoves`]' `Tab`).
+const JUMP_MOVEMENT: usize = 1;
+const JUMP_MOD: usize = 2;
 
 const PRESSURE: [PressureTarget; 8] = [
     PressureTarget::Off,
@@ -1253,6 +1384,100 @@ enum Key {
     /// The pad's zone on the keyboard: its lowest key (0), highest (1) or
     /// root (2).
     Zone(usize),
+    /// A button over the filter's picture (On, Compare, Paste, Reset):
+    /// each tap its own undo step.
+    Head(usize),
+}
+
+/// What the Filter section shows (the filter gap plan's F5): its pictures
+/// and panels, the types over its pictures, or what moves the filter in
+/// place of both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum View {
+    Main,
+    Types,
+    Moves,
+}
+
+/// Everything a pad's filter is (F5): its type, slope and knobs, whether
+/// it is bypassed, its envelope and its moves. Compare, Copy, Paste and
+/// Reset take it whole.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FilterSet {
+    pub filter: Filter,
+    pub bypass: bool,
+    pub env: Ahdsr,
+    pub vel_to_cutoff: f32,
+    pub key_track: f32,
+    pub vel_to_env: f32,
+    pub vel_to_attack: f32,
+    pub cutoff_random: f32,
+    pub res_random: f32,
+}
+
+impl FilterSet {
+    /// Pad `p`'s.
+    pub fn of(p: &Pad) -> FilterSet {
+        FilterSet {
+            filter: p.filter,
+            bypass: p.filter_bypass,
+            env: p.filter_env,
+            vel_to_cutoff: p.vel_to_cutoff,
+            key_track: p.key_track,
+            vel_to_env: p.vel_to_env,
+            vel_to_attack: p.vel_to_attack,
+            cutoff_random: p.cutoff_random,
+            res_random: p.res_random,
+        }
+    }
+
+    /// A new pad's: Off, every move at nothing.
+    pub fn new_pad() -> FilterSet {
+        FilterSet {
+            filter: Filter::default(),
+            bypass: false,
+            env: Ahdsr::OPEN,
+            vel_to_cutoff: 0.0,
+            key_track: 0.0,
+            vel_to_env: 0.0,
+            vel_to_attack: 0.0,
+            cutoff_random: 0.0,
+            res_random: 0.0,
+        }
+    }
+
+    /// How many of its moves are set: the envelope, velocity, key,
+    /// randoms, and velocity on the envelope (while it moves the cutoff).
+    pub fn moves(&self) -> usize {
+        let env = self.filter.env_octaves != 0.0;
+        [
+            env,
+            self.vel_to_cutoff != 0.0,
+            self.key_track != 0.0,
+            self.cutoff_random != 0.0,
+            self.res_random != 0.0,
+            env && self.vel_to_env != 0.0,
+            env && self.vel_to_attack != 0.0,
+        ]
+        .into_iter()
+        .filter(|m| *m)
+        .count()
+    }
+
+    /// Pad `p` with this filter, everything else kept.
+    pub fn on(&self, p: &Pad) -> Pad {
+        let mut p = p.clone();
+        p.filter = self.filter;
+        p.filter_bypass = self.bypass;
+        p.filter_env = self.env;
+        p.vel_to_cutoff = self.vel_to_cutoff;
+        p.key_track = self.key_track;
+        p.vel_to_env = self.vel_to_env;
+        p.vel_to_attack = self.vel_to_attack;
+        p.cutoff_random = self.cutoff_random;
+        p.res_random = self.res_random;
+        p
+    }
 }
 
 /// The Play tab's widgets and what their touches mean. It keeps the layer
@@ -1270,14 +1495,29 @@ pub struct PlayTab {
     next_gesture: u64,
     /// Whether the page has the keyboard.
     keys_shown: bool,
-    /// The section and keyboard the page is laid out for.
-    laid_out: (Section, bool),
+    /// The section, keyboard and Filter view the page is laid out for.
+    laid_out: (Section, bool, View),
     /// The crossfader, 0 (A) to 1 (B).
     fade: f32,
     /// The section open.
     section: Section,
     /// The Slices section's slice picked, from 0 (R4 part 5).
     slice: usize,
+    /// What the Filter section shows (F5).
+    view: View,
+    /// The pad's filter as it was when the Filter section opened (or the
+    /// pad was picked there): what Compare plays.
+    opened: Option<FilterSet>,
+    /// While comparing, the changes Compare set aside, which a tap on it
+    /// again (or leaving the section) puts back.
+    held: Option<FilterSet>,
+    /// Copy's filter, with the name of the pad it came from ("A5").
+    clip: Option<(String, FilterSet)>,
+    /// What the hint line should say about the last touch, for the app
+    /// ([`PlayTab::take_note`]).
+    note: Option<String>,
+    /// The rows Q-Links 1 to 4 turn as last shown ([`PlayTab::qlinks_for`]).
+    qrows: Cell<[Row; 4]>,
 }
 
 impl PlayTab {
@@ -1288,7 +1528,57 @@ impl PlayTab {
         if !is_value_target(t) {
             return None;
         }
-        self.section.rows().get(t.index)?.field()
+        self.rows().get(t.index)?.field()
+    }
+
+    /// The rows the list holds now: the open section's, or what moves the
+    /// filter's ([`MOVES`]) while that shows.
+    pub fn rows(&self) -> &'static [Row] {
+        if self.view == View::Moves {
+            &MOVES
+        } else {
+            self.section.rows()
+        }
+    }
+
+    /// What the Filter section shows.
+    pub fn view(&self) -> View {
+        self.view
+    }
+
+    /// Whether Compare is playing the filter as it was.
+    pub fn comparing(&self) -> bool {
+        self.held.is_some()
+    }
+
+    /// What the hint line should say about the last touch (Copy, Paste,
+    /// Reset, On, Compare, a faint slope), once.
+    pub fn take_note(&mut self) -> Option<String> {
+        self.note.take()
+    }
+
+    /// The rows Q-Links 1 to 4 turn for pad `p`: the open section's
+    /// ([`Section::qlinks`]); on the Filter section Cutoff, Resonance, Env
+    /// depth and the type's own knob (the Ladder's Drive), else Env decay;
+    /// what moves the filter's ([`MOVES_QLINKS`]) while that shows.
+    pub fn qlinks_for(&self, p: &Pad) -> [Row; 4] {
+        match (self.section, self.view) {
+            (Section::Filter, View::Moves) => MOVES_QLINKS,
+            (Section::Filter, _) if p.filter.kind == FilterKind::Ladder => {
+                [Row::Cutoff, Row::Resonance, Row::FilterEnv, Row::Drive]
+            }
+            (s, _) => s.qlinks(),
+        }
+    }
+
+    /// The hint line for the Filter section's types or moves; None on
+    /// its pictures and every other section.
+    pub fn view_hint(&self) -> Option<&'static str> {
+        match self.view {
+            View::Main => None,
+            View::Types => Some(TYPES_HINT),
+            View::Moves => Some(MOVES_HINT),
+        }
     }
 
     /// Adds the widgets and the page `name` to `ui` (the app adds `header`
@@ -1305,6 +1595,8 @@ impl PlayTab {
         env.right = "drag the points".into();
         ui.add(ENV, env);
         ui.add(FILTER, FilterCurve::new("Filter"));
+        ui.add(TYPES_VIEW, FilterTypes::new());
+        ui.add(MOVES_VIEW, FilterMoves::new());
         ui.add(KEYS, KeyZones::new("Keys"));
         ui.add(SLICES, Waveform::new());
         ui.add(MOTION, MotionView::new());
@@ -1338,10 +1630,16 @@ impl PlayTab {
             gesture: None,
             next_gesture: GESTURE_BASE,
             keys_shown: false,
-            laid_out: (Section::Layers, false),
+            laid_out: (Section::Layers, false, View::Main),
             fade: 0.0,
             section: Section::Layers,
             slice: 0,
+            view: View::Main,
+            opened: None,
+            held: None,
+            clip: None,
+            note: None,
+            qrows: Cell::new(Section::Layers.qlinks()),
         };
         tab.update(ui, st);
         Ok(tab)
@@ -1357,6 +1655,9 @@ impl PlayTab {
     pub fn open_section(&mut self, ui: &mut Ui, st: &PlayState, section: Section) {
         if section != self.section {
             self.section = section;
+            self.view = View::Main;
+            self.held = None;
+            self.opened = (section == Section::Filter).then(|| FilterSet::of(&st.settings));
             self.lift();
             if let Some(list) = ui.get_mut::<SettingList>(LIST) {
                 list.selected = 0;
@@ -1367,11 +1668,35 @@ impl PlayTab {
         self.show(ui, st);
     }
 
+    /// The Filter section shows `view`: the list picks the row it starts
+    /// on (the Type row for the types, the first move for the moves, the
+    /// Moves button back from them).
+    pub fn show_view(&mut self, ui: &mut Ui, st: &PlayState, view: View) {
+        if self.section != Section::Filter || view == self.view {
+            return;
+        }
+        let back = self.view;
+        self.view = view;
+        self.lift();
+        let pick = match (view, back) {
+            (View::Types, _) => Row::Filter.place(),
+            (View::Moves, _) => 0,
+            (View::Main, View::Moves) => Row::Moves.place(),
+            (View::Main, _) => Row::Filter.place(),
+        };
+        if let Some(list) = ui.get_mut::<SettingList>(LIST) {
+            list.selected = pick;
+            list.editing = false;
+        }
+        self.lay_out(ui, st.shows_keys());
+        self.show(ui, st);
+    }
+
     /// The rows Q-Links 1 to 4 turn now, for the hint line: "attack,
     /// decay, sustain, release", or "layer level, pan, tune, vel low".
     pub fn qlinks_text(&self) -> String {
         let mut said_layer = false;
-        let rows = self.section.qlinks().map(|r| {
+        let rows = self.qrows.get().map(|r| {
             let label = r.label().to_lowercase();
             if (r.of_layer() || r.of_slice()) && !said_layer {
                 said_layer = true;
@@ -1425,7 +1750,7 @@ impl PlayTab {
 
     /// The row picked in the section's list.
     pub fn row(&self, ui: &Ui) -> Row {
-        let rows = self.section.rows();
+        let rows = self.rows();
         ui.get::<SettingList>(LIST)
             .and_then(|l| rows.get(l.selected).copied())
             .unwrap_or(rows[0])
@@ -1454,6 +1779,9 @@ impl PlayTab {
             self.last_velocity = None;
             // A sliced pad's Slices open on the slice a hit plays.
             self.slice = usize::from(st.settings.slice);
+            // Compare compares the pad picked with itself as it was.
+            self.held = None;
+            self.opened = (self.section == Section::Filter).then(|| FilterSet::of(&st.settings));
         }
         self.layer = self.layer.min(st.settings.layers.len().saturating_sub(1));
         self.slice = self.slice.min(slices(&st.settings) - 1);
@@ -1468,7 +1796,9 @@ impl PlayTab {
 
     /// The hint line for the page as it is.
     pub fn hint(&self) -> &'static str {
-        if self.keys_shown {
+        if let Some(h) = self.view_hint() {
+            h
+        } else if self.keys_shown {
             KEYS_HINT
         } else {
             HINT
@@ -1480,16 +1810,22 @@ impl PlayTab {
     fn lay_out(&mut self, ui: &mut Ui, keys: bool) {
         let s = self.section;
         let keys = keys && matches!(s, Section::Pitch | Section::Pad);
-        if self.laid_out == (s, keys) {
+        let view = self.view;
+        if self.laid_out == (s, keys, view) {
             return;
         }
         let mut key = format!("{}.{}", self.name, s.label().to_lowercase());
         if keys {
             key.push_str(".keys");
         }
-        let spec = ui.layout_for(&key, &layout(s, keys));
+        match view {
+            View::Main => {}
+            View::Types => key.push_str(".types"),
+            View::Moves => key.push_str(".moves"),
+        }
+        let spec = ui.layout_for(&key, &view_layout(s, keys, view));
         if ui.set_layout(&self.name, &spec).is_ok() {
-            self.laid_out = (s, keys);
+            self.laid_out = (s, keys, view);
             self.keys_shown = keys;
         }
     }
@@ -1690,41 +2026,120 @@ impl PlayTab {
             if filter_env && p.filter.kind == FilterKind::Off {
                 e.caption.push_str(" · the filter is off");
             }
+            // The cutoff where the envelope takes it, down the right edge
+            // (F5): at its peak, its sustain and at rest.
+            e.marks.clear();
+            let f = &p.filter;
+            if filter_env && f.kind != FilterKind::Off && !p.filter_bypass && f.env_octaves != 0.0 {
+                let at = |level: f32| {
+                    let hz = (f.cutoff_hz * (f.env_octaves * level).exp2())
+                        .clamp(CUTOFF_RANGE_HZ.0, CUTOFF_RANGE_HZ.1);
+                    (level, hz_text(hz))
+                };
+                let s = p.filter_env.sustain.clamp(0.0, 1.0);
+                e.marks.push(at(1.0));
+                // Too near the peak or the rest to read apart from them.
+                if (0.15..=0.85).contains(&s) {
+                    e.marks.push(at(s));
+                }
+                e.marks.push(at(0.0));
+            }
             if n > 1 {
                 e.caption
                     .push_str(&format!(" · over layer {}", self.layer + 1));
             }
         }
         if let Some(f) = ui.get_mut::<FilterCurve>(FILTER) {
+            // While comparing, the pad plays the filter as it was and the
+            // changes set aside are drawn dashed.
             f.filter = p.filter;
-            f.title = format!("Filter · {}", filter_label(&p.filter));
-            if p.filter.kind == FilterKind::Off {
-                f.right = String::new();
-                f.caption = "Off: pick a type in the Filter row".into();
+            f.bypassed = p.filter_bypass && p.filter.kind != FilterKind::Off;
+            f.ghost = self.held.map(|h| h.filter);
+            f.short = "Filter".into();
+            f.title = if self.held.is_some() {
+                "Filter · as it was".into()
+            } else if f.bypassed {
+                "Filter · bypassed".into()
             } else {
-                f.right = "drag the dot".into();
-                f.caption = format!(
-                    "cutoff {} · res {} % · env {}",
+                format!("Filter · {}", type_name(p.filter.kind))
+            };
+            f.right = String::new();
+            let on = p.filter.kind != FilterKind::Off;
+            f.buttons = vec![
+                HeadButton {
+                    text: if p.filter_bypass && on {
+                        "○ Off".into()
+                    } else {
+                        "● On".into()
+                    },
+                    lit: on && !p.filter_bypass,
+                    faint: !on,
+                },
+                HeadButton {
+                    text: if self.held.is_some() {
+                        "Comparing".into()
+                    } else {
+                        "Compare".into()
+                    },
+                    lit: self.held.is_some(),
+                    faint: self.held.is_none() && self.opened.is_none_or(|o| o == FilterSet::of(p)),
+                },
+                HeadButton {
+                    text: "Copy".into(),
+                    lit: false,
+                    faint: false,
+                },
+                HeadButton {
+                    text: "Paste".into(),
+                    lit: false,
+                    faint: self.clip.is_none(),
+                },
+                HeadButton {
+                    text: "Reset".into(),
+                    lit: false,
+                    faint: false,
+                },
+            ];
+            f.caption = if let Some(h) = self.held {
+                format!(
+                    "Now: {} (dashed: your changes) · tap again to go back",
+                    filter_at(&h.filter)
+                )
+            } else if f.bypassed {
+                format!(
+                    "Bypassed: the pad plays unfiltered · {} waits",
+                    filter_at(&p.filter)
+                )
+            } else if !on {
+                "Off: pick a type in the Type row".into()
+            } else {
+                let mut c = format!(
+                    "cutoff {} · res {} %",
                     hz_text(p.filter.cutoff_hz),
                     percent(p.filter.resonance),
-                    octaves_text(p.filter.env_octaves)
                 );
                 match p.filter.kind {
                     FilterKind::Ladder if p.filter.drive_db > 0.0 => {
-                        f.caption += &format!(" · drive {:.1} dB", p.filter.drive_db)
+                        c += &format!(" · drive {:.1} dB", p.filter.drive_db)
                     }
-                    FilterKind::Vowel => {
-                        f.caption += &format!(" · \"{}\"", vowel_name(p.filter.cutoff_hz))
-                    }
+                    FilterKind::Vowel => c += &format!(" · \"{}\"", vowel_name(p.filter.cutoff_hz)),
                     FilterKind::Comb => {
-                        f.caption += &format!(" · rings at {}", note_of(p.filter.cutoff_hz))
+                        c += &format!(" · rings at {}", note_of(p.filter.cutoff_hz))
                     }
                     FilterKind::Peak => {
-                        f.caption += &format!(" · boost {}", boost_text(p.filter.resonance))
+                        c += &format!(" · boost {}", boost_text(p.filter.resonance))
                     }
                     _ => {}
                 }
-            }
+                c + " · drag across the graph"
+            };
+        }
+        if let Some(t) = ui.get_mut::<FilterTypes>(TYPES_VIEW) {
+            self.show_types(t, p);
+        }
+        let picked = self.row(ui);
+        if let Some(m) = ui.get_mut::<FilterMoves>(MOVES_VIEW) {
+            self.show_moves(m, picked, st);
         }
         if let Some(z) = ui.get_mut::<KeyZones>(KEYS) {
             self.show_zones(z, st);
@@ -1738,11 +2153,10 @@ impl PlayTab {
         }
         self.show_slices(ui, st);
         let rows = self
-            .section
             .rows()
             .iter()
             .map(|r| Setting {
-                name: r.label().into(),
+                name: r.name_on(p).into(),
                 value: match r {
                     Row::Chokes => pads_text(self.bank, &p.chokes),
                     Row::Links => pads_text(self.bank, &p.links),
@@ -1758,10 +2172,17 @@ impl PlayTab {
         } else {
             Vec::new()
         };
+        let buttons = if self.section == Section::Filter && self.view != View::Moves {
+            vec![Row::Moves.place()]
+        } else {
+            buttons
+        };
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
             list.rows = rows;
             list.controls = controls;
-            list.panel = Some(panel);
+            // What moves the filter shows its rows itself; the list only
+            // keeps them for the wheel.
+            list.panel = (self.view != View::Moves).then_some(panel);
             list.buttons = buttons;
             list.selected = list.selected.min(list.rows.len() - 1);
             (list.title, list.right) = match self.section {
@@ -1771,6 +2192,9 @@ impl PlayTab {
                 ),
                 Section::Layers => ("Layer 1".into(), sound.to_string()),
                 Section::Pad => ("Pad".into(), "and the kit's pads".into()),
+                Section::Filter if self.view == View::Moves => {
+                    ("What moves the filter".into(), filter_at(&p.filter))
+                }
                 Section::Slices => match slices(p) {
                     1 => ("Slices".into(), "not sliced".into()),
                     n => (
@@ -1790,18 +2214,222 @@ impl PlayTab {
                 .iter()
                 .map(|s| SectionChip {
                     name: s.label().into(),
-                    sub: section_text(st, *s),
+                    sub: match s {
+                        Section::Filter if self.held.is_some() => "Comparing".into(),
+                        _ => section_text(st, *s),
+                    },
                 })
                 .collect();
         }
         self.show_cards(ui, st);
     }
 
+    /// The filter types over the pictures: the pad's type lit, its slopes
+    /// as chips (F5).
+    fn show_types(&self, t: &mut FilterTypes, p: &Pad) {
+        t.note = "a tap puts it on the pad at once: play the pads to hear it".into();
+        t.tiles = TYPES
+            .iter()
+            .zip(TYPE_LINES)
+            .map(|(&kind, line)| TypeTile {
+                name: type_name(kind).into(),
+                line: line.into(),
+                filter: Filter {
+                    kind,
+                    poles: 2,
+                    cutoff_hz: if kind == FilterKind::HighPass {
+                        400.0
+                    } else {
+                        1000.0
+                    },
+                    resonance: match kind {
+                        FilterKind::Peak => 0.6,
+                        _ => 0.3,
+                    },
+                    env_octaves: 0.0,
+                    drive_db: 0.0,
+                },
+            })
+            .collect();
+        t.picked = TYPES.iter().position(|k| *k == p.filter.kind).unwrap_or(0);
+        let list = slopes_of(p.filter.kind);
+        let now = p.filter.slope();
+        t.slopes = ALL_SLOPES
+            .iter()
+            .map(|&poles| SlopeChip {
+                text: (6 * u32::from(poles)).to_string(),
+                lit: !list.is_empty() && poles == now,
+                faint: list.len() < 2 || !list.contains(&poles),
+            })
+            .collect();
+        t.slope_note = match (p.filter.kind, list.len()) {
+            (FilterKind::Off, _) => "pick a type first".into(),
+            (k, 0) => format!("the {} has no slope", type_name(k)),
+            (k, 1) => format!("the {} is {} dB, fixed", type_name(k), 6 * u32::from(now)),
+            _ => "steeper cuts harder; the resonance stays where it was".into(),
+        };
+    }
+
+    /// What moves the filter (F5): the cutoff's moves with their bars on
+    /// one octave scale, the resonance's and the envelope's, and where a
+    /// hit takes it. `picked` is the row the wheel turns.
+    fn show_moves(&self, m: &mut FilterMoves, picked: Row, st: &PlayState) {
+        let p = &st.settings;
+        let f = &p.filter;
+        m.cutoff_hz = f.cutoff_hz;
+        m.note = format!(
+            "{} · each bar is how far that one can take the cutoff",
+            filter_at(f)
+        );
+        let qlink = |r: Row| MOVES_QLINKS.iter().position(|q| *q == r);
+        let knob = |r: Row, name: &str, what: &str| {
+            let c = control_of(st, self.layer, self.slice, r);
+            let (pos, steps, bipolar) = match c.look {
+                Look::Knob {
+                    pos,
+                    steps,
+                    bipolar,
+                } => (pos, steps, bipolar),
+                _ => (0.0, 20, false),
+            };
+            MoveRow {
+                index: MOVES.iter().position(|x| *x == r),
+                pos,
+                steps,
+                bipolar,
+                qlink: qlink(r),
+                faint: c.faint,
+                picked: picked == r,
+                ..MoveRow::new(name, what, &st.value_text(r))
+            }
+        };
+        let env = f.env_octaves;
+        let vel = p.vel_to_cutoff;
+        let key = p.key_track;
+        let rnd = p.cutoff_random;
+        let mut cutoff = vec![
+            MoveRow {
+                span: Some((env.min(0.0), env.max(0.0))),
+                ..knob(
+                    Row::FilterEnv,
+                    "Envelope",
+                    "Env depth: opens it, then closes",
+                )
+            },
+            MoveRow {
+                span: Some(((-4.0 * vel).min(0.0), (-4.0 * vel).max(0.0))),
+                ..knob(
+                    Row::VelToCutoff,
+                    "Velocity",
+                    if vel < 0.0 {
+                        "Vel → cutoff: soft hits brighter"
+                    } else {
+                        "Vel → cutoff: soft hits darker"
+                    },
+                )
+            },
+            MoveRow {
+                // Keys two octaves either side of the root.
+                span: Some((-2.0 * key.abs(), 2.0 * key.abs())),
+                aside: match p.keys {
+                    Some(k) => format!(
+                        "keys {} to {}",
+                        note_name(k.root.saturating_sub(24)),
+                        note_name(k.root.saturating_add(24).min(127))
+                    ),
+                    None => "hits play at the root".into(),
+                },
+                ..knob(
+                    Row::KeyTrack,
+                    "Key",
+                    if key < 0.0 {
+                        "Key track: higher keys darker"
+                    } else {
+                        "Key track: higher keys brighter"
+                    },
+                )
+            },
+            MoveRow {
+                span: Some((-2.0 * rnd, 2.0 * rnd)),
+                aside: if rnd > 0.0 {
+                    format!("± {} oct a hit", trim(2.0 * rnd))
+                } else {
+                    String::new()
+                },
+                ..knob(Row::CutoffRandom, "Random", "each hit a little different")
+            },
+        ];
+        let lfo_on = p.lfo.target == LfoTarget::Cutoff;
+        cutoff.push(MoveRow {
+            span: lfo_on.then(|| (-4.0 * p.lfo.depth.abs(), 4.0 * p.lfo.depth.abs())),
+            jump: Some(("Movement ›".into(), JUMP_MOVEMENT)),
+            faint: !lfo_on,
+            ..MoveRow::new(
+                "LFO",
+                &match p.lfo.target {
+                    LfoTarget::Off => "off: set in Movement".to_string(),
+                    LfoTarget::Cutoff => format!(
+                        "{}, {}, set in Movement",
+                        lfo_wave_label(p.lfo.shape).to_lowercase(),
+                        lfo_rate_text(&p.lfo)
+                    ),
+                    t => format!("it moves {}", lfo_target_label(t).to_lowercase()),
+                },
+                &if lfo_on {
+                    format!("{} %", percent(p.lfo.depth))
+                } else {
+                    "–".into()
+                },
+            )
+        });
+        let press_on = p.pressure.target == PressureTarget::Filter;
+        cutoff.push(MoveRow {
+            span: press_on.then(|| (-4.0 * p.pressure.depth.abs(), 4.0 * p.pressure.depth.abs())),
+            jump: Some(("Mod ›".into(), JUMP_MOD)),
+            faint: !press_on,
+            ..MoveRow::new(
+                "Pressure",
+                &match p.pressure.target {
+                    PressureTarget::Off => "off: set in Mod".to_string(),
+                    PressureTarget::Filter => "the pad held down, set in Mod".to_string(),
+                    t => format!("on this pad it moves {}", pressure_label(t).to_lowercase()),
+                },
+                &if press_on {
+                    format!("{:+} %", percent(p.pressure.depth))
+                } else {
+                    "–".into()
+                },
+            )
+        });
+        m.cutoff = cutoff;
+        m.right = vec![
+            (
+                "Resonance".into(),
+                vec![knob(
+                    Row::ResRandom,
+                    "Random",
+                    "± up to half its range a hit",
+                )],
+            ),
+            (
+                "Envelope".into(),
+                vec![
+                    knob(Row::VelToEnv, "Vel → depth", "a soft hit opens it less"),
+                    knob(
+                        Row::VelToAttack,
+                        "Vel → attack",
+                        "a soft hit opens it slower, up to 1 s",
+                    ),
+                ],
+            ),
+        ];
+        m.hits = hits_text(p);
+    }
+
     /// How each of the open section's rows looks on the panel, in its
     /// list's order.
     fn controls(&self, st: &PlayState) -> Vec<Control> {
-        self.section
-            .rows()
+        self.rows()
             .iter()
             .map(|&row| control_of(st, self.layer, self.slice, row))
             .collect()
@@ -1868,37 +2496,47 @@ impl PlayTab {
                 )
                 .note("drag the points, or turn"),
             ],
-            Section::Filter => vec![
-                part(
-                    "Filter",
-                    390,
-                    vec![
-                        vec![it(Row::Filter).labelled()],
+            Section::Filter => {
+                // Cutoff and Resonance, then the type's own knobs (the
+                // Ladder's Drive), then Env depth (F5).
+                let mut knobs = vec![it(Row::Cutoff), it(Row::Resonance)];
+                if p.filter.kind == FilterKind::Ladder {
+                    knobs.push(it(Row::Drive));
+                }
+                knobs.push(it(Row::FilterEnv));
+                vec![
+                    part(
+                        "Filter",
+                        440,
                         vec![
-                            it(Row::Cutoff),
-                            it(Row::Resonance),
-                            it(Row::Drive),
-                            it(Row::FilterEnv),
+                            vec![
+                                it(Row::Filter).labelled(),
+                                it(Row::Slope).labelled().wide(140),
+                                it(Row::Moves).labelled().wide(100),
+                            ],
+                            knobs,
                         ],
-                    ],
-                )
-                .note(if p.filter.kind == FilterKind::Off {
-                    "off"
-                } else {
-                    "drag the dot"
-                }),
-                part(
-                    "Filter envelope",
-                    350,
-                    vec![vec![
-                        it(Row::EnvAttack),
-                        it(Row::EnvDecay),
-                        it(Row::EnvSustain),
-                        it(Row::EnvRelease),
-                    ]],
-                )
-                .note("its hold on the picture"),
-            ],
+                    )
+                    .note(if p.filter.kind == FilterKind::Off {
+                        "off"
+                    } else if p.filter_bypass {
+                        "bypassed"
+                    } else {
+                        "drag the graph"
+                    }),
+                    part(
+                        "Filter envelope",
+                        300,
+                        vec![vec![
+                            it(Row::EnvAttack).two_lines(),
+                            it(Row::EnvDecay).two_lines(),
+                            it(Row::EnvSustain).two_lines(),
+                            it(Row::EnvRelease).two_lines(),
+                        ]],
+                    )
+                    .note("its hold on the picture"),
+                ]
+            }
             Section::Pitch => vec![
                 part(
                     "Pitch",
@@ -2142,7 +2780,9 @@ impl PlayTab {
 
     fn show_cards(&self, ui: &mut Ui, st: &PlayState) {
         let row = self.row(ui);
-        for (k, r) in self.section.qlinks().iter().enumerate() {
+        let qrows = self.qlinks_for(&st.settings);
+        self.qrows.set(qrows);
+        for (k, r) in qrows.iter().enumerate() {
             let Some(c) = ui.get_mut::<KnobCard>(QLINKS[k]) else {
                 continue;
             };
@@ -2153,7 +2793,7 @@ impl PlayTab {
             } else if *r == Row::Wow {
                 format!("Q-Link {} · Wow", k + 1)
             } else {
-                format!("Q-Link {} · {}", k + 1, r.label())
+                format!("Q-Link {} · {}", k + 1, r.name_on(&st.settings))
             };
             c.scope = self.section.label().to_string();
             c.focused = *r == row;
@@ -2204,8 +2844,96 @@ impl PlayTab {
             }
             (SECTIONS, EventKind::Tab(i)) => {
                 let section = *Section::ALL.get(*i)?;
+                // The Filter chip closes the types or the moves.
+                if section == self.section && self.view != View::Main {
+                    self.show_view(ui, st, View::Main);
+                    return None;
+                }
+                // Leaving the section ends Compare, keeping the changes.
+                let back = self.end_compare(st).filter(|_| section != self.section);
                 self.open_section(ui, st, section);
+                back
+            }
+            (FILTER, EventKind::Tab(i)) => self.head(ui, st, *i),
+            (FILTER, EventKind::Select(i)) => {
+                self.note = Some(
+                    match *i {
+                        HEAD_ON => "On: the filter is off, so there is nothing to bypass",
+                        HEAD_COMPARE => "Compare: nothing changed since you opened the section",
+                        HEAD_PASTE => "Paste: nothing copied yet. Copy a pad's filter first",
+                        _ => return None,
+                    }
+                    .into(),
+                );
                 None
+            }
+            (TYPES_VIEW, EventKind::Tab(DONE)) | (MOVES_VIEW, EventKind::Tab(DONE)) => {
+                self.show_view(ui, st, View::Main);
+                None
+            }
+            (TYPES_VIEW, EventKind::Tab(i)) if *i < TYPES.len() => {
+                let after = typed(&st.settings, TYPES[*i]);
+                self.lift();
+                let a = self.edit(st, Key::Row(Row::Filter), after);
+                self.lift();
+                a
+            }
+            (TYPES_VIEW, EventKind::Tab(i)) => {
+                let poles = *ALL_SLOPES.get(i.checked_sub(SLOPE_BASE)?)?;
+                if !slopes_of(st.settings.filter.kind).contains(&poles) {
+                    return None;
+                }
+                let mut after = st.settings.clone();
+                after.filter.poles = poles;
+                self.lift();
+                let a = self.edit(st, Key::Row(Row::Slope), after);
+                self.lift();
+                a
+            }
+            (TYPES_VIEW, EventKind::Select(i)) => {
+                let poles = *ALL_SLOPES.get(i.checked_sub(SLOPE_BASE)?)?;
+                let kind = st.settings.filter.kind;
+                self.note = Some(match (kind, slopes_of(kind).len()) {
+                    (FilterKind::Off, _) => "The filter is off: pick a type first".into(),
+                    (k, 0) => format!("The {} has no slope", type_name(k)),
+                    (k, 1) => format!(
+                        "The {} is {} dB, fixed",
+                        type_name(k),
+                        6 * u32::from(st.settings.filter.slope())
+                    ),
+                    (k, _) => format!(
+                        "The {} has no {} dB slope",
+                        type_name(k).to_lowercase(),
+                        6 * u32::from(poles)
+                    ),
+                });
+                None
+            }
+            (MOVES_VIEW, EventKind::Tab(JUMP_MOVEMENT)) => {
+                let back = self.end_compare(st);
+                self.open_section(ui, st, Section::Movement);
+                back
+            }
+            (MOVES_VIEW, EventKind::Tab(JUMP_MOD)) => {
+                let back = self.end_compare(st);
+                self.open_section(ui, st, Section::Mod);
+                back
+            }
+            (MOVES_VIEW, EventKind::Select(i)) => {
+                if let Some(list) = ui.get_mut::<SettingList>(LIST) {
+                    list.selected = (*i).min(MOVES.len() - 1);
+                }
+                self.show(ui, st);
+                None
+            }
+            (MOVES_VIEW, EventKind::Step { index, delta }) => {
+                let row = *MOVES.get(*index)?;
+                if let Some(list) = ui.get_mut::<SettingList>(LIST) {
+                    list.selected = *index;
+                }
+                let a = self.step_on(ui, st, row, *delta);
+                self.show_cards(ui, st);
+                a
             }
             (KEYS, EventKind::Select(pad)) => (*pad != st.pad).then_some(PlayAction::Pick(*pad)),
             (KEYS, EventKind::Pad { index, down }) => Some(PlayAction::Note {
@@ -2262,16 +2990,27 @@ impl PlayTab {
                     (*frame as f32).clamp(CUTOFF_RANGE_HZ.0, CUTOFF_RANGE_HZ.1);
                 self.edit(st, Key::Cutoff, after)
             }
-            (LIST, EventKind::Tab(i)) => match self.section.rows().get(*i)? {
+            (LIST, EventKind::Tab(i)) => match self.rows().get(*i)? {
                 Row::AddLayer => self.add_layer(st),
                 Row::RemoveLayer => self.remove_layer(st),
+                Row::Moves => {
+                    self.show_view(ui, st, View::Moves);
+                    None
+                }
                 _ => None,
             },
             (LIST, EventKind::Step { index, delta }) => {
-                let row = *self.section.rows().get(*index)?;
+                let row = *self.rows().get(*index)?;
                 let a = self.step_on(ui, st, row, *delta);
                 self.show_cards(ui, st);
                 a
+            }
+            // A tap on the Type chip's name opens the types (F5).
+            (LIST, EventKind::Select(i))
+                if self.view == View::Main && self.rows().get(*i) == Some(&Row::Filter) =>
+            {
+                self.show_view(ui, st, View::Types);
+                None
             }
             (LIST, EventKind::Select(_)) => {
                 self.show_cards(ui, st);
@@ -2279,7 +3018,7 @@ impl PlayTab {
             }
             (name, EventKind::Select(_)) if QLINKS.contains(&name) => {
                 let k = QLINKS.iter().position(|q| *q == name)?;
-                self.pick_row(ui, self.section.qlinks()[k]);
+                self.pick_row(ui, self.qlinks_for(&st.settings)[k]);
                 self.show_cards(ui, st);
                 None
             }
@@ -2287,14 +3026,107 @@ impl PlayTab {
         }
     }
 
-    /// Picks row `row`, if it is in the section open.
+    /// Picks row `row`, if the list holds it now.
     fn pick_row(&self, ui: &mut Ui, row: Row) {
-        if row.section() != self.section {
+        let Some(at) = self.rows().iter().position(|r| *r == row) else {
             return;
-        }
+        };
         if let Some(list) = ui.get_mut::<SettingList>(LIST) {
-            list.selected = row.place();
+            list.selected = at;
         }
+    }
+
+    /// Compare ended (the section left, another section jumped to): the
+    /// changes it set aside go back on the pad, as an undo step of their
+    /// own. None when it wasn't comparing.
+    fn end_compare(&mut self, st: &PlayState) -> Option<PlayAction> {
+        let held = self.held.take()?;
+        self.lift();
+        let a = self.edit(st, Key::Head(HEAD_COMPARE), held.on(&st.settings));
+        self.lift();
+        a
+    }
+
+    /// A tap on a button over the filter's graph (F5): On, Compare, Copy,
+    /// Paste or Reset, each its own undo step, saying what it did.
+    fn head(&mut self, ui: &mut Ui, st: &PlayState, i: usize) -> Option<PlayAction> {
+        let p = &st.settings;
+        let pad = pad_text(self.bank, st.pad);
+        let now = FilterSet::of(p);
+        let after = match i {
+            HEAD_ON if p.filter.kind != FilterKind::Off => {
+                let mut a = p.clone();
+                a.filter_bypass = !p.filter_bypass;
+                self.note = Some(if a.filter_bypass {
+                    format!(
+                        "Bypassed: the pad plays unfiltered · {} waits",
+                        filter_at(&p.filter)
+                    )
+                } else {
+                    format!("Filter on: {}", filter_at(&p.filter))
+                });
+                a
+            }
+            HEAD_COMPARE => {
+                if let Some(held) = self.held {
+                    self.note = Some("Back to your changes".into());
+                    let a = held.on(p);
+                    self.held = None;
+                    a
+                } else {
+                    let opened = self.opened.filter(|o| *o != now)?;
+                    self.note = Some(
+                        "Comparing: the filter as it was when you opened the section · \
+                         tap again to go back"
+                            .into(),
+                    );
+                    let a = opened.on(p);
+                    self.lift();
+                    let act = self.edit(st, Key::Head(i), a);
+                    self.lift();
+                    self.held = Some(now);
+                    return act;
+                }
+            }
+            HEAD_COPY => {
+                self.note = Some(format!("Copied {pad}'s filter: {}", set_text(&now)));
+                self.clip = Some((pad, now));
+                self.show(ui, st);
+                return None;
+            }
+            HEAD_PASTE => {
+                let Some((from, set)) = self.clip.clone() else {
+                    self.note = Some("Paste: nothing copied yet. Copy a pad's filter first".into());
+                    return None;
+                };
+                if set == now {
+                    self.note = Some(format!("{pad} already has {from}'s filter"));
+                    return None;
+                }
+                self.note = Some(if from == pad {
+                    format!("Pasted {pad}'s filter back · UNDO puts it as it was")
+                } else {
+                    format!("Pasted {from}'s filter onto {pad} · UNDO puts {pad}'s back")
+                });
+                set.on(p)
+            }
+            HEAD_RESET => {
+                let set = FilterSet::new_pad();
+                if set == now {
+                    self.note = Some(format!("{pad}'s filter is a new pad's already: Off"));
+                    return None;
+                }
+                self.note = Some(format!(
+                    "Reset {pad}'s filter to a new pad's: Off · UNDO puts it back"
+                ));
+                set.on(p)
+            }
+            _ => return None,
+        };
+        self.lift();
+        let a = self.edit(st, Key::Head(i), after);
+        self.lift();
+        a
     }
 
     /// A Q-Link turned: `knob` 0 to 3 turns the section's four rows
@@ -2309,7 +3141,7 @@ impl PlayTab {
         delta: i32,
         fine: bool,
     ) -> Option<PlayAction> {
-        let row = *self.section.qlinks().get(knob)?;
+        let row = *self.qlinks_for(&st.settings).get(knob)?;
         self.pick_row(ui, row);
         self.show_cards(ui, st);
         if delta == 0 || faint_why(st, row).is_some() {
@@ -2389,6 +3221,11 @@ impl PlayTab {
     fn edit(&mut self, st: &PlayState, key: Key, after: Pad) -> Option<PlayAction> {
         if after == st.settings {
             return None;
+        }
+        // An edit while comparing is made on the filter as it was, which
+        // becomes the changes: Compare is over.
+        if key != Key::Head(HEAD_COMPARE) {
+            self.held = None;
         }
         let gesture = match self.gesture {
             Some((k, g)) if k == key => g,
@@ -2605,7 +3442,12 @@ fn turned(p: &Pad, layer: usize, row: Row, delta: i32, fine: bool) -> Option<Pad
         Row::VelToLevel => p.vel_to_level = frac(p.vel_to_level, 0.0),
         Row::VelToStart => p.vel_to_start = frac(p.vel_to_start, 0.0),
         Row::Depth => p.pressure.depth = frac(p.pressure.depth, -1.0),
-        Row::VelToCutoff => p.vel_to_cutoff = frac(p.vel_to_cutoff, 0.0),
+        Row::VelToCutoff => p.vel_to_cutoff = frac(p.vel_to_cutoff, -1.0),
+        Row::KeyTrack => p.key_track = frac(p.key_track, -1.0),
+        Row::CutoffRandom => p.cutoff_random = frac(p.cutoff_random, 0.0),
+        Row::ResRandom => p.res_random = frac(p.res_random, 0.0),
+        Row::VelToEnv => p.vel_to_env = frac(p.vel_to_env, 0.0),
+        Row::VelToAttack => p.vel_to_attack = frac(p.vel_to_attack, 0.0),
         Row::LfoDepth => p.lfo.depth = frac(p.lfo.depth, -1.0),
         // Semitones: one a detent, a tenth with SHIFT.
         Row::VelToPitch | Row::PitchEnv => {
@@ -2657,13 +3499,26 @@ fn faint_why(st: &PlayState, row: Row) -> Option<&'static str> {
         | Row::EnvDecay
         | Row::EnvSustain
         | Row::EnvRelease
+        | Row::Slope
+        | Row::KeyTrack
+        | Row::CutoffRandom
+        | Row::ResRandom
+        | Row::VelToEnv
+        | Row::VelToAttack
             if p.filter.kind == FilterKind::Off =>
         {
-            Some("The filter is off: pick one in the Filter row")
+            Some("The filter is off: pick one in the Type row")
         }
         Row::Drive if p.filter.kind != FilterKind::Ladder => {
-            Some("Drive is the Ladder's: pick Ladder in the Filter row")
+            Some("Drive is the Ladder's: pick Ladder in the Type row")
         }
+        Row::Slope => match p.filter.kind {
+            FilterKind::Ladder => Some("The Ladder is 24 dB, fixed"),
+            FilterKind::Peak => Some("The Peak is 12 dB, fixed"),
+            FilterKind::Vowel => Some("The Vowel has no slope: it is two formants"),
+            FilterKind::Comb => Some("The Comb has no slope: it rings at a pitch"),
+            _ => None,
+        },
         Row::LowKey | Row::HighKey | Row::RootKey if p.keys.is_none() => {
             Some("The pad is no keygroup: turn Keys on")
         }
@@ -2760,7 +3615,12 @@ pub fn control_of(st: &PlayState, layer: usize, slice: usize, row: Row) -> Contr
         | Row::Resonance
         | Row::VelToLevel
         | Row::VelToStart
-        | Row::VelToCutoff => knob(20, false),
+        | Row::CutoffRandom
+        | Row::ResRandom
+        | Row::VelToEnv
+        | Row::VelToAttack => knob(20, false),
+        Row::VelToCutoff | Row::KeyTrack => knob(40, true),
+        Row::Moves => Look::Button(format!("{} ›", moves_text(p))),
         Row::VelToPitch => knob((2.0 * VEL_PITCH_ST) as u32, true),
         Row::PitchEnv => knob((2.0 * PITCH_ENV_ST) as u32, true),
         Row::PitchDecay => knob(times, false),
@@ -2816,6 +3676,7 @@ pub fn control_of(st: &PlayState, layer: usize, slice: usize, row: Row) -> Contr
         Row::Sound
         | Row::VelFade
         | Row::Filter
+        | Row::Slope
         | Row::Pressure
         | Row::Polyphony
         | Row::MuteGroup
@@ -2922,7 +3783,19 @@ fn knob_pos(st: &PlayState, layer: usize, row: Row) -> f32 {
         Row::Wow => p.wow,
         Row::VelToLevel => p.vel_to_level,
         Row::VelToStart => p.vel_to_start,
-        Row::VelToCutoff => p.vel_to_cutoff,
+        Row::VelToCutoff => (p.vel_to_cutoff + 1.0) / 2.0,
+        Row::KeyTrack => (p.key_track + 1.0) / 2.0,
+        Row::CutoffRandom => p.cutoff_random,
+        Row::ResRandom => p.res_random,
+        Row::VelToEnv => p.vel_to_env,
+        Row::VelToAttack => p.vel_to_attack,
+        Row::Slope => {
+            let list = slopes_of(p.filter.kind);
+            match list.iter().position(|s| *s == p.filter.slope()) {
+                Some(i) if list.len() > 1 => i as f32 / (list.len() - 1) as f32,
+                _ => 0.0,
+            }
+        }
         Row::VelToPitch => (p.vel_to_pitch + VEL_PITCH_ST) / (2.0 * VEL_PITCH_ST),
         Row::PitchEnv => (p.pitch_env.semitones + PITCH_ENV_ST) / (2.0 * PITCH_ENV_ST),
         Row::PitchDecay => time(p.pitch_env.decay_ms),
@@ -3021,17 +3894,18 @@ fn section_text(st: &PlayState, s: Section) -> String {
                 percent(p.amp.sustain)
             )
         }
-        // "LP2 · 2.40 kHz", "Vowel · ah".
+        // "LP 24 dB · 2.40 kHz", "Vowel · ah", "Bypassed · LP 24".
         Section::Filter => match p.filter.kind {
             FilterKind::Off => "Off".into(),
+            _ if p.filter_bypass => format!(
+                "Bypassed · {}",
+                filter_label(&p.filter).trim_end_matches(" dB")
+            ),
             FilterKind::Vowel => format!("Vowel · {}", vowel_name(p.filter.cutoff_hz)),
             FilterKind::Comb => format!("Comb · {}", note_of(p.filter.cutoff_hz)),
-            // "LP 4-pole" as "LP4".
             _ => format!(
                 "{} · {}",
-                filter_label(&p.filter)
-                    .replace("-pole", "")
-                    .replace(' ', ""),
+                filter_label(&p.filter),
                 hz_text(p.filter.cutoff_hz)
             ),
         },
@@ -3373,8 +4247,30 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
             p.pressure.depth = round_to(p.pressure.depth + d * 0.05, 0.05).clamp(-1.0, 1.0)
         }
         Row::VelToCutoff => {
-            p.vel_to_cutoff = round_to(p.vel_to_cutoff + d * 0.05, 0.05).clamp(0.0, 1.0)
+            p.vel_to_cutoff = round_to(p.vel_to_cutoff + d * 0.05, 0.05).clamp(-1.0, 1.0)
         }
+        Row::KeyTrack => p.key_track = round_to(p.key_track + d * 0.05, 0.05).clamp(-1.0, 1.0),
+        Row::CutoffRandom => {
+            p.cutoff_random = round_to(p.cutoff_random + d * 0.05, 0.05).clamp(0.0, 1.0)
+        }
+        Row::ResRandom => p.res_random = round_to(p.res_random + d * 0.05, 0.05).clamp(0.0, 1.0),
+        Row::VelToEnv => p.vel_to_env = round_to(p.vel_to_env + d * 0.05, 0.05).clamp(0.0, 1.0),
+        Row::VelToAttack => {
+            p.vel_to_attack = round_to(p.vel_to_attack + d * 0.05, 0.05).clamp(0.0, 1.0)
+        }
+        Row::Slope => {
+            let list = slopes_of(p.filter.kind);
+            if list.len() > 1 {
+                let now = p.filter.slope();
+                let i = list
+                    .iter()
+                    .position(|s| *s == now)
+                    .unwrap_or_else(|| nearest(list.iter().map(|&s| f32::from(s)), f32::from(now)));
+                p.filter.poles = list[shift(i, delta, list.len())];
+            }
+        }
+        // A button: see [`PlayTab::action`].
+        Row::Moves => {}
         Row::VelToPitch => {
             p.vel_to_pitch = round_to(p.vel_to_pitch + d, 1.0).clamp(-VEL_PITCH_ST, VEL_PITCH_ST)
         }
@@ -3432,20 +4328,8 @@ pub fn stepped(p: &Pad, row: Row, delta: i32, granular: bool) -> Pad {
         Row::Sustain => p.amp.sustain = round_to(p.amp.sustain + d * 0.05, 0.05).clamp(0.0, 1.0),
         Row::Release => p.amp.release_ms = step_time(p.amp.release_ms, delta, MIN_RELEASE_MS),
         Row::Filter => {
-            let now = (p.filter.kind, p.filter.slope());
-            let i = FILTERS.iter().position(|f| *f == now).unwrap_or(0);
-            (p.filter.kind, p.filter.poles) = FILTERS[shift(i, delta, FILTERS.len())];
-            if now.0 == FilterKind::Off
-                && p.filter.kind != FilterKind::Off
-                && p.filter.cutoff_hz >= CUTOFF_RANGE_HZ.1
-            {
-                // A low-pass at 20 kHz does nothing: start it where it is heard.
-                p.filter.cutoff_hz = if p.filter.kind == FilterKind::HighPass {
-                    200.0
-                } else {
-                    2000.0
-                };
-            }
+            let i = TYPES.iter().position(|k| *k == p.filter.kind).unwrap_or(0);
+            p = typed(&p, TYPES[shift(i, delta, TYPES.len())]);
         }
         Row::Cutoff => {
             // A third of an octave a step.
@@ -3604,6 +4488,17 @@ pub fn value_text(p: &Pad, row: Row) -> String {
         Row::Pressure => pressure_label(p.pressure.target).into(),
         Row::Depth => format!("{:+} %", (p.pressure.depth * 100.0).round() as i32),
         Row::VelToCutoff => format!("{} %", percent(p.vel_to_cutoff)),
+        Row::KeyTrack => format!("{} %", percent(p.key_track)),
+        Row::CutoffRandom => format!("{} %", percent(p.cutoff_random)),
+        Row::ResRandom => format!("{} %", percent(p.res_random)),
+        Row::VelToEnv => format!("{} %", percent(p.vel_to_env)),
+        Row::VelToAttack => format!("{} %", percent(p.vel_to_attack)),
+        Row::Moves => moves_text(p),
+        Row::Slope => match slopes_of(p.filter.kind).len() {
+            0 => "–".into(),
+            1 => format!("{} dB, fixed", 6 * u32::from(p.filter.slope())),
+            _ => format!("{} dB", 6 * u32::from(p.filter.slope())),
+        },
         Row::VelToPitch => semis_text(p.vel_to_pitch),
         Row::LfoTo => lfo_target_label(p.lfo.target).into(),
         Row::LfoWave => lfo_wave_label(p.lfo.shape).into(),
@@ -3623,7 +4518,7 @@ pub fn value_text(p: &Pad, row: Row) -> String {
         Row::Decay => ms_text(p.amp.decay_ms),
         Row::Sustain => format!("{} %", percent(p.amp.sustain)),
         Row::Release => ms_text(p.amp.release_ms),
-        Row::Filter => filter_label(&p.filter),
+        Row::Filter => type_name(p.filter.kind).into(),
         // A vowel's cutoff picks the vowel: "1.00 kHz · ah".
         Row::Cutoff if p.filter.kind == FilterKind::Vowel => format!(
             "{} · {}",
@@ -3904,19 +4799,135 @@ pub fn note_of(hz: f32) -> String {
     )
 }
 
+/// A filter as short as a chip says it: "LP 24 dB", "Notch 12 dB",
+/// "Ladder", "Off".
 pub fn filter_label(f: &Filter) -> String {
     let kind = match f.kind {
-        FilterKind::Off => return "Off".into(),
         FilterKind::LowPass => "LP",
         FilterKind::HighPass => "HP",
         FilterKind::BandPass => "BP",
         FilterKind::Notch => "Notch",
-        FilterKind::Peak => return "Peak".into(),
-        FilterKind::Ladder => return "Ladder".into(),
-        FilterKind::Vowel => return "Vowel".into(),
-        FilterKind::Comb => return "Comb".into(),
+        k => return type_name(k).into(),
     };
-    format!("{kind} {}-pole", f.slope())
+    format!("{kind} {} dB", 6 * u32::from(f.slope()))
+}
+
+/// A filter type's name: "Low-pass", "Ladder", "Off" (F5).
+pub fn type_name(kind: FilterKind) -> &'static str {
+    match kind {
+        FilterKind::Off => "Off",
+        FilterKind::LowPass => "Low-pass",
+        FilterKind::HighPass => "High-pass",
+        FilterKind::BandPass => "Band-pass",
+        FilterKind::Notch => "Notch",
+        FilterKind::Peak => "Peak",
+        FilterKind::Ladder => "Ladder",
+        FilterKind::Vowel => "Vowel",
+        FilterKind::Comb => "Comb",
+    }
+}
+
+/// A filter whole, as the hint line names it: "Low-pass 24 dB at 1.00
+/// kHz", "Ladder at 800 Hz", "Off".
+pub fn filter_at(f: &Filter) -> String {
+    let name = match f.kind {
+        FilterKind::Off => return "Off".into(),
+        k if slopes_of(k).len() > 1 => {
+            format!("{} {} dB", type_name(k), 6 * u32::from(f.slope()))
+        }
+        k => type_name(k).to_string(),
+    };
+    format!("{name} at {}", hz_text(f.cutoff_hz))
+}
+
+/// `p` with filter type `kind` (F5): the slope kept where the type has
+/// it, else the nearest it has (a type with one leaves it be, so the
+/// slope comes back after a Ladder). From Off at 20 kHz the cutoff starts
+/// where it is heard.
+pub fn typed(p: &Pad, kind: FilterKind) -> Pad {
+    let mut p = p.clone();
+    let was = p.filter.kind;
+    p.filter.kind = kind;
+    let list = slopes_of(kind);
+    if list.len() > 1 && !list.contains(&p.filter.poles) {
+        let i = nearest(
+            list.iter().map(|&s| f32::from(s)),
+            f32::from(p.filter.poles),
+        );
+        p.filter.poles = list[i];
+    }
+    if was == FilterKind::Off && kind != FilterKind::Off && p.filter.cutoff_hz >= CUTOFF_RANGE_HZ.1
+    {
+        // A low-pass at 20 kHz does nothing: start it where it is heard.
+        p.filter.cutoff_hz = if kind == FilterKind::HighPass {
+            200.0
+        } else {
+            2000.0
+        };
+    }
+    p
+}
+
+/// How many things move pad `p`'s filter: its own moves
+/// ([`FilterSet::moves`]) and the LFO or pressure when they move the
+/// cutoff.
+pub fn moves(p: &Pad) -> usize {
+    FilterSet::of(p).moves()
+        + usize::from(p.lfo.target == LfoTarget::Cutoff && p.lfo.depth != 0.0)
+        + usize::from(p.pressure.target == PressureTarget::Filter && p.pressure.depth != 0.0)
+}
+
+/// The Moves button's count: "3 moves", "1 move", "Moves".
+fn moves_text(p: &Pad) -> String {
+    match moves(p) {
+        0 => "Moves".into(),
+        1 => "1 move".into(),
+        n => format!("{n} moves"),
+    }
+}
+
+/// A filter as Copy names it: "Low-pass 24 dB, 1.00 kHz, its envelope and
+/// 3 moves".
+fn set_text(f: &FilterSet) -> String {
+    if f.filter.kind == FilterKind::Off {
+        return "Off".into();
+    }
+    let n = f.moves();
+    let name = filter_at(&f.filter).replacen(" at ", ", ", 1);
+    let bypass = if f.bypass { " (bypassed)" } else { "" };
+    match n {
+        0 => format!("{name}{bypass} and its envelope"),
+        1 => format!("{name}{bypass}, its envelope and 1 move"),
+        n => format!("{name}{bypass}, its envelope and {n} moves"),
+    }
+}
+
+/// Where a hit takes pad `p`'s cutoff (what moves the filter's line): the
+/// hardest and the softest, the key at the root, before the random.
+fn hits_text(p: &Pad) -> String {
+    let f = &p.filter;
+    if f.kind == FilterKind::Off {
+        return "The filter is off: pick a type to hear what moves it".into();
+    }
+    let clamp = |hz: f32| hz.clamp(CUTOFF_RANGE_HZ.0, CUTOFF_RANGE_HZ.1);
+    let soft = clamp(f.cutoff_hz * (-4.0 * p.vel_to_cutoff).exp2());
+    let hard_peak = clamp(f.cutoff_hz * f.env_octaves.exp2());
+    let soft_peak = clamp(soft * (f.env_octaves * (1.0 - p.vel_to_env)).exp2());
+    let tail = " (key at the root, before the random).";
+    if f.env_octaves == 0.0 {
+        format!(
+            "A hit now: the hardest plays at {}, the softest at {}{tail}",
+            hz_text(f.cutoff_hz),
+            hz_text(soft)
+        )
+    } else {
+        format!(
+            "A hit now: the hardest opens to {}, the softest starts at {} and opens to {}{tail}",
+            hz_text(hard_peak),
+            hz_text(soft),
+            hz_text(soft_peak)
+        )
+    }
 }
 
 /// The Peak's boost at Resonance `res`: "+14.5 dB".
@@ -3967,7 +4978,7 @@ pub fn octaves_text(oct: f32) -> String {
 }
 
 /// What changed between two versions of a pad's settings, for the log:
-/// "attack 0 ms -> 12 ms, filter Off -> LP 2-pole". Empty if nothing did.
+/// "attack 0 ms -> 12 ms, filter Off -> Low-pass". Empty if nothing did.
 /// Layer regions are the Wave tab's and aren't compared.
 pub fn describe(a: &Pad, b: &Pad) -> String {
     let mut out = Vec::new();
@@ -4060,6 +5071,7 @@ pub fn describe(a: &Pad, b: &Pad) -> String {
         Row::Sustain,
         Row::Release,
         Row::Filter,
+        Row::Slope,
         Row::Cutoff,
         Row::Resonance,
         Row::Drive,
@@ -4068,12 +5080,24 @@ pub fn describe(a: &Pad, b: &Pad) -> String {
         Row::EnvDecay,
         Row::EnvSustain,
         Row::EnvRelease,
+        Row::KeyTrack,
+        Row::CutoffRandom,
+        Row::ResRandom,
+        Row::VelToEnv,
+        Row::VelToAttack,
     ] {
-        diff(
-            &row.label().to_lowercase(),
-            value_text(a, row),
-            value_text(b, row),
-        );
+        let name = match row {
+            Row::Filter => "filter",
+            Row::Slope => "filter slope",
+            Row::CutoffRandom => "cutoff random",
+            r => r.label(),
+        };
+        diff(&name.to_lowercase(), value_text(a, row), value_text(b, row));
     }
+    diff(
+        "filter bypass",
+        if a.filter_bypass { "On" } else { "Off" }.into(),
+        if b.filter_bypass { "On" } else { "Off" }.into(),
+    );
     out.join(", ")
 }
