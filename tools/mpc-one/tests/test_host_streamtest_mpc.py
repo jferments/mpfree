@@ -178,6 +178,16 @@ class StreamtestTests(unittest.TestCase):
         with open(self.report) as fh:
             self.assertIn("RESULT: 2 workflows played.", fh.read())
 
+    def test_a_hands_off_round_plays_without_a_terminal_and_records_the_question_as_not_asked(self):
+        res = self.run_helper(answers="", MPFREE_APP_TEST="", MPFREE_ROUND="1")
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertEqual(res.stdout.count("(hands-off round: going on)"), 2, res.stdout)
+        self.assertIn("Did anything click, drop out, stick or sound wrong while they played?", res.stdout)
+        self.assertIn("(not asked: hands-off round)", res.stdout)
+        self.assertNotIn("your answer:", res.stdout)
+        self.assertIn("RESULT: 2 workflows played.", res.stdout)
+        self.mine_as_they_were()
+
     def test_the_device_reports_reader_reads_its_runs(self):
         res = self.run_helper()
         self.assertEqual(res.returncode, 0, res.stdout)

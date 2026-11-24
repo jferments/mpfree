@@ -107,7 +107,8 @@ def exit_code(status):
     return os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
 
 
-def run(name, cmd):
+def begin(name, cmd):
+    """A new step's log in current/: (current, prefix, log path, the reports there before it ran)."""
     if not NAME.match(name):
         raise Stop(f"step name {name!r}: use lowercase letters, digits and dashes")
     if not cmd:
@@ -118,14 +119,21 @@ def run(name, cmd):
     os.makedirs(current, mode=0o700, exist_ok=True)
     number = 1 + len([f for f in os.listdir(current) if f.endswith(".log")])
     prefix = f"{number:02d}-{name}"
-    log_path = os.path.join(current, prefix + ".log")
-    before = report_candidates()
+    return current, prefix, os.path.join(current, prefix + ".log"), report_candidates()
+
+
+def header(name, cmd):
     head = git("log", "-1", "--format=%h %s")
     branch = git("rev-parse", "--abbrev-ref", "HEAD")
+    return (f"# mpfree results: {name}\n# command: {shlex.join(cmd)}\n# folder: {os.getcwd()}\n"
+            f"# clone: {head or '?'} (branch {branch or '?'})\n# started: {utc('%Y-%m-%d %H:%M:%S UTC')}\n"
+            ).encode()
+
+
+def run(name, cmd):
+    current, prefix, log_path, before = begin(name, cmd)
     with open(log_path, "wb") as log:
-        log.write((f"# mpfree results: {name}\n# command: {shlex.join(cmd)}\n# folder: {os.getcwd()}\n"
-                   f"# clone: {head or '?'} (branch {branch or '?'})\n# started: {utc('%Y-%m-%d %H:%M:%S UTC')}\n"
-                   ).encode())
+        log.write(header(name, cmd))
         log.flush()
         eof_sent = []
 
@@ -152,6 +160,40 @@ def run(name, cmd):
         text = fh.read().replace(b"\r\n", b"\n")
     with open(log_path, "wb") as fh:
         fh.write(text)
+    return finish(current, prefix, log_path, before, rc)
+
+
+def run_piped(name, cmd, env=None, zip_hint=True):
+    """As run, but COMMAND's output comes through a pipe (to this terminal and the log) while its input stays
+    this terminal itself, not a new one. So a password it asks for is asked on this terminal and stays
+    remembered for the next step, as when typed straight in it (a new terminal per step asks every time).
+    The SD card round runs its steps this way (it packs the zip itself: zip_hint=False leaves out the reminder).
+    env: the variables to add for COMMAND."""
+    current, prefix, log_path, before = begin(name, cmd)
+    with open(log_path, "wb") as log:
+        log.write(header(name, cmd))
+        log.flush()
+        child_env = dict(os.environ, PAGER="cat", GIT_PAGER="cat", PYTHONUNBUFFERED="1", **(env or {}))
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=child_env)
+        try:
+            while True:
+                data = os.read(proc.stdout.fileno(), 65536)
+                if not data:
+                    break
+                log.write(data)
+                log.flush()
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+            rc = proc.wait()
+        except KeyboardInterrupt:
+            proc.wait()
+            rc = 130
+        log.write(f"\n# finished: {utc('%Y-%m-%d %H:%M:%S UTC')}, exit code {rc}\n".encode())
+    return finish(current, prefix, log_path, before, rc, zip_hint)
+
+
+def finish(current, prefix, log_path, before, rc, zip_hint=True):
+    """Copies the reports the step wrote next to its log, and says where they are."""
     copied = []
     for path, sig in sorted(report_candidates().items()):
         if before.get(path) == sig:
@@ -167,7 +209,8 @@ def run(name, cmd):
     print(f"\nresults: exit code {rc}; saved {log_path}")
     for dest in copied:
         print(f"results: report copied to {dest}")
-    print("results: when you're done, run: python3 tools/mpc-one/results.py zip")
+    if zip_hint:
+        print("results: when you're done, run: python3 tools/mpc-one/results.py zip")
     return rc
 
 

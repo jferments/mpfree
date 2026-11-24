@@ -1,0 +1,14 @@
+[Unit]
+Description=MPFree: wait to be asked for the SD card, for writing
+DefaultDependencies=no
+After=mpfree-test-internal-off.service
+Conflicts=shutdown.target
+Before=shutdown.target
+IgnoreOnIsolate=yes
+
+[Path]
+PathExists=/run/mpfree-app/sd-card-write.request
+Unit=mpfree-setup-sd-card-write.service
+
+[Install]
+WantedBy=sysinit.target

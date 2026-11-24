@@ -123,6 +123,29 @@ class ResultsTests(unittest.TestCase):
         self.tool("run", "three", *self.py("print('three')"))
         self.assertEqual(os.listdir(self.current()), ["01-three.log"])
 
+    def test_a_piped_step_is_logged_the_same_way_and_keeps_this_terminal_as_its_input(self):
+        """run_piped (the SD card round's steps): the same log, the reports copied, the variables given, and
+        the child reads the caller's own input, not a new terminal's."""
+        report = os.path.join(self.research, "mpc-one-boot-map-1.txt")
+        child = (f"import os, sys; print('out', os.environ['MPFREE_ROUND']); print('err', file=sys.stderr); "
+                 f"print('read', sys.stdin.readline().strip()); open({report!r}, 'w').write('map\\n'); sys.exit(4)")
+        driver = (f"import importlib.util, sys\n"
+                  f"spec = importlib.util.spec_from_file_location('results', {TOOL!r})\n"
+                  f"r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)\n"
+                  f"sys.exit(r.run_piped('boot-map', [sys.executable, '-I', '-c', {child!r}], {{'MPFREE_ROUND': '1'}}))\n")
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": self.tmp, "MPFREE_RESULTS_DIR": self.results,
+               "MPFREE_WORK_DIR": self.work, "MPC_REPORT_DIR": self.research}
+        res = subprocess.run([sys.executable, "-I", "-c", driver], input="typed line\n", env=env, text=True,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+        self.assertEqual(res.returncode, 4, res.stdout)
+        self.assertIn("out 1", res.stdout)
+        log = self.read(self.current(), "01-boot-map.log")
+        self.assertIn("# mpfree results: boot-map\n", log)
+        for line in ("out 1\n", "err\n", "read typed line\n"):
+            self.assertIn(line, log)
+        self.assertTrue(log.endswith("exit code 4\n"), log)
+        self.assertEqual(self.read(self.current(), "01-boot-map--mpc-one-boot-map-1.txt"), "map\n")
+
     def test_refusals(self):
         for args, reason in ((("run", "Bad Name", "--", "true"), "use lowercase letters"),
                              (("run", "x", "--"), "nothing to run"),
