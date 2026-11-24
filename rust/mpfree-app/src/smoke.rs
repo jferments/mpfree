@@ -500,6 +500,59 @@ mod tests {
         }
     }
 
+    /// The Sets place's screens swept on their own (live shows B1 and B2):
+    /// every control does something, the soundcheck screen's included, and
+    /// each is in the catalogue.
+    #[test]
+    fn the_sets_screens_controls_do_something() {
+        let rows = on_big_stack(|| {
+            let mut rows = Vec::new();
+            for name in gui::SETS_SAMPLES {
+                let make = || gui::sample_sets(name, Fonts::embedded()).expect("drawn");
+                let mut p = make();
+                let mut fresh = make;
+                rows.extend(sweep(name, &mut p, &mut fresh));
+            }
+            rows
+        });
+        for (key, screen, least) in [
+            ("browser/sets-button", "browser-sets-soundcheck", 2),
+            ("browser/sets-row", "browser-sets-soundcheck", 8),
+            ("browser/sets-row", "browser-sets-check", 8),
+        ] {
+            let pressed = rows
+                .iter()
+                .filter(|r| r.key() == key && r.screen == screen)
+                .filter(|r| r.outcome != Outcome::Skipped)
+                .count();
+            assert!(pressed >= least, "{key} on {screen}: {pressed} pressed");
+        }
+        let dead: Vec<String> = rows
+            .iter()
+            .filter(|r| r.outcome == Outcome::Dead)
+            .filter(|r| !catalogue::known_dead(&r.key()))
+            .map(|r| {
+                format!(
+                    "{} #{} \"{}\" on {}",
+                    r.key(),
+                    r.target.index,
+                    r.target.label,
+                    r.screen
+                )
+            })
+            .collect();
+        assert!(dead.is_empty(), "dead: {dead:#?}");
+        let text = std::fs::read_to_string(catalogue::PATH).expect("docs/dev/guides/controls.md");
+        let listed = catalogue::keys(&text);
+        for r in &rows {
+            assert!(
+                listed.contains(&r.key()),
+                "{} not in the catalogue",
+                r.key()
+            );
+        }
+    }
+
     /// Every control on every sample screen does something when pressed.
     #[test]
     fn every_control_on_every_screen_does_something() {

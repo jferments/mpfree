@@ -19,7 +19,7 @@ use crate::phrase::{Follow, Phrase, Playhead, Speed};
 use crate::scale::{Scale, Snap, CHROMATIC, MAJOR};
 
 mod phrase_mode;
-pub use phrase_mode::phrase_speed;
+pub use phrase_mode::{phrase_speed, CHORD_SETTLE};
 
 /// Clock resolution: ticks per quarter note.
 pub const PPQ: u32 = 960;
@@ -781,6 +781,12 @@ pub struct Engine {
     free_tick: f64,
     /// The next event's [`Pending::seq`].
     seq: u64,
+    /// What a phrase plays from (the newest note or the chord held), the
+    /// frame the notes held last changed on, and how long a new chord is
+    /// held before a phrase follows it (`engine/phrase_mode.rs`).
+    lead: Option<phrase_mode::Lead>,
+    held_since: f64,
+    settle: f64,
 }
 
 impl Engine {
@@ -830,6 +836,9 @@ impl Engine {
             free_frame: 0.0,
             free_tick: 0.0,
             seq: 0,
+            lead: None,
+            held_since: 0.0,
+            settle: phrase_mode::CHORD_SETTLE,
         }
     }
 
@@ -1382,6 +1391,7 @@ impl Engine {
     }
 
     fn after_change(&mut self, before: &NoteSet) {
+        self.held_since = (self.now + u64::from(self.at)) as f64;
         let added = self
             .notes
             .active()

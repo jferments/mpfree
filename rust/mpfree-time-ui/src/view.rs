@@ -874,6 +874,27 @@ pub struct TrackInfo {
     pub slots: Vec<Option<ClipInfo>>,
 }
 
+/// The takes by their transactions ([`TimeState::take_txns`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TakeTxns {
+    /// Those that can be undone, oldest first, and redone, the next one
+    /// last (as [`Takes`] keeps them).
+    pub done: Vec<mpfree_transport::TransactionId>,
+    pub undone: Vec<mpfree_transport::TransactionId>,
+    /// [`Takes::let_go`].
+    pub let_go: mpfree_transport::TransactionId,
+}
+
+impl TakeTxns {
+    pub fn of(takes: &Takes) -> TakeTxns {
+        TakeTxns {
+            done: takes.done().iter().map(|t| t.txn).collect(),
+            undone: takes.undone().iter().map(|t| t.txn).collect(),
+            let_go: takes.let_go(),
+        }
+    }
+}
+
 /// One take as the list shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TakeRow {
@@ -1121,6 +1142,11 @@ pub struct TimeState {
     /// redone, the next one last (as [`Takes`] keeps them).
     pub done: Vec<TakeRow>,
     pub undone: Vec<TakeRow>,
+    /// The same takes by their transactions, and the newest one the list
+    /// let go of, for the one UNDO across the engines (audio tracks phase
+    /// 4d): how the app follows the takes while the editing side runs on
+    /// a thread of its own.
+    pub take_txns: TakeTxns,
     /// Status chips on the right of the bar (the arp's).
     pub chips: Vec<Chip>,
     /// What Capture would keep now, such as "2 bars"; None when nothing
@@ -1539,6 +1565,7 @@ impl TimeState {
             notes_copied: None,
             done: takes.done().iter().map(TakeRow::of).collect(),
             undone: takes.undone().iter().map(TakeRow::of).collect(),
+            take_txns: TakeTxns::of(takes),
             chips: Vec::new(),
             capture: None,
             scene_playing: None,

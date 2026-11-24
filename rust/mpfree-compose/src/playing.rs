@@ -301,6 +301,13 @@ pub fn timing(
     let last = part.decisions.iter().map(|d| d.at).max().unwrap_or(0);
     let curve = drift_on(style.drift_ms, groove)
         .then(|| drift(seed, (last / STEP) as usize + 1, style.drift_ms, bpm));
+    // A style made from a clip leans as the clip did, unless a played
+    // groove sets the feel; within contract 3's 30 ms.
+    let lean = if groove.is_some_and(|g| g.played) {
+        0.0
+    } else {
+        crate::timing::ms_to_ticks(f64::from(style.playing.lean_ms.clamp(-25.0, 25.0)), bpm) as f32
+    };
     for d in part.decisions.iter_mut() {
         d.lane = lane;
         let step = d.at / STEP;
@@ -311,6 +318,9 @@ pub fn timing(
         };
         if let Some(c) = &curve {
             d.timing.play = c.get(step as usize).copied().unwrap_or(0.0) as f32;
+        }
+        if lean.abs() > 0.0 {
+            d.timing.play += lean;
         }
     }
 }

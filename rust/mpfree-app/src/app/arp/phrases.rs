@@ -120,10 +120,14 @@ impl App {
         self.phrases.get(i).map_or("", |(n, _)| n.as_str())
     }
 
-    /// A phrase plays here: the pads press notes into the armed track's
-    /// arp (a synth), not a kit's pads.
+    /// A phrase plays here: the armed track's instrument takes notes (its
+    /// own synth, the shared synth, a kit played as notes), or the pads
+    /// press notes into its arp; not a kit's pads. It asks the track's
+    /// instrument (`TrackArps::on_notes`) as well as what the pads press,
+    /// because while the pads play something of their own they press
+    /// nothing into the track, and its phrase plays on.
     pub fn phrases_play(&self) -> bool {
-        self.press_layout().is_some()
+        self.press_layout().is_some() || self.arps.on_notes(self.track)
     }
 
     /// The armed track takes phrase `i` of the list. While its phrase
@@ -645,6 +649,35 @@ mod tests {
         assert_eq!(app.eng().settings().speed, Speed::Double, "kept");
     }
 
+    /// The phrase's speed is a parameter of its own: a learned control
+    /// sets it as Q-Link 1 does, the XY pad's hand holds it until it lets
+    /// go (the speed as set kept), and Stay keeps where it held.
+    #[test]
+    fn a_learned_control_and_the_xy_pad_turn_a_phrases_speed() {
+        use mpfree_play::mpfree_param::arp as ids;
+        let mut app = on_the_phrase_tab();
+        let (info, v) = app.arp_param(0, ids::SPEED).unwrap();
+        assert_eq!((info.name, v), ("Speed", 1.0));
+        assert_eq!(mpfree_mod::text::value_text(&info, v), "As written");
+        assert!(!app.set_arp_param(0, ids::SPEED, 2.0).is_empty());
+        assert_eq!(app.eng().settings().speed, Speed::Double);
+        assert!(
+            app.set_arp_param(0, ids::SPEED, 2.4).is_empty(),
+            "the same step"
+        );
+        // The pad's hand: half while it holds, the speed as set kept.
+        assert!(app.arp_hand(0, ids::SPEED, Some(0.0)));
+        assert_eq!(app.eng().live().speed, Speed::Half);
+        assert_eq!(app.eng().settings().speed, Speed::Double);
+        assert_eq!(app.arp_beneath(0, ids::SPEED), Some((2.0, 2.0)));
+        assert!(app.arp_hand(0, ids::SPEED, None));
+        assert_eq!(app.eng().live().speed, Speed::Double);
+        // Stay: where it held becomes the speed as set.
+        let (v, _) = app.keep_arp(0, ids::SPEED, 0.2).unwrap();
+        assert_eq!(v, 0.0);
+        assert_eq!(app.eng().settings().speed, Speed::Half);
+    }
+
     /// NOTE REPEAT held away from the panel: on a synth - and + reach
     /// Phrase after Pattern, and no further (no kinds show there); the
     /// wheel moves the pick along its kind.
@@ -995,6 +1028,43 @@ mod tests {
         assert_eq!(app.eng().settings().mode, Mode::Direct);
     }
 
+    /// A track with a synth of its own keeps its phrase while the pads
+    /// play something else on their own: they press nothing into the
+    /// track then (main.rs `press_layout`), but its instrument still takes
+    /// notes (`TrackArps::on_notes`), so its arp stays on Phrase, a
+    /// latched phrase plays on, and the tab keeps its list. A kit track's
+    /// instrument takes pad hits, and its pads play as pressed (repeated
+    /// while latched).
+    #[test]
+    fn a_tracks_own_synth_keeps_its_phrase_while_the_pads_are_away() {
+        let mut app = ready();
+        let pads = layout(&PadSetup {
+            layout: PadLayout::Chromatic,
+            ..PadSetup::default()
+        });
+        app.arps.set_on_notes(0, true);
+        app.set_arp_layout(Some(pads));
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Phrase));
+        app.arp_action(ArpAction::Latch);
+        app.pad_down(0, 100);
+        app.pad_up(0);
+        assert_eq!(app.eng().settings().mode, Mode::Phrase);
+        assert!(!ons(&mut app, 22_050).is_empty(), "the phrase plays");
+        // The pads go to a kit of their own: nothing pressed into the
+        // track, which plays on.
+        app.set_arp_layout(None);
+        assert!(app.phrases_play());
+        assert_eq!(app.eng().settings().mode, Mode::Phrase);
+        assert!(!ons(&mut app, 22_050).is_empty(), "it plays on");
+        // The track's instrument becomes a kit: no phrase, and with Latch
+        // on, repeats of what is latched, as on a kit track.
+        app.arps.set_on_notes(0, false);
+        app.set_arp_layout(None);
+        assert!(!app.phrases_play());
+        assert_eq!(app.eng().settings().mode, Mode::Repeat);
+    }
+
     /// What the pads play on their own (the pads' arp, sampler step 15c)
     /// never takes a phrase: a track on Phrase gives it the pads as
     /// pressed, and Repeat while NOTE REPEAT or Latch is on, and the
@@ -1021,6 +1091,41 @@ mod tests {
         }
         app.toggle_panel();
         assert_eq!(app.pads_own_mode(), Mode::Direct, "the panel closed");
+    }
+
+    /// The shared synth the pads play on their own presses notes, so the
+    /// pads' arp plays the track's phrase there, even beside a kit track:
+    /// the tab shows its list and its cursor follows the pads' phrase,
+    /// while the kit track's own arp plays its pads as pressed.
+    #[test]
+    fn the_synth_the_pads_play_on_their_own_plays_the_tracks_phrase() {
+        let mut app = ready();
+        app.toggle_panel();
+        app.arp_action(ArpAction::Mode(Mode::Phrase));
+        let view = |app: &App| match app.arp_view() {
+            Effect::Arp(v) => v,
+            _ => unreachable!(),
+        };
+        assert!(view(&app).phrase.kit_track.is_some(), "a kit track's tab");
+        app.set_pads_own(true, None);
+        assert_eq!(app.pads_own_mode(), Mode::Phrase);
+        assert_eq!(app.eng().settings().mode, Mode::Direct, "the kit track");
+        let v = view(&app);
+        assert_eq!(v.settings.mode, Mode::Phrase);
+        assert!(v.phrase.plays && v.phrase.kit_track.is_none(), "the list");
+        // The cursor follows the pads' phrase.
+        let ticks = app.eng().phrase().ticks() as f32;
+        app.set_pads_own(true, Some(f64::from(ticks) / 2.0));
+        assert_eq!(view(&app).phrase.at, Some(0.5));
+        // NOTE REPEAT and Latch keep it on the phrase.
+        app.button(NOTE_REPEAT, true, 0.0);
+        assert_eq!(app.pads_own_mode(), Mode::Phrase);
+        app.button(NOTE_REPEAT, false, 0.0);
+        // Back to the track: as pressed, and the kit panel again.
+        app.set_pads_own(false, Some(1.0));
+        assert_eq!(app.pads_own_mode(), Mode::Direct);
+        let v = view(&app);
+        assert!(v.phrase.kit_track.is_some() && v.phrase.at.is_none());
     }
 
     /// Each track keeps its own pick, and a latched phrase plays on,

@@ -87,6 +87,7 @@ use mpfree_seq::{
     RecId, Scene, SceneSettings, Touch, TouchKeep, TouchPoint, Track, MAX_TRACKS, ROWS,
 };
 use mpfree_transport::time::Tick;
+use mpfree_transport::TransactionId;
 
 mod drops;
 
@@ -585,6 +586,10 @@ pub struct Takes {
     /// redo could bring. Kept until the next new take.
     evicted: Option<Take>,
     cleared: Vec<Take>,
+    /// The newest take's transaction a full list let go of (audio tracks
+    /// phase 4d: [`Takes::let_go`]), and what it was before the latest
+    /// new take, for [`Takes::withdraw`].
+    let_go: (TransactionId, TransactionId),
 }
 
 impl Default for Takes {
@@ -606,6 +611,7 @@ impl Takes {
             joining: None,
             evicted: None,
             cleared: vec![],
+            let_go: (TransactionId::NONE, TransactionId::NONE),
         }
     }
 
@@ -2015,6 +2021,7 @@ impl Takes {
             self.edits -= 1;
             if let Some(t) = self.evicted.take() {
                 self.done.insert(0, t);
+                self.let_go.0 = self.let_go.1;
             }
             self.undone = std::mem::take(&mut self.cleared);
             return Ok(());
@@ -2039,6 +2046,13 @@ impl Takes {
     /// The takes that can be redone, the next one last.
     pub fn undone(&self) -> &[Take] {
         &self.undone
+    }
+
+    /// The newest take's transaction the list let go of once full (its
+    /// oldest, which stays as it is), for the one UNDO across the engines
+    /// (audio tracks phase 4d); none if it never did.
+    pub fn let_go(&self) -> TransactionId {
+        self.let_go.0
     }
 
     /// Free the pressure values clip `slot` of `track` holds that nothing
@@ -2185,7 +2199,9 @@ impl Takes {
         self.cleared = std::mem::take(&mut self.undone);
         self.evicted = None;
         if self.done.len() == self.limit {
-            self.evicted = Some(self.done.remove(0));
+            let t = self.done.remove(0);
+            self.let_go = (t.txn, self.let_go.0);
+            self.evicted = Some(t);
         }
         self.done.push(take);
         self.done.last_mut().expect("just pushed")
@@ -3477,6 +3493,34 @@ mod tests {
         assert_eq!(t.undo(&mut p), Some(2));
         assert_eq!(t.undo(&mut p), None);
         assert_eq!(ticks(&p), vec![100], "take 1 stays");
+    }
+
+    /// The newest take a full list let go of, for the one UNDO across the
+    /// engines (audio tracks phase 4d): none until one goes; an edit
+    /// withdrawn as it was made gives its take back, and the one before.
+    #[test]
+    fn a_full_list_says_the_newest_take_it_let_go_of() {
+        use mpfree_seq::steps::Grid;
+        let mut p = project();
+        let mut t = Takes::new(2);
+        for take in 1..=2 {
+            t.add(&mut p, &taken(i64::from(take) * 100, take)).unwrap();
+        }
+        assert_eq!(t.let_go(), TransactionId::NONE);
+        let first = t.done()[0].txn;
+        t.add(&mut p, &taken(300, 3)).unwrap();
+        assert_eq!(t.let_go(), first);
+        let second = t.done()[0].txn;
+        // An edit pushes take 2 out; withdrawn, it is back, and so is
+        // what was let go before it.
+        let g = Grid::new(240).unwrap();
+        let clip = p.tracks[0].slots[0].clone().unwrap();
+        let e = g.toggle(&clip, 36, 0, 100);
+        t.edit(&mut p, 0, 0, &e, None).unwrap();
+        assert_eq!(t.let_go(), second);
+        t.withdraw(&mut p, (0, 0), &e, None, true).unwrap();
+        assert_eq!(t.done()[0].txn, second);
+        assert_eq!(t.let_go(), first);
     }
 
     #[test]

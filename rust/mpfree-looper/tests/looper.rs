@@ -2461,6 +2461,86 @@ fn clear_keeps_the_loop_and_undo_brings_it_back() {
     assert_eq!(r.l.status().layers, 1);
 }
 
+/// Each step keeps its transaction through Undo and Redo, and a new one
+/// takes a later one (audio tracks phase 4d): what the one UNDO across
+/// the engines follows. The first pass is no step. A loop cleared and
+/// kept for Undo lists its steps, then its Clear, a step of its own;
+/// brought back, its steps again as they were.
+#[test]
+fn each_step_keeps_its_transaction_and_a_clear_is_a_step_of_its_own() {
+    use mpfree_transport::TransactionId;
+    let mut r = Rig::new(10, 128);
+    let z = dc(0.0);
+    let wait = |r: &mut Rig| r.run(r.frame + 4 * FADE as u64, &z);
+    let (mut done, mut redo) = (Vec::new(), Vec::new());
+    let txns = |d: &[mpfree_looper::StepTxn]| d.iter().map(|s| s.txn).collect::<Vec<_>>();
+    record_one_bar(&mut r, &dc(0.25));
+    assert_eq!(r.l.loop_steps(0, &mut done, &mut redo), TransactionId::NONE);
+    assert!(
+        done.is_empty() && redo.is_empty(),
+        "the first pass is no step"
+    );
+    r.overdub(2_000, &dc(0.1));
+    r.overdub(2_000, &dc(0.05));
+    r.l.loop_steps(0, &mut done, &mut redo);
+    let (a, b) = (done[0].txn, done[1].txn);
+    assert!(a.is_some() && b > a);
+    assert!(matches!(done[1].step, Some(Step::Overdub(_))));
+    r.cmd(L::Undo);
+    wait(&mut r);
+    r.l.loop_steps(0, &mut done, &mut redo);
+    assert_eq!((txns(&done), redo.clone()), (vec![a], vec![b]));
+    r.cmd(L::Redo);
+    wait(&mut r);
+    r.l.loop_steps(0, &mut done, &mut redo);
+    assert_eq!((txns(&done), redo.len()), (vec![a, b], 0));
+    // Cleared: its steps, then its Clear.
+    r.cmd(L::Clear);
+    wait(&mut r);
+    assert!(r.l.status().kept);
+    r.l.loop_steps(0, &mut done, &mut redo);
+    assert_eq!(txns(&done)[..2], [a, b]);
+    assert!(done[2].txn > b && done[2].step.is_none());
+    // Back with Undo: its own steps again.
+    r.cmd(L::Undo);
+    wait(&mut r);
+    r.l.loop_steps(0, &mut done, &mut redo);
+    assert_eq!((txns(&done), redo.len()), (vec![a, b], 0));
+    // No other loop has a step; past the loops, nothing.
+    r.l.loop_steps(1, &mut done, &mut redo);
+    assert!(done.is_empty());
+    assert_eq!(
+        r.l.loop_steps(MAX_LOOPS, &mut done, &mut redo),
+        TransactionId::NONE
+    );
+}
+
+/// An edit with every place for a shape taken lets the history go up to
+/// its oldest edit: the loop says which step it let go of last, so the
+/// one UNDO retires it and every older step.
+#[test]
+fn a_full_history_says_the_newest_step_it_let_go_of() {
+    use mpfree_transport::TransactionId;
+    let mut r = Rig::new(10, 128);
+    let z = dc(0.0);
+    let (mut done, mut redo) = (Vec::new(), Vec::new());
+    record_one_bar(&mut r, &dc(0.25));
+    r.overdub(2_000, &dc(0.1));
+    r.cmd(L::Edit(E::Reverse));
+    r.run(r.frame + 4 * FADE as u64, &z);
+    r.l.loop_steps(0, &mut done, &mut redo);
+    let (overdub, first) = (done[0].txn, done[1].txn);
+    for _ in 0..16 {
+        r.cmd(L::Edit(E::Reverse));
+        r.run(r.frame + 4 * FADE as u64, &z);
+    }
+    let let_go = r.l.loop_steps(0, &mut done, &mut redo);
+    assert_eq!(let_go, first, "up to the oldest edit");
+    assert_eq!(done.len(), 16);
+    assert!(done.iter().all(|s| s.txn > first && s.txn != overdub));
+    assert_ne!(let_go, TransactionId::NONE);
+}
+
 /// A clear during an overdub (a loop key held to clear started one on its
 /// press): the overdub is undone first, so UNDO brings the loop back as it
 /// was before it, and Redo brings what the overdub recorded.

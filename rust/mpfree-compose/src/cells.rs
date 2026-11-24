@@ -163,6 +163,11 @@ pub struct Aim {
     pub density: f32,
     /// 0 to 1, as [`syncopation`] measures it.
     pub syncopation: f32,
+    /// How hard the density is reached for, 0 to 1: 0 at the middle of
+    /// Busy, where the riff is chosen as it always was, 1 at Sparse or
+    /// Busy's ends, where the cells drawn lean towards the density asked
+    /// and missing it costs three times as much.
+    pub lean: f32,
 }
 
 /// A riff of `riff_bars` bars of cells (one cell per beat) from `lib`,
@@ -221,7 +226,10 @@ pub fn riff(
             0
         };
         f64::from(fits) + 0.4 * likes
-            - 3.0 * f64::from((density - aim.density).abs()) * riff_bars as f64
+            - 3.0
+                * (1.0 + 2.0 * f64::from(aim.lean))
+                * f64::from((density - aim.density).abs())
+                * riff_bars as f64
             - 2.0 * f64::from((sync - aim.syncopation).abs())
             - 1.5 * empty as f64
     };
@@ -231,7 +239,11 @@ pub fn riff(
             .map(|j| {
                 let w: Vec<f64> = lib
                     .iter()
-                    .map(|&(c, lw)| f64::from(lw) * (f64::from(fit(j, c)) * 1.5).exp())
+                    .map(|&(c, lw)| {
+                        let off = (starts_of(c, grid.beat).count() as f32 - aim.density).abs();
+                        f64::from(lw)
+                            * (f64::from(fit(j, c)) * 1.5 - 3.0 * f64::from(aim.lean * off)).exp()
+                    })
                     .collect();
                 lib[dice.pick(&w).unwrap_or(0)].0
             })
@@ -730,6 +742,7 @@ mod tests {
         let aim = Aim {
             density: 0.9,
             syncopation: 0.5,
+            lean: 0.0,
         };
         let lib = library(&GROOVE, CellPart::Bass);
         let r = riff(lib, four(), 1, &desire, aim, 0.3, &mut dice(1));
@@ -756,6 +769,7 @@ mod tests {
         let aim = Aim {
             density: 1.0,
             syncopation: 0.0,
+            lean: 0.0,
         };
         let w = riff(
             library(&JAZZISH, CellPart::Bass),

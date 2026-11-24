@@ -433,8 +433,13 @@ fn continue_is_heard_on_the_drummer_kept_as_heard_and_undone() {
         budget: ReadBudget::default(),
         row: None,
     };
+    // The phrase's own timing (S3, `perform`) off, so every new note sits
+    // exactly on the drummer's feel; it moves notes a few ms, within
+    // contract 3, and its tests are its own.
+    let mut style = GROOVE;
+    style.playing.gesture = 0.0;
     let settings = Settings {
-        style: GROOVE,
+        style,
         bars: 2,
         seed: 5,
         ..Settings::default()

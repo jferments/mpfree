@@ -46,6 +46,7 @@
 //! hold and swap one on the audio thread.
 
 use crate::engine::{Rate, PPQ};
+use crate::pattern::{Pattern, Step};
 use crate::scale::{Scale, Snap};
 
 /// Most notes in a phrase.
@@ -229,6 +230,91 @@ impl Speed {
     }
 }
 
+/// A chord held under a phrase (P3): its root and what sits over it, in
+/// semitones. Read from the notes held by [`HeldChord::of`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeldChord {
+    /// The root's pitch, at or below the lowest note held.
+    pub root: u8,
+    /// A third over the root (3 or 4), else a 2nd or 4th held in its place
+    /// (a sus chord), else none.
+    pub third: Option<u8>,
+    /// A fifth (7, or 6 over a minor third, or 8 over a major one).
+    pub fifth: Option<u8>,
+    /// A seventh (10 or 11, or 9 in a diminished chord).
+    pub seventh: Option<u8>,
+}
+
+impl HeldChord {
+    /// The chord `held` makes, or None with fewer than three pitch classes:
+    /// one note, a note in octaves, or two notes (a hand moving from one
+    /// note to the next overlaps them) lead from the newest, as before P3.
+    /// The root is the pitch class with the most of a fifth, a third and
+    /// a seventh over it among the others, the lowest note's on a tie, so
+    /// E G C held is C major and A C E G is A minor seventh.
+    pub fn of(held: &[u8]) -> Option<HeldChord> {
+        let mut mask = 0u16;
+        for &n in held {
+            mask |= 1 << (n % 12);
+        }
+        if mask.count_ones() < 3 {
+            return None;
+        }
+        let lowest = *held.iter().min()?;
+        let has = |r: u8, i: u8| mask & (1 << ((r + i) % 12)) != 0;
+        let score = |r: u8| {
+            let mut s = 0;
+            if has(r, 7) {
+                s += 6;
+            }
+            if has(r, 3) || has(r, 4) {
+                s += 4;
+            }
+            if has(r, 10) || has(r, 11) {
+                s += 2;
+            }
+            if (has(r, 6) && has(r, 3)) || (has(r, 8) && has(r, 4)) {
+                s += 3;
+            }
+            if r == lowest % 12 {
+                s += 1;
+            }
+            s
+        };
+        let r = (0..12u8)
+            .filter(|&r| mask & (1 << r) != 0)
+            .max_by_key(|&r| (score(r), u8::from(r == lowest % 12)))?;
+        // At or below the lowest note; above it only at the very bottom.
+        let below = i16::from(lowest) - i16::from((lowest % 12 + 12 - r) % 12);
+        let root = if below < 0 { below + 12 } else { below } as u8;
+        let third = [4, 3, 2, 5].into_iter().find(|&i| has(r, i));
+        let fifth = if has(r, 7) {
+            Some(7)
+        } else if third == Some(3) && has(r, 6) {
+            Some(6)
+        } else if third == Some(4) && has(r, 8) {
+            Some(8)
+        } else {
+            None
+        };
+        let seventh = if has(r, 10) {
+            Some(10)
+        } else if has(r, 11) {
+            Some(11)
+        } else if fifth == Some(6) && has(r, 9) {
+            Some(9)
+        } else {
+            None
+        };
+        Some(HeldChord {
+            root,
+            third,
+            fifth,
+            seventh,
+        })
+    }
+}
+
 /// One note of a phrase, from its home note.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PhraseNote {
@@ -387,6 +473,52 @@ impl Phrase {
         true
     }
 
+    /// The note `n` plays over a chord held (P3): its notes kept as parts
+    /// of the chord. The phrase was written over its home chord, so a step
+    /// on that chord's root, third or fifth plays the held chord's root,
+    /// third or fifth, and the 7th the held chord's seventh when it has
+    /// one; the other steps (2nd, 4th, 6th, 7th) are colour and passing
+    /// notes, placed by the held chord's own scale (major with a major
+    /// third, natural minor with a minor one, the written scale over a
+    /// chord with neither), and In key brought into the arp's scale by
+    /// `snap` (a chord note is never moved: the chord you hold wins). A
+    /// note written outside its scale keeps its half step. Octaves count
+    /// from the chord's root, at or below the lowest note held. A riff
+    /// written over C minor takes F major's shape held on F major.
+    pub fn pitch_over(
+        &self,
+        n: &PhraseNote,
+        chord: &HeldChord,
+        follow: Follow,
+        scale: Option<Scale>,
+        snap: Snap,
+    ) -> Option<u8> {
+        let steps = i16::from(n.steps);
+        let (octave, d) = (steps.div_euclid(7), steps.rem_euclid(7) as usize);
+        let mut table = match chord.third {
+            Some(4) => [0, 2, 4, 5, 7, 9, 11],
+            Some(3) if chord.fifth == Some(6) => [0, 2, 3, 5, 6, 8, 9],
+            Some(3) => [0, 2, 3, 5, 7, 8, 10],
+            _ => self.written.steps(),
+        };
+        if let Some(t) = chord.third {
+            table[2] = t as i8;
+        }
+        if let Some(f) = chord.fifth {
+            table[4] = f as i8;
+        }
+        if let Some(sv) = chord.seventh {
+            table[6] = sv as i8;
+        }
+        let tone = matches!(d, 0 | 2 | 4) || (d == 6 && chord.seventh.is_some());
+        let note = i16::from(chord.root) + 12 * octave + i16::from(table[d]) + i16::from(n.alt);
+        let note = match (follow, scale) {
+            (Follow::InKey, Some(scale)) if !tone && n.alt == 0 => scale.snapped(note, snap)?,
+            _ => note,
+        };
+        (0..=127).contains(&note).then_some(note as u8)
+    }
+
     /// The note `n` plays from `held`, or None when it falls outside
     /// 0..=127 or the scale's snap skips the held note. In key with a
     /// scale, the held note is brought into the scale by `snap` and the
@@ -498,6 +630,96 @@ impl Phrase {
         }
         let bar = p.bar_ticks();
         p.bars = end.div_ceil(bar).clamp(1, u32::from(MAX_BARS)) as u8;
+        p
+    }
+
+    /// A latch pattern played on one held note, as a phrase (the Yours
+    /// shelf's "a pattern that plays one note"): every step that plays
+    /// sounds `home`, moved by its octaves (the step's and the `oct`
+    /// lane's), as loud as its accent or the `vel` lane says (else
+    /// `velocity`), as long as its gate (the step's, the `gate` lane's,
+    /// else `gate`, the arp's setting, in percent of the step), with its
+    /// ratchets and its nudge; a tie holds the notes before it on. The
+    /// steps, a `rate` apart, repeat until they fill whole bars of `beats`
+    /// (at most [`MAX_BARS`]), so the phrase loops as the pattern did.
+    /// Scale degrees, chances and random amounts are left out: a phrase
+    /// plays the same notes every time. Written for either scale, on the
+    /// pattern's rate (1/8 for a pattern at 1/4).
+    pub fn from_pattern(
+        pattern: &Pattern,
+        rate: Rate,
+        beats: u8,
+        gate: u8,
+        velocity: u8,
+        home: u8,
+    ) -> Self {
+        let beats = beats.clamp(1, 12);
+        let step = rate.ticks();
+        let bar = u32::from(beats) * PPQ;
+        let n = pattern.len().max(1) as u32;
+        let most = u32::from(MAX_BARS) * bar;
+        // Whole bars: the steps repeated until both line up, or as many
+        // as eight bars hold.
+        let round = n * step;
+        let whole = round / gcd(round, bar) * bar;
+        let total = if whole <= most {
+            whole / step
+        } else {
+            most / step
+        };
+        let lanes = &pattern.lanes;
+        let mut notes: Vec<(u32, u32, u8, u8)> = Vec::new();
+        // The notes the last playing step started, to hold on over a tie.
+        let mut last: core::ops::Range<usize> = 0..0;
+        for i in 0..total {
+            let at = i * step;
+            let k = u64::from(i);
+            match pattern.steps()[(i % n) as usize] {
+                Step::Rest => last = notes.len()..notes.len(),
+                Step::Tie => {
+                    for t in &mut notes[last.clone()] {
+                        t.1 = at + step - t.0;
+                    }
+                }
+                Step::Play {
+                    octave,
+                    accent,
+                    gate: g,
+                    ratchet,
+                    ..
+                } => {
+                    let octave = i16::from(octave) + i16::from(lanes.octave.at(k).unwrap_or(0));
+                    let note = (i16::from(home) + 12 * octave.clamp(-3, 3)).clamp(0, 127) as u8;
+                    let vel = match lanes.velocity.at(k) {
+                        _ if accent => ACCENT_VELOCITY,
+                        Some(v) if v > 0 => v,
+                        _ => velocity,
+                    };
+                    let g = [g, lanes.gate.at(k).unwrap_or(0), gate]
+                        .into_iter()
+                        .find(|g| *g > 0)
+                        .unwrap_or(GATE_WRITTEN)
+                        .min(100);
+                    let nudge = i64::from(lanes.nudge.at(k).unwrap_or(0).clamp(-50, 50));
+                    let start = (i64::from(at) + i64::from(step) * nudge / 100).max(0) as u32;
+                    let hits = u32::from(ratchet.clamp(1, 8));
+                    let each = step / hits;
+                    let first = notes.len();
+                    for h in 0..hits {
+                        let len = (each * u32::from(g) / 100).max(1);
+                        notes.push((start + h * each, len, note, vel));
+                    }
+                    last = first..notes.len();
+                }
+            }
+        }
+        let unit = if rate == Rate::Quarter {
+            Rate::Eighth
+        } else {
+            rate
+        };
+        let mut p = Self::from_notes(&notes, home, Written::Either, unit, beats);
+        p.bars = (total * step).div_ceil(bar).clamp(1, u32::from(MAX_BARS)) as u8;
         p
     }
 
@@ -1117,10 +1339,140 @@ fn shortest_lane(values: &[Option<i32>]) -> Option<Vec<i32>> {
     })
 }
 
+/// The greatest common divisor of `a` and `b`.
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 {
+        a.max(1)
+    } else {
+        gcd(b, a % b)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::scale::{MAJOR, MINOR, PENTATONIC_MINOR};
+
+    /// A chord held is read from its notes, in any voicing: the root has
+    /// the most of a fifth, a third and a seventh over it.
+    #[test]
+    fn a_chord_held_is_read_from_its_notes() {
+        let c = |held: &[u8]| HeldChord::of(held);
+        let chord = |root, third, fifth, seventh| {
+            Some(HeldChord {
+                root,
+                third: Some(third),
+                fifth: Some(fifth),
+                seventh,
+            })
+        };
+        assert_eq!(c(&[60, 64, 67]), chord(60, 4, 7, None), "C major");
+        assert_eq!(c(&[64, 67, 72]), chord(60, 4, 7, None), "C major from E");
+        assert_eq!(c(&[65, 69, 72]), chord(65, 4, 7, None), "F major");
+        assert_eq!(c(&[57, 60, 64, 67]), chord(57, 3, 7, Some(10)), "Am7");
+        assert_eq!(c(&[55, 59, 62, 65]), chord(55, 4, 7, Some(10)), "G7");
+        assert_eq!(c(&[59, 62, 65]), chord(59, 3, 6, None), "B diminished");
+        assert_eq!(
+            c(&[48, 64, 67, 71]),
+            chord(48, 4, 7, Some(11)),
+            "Cmaj7, spread"
+        );
+        // At the very bottom the root sits above the lowest note.
+        assert_eq!(c(&[4, 7, 12]).map(|h| h.root), Some(0));
+        assert_eq!(c(&[1, 5, 8]).map(|h| h.root), Some(1));
+        // One note, octaves of it, or two notes: no chord.
+        assert_eq!(c(&[60]), None);
+        assert_eq!(c(&[48, 60, 72]), None);
+        assert_eq!(c(&[60, 67]), None);
+        assert_eq!(c(&[]), None);
+    }
+
+    /// Over a chord a phrase keeps its notes as parts of it: written over
+    /// C minor's home chord, held on F major it plays F major's root, third
+    /// and fifth, and its colour notes from F major's scale, In key brought
+    /// into the arp's scale (never a chord note).
+    #[test]
+    fn over_a_chord_a_phrase_keeps_its_notes_as_parts_of_the_chord() {
+        let p = Phrase::parse("line minor : 1 2 b3 4 5 b6 b7 1+ 5- #4").unwrap();
+        let f_major = HeldChord::of(&[65, 69, 72]).unwrap();
+        let play = |chord: &HeldChord, follow, scale| -> Vec<Option<u8>> {
+            p.notes()
+                .iter()
+                .map(|n| p.pitch_over(n, chord, follow, scale, Snap::Down))
+                .collect()
+        };
+        let some = |v: &[u8]| v.iter().map(|&n| Some(n)).collect::<Vec<_>>();
+        // Exact, or In key with no scale: F major's own.
+        assert_eq!(
+            play(&f_major, Follow::Exact, None),
+            some(&[65, 67, 69, 70, 72, 74, 76, 77, 60, 71])
+        );
+        assert_eq!(
+            play(&f_major, Follow::InKey, None),
+            play(&f_major, Follow::Exact, None)
+        );
+        // In key in C minor: E is brought down to Eb; A, the chord's
+        // third, stays; the raised 4th keeps its half step.
+        let c_minor = Some(Scale::new(0, MINOR));
+        assert_eq!(
+            play(&f_major, Follow::InKey, c_minor),
+            some(&[65, 67, 69, 70, 72, 74, 75, 77, 60, 71])
+        );
+        // Over C minor it plays as written from C.
+        let c_minor_chord = HeldChord::of(&[60, 63, 67]).unwrap();
+        assert_eq!(
+            play(&c_minor_chord, Follow::Exact, None),
+            some(&[60, 62, 63, 65, 67, 68, 70, 72, 55, 66])
+        );
+        // A seventh held is the 7th's note; a diminished fifth the 5th's.
+        let g7 = HeldChord::of(&[55, 59, 62, 65]).unwrap();
+        assert_eq!(play(&g7, Follow::Exact, None)[6], Some(65));
+        let b_dim = HeldChord::of(&[59, 62, 65]).unwrap();
+        assert_eq!(play(&b_dim, Follow::Exact, None)[4], Some(65));
+    }
+
+    /// A pattern played on one note becomes a phrase that plays the same:
+    /// its steps repeated to a whole bar, each note on its step for its
+    /// gate, ties holding on, accents and octaves kept, ratchets split.
+    #[test]
+    fn a_pattern_on_one_note_becomes_a_phrase_that_loops_as_it_did() {
+        let pat = |t: &str| Pattern::parse(t).unwrap();
+        let notes = |p: &Phrase| -> Vec<(u32, u32, i8, u8)> {
+            p.notes()
+                .iter()
+                .map(|n| (n.start, n.len, n.semis, n.velocity))
+                .collect()
+        };
+        let s = Rate::Sixteenth.ticks();
+        // Four steps of 1/16 fill a beat: four times to the bar.
+        let p = Phrase::from_pattern(&pat("x . x x"), Rate::Sixteenth, 4, 50, 100, 60);
+        assert_eq!((p.bars, p.len()), (1, 12));
+        assert_eq!(
+            &notes(&p)[..3],
+            [
+                (0, s / 2, 0, 100),
+                (2 * s, s / 2, 0, 100),
+                (3 * s, s / 2, 0, 100)
+            ]
+        );
+        // A tie holds on, an accent and an octave stay, a ratchet splits.
+        let p = Phrase::from_pattern(&pat("x _ . x+! x:2 . . ."), Rate::Sixteenth, 4, 50, 90, 60);
+        assert_eq!(
+            &notes(&p)[..4],
+            [
+                (0, 2 * s, 0, 90),
+                (3 * s, s / 2, 12, ACCENT_VELOCITY),
+                (4 * s, s / 4, 0, 90),
+                (4 * s + s / 2, s / 4, 0, 90),
+            ]
+        );
+        // Three steps don't fill a bar: three bars do.
+        let p = Phrase::from_pattern(&pat("x x ."), Rate::Sixteenth, 4, 50, 100, 60);
+        assert_eq!((p.bars, p.len()), (3, 32));
+        // A pattern at 1/4 is written on 1/8s.
+        let p = Phrase::from_pattern(&pat("x"), Rate::Quarter, 4, 50, 100, 60);
+        assert_eq!((p.unit, p.len()), (Rate::Eighth, 4));
+    }
 
     fn semis(p: &Phrase) -> Vec<i8> {
         p.notes().iter().map(|n| n.semis).collect()

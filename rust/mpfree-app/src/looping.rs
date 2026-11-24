@@ -3201,6 +3201,55 @@ impl LoopHost {
         )
     }
 
+    /// UNDO, or REDO (`redo`), of loop `n`'s newest step, from the one
+    /// history across the engines (audio tracks phase 4d): as the picked
+    /// loop's would be, but the pick stays where it is (the loop is
+    /// selected for the command and the pick again after it). A snap's or
+    /// Read as's lands on the loop's downbeat with the tempo, as the step
+    /// did. With its `looper:` line for the log.
+    pub fn undo_loop(&mut self, n: usize, redo: bool) -> String {
+        let c = if redo { Command::Redo } else { Command::Undo };
+        if n == self.picked && self.looper.selected() == n {
+            return self.command(c);
+        }
+        let Some(h) = self.looper.loop_history(n) else {
+            return format!("looper: loop {}: there is no such loop", n + 1);
+        };
+        let top = if redo {
+            h.redo().first()
+        } else {
+            h.done().last()
+        };
+        if matches!(top, Some(Step::Snap(_) | Step::Bars(_))) {
+            let s = if redo { Snap::Redo } else { Snap::Undo };
+            return self.snap_on(n, s);
+        }
+        if self.looper.room() < 3 {
+            return format!(
+                "looper: loop {}: {c:?} NOT done, the command queue is full",
+                n + 1
+            );
+        }
+        self.steps_left = 0;
+        self.looper.select_loop(n);
+        self.looper.command(c);
+        self.looper.select_loop(self.picked);
+        format!("looper: loop {}: {c:?}, from the one history", n + 1)
+    }
+
+    /// Loop `n`'s step as UNDO names it ("Overdub · Layer 2"), its layers
+    /// by their place in the loop now; None is its Clear, kept for Undo
+    /// ([`mpfree_looper::Looper::loop_steps`]).
+    pub fn step_words(&self, n: usize, step: Option<Step>) -> String {
+        let Some(s) = step else {
+            return "Clear".to_string();
+        };
+        let layers: Vec<Option<LayerInfo>> = (0..MAX_LAYERS)
+            .map(|k| self.looper.loop_layer_info(n, k))
+            .collect();
+        crate::looper_page::step_text(s, &layers, self.rate)
+    }
+
     /// As many of the undo history's presses as the queue takes.
     fn queue_steps(&mut self) {
         while self.steps_left != 0 {
@@ -4986,7 +5035,11 @@ impl LoopHost {
     /// next period ([`LoopHost::tend_snap`]); what it did, or why not,
     /// comes after. The line for the log now.
     pub fn snap(&mut self, s: Snap) -> String {
-        let n = self.looper.selected();
+        self.snap_on(self.looper.selected(), s)
+    }
+
+    /// [`LoopHost::snap`] on loop `n`, picked or not.
+    fn snap_on(&mut self, n: usize, s: Snap) -> String {
         self.snap_ask = None;
         self.ab_stop();
         self.side_want = None;

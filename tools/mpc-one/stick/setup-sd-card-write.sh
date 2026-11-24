@@ -2,12 +2,15 @@ R=''
 # MPFree and the SD card, step S2a of the SD card plan (docs/dev/hardware/sd-card-and-internal-drive.md):
 # open the card in the MPC's SD slot for writing INSIDE ITS MPFree FOLDER ONLY, then close it cleanly.
 # STATE-CHANGING ON THE CARD: its MPFree folder (made if missing), and the in-use mark exFAT keeps while the
-# card is open for writing, cleared again by the clean unmount at the close. Nothing else on the card.
+# card is open for writing, cleared again by the clean unmount at the close. Nothing else on the card, except
+# with a repair asked for (below): then also the card's filesystem records that fsck.exfat -y mends.
 # (The R='' line is an empty root prefix; only tests change it.)
 #
 # Run as root, once per opening, when asked: /run/mpfree-app/sd-card-write.request holds a word (the disk
-# test asks now; the pad player's saves will). Never at the same time as the read-only window
-# (setup-sd-card.sh): each refuses while any mmcblk device is there.
+# test asks now; the pad player's saves will), and a second line `repair` when the owner asked for a repair
+# (only the disk test's --repair-card writes it, for the SD card round; the pad player never repairs a card
+# on its own). Never at the same time as the read-only window (setup-sd-card.sh): each refuses while any
+# mmcblk device is there.
 #   1. checks, the read-only window's: the startup switch-off finished, no eMMC or SD card block device, both
 #      controllers unbound, the backup not running, the internal drive not open, nothing mounted at the
 #      card's places; and the system has fsck.exfat;
@@ -18,10 +21,16 @@ R=''
 #   3. reads its first sector, once, into RAM: it must be exFAT (FAT's rename can cross-link two files when a
 #      card is pulled at the wrong moment, so FAT stays read-only until the pull test shows a safe way), the
 #      kernel must have exfat, and the in-use mark (VolumeFlags bit 1) and the disk-error bit (bit 2) must be
-#      clear. A marked card is refused: check it on a computer (tools/mpc-one/repair-sd-card.py);
+#      clear. Without a repair asked for, a marked card is refused (and step 4 is not run);
 #   4. checks its filesystem read-only: fsck.exfat -n on the disk the kernel still holds read-only (no
-#      program can open it for writing), its version noted; anything but a clean answer refuses. The card's
-#      write and discard counters and the kernel's refused writes must not have moved;
+#      program can open it for writing), its version noted; without a repair asked for, anything but a clean
+#      answer refuses. The card's write and discard counters and the kernel's refused writes must not have
+#      moved;
+#   4b. only with a repair asked for, and only if step 3 found a bit set or step 4 found problems: the
+#      repair, in the MPC. force_ro 0 on the card's disk alone (refused if its lock switch is on),
+#      fsck.exfat -y (it mends what it found and clears the mark), force_ro 1, then the first sector read
+#      again (both bits must be clear) and fsck.exfat -n again (clean). Anything else refuses, and the card
+#      stays read-only: nothing more is written to it;
 #   5. makes the card's disk writable: force_ro 0 on that disk alone (ro must follow; if it stays 1, the
 #      card's lock switch is on, and it is refused), mounts it rw,nosuid,nodev,noexec,noatime,dirsync,
 #      errors=remount-ro (files root's and the pad player's group's) at a private place, makes its MPFree
@@ -44,8 +53,9 @@ R=''
 # Every program of Akai's system it runs is in NEEDS (fsck.exfat is checked when asked, so a system without
 # it still makes a stick: the card then stays read-only).
 # Progress and the result: /run/mpfree-setup/sd-card-write-status (key=value lines), read by the asker:
-# state (checking, opening, checking-card, open, closing, closed, none, refused, failed), message, ask (the
-# request's word), while open card, fs, sectors, mount, write and fsck, and once closed written (MiB).
+# state (checking, opening, checking-card, repairing, open, closing, closed, none, refused, failed), message,
+# ask (the request's word), while open card, fs, sectors, mount, write and fsck, once closed written (MiB),
+# and repaired (what the repair mended) from the repair on.
 # Notes: /run/mpfree-setup/sd-card-write-log.txt and the kernel log.
 [ -n "$R" ] || PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
@@ -77,10 +87,19 @@ devdir=''
 version=''
 written=''
 
+repaired=''
+
 mkdir -p "$S"
-# The asker's word for this opening (hex digits from the request), given back in every status.
-ask=$(cut -c1-32 "$ASK/sd-card-write.request" 2>/dev/null | tr -cd '0-9a-f')
-ask=$(printf '%s' "$ask" | cut -c1-32)
+# The asker's word for this opening (hex digits from the request's first line), given back in every status,
+# and a repair if its second line asks for one.
+ask=''
+how=''
+if [ -f "$ASK/sd-card-write.request" ]; then
+  { IFS= read -r ask; IFS= read -r how; } < "$ASK/sd-card-write.request" 2>/dev/null
+fi
+ask=$(printf '%s' "$ask" | tr -cd '0-9a-f' | cut -c1-32)
+repair=''
+[ "$how" = repair ] && repair=yes
 rm -f "$ASK/sd-card-write.request" "$ASK/sd-card-write.close" "$ALIVE"
 status() {   # state message
   { echo "state=$1"; echo "message=$2"; echo "ask=$ask"
@@ -89,6 +108,7 @@ status() {   # state message
       echo "fsck=$version"
     fi
     if [ -n "$written" ]; then echo "written=$written"; fi
+    if [ -n "$repaired" ]; then echo "repaired=$repaired"; fi
   } > "$S/sd-card-write-status.new" && mv "$S/sd-card-write-status.new" "$S/sd-card-write-status"
 }
 say() { { echo "mpfree-sd-card-write: $*" > "$R/dev/kmsg"; } 2>/dev/null; echo "$*" >> "$S/sd-card-write-log.txt"; }
@@ -232,6 +252,12 @@ fsck_card() {   # fsck.exfat -n on the card's filesystem; its words go to the no
   echo "--- fsck.exfat -n /dev/$dev ($1)" >> "$S/sd-card-write-log.txt"
   fsck.exfat -n "$R/dev/$dev" >> "$S/sd-card-write-log.txt" 2>&1 < /dev/null
 }
+marks() {   # what the sector's copy says is wrong: the in-use mark, the disk-error bit; empty if neither
+  m=''
+  case "$(byte 106)" in *[2367]) m="the card wasn't safely removed last time (its exFAT is marked in use)" ;; esac
+  case "$(byte 106)" in *[4567]) m="${m:+$m; }the card's exFAT says a disk error was seen" ;; esac
+  echo "$m"
+}
 
 trap stopped TERM INT
 : >> "$S/sd-card-write-log.txt"
@@ -321,13 +347,11 @@ case "$(tr -c 'A-Z0-9' '.' < "$SECTOR" | cut -c4-11)" in
 esac
 grep -q "[[:space:]]exfat\$" "$R/proc/filesystems" 2>/dev/null ||
   refuse "this kernel has no exfat filesystem loaded (the stick must load it before the switch)"
-flags=$(byte 106)
-case "$flags" in
-  *[2367]) refuse "the card wasn't safely removed last time (its exFAT is marked in use): check it on a computer first" ;;
-esac
-case "$flags" in
-  *[4567]) refuse "the card's exFAT says a disk error was seen: check it on a computer first" ;;
-esac
+need=$(marks)
+if [ -n "$need" ]; then
+  [ -n "$repair" ] || refuse "$need: check it on a computer first, or ask for a repair in the MPC"
+  say "found: $need (a repair was asked for)"
+fi
 counters > "$S/sd-card-write-counters-before.txt"
 
 # 4. Its filesystem, checked read-only.
@@ -336,8 +360,11 @@ version=$(fsck.exfat -V 2>&1 < /dev/null | grep -i 'version\|exfatfsck' | tr -cd
 say "fsck.exfat: ${version:-no version given}"
 if fsck_card "before writing"; then
   say "the card checks clean (fsck.exfat -n)"
+elif [ -n "$repair" ]; then
+  need="${need:+$need; }its check found problems (fsck.exfat -n)"
+  say "found: its check found problems (fsck.exfat -n, see the notes; a repair was asked for)"
 else
-  refuse "the card's check found problems (fsck.exfat -n, see the notes): check it on a computer first"
+  refuse "the card's check found problems (fsck.exfat -n, see the notes): check it on a computer first, or ask for a repair in the MPC"
 fi
 setro
 [ "$(cat "$R/sys/block/$card/ro")" = 1 ] || fail "$card stopped being read-only during the check"
@@ -347,18 +374,46 @@ counters > "$S/sd-card-write-counters-now.txt"
 [ "$(refused)" -le "$refused_before" ] || fail "something wrote to the read-only card during the check (the kernel's log says so)"
 [ -e "$R/sys/block/$card" ] || refuse "the card was taken out during the check"
 
+# The card's disk alone writable (after the read-only check only), or refused if its lock switch is on.
+writable() {
+  say "making $card writable"
+  echo 0 > "$R/sys/block/$card/force_ro" 2>/dev/null || fail "could not make $card writable"
+  sleep 1
+  if [ "$(cat "$R/sys/block/$card/ro")" != 0 ]; then
+    refuse "the card stays read-only: its lock switch is on (slide it up, away from LOCK)"
+  fi
+  for p in $parts; do
+    [ "$(cat "$R/sys/block/$card/$p/ro")" = 0 ] || fail "$p stayed read-only after its disk was made writable"
+  done
+  only_the_card
+}
+
+# 4b. The repair, only when asked for and needed: fsck.exfat -y, then everything checked again read-only.
+if [ -n "$need" ]; then
+  status repairing "Repairing the card (fsck.exfat -y), as asked: $need"
+  say "repairing the card, as asked: $need"
+  repaired="$need"
+  writable
+  echo "--- fsck.exfat -y /dev/$dev (the repair)" >> "$S/sd-card-write-log.txt"
+  fsck.exfat -y "$R/dev/$dev" >> "$S/sd-card-write-log.txt" 2>&1 < /dev/null
+  rc=$?
+  say "fsck.exfat -y: exit code $rc"
+  setro
+  [ -e "$R/sys/block/$card" ] || refuse "the card was taken out during the repair: check it before the next save"
+  [ "$(cat "$R/sys/block/$card/ro")" = 1 ] || fail "$card could not be made read-only again after the repair"
+  dd if="$R/dev/$dev" bs=512 count=1 2>/dev/null > "$SECTOR" ||
+    refuse "the repair ran, but the card's first sector could not be read again; it stays read-only"
+  left=$(marks)
+  [ -z "$left" ] ||
+    refuse "the repair ran (fsck.exfat -y exit code $rc, see the notes), but still: $left; it stays read-only"
+  fsck_card "after the repair" ||
+    refuse "the repair ran (fsck.exfat -y exit code $rc), but the card's check after it found problems (fsck.exfat -n, see the notes); it stays read-only"
+  say "repaired: the mark is clear and the card checks clean"
+fi
+
 # 5. Writable: that disk alone, mounted privately, then shown as the whole card read-only and MPFree/
 # writable.
-say "making $card writable"
-echo 0 > "$R/sys/block/$card/force_ro" 2>/dev/null || fail "could not make $card writable"
-sleep 1
-if [ "$(cat "$R/sys/block/$card/ro")" != 0 ]; then
-  refuse "the card stays read-only: its lock switch is on (slide it up, away from LOCK)"
-fi
-for p in $parts; do
-  [ "$(cat "$R/sys/block/$card/$p/ro")" = 0 ] || fail "$p stayed read-only after its disk was made writable"
-done
-only_the_card
+writable
 written_before=$(sectors_written)
 mkdir -p -m 700 "$R$PRIV" && mkdir -p "$R$MNT" || fail "could not make the card's places in /run"
 mounted=yes

@@ -63,6 +63,9 @@ pub struct Heard<'a> {
     pub landings: &'a [Landing],
     /// The plan's rests, as `(from, to)` in steps; empty with no plan.
     pub rests: &'a [(i32, i32)],
+    /// Leading back leads to this scale place instead of your first note
+    /// (a Bridge leads into the next clip's first note).
+    pub lead_to: Option<i32>,
 }
 
 /// One check's answer.
@@ -175,6 +178,7 @@ pub fn judge_continue(req: &Continue, new: &[Note], chords: &ChordTimeline) -> V
         copy_bars: copy_bars(&req.settings.style),
         landings: &[],
         rests: &[],
+        lead_to: None,
     })
 }
 
@@ -290,7 +294,10 @@ fn lands(h: &Heard, new: &[GridNote]) -> Check {
         Ending::Home => last.alt == 0 && matches!(degree, 0 | 2 | 4),
         Ending::Open => degree != 0 || last.alt != 0,
         Ending::LoopsBack => {
-            let first = h.notes.first().map_or(last.pos, |m| m.pos);
+            let first = h
+                .lead_to
+                .or_else(|| h.notes.first().map(|m| m.pos))
+                .unwrap_or(last.pos);
             (last.pos - first).abs() <= 2 || degree == 4
         }
     };
@@ -456,7 +463,7 @@ fn same(a: &[GridNote], b: &[GridNote]) -> bool {
 
 /// The longest run of new bars each a copy of the bar one, two or (your
 /// bars) bars before it, against what the style allows.
-fn repeats(h: &Heard) -> Check {
+pub(crate) fn repeats(h: &Heard) -> Check {
     let bars: Vec<Vec<GridNote>> = (0..h.bars)
         .map(|b| bar_of(h.notes, b as i32, h.grid.bar))
         .collect();
@@ -494,6 +501,86 @@ fn repeats(h: &Heard) -> Check {
     Check::new(pass, score, words)
 }
 
+/// How a line moves from note to note: its leaps counted, for the checks
+/// that rule on them. A tune and a riff are held to different limits, and
+/// both count the same things.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Moves {
+    /// Leaps wider than a fourth in each bar, counted where they land.
+    pub leaps: Vec<usize>,
+    /// Leaps wider than a sixth.
+    pub wide: usize,
+    /// Leaps wider than an octave.
+    pub wild: usize,
+    /// Leaps followed by a move of a third or more the same way.
+    pub on_and_on: usize,
+    /// Two notes a step apart, back and forth twice, in quick notes of an
+    /// 1/8 or less.
+    pub trills: usize,
+}
+
+/// The moves of `line`, each note its (start in steps, pitch, length in
+/// steps), over `bars` bars of `grid`; a start past the last bar counts
+/// in the first, as a loop comes round. With `across`, a move over a rest
+/// of that many steps or more is not a move: the ear takes what follows a
+/// breath as a new start.
+pub(crate) fn moves(
+    line: &[(i32, i32, i32)],
+    bars: usize,
+    grid: Grid,
+    across: Option<i32>,
+) -> Moves {
+    let bars = bars.max(1);
+    let steps: Vec<Option<i32>> = line
+        .windows(2)
+        .map(|w| {
+            let rest = w[1].0 - (w[0].0 + w[0].2);
+            (!across.is_some_and(|a| rest >= a)).then_some(w[1].1 - w[0].1)
+        })
+        .collect();
+    let mut m = Moves {
+        leaps: vec![0; bars],
+        ..Moves::default()
+    };
+    for (i, d) in steps.iter().enumerate() {
+        let Some(d) = *d else {
+            continue;
+        };
+        if d.abs() > 12 {
+            m.wild += 1;
+        }
+        if d.abs() > 9 {
+            m.wide += 1;
+        }
+        if d.abs() > 5 {
+            let bar = line[i + 1]
+                .0
+                .div_euclid(grid.bar.max(1))
+                .rem_euclid(bars as i32);
+            m.leaps[bar as usize] += 1;
+            if steps
+                .get(i + 1)
+                .copied()
+                .flatten()
+                .is_some_and(|e| e.abs() > 4 && e.signum() == d.signum())
+            {
+                m.on_and_on += 1;
+            }
+        }
+    }
+    let quick = (grid.beat / 2).max(1);
+    m.trills = line
+        .windows(4)
+        .filter(|w| {
+            w[0].1 == w[2].1
+                && w[1].1 == w[3].1
+                && (1..=2).contains(&(w[0].1 - w[1].1).abs())
+                && w.iter().all(|x| x.2 <= quick)
+        })
+        .count();
+    m
+}
+
 /// The new bars move well: no leap wider than a sixth, at most one
 /// wider than a fourth in every two new bars, none followed by another
 /// leap the same way, and no trill (two notes a step apart, back and
@@ -501,38 +588,13 @@ fn repeats(h: &Heard) -> Check {
 /// new bars counts as where they start from.
 fn flows(h: &Heard, start: i32) -> Check {
     let from = h.notes.iter().rposition(|m| m.on < start).unwrap_or(0);
-    let line: Vec<(i32, i32)> = h.notes[from..]
+    let line: Vec<(i32, i32, i32)> = h.notes[from..]
         .iter()
-        .map(|m| (pitch(h, m), m.len))
+        .map(|m| (m.on, pitch(h, m), m.len))
         .collect();
-    let steps: Vec<i32> = line.windows(2).map(|w| w[1].0 - w[0].0).collect();
-    let mut wide = 0usize;
-    let mut leaps = 0usize;
-    let mut on_and_on = 0usize;
-    for (i, &d) in steps.iter().enumerate() {
-        if d.abs() > 9 {
-            wide += 1;
-        }
-        if d.abs() > 5 {
-            leaps += 1;
-            if steps
-                .get(i + 1)
-                .is_some_and(|&e| e.abs() > 4 && e.signum() == d.signum())
-            {
-                on_and_on += 1;
-            }
-        }
-    }
-    let quick = (h.grid.beat / 2).max(1);
-    let trills = line
-        .windows(4)
-        .filter(|w| {
-            w[0].0 == w[2].0
-                && w[1].0 == w[3].0
-                && (1..=2).contains(&(w[0].0 - w[1].0).abs())
-                && w.iter().all(|x| x.1 <= quick)
-        })
-        .count();
+    let m = moves(&line, h.bars, h.grid, None);
+    let (wide, on_and_on, trills) = (m.wide, m.on_and_on, m.trills);
+    let leaps: usize = m.leaps.iter().sum();
     let allowed = ((h.bars - h.your_bars) / 2).max(1);
     let extra = leaps.saturating_sub(allowed);
     let pass = wide == 0 && extra == 0 && on_and_on == 0 && trills == 0;
@@ -587,6 +649,7 @@ mod tests {
             copy_bars: 2,
             landings: &[],
             rests: &[],
+            lead_to: None,
         }
     }
 
@@ -698,5 +761,47 @@ mod tests {
         let verdict = judge(&h);
         assert!(!verdict.lands.pass, "{}", verdict.words());
         assert!(verdict.lands.words.contains("missing"));
+    }
+
+    #[test]
+    fn moves_counts_each_leap_in_the_bar_it_lands_in() {
+        let g = Grid::of(Meter::default());
+        // Up a fifth and on up a fourth; down an octave into bar 2; up a
+        // ninth.
+        let line = [(0, 60, 2), (2, 67, 2), (4, 72, 2), (16, 60, 2), (18, 74, 2)];
+        let m = moves(&line, 2, g, None);
+        assert_eq!(m.leaps, vec![1, 2]);
+        assert_eq!((m.wide, m.wild), (2, 1));
+        // Only the fifth is followed by another move the same way.
+        assert_eq!(m.on_and_on, 1);
+        assert_eq!(m.trills, 0);
+        // The octave down comes after ten steps of rest: with a beat's
+        // rest taken as a new start, it is no move at all.
+        let m = moves(&line, 2, g, Some(g.beat));
+        assert_eq!(m.leaps, vec![1, 1]);
+        assert_eq!((m.wide, m.wild), (1, 1));
+    }
+
+    #[test]
+    fn moves_counts_the_way_round_a_loop_in_the_first_bar() {
+        let g = Grid::of(Meter::default());
+        // Two bars that end a sixth above where they start again.
+        let line = [(0, 60, 4), (16, 62, 4), (28, 69, 4), (32, 60, 4)];
+        let m = moves(&line, 2, g, None);
+        assert_eq!(m.leaps, vec![1, 1]);
+        assert_eq!(m.wide, 0);
+    }
+
+    #[test]
+    fn a_trill_is_two_notes_a_step_apart_back_and_forth_in_quick_notes() {
+        let g = Grid::of(Meter::default());
+        let quick = [(0, 60, 2), (2, 62, 2), (4, 60, 2), (6, 62, 2)];
+        assert_eq!(moves(&quick, 1, g, None).trills, 1);
+        // The same in 1/4 notes is a tune rocking, and a third apart is
+        // no trill.
+        let slow = [(0, 60, 4), (4, 62, 4), (8, 60, 4), (12, 62, 4)];
+        assert_eq!(moves(&slow, 1, g, None).trills, 0);
+        let third = [(0, 60, 2), (2, 63, 2), (4, 60, 2), (6, 63, 2)];
+        assert_eq!(moves(&third, 1, g, None).trills, 0);
     }
 }
