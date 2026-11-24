@@ -80,6 +80,27 @@ const GRIDS: [Rate; 6] = [
 /// A phrase from a clip's notes (`at` from the clip's start) in `meter`,
 /// `len` ticks long (0: as long as its notes reach). See the module docs.
 pub fn phrase_of(notes: &[Played], len: Tick, meter: Meter) -> Result<Made, MakeRefused> {
+    phrase_of_as(notes, len, meter, Asked::default())
+}
+
+/// What the musician changed of what the notes say (the Make a phrase
+/// sheet's Kind and Home rows): None keeps what was read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Asked {
+    pub kind: Option<Kind>,
+    /// The note a held pad plays the phrase from. The phrase keeps the
+    /// scale it was heard in, so a home off the key's tonic counts its
+    /// steps from there.
+    pub home: Option<u8>,
+}
+
+/// [`phrase_of`], with the kind or the home note as asked.
+pub fn phrase_of_as(
+    notes: &[Played],
+    len: Tick,
+    meter: Meter,
+    asked: Asked,
+) -> Result<Made, MakeRefused> {
     if meter.unit != 4 {
         return Err(MakeRefused::Meter);
     }
@@ -100,8 +121,8 @@ pub fn phrase_of(notes: &[Played], len: Tick, meter: Meter) -> Result<Made, Make
         .collect();
     kept.sort_by_key(|n| (n.at, n.pitch));
     let key = key_of(&kept, meter);
-    let kind = kind_of(&kept, meter);
-    let home = home_of(&kept, kind, key);
+    let kind = asked.kind.unwrap_or_else(|| kind_of(&kept, meter));
+    let home = asked.home.unwrap_or_else(|| home_of(&kept, kind, key));
     let written = match key.map(|k| k.mode) {
         Some(Mode::Major | Mode::Mixolydian | Mode::Lydian) => Written::Major,
         Some(Mode::Minor | Mode::Dorian | Mode::Phrygian) => Written::Minor,
@@ -288,6 +309,16 @@ mod tests {
         assert_eq!(p.len(), line.len());
         let semis: Vec<i8> = p.notes().iter().map(|n| n.semis).collect();
         assert_eq!(semis, [0, 0, 7, 3, 0, 10]);
+        // The sheet's Kind and Home as asked: a riff from C3 is the same
+        // notes an octave under its home.
+        let asked = Asked {
+            kind: Some(Kind::Riff),
+            home: Some(48),
+        };
+        let made = phrase_of_as(&line, 4 * Q, FOUR, asked).unwrap();
+        assert_eq!((made.home, made.phrase.kind), (48, Kind::Riff));
+        let semis: Vec<i8> = made.phrase.notes().iter().map(|n| n.semis).collect();
+        assert_eq!(semis, [-12, -12, -5, -9, -12, -2]);
     }
 
     /// Stabs of three notes together are chords; a run of 1/16s is an
