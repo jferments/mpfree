@@ -26,6 +26,10 @@
 //!   library's targets (tuning, aliasing, velocity, level, stereo, the
 //!   filter, glide, envelopes, FM sidebands, drum decays), with the same
 //!   ratchet (`docs/dev/design/synth-quality.md`).
+//! - [`listening`]: the sampler plan's step 18, a listening set (drum
+//!   hits and a loop, piano, bass, a voice, and steady sounds) through
+//!   each grain mode as a pad plays it, with each render's level change,
+//!   wobble and peaks and a ratchet of its own (`tests/listening.rs`).
 //! - [`robust`]: the DSP quality plan's Y4 (every engine, the drums and
 //!   every effect stay finite at every setting) and Y7 (the same output
 //!   for any block size), `docs/dev/design/dsp-quality.md`.
@@ -61,6 +65,7 @@ pub mod flutter;
 pub mod grain;
 pub mod harmonics;
 pub mod knob;
+pub mod listening;
 pub mod loudness;
 pub mod mixlaw;
 pub mod null;
