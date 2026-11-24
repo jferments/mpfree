@@ -19,6 +19,11 @@ in them:
   stream test, D3), the takes on files and the seconds that went silent
   because the drive was late, over each part (any silence fails the run);
   the screen's frames; your listening answer;
+- every project open the runs made (live shows A4): how long the whole open
+  took and each part of it (the library's read, the build with the plugins'
+  starts, the swap into the audio loop, the kits, loops and takes), the
+  sound files read and their time, and the memory once it was in; and each
+  set's song change, from Go (or Play set) to the next song in;
 - heavy-load on each sound-core setting side by side, with the setting the
   numbers favour;
 - the benchmarks (host_bench_mpc.py): the NEON keep-or-drop A/B (every
@@ -61,6 +66,14 @@ GRAIN_FIT = re.compile(r"^grain budget: (\d+) grains fit .*\(GRAIN_BUDGET is (\d
 OVER = "over the synth budget"
 ASKED = ("wind", "keys", "tine", "drawbar", "organ", "fm", "choir", "grain")
 LISTEN = re.compile(r"^your answer: (.*)$")
+# The open's own line (open_clock.rs) and a set's song in (gui.rs), live shows A4.
+OPENED = re.compile(r"^project: (.+?) opened in (\d+\.\d+) s: (.*)$")
+OPEN_READ = re.compile(r"^read in (\d+\.\d+) s")
+OPEN_BUILT = re.compile(r"built in (\d+\.\d+) s(?: \((\d+) plugins? started in (\d+\.\d+) s\))?")
+OPEN_AT = re.compile(r"(in the audio loop|kits|loops|takes) at (\d+\.\d+) s")
+OPEN_FILES = re.compile(r"(\d+) sound files? \((\d+\.\d) MB\) read in (\d+\.\d+) s")
+OPEN_MEMORY = re.compile(r"memory (\d+) MB in use(?: \(peak (\d+) MB\))?(?:, (\d+) MB free)?")
+SONG_IN = re.compile(r"^show: (.+?) is in \((\w+)\), (\d+\.\d+) s after (Go|Play set)$")
 NEON_MARGIN = 0.02
 
 
@@ -251,6 +264,72 @@ def workflow_section(runs, out, answer):
     return found, bad
 
 
+def open_line(ln):
+    """One open's numbers from its line, or None."""
+    m = OPENED.match(ln)
+    if not m:
+        return None
+    name, total, rest = m.group(1), float(m.group(2)), m.group(3)
+    o = {"song": name, "total": total, "read": None, "built": None, "plugins": 0, "plugins_s": None,
+         "in the audio loop": None, "kits": None, "loops": None, "takes": None, "files": 0, "mb": None,
+         "files_s": None, "in_use": None, "peak": None, "free": None}
+    r = OPEN_READ.match(rest)
+    if r:
+        o["read"] = float(r.group(1))
+    b = OPEN_BUILT.search(rest)
+    if b:
+        o["built"] = float(b.group(1))
+        if b.group(2):
+            o["plugins"], o["plugins_s"] = int(b.group(2)), float(b.group(3))
+    for part, at in OPEN_AT.findall(rest):
+        o[part] = float(at)
+    f = OPEN_FILES.search(rest)
+    if f:
+        o["files"], o["mb"], o["files_s"] = int(f.group(1)), float(f.group(2)), float(f.group(3))
+    mem = OPEN_MEMORY.search(rest)
+    if mem:
+        o["in_use"], o["peak"], o["free"] = (int(x) if x else None for x in mem.groups())
+    return o
+
+
+def opens_section(runs, out):
+    """Every open and set song change the workflows made (live shows A4), in the order they came."""
+    opens = [(run, o) for run in runs for ln in run.lines for o in [open_line(ln)] if o]
+    songs = [(run, m.groups()) for run in runs for ln in run.lines for m in [SONG_IN.match(ln)] if m]
+    if not opens and not songs:
+        return
+    out.append("## Opens and song changes\n")
+    out.append("Each open from its own line: the whole open (the library's read, then the last part in), the "
+               "read, the build (with the plugins' starts and their time), then when each part was in, counted "
+               "from the read's end; the sound files the kits and loops read and the time in the reads alone; "
+               "the memory once it was in. The round's library is in RAM on the MPC, so the reads are RAM's, "
+               "not the stick's.\n")
+    if opens:
+        out.append("| workflow | song | whole open s | read s | built s | plugins (s) | in the audio loop s | kits s "
+                   "| loops s | takes s | sound files (MB, s) | in use MB | peak MB | free MB |")
+        out.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+        for run, o in opens:
+            plugins = f"{o['plugins']} ({fmt(o['plugins_s'], 2)})" if o["plugins"] else "0"
+            files = f"{o['files']} ({fmt(o['mb'], 1)}, {fmt(o['files_s'], 2)})" if o["files"] else "0"
+            out.append(f"| {run.label()} | {o['song']} | {fmt(o['total'], 2)} | {fmt(o['read'], 2)} "
+                       f"| {fmt(o['built'], 2)} | {plugins} | {fmt(o['in the audio loop'], 2)} | {fmt(o['kits'], 2)} "
+                       f"| {fmt(o['loops'], 2)} | {fmt(o['takes'], 2)} | {files} | {fmt(o['in_use'])} "
+                       f"| {fmt(o['peak'])} | {fmt(o['free'])} |")
+        slowest = max(opens, key=lambda ro: ro[1]["total"])
+        peak = max((o["peak"] for _, o in opens if o["peak"] is not None), default=None)
+        out.append(f"\nSlowest open: {slowest[1]['song']} in {slowest[1]['total']:.2f} s ({slowest[0].label()})."
+                   + (f" Highest peak memory: {peak} MB." if peak is not None else ""))
+        out.append("")
+    if songs:
+        out.append("A set's song change, from Go (the song's ending, its recovery copy, the next song's open) or "
+                   "from Play set for the first song, to the song in:\n")
+        out.append("| workflow | song | starts | s after | from |")
+        out.append("|---|---|---|---|---|")
+        for run, (song, starts, secs, frm) in songs:
+            out.append(f"| {run.label()} | {song} | {starts} | {float(secs):.2f} | {frm} |")
+        out.append("")
+
+
 def cores_section(found, out):
     heavy = [(run, a) for run, a in found if run.workflow == "heavy-load" and run.cores != "default"]
     if not heavy:
@@ -389,6 +468,7 @@ def main(argv):
     bad = False
     if runs:
         found, bad = workflow_section(runs, out, answer)
+        opens_section(runs, out)
         cores_section(found, out)
     verdict = neon_section(reports, out)
     afford_section(lines, out)

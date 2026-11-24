@@ -136,6 +136,7 @@ mod mixing;
 mod mixturns;
 mod modmix;
 mod modpanels;
+mod open_clock;
 mod pace;
 mod pad_synths;
 mod parts;

@@ -30,7 +30,7 @@ Tap a song in the set to pick it. Its card on the right sets how it plays in the
 | Row | What it does |
 |---|---|
 | **Starts** | **Stopped** (it waits for PLAY), **Playing** (it plays as soon as it's in), or **Count-in then play**. |
-| **Ends** | How the song before it ends when this one takes over: **Let it finish** (no new notes, and what's still ringing rings out), **Fade**, or **Cut**. |
+| **Ends** | How this song ends when you Go to the next one: **Let it finish** (no new notes, and what's still ringing rings out), **Fade**, or **Cut**. |
 | **Fade** | How long the fade takes, 1 to 30 seconds, when Ends is Fade. |
 | **Needs** | The keyboards this song needs. Tap it to see the keyboards MPFree knows, then tap one to mark it **Needed** (the song isn't ready without it), **Nice to have** (it plays without it, with limits) or not needed. Tap **Done** to go back. |
 | **Notes** | Anything you want to see on stage: the key, the cues, who starts. Tap the box to type, up to 240 characters. |
@@ -69,7 +69,7 @@ Changing song takes two steps, so nothing changes by accident: **arm** the next 
 
 With the transport stopped, Next song still needs two presses unless you turn on **Quick advance** in [Prefs](../reference/prefs.md). **Cancel next** drops the armed song and leaves the music alone. A song that isn't ready can be armed, so you can read why on its card, but Go does nothing.
 
-When you Go, the song playing ends the way the next song's **Ends** says:
+When you Go, the song playing ends the way its own **Ends** says:
 
 - **Let it finish**: no new notes start, notes you hold sound until you let go, and what's ringing rings out. Once it's quiet (or after 10 seconds at most) it fades out over a moment. The pill counts down **FINISHING**. Press Go again to go now.
 - **Fade**: it fades out over the song's Fade time.
@@ -77,7 +77,7 @@ When you Go, the song playing ends the way the next song's **Ends** says:
 
 If you changed the song while it played (a new take, a knob turned), its changes and takes are kept in a **recovery copy** beside it before the next song opens: the card says **SAVING TAKES**. The song in the set stays as you saved it. Then the next song opens (**OPENING**) and starts as its **Starts** says. Autosave waits while a song changes, and saving waits too.
 
-The next song opens when you Go, so there is a short pause between songs while it loads. Loading the next song while you play comes later.
+The next song opens when you Go, so there is a short pause between songs while it loads. Loading the next song while you play comes later. The Events log says how long each change took, from Go to the next song in (*Glass Garden is in (Playing), 4.80 s after Go*), and how long its open took, part by part (see [Opening a project](saving.md#opening-a-project)).
 
 ### When a song doesn't open
 

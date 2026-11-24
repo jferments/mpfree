@@ -117,6 +117,23 @@ def eight(silent_in_play=0.0):
     return body
 
 
+def sets():
+    """sets.mpw cut down: its opens' lines (open_clock.rs) and its song changes (live shows A4)."""
+    body = ['    script: "Sets", 3 steps, 40.0 s', "    script: line 3 at 1.000 s: mark set-play"]
+    body += status(0, 344, 100, 50)
+    body += ["    project: Night Market opened in 2.41 s: read in 0.05 s, built in 0.62 s (2 plugins started in "
+             "0.40 s), in the audio loop at 0.67 s, kits at 2.36 s, loops at 0.70 s; 42 sound files (38.1 MB) read "
+             "in 0.90 s; memory 212 MB in use (peak 236 MB), 1480 MB free",
+             "    show: Night Market is in (Playing), 2.52 s after Play set",
+             "    script: line 9 at 20.000 s: mark change-fade",
+             "    project: Glass Garden opened in 0.31 s: read in 0.01 s, built in 0.20 s, in the audio loop at "
+             "0.30 s; memory 220 MB in use (peak 240 MB), 1470 MB free",
+             "    show: Glass Garden is in (Stopped), 4.80 s after Go",
+             "    script: done"]
+    body += status(0, 3444, 110, 55)
+    return body
+
+
 class ReportTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="mpfree-devtest-report-")
@@ -210,6 +227,22 @@ class ReportTests(unittest.TestCase):
         res = self.report(self.write("08-devtest.log", run("effects", "default", effects())))
         self.assertIn("| effects | 0 | yes | 1 of 1 | 0 | 0 | 0 | 0 |\n", res.stdout)
         self.assertNotIn("went silent", res.stdout)
+
+    def test_the_opens_and_song_changes_say_each_part_and_the_memory(self):
+        res = self.report(self.write("05-devtest.log", run("sets", "default", sets())))
+        self.assertEqual(res.returncode, 0, res.stdout)
+        out = res.stdout
+        self.assertIn("## Opens and song changes", out)
+        self.assertIn("| sets | Night Market | 2.41 | 0.05 | 0.62 | 2 (0.40) | 0.67 | 2.36 | 0.70 | - "
+                      "| 42 (38.1, 0.90) | 212 | 236 | 1480 |", out)
+        self.assertIn("| sets | Glass Garden | 0.31 | 0.01 | 0.20 | 0 | 0.30 | - | - | - | 0 | 220 | 240 | 1470 |",
+                      out)
+        self.assertIn("Slowest open: Night Market in 2.41 s (sets). Highest peak memory: 240 MB.", out)
+        self.assertIn("| sets | Night Market | Playing | 2.52 | Play set |", out)
+        self.assertIn("| sets | Glass Garden | Stopped | 4.80 | Go |", out)
+        # A round with no opens has no such section.
+        res = self.report(self.write("06-devtest.log", run("effects", "default", effects())))
+        self.assertNotIn("Opens and song changes", res.stdout)
 
     def test_nothing_to_read(self):
         res = self.report(self.write("empty.log", ["hello"]))
