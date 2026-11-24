@@ -114,6 +114,7 @@ pub mod baseline;
 pub mod beat;
 pub mod bind;
 pub mod cells;
+pub mod clip_style;
 pub mod critic;
 pub mod dice;
 pub mod draft;
@@ -148,6 +149,7 @@ pub mod timing;
 
 pub use beat::{continue_drums, Drummed, DrumsAsk, DrumsRefused, Hit as BeatHit};
 pub use bind::{audition, revision, revision_in, Binding, Stale};
+pub use clip_style::{read_clip, ClipStyle, Read as ClipRead, Subdivision};
 pub use dice::{Dice, DiceName, Job};
 pub use event::{Event, MotifRef, Motion, NoteDecision, Part, PartId, Role, Source};
 pub use fit::{fit_clip, marks, FitRefused};

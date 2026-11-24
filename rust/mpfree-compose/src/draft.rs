@@ -2194,4 +2194,66 @@ mod tests {
             cases * 2
         );
     }
+
+    #[test]
+    fn a_style_made_from_a_clip_carries_on_with_the_clips_feel() {
+        use crate::clip_style::{ClipStyle, Read, Subdivision};
+        let notes = riff();
+        let ctx = context(&notes);
+        let mut accent = [-6i8; 16];
+        for s in [0, 4, 8, 11] {
+            accent[s] = 14;
+        }
+        let read = Read {
+            grid: Subdivision::Sixteenths,
+            swing: 56,
+            busy: 12.0,
+            syncopation: 0.6,
+            rest: 0.0,
+            accent,
+            accents: vec![0, 4, 8, 11],
+            bar_steps: 16,
+            steps_per_beat: 4,
+            loudness: (62, 112),
+            velocity: 84,
+            ghosts: 0.0,
+            lean_ms: 10.0,
+        };
+        let cs = ClipStyle::new("Clip 1", read, Meter::default());
+        let ms = ms_to_ticks(1.0, 120.0);
+        for seed in 1..=4 {
+            let mut s = settings(cs.style(), 8, seed);
+            let req = ask(&notes, &ctx, &s);
+            let best = drafts(&req).unwrap().remove(0);
+            assert!(
+                best.verdict.passed() >= 5,
+                "seed {seed}: {}",
+                best.verdict.words()
+            );
+            let fresh: Vec<f64> = best
+                .made
+                .part
+                .decisions
+                .iter()
+                .filter(|d| d.at >= 2 * BAR)
+                .map(|d| f64::from(d.timing.play) / ms)
+                .collect();
+            let mean = fresh.iter().sum::<f64>() / fresh.len() as f64;
+            s.style.playing.lean_ms = 0.0;
+            let plain = drafts(&ask(&notes, &ctx, &s)).unwrap().remove(0);
+            let was: Vec<f64> = plain
+                .made
+                .part
+                .decisions
+                .iter()
+                .filter(|d| d.at >= 2 * BAR)
+                .map(|d| f64::from(d.timing.play) / ms)
+                .collect();
+            let plain_mean = was.iter().sum::<f64>() / was.len() as f64;
+            assert!(
+                (mean - plain_mean - 10.0).abs() < 1.5,
+                "seed {seed}: leans {mean:.1} ms against {plain_mean:.1}"
+            );
+        }
+    }
 }
