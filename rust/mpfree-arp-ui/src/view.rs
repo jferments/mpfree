@@ -23,6 +23,9 @@
 //! pads, the header and the hint line belong to the app; the panel only adds
 //! its own widgets and the layouts that place them.
 
+use crate::maker::{
+    MakerView, PhraseMaker, MAKER_BACK, MAKER_CLOSE, MAKER_KEEP, MAKER_STEP, MAKER_TRY,
+};
 use crate::phrase_tab::{self, PhraseKinds, PhraseKit, PhrasePlays, PhraseRows};
 use crate::phrases::{PhraseList, Shelf};
 use crate::widgets::{
@@ -58,6 +61,7 @@ pub const KINDS: &str = "arp-phrase-kinds";
 pub const PHRASES: &str = "arp-phrase-list";
 pub const PLAYS: &str = "arp-phrase-plays";
 pub const KIT: &str = "arp-phrase-kit";
+pub use crate::maker::MAKER;
 
 /// Every layout but the Phrase tab's keeps the pads where the Play page has
 /// them: the arp's widgets only ever take the right-hand column, [`SIDE`]
@@ -83,6 +87,10 @@ pub const PATTERN_LAYOUT: &str =
 /// are not on the panel at all.)
 pub const PHRASE_LAYOUT: &str =
     "col(header:60, col(arp-modes:52, row(arp-phrase-kinds:166, arp-phrase-list:*, arp-phrase-plays:397):*):*, hint:26)";
+/// Phrase with New idea or More like this open: their panel
+/// ([`crate::maker`]) in the list's place.
+pub const PHRASE_MAKER_LAYOUT: &str =
+    "col(header:60, col(arp-modes:52, row(arp-phrase-kinds:166, arp-phrase-maker:*, arp-phrase-plays:397):*):*, hint:26)";
 /// Phrase on a kit track, whose pads play as pressed: the kinds, and one
 /// panel that says so in the place of the other two.
 pub const PHRASE_KIT_LAYOUT: &str =
@@ -178,6 +186,9 @@ pub struct ArpState {
     /// The phrases to choose from, and the track's pick.
     pub phrases: PhraseList,
     pub phrase_index: usize,
+    /// New idea or More like this, while one is open: its panel takes the
+    /// list's place and the detail panel shows its try.
+    pub maker: Option<MakerView>,
     /// The scale the pads play: the key a phrase follows In key while the
     /// arp's own scale is off ([`ArpState::phrase_key`]).
     pub pads_key: Option<Scale>,
@@ -211,6 +222,7 @@ impl ArpState {
             pattern_changed,
             phrases: PhraseList::built_in(),
             phrase_index: 0,
+            maker: None,
             pads_key: e.key(),
             phrase: PhraseNow {
                 at: e
@@ -307,6 +319,28 @@ pub enum ArpAction {
     Phrase(usize),
     /// A kind was tapped on the Phrase tab: show its phrases.
     Shelf(Shelf),
+    /// The list's New idea: its panel opens on the kind shown.
+    NewIdea,
+    /// More like this, on the phrase that plays: its panel opens.
+    MoreLike,
+    /// A touch on the New idea or More like this panel.
+    Maker(MakerAction),
+}
+
+/// A touch on the New idea or More like this panel ([`crate::maker`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MakerAction {
+    /// Row `row`'s ‹ (-1) or › (+1): its value changes, and a new try is
+    /// made where the value changes what is made.
+    Step { row: usize, delta: i32 },
+    /// Another try with the same choices.
+    TryAgain,
+    /// ‹ Try N: the try before.
+    Previous,
+    /// Back, or ×: the panel closes and the track's phrase plays again.
+    Back,
+    /// The try shown joins Yours and the track picks it.
+    Keep,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -715,9 +749,14 @@ pub fn phrase_kit_hint(track: &str) -> String {
 pub fn hint_for(st: &ArpState) -> String {
     match &st.phrase.kit_track {
         Some(track) => phrase_kit_hint(track),
+        None if st.maker.is_some() && st.tab() == Mode::Phrase => MAKER_HINT.to_string(),
         None => hint(st.tab()).to_string(),
     }
 }
+
+/// The hint while New idea or More like this is open.
+pub const MAKER_HINT: &str =
+    "Wheel: a row · − / +: change it · Q-Links: speed, gate, swing, octaves · Keep: on Yours · Back: nothing changes";
 
 /// The hint line under the quick band.
 pub fn quick_hint(mode: Mode) -> &'static str {
@@ -745,6 +784,8 @@ pub fn layout_for(mode: Mode) -> &'static str {
 pub fn layout_of(st: &ArpState) -> &'static str {
     if st.phrase.kit_track.is_some() {
         PHRASE_KIT_LAYOUT
+    } else if st.maker.is_some() && st.tab() == Mode::Phrase {
+        PHRASE_MAKER_LAYOUT
     } else {
         layout_for(st.tab())
     }
@@ -808,6 +849,7 @@ impl ArpPanel {
         ui.add(PHRASES, PhraseRows::default());
         ui.add(PLAYS, PhrasePlays::new(&PHRASE_QLINK_LABELS));
         ui.add(KIT, PhraseKit::default());
+        ui.add(MAKER, PhraseMaker::default());
         ui.add_page(quick, QUICK_LAYOUT)?;
         let mut panel = ArpPanel {
             name: name.to_string(),
@@ -972,7 +1014,10 @@ impl ArpPanel {
             if st.phrase.kit_track.is_some() {
                 show(ui, KIT, phrase_tab::kit(st));
             } else {
-                show(ui, PHRASES, phrase_tab::rows(st));
+                match &st.maker {
+                    Some(m) => show(ui, MAKER, PhraseMaker { view: m.clone() }),
+                    None => show(ui, PHRASES, phrase_tab::rows(st)),
+                }
                 let plays = phrase_tab::plays(st);
                 // Its sliders may be under a finger, so the panel is
                 // changed in place, and only when it shows something else.
@@ -1027,6 +1072,22 @@ impl ArpPanel {
             (PHRASES, EventKind::Select(i)) => {
                 (*i < st.phrases.phrases.len()).then_some(ArpAction::Phrase(*i))
             }
+            (PHRASES, EventKind::Toggle(phrase_tab::NEW_IDEA)) => Some(ArpAction::NewIdea),
+            (PLAYS, EventKind::Toggle(phrase_tab::MORE_LIKE)) => Some(ArpAction::MoreLike),
+            (MAKER, EventKind::Step { index, delta }) => {
+                Some(ArpAction::Maker(MakerAction::Step {
+                    row: *index,
+                    delta: *delta,
+                }))
+            }
+            (MAKER, EventKind::Toggle(k)) => match *k {
+                MAKER_TRY => Some(MakerAction::TryAgain),
+                MAKER_STEP => Some(MakerAction::Previous),
+                MAKER_CLOSE | MAKER_BACK => Some(MakerAction::Back),
+                MAKER_KEEP => Some(MakerAction::Keep),
+                _ => None,
+            }
+            .map(ArpAction::Maker),
             // In key or Exact.
             (PLAYS, EventKind::Tab(i)) => Follow::ALL
                 .get(*i)
@@ -1169,6 +1230,7 @@ mod tests {
             pattern_changed: false,
             phrases: PhraseList::built_in(),
             phrase_index: 0,
+            maker: None,
             pads_key: None,
             phrase: PhraseNow::default(),
             notes: held
@@ -1234,9 +1296,12 @@ mod tests {
                 if s.state.phrase.kit_track.is_some() {
                     want.push(KIT);
                     gone.extend([PHRASES, PLAYS]);
+                } else if s.state.maker.is_some() {
+                    want.extend([MAKER, PLAYS]);
+                    gone.extend([KIT, PHRASES]);
                 } else {
                     want.extend([PHRASES, PLAYS]);
-                    gone.push(KIT);
+                    gone.extend([KIT, MAKER]);
                 }
                 gone.extend(["pads", LIST, PATTERNS, QLINKS, ACTIONS, STEPS, MINI]);
             } else {

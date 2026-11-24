@@ -3311,6 +3311,7 @@ impl Player {
             pattern_changed: false,
             phrases: mpfree_arp_ui::PhraseList::built_in(),
             phrase_index: 0,
+            maker: None,
             pads_key: None,
             phrase: arp_view::PhraseNow::default(),
             notes: Vec::new(),

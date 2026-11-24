@@ -316,11 +316,14 @@ pub struct PhraseRow {
 
 /// The shown shelf's phrases, the track's pick kept in view. A tap on a
 /// row gives `Select(i)`, `i` the phrase's place in the app's list
-/// ([`PhraseRow::index`]).
+/// ([`PhraseRow::index`]); New idea in the heading gives
+/// `Toggle(NEW_IDEA)`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PhraseRows {
     /// The shelf's name.
     pub title: String,
+    /// New idea shows in the heading (composing tools P2, board A).
+    pub new_idea: bool,
     pub rows: Vec<PhraseRow>,
     /// The row the track's pick is on, when it is on this shelf.
     pub picked: Option<usize>,
@@ -333,7 +336,18 @@ pub struct PhraseRows {
 const SKETCH_W: i32 = 118;
 const SKETCH_H: i32 = 30;
 
+/// The heading's New idea: `Toggle(NEW_IDEA)` from the list.
+pub const NEW_IDEA: usize = 0;
+/// More like this, on the phrase that plays: `Toggle(MORE_LIKE)` from
+/// [`PhrasePlays`].
+pub const MORE_LIKE: usize = 0;
+
 impl PhraseRows {
+    /// New idea's button, at the right of the heading.
+    pub fn new_idea_button(r: Rect) -> Rect {
+        Rect::new(r.right() - 16 - 110, r.y + 7, 110, 34)
+    }
+
     /// The area for rows: the panel under its heading, less the scroll
     /// bar's side.
     fn body(r: Rect) -> Rect {
@@ -392,33 +406,71 @@ impl Widget for PhraseRows {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.panel(r);
-        // The shelf's name, and where the pick is on it.
+        // The shelf's name, and where the pick is on it: at the right, or
+        // beside the name with New idea at the right.
         let head = Rect::new(r.x + 16, r.y + 6, r.w - 36, 38);
         let count = match (self.picked, self.rows.len()) {
             (_, 0) => String::new(),
             (Some(k), n) => format!("{} of {n}", k + 1),
             (None, n) => format!("{n}"),
         };
-        let cw = cx.text(
-            FontId::Sans,
-            t.size_small,
-            head,
-            Align::Right,
-            t.text_dim,
-            &count,
-        );
-        let name = Rect {
-            w: (head.w - cw - 12).max(1),
-            ..head
-        };
-        cx.text(
-            FontId::Bold,
-            t.size_title + 1.0,
-            name,
-            Align::Left,
-            t.text,
-            &self.title,
-        );
+        if self.new_idea {
+            let b = PhraseRows::new_idea_button(r);
+            cx.canvas.fill_round_rect(b, t.round(10), t.raised);
+            cx.text(
+                FontId::Bold,
+                t.size_small + 1.0,
+                b,
+                Align::Center,
+                t.text,
+                "New idea",
+            );
+            let name = Rect {
+                w: (b.x - 12 - head.x).max(1),
+                ..head
+            };
+            let nw = cx.text(
+                FontId::Bold,
+                t.size_title + 1.0,
+                name,
+                Align::Left,
+                t.text,
+                &self.title,
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                Rect {
+                    x: name.x + nw + 10,
+                    w: (name.w - nw - 10).max(1),
+                    ..name
+                },
+                Align::Left,
+                t.text_dim,
+                &count,
+            );
+        } else {
+            let cw = cx.text(
+                FontId::Sans,
+                t.size_small,
+                head,
+                Align::Right,
+                t.text_dim,
+                &count,
+            );
+            let name = Rect {
+                w: (head.w - cw - 12).max(1),
+                ..head
+            };
+            cx.text(
+                FontId::Bold,
+                t.size_title + 1.0,
+                name,
+                Align::Left,
+                t.text,
+                &self.title,
+            );
+        }
         cx.canvas
             .fill_rect(Rect::new(r.x + 12, r.y + 47, r.w - 24, 1), t.outline);
         let body = PhraseRows::body(r);
@@ -514,18 +566,30 @@ impl Widget for PhraseRows {
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
-        (0..self.rows.len())
+        let mut out: Vec<Target> = (0..self.rows.len())
             .filter_map(|k| {
                 let row = &self.rows[k];
                 let lit = matches!(row.state, RowState::Picked | RowState::Waiting);
                 Some(Target::tap("phrase", k, row.name.clone(), self.row(r, k)?).disabled_if(lit))
             })
-            .collect()
+            .collect();
+        if self.new_idea {
+            out.push(Target::tap(
+                "new-idea",
+                NEW_IDEA,
+                "New idea",
+                PhraseRows::new_idea_button(r),
+            ));
+        }
+        out
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         if phase != Touch::Down {
             return None;
+        }
+        if self.new_idea && PhraseRows::new_idea_button(r).contains(x, y) {
+            return Some(EventKind::Toggle(NEW_IDEA));
         }
         let k = (0..self.rows.len()).find(|&k| self.row(r, k).is_some_and(|b| b.contains(x, y)))?;
         let row = &self.rows[k];
@@ -593,6 +657,11 @@ pub struct Plays {
     pub follow: usize,
     /// The two lines beside that switch: the key, and whose it is.
     pub follows: [String; 2],
+    /// More like this shows on the heading (composing tools P2, board A).
+    pub more: bool,
+    /// The heading in the good colour: a try of New idea or More like
+    /// this ("Try 3 · Back keeps Night drive").
+    pub head_good: bool,
 }
 
 impl Plays {
@@ -608,17 +677,22 @@ impl Plays {
             cursor: _,
             follow,
             follows,
+            more,
+            head_good,
         } = self;
-        (head, waiting, name, about, sketch, follow, follows)
-            == (
-                &other.head,
-                &other.waiting,
-                &other.name,
-                &other.about,
-                &other.sketch,
-                &other.follow,
-                &other.follows,
-            )
+        (
+            head, waiting, name, about, sketch, follow, follows, more, head_good,
+        ) == (
+            &other.head,
+            &other.waiting,
+            &other.name,
+            &other.about,
+            &other.sketch,
+            &other.follow,
+            &other.follows,
+            &other.more,
+            &other.head_good,
+        )
     }
 }
 
@@ -702,6 +776,11 @@ impl PhrasePlays {
         }
     }
 
+    /// More like this's button, at the right of the heading.
+    pub fn more_button(r: Rect) -> Rect {
+        Rect::new(r.right() - 14 - 140, r.y + 10, 140, 34)
+    }
+
     /// Half `i` of the Follows switch (In key, Exact).
     pub fn half(r: Rect, i: usize) -> Rect {
         let s = PhrasePlays::parts(r).switch;
@@ -752,13 +831,34 @@ impl Widget for PhrasePlays {
         if clip.intersect(p.picture) == clip.intersect(r) {
             return;
         }
+        let (head, name) = if s.more {
+            let b = PhrasePlays::more_button(r);
+            cx.canvas.fill_round_rect(b, t.round(10), t.raised);
+            cx.text(
+                FontId::Bold,
+                t.size_small + 1.0,
+                b,
+                Align::Center,
+                t.text,
+                "More like this",
+            );
+            let narrow = |q: Rect| Rect {
+                w: (b.x - 10 - q.x).max(1),
+                ..q
+            };
+            (narrow(p.head), narrow(p.name))
+        } else {
+            (p.head, p.name)
+        };
         cx.text(
             FontId::Bold,
             t.size_small - 1.0,
-            p.head,
+            head,
             Align::Left,
             if s.waiting {
                 t.readable(t.warn, t.surface)
+            } else if s.head_good {
+                t.readable(t.good, t.surface)
             } else {
                 t.text_dim
             },
@@ -767,7 +867,7 @@ impl Widget for PhrasePlays {
         cx.text(
             FontId::Bold,
             t.size_title + 2.0,
-            p.name,
+            name,
             Align::Left,
             t.text,
             &s.name,
@@ -837,11 +937,22 @@ impl Widget for PhrasePlays {
                     .disabled_if(i == self.show.follow)
             })
             .collect();
+        if self.show.more {
+            out.push(Target::tap(
+                "more-like-this",
+                MORE_LIKE,
+                "More like this",
+                PhrasePlays::more_button(r),
+            ));
+        }
         out.extend(self.sliders.targets_in(PhrasePlays::parts(r).sliders));
         out
     }
 
     fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        if phase == Touch::Down && self.show.more && PhrasePlays::more_button(r).contains(x, y) {
+            return Some(EventKind::Toggle(MORE_LIKE));
+        }
         if phase == Touch::Down {
             if let Some(i) =
                 (0..Follow::ALL.len()).find(|&i| PhrasePlays::half(r, i).contains(x, y))
@@ -996,6 +1107,7 @@ pub fn rows(st: &ArpState) -> PhraseRows {
         .collect();
     PhraseRows {
         title: shelf.label().to_string(),
+        new_idea: true,
         picked: list.iter().position(|r| r.index == st.phrase_index),
         rows,
         note: if shelf == Shelf::Own {
@@ -1014,6 +1126,23 @@ pub fn plays(st: &ArpState) -> Plays {
         .position(|f| *f == st.settings.follow)
         .unwrap_or(0);
     let follows = follow_lines(st);
+    // New idea or More like this: its try, which a held pad plays.
+    if let Some((name, p)) = st.maker.as_ref().and_then(|m| m.shown.as_ref()) {
+        return Plays {
+            head: st
+                .maker
+                .as_ref()
+                .map_or_else(String::new, |m| m.head.clone()),
+            head_good: true,
+            name: name.clone(),
+            about: about(p),
+            sketch: Sketch::of(p),
+            cursor: st.phrase.at,
+            follow,
+            follows,
+            ..Plays::default()
+        };
+    }
     let Some((name, p)) = st.phrases.phrases.get(st.phrase_index) else {
         return Plays {
             head: "Plays".to_string(),
@@ -1038,6 +1167,8 @@ pub fn plays(st: &ArpState) -> Plays {
         cursor: if waiting { None } else { st.phrase.at },
         follow,
         follows,
+        more: st.maker.is_none(),
+        head_good: false,
     }
 }
 
@@ -1180,8 +1311,9 @@ mod tests {
             let row = list.row(r, k).unwrap();
             assert!(row.h >= 44 && row.y > r.y && row.bottom() <= r.bottom());
         }
+        // The rows in view, and New idea in the heading.
         let w = s.ui.get::<PhraseRows>(PHRASES).unwrap();
-        assert_eq!(w.targets(r).len(), seen.len());
+        assert_eq!(w.targets(r).len(), seen.len() + 1);
         assert_eq!(*w, list, "the panel shows the model");
     }
 
@@ -1541,5 +1673,90 @@ mod tests {
         s.page.update(&mut s.ui, &st).unwrap();
         let w = s.ui.get::<PhrasePlays>(PLAYS).unwrap();
         assert_eq!(w.changed_parts(r), None);
+    }
+
+    /// Board A: New idea in the list's heading, More like this on the
+    /// phrase that plays, each a fingertip tall and each asking the app.
+    #[test]
+    fn new_idea_and_more_like_this_open_from_the_tab() {
+        let mut s = sample("phrase-browse");
+        let list = s.ui.rect_of(PHRASES).unwrap();
+        let plays_r = s.ui.rect_of(PLAYS).unwrap();
+        let b = PhraseRows::new_idea_button(list);
+        assert!(list.contains(b.x, b.y) && b.h >= 34 && b.right() < list.right());
+        let ev = tap(&mut s.ui, b).unwrap();
+        assert_eq!(
+            s.page.action(&ev, &s.state, &mut None),
+            Some(ArpAction::NewIdea)
+        );
+        let m = PhrasePlays::more_button(plays_r);
+        assert!(plays_r.contains(m.x, m.y) && m.right() < plays_r.right());
+        let ev = tap(&mut s.ui, m).unwrap();
+        assert_eq!(
+            s.page.action(&ev, &s.state, &mut None),
+            Some(ArpAction::MoreLike)
+        );
+        assert!(plays(&s.state).more);
+    }
+
+    /// Boards B and C: the panel takes the list's place, the detail panel
+    /// shows the try in the good colour, and the panel's touches ask the
+    /// app.
+    #[test]
+    fn the_makers_panel_takes_the_lists_place_and_shows_its_try() {
+        use crate::maker::{PhraseMaker, MAKER};
+        use crate::view::MakerAction;
+        for name in ["phrase-new-idea", "phrase-more-like"] {
+            let mut s = sample(name);
+            assert!(s.ui.rect_of(PHRASES).is_none(), "{name}");
+            let panel = s.ui.rect_of(MAKER).expect("the maker's panel");
+            let kinds = s.ui.rect_of(KINDS).unwrap();
+            let plays_r = s.ui.rect_of(PLAYS).unwrap();
+            assert_eq!(
+                (panel.x, panel.right()),
+                (kinds.right() + 12, plays_r.x - 12)
+            );
+            let p = plays(&s.state);
+            let m = s.state.maker.as_ref().unwrap();
+            assert!(p.head_good && !p.more);
+            assert_eq!(p.name, m.shown.as_ref().unwrap().0);
+            assert_eq!(p.head, m.head);
+            assert_eq!(hint_for(&s.state), crate::view::MAKER_HINT);
+            let w = s.ui.get::<PhraseMaker>(MAKER).unwrap();
+            let g = w.geo(panel);
+            let last = g.steppers.len() - 1;
+            let st = s.state.clone();
+            let s1 = g.steppers[last];
+            let ev = tap(&mut s.ui, Rect::new(s1.right() - 30, s1.y, 20, s1.h)).unwrap();
+            assert_eq!(
+                s.page.action(&ev, &st, &mut None),
+                Some(ArpAction::Maker(MakerAction::Step {
+                    row: last,
+                    delta: 1
+                }))
+            );
+            let want = [
+                MakerAction::TryAgain,
+                MakerAction::Previous,
+                MakerAction::Back,
+                MakerAction::Keep,
+            ];
+            for (k, b) in g.buttons.iter().enumerate() {
+                let ev = tap(&mut s.ui, *b).unwrap();
+                assert_eq!(
+                    s.page.action(&ev, &st, &mut None),
+                    Some(ArpAction::Maker(want[k]))
+                );
+            }
+            let ev = tap(&mut s.ui, g.close).unwrap();
+            assert_eq!(
+                s.page.action(&ev, &st, &mut None),
+                Some(ArpAction::Maker(MakerAction::Back))
+            );
+            // Closed, the list is back.
+            s.state.maker = None;
+            s.page.update(&mut s.ui, &s.state).unwrap();
+            assert!(s.ui.rect_of(MAKER).is_none() && s.ui.rect_of(PHRASES).is_some());
+        }
     }
 }
