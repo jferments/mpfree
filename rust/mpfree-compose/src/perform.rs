@@ -118,6 +118,10 @@ impl InstrumentKind {
     }
 }
 
+/// The most a note moves with the phrase, in ms: inside contract 3's
+/// ±30 ms.
+const LIMIT_MS: f64 = 28.0;
+
 /// What [`shape`] plays the new notes from.
 pub struct Shaping<'a> {
     pub sketch: &'a Sketch,
@@ -258,6 +262,7 @@ pub fn shape(part: &mut Part, events: &[Event], style: &Style, sh: &Shaping) {
         return;
     }
     let sk = sh.sketch;
+    let brief = sk.character.brief();
     let bar = sh.meter.bar_ticks().max(1);
     let beat = sh.meter.beat_ticks().max(1);
     let k = f64::from(part.kind.profile().velocity_response);
@@ -311,8 +316,17 @@ pub fn shape(part: &mut Part, events: &[Event], style: &Style, sh: &Shaping) {
             let breath = next.is_none_or(|nx| nx - t >= beat);
             if t == e && ph.onsets.len() >= 2 && breath {
                 let full = last_phrase && home;
-                off += f64::from(ex.last_ms) * depth * if full { 1.0 } else { 0.5 };
+                off += f64::from(ex.last_ms)
+                    * depth
+                    * if full { 1.0 } else { 0.5 }
+                    * f64::from(brief.last);
             }
+            // A character: the last note on time (Restrained), every note
+            // pushing ahead (Urgent); within contract 3's 30 ms.
+            if brief.last <= 0.0 && last_phrase && t == e {
+                off = 0.0;
+            }
+            off = (off + f64::from(brief.push_ms) * depth).clamp(-LIMIT_MS, LIMIT_MS);
 
             // Loudness: the phrase's arch in place of the fixed four-bar
             // rise and fall, the high point leaning a little more.
@@ -323,7 +337,7 @@ pub fn shape(part: &mut Part, events: &[Event], style: &Style, sh: &Shaping) {
             let mut dv = depth * a * weight * range * 0.9 * k * f64::from(ex.dynamics)
                 - depth.min(1.0) * fixed;
             if ph.peak && t == ph.climax {
-                dv += 4.0 * k * depth;
+                dv += 4.0 * k * depth * (1.0 + f64::from(brief.lean));
             }
 
             // Length.
@@ -384,7 +398,9 @@ pub fn shape(part: &mut Part, events: &[Event], style: &Style, sh: &Shaping) {
                     d.len = ((d.len as f64 * 0.8) as Tick).max(STEP / 3);
                 }
                 if ph.peak && t == ph.climax {
-                    let longer = (d.len as f64 * if mono { 1.15 } else { 1.1 }) as Tick;
+                    let longer = (d.len as f64
+                        * (if mono { 1.15 } else { 1.1 } + 0.15 * f64::from(brief.lean)))
+                        as Tick;
                     d.len = match gap {
                         Some(gp) if mono => longer.min(gp).max(d.len.min(gp)),
                         _ => longer,
@@ -399,6 +415,7 @@ pub fn shape(part: &mut Part, events: &[Event], style: &Style, sh: &Shaping) {
 pub(crate) mod tests {
     use super::*;
     use crate::event::{Motion, NoteDecision, PartId, Role, Source};
+    use crate::settings::Character;
     use crate::sketch::Anchor;
     use crate::style::{GROOVE, MINIMAL};
     use crate::timing::Timing;
@@ -437,6 +454,8 @@ pub(crate) mod tests {
             ],
             rests: Vec::new(),
             surprise: None,
+            character: Character::AsStyle,
+            tone: 0.0,
         }
     }
 

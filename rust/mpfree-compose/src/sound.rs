@@ -199,7 +199,9 @@ pub fn sound_moves(
             } else {
                 0.0
             };
-            push(Control::Brightness, t, b as f32 * depth * reach.brightness);
+            // An aimed try's Less bright or Brighter moves every note's.
+            let b = b as f32 + sh.sketch.tone;
+            push(Control::Brightness, t, b * depth * reach.brightness);
             // Length and space: the phrase's last note before a breath.
             let gap = next.map(|nx| nx - t);
             let breath = gap.is_none_or(|g| g >= beat);

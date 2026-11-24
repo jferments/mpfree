@@ -464,6 +464,29 @@ pub fn try_bars(
     })
 }
 
+/// An aimed try (S5): the new bars `bars` (every new bar when empty) tried
+/// again changing one thing, the rest kept ([`crate::draft::try_aimed`]).
+/// A result with no phrase plan (a beat's) gets a fresh try of the same
+/// bars.
+pub fn try_aimed(
+    req: &Continue,
+    before: &Continued,
+    aim: crate::settings::Aim,
+    bars: &[usize],
+    attempt: u16,
+) -> Result<Continued, Refused> {
+    if let Some(sk) = &before.sketch {
+        return crate::draft::try_aimed(req, before, sk, aim, bars, attempt);
+    }
+    let all: Vec<usize> = (your_bars(req)..before.plan.len()).collect();
+    try_bars(
+        req,
+        before,
+        if bars.is_empty() { &all } else { bars },
+        attempt,
+    )
+}
+
 /// Try the picked new notes again: `picked` are notes of the clip as it is
 /// heard with `before` (where each is written, in the clip's ticks, and
 /// its note). Each gets another note in its place where one fits, played
