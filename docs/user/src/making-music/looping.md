@@ -197,6 +197,8 @@ When the Looper records the line input or a mix (**Records from**), Smart loop e
 
 The beat you played still helps count the bars when Smart loop end is Off.
 
+The log says what Smart loop end decided about each closing tap, and how sure it was of four things, told apart: the end, the bars, the tempo and the start ("how sure: the end clear, the bars a close call, the tempo from the length alone, the start on your first hit"). The bars can be a close call even when the end is clear.
+
 The chip lasts until you keep a side (below), or the loop changes in another way: an overdub, an edit, a trim.
 
 With your hands on an instrument, a footswitch can do the chip's job: learn one on **Snap** and one on **Use my tap** in the mixer's Learn section (see [A footswitch](#a-footswitch)).

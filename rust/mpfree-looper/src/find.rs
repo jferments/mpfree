@@ -290,5 +290,6 @@ pub fn late(ask: &Ask) -> Decision {
         second: None,
         tap,
         lead: 0,
+        opened: false,
     }
 }
