@@ -266,30 +266,30 @@ filters/sampler Comb[audio-rate cutoff]/over_held_peak_db	0.0944
 filters/sampler Comb[audio-rate resonance]/over_held_peak_db	-2.8122
 filters/sampler Comb[envelope]/over_held_peak_db	0.0944
 filters/sampler Comb[envelope]/step_noise_db	1.0365
-filters/sampler Ladder[10 kHz, resonance 0.5]/below_cutoff_err_db	1.4535
-filters/sampler Ladder[10 kHz, resonance 0.5]/err_18_20k_db	42.6347
-filters/sampler Ladder[10 kHz, resonance 0.9]/below_cutoff_err_db	3.4519
-filters/sampler Ladder[10 kHz, resonance 0.9]/err_18_20k_db	42.7453
-filters/sampler Ladder[10 kHz, resonance 0]/below_cutoff_err_db	1.1183
-filters/sampler Ladder[10 kHz, resonance 0]/err_18_20k_db	42.4448
-filters/sampler Ladder[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	7.4963
-filters/sampler Ladder[110 Hz to 7 kHz, resonance 1]/sing_growth_worst_db	0.0001
-filters/sampler Ladder[110 Hz to 7 kHz, resonance 1]/sing_worst_cents	-0.0927
-filters/sampler Ladder[15 kHz, resonance 0.5]/below_cutoff_err_db	3.642
-filters/sampler Ladder[15 kHz, resonance 0.5]/err_18_20k_db	29.9366
-filters/sampler Ladder[15 kHz, resonance 0.9]/below_cutoff_err_db	8.6078
-filters/sampler Ladder[15 kHz, resonance 0.9]/err_18_20k_db	31.7487
-filters/sampler Ladder[15 kHz, resonance 0]/below_cutoff_err_db	2.928
-filters/sampler Ladder[15 kHz, resonance 0]/err_18_20k_db	27.7308
-filters/sampler Ladder[5 kHz, resonance 0.5]/below_cutoff_err_db	0.3388
-filters/sampler Ladder[5 kHz, resonance 0.9]/below_cutoff_err_db	0.8116
-filters/sampler Ladder[5 kHz, resonance 0]/below_cutoff_err_db	0.2584
-filters/sampler Ladder[LFO]/over_held_peak_db	-0.0736
+filters/sampler Ladder[10 kHz, resonance 0.5]/below_cutoff_err_db	0.337
+filters/sampler Ladder[10 kHz, resonance 0.5]/err_18_20k_db	4.3488
+filters/sampler Ladder[10 kHz, resonance 0.9]/below_cutoff_err_db	0.8093
+filters/sampler Ladder[10 kHz, resonance 0.9]/err_18_20k_db	4.4573
+filters/sampler Ladder[10 kHz, resonance 0]/below_cutoff_err_db	0.2601
+filters/sampler Ladder[10 kHz, resonance 0]/err_18_20k_db	4.1815
+filters/sampler Ladder[100 Hz to 10 kHz, resonance 0.9]/peak_worst_cents	2.0148
+filters/sampler Ladder[110 Hz to 7 kHz, resonance 1]/sing_growth_worst_db	-0.0002
+filters/sampler Ladder[110 Hz to 7 kHz, resonance 1]/sing_worst_cents	-2.762
+filters/sampler Ladder[15 kHz, resonance 0.5]/below_cutoff_err_db	0.7831
+filters/sampler Ladder[15 kHz, resonance 0.5]/err_18_20k_db	2.7524
+filters/sampler Ladder[15 kHz, resonance 0.9]/below_cutoff_err_db	1.8667
+filters/sampler Ladder[15 kHz, resonance 0.9]/err_18_20k_db	3.4786
+filters/sampler Ladder[15 kHz, resonance 0]/below_cutoff_err_db	0.6019
+filters/sampler Ladder[15 kHz, resonance 0]/err_18_20k_db	2.0149
+filters/sampler Ladder[5 kHz, resonance 0.5]/below_cutoff_err_db	0.0929
+filters/sampler Ladder[5 kHz, resonance 0.9]/below_cutoff_err_db	0.1989
+filters/sampler Ladder[5 kHz, resonance 0]/below_cutoff_err_db	0.093
+filters/sampler Ladder[LFO]/over_held_peak_db	-0.0554
 filters/sampler Ladder[LFO]/step_noise_db	0.0001
-filters/sampler Ladder[audio-rate cutoff]/over_held_peak_db	0.0215
-filters/sampler Ladder[audio-rate resonance]/over_held_peak_db	-7.6284
-filters/sampler Ladder[envelope]/over_held_peak_db	2.9348
-filters/sampler Ladder[envelope]/step_noise_db	2.6678
+filters/sampler Ladder[audio-rate cutoff]/over_held_peak_db	-0.5881
+filters/sampler Ladder[audio-rate resonance]/over_held_peak_db	-6.2345
+filters/sampler Ladder[envelope]/over_held_peak_db	2.3281
+filters/sampler Ladder[envelope]/step_noise_db	2.2796
 filters/sampler Peak[10 kHz, resonance 0.5]/below_cutoff_err_db	0
 filters/sampler Peak[10 kHz, resonance 0.5]/err_18_20k_db	0
 filters/sampler Peak[10 kHz, resonance 0.9]/below_cutoff_err_db	0

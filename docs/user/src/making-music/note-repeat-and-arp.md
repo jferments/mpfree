@@ -125,20 +125,21 @@ Each row has a picture of the pattern's first bar, so you can see its rhythm bef
 
 Every pattern plays the notes you hold, so it follows your chord. [Arp patterns](../reference/arp-patterns.md) lists all 74 and what each one plays.
 
-Under the list, four buttons work on the pattern:
+Under the list, five buttons work on the pattern:
 
 - **Edit pattern** opens the pattern workspace (below).
 - **Record on pads** opens the workspace and records a new pattern from the pads.
 - **Mutate** changes some of the pattern's steps at random. Press it again for more.
 - **Original** puts back the pattern as it was in the list.
+- **Keep as a phrase** puts the pattern, as it plays on one held note, on the Phrase tab's **Yours** under the pattern's name (Gallop, or Gallop 2 when you have one), with its rhythm, accents, octaves and gate. It is for a pattern that plays one note whatever you hold, such as Gallop (`x x . x`); one that picks your second or third note, or walks the scale, would become the same note over and over, so the button is faint there.
 
 ### Phrases
 
 A **phrase** is a short piece of music, a bar or two long, that plays from the note you hold: a bass line, a riff, a run of chords or an arp line, with its own rhythm, long and short notes and accents. Hold one pad on a synth track and the whole phrase plays from that pad's note, round and round. Hold another pad and it carries on from there, without losing its place. It is the quickest way from one finger to a part that sounds written. Hold a chord of three notes or more and the phrase plays over the chord itself: a riff written over C minor takes F major's notes when you hold F major (its root, third and fifth, and the notes between them from F major's scale). A chord played a little unevenly counts as one change: the phrase follows it about 30 ms after its last note.
 
-{{shot: arp-phrase | The Phrase tab: the kinds of phrase on the left, the basses in the middle with Night drive picked, and on the right its notes over two bars with a line where it is playing, what it follows, and the four Q-Link settings.}}
+{{shot: arp-phrase | The Phrase tab: the kinds of phrase on the left, the basses in the middle with Night drive picked, and on the right the Plays row (While I hold), its notes over two bars with a line where it is playing, the moves Hold, Evolve, Return and Capture, what it follows, and the four Q-Link settings.}}
 
-MPFree comes with 64 phrases of its own, 16 of each kind: **Bass**, **Riff**, **Chords** and **Arp lines**. **Yours** is for phrases of your own. It is empty until you have one, and making them on the screen comes next.
+MPFree comes with 64 phrases of its own, 16 of each kind: **Bass**, **Riff**, **Chords** and **Arp lines**. **Yours** is for phrases of your own: the ones you make with **New idea**, **More like this** and **Make a phrase** (below), and patterns you keep with **Keep as a phrase** on the Pattern tab, go there.
 
 1. Open the Arp panel on a synth track and tap **Phrase**.
 2. Tap a kind on the left, then a phrase in the list, or turn the data wheel.
@@ -157,12 +158,85 @@ Tapping a kind, or stepping to it with **–** and **+**, also picks a phrase of
 
 In the list, each phrase shows its length and its notes drawn small. The phrases that suit the key you are in come first. One written for the other kind of scale (a major phrase while you play in minor) comes after them, faint, and says which scale it was written in. It still plays, moved onto your key.
 
-**Follows**, under the phrase's picture, sets how the phrase finds its notes:
+#### Evolve, Hold, Return and Capture
+
+Under the phrase's picture, four moves change it as it plays:
+
+- **Evolve** changes a little of the phrase every 4 bars: a few of its notes, never its rhythm and never its last note, so it still comes round as it did. Each change builds on the last, so the phrase wanders a little at a time. The notes the next change brings are outlined in the picture, and the line above the moves counts the bars to it.
+- **Hold** keeps the phrase as it plays now. It is what a phrase does until you tap Evolve.
+- **Return** goes back to the phrase as you picked it.
+- **Capture** keeps the last bars you played as a clip, as **SHIFT** + **REC** does.
+
+Picking another phrase starts it again from that phrase as written; Evolve stays on. The line above the moves also says what the phrase plays over: the chord you hold, by name, or the note.
+
+{{shot: arp-phrase-evolve | The Phrase tab with Minor hook latched over F major and Evolve on: the line reads Over F major, the chord you hold, and evolves in a few bars; the notes the next change brings are outlined.}}
+
+The **Plays** row picks when the phrase plays: **While I hold** is what this section describes. **When I stop** is call and response, below.
+
+#### When I stop: MPFree answers you
+
+Tap **When I stop** on the Plays row and the pads play as pressed. Play a phrase and stop: after a beat of quiet, MPFree answers it from the next bar line, in the track's sound. Play again while it answers and it stops at once, and your notes start the next call.
+
+The list's place shows **Call and answer**: what you played, then the answer, solid where it has played and outlined where it is still to come. Under it the turn light says whose turn it is: You played, Quiet, Answer, Your turn.
+
+The panel beside it sets how it answers:
+
+- **Mode**: **Echo** plays your phrase back a little changed, with your rhythm and the same ending. **Answer** replies with your rhythm, its own notes and the ending turned round: a call that leaves things open gets an answer that lands home, and the other way round. **Trade** takes turns: you play for a few bars, it answers for as many, then it is your turn again.
+- **Answers for**: **Like mine** answers for as long as you played (1, 2 or 4 bars); **1 bar**, **2 bars** or **4 bars** whatever you played. In Trade this row is **Turns**: how long each turn is.
+- **Key** is the key MPFree heard your phrase in. **Starts** says when the answer comes.
+- **Answer now** ends your call at once: the answer starts on the next beat, not the next bar.
+- **Capture both as a clip** keeps your call and its answer as one clip, as **SHIFT** + **REC** does.
+- **Q-Links 1 to 3** (and the sliders under the buttons): **Variation** from steady to restless, **Activity** from sparser through like mine to busier, **Range** narrow, medium or wide. They shape the next answer. Q-Link 4 does nothing here.
+
+{{shot: arp-phrase-answer | The Phrase tab with When I stop: a call of five notes in bar 1 and MPFree's answer in bar 2, playing, with the turn light on Answer.}}
+
+Tap **While I hold** to go back to the list: a held note plays the phrase again.
+
+**Follows**, under the moves, sets how the phrase finds its notes:
 
 - **In key** moves the phrase onto a scale, so every note belongs. It follows the arp's own **Scale** if you set one (see [Arp options](#arp-options)), otherwise the scale the pads play; the key is named beside the switch. With no scale anywhere it plays by semitones, as Exact does.
 - **Exact** plays the phrase's notes as written, counted in semitones from the note you hold, whatever the key.
 
 A phrase written in triplets is never swung: its Swing slider goes faint and reads "straight". **Speed**, Gate, Swing and Octaves each learn a knob: hold **SHIFT**, touch the slider, then move the knob, and the knob steps Speed through half, as written and double. The same goes for the [XY pad](xy-layouts.md#the-arp-on-the-pad): a layout of yours can hold a phrase's Speed, Gate, Swing and Octaves, and Let go: Stay keeps the speed your finger left. A layout that holds the arp's Rate also plays a phrase faster or slower while your finger is down, and the phrase goes back to its own speed when you lift, even with Let go: Stay.
+
+#### New ideas, and more like this
+
+MPFree can write a phrase for you. **New idea**, at the right of the list's heading, makes a new one to order; **More like this**, at the right of the phrase's heading, makes another from the phrase you have. Either opens a panel where the list was, makes a first try at once, and the try plays from the pad you hold (or the one latched), so you hear each one as it comes. Nothing changes until you keep one.
+
+{{shot: arp-phrase-new-idea | New idea open on the Phrase tab: Kind Bass, Style Groove, 2 bars, Activity Middle; the third try shows on the right under "Try 3 · Back keeps Night drive", and plays from the latched pad.}}
+
+1. On the Phrase tab, tap **New idea**. It opens on the kind the list shows.
+2. Change the rows with their **‹** and **›**, or turn the data wheel to a row and press **–** or **+**: **Kind** (Bass, Riff, Chords, Arp lines), **Style** (Minimal, Groove, Jazz-ish), **Bars** (1, 2 or 4) and **Activity** (Sparse to Very busy). Each change makes a new try.
+3. **Try again** makes another with the same choices. **‹ Try 2** goes back to an earlier one: the last eight are kept while the panel is open.
+4. **Keep** puts the try on **Yours** under the name the panel says ("Groove bass 1"), and the track plays it. **Back** or **×** closes the panel and the track's phrase plays again, as it was.
+
+The phrase is written for the key it follows (minor or major, as the line under the rows says), and In key moves it onto that key as it does every phrase. The Q-Links still set its speed, gate, swing and octaves while you try.
+
+{{shot: arp-phrase-more-like | More like this from Night drive: Change New notes (its rhythm, with new notes), Style Groove; the second try plays, and Keep would put it on Yours as Night drive 2.}}
+
+**More like this** has two rows. **Change** says what changes: **New notes** keeps the phrase's rhythm and gives it new notes, **New rhythm** keeps its notes and plays them on a new rhythm, **Up a step** moves every note a step up its scale, **Upside down** turns it over (a step up becomes a step down), and **First half twice** plays its first half again in place of its second. **Style** is for New notes and New rhythm. The last three changes come out one way, so Try again has nothing more to give there. A phrase that isn't in 4/4 on a plain grid, or is longer than four bars, can be changed the last three ways only, and the panel says so. Keep names it after the phrase ("Night drive 2").
+
+Going to another tab, page or track closes the panel as Back does. A phrase you keep is saved with your other phrases (with a data folder on the stick), so it is there at the next start.
+
+#### Make a phrase
+
+A clip of notes you played or drew, or a MIDI file, can become a phrase of your own, which the arp then plays from any note you hold, as it plays MPFree's.
+
+- **From a clip:** on **Arrange**, open the clip's card (the Record panel's **Clip** tab) and step its **Phrase** row (**Make ›**) with either arrow: the **Make a phrase** sheet opens in the card's place.
+- **From a MIDI file:** press **BROWSE**, pick the file and tap **Make a phrase** beside **Load**: the sheet opens over the **Selected** panel, made from the file's first track with notes, from its start. Nothing is loaded into the song.
+
+{{shot: clips-card-phrase | The clip card scrolled to its last row, Phrase, which reads Make › on a clip of notes.}}
+
+{{shot: clips-make-phrase | Make a phrase open from Clip 1: a picture of the phrase, heard in C minor on 1/16s, Kind Bass and Home C2, and Keep puts it on Yours as Clip 1.}}
+
+{{shot: browser-make-phrase | Make a phrase open over the browser's Selected panel, made from Bassline.mid on the SD card: Keep puts it on Yours as Bassline.}}
+
+The sheet reads everything from the notes: the key they were heard in, the grid they sit on, how long the phrase is (the clip's bars, up to eight), what **Kind** of phrase it is, and its **Home**, the note it is written from. Hold a pad and the phrase plays from that note at once: holding C2 plays it as you played it, holding G2 plays it from G.
+
+1. If the sheet read something differently from how you mean it, change **Kind** (Bass, Riff, Chords, Arp lines) or **Home** with their **‹** and **›**, or turn the data wheel to a row and press **–** or **+**. The phrase is made again at once, and the line under the rows says what the notes said.
+2. **Keep** puts it on the Phrase tab's **Yours** under the clip's name ("Clip 1"; if you already have one called that, "Clip 1 2") or the file's ("Bassline"), and the armed track plays it. **Back** or **×** closes the sheet and nothing changes.
+
+A clip of pad hits has no notes of its own (a pad's note is whatever its kit plays), so its Phrase row says **no tune**; a MIDI file with no notes says so on the line under the screen; a phrase counts its bars in quarter notes, so notes in 6/8 make none, and the sheet says so. Going to another page or track closes the sheet as Back does. **Make a phrase** is in the full browser (**BROWSE**) only: the Pads tab's browser has no room for the sheet.
 
 #### Changing phrase while one plays
 

@@ -2310,6 +2310,7 @@ fn row5_part(
         settings: pick.settings(),
         bars: pick.bars,
         attempt: 1,
+        phrase: pick.phrase_of().map(|(_, p)| p),
     };
     let job = AddPartJob::new(&s.project, ask);
     let made = job.run().result.map_err(|e| format!("add a part: {e:?}"))?;
@@ -2370,6 +2371,40 @@ pub fn add_part_new_track_state() -> Result<(TimeState, crate::add_view::AddPick
         state: AddState::Playing,
         made: Some(std::sync::Arc::new(made)),
         position: Some((1, 1)),
+        line: None,
+        picked: None,
+        words: None,
+        part: pick.part,
+        relation: pick.relation,
+    }));
+    st.row_chords = Some((ADD_ROW, std::sync::Arc::new(heard)));
+    Ok((st, pick))
+}
+
+/// Add a part on a phrase (P2, board H): the panel on row 5 with its
+/// Style row run on past Jazz-ish to MPFree's Night drive, the bass line
+/// played over the row's chords, its second try playing in the Bass
+/// track's cell.
+pub fn add_part_phrase_state() -> Result<(TimeState, crate::add_view::AddPick), String> {
+    use crate::adding::{AddState, Adding};
+    let s = row5_playing()?;
+    let mut st = s.state();
+    st.scene_focus = ADD_ROW;
+    let mut pick = crate::add_view::AddPick::open(&st, ADD_ROW, Some(ADD_BASS))?;
+    pick.phrases = mpfree_arp_ui::PhraseList::built_in().phrases.into();
+    let night = pick
+        .phrases
+        .iter()
+        .position(|(n, _)| n == "Night drive")
+        .ok_or("no Night drive")?;
+    pick.phrase = Some(night);
+    let (made, heard) = row5_part(&s, &pick)?;
+    st.adding = Some(std::sync::Arc::new(Adding {
+        row: ADD_ROW,
+        track: ADD_BASS,
+        state: AddState::Playing,
+        made: Some(std::sync::Arc::new(made)),
+        position: Some((2, 2)),
         line: None,
         picked: None,
         words: None,

@@ -174,6 +174,14 @@ impl PlayView {
             .replace(&format!("{THROWS}:196"), &format!("{INSPECTOR}:196"))
     }
 
+    /// Beats with Continue open (composing step 4): the bar strip in the
+    /// timing strip's place and the Continue panel in the throws' (the
+    /// step editor's), whether the timing strip is on or not.
+    pub fn continue_layout() -> String {
+        use crate::steps_continue::{BARS, BARS_H, PANEL, PANEL_H};
+        frame(&format!("{STEPS}:*, {BARS}:{BARS_H}, {PANEL}:{PANEL_H}"))
+    }
+
     /// The view while NOTE REPEAT is held or pads are latched.
     pub fn quick_layout(self) -> String {
         self.quick_layout_for(false)
@@ -4113,6 +4121,7 @@ mod tests {
             locks: Vec::new(),
             lock_values: Vec::new(),
             silent: None,
+            new_from: None,
         });
         p
     }

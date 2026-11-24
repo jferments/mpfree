@@ -14,10 +14,13 @@
 //!   ([`multi::SlopeStages`]).
 //! - [`onepole`]: the one-pole stage (6 dB an octave) an odd slope starts
 //!   with.
+//! - [`ladder`]: the transistor ladder with a curve in every stage, solved
+//!   once a sample by tangents (the pads' Ladder since step F6).
 //!
 //! No allocation and no dependencies: every call is safe on the audio
 //! thread.
 
+pub mod ladder;
 pub mod multi;
 pub mod onepole;
 pub mod svf;

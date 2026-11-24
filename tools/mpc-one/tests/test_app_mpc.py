@@ -1304,6 +1304,10 @@ class StaticTests(unittest.TestCase):
                     # The host-only Pads tab picture (--preview and --display-lists, never on the MPC): the scratch
                     # library pads_browse made a moment before in the workstation's temp folder, removed again.
                     ("mpfree-app/gui.rs", "let _ = std::fs::remove_dir_all(&dir);"),
+                    # The host-only sample screens browser-midi and browser-make-phrase (--preview, never on the
+                    # MPC; composing tools, 24 Nov 2026): Bassline.mid written into the stand-in card folder that
+                    # browser_midi makes in the workstation's temp folder (removed again, the line above).
+                    ("mpfree-app/gui.rs", "std::fs::write(card.join(\"Bassline.mid\"), &bytes).map_err(|e| e.to_string())?;"),
                     # The safe start (crash.rs): /run/mpfree-app/running, in RAM beside the report, holds the pid
                     # while the app runs and says "ended" when the run ends well; a stop's handler unlinks it
                     # (sys.rs, below).

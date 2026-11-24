@@ -45,7 +45,7 @@ mod tunings_page;
 
 pub use add_sound::AddSound;
 pub use arp::{
-    built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, WorkspaceView, ARP_HEADER,
+    built_in_patterns, mode_label, ArpItem, ArpView, LiveMap, MakeFrom, WorkspaceView, ARP_HEADER,
 };
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
@@ -1900,6 +1900,22 @@ pub struct App {
     /// The phrase last picked on each kind's shelf, so stepping back to a
     /// kind returns to it (`app/arp/phrases.rs`).
     phrase_last: [Option<usize>; mpfree_arp_ui::phrases::Shelf::ALL.len()],
+    /// New idea or More like this, while open on the Phrase tab
+    /// (`app/arp/maker.rs`).
+    maker: Option<arp::Maker>,
+    /// The Make a phrase sheet, while open on Arrange or in the browser
+    /// (`app/arp/make.rs`).
+    sheet: Option<arp::Sheet>,
+    /// The choices New idea and More like this keep between openings.
+    maker_set: arp::MakerSet,
+    /// Counts New idea and More like this's openings: each asks the
+    /// composer with the next seed, so each opening's tries are new.
+    maker_seed: u64,
+    /// Improvise on the Phrase tab: the Plays row and Evolve
+    /// (`app/arp/improvise.rs`).
+    improvise: arp::Improvise,
+    /// The Phrase tab's When I stop: Answer (`app/arp/answer.rs`).
+    answer: arp::Answer,
     /// The pads play the shared synth on their own (main.rs
     /// `PadsPreview::Synth`), whose pads press notes, so the pads' arp
     /// plays the armed track's phrase there ([`App::set_pads_own`]).
@@ -2203,6 +2219,12 @@ impl App {
             phrase_index: 0,
             phrase_shelf: None,
             phrase_last: [None; mpfree_arp_ui::phrases::Shelf::ALL.len()],
+            maker: None,
+            sheet: None,
+            maker_set: arp::MakerSet::default(),
+            maker_seed: 0,
+            improvise: arp::Improvise::default(),
+            answer: arp::Answer::default(),
             pads_own_notes: false,
             pads_phrase_at: None,
             pattern,
@@ -3961,6 +3983,12 @@ impl App {
             // SHIFT + the wheel's push: the outlined value back to its
             // default (the button combos of 19 Nov).
             fx.push(Effect::Reset);
+        } else if Some(note) == self.map.data_push
+            && self.sheet.is_some()
+            && matches!(self.view, View::Arrange | View::Browser)
+        {
+            // The Make a phrase sheet: the push does nothing (Keep is a
+            // tap), so it never loads or picks what is under the sheet.
         } else if Some(note) == self.map.data_push && self.browsing() {
             fx.push(Effect::Browse(BrowseKey::Push));
         } else if Some(note) == self.map.data_push && self.view == View::SystemStatus {
@@ -4001,6 +4029,9 @@ impl App {
                 fx.extend(self.arp_mode_step(d));
             } else if self.view == View::Synth && shift {
                 fx.push(Effect::SynthPage(d));
+            } else if self.sheet.is_some() && matches!(self.view, View::Arrange | View::Browser) {
+                // The Make a phrase sheet: the wheel's row.
+                fx.extend(self.sheet_action(mpfree_arp_ui::make_sheet::SheetAction::Change(d)));
             } else if self.browsing() {
                 fx.push(Effect::Browse(if d > 0 {
                     BrowseKey::Enter
@@ -4478,6 +4509,10 @@ impl App {
             View::Touch => vec![Effect::TouchWheel(delta)],
             // NOTE REPEAT held or the Arp panel: the rate, order or pattern.
             _ if self.repeat_held || self.view == View::Arp => self.arp_wheel(delta),
+            // The Make a phrase sheet, on Arrange or in the browser: its row.
+            View::Arrange | View::Browser if self.sheet.is_some() && !self.shift => {
+                self.sheet_action(mpfree_arp_ui::make_sheet::SheetAction::Wheel(delta))
+            }
             // The 16 Levels panel: what the levels change.
             View::Play if self.levels_open => vec![Effect::LevelsWheel(delta)],
             // SHIFT + wheel keeps each page's second job: scroll Arrange,
@@ -4785,6 +4820,13 @@ impl App {
     /// workspace stops recording.
     fn after_view_change(&mut self) -> Vec<Effect> {
         let mut fx = Vec::new();
+        // New idea or More like this lives on the Arp panel: another page
+        // closes it, as Back.
+        if self.view != View::Arp {
+            fx.extend(self.close_maker());
+        }
+        // So does the Make a phrase sheet on another page than its own.
+        fx.extend(self.sheet_follows_view());
         if self.view != View::Pattern && self.recorder.is_some() {
             fx.extend(self.set_recording(false));
         }

@@ -1144,6 +1144,7 @@ pub(crate) fn draft_with(
             to,
             sketch: Some(sk.clone()),
             critic: Vec::new(),
+            fills: Vec::new(),
         },
         sketch: sk,
         verdict,
@@ -1324,6 +1325,7 @@ fn refill(
         to: before.to,
         sketch: Some(sk.clone()),
         critic: Vec::new(),
+        fills: Vec::new(),
     })
 }
 
@@ -1564,6 +1566,7 @@ fn register(
             notes: clip,
             to: before.to,
             sketch: Some(sk.clone()),
+            fills: Vec::new(),
             critic: Vec::new(),
         };
         let now = verdict_for(req, &made, &sk);

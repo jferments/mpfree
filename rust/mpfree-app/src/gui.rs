@@ -40,7 +40,7 @@ use crate::play_page::{
     self, HeldBank, InspectTap, Knob, PadInfo, PadsBar, PlayPage, PlayView, SynthPads, Turn,
 };
 use crate::play_widgets::{
-    self, MiniPads, PlayTransport, StepGrid, StepInspector, Throws, XyPad, YourTiming,
+    self, GridCont, MiniPads, PlayTransport, StepGrid, StepInspector, Throws, XyPad, YourTiming,
 };
 use crate::sample_page::{self, SamplePage};
 use crate::sampler::{Cloud, Playheads, ViewSwap};
@@ -2366,6 +2366,9 @@ pub enum FromUi {
     /// A MIDI file BROWSE loaded, read: its tracks as clips from the armed
     /// track on ([`crate::midi_file::put`]).
     MidiFile(Box<crate::midi_file::MidiImport>),
+    /// A MIDI file's Make a phrase, read: the Make a phrase sheet opens on
+    /// its first track with notes (the app's, step 3 of the phrases).
+    MakePhrase(Box<crate::app::MakeFrom>),
 }
 
 /// Room for the Grains effect's whole memory at the app's rate, for a
@@ -2799,6 +2802,8 @@ pub struct Player {
     preview_load: Option<std::sync::mpsc::Receiver<sample_page::Loaded>>,
     /// A MIDI file BROWSE loaded, being read ([`crate::midi_file`]).
     midi_load: Option<std::sync::mpsc::Receiver<Result<crate::midi_file::MidiImport, String>>>,
+    /// A MIDI file being read for Make a phrase (the browser's button).
+    midi_phrase: Option<std::sync::mpsc::Receiver<Result<crate::midi_file::MidiImport, String>>>,
     /// The preset picker the Synth tab's title opens (presets.rs).
     preset_picker: crate::presets::Picker,
     /// The XY pad's list's From the browser: the browser opens on your
@@ -2821,6 +2826,10 @@ pub struct Player {
     /// A phrase plays on the armed track (its pads press notes), so the
     /// NOTE REPEAT band's - and + reach Phrase: what its hint lists.
     phrases_play: bool,
+    /// The Make a phrase sheet, while open (the app's, step 3 of the
+    /// phrases): on Arrange in the clip card's place, in the browser in
+    /// the Selected panel's.
+    sheet: Option<mpfree_arp_ui::make_sheet::SheetView>,
     /// The Q-Link slider a finger is on, on the panel.
     qlink_focus: Option<usize>,
     /// Where the arp chip is in the header's chips.
@@ -2962,6 +2971,12 @@ pub struct Player {
     /// What each track plays, as last told the time engine for the note
     /// editor's Continue ([`Player::refresh_compose_parts`]).
     compose_parts: Option<Arc<mpfree_time_ui::continuing::Parts>>,
+    /// Continue open on Steps (composing step 4): its rows' settings and
+    /// the Q-Links', kept while it is open ([`steps_cont`]).
+    steps_cont: Option<mpfree_time_ui::editor::compose::ContinueSet>,
+    /// The time engine has said Continue is under way for it: its end
+    /// closes the panel.
+    steps_cont_live: bool,
     /// Add a part's New track (composing tools S2.6b): the synth asked for
     /// its tries (the index the track will get, the synth's node id), and
     /// a try held until that synth plays there, with the seconds it has
@@ -3185,6 +3200,14 @@ impl Player {
         ui.add(play_page::TIMING, YourTiming::default());
         ui.add(play_page::INSPECTOR, StepInspector::default());
         ui.add(
+            crate::steps_continue::BARS,
+            crate::steps_continue::BarStrip::default(),
+        );
+        ui.add(
+            crate::steps_continue::PANEL,
+            crate::steps_continue::ContinuePanel::default(),
+        );
+        ui.add(
             crate::rec_list::REC_LIST,
             crate::rec_list::RecList::default(),
         );
@@ -3247,7 +3270,10 @@ impl Player {
             mpfree_ui::status_page::StatusPage::default(),
         );
         ui.add("syshw", StatList::new("Hardware"));
-        let time_page = TimePage::add_to(&mut ui).expect("clips layout");
+        let mut time_page = TimePage::add_to(&mut ui).expect("clips layout");
+        // MPFree's phrases, which Add a part's Style row runs on into,
+        // until the app sends its list with the owner's.
+        time_page.phrases = mpfree_arp_ui::PhraseList::built_in().phrases.into();
         ui.add_full_page("Loading", "loading")
             .expect("loading layout");
         // The Looper tab's widgets first: the Play views show some of them.
@@ -3267,6 +3293,8 @@ impl Player {
             ui.add_page(page, &PlayView::step_layout(timing))
                 .expect("beats with the step inspector");
         }
+        ui.add_page(crate::steps_continue::PAGE, &PlayView::continue_layout())
+            .expect("beats with Continue open");
         ui.add_page(
             crate::rec_list::REC_PAGE,
             &play_page::frame(&format!("{}:*", crate::rec_list::REC_LIST)),
@@ -3332,8 +3360,11 @@ impl Player {
             pattern_changed: false,
             phrases: mpfree_arp_ui::PhraseList::built_in(),
             phrase_index: 0,
+            maker: None,
+            sheet_name: None,
             pads_key: None,
             phrase: arp_view::PhraseNow::default(),
+            improvise: arp_view::ImproviseNow::default(),
             notes: Vec::new(),
             step: 0,
             latched: false,
@@ -3549,6 +3580,7 @@ impl Player {
             preview_db: crate::preview::LEVEL_DB,
             preview_load: None,
             midi_load: None,
+            midi_phrase: None,
             preset_picker: crate::presets::Picker::default(),
             xy_browse: XyBrowse::default(),
             bundling: None,
@@ -3562,6 +3594,7 @@ impl Player {
             workspace,
             arp,
             phrases_play: false,
+            sheet: None,
             qlink_focus: None,
             arp_chip: None,
             clock_from: None,
@@ -3621,6 +3654,8 @@ impl Player {
             tuning: Tuning::default(),
             saved_tuning: Tuning::default(),
             compose_parts: None,
+            steps_cont: None,
+            steps_cont_live: false,
             add_sound: None,
             add_held: None,
         };
@@ -5671,6 +5706,9 @@ impl Player {
             });
             held_title = format!("Q-Links · Controller {}", c.bank_words());
             (held_title.as_str(), cards)
+        } else if let Some(cards) = self.steps_continue_cards() {
+            // Continue on Steps (composing step 4).
+            ("Q-Links · Continue", cards)
         } else if let Some(cards) = self.patch_qlinks() {
             // The patch editor: the picked zone's ends, transpose and
             // softest velocity (layout spec 4q).
@@ -5737,15 +5775,23 @@ impl Player {
             held_title = format!("Q-Links · {name} · {bank}");
             (held_title.as_str(), cards)
         } else if arp {
-            let rows = self
-                .ui
-                .get::<SliderStack>(arp_view::QLINKS)
-                .map(|q| q.rows.clone())
-                .unwrap_or_default();
+            // On the Phrase tab with When I stop, Answer's three.
+            let answering = self.arp.answering();
+            let rows = if answering {
+                self.ui
+                    .get::<mpfree_arp_ui::answer_panel::AnswerPanel>(arp_view::ANSWER)
+                    .map(|w| w.sliders.rows.clone())
+            } else {
+                self.ui
+                    .get::<SliderStack>(arp_view::QLINKS)
+                    .map(|q| q.rows.clone())
+            }
+            .unwrap_or_default();
             let mut cards: [QLinkCard; 4] = Default::default();
+            let whose = if answering { "Answer" } else { "Arp" };
             for (card, row) in cards.iter_mut().zip(&rows) {
                 let name = row.label.split(" · ").next().unwrap_or(&row.label);
-                *card = QLinkCard::new(name, "Arp", &row.text, row.value);
+                *card = QLinkCard::new(name, whose, &row.text, row.value);
             }
             (ARP_QLINKS, cards)
         } else if let Some(p) = self
@@ -8366,9 +8412,12 @@ impl Player {
             (g.top, g.add_lane) = (old.top, old.add_lane);
             g.rows_open.clone_from(&old.rows_open);
             g.hold_picks = old.hold_picks;
+            g.add_continue = old.add_continue;
+            g.cont.clone_from(&old.cont);
         }
         self.refresh_lock_knobs();
         self.play.fill_steps(&mut g);
+        self.fill_steps_cont(&mut g);
         let same = self
             .ui
             .get::<StepGrid>(play_page::STEPS)
@@ -8389,6 +8438,8 @@ impl Player {
                     && old.hold_picks == g.hold_picks
                     && old.chip == g.chip
                     && old.size == g.size
+                    && old.add_continue == g.add_continue
+                    && old.cont == g.cont
             });
         if !same {
             if let Some(w) = self.ui.get_mut::<StepGrid>(play_page::STEPS) {
@@ -8408,6 +8459,8 @@ impl Player {
                 (w.top, w.add_lane) = (g.top, g.add_lane);
                 w.rows_open = g.rows_open;
                 w.hold_picks = g.hold_picks;
+                w.add_continue = g.add_continue;
+                w.cont = g.cont;
             }
         }
         if self.lane_list {
@@ -8497,6 +8550,8 @@ impl Player {
                 crate::xy_setup::XY_SETUP_PAGE
             } else if self.xy_full && self.view == View::Play {
                 play_page::XY_FULL_PAGE
+            } else if self.steps_continuing() {
+                crate::steps_continue::PAGE
             } else {
                 self.play
                     .view
@@ -9355,6 +9410,40 @@ impl Player {
         }
     }
 
+    /// The Make a phrase sheet as the app has it, on the page shown: in
+    /// the clip card's place on Arrange.
+    fn refresh_sheet(&mut self) {
+        use mpfree_arp_ui::make_sheet::{MakeSheet, MAKE_SHEET};
+        let on_arrange = self.sheet.clone().filter(|_| self.view == View::Arrange);
+        if self.time_page.make != on_arrange {
+            self.time_page.make = on_arrange;
+            self.time_page.update(&mut self.ui, &self.time);
+        }
+        // In the browser: over its Selected panel.
+        let over = self
+            .sheet
+            .as_ref()
+            .filter(|_| self.view == View::Browser)
+            .and_then(|_| {
+                let r = self.ui.rect_of(mpfree_browser_ui::BROWSER)?;
+                let b = self
+                    .ui
+                    .get::<mpfree_browser_ui::BrowserView>(mpfree_browser_ui::BROWSER)?;
+                Some(b.detail_rect(r))
+            });
+        if let (Some(_), Some(v)) = (over, &self.sheet) {
+            if let Some(w) = self.ui.get_mut::<MakeSheet>(MAKE_SHEET) {
+                if w.view != *v {
+                    w.view = v.clone();
+                }
+            }
+        }
+        let _ = self
+            .ui
+            .set_float(mpfree_browser_ui::BROWSER_PAGE, MAKE_SHEET, over);
+        self.refresh_hint();
+    }
+
     fn refresh_hint(&mut self) {
         let stop = self.stop_words();
         self.stop_said = stop;
@@ -9617,6 +9706,8 @@ impl Player {
                         && self.note_inspector().is_some();
                     time_view::edit_hint(lens, tool, picked).to_string()
                 }
+                // Continue open on Steps (composing step 4).
+                View::Sequencer if self.steps_continuing() => steps_cont::HINT.to_string(),
                 // A kit's Steps: + Lane and the lock lanes (the redesign's
                 // step 5).
                 View::Sequencer if !self.play.pitched() => format!("Tap a step: in or out   ·   hold a step: edit it   ·   \
@@ -9637,6 +9728,10 @@ impl Player {
                     .as_deref()
                     .map_or_else(String::new, time_view::report_hint),
                 View::Arrange if self.time.scene_open.is_some() => time_view::SCENE_CARD_HINT.to_string(),
+                // The Make a phrase sheet (step 3 of the phrases).
+                View::Arrange if self.time_page.make.is_some() => {
+                    self.sheet.as_ref().map(|v| v.hint.clone()).unwrap_or_default()
+                }
                 View::Arrange if self.time_page.adding => mpfree_time_ui::song::ADD_HINT.to_string(),
                 // Link's chooser (the Arrange refactor's 4b.5).
                 View::Arrange if self.time_page.linking => time_view::LINK_HINT.to_string(),
@@ -9847,6 +9942,15 @@ impl Player {
                 View::Arp if tab == Mode::Phrase => match &self.arp.phrase.kit_track {
                     Some(track) => format!("{track}'s instrument is a kit   ·   phrases play on a synth   ·   - / +: kind   ·   \
                                             MENU: options   ·   NOTE REPEAT + MENU: close"),
+                    // When I stop: Answer's panels.
+                    None if self.arp.answering() => "Play, then stop: it answers on the next bar   ·   \
+                             play again: it stops at once   ·   Q-Links: variation, activity, range   ·   \
+                             NOTE REPEAT + MENU: close"
+                        .to_string(),
+                    // New idea or More like this open in the list's place.
+                    None if self.arp.maker.is_some() => "Wheel: a row   ·   - / +: change it   ·   \
+                             Q-Links: speed, gate, swing, octaves   ·   Keep: on Yours   ·   Back: nothing changes"
+                        .to_string(),
                     None => "Wheel: phrase   ·   - / +: kind   ·   Q-Links: speed, gate, swing, octaves   ·   \
                              MENU: options   ·   NOTE REPEAT + MENU: close".to_string(),
                 },
@@ -9856,6 +9960,10 @@ impl Player {
                 View::Browser if self.browser.is_none() => NO_LIBRARY_HINT.to_string(),
                 View::Browser if self.preset_picker.open => self.preset_picker.hint(),
                 View::Browser if self.xy_browse.open => XY_BROWSE_HINT.to_string(),
+                // The Make a phrase sheet over the Selected panel.
+                View::Browser if self.sheet.is_some() => {
+                    self.sheet.as_ref().map(|v| v.hint.clone()).unwrap_or_default()
+                }
                 View::Browser
                     if self
                         .browser
@@ -10369,6 +10477,20 @@ impl Player {
                         self.outbox.push(a);
                     }
                 }
+            }
+            self.refresh_hint();
+            return;
+        }
+        // Continue open on Steps (composing step 4): the wheel and - / +
+        // step the panel's picked row, the push picks the next row.
+        if self.steps_continuing() {
+            match n {
+                Nav::Turn(d) | Nav::Step(d) | Nav::Fine(d) => {
+                    if let Some(a) = self.steps_continue_wheel(d) {
+                        self.outbox.push(a);
+                    }
+                }
+                Nav::Push => self.steps_continue_next_row(),
             }
             self.refresh_hint();
             return;
@@ -12071,6 +12193,7 @@ impl Player {
                 self.play.set_steps(*st);
                 self.play.track = self.track_look();
                 self.refresh_play();
+                self.refresh_steps_continue();
                 if matches!(self.view, View::Play | View::Sequencer) {
                     self.refresh_qlinks();
                 }
@@ -12116,6 +12239,9 @@ impl Player {
                 } else if self.xy_setup_showing() {
                     // XY Setup: the picked setting's range and curve.
                     self.xy_setup_qlink(k, ticks);
+                } else if self.steps_continuing() {
+                    // Continue on Steps: Similarity, Variation, Activity.
+                    self.steps_continue_knob(k, ticks);
                 } else if self.play.held.is_some()
                     && matches!(self.view, View::Play | View::Sequencer | View::Arrange)
                 {
@@ -12128,7 +12254,11 @@ impl Player {
                     // An audio region's knobs.
                 } else if self.view == View::Arrange && self.time_page.add_knob(k, ticks) {
                     // Add a part's panel: Similarity, Variation, Activity
-                    // and Range, a new try with each change.
+                    // and Range, a new try with each change; on a phrase
+                    // they shape nothing, and say so.
+                    if let Some(why) = self.time_page.add_knob_why() {
+                        self.tell(why);
+                    }
                     self.send_page_asks();
                     self.refresh_qlinks();
                 } else if self.note_inspector().is_some() {
@@ -13012,6 +13142,13 @@ impl Player {
                 a.pattern_changed = v.pattern_changed;
                 a.phrase_index = v.phrase_index;
                 a.pads_key = v.pads_key;
+                a.maker = v.maker.map(|m| *m);
+                a.improvise = *v.improvise;
+                let sheet = v.sheet.map(|s| *s);
+                a.sheet_name = sheet
+                    .as_ref()
+                    .filter(|s| s.can_keep)
+                    .map(|s| s.name.clone());
                 a.phrase = arp_view::PhraseNow {
                     shelf: v.phrase.shelf,
                     at: v.phrase.at,
@@ -13024,6 +13161,10 @@ impl Player {
                 a.latched = v.latched;
                 a.bpm = v.bpm;
                 self.refresh_arp();
+                if sheet != self.sheet {
+                    self.sheet = sheet;
+                    self.refresh_sheet();
+                }
             }
             ToUi::SixteenLevels => self.toggle_levels(),
             ToUi::LevelsWheel(d) => {
@@ -13042,6 +13183,10 @@ impl Player {
                 self.refresh_arp();
             }
             ToUi::Phrases(list) => {
+                // Add a part's Style row runs on into them (P2, board H).
+                if self.time_page.set_phrases(list.phrases.clone().into()) {
+                    self.time_page.update(&mut self.ui, &self.time);
+                }
                 self.arp.phrases = list;
                 self.refresh_arp();
             }
@@ -13159,6 +13304,7 @@ impl Player {
                 self.refresh_show();
                 self.play.set_transport(self.time.transport);
                 self.refresh_play();
+                self.refresh_steps_continue();
                 let inspecting = self
                     .ui
                     .get::<QLinkColumn>(play_page::QLINKS)
@@ -13995,6 +14141,13 @@ impl Player {
             A::LoadMidi { path, .. } => {
                 self.midi_load = Some(crate::midi_file::read_in_thread(path));
             }
+            // Make a phrase: read in a thread, then the sheet over the
+            // Selected panel. BROWSE's alone: the Pads tab's browser has
+            // no room for it.
+            A::MakePhrase { path, .. } if self.view == View::Browser => {
+                self.midi_phrase = Some(crate::midi_file::read_in_thread(path));
+            }
+            A::MakePhrase { .. } => self.tell("Make a phrase: open the file from BROWSE"),
             // The preset picker the Synth tab's title opened (presets.rs).
             A::TryFactoryPreset { index, .. } => {
                 self.outbox
@@ -14472,6 +14625,32 @@ impl Player {
             Ok(m) => self.outbox.push(FromUi::MidiFile(Box::new(m))),
             Err(e) => {
                 let line = format!("MIDI file: not loaded: {e}");
+                self.tell(&line);
+                self.say(line);
+            }
+        }
+    }
+
+    /// A MIDI file read for Make a phrase: the sheet opens on its first
+    /// track with notes, or why it can't.
+    fn poll_midi_phrase(&mut self) {
+        let Some(rx) = &self.midi_phrase else {
+            return;
+        };
+        let r = match rx.try_recv() {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("its thread stopped".into()),
+        };
+        self.midi_phrase = None;
+        match r.and_then(|m| crate::app::MakeFrom::midi(&m)) {
+            Ok(from) => self.outbox.push(FromUi::MakePhrase(Box::new(from))),
+            Err(e) => {
+                let line = if e.starts_with("Make a phrase") {
+                    e
+                } else {
+                    format!("Make a phrase: the file was not read: {e}")
+                };
                 self.tell(&line);
                 self.say(line);
             }
@@ -16939,6 +17118,9 @@ impl Player {
             View::Play if self.patch_showing() && self.ready => self.patch_page().to_string(),
             View::Play if self.xy_setup && self.ready => crate::xy_setup::XY_SETUP_PAGE.to_string(),
             View::Play if self.xy_full && self.ready => play_page::XY_FULL_PAGE.to_string(),
+            View::Play | View::Sequencer if self.steps_continuing() && self.ready => {
+                crate::steps_continue::PAGE.to_string()
+            }
             View::Play | View::Sequencer => self
                 .play
                 .view
@@ -17466,6 +17648,7 @@ impl Player {
             self.ui
                 .get::<QLinkColumn>(play_page::QLINKS)
                 .is_some_and(|q| q.title == ARP_QLINKS)
+                && !self.arp.answering()
         };
         // The Phrase tab's own sliders are the same four, but its first is
         // the phrase's speed, a parameter of its own.
@@ -17997,6 +18180,11 @@ impl Player {
 
     /// A touch meant something: hand it to the audio thread, which decides.
     pub fn on_event(&mut self, ev: UiEvent) -> Option<FromUi> {
+        // The Make a phrase sheet, on Arrange or in the browser: the app's.
+        if ev.widget == mpfree_arp_ui::make_sheet::MAKE_SHEET {
+            return mpfree_arp_ui::make_sheet::SheetAction::of(&ev.kind)
+                .map(|a| FromUi::Arp(ArpAction::Sheet(a)));
+        }
         // An audio track's input list open (phase 4, board 4): a tap on
         // an input picks it, or says why it can't; a touch anywhere else
         // only closes it.
@@ -18462,7 +18650,10 @@ impl Player {
                 if matches!(self.view, View::Play | View::Sequencer | View::Arrange)
                     && !self.band_showing() =>
             {
-                if self.patch_qlink(index, delta) {
+                if self.steps_continuing() {
+                    // Continue on Steps: Similarity, Variation, Activity.
+                    self.steps_continue_knob(index, delta);
+                } else if self.patch_qlink(index, delta) {
                     // The patch editor's zone.
                 } else if !self.audio_qlink(index, delta) {
                     self.play_qlink(index, delta);
@@ -18479,6 +18670,15 @@ impl Player {
             (play_page::STEPS, EventKind::Tab(play_widgets::HEAD_LANE)) => {
                 self.toggle_lane_list();
                 None
+            }
+            // Continue on Steps (composing step 4): the head's Continue
+            // opens its panel and asks; the panel and the bar strip.
+            (play_page::STEPS, EventKind::Tab(play_widgets::HEAD_CONTINUE)) => {
+                self.steps_continue_open()
+            }
+            (w @ (crate::steps_continue::PANEL | crate::steps_continue::BARS), e) => {
+                let w = w.to_string();
+                self.steps_continue_event(&w, e)
             }
             // The clip chip (refactor C2): the track's clips, to edit one
             // without starting it.
@@ -19586,6 +19786,7 @@ impl Player {
         self.poll_xy_file();
         self.poll_sound_track();
         self.poll_midi();
+        self.poll_midi_phrase();
         self.poll_loops();
         self.poll_audio();
         self.open_clock_tick();
@@ -21143,17 +21344,113 @@ pub fn sample_play(fonts: Fonts, v: PlayView) -> Player {
     p
 }
 
+/// Continue open on Steps (composing step 4), as its boards draw it: a
+/// one-bar beat (Kick, Snare, Hat, Hat op) carried on by the real time
+/// engine and composer, Groove, +4 bars, landing home; the grid on bar
+/// `page` + 1, the bar strip, the panel with its tries and the Q-Links.
+pub fn sample_steps_continue(fonts: Fonts, tries: usize, page: usize) -> Player {
+    use crate::time::{Pads, StepAction, TimeHost};
+    struct Quiet;
+    impl Pads for Quiet {
+        fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+            true
+        }
+        fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+        fn stop_all(&mut self) {}
+        fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+    }
+    let mut p = sample_play(fonts, PlayView::Beats);
+    p.play.selected = None;
+    p.apply(ToUi::QLinkTouch(0, false));
+    // The kit's pads named as the Steps show them, so Continue reads the
+    // same kick, snare and hats the lanes say.
+    for k in p.kits.iter_mut().filter(|k| k.synth.is_none()) {
+        for (slot, name) in k.pads.iter_mut().zip(BOOM_BAP) {
+            *slot = Some(name.to_string());
+        }
+    }
+    let Ok(mut h) = TimeHost::new(44_100, 92.0) else {
+        return p;
+    };
+    let beat: [(u8, &[usize], u8); 4] = [
+        (0, &[0, 6, 8, 10], 110),
+        (2, &[4, 12, 15], 100),
+        (4, &[0, 2, 3, 4, 6, 7, 8, 10, 11, 12, 14, 15], 80),
+        (5, &[7], 90),
+    ];
+    for (pad, steps, velocity) in beat {
+        for &step in steps {
+            let _ = h.step_action(StepAction::Tap {
+                pad,
+                step,
+                velocity,
+            });
+        }
+    }
+    let mut q = Quiet;
+    h.period(128, &mut q);
+    p.apply(ToUi::Time(Box::new(h.state())));
+    p.apply(ToUi::Steps(Box::new(h.steps())));
+    let groove = mpfree_compose::STYLES
+        .iter()
+        .position(|k| k.name == "Groove")
+        .unwrap_or(0);
+    p.steps_cont = Some(mpfree_time_ui::editor::compose::ContinueSet {
+        style: groove,
+        ..Default::default()
+    });
+    for k in 0..tries.max(1) {
+        let a = if k == 0 {
+            p.steps_continue_open()
+        } else {
+            p.steps_continue_event(
+                crate::steps_continue::PANEL,
+                EventKind::Tab(crate::steps_continue::TRY_AGAIN),
+            )
+        };
+        for o in std::mem::take(&mut p.outbox) {
+            if let FromUi::Time(t) = o {
+                let _ = h.act(t);
+            }
+        }
+        if let Some(FromUi::Time(a)) = a {
+            let _ = h.act(a);
+        }
+        let t0 = std::time::Instant::now();
+        while t0.elapsed() < Duration::from_secs(10)
+            && !h
+                .state()
+                .continuing
+                .is_some_and(|c| c.position == Some((k + 1, k + 1)) && c.heard)
+        {
+            h.period(128, &mut q);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        h.period(128, &mut q);
+    }
+    p.apply(ToUi::Time(Box::new(h.state())));
+    p.apply(ToUi::Steps(Box::new(h.steps())));
+    p.play.page = page;
+    p.refresh_play();
+    p.refresh_steps_continue();
+    p.refresh_qlinks();
+    p.refresh_hint();
+    p
+}
+
+/// Boom Bap's pad names, as the previews' Steps show them.
+const BOOM_BAP: [&str; 16] = [
+    "Kick", "Kick 2", "Snare", "Rim", "Hat", "Hat op", "Shaker", "Clap", "Conga", "Tom", "Perc",
+    "Crash", "Bass", "Chop 1", "Chop 2", "Vox",
+];
+
 /// Boom Bap's sampler project for the previews: a short made-up sound on
 /// each of its 16 pads, with the mockups' settings on Kick (-2 st) and Hat
 /// (+2 st, 180 ms decay).
 fn boom_bap_project() -> mpfree_sampler::model::Project {
     use mpfree_sampler::model::{Layer, Pad, Project, Region, Source};
     let mut p = Project::new();
-    let names = [
-        "Kick", "Kick 2", "Snare", "Rim", "Hat", "Hat op", "Shaker", "Clap", "Conga", "Tom",
-        "Perc", "Crash", "Bass", "Chop 1", "Chop 2", "Vox",
-    ];
-    for (i, name) in names.iter().enumerate() {
+    for (i, name) in BOOM_BAP.iter().enumerate() {
         let data: Vec<f32> = (0..2_000)
             .map(|n| (n as f32 * 0.05 * (i + 1) as f32).sin() * (1.0 - n as f32 / 2_000.0))
             .collect();
@@ -21569,6 +21866,43 @@ pub fn sample_clips(fonts: Fonts) -> Result<Player, String> {
     p.apply(ToUi::Time(Box::new(host.state())));
     p.apply(ToUi::Show(View::Arrange));
     Ok(p)
+}
+
+/// A clip of a C minor bass line from C2, two bars of 1/16s, as Make a
+/// phrase reads it from Clip 1 on Track 1 (the sample screens' and the
+/// tests' clip).
+pub fn sample_bass_clip() -> crate::app::MakeFrom {
+    use mpfree_context::listen::Played;
+    const NOTES: [(i64, i64, u8); 18] = [
+        (0, 360, 36),
+        (480, 240, 36),
+        (720, 240, 48),
+        (1200, 240, 36),
+        (1440, 480, 39),
+        (1920, 360, 36),
+        (2400, 240, 43),
+        (2880, 480, 46),
+        (3360, 240, 43),
+        (3840, 360, 36),
+        (4320, 240, 36),
+        (4560, 240, 48),
+        (5040, 240, 36),
+        (5280, 480, 41),
+        (5760, 360, 39),
+        (6240, 240, 43),
+        (6720, 240, 34),
+        (7200, 480, 36),
+    ];
+    crate::app::MakeFrom {
+        place: "Clip 1 · Track 1".to_string(),
+        name: "Clip 1".to_string(),
+        notes: NOTES
+            .iter()
+            .map(|&(at, len, pitch)| Played::new(at, len, pitch, 100))
+            .collect(),
+        len: 2 * 4 * 960,
+        meter: mpfree_transport::time::Meter { beats: 4, unit: 4 },
+    }
 }
 
 /// The Arrange page in the middle of a jam (Jay, 19 Nov 02:45Z: more
@@ -23139,6 +23473,93 @@ fn browser_sd_card(fonts: Fonts) -> Result<Player, String> {
     built
 }
 
+/// Bassline.mid: [`sample_bass_clip`]'s notes as a MIDI file of one track,
+/// as the browser's sample screens and the tests read it.
+pub fn sample_bassline_mid() -> Vec<u8> {
+    use mpfree_midi::msg::Msg;
+    use mpfree_midi::smf::{Smf, SmfTrack};
+    let mut events = Vec::new();
+    for n in &sample_bass_clip().notes {
+        let at = n.at as u64;
+        events.push((
+            at,
+            Msg::NoteOn {
+                ch: 0,
+                note: n.pitch,
+                vel: n.velocity,
+            },
+        ));
+        events.push((
+            at + n.len as u64,
+            Msg::NoteOff {
+                ch: 0,
+                note: n.pitch,
+                vel: 64,
+            },
+        ));
+    }
+    Smf {
+        name: "Bassline".to_string(),
+        tempos: vec![(0, 120.0)],
+        meters: vec![(0, 4, 4)],
+        tracks: vec![SmfTrack {
+            name: "Bass".to_string(),
+            events,
+        }],
+        end: 2 * 4 * 960,
+    }
+    .bytes()
+}
+
+/// The whole browser (BROWSE) on the stand-in SD card with Bassline.mid
+/// picked (board F); with `sheet`, its Make a phrase open over the
+/// Selected panel, read from the file as the button reads it.
+fn browser_midi(fonts: Fonts, sheet: bool) -> Result<Player, String> {
+    use mpfree_browser_ui::sample::{fill, fill_card, select, source};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("mpfree-midi-{}-{nanos}", std::process::id()));
+    let built = (|| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let lib = fill(&dir)?;
+        let card = fill_card(&lib, &dir.join("card"))?;
+        let bytes = sample_bassline_mid();
+        std::fs::write(card.join("Bassline.mid"), &bytes).map_err(|e| e.to_string())?;
+        let mut p = sample_sampler(fonts);
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        p.take_actions();
+        p.apply(ToUi::Show(View::Browser));
+        let b = p.browser.as_mut().ok_or("no browser")?;
+        b.go_source(source("SD card"));
+        b.take_actions();
+        b.library().set_card(Some(card));
+        b.set_card(mpfree_browser_ui::CardState::Open {
+            about: "exFAT, 63.9 GB".into(),
+            dirty: false,
+        });
+        select(b, "Bassline.mid");
+        p.step_browser();
+        p.take_actions();
+        if sheet {
+            let m = crate::midi_file::import("Bassline.mid", &bytes)?;
+            let mut app = sample_app();
+            app.set_pad_layout(Some(mpfree_arp::scale::pads::layout(
+                &mpfree_arp::scale::pads::PadSetup {
+                    layout: mpfree_arp::scale::pads::PadLayout::Chromatic,
+                    ..mpfree_arp::scale::pads::PadSetup::default()
+                },
+            )));
+            let fx = app.open_sheet(crate::app::MakeFrom::midi(&m)?);
+            apply_effects(&mut p, fx);
+        }
+        Ok(p)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    built
+}
+
 /// The whole browser (BROWSE) in its Plugins place: a made-up catalog
 /// with two plugins installed and a zip on the stick, Mono Bass picked
 /// (installed, an update out), its own screen drawn from the test skin. Nothing is fetched or written. For
@@ -23631,6 +24052,16 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     ] {
         out.push((name, sample_play(fonts(), v)));
     }
+    // Continue on Steps (composing step 4): its third try, on its last bar
+    // landing home, then on bar 2.
+    out.push((
+        "sequencer-steps-continue",
+        sample_steps_continue(fonts(), 3, 4),
+    ));
+    out.push((
+        "sequencer-steps-continue-bar",
+        sample_steps_continue(fonts(), 3, 1),
+    ));
     // The Sequencer's lock lanes (the Play, Pads and Sequencer redesign's
     // board 3): Kick's Decay locked on steps 7 and 12, and a Delay send
     // lane on the track throwing on steps 8, 15 and 16; then the Lanes
@@ -24692,6 +25123,50 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                 }
                 out.push(("clips-card-continue", p));
             }
+            // The same clip scrolled to its Phrase row (step 3 of the
+            // phrases, board D): either arrow opens Make a phrase.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                let mut st = st.clone();
+                if let Some(c) = st
+                    .focus()
+                    .and_then(|(t, s)| st.tracks.get_mut(t)?.slots.get_mut(s)?.as_mut())
+                {
+                    c.holds = mpfree_seq::Holds::Notes;
+                    c.notes = c.notes.max(8);
+                }
+                p.time_page.clip_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
+                    l.selected = time_view::CLIP_PHRASE;
+                }
+                out.push(("clips-card-phrase", p));
+            }
+            // Make a phrase open from it (board E): a C minor bass line of
+            // two bars read as Bass from C2 on 1/16s, a held pad playing it.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                let mut st = st.clone();
+                if let Some(c) = st
+                    .focus()
+                    .and_then(|(t, s)| st.tracks.get_mut(t)?.slots.get_mut(s)?.as_mut())
+                {
+                    c.holds = mpfree_seq::Holds::Notes;
+                    c.notes = c.notes.max(8);
+                }
+                p.time_page.clip_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                let mut app = sample_app();
+                app.set_pad_layout(Some(mpfree_arp::scale::pads::layout(
+                    &mpfree_arp::scale::pads::PadSetup {
+                        layout: mpfree_arp::scale::pads::PadLayout::Chromatic,
+                        ..mpfree_arp::scale::pads::PadSetup::default()
+                    },
+                )));
+                let fx = app.open_sheet(sample_bass_clip());
+                apply_effects(&mut p, fx);
+                out.push(("clips-make-phrase", p));
+            }
             // Mutated (S6): it plays a variant, its original kept for ‹.
             if let Ok(mut p) = sample_clips(fonts()) {
                 if let Some(c) = st
@@ -24781,6 +25256,21 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("clips-add-part-new-track", p));
         }
         Err(e) => eprintln!("clips-add-part-new-track sample: {e}"),
+    }
+    // Add a part on a phrase (P2, board H): the Style row run on past
+    // Jazz-ish to Night drive, a try of it playing over the row's chords.
+    match mpfree_time_ui::sample::add_part_phrase_state() {
+        Ok((st, pick)) => {
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.time_page.add = Some(pick);
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.refresh_qlinks();
+            p.refresh_hint();
+            out.push(("clips-add-part-phrase", p));
+        }
+        Err(e) => eprintln!("clips-add-part-phrase sample: {e}"),
     }
     // The Chords tab (S2.6, board C): bar 4's chord set to A♭7 after
     // the Bass was kept, so the Bass and the Solo don't fit: both marked
@@ -26504,6 +26994,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Ok(card) => out.push(("browser-sd-card", card)),
         Err(e) => eprintln!("browser-sd-card: not drawn ({e})"),
     }
+    // A MIDI file on the SD card picked (step 3 of the phrases, board F):
+    // Make a phrase beside Load and Copy; then its sheet over the Selected
+    // panel.
+    match browser_midi(fonts(), false) {
+        Ok(p) => out.push(("browser-midi", p)),
+        Err(e) => eprintln!("browser-midi: not drawn ({e})"),
+    }
+    match browser_midi(fonts(), true) {
+        Ok(p) => out.push(("browser-make-phrase", p)),
+        Err(e) => eprintln!("browser-make-phrase: not drawn ({e})"),
+    }
     // The browser's Plugins place over a made-up catalog.
     match browser_plugins(fonts()) {
         Ok(plugins) => out.push(("browser-plugins", plugins)),
@@ -27771,11 +28272,15 @@ pub fn sample_sets(name: &str, fonts: Fonts) -> Result<Player, String> {
     }
 }
 
-pub const PHRASE_SAMPLES: [&str; 4] = [
+pub const PHRASE_SAMPLES: [&str; 8] = [
     "arp-phrase",
+    "arp-phrase-evolve",
+    "arp-phrase-answer",
     "arp-phrase-next-bar",
     "arp-phrase-kit",
     "arp-quick-band-phrase",
+    "arp-phrase-new-idea",
+    "arp-phrase-more-like",
 ];
 
 /// Sample screen `name` of the Arp panel's Phrase tab, as the owner's
@@ -27826,6 +28331,106 @@ pub fn sample_phrase(name: &str, fonts: Fonts) -> Player {
             run_arp(&mut p, &mut app, 128);
             p
         }
+        // New idea (board B): a Groove bass's third try plays from the
+        // latched pad, Night drive left to go back to.
+        "arp-phrase-new-idea" => {
+            use mpfree_arp_ui::view::MakerAction;
+            let (mut p, mut app) = phrase_player(fonts);
+            night_drive(&mut p, &mut app);
+            let mut fx = app.arp_action(ArpAction::NewIdea);
+            for _ in 0..2 {
+                fx.extend(app.arp_action(ArpAction::Maker(MakerAction::TryAgain)));
+            }
+            apply_effects(&mut p, fx);
+            run_arp(&mut p, &mut app, 3 * 22_050);
+            p
+        }
+        // More like this (board C): Night drive's rhythm with new notes,
+        // the second try.
+        "arp-phrase-more-like" => {
+            use mpfree_arp_ui::view::MakerAction;
+            let (mut p, mut app) = phrase_player(fonts);
+            night_drive(&mut p, &mut app);
+            let mut fx = app.arp_action(ArpAction::MoreLike);
+            fx.extend(app.arp_action(ArpAction::Maker(MakerAction::TryAgain)));
+            apply_effects(&mut p, fx);
+            run_arp(&mut p, &mut app, 3 * 22_050);
+            p
+        }
+        // Improvise's While I hold (S5, board A): Minor hook latched over
+        // F major (F, A and C held) with Evolve on, five bars in: one
+        // change made, the next outlined.
+        "arp-phrase-evolve" => {
+            use mpfree_arp_ui::view::ImproviseAction;
+            let (mut p, mut app) = phrase_player(fonts);
+            let mut fx = app.toggle_panel();
+            fx.extend(app.arp_action(ArpAction::Mode(Mode::Phrase)));
+            fx.extend(app.arp_action(ArpAction::Phrase(phrase_named("Minor hook"))));
+            fx.extend(app.arp_action(ArpAction::Latch));
+            for pad in [5, 7, 9] {
+                fx.extend(app.pad_down(pad, 100));
+            }
+            for pad in [5, 7, 9] {
+                app.pad_up(pad);
+            }
+            fx.extend(app.arp_action(ArpAction::Improvise(ImproviseAction::Evolve)));
+            apply_effects(&mut p, fx);
+            // Evolve keeps time from the playhead, heard every period.
+            let mut ev = mpfree_arp::Events::new();
+            let mut last = None;
+            for _ in 0..5 * 2 * 44_100 / 128 {
+                app.process(128, &mut ev);
+                last = app.arp_poll().or(last);
+            }
+            apply_effects(&mut p, last.into_iter().collect());
+            p
+        }
+        // When I stop (S5, board B): a call of five eighths on the pads in
+        // bar 1, a beat of quiet, and its answer half way through bar 2.
+        "arp-phrase-answer" => {
+            use mpfree_arp_ui::view::{ImproviseAction, PlaysWhen};
+            let (mut p, mut app) = phrase_player(fonts);
+            let mut fx = app.toggle_panel();
+            fx.extend(app.arp_action(ArpAction::Mode(Mode::Phrase)));
+            fx.extend(app.arp_action(ArpAction::Phrase(phrase_named("Minor hook"))));
+            fx.extend(app.arp_action(ArpAction::Improvise(ImproviseAction::Plays(
+                PlaysWhen::WhenIStop,
+            ))));
+            app.answer_inline(true);
+            let mut ev = mpfree_arp::Events::new();
+            let mut last = None;
+            // Periods of 128 frames in an eighth at 120 BPM.
+            let eighth = 44_100 / 4 / 128;
+            let mut run = |app: &mut crate::app::App, periods: usize, last: &mut Option<_>| {
+                for _ in 0..periods {
+                    app.process(128, &mut ev);
+                    *last = app.arp_poll().or(last.take());
+                }
+            };
+            for pad in [5, 7, 9, 7, 12] {
+                fx.extend(app.pad_down(pad, 100));
+                run(&mut app, eighth * 4 / 5, &mut last);
+                app.pad_up(pad);
+                run(&mut app, eighth - eighth * 4 / 5, &mut last);
+            }
+            // On until the answer is three eighths in.
+            let into = |v: &Option<crate::app::Effect>| match v {
+                Some(crate::app::Effect::Arp(v)) => v.improvise.answer.playhead.map(|h| {
+                    let a = &v.improvise.answer;
+                    h - i64::from(a.call_bars) * a.bar_ticks
+                }),
+                _ => None,
+            };
+            for _ in 0..32 * eighth {
+                if into(&last).is_some_and(|t| t >= 3 * 480) {
+                    break;
+                }
+                run(&mut app, 1, &mut last);
+            }
+            fx.extend(last);
+            apply_effects(&mut p, fx);
+            p
+        }
         // NOTE REPEAT held on the synth with + pressed to Phrase: the band
         // names the phrase and steps its speed.
         "arp-quick-band-phrase" => {
@@ -27859,6 +28464,7 @@ fn button_play() -> u8 {
 }
 
 mod patches;
+mod steps_cont;
 
 #[cfg(test)]
 mod tests {
@@ -28032,6 +28638,7 @@ mod tests {
                     name: "Bass".into(),
                     sound,
                 }),
+                phrase: None,
             })
         };
         let asks = |p: &mut Player| {
@@ -33845,6 +34452,155 @@ mod tests {
         );
         let c = p.play.steps.clip.as_ref().unwrap();
         assert_eq!(c.row(0)[a].unwrap().velocity, was + 5);
+    }
+
+    /// Continue on Steps (composing tools, step 4): the head's Continue
+    /// opens Continue in the step editor's place and asks the time engine
+    /// to carry the kit's beat on, its pads' drums read from their names;
+    /// the Q-Links are Continue's (Range has nothing to do on drums), the
+    /// hardware knobs too, each change a new ask; Try again asks again,
+    /// ‹ steps back a try, Done keeps it and Cancel goes back, each
+    /// closing Continue.
+    #[test]
+    fn continue_on_steps_asks_for_a_beat_and_its_buttons_answer() {
+        use crate::steps_continue as sc;
+        use mpfree_compose::InstrumentKind;
+        use mpfree_context::groove::Lane;
+        use mpfree_time_ui::continuing::ContinueAction;
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        assert!(p.ui.get::<StepGrid>(play_page::STEPS).unwrap().add_continue);
+        let b = steps_target(&p, "head", play_widgets::HEAD_CONTINUE);
+        let a = steps_tap(&mut p, b);
+        let Some(FromUi::Time(TimeAction::Continue(ContinueAction::Ask(ask)))) = a else {
+            panic!("{a:?}");
+        };
+        assert_eq!(ask.kind, InstrumentKind::Percussive);
+        assert_eq!(ask.track, p.play.steps.track);
+        assert_eq!(
+            (0..3)
+                .map(|pad| ask.lanes.lane(ask.track, pad))
+                .collect::<Vec<_>>(),
+            [Some(Lane::Kick), Some(Lane::Snare), Some(Lane::Hats)],
+            "the sample kit's Kick, Snare and Closed Hat"
+        );
+        // The kit's drums went to the time engine just before.
+        assert!(p.take_actions().iter().any(|a| matches!(
+            a,
+            FromUi::Time(TimeAction::Continue(ContinueAction::Parts(_)))
+        )));
+        assert_eq!(p.page(), sc::PAGE);
+        let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+        assert!(!g.add_continue);
+        assert!(
+            g.cont.as_ref().is_some_and(|c| c.bar.starts_with("Bar 1")),
+            "{:?}",
+            g.cont
+        );
+        let q = p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap();
+        assert_eq!(
+            q.cards.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["Similarity", "Variation", "Activity", "Range"]
+        );
+        assert_eq!(q.cards[3].value, "drums: none");
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.starts_with("Continue: Q1 similarity"), "{hint}");
+        // A hardware Q-Link: Variation up, a new ask with it.
+        let was = p.steps_cont.unwrap().q[1];
+        p.apply(ToUi::PlayQLink(1, 2));
+        assert_eq!(p.steps_cont.unwrap().q[1], was + 10);
+        assert!(p.take_actions().iter().any(|a| matches!(
+            a,
+            FromUi::Time(TimeAction::Continue(ContinueAction::Ask(_)))
+        )));
+        // Range turns nothing, and says so.
+        p.apply(ToUi::PlayQLink(3, 1));
+        assert!(!p.take_actions().iter().any(|a| matches!(
+            a,
+            FromUi::Time(TimeAction::Continue(ContinueAction::Ask(_)))
+        )));
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.contains("Range has nothing to do on drums"), "{hint}");
+        let tap = |p: &mut Player, k: usize| {
+            p.on_event(UiEvent {
+                widget: sc::PANEL.into(),
+                kind: EventKind::Tab(k),
+            })
+        };
+        assert!(matches!(
+            tap(&mut p, sc::TRY_AGAIN),
+            Some(FromUi::Time(TimeAction::Continue(ContinueAction::Ask(_))))
+        ));
+        assert!(matches!(
+            tap(&mut p, sc::BACK_A_TRY),
+            Some(FromUi::Time(TimeAction::Continue(ContinueAction::Step {
+                back: true
+            })))
+        ));
+        assert_eq!(p.page(), sc::PAGE);
+        assert!(matches!(
+            tap(&mut p, sc::DONE),
+            Some(FromUi::Time(TimeAction::Continue(ContinueAction::Keep)))
+        ));
+        assert_ne!(p.page(), sc::PAGE);
+        assert!(p.steps_cont.is_none());
+        assert!(p.ui.get::<StepGrid>(play_page::STEPS).unwrap().add_continue);
+        // Again, and Cancel: the clip as it was.
+        let b = steps_target(&p, "head", play_widgets::HEAD_CONTINUE);
+        assert!(steps_tap(&mut p, b).is_some());
+        assert!(matches!(
+            tap(&mut p, sc::CANCEL),
+            Some(FromUi::Time(TimeAction::Continue(ContinueAction::Back)))
+        ));
+        assert_ne!(p.page(), sc::PAGE);
+        assert!(p.steps_cont.is_none());
+    }
+
+    /// Continue on Steps with the real composer (the previews' sample):
+    /// the beat carried on four bars, each new bar faint on the grid; the
+    /// bar strip shows your bar and the four new ones with their jobs; a
+    /// tap on one pages the grid to it, and the title row says which bar
+    /// it is and what it does.
+    #[test]
+    fn continue_on_steps_shows_the_new_bars_and_pages_to_them() {
+        use crate::steps_continue as sc;
+        use mpfree_ui::Widget as _;
+        let mut p = sample_steps_continue(Fonts::embedded(), 1, 0);
+        assert_eq!(p.page(), sc::PAGE);
+        let strip = p.ui.get::<sc::BarStrip>(sc::BARS).unwrap().clone();
+        assert_eq!(strip.bars.len(), 5, "{strip:?}");
+        assert_eq!(strip.bars[0].job, "yours");
+        assert!(!strip.bars[0].new);
+        assert!(strip.bars[1..].iter().all(|b| b.new && !b.hits.is_empty()));
+        assert!(
+            strip.bars[4].job.starts_with("land home"),
+            "{:?}",
+            strip.bars[4].job
+        );
+        assert_eq!(strip.shown, 0);
+        let clip = p.play.steps.clip.as_ref().unwrap();
+        assert_eq!(clip.new_from, Some(16));
+        assert_eq!(clip.steps, 80);
+        // Bar 5 from the strip.
+        let r = p.ui.rect_of(sc::BARS).unwrap();
+        let t =
+            p.ui.get::<sc::BarStrip>(sc::BARS)
+                .unwrap()
+                .targets(r)
+                .into_iter()
+                .find(|t| t.id == "bar" && t.index == 4)
+                .unwrap()
+                .rect;
+        let (x, y) = (t.x + t.w / 2, t.y + t.h / 2);
+        let down = p.touch(7, Touch::Down, x, y);
+        let up = p.touch(7, Touch::Up, x, y);
+        assert_eq!(down.or(up), None);
+        assert_eq!(p.play.page, 4);
+        assert_eq!(p.ui.get::<sc::BarStrip>(sc::BARS).unwrap().shown, 4);
+        let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+        let cont = g.cont.as_ref().unwrap();
+        assert!(cont.bar.starts_with("Bar 5 · land home"), "{}", cont.bar);
+        assert_eq!(cont.new_from, Some(0), "the whole page is new");
     }
 
     /// The Steps' target `id`, `index` (a lane's head, a lock cell).

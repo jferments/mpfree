@@ -235,6 +235,7 @@ impl Adding {
             settings: mpfree_compose::Settings::default(),
             bars: None,
             attempt: 0,
+            phrase: None,
         };
         let job = AddPartJob::new(project, ask);
         if self.hear_worker.is_none() {
@@ -367,6 +368,7 @@ impl Adding {
             settings: ask.settings,
             bars: ask.bars,
             attempt: self.attempts,
+            phrase: ask.phrase.as_ref().map(|(_, p)| *p),
         };
         self.attempts = self.attempts.wrapping_add(1);
         let mut job = AddPartJob::new(project, job);

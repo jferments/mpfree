@@ -759,6 +759,12 @@ impl BrowserView {
         }
     }
 
+    /// Where the Selected panel is in a browser drawn in `r`: the app's
+    /// Make a phrase sheet goes over it (step 3 of the phrases).
+    pub fn detail_rect(&self, r: Rect) -> Rect {
+        Geo::new(r, &self.screen).detail
+    }
+
     /// The middle of pad `pad` (0 to 15) of the pad map, in a browser
     /// drawn in `r` showing `screen` (for tests and the touch tools).
     pub fn map_point(r: Rect, screen: &Screen, pad: usize) -> Option<(i32, i32)> {

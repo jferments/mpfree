@@ -22,8 +22,9 @@ pub use mpfree_scale as scale;
 
 pub use ears::{CallNote, Ears, Heard, Light, Turns as AnswerTurns, MAX_CALL_NOTES};
 pub use engine::{
-    phrase_speed, step_notes, turn_of, turn_steps, Chord, Clock, Engine, Event, EventKind, Events,
-    Mode, Order, Ramp, Rate, Settings, SyncStart, Turns, Velocity, CHORD_SETTLE, PPQ,
+    phrase_speed, step_notes, turn_of, turn_steps, AnswerNote, Chord, Clock, Engine, Event,
+    EventKind, Events, Mode, Order, Ramp, Rate, Settings, SyncStart, Turns, Velocity, CHORD_SETTLE,
+    MAX_ANSWER_NOTES, PPQ,
 };
 pub use hand::{Hand, HandOn};
 pub use library::{Library, LibraryError, STARTER_PHRASES};

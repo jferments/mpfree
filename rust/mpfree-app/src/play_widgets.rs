@@ -1346,6 +1346,13 @@ pub struct StepGrid {
     pub top: usize,
     /// The Steps head's + Lane (a kit track on the Sequencer's Steps).
     pub add_lane: bool,
+    /// The Steps head's Continue (composing step 4): a kit track's clip
+    /// of hits on the Sequencer's Steps, carried on as a beat.
+    pub add_continue: bool,
+    /// Continue open on the clip: the head says which bar shows and what
+    /// it does, the controls that change the clip step aside, and the
+    /// new bars' steps play faint until Done.
+    pub cont: Option<GridCont>,
     /// A gear lane's mod rows, open over the pattern (LFO to CC).
     pub rows_open: Option<LaneRows>,
     /// The Sequencer's Steps: a step's tap waits for the finger to lift,
@@ -1440,6 +1447,19 @@ pub const HEAD_BANK: usize = 16;
 pub const HEAD_LANE: usize = 11;
 /// The Steps head's clip chip: `Tab(HEAD_CLIP)`.
 pub const HEAD_CLIP: usize = 12;
+/// The Steps head's Continue: `Tab(HEAD_CONTINUE)` (composing step 4).
+pub const HEAD_CONTINUE: usize = 14;
+
+/// Continue open on the Steps' clip (composing step 4), as the grid
+/// shows it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GridCont {
+    /// The bar shown and what it does: "Bar 5 · land home · fill".
+    pub bar: String,
+    /// The first step on the page that is new (faint from it to the
+    /// page's end); None when the page is all yours.
+    pub new_from: Option<usize>,
+}
 /// The Steps head's step size chip: `Tab(HEAD_SIZE)` (refactor D1).
 pub const HEAD_SIZE: usize = 13;
 /// The Steps head's length ("16 steps"): `Tab(HEAD_LENGTH)` puts the
@@ -1500,6 +1520,8 @@ struct StepLook {
     bank: Option<BankHead>,
     top: usize,
     add_lane: bool,
+    add_continue: bool,
+    cont: Option<GridCont>,
     rows_open: Option<LaneRows>,
     /// A stroke on a Velocity or Chance lane: its lane and the values it
     /// shows.
@@ -1527,6 +1549,20 @@ struct Head {
     lane: Rect,
     /// The step size chip, left of the length (empty without it).
     size: Rect,
+    /// Continue, left of + Lane (empty without it).
+    cont: Rect,
+}
+
+/// What the Steps head holds besides the page ([`Head::of`]).
+#[derive(Clone, Copy, Debug, Default)]
+struct HeadHas {
+    pitched: bool,
+    add_lane: bool,
+    size: bool,
+    /// The Continue button.
+    cont: bool,
+    /// Continue open: the length and its - and + step aside.
+    open: bool,
 }
 
 /// A head button's width.
@@ -1535,7 +1571,14 @@ const HEAD_BTN: i32 = 56;
 const SIZE_CHIP_W: i32 = 84;
 
 impl Head {
-    fn of(r: Rect, pitched: bool, add_lane: bool, size: bool) -> Head {
+    fn of(r: Rect, has: HeadHas) -> Head {
+        let HeadHas {
+            pitched,
+            add_lane,
+            size,
+            cont,
+            open,
+        } = has;
         let (h, body) = card_head(r);
         let band = Rect::new(h.x, r.y, h.w, body.y - 2 - r.y);
         let mut x = h.right();
@@ -1543,10 +1586,13 @@ impl Head {
             x -= w;
             Rect::new(x, band.y, w, band.h)
         };
-        let longer = take(HEAD_BTN);
-        let length = take(78);
-        let shorter = take(HEAD_BTN);
-        let size = if size {
+        let (longer, length, shorter) = if open {
+            let gone = take(0);
+            (gone, gone, gone)
+        } else {
+            (take(HEAD_BTN), take(78), take(HEAD_BTN))
+        };
+        let size = if size && !open {
             take(6);
             take(SIZE_CHIP_W)
         } else {
@@ -1574,7 +1620,15 @@ impl Head {
         } else {
             none
         };
-        let left = if add_lane {
+        let cont = if cont {
+            take(12);
+            take(112)
+        } else {
+            none
+        };
+        let left = if cont.w > 0 {
+            cont.x
+        } else if add_lane {
             lane.x
         } else if pitched {
             fold.x
@@ -1595,12 +1649,14 @@ impl Head {
             higher,
             lane,
             size,
+            cont,
         }
     }
 
     /// The control under (`x`, `y`), as its `Tab` index.
     fn at(&self, x: i32, y: i32) -> Option<usize> {
         [
+            (self.cont, HEAD_CONTINUE),
             (self.size, HEAD_SIZE),
             (self.length, HEAD_LENGTH),
             (self.lane, HEAD_LANE),
@@ -1954,6 +2010,8 @@ impl StepGrid {
             bank: self.bank.clone(),
             top: self.top,
             add_lane: self.add_lane,
+            add_continue: self.add_continue,
+            cont: self.cont.clone(),
             rows_open: self.rows_open.clone(),
             stroke: self.stroke.as_ref().map(|s| {
                 let shown = (0..s.lane.bars.len()).map(|k| s.lane.shown(k)).collect();
@@ -2064,11 +2122,16 @@ impl StepGrid {
 
     /// The pattern head, with + Lane where it shows.
     fn head(&self, r: Rect) -> Head {
+        let open = self.cont.is_some();
         Head::of(
             r,
-            self.pitched.is_some(),
-            self.add_lane,
-            self.size.is_some(),
+            HeadHas {
+                pitched: self.pitched.is_some(),
+                add_lane: self.add_lane && !open,
+                size: self.size.is_some(),
+                cont: self.add_continue && !open,
+                open,
+            },
         )
     }
 
@@ -2126,6 +2189,7 @@ impl StepGrid {
             HEAD_LENGTH => h.length,
             HEAD_SIZE => h.size,
             HEAD_LANE => h.lane,
+            HEAD_CONTINUE => h.cont,
             _ => [
                 h.prev, h.next, h.shorter, h.longer, h.fold, h.lower, h.higher,
             ][k],
@@ -2159,8 +2223,16 @@ impl StepGrid {
                 0
             }
             + self.chip_rect(r).map_or(0, |c| c.w + 10);
+        if let Some(c) = &self.cont {
+            // Continue open: the bar shown and what it does, where the
+            // details go.
+            let w = cx.measure(FontId::Bold, 15.0, &c.bar);
+            if title_w + 16 + w <= hd.title.w {
+                cx.text(FontId::Bold, 15.0, hd.title, Align::Right, t.text, &c.bar);
+            }
+        }
         let right_w = cx.measure(FontId::Sans, draw::HEAD_PX, &self.right);
-        if !self.right.is_empty() && title_w + 16 + right_w <= hd.title.w {
+        if self.cont.is_none() && !self.right.is_empty() && title_w + 16 + right_w <= hd.title.w {
             cx.text(
                 FontId::Sans,
                 draw::HEAD_PX,
@@ -2186,8 +2258,23 @@ impl StepGrid {
         };
         button(cx, hd.prev, "‹", prev);
         button(cx, hd.next, "›", next);
-        button(cx, hd.shorter, "−", shorter);
-        button(cx, hd.longer, "+", longer);
+        if hd.length.w > 0 {
+            button(cx, hd.shorter, "−", shorter);
+            button(cx, hd.longer, "+", longer);
+        }
+        if hd.cont.w > 0 {
+            // Continue: the beat carried on (once there are hits).
+            let face = Rect::new(hd.cont.x + 4, mid - 13, hd.cont.w - 8, 26);
+            cx.canvas.fill_round_rect(face, 8, t.raised);
+            cx.text(
+                FontId::Bold,
+                14.0,
+                face,
+                Align::Center,
+                t.button_ink(self.length > 0),
+                "Continue",
+            );
+        }
         if hd.lane.w > 0 {
             // + Lane: a lock lane (usable once there is a clip).
             let face = Rect::new(hd.lane.x + 4, mid - 13, hd.lane.w - 8, 26);
@@ -2259,14 +2346,16 @@ impl StepGrid {
             self.length
         };
         let length = format!("{n} steps");
-        cx.text(
-            FontId::Bold,
-            draw::HEAD_PX,
-            row(hd.length),
-            Align::Center,
-            t.text_dim,
-            &length,
-        );
+        if hd.length.w > 0 {
+            cx.text(
+                FontId::Bold,
+                draw::HEAD_PX,
+                row(hd.length),
+                Align::Center,
+                t.text_dim,
+                &length,
+            );
+        }
     }
 
     /// Play's head ([`BankHead`]): the track with ‹ and ›, the banks (the
@@ -2979,6 +3068,15 @@ impl Widget for StepGrid {
                 let m = lane.marks.get(s).copied().unwrap_or_default();
                 let lit = self.play == Some(s) && !lane.muted;
                 paint_cell(cx, sr, v, &m, c, lane.muted, lit, s % 4 == 0);
+                let new = self
+                    .cont
+                    .as_ref()
+                    .and_then(|c| c.new_from)
+                    .is_some_and(|n| s >= n);
+                if new && v > 0 {
+                    // A new bar's step: faint until Done.
+                    cx.canvas.fill_round_rect(sr, 5, t.surface.with_alpha(120));
+                }
                 if self.selected == Some((lane.pad, s)) || self.held.contains(&(lane.pad, s)) {
                     cx.canvas.stroke_round_rect(sr.inset(-3), 7, 2, t.text);
                 }
@@ -3057,9 +3155,15 @@ impl Widget for StepGrid {
             (HEAD_LONGER, "More steps", h.longer, longer),
         ]
         .into_iter()
-        .filter(|_| self.bank.is_none())
+        .filter(|(_, _, rect, _)| self.bank.is_none() && rect.w > 0)
         {
             out.push(Target::tap("head", k, label, rect).disabled_if(!can));
+        }
+        if h.cont.w > 0 && self.bank.is_none() {
+            out.push(
+                Target::tap("head", HEAD_CONTINUE, "Continue", h.cont)
+                    .disabled_if(self.length == 0),
+            );
         }
         if h.lane.w > 0 && self.bank.is_none() {
             out.push(
@@ -3076,7 +3180,7 @@ impl Widget for StepGrid {
         }
         // The length: a value the wheel and - / + turn a step at a time
         // (refactor D2), once a tap or the outline puts them on it.
-        if self.bank.is_none() {
+        if self.bank.is_none() && h.length.w > 0 {
             out.push(
                 Target::drag("length", HEAD_LENGTH, "Length", h.length)
                     .disabled_if(self.length == 0),
