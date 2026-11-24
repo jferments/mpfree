@@ -4672,6 +4672,7 @@ impl Looper {
                 };
                 let tap_reading = heard(tap_len).unwrap_or(tap_reading);
                 let bars = tap_reading.bars;
+                let other = tap_reading.other.map(|(b, _)| b);
                 let d = if self.by_ear {
                     // By ear: the finder's answer, waited for a little.
                     let wait = ms_frames(rate, FIND_WAIT_AUTO_MS);
@@ -4684,7 +4685,8 @@ impl Looper {
                         }
                     }
                 } else {
-                    ends::decide(&self.notes, &ask, &|_| Some(bars))
+                    // A bar count in doubt must agree on the end.
+                    ends::decide_agreed(&self.notes, &ask, bars, other)
                 };
                 // A smart start (your first hit came just after REC) needs
                 // what was heard after the end kept: room for it.
@@ -4869,7 +4871,8 @@ impl Looper {
                     None => continue,
                 }
             } else {
-                ends::decide(&self.notes, &ask, &|_| Some(bars))
+                let other = w.reading.other.map(|(b, _)| b);
+                ends::decide_agreed(&self.notes, &ask, bars, other)
             };
             self.loops[k].smart_wait = None;
             let by = d.moved_by(w.tap);
