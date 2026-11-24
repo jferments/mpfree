@@ -225,8 +225,9 @@ pub struct Session {
     pub synth_on: bool,
     /// What each track plays, as main.rs keeps it.
     pub track_kits: crate::sampler::TrackKits,
-    /// The song's tuning the kits were handed last, as main.rs keeps it.
-    kits_tuned: Option<crate::synth::TuningPick>,
+    /// What each instrument plays in, as main.rs hands it over (tunings
+    /// step T5).
+    tunings_handed: Box<crate::TuningsHanded>,
     /// The project's instruments, as main.rs keeps them.
     pub instrument_list: crate::instrument_list::InstrumentList,
     /// The tracks' own instruments and sends the screen was last told of,
@@ -241,6 +242,11 @@ pub struct Session {
     /// What the screen shows the pads play, and their bank's letter (step
     /// 6c), as main.rs.
     pads_shown: (crate::app::PadFocus, Option<usize>),
+    /// Each kit's tuning as the Pads tab's Edit pad last showed it.
+    kit_tunings_shown: Option<(
+        mpfree_tuning::TuningPick,
+        [Option<mpfree_tuning::TuningPick>; crate::instrument_list::KITS],
+    )>,
     /// Who plays the Synth tab's instrument, as last shown (step 8b).
     who_shown: Option<String>,
     /// The time engine's REDOs seen so far, as player_session keeps them.
@@ -431,7 +437,7 @@ impl Session {
             kit: 0,
             synth_on: false,
             track_kits: crate::sampler::TrackKits::new(n),
-            kits_tuned: None,
+            tunings_handed: Box::new(crate::TuningsHanded::new()),
             instrument_list: {
                 // Each kit place has its id, as main.rs's (step 14).
                 let mut list = crate::instrument_list::InstrumentList::new();
@@ -441,6 +447,7 @@ impl Session {
             sounds_shown: [None; crate::instruments::HOLDERS],
             pads_host_shown: None,
             pads_shown: (crate::app::PadFocus::Track, None),
+            kit_tunings_shown: None,
             who_shown: None,
             sends_shown: [None; crate::instruments::TRACKS],
             plan_shown: None,
@@ -808,7 +815,7 @@ impl Session {
         let mut kits = crate::kit::parse_kits(&file).expect("the tones kit");
         self.sounds = Some(crate::sampler::Player::new(&mut kits, &notes, RATE).expect("a player"));
         // A new player starts in 12-TET: the next period hands it the tuning.
-        self.kits_tuned = None;
+        self.tunings_handed.new_player();
         self
     }
 
@@ -1411,9 +1418,8 @@ impl Session {
             self.out.show(ToUi::PadUp(pad));
             return;
         }
-        if let (true, true, Some(to)) =
-            (down && pad < 16, self.app.generating(), self.pads_preview())
-        {
+        let arp_on = self.app.pads_own_mode() != mpfree_arp::Mode::Direct;
+        if let (true, true, Some(to)) = (down && pad < 16, arp_on, self.pads_preview()) {
             let v = self.app.velocity(velocity);
             let mut buf = [0u8; mpfree_arp::scale::pads::MAX_PAD_NOTES];
             let n = match to {
@@ -1811,6 +1817,12 @@ impl Session {
             }
             self.pads_shown = pads_now;
         }
+        // Each kit's tuning for the Pads tab's Edit pad, as main.rs.
+        let kit_tunings_now = Some(self.app.kit_tunings_key());
+        if kit_tunings_now != self.kit_tunings_shown {
+            self.kit_tunings_shown = kit_tunings_now;
+            self.out.show(ToUi::KitTunings(self.app.kit_tunings()));
+        }
         // Who plays the Synth tab's instrument (step 8b), as main.rs.
         if self.app.view() == crate::app::View::Synth {
             let who = crate::who_plays(
@@ -1998,9 +2010,9 @@ impl Session {
             .period_arps(PERIOD as u32, &mut self.hits, &mut self.app.arps);
         // The pads' arp (sampler step 15c), as main.rs: on the clips' arps'
         // period, where the pads play on their own.
-        let own_swing = self.app.arp_own_swing();
+        let (mode, own_swing) = (self.app.pads_own_mode(), self.app.arp_own_swing());
         self.pads_arp
-            .follow(self.app.arps.engine_at(self.app.track()), own_swing);
+            .follow(self.app.arps.engine_at(self.app.track()), mode, own_swing);
         {
             let (synth, own) = (&mut *self.synth, &mut self.mix.instruments);
             let (sounds, played) = (&mut self.sounds, &mut self.arp_played);
@@ -2213,12 +2225,19 @@ impl Session {
         let mut played = 0;
         if let Some(p) = self.sounds.as_mut() {
             p.set_tempo(self.time.info().bpm);
-            // The kits play the song's tuning, as main.rs hands it over.
-            let (now, said) = crate::kits_follow_tuning(&self.synth, p, self.kits_tuned);
-            self.kits_tuned = now;
-            if let Some(line) = said {
-                self.out.note(&line);
-            }
+        }
+        // Each instrument plays its own tuning or the song's, as main.rs
+        // hands them over.
+        for line in self.tunings_handed.follow(
+            self.app.tunings(),
+            &self.instrument_list,
+            &self.synth,
+            &mut self.mix,
+            self.sounds.as_mut(),
+        ) {
+            self.out.note(&line);
+        }
+        if let Some(p) = self.sounds.as_mut() {
             let mut pads = self.mix.pads();
             p.render_routed(PERIOD, &mut pads);
             played = pads.played();
@@ -2375,6 +2394,7 @@ impl Session {
             ),
             instrument_list: self.instrument_list.text(),
             pads: self.app.pads_part(),
+            tunings: self.app.tunings_part(),
             loops,
             audio,
         };
@@ -2508,6 +2528,11 @@ impl Session {
         self.fx.extend(fx);
         self.app.forget_copies();
         let (notes, fx) = self.app.open_pads(o.pads.as_deref());
+        for line in notes {
+            self.out.note(&line);
+        }
+        self.fx.extend(fx);
+        let (notes, fx) = self.app.open_tunings(o.tunings.as_deref());
         for line in notes {
             self.out.note(&line);
         }
@@ -3025,7 +3050,7 @@ impl Session {
                     Effect::BankLights => {}
                     Effect::Audio(p) => self.out.note(&format!("audio buffer: {p} periods")),
                     Effect::Quit => self.quit = true,
-                    Effect::SavePatterns(_) => {}
+                    Effect::SavePatterns(_) | Effect::SavePhrases(_) => {}
                     Effect::SaveProject => self.save_asked = true,
                     // 16 LEVEL, as main.rs: the synth's pads open Transpose;
                     // the Drums engine's have neither.

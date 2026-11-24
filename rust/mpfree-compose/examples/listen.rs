@@ -65,8 +65,17 @@
 //! alone, the riff's beat alone and the swung line with its beat; with
 //! `--midi` your clip with the style's beat.
 //!
-//! It never touches any device: it reads only the MIDI file given and
-//! writes only into its one new folder.
+//! `--phrases` is another set altogether: the arp's phrases as they play,
+//! one file each (`examples/listen/phrases.rs`). The arp's own engine
+//! plays every phrase MPFree ships (or, with `--phrases-from FILE`, every
+//! phrase of a library file) from a held note that moves through the key,
+//! on a sound, at a tempo and over a beat picked for it, through this
+//! tool's mix. `--only TEXT` keeps the phrases whose name or kind holds
+//! the text; `EXPLAIN=1` prints the notes each one played. It writes the
+//! WAVs, report.txt and phrases.json (for the listening page).
+//!
+//! It never touches any device: it reads only the MIDI or library file
+//! given and writes only into its one new folder.
 #![forbid(unsafe_code)]
 
 use mpfree_compose::baseline::{
@@ -94,6 +103,9 @@ use mpfree_synth::{Bass, Drums, Keys, Pluck, Poly, Strings, Wind};
 use mpfree_transport::time::{Meter, Swing, Tick, PPQ};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+
+#[path = "listen/phrases.rs"]
+mod phrases;
 
 const RATE: u32 = 48_000;
 const BLOCK: usize = 128;
@@ -1731,9 +1743,15 @@ struct Part {
     delay: f32,
     /// (frame, note-off before note-on at the same frame, event)
     events: Vec<(u64, u8, NodeEvent)>,
+    /// How far under the lead it sits, in LU, in the sets mixed by how
+    /// loud each part sounds ([`mix`]); the lead itself is at 0.
+    below: f64,
+    /// Drums or a pad: left out on plain keys.
+    backing: bool,
 }
 
 impl Part {
+    /// The lead: every other part is set against it.
     fn new(node: Box<dyn Node>, gain: f32, reverb: f32, delay: f32) -> Part {
         Part {
             node,
@@ -1741,7 +1759,21 @@ impl Part {
             reverb,
             delay,
             events: Vec::new(),
+            below: 0.0,
+            backing: false,
         }
+    }
+
+    /// The part `lu` under the lead.
+    fn under(mut self, lu: f64) -> Part {
+        self.below = lu;
+        self
+    }
+
+    /// Drums or a pad.
+    fn backing(mut self) -> Part {
+        self.backing = true;
+        self
     }
 
     fn note(&mut self, on: u64, off: u64, note: u8, velocity: u8) {
@@ -2126,6 +2158,163 @@ fn bass_line(p: &Phrase, chords: &ChordTimeline, from: Tick, to: Tick) -> Vec<No
     out
 }
 
+/// How far under the lead the drummer and a bass sit, in LU, for the
+/// phrase's style.
+fn sits(p: &Phrase) -> (f64, f64) {
+    match p.style.bass.drums {
+        DrumMap::BoomBap => (-3.0, -3.0),
+        DrumMap::Ride => (-6.0, -5.0),
+        _ => (-4.0, -4.0),
+    }
+}
+
+/// The parts as heard together, `frames` long (to the next whole block):
+/// each part on its own first, so that in the sets mixed by loudness
+/// every part can be set where it sits under the first one (the lead)
+/// whatever its preset's own level; then the echo and the plate; then the
+/// whole brought to the loudness every file has. `drums_lu` is where a
+/// drummer sits ([`sits`]): with a silent lead (a beat alone) the parts
+/// are set against where the lead would be over the drums.
+fn mix(parts: &mut [Part], drums_lu: f64, bpm: f64, frames: usize) -> (Vec<f32>, Vec<f32>) {
+    let frames = frames.div_ceil(BLOCK) * BLOCK;
+    let (mut l, mut r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
+    let ctx_at = |pos: usize| Ctx {
+        rate: RATE,
+        frame: pos as u64,
+        bpm,
+        beats: pos as f64 / f64::from(RATE) * bpm / 60.0,
+        playing: true,
+        sidechain: None,
+    };
+    // Each part on its own first, so the mix can be set by how loud each
+    // part sounds.
+    let mut dry: Vec<(Vec<f32>, Vec<f32>)> = Vec::new();
+    let mut buf = Vec::new();
+    for part in parts.iter_mut() {
+        let (mut pl, mut pr) = (vec![0.0f32; frames], vec![0.0f32; frames]);
+        part.events.sort_by_key(|e| (e.0, e.1));
+        part.node.prepare(RATE, BLOCK);
+        let mut i = 0;
+        for pos in (0..frames).step_by(BLOCK) {
+            buf.clear();
+            while i < part.events.len() && part.events[i].0 < (pos + BLOCK) as u64 {
+                let (f, _, e) = part.events[i];
+                buf.push(Timed::new((f.max(pos as u64) - pos as u64) as u32, e));
+                i += 1;
+            }
+            l.fill(0.0);
+            r.fill(0.0);
+            part.node.process(&ctx_at(pos), &buf, &mut l, &mut r);
+            pl[pos..pos + BLOCK].copy_from_slice(&l);
+            pr[pos..pos + BLOCK].copy_from_slice(&r);
+        }
+        dry.push((pl, pr));
+    }
+    // The S0 sets: every part sits a set number of LU under the melody,
+    // whatever its preset's own level (parts: melody, drums, then pad and
+    // bass on the long listen). Plain keys keep only the melody and bass.
+    if matches!(sounds(), Sounds::A | Sounds::B | Sounds::Plain) {
+        // Set against the melody; with no melody (a beat alone), against
+        // where the melody would be over the drums.
+        let mut melody = loudness(&dry[0].0, &dry[0].1);
+        if !melody.is_finite() && !parts[0].events.is_empty() {
+            eprintln!("listen: the lead has notes but made no sound");
+        }
+        if !melody.is_finite() {
+            melody = (1..parts.len())
+                .find_map(|k| {
+                    let lu = loudness(&dry[k].0, &dry[k].1);
+                    (lu.is_finite() && parts[k].backing && parts[k].below == drums_lu)
+                        .then_some(lu - drums_lu)
+                })
+                .unwrap_or(melody);
+        }
+        for (k, part) in parts.iter_mut().enumerate() {
+            let lu = loudness(&dry[k].0, &dry[k].1);
+            part.gain = if sounds() == Sounds::Plain && part.backing {
+                0.0
+            } else if melody.is_finite() && lu.is_finite() {
+                10f64.powf((melody + part.below - lu) / 20.0) as f32
+            } else {
+                part.gain
+            };
+            if sounds() == Sounds::Plain {
+                part.reverb = 0.0;
+                part.delay = 0.0;
+            }
+            if std::env::var_os("EXPLAIN").is_some() {
+                eprintln!(
+                    "  mix: part {} is {lu:.1} LUFS on its own, set {:+.1} dB",
+                    k + 1,
+                    20.0 * f64::from(part.gain.max(1e-9)).log10()
+                );
+            }
+        }
+    }
+    let (mut left, mut right) = (vec![0.0f32; frames], vec![0.0f32; frames]);
+    let (mut rev_l, mut rev_r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
+    let (mut del_l, mut del_r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
+    for (part, (pl, pr)) in parts.iter().zip(&dry) {
+        for k in 0..frames {
+            let (a, b) = (pl[k] * part.gain, pr[k] * part.gain);
+            left[k] += a;
+            right[k] += b;
+            rev_l[k] += a * part.reverb;
+            rev_r[k] += b * part.reverb;
+            del_l[k] += a * part.delay;
+            del_r[k] += b * part.delay;
+        }
+    }
+    // The echo: a dotted 1/8, a few soft repeats, dark; a little of it
+    // into the reverb too.
+    let mut echo = Delay::new();
+    for (id, v) in [(0u16, 7.0), (2, 32.0), (3, 1.0), (4, 3_500.0), (6, 100.0)] {
+        echo.set_param(id, v);
+    }
+    let mut plate = Plate::new();
+    for (id, v) in [
+        (plate::PREDELAY, 18.0),
+        (plate::DECAY, 2_200.0),
+        (plate::DAMPING, 45.0),
+        (plate::LOW_CUT, 180.0),
+        (plate::MIX, 100.0),
+    ] {
+        plate.set_param(id, v);
+    }
+    let fx: [(&mut dyn Node, bool); 2] = [(&mut echo, true), (&mut plate, false)];
+    for (node, is_echo) in fx {
+        node.prepare(RATE, BLOCK);
+        for pos in (0..frames).step_by(BLOCK) {
+            let (src_l, src_r) = if is_echo {
+                (&del_l, &del_r)
+            } else {
+                (&rev_l, &rev_r)
+            };
+            l.copy_from_slice(&src_l[pos..pos + BLOCK]);
+            r.copy_from_slice(&src_r[pos..pos + BLOCK]);
+            node.process(&ctx_at(pos), &[], &mut l, &mut r);
+            for k in 0..BLOCK {
+                left[pos + k] += l[k];
+                right[pos + k] += r[k];
+                if is_echo {
+                    rev_l[pos + k] += l[k] * 0.3;
+                    rev_r[pos + k] += r[k] * 0.3;
+                }
+            }
+        }
+    }
+    // Every file at the same loudness, so files compare fairly; the
+    // writer's fixed LEVEL is taken into account.
+    let lu = loudness(&left, &right);
+    if lu.is_finite() {
+        let g = (10f64.powf((FILE_LUFS - lu) / 20.0) / f64::from(LEVEL)) as f32;
+        for x in left.iter_mut().chain(right.iter_mut()) {
+            *x *= g;
+        }
+    }
+    (left, right)
+}
+
 /// The case's take as heard: the melody, a drummer, and in the long
 /// listen the chords as a pad and a bass, through a plate reverb and a
 /// tempo-synced echo.
@@ -2199,15 +2388,9 @@ fn render(p: &Phrase, t: &Take) -> (Vec<f32>, Vec<f32>, Smf) {
         }
     }
     // How far under the melody each part sits in the S0 sets, in LU.
-    let (drums_lu, bass_lu) = match p.style.bass.drums {
-        DrumMap::BoomBap => (-3.0, -3.0),
-        DrumMap::Ride => (-6.0, -5.0),
-        _ => (-4.0, -4.0),
-    };
-    let mut parts = vec![melody, drums];
-    let mut below: Vec<f64> = vec![0.0, drums_lu];
     // Plain keys play only the melody and the basses.
-    let mut drum_or_pad = vec![false, true];
+    let (drums_lu, bass_lu) = sits(p);
+    let mut parts = vec![melody, drums.under(drums_lu).backing()];
     let mut midi_bass: Vec<(u64, Msg)> = Vec::new();
     // The chords, as a quiet pad, and a bass, for the long listen.
     if let Some(chords) = &t.pad {
@@ -2244,12 +2427,8 @@ fn render(p: &Phrase, t: &Take) -> (Vec<f32>, Vec<f32>, Smf) {
             bass.note(at(on), at(off), note, vel);
             midi_note(&mut midi_bass, 1, on, off, note, vel);
         }
-        parts.push(pad);
-        below.push(-11.0);
-        drum_or_pad.push(true);
-        parts.push(bass);
-        below.push(bass_lu);
-        drum_or_pad.push(false);
+        parts.push(pad.under(-11.0).backing());
+        parts.push(bass.under(bass_lu));
     }
     // Parts added to a row (S2), each on its own sound.
     let mut midi_extra: Vec<(&'static str, Vec<(u64, Msg)>)> = Vec::new();
@@ -2281,129 +2460,16 @@ fn render(p: &Phrase, t: &Take) -> (Vec<f32>, Vec<f32>, Smf) {
             part.note(at(on), at(off), note, vel);
             midi_note(&mut track, ch, on, off, note, vel);
         }
-        parts.push(part);
-        below.push(lu);
-        drum_or_pad.push(x.kind == ExtraKind::Drums);
+        let part = part.under(lu);
+        parts.push(if x.kind == ExtraKind::Drums {
+            part.backing()
+        } else {
+            part
+        });
         midi_extra.push((name, track));
     }
     let frames = (at(to) as f64 + TAIL * f64::from(RATE)) as usize;
-    let frames = frames.div_ceil(BLOCK) * BLOCK;
-    let (mut l, mut r) = (vec![0.0f32; BLOCK], vec![0.0f32; BLOCK]);
-    let ctx_at = |pos: usize| Ctx {
-        rate: RATE,
-        frame: pos as u64,
-        bpm: p.bpm,
-        beats: pos as f64 / f64::from(RATE) * p.bpm / 60.0,
-        playing: true,
-        sidechain: None,
-    };
-    // Each part on its own first, so the mix can be set by how loud each
-    // part sounds.
-    let mut dry: Vec<(Vec<f32>, Vec<f32>)> = Vec::new();
-    let mut buf = Vec::new();
-    for part in &mut parts {
-        let (mut pl, mut pr) = (vec![0.0f32; frames], vec![0.0f32; frames]);
-        part.events.sort_by_key(|e| (e.0, e.1));
-        part.node.prepare(RATE, BLOCK);
-        let mut i = 0;
-        for pos in (0..frames).step_by(BLOCK) {
-            buf.clear();
-            while i < part.events.len() && part.events[i].0 < (pos + BLOCK) as u64 {
-                let (f, _, e) = part.events[i];
-                buf.push(Timed::new((f.max(pos as u64) - pos as u64) as u32, e));
-                i += 1;
-            }
-            l.fill(0.0);
-            r.fill(0.0);
-            part.node.process(&ctx_at(pos), &buf, &mut l, &mut r);
-            pl[pos..pos + BLOCK].copy_from_slice(&l);
-            pr[pos..pos + BLOCK].copy_from_slice(&r);
-        }
-        dry.push((pl, pr));
-    }
-    // The S0 sets: every part sits a set number of LU under the melody,
-    // whatever its preset's own level (parts: melody, drums, then pad and
-    // bass on the long listen). Plain keys keep only the melody and bass.
-    if matches!(sounds(), Sounds::A | Sounds::B | Sounds::Plain) {
-        // Set against the melody; with no melody (a beat alone), against
-        // where the melody would be over the drums.
-        let mut melody = loudness(&dry[0].0, &dry[0].1);
-        if !melody.is_finite() {
-            melody = (1..parts.len())
-                .find_map(|k| {
-                    let lu = loudness(&dry[k].0, &dry[k].1);
-                    (lu.is_finite() && drum_or_pad[k] && below[k] == drums_lu)
-                        .then_some(lu - drums_lu)
-                })
-                .unwrap_or(melody);
-        }
-        for (k, part) in parts.iter_mut().enumerate() {
-            let lu = loudness(&dry[k].0, &dry[k].1);
-            part.gain = if sounds() == Sounds::Plain && drum_or_pad[k] {
-                0.0
-            } else if melody.is_finite() && lu.is_finite() {
-                10f64.powf((melody + below.get(k).copied().unwrap_or(-6.0) - lu) / 20.0) as f32
-            } else {
-                part.gain
-            };
-            if sounds() == Sounds::Plain {
-                part.reverb = 0.0;
-                part.delay = 0.0;
-            }
-        }
-    }
-    let (mut left, mut right) = (vec![0.0f32; frames], vec![0.0f32; frames]);
-    let (mut rev_l, mut rev_r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
-    let (mut del_l, mut del_r) = (vec![0.0f32; frames], vec![0.0f32; frames]);
-    for (part, (pl, pr)) in parts.iter().zip(&dry) {
-        for k in 0..frames {
-            let (a, b) = (pl[k] * part.gain, pr[k] * part.gain);
-            left[k] += a;
-            right[k] += b;
-            rev_l[k] += a * part.reverb;
-            rev_r[k] += b * part.reverb;
-            del_l[k] += a * part.delay;
-            del_r[k] += b * part.delay;
-        }
-    }
-    // The echo: a dotted 1/8, a few soft repeats, dark; a little of it
-    // into the reverb too.
-    let mut echo = Delay::new();
-    for (id, v) in [(0u16, 7.0), (2, 32.0), (3, 1.0), (4, 3_500.0), (6, 100.0)] {
-        echo.set_param(id, v);
-    }
-    let mut plate = Plate::new();
-    for (id, v) in [
-        (plate::PREDELAY, 18.0),
-        (plate::DECAY, 2_200.0),
-        (plate::DAMPING, 45.0),
-        (plate::LOW_CUT, 180.0),
-        (plate::MIX, 100.0),
-    ] {
-        plate.set_param(id, v);
-    }
-    let fx: [(&mut dyn Node, bool); 2] = [(&mut echo, true), (&mut plate, false)];
-    for (node, is_echo) in fx {
-        node.prepare(RATE, BLOCK);
-        for pos in (0..frames).step_by(BLOCK) {
-            let (src_l, src_r) = if is_echo {
-                (&del_l, &del_r)
-            } else {
-                (&rev_l, &rev_r)
-            };
-            l.copy_from_slice(&src_l[pos..pos + BLOCK]);
-            r.copy_from_slice(&src_r[pos..pos + BLOCK]);
-            node.process(&ctx_at(pos), &[], &mut l, &mut r);
-            for k in 0..BLOCK {
-                left[pos + k] += l[k];
-                right[pos + k] += r[k];
-                if is_echo {
-                    rev_l[pos + k] += l[k] * 0.3;
-                    rev_r[pos + k] += r[k] * 0.3;
-                }
-            }
-        }
-    }
+    let (left, right) = mix(&mut parts, drums_lu, p.bpm, frames);
     let mut tracks = vec![SmfTrack {
         name: if p.role == PartRole::Bass {
             "Bass"
@@ -2437,15 +2503,6 @@ fn render(p: &Phrase, t: &Take) -> (Vec<f32>, Vec<f32>, Smf) {
         tracks,
         end: length,
     };
-    // Every file at the same loudness, so files compare fairly; the
-    // writer's fixed LEVEL is taken into account.
-    let lu = loudness(&left, &right);
-    if lu.is_finite() {
-        let g = (10f64.powf((FILE_LUFS - lu) / 20.0) / f64::from(LEVEL)) as f32;
-        for x in left.iter_mut().chain(right.iter_mut()) {
-            *x *= g;
-        }
-    }
     (left, right, smf)
 }
 
@@ -2836,7 +2893,8 @@ fn show(p: &Phrase, what: &str, c: &Continued, gestures: &[mpfree_compose::sketc
 }
 
 const USAGE: &str = "usage: listen --demo | --midi FILE [--track N] [--from BAR] [--bars N] [--all-notes] \
-[--style minimal|groove|jazzish] [--bpm N] [--swing 1/8:58] [--role melody|bass] [--sounds a|b|now|round2|plain] [--seed N] [--gate | --parts] [--out DIR] | --critic N (--demo | --midi FILE)";
+[--style minimal|groove|jazzish] [--bpm N] [--swing 1/8:58] [--role melody|bass] [--sounds a|b|now|round2|plain] [--seed N] [--gate | --parts] [--out DIR] | --critic N (--demo | --midi FILE) \
+| --phrases | --phrases-from FILE [--only TEXT] [--out DIR]";
 
 fn run(args: &[String]) -> Result<(), String> {
     let mut demo = false;
@@ -2854,6 +2912,9 @@ fn run(args: &[String]) -> Result<(), String> {
     let mut critic: Option<u64> = None;
     let mut gate = false;
     let mut parts = false;
+    let mut phrases = false;
+    let mut phrases_from: Option<PathBuf> = None;
+    let mut only: Option<String> = None;
     let mut i = 0;
     let value = |i: &mut usize| -> Result<String, String> {
         *i += 1;
@@ -2866,6 +2927,9 @@ fn run(args: &[String]) -> Result<(), String> {
             "--demo" => demo = true,
             "--gate" => gate = true,
             "--parts" => parts = true,
+            "--phrases" => phrases = true,
+            "--phrases-from" => phrases_from = Some(PathBuf::from(value(&mut i)?)),
+            "--only" => only = Some(value(&mut i)?),
             "--critic" => {
                 critic = Some(
                     value(&mut i)?
@@ -2943,6 +3007,33 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         i += 1;
     }
+    let new_dir = |kind: &str| -> Result<PathBuf, String> {
+        let dir = out.clone().unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            Path::new(&home)
+                .join("mpfree-work")
+                .join(format!("{kind}-{}", utc_stamp()))
+        });
+        if dir.exists() && std::fs::read_dir(&dir).map_or(true, |mut d| d.next().is_some()) {
+            return Err(format!(
+                "{} is already there and not empty: give a new --out",
+                dir.display()
+            ));
+        }
+        Ok(dir)
+    };
+    if phrases || phrases_from.is_some() {
+        if demo || midi.is_some() || (phrases && phrases_from.is_some()) {
+            return Err(format!(
+                "give one of --demo, --midi FILE, --phrases or --phrases-from FILE\n{USAGE}"
+            ));
+        }
+        return phrases::run(
+            phrases_from.as_deref(),
+            only.as_deref(),
+            &new_dir("phrases-listen")?,
+        );
+    }
     if demo == midi.is_some() {
         return Err(format!("give --demo or --midi FILE\n{USAGE}"));
     }
@@ -2969,18 +3060,7 @@ fn run(args: &[String]) -> Result<(), String> {
         };
         return critic_table(&phrases, seeds);
     }
-    let dir = out.unwrap_or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        Path::new(&home)
-            .join("mpfree-work")
-            .join(format!("compose-listen-{}", utc_stamp()))
-    });
-    if dir.exists() && std::fs::read_dir(&dir).map_or(true, |mut d| d.next().is_some()) {
-        return Err(format!(
-            "{} is already there and not empty: give a new --out",
-            dir.display()
-        ));
-    }
+    let dir = new_dir("compose-listen")?;
     let (phrases, header) = if let Some(path) = midi {
         let (mut p, said) = midi_phrase(
             &path,

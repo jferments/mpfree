@@ -802,6 +802,11 @@ impl Node for MpcNode {
     fn latency(&self) -> u32 {
         self.inst.fields().initial_delay.max(0) as u32
     }
+
+    /// An MPC plugin instrument takes MIDI notes only: it plays 12-TET.
+    fn follows_tuning(&self) -> bool {
+        self.kind != Kind::Instrument
+    }
 }
 
 // --------------------------------------------------------------- control

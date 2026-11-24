@@ -21,3 +21,5 @@ mpfree-midi = { path = "../mpfree-midi" }
 mpfree-node = { path = "../mpfree-node" }
 mpfree-synth = { path = "../mpfree-synth" }
 mpfree-fx = { path = "../mpfree-fx" }
+# Its --phrases: the arp's engine plays its phrases, to be heard.
+mpfree-arp = { path = "../mpfree-arp" }

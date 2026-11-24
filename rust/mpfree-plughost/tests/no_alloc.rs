@@ -1,13 +1,13 @@
 //! The host's part of the sandbox never allocates or frees on the audio
 //! thread: notes, pressure, bend, parameters (as events and between
-//! blocks), resets, the values the process sends back, blocks cut to the
-//! process's size, misses and busy blocks. (The plugin process has its own
+//! blocks), resets, tuning changes, the values the process sends back,
+//! blocks cut to the process's size, misses and busy blocks. (The plugin process has its own
 //! audio thread; what it does there is `mpfree-clap`'s, which has its own
 //! test.)
 
 use mpfree_clap::testplug::{gain_params, synth_params, GAIN_ID, SYNTH_ID};
 use mpfree_clap::Library;
-use mpfree_node::{Ctx, Node, NodeEvent, Timed};
+use mpfree_node::{Ctx, Node, NodeEvent, Timed, Tuning};
 use mpfree_plughost::{spawn, Deadline};
 use mpfree_prof::alloc::{installed, thread_count, CountingAlloc};
 use std::path::PathBuf;
@@ -79,6 +79,10 @@ fn the_audio_threads_part_never_allocates() {
     gain.prepare(RATE, 256);
     let mut events: Vec<Timed> = Vec::with_capacity(16);
     let (mut l, mut r) = (vec![0f32; 128], vec![0f32; 128]);
+    // Three tunings, made before: 12-TET, quarter tones and a table.
+    let table = Tuning::from_keys(|k| Some(261.6 * 2f64.powf(f64::from(k - 60) / 12.0 + 0.01)))
+        .expect("a table");
+    let tunings = [Tuning::standard(), Tuning::equal(24, 440.0), table];
     let before = thread_count();
     for b in 0..600u64 {
         events.clear();
@@ -130,6 +134,9 @@ fn the_audio_threads_part_never_allocates() {
         if b % 11 == 0 {
             synth.set_param(decay, 50.0 + (b % 1000) as f32);
             gain.set_param(level, -((b % 12) as f32));
+        }
+        if b % 50 == 0 {
+            synth.set_tuning(&tunings[(b / 50) as usize % 3]);
         }
         // A stall, a miss and a busy block on the way.
         if b == 300 {

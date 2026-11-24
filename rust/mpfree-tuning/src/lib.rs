@@ -42,6 +42,9 @@ const LOG2_MAX: f64 = 20.0;
 /// A4's frequency when nothing else is said.
 pub const A4_HZ: f32 = 440.0;
 
+/// Numbers in a tuning's plain form ([`Tuning::words`]).
+pub const WORDS: usize = 4 + KEYS;
+
 /// Why a tuning couldn't be made: a file that doesn't parse, or a map that
 /// gives too few keys a pitch. The message names the line where it can.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -279,6 +282,60 @@ impl Tuning {
                 ((l - std) * 1200.0) as f32
             }
         }
+    }
+
+    /// The tuning as plain numbers, for memory shared with another process
+    /// (the plugin sandbox hands an instrument its tuning this way):
+    /// [`Tuning::from_words`] makes it again, equal to this one. Never
+    /// allocates.
+    pub fn words(&self) -> [f32; WORDS] {
+        let mut w = [0.0; WORDS];
+        match self.map {
+            Map::Equal {
+                ref_hz,
+                ref_note,
+                steps,
+            } => {
+                w[1] = ref_hz;
+                w[2] = ref_note;
+                w[3] = steps;
+            }
+            Map::Table => {
+                w[0] = 1.0;
+                w[4..].copy_from_slice(&self.log2);
+            }
+        }
+        w
+    }
+
+    /// A tuning from its plain numbers ([`Tuning::words`]). None for
+    /// numbers no tuning gives: an equal tuning whose A4 or steps aren't
+    /// above 0, a key's pitch out of range, not a number anywhere. Never
+    /// allocates.
+    pub fn from_words(w: &[f32; WORDS]) -> Option<Tuning> {
+        let fine = |v: f32| v.is_finite();
+        if w[0] == 0.0 {
+            let (ref_hz, ref_note, steps) = (w[1], w[2], w[3]);
+            let ok = fine(ref_hz) && ref_hz > 0.0 && fine(ref_note) && fine(steps) && steps > 0.0;
+            return ok.then_some(Tuning {
+                map: Map::Equal {
+                    ref_hz,
+                    ref_note,
+                    steps,
+                },
+                log2: [0.0; KEYS],
+            });
+        }
+        if w[0] != 1.0 {
+            return None;
+        }
+        let range = LOG2_MIN as f32..=LOG2_MAX as f32;
+        let mut log2 = [0.0; KEYS];
+        log2.copy_from_slice(&w[4..]);
+        log2.iter().all(|v| range.contains(v)).then_some(Tuning {
+            map: Map::Table,
+            log2,
+        })
     }
 }
 
@@ -660,5 +717,23 @@ mod tests {
         assert!((t.hz(58.0) - 50.0).abs() < 1e-3);
         assert!(Tuning::from_keys(|k| (k == 60).then_some(261.0)).is_err());
         assert!(Tuning::from_keys(|k| Some(if k == 70 { -1.0 } else { 100.0 })).is_err());
+    }
+
+    #[test]
+    fn a_tunings_plain_numbers_make_it_again() {
+        let mut every = vec![Tuning::standard(), Tuning::equal(24, 432.0)];
+        every.extend(Builtin::ALL.iter().map(|b| b.tuning(2, 415.0)));
+        for t in &every {
+            assert_eq!(Tuning::from_words(&t.words()).as_ref(), Some(t));
+        }
+        // Numbers no tuning gives are refused.
+        let mut w = Tuning::standard().words();
+        w[3] = 0.0;
+        assert_eq!(Tuning::from_words(&w), None);
+        let mut w = Builtin::Just.tuning(0, 440.0).words();
+        w[100] = f32::NAN;
+        assert_eq!(Tuning::from_words(&w), None);
+        w[0] = 2.0;
+        assert_eq!(Tuning::from_words(&w), None);
     }
 }

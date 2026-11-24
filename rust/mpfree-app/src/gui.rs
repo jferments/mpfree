@@ -1137,6 +1137,11 @@ fn loops_info(v: &crate::looping::LooperView) -> mpfree_time_ui::view::LoopsInfo
     info
 }
 
+/// What the Sample and Pads pages' hint depends on ([`Player::sample_after`]):
+/// the keyboard shown, a row that pad hits edit or the kit's Tuning picked,
+/// the Wave page's REC, a take shown, and its Warp, Grain or Slice tool.
+type SampleKeys = (bool, (bool, bool), bool, bool, (bool, bool, bool));
+
 pub enum ToUi {
     /// Controller mode (controller_out.rs) is on, as shown, or off.
     Controller(Option<ControllerShow>),
@@ -1316,6 +1321,9 @@ pub enum ToUi {
     /// channel of its own, by kit and pad): the Pads tab's Effects row
     /// names them.
     PadFx(Vec<crate::modpanels::PadFx>),
+    /// Each kit's tuning as the app names it, in kit order (tunings step
+    /// T6): Edit pad's Tuning and the pad's line show the kit's.
+    KitTunings(Vec<mpfree_sampler_ui::play_tab::KitTuning>),
     /// The synth-voice pads that play through the Synth channel (past the
     /// sixteen with a synth of their own, or whose own couldn't be made),
     /// by kit and pad: the Pads tab says so under the pad.
@@ -1595,6 +1603,8 @@ pub enum ToUi {
     LevelsWheel(i32),
     /// The arp's pattern list.
     Patterns(Vec<(String, Pattern)>),
+    /// The arp's phrase list.
+    Phrases(mpfree_arp_ui::PhraseList),
     Workspace(Box<WorkspaceView>),
     /// A step recorded on the pads: the pattern so far and the next step.
     Recorded(Box<Pattern>, usize),
@@ -2009,6 +2019,12 @@ pub enum FromUi {
     SamplePadLive {
         kit: usize,
         values: Vec<(u8, mpfree_sampler::engine::PadField, f32)>,
+    },
+    /// Edit pad's Tuning, under The kit's pads, stepped by `delta`: kit
+    /// `kit`'s own tuning, or Song's (tunings step T6). The app keeps it.
+    KitTuning {
+        kit: usize,
+        delta: i32,
     },
     /// A key pressed (`down`) or let go on the Play tab's keyboard: kit
     /// `kit`'s keygroups play `note`, while that kit is the one playing.
@@ -2434,8 +2450,9 @@ pub struct Player {
     /// The menu's selected row is open for the wheel (its push opened it).
     menu_editing: bool,
     /// The Sample page's Play tab showed its keyboard, a row that pad hits
-    /// edit, and the Wave page's REC on (each changes its hint).
-    sample_keys: (bool, bool, bool, bool, (bool, bool, bool)),
+    /// edit (or the kit's Tuning) picked, and the Wave page's REC on (each
+    /// changes its hint).
+    sample_keys: SampleKeys,
     /// What the REC chip last called the Wave page's REC take.
     here_chip: Option<String>,
     /// What the Play page's Q-Links turn, as its hint names them.
@@ -2647,6 +2664,9 @@ pub struct Player {
     pub workspace: PatternWorkspace,
     /// What the arp screens show, from the app.
     pub arp: ArpState,
+    /// A phrase plays on the armed track (its pads press notes), so the
+    /// NOTE REPEAT band's - and + reach Phrase: what its hint lists.
+    phrases_play: bool,
     /// The Q-Link slider a finger is on, on the panel.
     qlink_focus: Option<usize>,
     /// Where the arp chip is in the header's chips.
@@ -3139,6 +3159,10 @@ impl Player {
             patterns,
             pattern_index: 0,
             pattern_changed: false,
+            phrases: mpfree_arp_ui::PhraseList::built_in(),
+            phrase_index: 0,
+            pads_key: None,
+            phrase: arp_view::PhraseNow::default(),
             notes: Vec::new(),
             step: 0,
             latched: false,
@@ -3266,7 +3290,7 @@ impl Player {
             screen_row: ("-".to_string(), Tone::Dim),
             timed,
             menu_editing: false,
-            sample_keys: (false, false, false, false, (false, false, false)),
+            sample_keys: (false, (false, false), false, false, (false, false, false)),
             here_chip: None,
             sample_qlinks: String::new(),
             sample_live: false,
@@ -3353,6 +3377,7 @@ impl Player {
             },
             workspace,
             arp,
+            phrases_play: false,
             qlink_focus: None,
             arp_chip: None,
             clock_from: None,
@@ -8122,11 +8147,17 @@ impl Player {
         // The level is on the master bar and the tempo on the transport, so
         // the header keeps to the chips that change how the pads play. The
         // arp chip shows while the arp, a repeat or a pattern is on (a tap
-        // opens the panel; NOTE REPEAT + MENU opens it too).
+        // opens the panel; NOTE REPEAT + MENU opens it too). Where the
+        // bar has no room for every chip in full (a long name does that: a
+        // phrase's, a pattern's, "Random, no repeats"), this chip's tempo
+        // goes first, as it is on the transport, so the chips after it
+        // (MAKE or PERFORM, the last) keep their places where they can;
+        // then the end of the name is cut, and the chip stays.
         self.arp_chip = None;
         let s = &self.status;
         if self.arp.settings.mode != Mode::Direct || self.arp.latched || s.repeat || s.latched {
             let mut arp = arp_view::chip(&self.arp);
+            arp.short = Some(arp.text.clone());
             arp.text = format!("{} · {:.0} BPM", arp.text, self.arp.bpm);
             self.arp_chip = Some(chips.len());
             chips.push(arp);
@@ -8317,9 +8348,13 @@ impl Player {
             "STOP: silence"
         };
         let mode = self.arp.settings.mode;
-        let wheel = match mode {
+        // The wheel and Q-Link 1 follow the tab: the mode the pads play
+        // through, or Phrase while the panel shows that tab on a kit.
+        let tab = self.arp.tab();
+        let wheel = match tab {
             Mode::Arp => "order",
             Mode::Pattern => "pattern   ·   SHIFT + wheel: group",
+            Mode::Phrase => "phrase",
             Mode::Direct | Mode::Repeat => "rate",
         };
         let text = if self.power.is_some() {
@@ -8404,7 +8439,9 @@ impl Player {
         } else if self.status.shift
             && self.ready
             && (matches!(self.view, View::Mixer | View::Chain | View::Macros)
-                || (self.view == View::Arp && self.ui.rect_of(arp_view::QLINKS).is_some()))
+                || (self.view == View::Arp
+                    && (self.ui.rect_of(arp_view::QLINKS).is_some()
+                        || self.ui.rect_of(arp_view::PLAYS).is_some())))
             && (self.view != View::Mixer || mpfree_mixer_ui::io_hint(&self.ui).is_none())
         {
             SHIFT_LEARN_HINT.to_string()
@@ -8491,7 +8528,15 @@ impl Player {
             format!("Latched: {}   ·   NOTE REPEAT: let go   ·   hold NOTE REPEAT for the wheel, - / + and Q-Links   ·   \
                      {stop}", crate::app::mode_label(mode))
         } else if self.play_frame() && self.band_showing() {
-            format!("Wheel: {wheel}   ·   - / +: Repeat, Arp, Pattern   ·   Q-Links: rate, gate, swing, octaves   ·   \
+            // On a synth, - and + reach Phrase too; a phrase's first
+            // Q-Link is its speed.
+            let modes = if self.phrases_play {
+                "Repeat, Arp, Pattern, Phrase"
+            } else {
+                "Repeat, Arp, Pattern"
+            };
+            let first = if tab == Mode::Phrase { "speed" } else { "rate" };
+            format!("Wheel: {wheel}   ·   - / +: {modes}   ·   Q-Links: {first}, gate, swing, octaves   ·   \
                      + MENU: Arp panel")
         } else if self.view == View::Play && self.levels.open {
             LEVELS_HINT.to_string()
@@ -8694,6 +8739,10 @@ impl Player {
                     "Hit pads to add them to the row picked or take them out   ·   Wheel: the next pad   ·   \
                      tap another row when done   ·   UNDO: undo".to_string()
                 }
+                // The kit's Tuning picked (tunings step T6).
+                View::Pads if self.sample.play_row(&self.ui) == Some(mpfree_sampler_ui::play_tab::Row::KitTuning) => {
+                    mpfree_sampler_ui::play_tab::TUNING_HINT.to_string()
+                }
                 View::Pads if self.sample.page() == sample_page::PLAY_PAGE && self.sample.play_keys_shown() => {
                     format!("Press keys to hear the kit   ·   drag the zone edges and root   ·   \
                      Q-Links 1-4: {}   ·   {ROWS_HINT}", self.sample.play_qlinks_text())
@@ -8739,6 +8788,14 @@ impl Player {
                 View::Chain => mpfree_chain_ui::chain_hint(&self.ui).to_string(),
                 View::Macros => mpfree_chain_ui::MACROS_HINT.to_string(),
                 View::Guide => GUIDE_HINT.to_string(),
+                // The Phrase tab: - and + step its kinds first (the modes
+                // are a tap away); on a kit it says why no list shows.
+                View::Arp if tab == Mode::Phrase => match &self.arp.phrase.kit_track {
+                    Some(track) => format!("{track}'s instrument is a kit   ·   phrases play on a synth   ·   - / +: kind   ·   \
+                                            MENU: options   ·   NOTE REPEAT + MENU: close"),
+                    None => "Wheel: phrase   ·   - / +: kind   ·   Q-Links: speed, gate, swing, octaves   ·   \
+                             MENU: options   ·   NOTE REPEAT + MENU: close".to_string(),
+                },
                 View::Arp => format!("Wheel: {wheel}   ·   - / +: mode   ·   Q-Links: rate, gate, swing, octaves   ·   \
                                       MENU: options   ·   NOTE REPEAT + MENU: close"),
                 View::Pattern => self.workspace.hint().to_string(),
@@ -11119,6 +11176,7 @@ impl Player {
             }
             ToUi::MixerQLink(k, d) => self.mixer_qlink(k, d),
             ToUi::PadFx(fx) => self.sample.set_pad_fx(&mut self.ui, fx),
+            ToUi::KitTunings(t) => self.sample.set_kit_tunings(&mut self.ui, t),
             ToUi::PadsOnSynth(on) => self.sample.set_pads_on_synth(&mut self.ui, on),
             ToUi::MixerFaders => {
                 mpfree_mixer_ui::set_look(&mut self.ui, mpfree_mixer_ui::Look::Faders);
@@ -11379,10 +11437,21 @@ impl Player {
                         o.reset_view();
                     }
                     o.title = m.title;
+                    let mut marks = m.marks.into_iter();
                     o.rows = m
                         .rows
                         .into_iter()
-                        .map(|(name, value)| OptionRow { name, value })
+                        .map(|(name, value)| {
+                            let mark = marks.next().unwrap_or_default();
+                            OptionRow {
+                                name,
+                                value,
+                                tag: mark.tag.to_string(),
+                                sub: mark.sub,
+                                fixed: mark.fixed,
+                                heading: mark.heading,
+                            }
+                        })
                         .collect();
                     o.selected = m.selected;
                     o.editing = m.editing;
@@ -11393,16 +11462,31 @@ impl Player {
                 }
                 if let Some(c) = self.ui.get_mut::<Card>("help") {
                     c.heading = m.help_heading;
-                    // The row's facts first, brighter, then a gap (the
-                    // Instrument row's track line, step 11d).
-                    let gap = (!m.facts.is_empty()).then(String::new);
+                    // The row's facts first, brighter (amber when they
+                    // warn), then a gap (the Instrument row's track line,
+                    // step 11d) or the link to a page (a Tuning row's
+                    // Tunings button, tunings step T6).
+                    let facts = m.facts.len();
+                    let fact_tone = if m.facts_warn {
+                        Tone::Warn
+                    } else {
+                        Tone::Normal
+                    };
+                    let gap = (facts > 0 && m.help_link.is_none()).then(String::new);
                     c.lines = m
                         .facts
                         .into_iter()
-                        .chain(gap)
-                        .map(|l| (l, Tone::Normal))
+                        .map(|l| (l, fact_tone))
+                        .chain(gap.map(|l| (l, Tone::Normal)))
                         .chain(m.help.into_iter().map(|l| (l, Tone::Dim)))
                         .collect();
+                    c.link = m
+                        .help_link
+                        .map(|(title, sub)| mpfree_ui::widgets::CardLink {
+                            title,
+                            sub,
+                            after: facts,
+                        });
                     c.buttons = m.help_buttons;
                 }
             }
@@ -11772,6 +11856,9 @@ impl Player {
             }
             ToUi::Arp(v) => {
                 let v = *v;
+                // The Phrase tab on a kit names the track, as Arrange does.
+                let kit_track = v.phrase.kit_track.map(|t| self.track_name(t));
+                self.phrases_play = v.phrase.plays;
                 let a = &mut self.arp;
                 a.settings = v.settings;
                 a.live = v.live;
@@ -11779,6 +11866,15 @@ impl Player {
                 a.pattern = v.pattern;
                 a.pattern_index = v.pattern_index;
                 a.pattern_changed = v.pattern_changed;
+                a.phrase_index = v.phrase_index;
+                a.pads_key = v.pads_key;
+                a.phrase = arp_view::PhraseNow {
+                    shelf: v.phrase.shelf,
+                    at: v.phrase.at,
+                    waits: v.phrase.waits,
+                    playing: v.phrase.playing,
+                    kit_track,
+                };
                 a.notes = v.notes;
                 a.step = v.step;
                 a.latched = v.latched;
@@ -11799,6 +11895,10 @@ impl Player {
             }
             ToUi::Patterns(list) => {
                 self.arp.patterns = list;
+                self.refresh_arp();
+            }
+            ToUi::Phrases(list) => {
+                self.arp.phrases = list;
                 self.refresh_arp();
             }
             ToUi::Workspace(w) => {
@@ -12393,14 +12493,16 @@ impl Player {
             self.sample_changed();
         }
         // The keyboard came or went on the Play tab, a row that pad hits
-        // edit was picked, another section (with its own Q-Links) opened,
+        // edit (or the kit's Tuning) was picked, another section (with its own Q-Links) opened,
         // the Slice tool went live, the Wave page's REC went on or off, a
         // take kept on the page came or went on the Wave page, or its
         // Slice, Warp or Grain tool was picked or put down: its hint with
         // it.
+        let tuning =
+            self.sample.play_row(&self.ui) == Some(mpfree_sampler_ui::play_tab::Row::KitTuning);
         let keys = (
             self.sample.play_keys_shown(),
-            self.sample.play_takes_pads(&self.ui),
+            (self.sample.play_takes_pads(&self.ui), tuning),
             self.sample.recorder_on(),
             self.sample.take_shown().is_some(),
             (
@@ -15604,7 +15706,16 @@ impl Player {
                 .get::<QLinkColumn>(play_page::QLINKS)
                 .is_some_and(|q| q.title == ARP_QLINKS)
         };
-        if w == arp_view::QLINKS || (w == play_page::QLINKS && arp_cards()) {
+        // The Phrase tab's own sliders are the same four, but its first is
+        // the phrase's speed, which has no parameter of its own yet (the
+        // rate's would turn the wrong thing), so it learns nothing.
+        let slider = w == arp_view::QLINKS
+            || (w == arp_view::PLAYS && t.id == "slider")
+            || (w == play_page::QLINKS && arp_cards());
+        if slider {
+            if t.index == 0 && self.arp.tab() == Mode::Phrase {
+                return None;
+            }
             let (id, _) = mpfree_play::mpfree_param::arp::ALL.get(t.index)?;
             return Some(LearnValue::Arp(*id));
         }
@@ -19374,6 +19485,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::LevelsWheel(d) => p.apply(ToUi::LevelsWheel(d)),
             Effect::Steps(_) => {}
             Effect::Patterns(l) => p.apply(ToUi::Patterns(l)),
+            Effect::Phrases(l) => p.apply(ToUi::Phrases(l)),
             Effect::Workspace(w) => p.apply(ToUi::Workspace(Box::new(w))),
             Effect::Recorded(pat, next) => p.apply(ToUi::Recorded(Box::new(pat), next)),
             Effect::WorkspaceWheel(d) => p.apply(ToUi::WorkspaceWheel(d)),
@@ -19429,6 +19541,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::PlayFx(_)
             | Effect::TrackMute { .. }
             | Effect::SavePatterns(_)
+            | Effect::SavePhrases(_)
             | Effect::SynthPads(_)
             | Effect::TrackSound { .. }
             | Effect::TrackSend { .. }
@@ -19483,6 +19596,57 @@ fn run_arp(p: &mut Player, app: &mut crate::app::App, frames: u32) {
     }
     let fx: Vec<_> = app.arp_poll().into_iter().collect();
     apply_effects(p, fx);
+}
+
+/// As [`run_arp`] with the transport playing at 120 BPM from period
+/// `*from` on, so a phrase picked while one plays waits for its bar line.
+fn run_arp_playing(p: &mut Player, app: &mut crate::app::App, from: &mut u64, periods: u64) {
+    let mut ev = mpfree_arp::Events::new();
+    for _ in 0..periods {
+        app.set_clock(Some(mpfree_arp::Clock::playing(0, *from * 128, 120.0)));
+        app.process(128, &mut ev);
+        *from += 1;
+    }
+    let fx: Vec<_> = app.arp_poll().into_iter().collect();
+    apply_effects(p, fx);
+}
+
+/// The pad player and its screen with the pads on the synth, In key in A
+/// minor: where a phrase plays (it moves notes, so never on a kit).
+fn phrase_player(fonts: Fonts) -> (Player, crate::app::App) {
+    use mpfree_arp::scale::pads::{layout, PadLayout};
+    // The synth as the Synth tab's options would set it.
+    let mut synth = crate::synth::Synth::new(44_100);
+    let mut set = synth.settings();
+    set.scale = mpfree_arp::scale::by_name("Minor")
+        .map(|m| mpfree_arp::scale::Scale::with_down(9, m.mask, m.down));
+    set.set_layout(PadLayout::InKey);
+    synth.set_settings(set);
+    let synth_kit = sample_kits().len();
+    let mut p = quiet_player(fonts);
+    p.apply(ToUi::KitChanged {
+        kit: synth_kit,
+        view: synth.kit_view(),
+    });
+    p.apply(ToUi::Synth(synth.state()));
+    p.apply(ToUi::Kit(synth_kit));
+    // The pad player in the same key, its pads pressing the synth's notes.
+    let mut app = sample_app();
+    let mut key = mpfree_store::Settings::default();
+    key.set_str("scale-root", "A");
+    key.set_str("scale", "Minor");
+    app.open_synth(&key);
+    app.set_pad_layout(Some(layout(&synth.setup())));
+    (p, app)
+}
+
+/// The place of MPFree's phrase `name` in the pad player's list.
+fn phrase_named(name: &str) -> usize {
+    mpfree_arp_ui::PhraseList::built_in()
+        .phrases
+        .iter()
+        .position(|(n, _)| n == name)
+        .unwrap_or(0)
 }
 
 /// The sample player with no pad held or fading, for the arp's screens.
@@ -23733,6 +23897,99 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     fx.extend(a.select(3));
     apply_effects(&mut options, fx);
     out.push(("synth-options", options));
+    // The tuning screens (tunings step T6, layout spec 3): Track 2's Poly
+    // on Song's, Track 3's FM (Tracks 3 and 4) in its own meantone at 415
+    // Hz, Track 6's Bassline that takes only MIDI, the song in just on D.
+    let tunings_app = || {
+        use crate::instruments::Held;
+        let mut a = sample_app();
+        a.set_track_count(6);
+        let mut list = crate::instrument_list::InstrumentList::new();
+        list.follow_kits(2);
+        list.follow(0b10_0110);
+        a.set_instrument_list(&list);
+        a.set_kit_names(vec!["Classic House".to_string(), String::new()]);
+        for (t, id, name) in [
+            (1, "mpfree.poly", "Poly"),
+            (2, "mpfree.fm", "FM"),
+            (5, "clap:com.example.bassline", "Bassline"),
+        ] {
+            a.set_track_sound(
+                t,
+                Some(Held {
+                    id,
+                    name,
+                    instance: 0,
+                }),
+            );
+        }
+        let mut sends = [None; mpfree_seq::MAX_TRACKS];
+        sends[3] = Some(2);
+        a.set_track_sends(&sends);
+        let mut kit_of = [None; mpfree_seq::MAX_TRACKS];
+        kit_of[0] = Some(0);
+        a.set_tuning_facts((1 << 5, 0), kit_of);
+        let song = crate::synth::TuningPick {
+            builtin: crate::synth::Builtin::Just,
+            root: 2,
+            ..Default::default()
+        };
+        let meantone = crate::synth::TuningPick {
+            builtin: crate::synth::Builtin::Meantone,
+            a4_hz: 415,
+            ..Default::default()
+        };
+        a.set_song_tuning(song);
+        if let Some(fm) = list.own_of(2) {
+            a.set_own_tuning(fm, Some(meantone));
+        }
+        a
+    };
+    // Board 1: Track 2's Poly on Song's, the Tuning row picked.
+    let mut songs = sample_player(fonts());
+    let mut a = tunings_app();
+    let mut fx = a.set_track(1);
+    fx.extend(a.open_tab(View::Synth));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, true, 0.0));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, false, 0.0));
+    let at = a
+        .row_of(crate::app::Item::Synth(crate::app::SynthItem::Tuning))
+        .unwrap_or(5);
+    fx.extend(a.select(at));
+    apply_effects(&mut songs, fx);
+    out.push(("synth-options-tuning", songs));
+    // Board 2: Track 3's FM in its own tuning, its root and A4 under it.
+    let mut own_tuning = sample_player(fonts());
+    let mut a = tunings_app();
+    let mut fx = a.set_track(2);
+    fx.extend(a.open_tab(View::Synth));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, true, 0.0));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, false, 0.0));
+    fx.extend(a.select(at));
+    apply_effects(&mut own_tuning, fx);
+    out.push(("synth-options-own-tuning", own_tuning));
+    // Board 5: Track 6's Bassline can't follow.
+    let mut deaf = sample_player(fonts());
+    let mut a = tunings_app();
+    let mut fx = a.set_track(5);
+    fx.extend(a.open_tab(View::Synth));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, true, 0.0));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, false, 0.0));
+    fx.extend(a.select(at));
+    apply_effects(&mut deaf, fx);
+    out.push(("synth-options-cant-follow", deaf));
+    // Board 3: the Tunings page, FM's row picked.
+    let mut page = sample_player(fonts());
+    let mut a = tunings_app();
+    let mut fx = a.set_track(1);
+    fx.extend(a.open_tab(View::Synth));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, true, 0.0));
+    fx.extend(a.button(mpfree_controller::mpc_one::button::MENU, false, 0.0));
+    fx.extend(a.select(at));
+    fx.extend(a.help_button(mpfree_ui::widgets::CARD_LINK));
+    fx.extend(a.select(8));
+    apply_effects(&mut page, fx);
+    out.push(("tunings-page", page));
     // The Instrument row on track 2 stepped past the engines to a plugin
     // synth (two found), its help open.
     let mut inst = sample_player(fonts());
@@ -24340,6 +24597,42 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         });
         keys.take_actions();
         out.push(("pads-edit-keys", keys));
+    }
+    // The kit's Tuning (tunings step T6, board 4): the pad a keygroup, the
+    // pads playing notes, the song in just on D and the kit on Song's,
+    // its Tuning picked.
+    {
+        use mpfree_sampler_ui::play_tab::{KitTuning, Row, LIST};
+        use mpfree_sampler_ui::widgets::SettingList;
+        let mut tuned = sample_sampler(fonts());
+        edit_pad(&mut tuned);
+        for (row, delta) in [
+            (Row::Keys, 1),
+            (Row::LowKey, 36),
+            (Row::HighKey, -43),
+            (Row::PadsPlay, 1),
+        ] {
+            let index = play_row(&mut tuned, row);
+            tuned.on_event(UiEvent {
+                widget: LIST.into(),
+                kind: EventKind::Step { index, delta },
+            });
+            tuned.apply(ToUi::SampleLift);
+        }
+        tuned.apply(ToUi::KitTunings(vec![KitTuning {
+            value: "Song's: Just (5-limit) on D".into(),
+            line: "tuning: song's".into(),
+        }]));
+        let index = play_row(&mut tuned, Row::KitTuning);
+        if let Some(list) = tuned.ui.get_mut::<SettingList>(LIST) {
+            list.selected = index;
+        }
+        tuned.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Select(index),
+        });
+        tuned.take_actions();
+        out.push(("pads-edit-kit-tuning", tuned));
     }
     // A bank mapped to keys on the Pads tab: five pads named by their
     // notes, one keygroup instrument; the Play tab's keyboard with A5's
@@ -25025,7 +25318,95 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     apply_effects(&mut ws, fx);
     out.push(("arp-workspace-record", ws));
+    // The Arp panel's Phrase tab.
+    for name in PHRASE_SAMPLES {
+        out.push((name, sample_phrase(name, fonts())));
+    }
     out
+}
+
+/// The sample screens of the Arp panel's Phrase tab ([`sample_phrase`]).
+pub const PHRASE_SAMPLES: [&str; 4] = [
+    "arp-phrase",
+    "arp-phrase-next-bar",
+    "arp-phrase-kit",
+    "arp-quick-band-phrase",
+];
+
+/// Sample screen `name` of the Arp panel's Phrase tab, as the owner's
+/// boards have it (23 Nov 2026), each with the real pad player behind it.
+/// On their own so that a test can sweep them without building every
+/// screen.
+pub fn sample_phrase(name: &str, fonts: Fonts) -> Player {
+    use mpfree_controller::mpc_one::button::{NOTE_REPEAT, PLUS};
+    // Night drive of MPFree's basses latched on pad 1, in A minor.
+    let night_drive = |p: &mut Player, app: &mut crate::app::App| {
+        let mut fx = app.toggle_panel();
+        fx.extend(app.arp_action(ArpAction::Mode(Mode::Phrase)));
+        fx.extend(app.arp_action(ArpAction::Phrase(phrase_named("Night drive"))));
+        fx.extend(app.arp_action(ArpAction::Latch));
+        fx.extend(app.pad_down(0, 100));
+        app.pad_up(0);
+        apply_effects(p, fx);
+    };
+    match name {
+        // The transport playing: Dub steps picked two beats into Night
+        // drive waits for the bar line (amber), Night drive still heard
+        // (green).
+        "arp-phrase-next-bar" => {
+            let (mut p, mut app) = phrase_player(fonts);
+            night_drive(&mut p, &mut app);
+            let mut period = 0;
+            run_arp_playing(&mut p, &mut app, &mut period, 344);
+            let fx = app.arp_action(ArpAction::Phrase(phrase_named("Dub steps")));
+            apply_effects(&mut p, fx);
+            run_arp_playing(&mut p, &mut app, &mut period, 86);
+            // The transport bar at the same place: two and a half beats in.
+            p.apply(ToUi::Transport(TransportInfo {
+                state: mpfree_transport::State::Playing,
+                position: (period * 128) as i64 * mpfree_transport::time::PPQ as i64 / 22_050,
+                bpm: 120.0,
+                ..TransportInfo::default()
+            }));
+            p
+        }
+        // The tab on a kit track, whose pads play as pressed: it says so
+        // where the list would be, and the kinds stay to look through.
+        "arp-phrase-kit" => {
+            let mut p = quiet_player(fonts);
+            let mut app = sample_app();
+            let mut fx = app.toggle_panel();
+            fx.extend(app.arp_action(ArpAction::Mode(Mode::Phrase)));
+            apply_effects(&mut p, fx);
+            run_arp(&mut p, &mut app, 128);
+            p
+        }
+        // NOTE REPEAT held on the synth with + pressed to Phrase: the band
+        // names the phrase and steps its speed.
+        "arp-quick-band-phrase" => {
+            let (mut p, mut app) = phrase_player(fonts);
+            let mut fx = app.button(NOTE_REPEAT, true, 0.0);
+            for _ in 0..3 {
+                fx.extend(app.button(PLUS, true, 0.0));
+                fx.extend(app.button(PLUS, false, 0.0));
+            }
+            fx.extend(app.pad_down(0, 100));
+            apply_effects(&mut p, fx);
+            p.apply(ToUi::PadDown {
+                pad: 0,
+                velocity: 100,
+            });
+            run_arp(&mut p, &mut app, 3 * 22_050);
+            p
+        }
+        // The tab: MPFree's basses, Night drive three beats in.
+        _ => {
+            let (mut p, mut app) = phrase_player(fonts);
+            night_drive(&mut p, &mut app);
+            run_arp(&mut p, &mut app, 3 * 22_050);
+            p
+        }
+    }
 }
 
 fn button_play() -> u8 {
@@ -35109,6 +35490,7 @@ mod tests {
             track_kits: String::new(),
             instrument_list: crate::instrument_list::InstrumentList::new().text(),
             pads: String::new(),
+            tunings: String::new(),
             perform: String::new(),
             xy: String::new(),
             loops: Some(loops),
@@ -35700,6 +36082,7 @@ mod tests {
             track_kits: String::new(),
             instrument_list: crate::instrument_list::InstrumentList::new().text(),
             pads: String::new(),
+            tunings: String::new(),
             perform: String::new(),
             xy: String::new(),
             loops: None,
@@ -35868,6 +36251,7 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: crate::instrument_list::InstrumentList::new().text(),
                 pads: String::new(),
+                tunings: String::new(),
                 perform: String::new(),
                 xy: String::new(),
                 loops: None,
@@ -35971,6 +36355,7 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: crate::instrument_list::InstrumentList::new().text(),
                 pads: String::new(),
+                tunings: String::new(),
                 perform: String::new(),
                 xy: String::new(),
                 loops: None,
@@ -44983,9 +45368,10 @@ mod tests {
             0,
             "the panel belongs to Play"
         );
+        // The last of its five tabs is Phrase.
         let modes = p.ui.rect_of(arp_view::MODES).unwrap();
         let a = p.touch(9, Touch::Down, modes.right() - 10, modes.y + modes.h / 2);
-        assert_eq!(a, Some(FromUi::Arp(ArpAction::Mode(Mode::Pattern))));
+        assert_eq!(a, Some(FromUi::Arp(ArpAction::Mode(Mode::Phrase))));
         p.touch(9, Touch::Up, modes.right() - 10, modes.y + modes.h / 2);
         assert!(p
             .ui

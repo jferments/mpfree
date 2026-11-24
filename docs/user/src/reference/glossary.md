@@ -130,6 +130,8 @@ checked: 2026-11-19 f0b39161
 
 **Tracker** — A view of a clip as a list of steps from top to bottom, every step's settings in a row.
 
+**Tunings page** — The page with the song's tuning and every instrument's: what each synth and kit plays in, the song's or its own. Open it from the help of the Synth tab's Tuning row.
+
 **Tuning file** — A Scala file (`.scl`, with an optional `.kbm`) that tunes the synths and the kits' keygroups to a scale of your own.
 
 **Velocity** — How hard a pad is hit, from 1 (softest) to 127 (hardest).

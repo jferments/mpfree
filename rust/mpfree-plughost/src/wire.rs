@@ -40,6 +40,10 @@ pub struct Hello {
     pub name: String,
     pub kind: Kind,
     pub params: Vec<ParamSpec>,
+    /// Whether the plugin plays the tuning it's handed
+    /// (`mpfree_node::Node::follows_tuning`): false for one that takes only
+    /// MIDI notes.
+    pub follows_tuning: bool,
 }
 
 /// Messages the plugin process sends.
@@ -281,7 +285,9 @@ pub fn send_to_host(w: &mut impl Write, m: &ToHost) -> io::Result<()> {
             e.u8(101)
                 .str(&h.id)
                 .str(&h.name)
-                .u8(u8::from(h.kind == Kind::Instrument))
+                // Bit 0: an instrument. Bit 1: it plays 12-TET whatever
+                // tuning it's handed.
+                .u8(u8::from(h.kind == Kind::Instrument) | u8::from(!h.follows_tuning) << 1)
                 .u32(h.params.len() as u32);
             for p in &h.params {
                 put_param(&mut e, p);
@@ -330,7 +336,8 @@ pub fn read_to_host(r: &mut impl Read) -> io::Result<ToHost> {
     Ok(match d.u8()? {
         101 => {
             let (id, name) = (d.str()?, d.str()?);
-            let kind = if d.u8()? != 0 {
+            let what = d.u8()?;
+            let kind = if what & 1 != 0 {
                 Kind::Instrument
             } else {
                 Kind::Effect
@@ -347,6 +354,7 @@ pub fn read_to_host(r: &mut impl Read) -> io::Result<ToHost> {
                 name,
                 kind,
                 params,
+                follows_tuning: what & 2 == 0,
             })
         }
         102 => ToHost::Prepared {
@@ -449,9 +457,17 @@ mod tests {
                     readonly: true,
                 },
             ],
+            follows_tuning: true,
+        };
+        // An instrument that plays 12-TET whatever it's handed says so.
+        let midi_only = Hello {
+            kind: Kind::Instrument,
+            follows_tuning: false,
+            ..hello.clone()
         };
         let to_host = [
             ToHost::Hello(hello),
+            ToHost::Hello(midi_only),
             ToHost::Prepared {
                 ok: true,
                 latency: 3,

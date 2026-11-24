@@ -370,6 +370,7 @@ impl Desk<'_> {
             gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),
             gui::FromUi::GuideButton(k) => fx.extend(app.guide_button(k)),
             gui::FromUi::HelpButton(k) => fx.extend(app.help_button(k)),
+            gui::FromUi::KitTuning { kit, delta } => fx.extend(app.step_kit_tuning(kit, delta)),
             gui::FromUi::Arp(a) => fx.extend(app.arp_action(a)),
             gui::FromUi::Workspace(a) => fx.extend(app.workspace_action(*a)),
             gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
@@ -968,6 +969,7 @@ impl Desk<'_> {
             app::Effect::TouchStep(d) => out.show(gui::ToUi::TouchStep(d)),
             app::Effect::Arp(v) => out.show(gui::ToUi::Arp(Box::new(v))),
             app::Effect::Patterns(list) => out.show(gui::ToUi::Patterns(list)),
+            app::Effect::Phrases(list) => out.show(gui::ToUi::Phrases(list)),
             app::Effect::Workspace(w) => out.show(gui::ToUi::Workspace(Box::new(w))),
             app::Effect::Recorded(p, next) => out.show(gui::ToUi::Recorded(Box::new(p), next)),
             app::Effect::WorkspaceWheel(d) => out.show(gui::ToUi::WorkspaceWheel(d)),
@@ -1053,6 +1055,7 @@ impl Desk<'_> {
             | app::Effect::Bank { .. }
             | app::Effect::BankLights
             | app::Effect::SavePatterns(_)
+            | app::Effect::SavePhrases(_)
             | app::Effect::SetupNextStart { .. }) => return Some(e),
         }
         None

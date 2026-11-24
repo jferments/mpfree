@@ -6,7 +6,8 @@ use mpfree_ui::{Align, EventKind, PaintCx, Rect, Target, Tone, Touch, Widget};
 
 // ---------------------------------------------------------------- segments
 
-/// A row of equal tabs, one of them active (Direct, Repeat, Arp, Pattern).
+/// A row of equal tabs, one of them active (Direct, Repeat, Arp, Pattern,
+/// Phrase).
 /// A tap on tab `i` gives `Tab(i)`.
 pub struct Segments {
     pub items: Vec<String>,
@@ -317,11 +318,19 @@ pub struct Slider {
     /// 0.0 to 1.0, with its text: a ring on the track and "1/16 → 1/32".
     /// The slider still sets [`Slider::value`].
     pub pushed: Option<(f32, String)>,
+    /// The setting changes nothing as things are (swing on a phrase in
+    /// triplets): the slider is drawn faint. It still turns, for when it
+    /// counts again, and its label or text says why.
+    pub quiet: bool,
 }
 
 /// A titled panel of horizontal sliders, such as the four Q-Links. A finger
 /// that goes down on row `i` gives `Select(i)`, then `Value(v)` for that row
 /// as it moves, until it lifts.
+///
+/// A widget that draws the same sliders inside a panel of its own (the
+/// Phrase tab's) holds one and uses the `_in` functions, which take the
+/// area the rows share in place of the panel.
 pub struct SliderStack {
     pub title: String,
     pub rows: Vec<Slider>,
@@ -355,7 +364,11 @@ impl SliderStack {
 
     /// Row `i`'s area and its track.
     pub fn row_rects(&self, r: Rect, i: usize) -> (Rect, Rect) {
-        let body = SliderStack::body(r);
+        self.row_rects_in(SliderStack::body(r), i)
+    }
+
+    /// Row `i`'s area and its track, the rows sharing `body`.
+    pub fn row_rects_in(&self, body: Rect, i: usize) -> (Rect, Rect) {
         let n = self.rows.len().max(1) as i32;
         let h = body.h / n;
         let row = Rect::new(body.x, body.y + i as i32 * h, body.w, h);
@@ -368,18 +381,16 @@ impl SliderStack {
         (row, track)
     }
 
-    fn value_at(&self, r: Rect, i: usize, x: i32) -> f32 {
-        let (_, track) = self.row_rects(r, i);
+    fn value_at(&self, body: Rect, i: usize, x: i32) -> f32 {
+        let (_, track) = self.row_rects_in(body, i);
         ((x - track.x) as f32 / track.w as f32).clamp(0.0, 1.0)
     }
-}
 
-impl Widget for SliderStack {
-    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+    /// Draws the rows in `body`, on a panel already drawn.
+    pub fn paint_in(&self, cx: &mut PaintCx, body: Rect) {
         let t = cx.theme.clone();
-        cx.titled_panel(r, &self.title, "");
         for (i, s) in self.rows.iter().enumerate() {
-            let (row, track) = self.row_rects(r, i);
+            let (row, track) = self.row_rects_in(body, i);
             let on = self.active == Some(i);
             let head = Rect::new(row.x, row.y, row.w, SLIDER_HEAD);
             let ink = if on { t.accent } else { t.text_dim };
@@ -406,12 +417,20 @@ impl Widget for SliderStack {
                 let w = cx.measure(FontId::Bold, t.size_body, &to) + 8;
                 value_box.w = (value_box.w - w).max(1);
             }
+            // A setting that changes nothing now: its value, its fill and
+            // its knob faint.
+            let (value_ink, fill_ink, knob_ink) = if s.quiet {
+                let faint = |ink| t.faded(ink, t.panel());
+                (faint(t.text), faint(t.accent), faint(t.text))
+            } else {
+                (t.text, t.accent, t.text)
+            };
             cx.text(
                 FontId::Bold,
                 t.size_body,
                 value_box,
                 Align::Right,
-                t.text,
+                value_ink,
                 &s.text,
             );
             cx.canvas.fill_round_rect(track, 4, t.raised);
@@ -424,40 +443,50 @@ impl Widget for SliderStack {
                 let (a, b) = (px.min(fill.right()), px.max(fill.right()));
                 let span = Rect::new(a, track.y, (b - a).max(1), track.h);
                 cx.canvas.fill_round_rect(span, 4, t.accent2);
-                cx.canvas.fill_round_rect(fill, 4, t.accent);
+                cx.canvas.fill_round_rect(fill, 4, fill_ink);
                 let ring = Rect::new(px - 9, track.y - 5, 18, 18);
                 cx.canvas.fill_round_rect(ring, 9, t.surface);
                 cx.canvas.stroke_round_rect(ring, 9, 3, t.accent2);
             } else {
-                cx.canvas.fill_round_rect(fill, 4, t.accent);
+                cx.canvas.fill_round_rect(fill, 4, fill_ink);
             }
             let kx = track.x + fill.w;
             cx.canvas
-                .fill_round_rect(Rect::new(kx - 9, track.y - 5, 18, 18), 9, t.text);
+                .fill_round_rect(Rect::new(kx - 9, track.y - 5, 18, 18), 9, knob_ink);
         }
     }
 
-    fn targets(&self, r: Rect) -> Vec<Target> {
+    /// The rows' controls, the rows sharing `body`.
+    pub fn targets_in(&self, body: Rect) -> Vec<Target> {
         (0..self.rows.len())
             .map(|i| {
                 Target::drag(
                     "slider",
                     i,
                     self.rows[i].label.clone(),
-                    self.row_rects(r, i).0,
+                    self.row_rects_in(body, i).0,
                 )
                 .towards(30, 0)
             })
             .collect()
     }
 
-    fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+    /// A finger on the rows, which share `body`.
+    pub fn touch_in(
+        &mut self,
+        finger: u64,
+        phase: Touch,
+        x: i32,
+        y: i32,
+        body: Rect,
+    ) -> Option<EventKind> {
         match phase {
             Touch::Down => {
-                let i = (0..self.rows.len()).find(|&i| self.row_rects(r, i).0.contains(x, y))?;
+                let i =
+                    (0..self.rows.len()).find(|&i| self.row_rects_in(body, i).0.contains(x, y))?;
                 self.grabbed = Some((finger, i));
                 self.active = Some(i);
-                self.rows[i].value = self.value_at(r, i, x);
+                self.rows[i].value = self.value_at(body, i, x);
                 Some(EventKind::Select(i))
             }
             Touch::Move => {
@@ -465,7 +494,7 @@ impl Widget for SliderStack {
                 if f != finger {
                     return None;
                 }
-                let v = self.value_at(r, i, x);
+                let v = self.value_at(body, i, x);
                 self.rows[i].value = v;
                 Some(EventKind::Value(v))
             }
@@ -476,6 +505,21 @@ impl Widget for SliderStack {
                 None
             }
         }
+    }
+}
+
+impl Widget for SliderStack {
+    fn paint(&self, cx: &mut PaintCx, r: Rect) {
+        cx.titled_panel(r, &self.title, "");
+        self.paint_in(cx, SliderStack::body(r));
+    }
+
+    fn targets(&self, r: Rect) -> Vec<Target> {
+        self.targets_in(SliderStack::body(r))
+    }
+
+    fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+        self.touch_in(finger, phase, x, y, SliderStack::body(r))
     }
 }
 
@@ -519,7 +563,12 @@ pub struct StepStrip {
     pub cursor: Option<usize>,
     /// Cells shown even when fewer steps exist, so cells keep their width.
     pub min_cells: usize,
+    /// What it says in place of cells when there are none.
+    pub empty: &'static str,
 }
+
+/// What the strip says with no cells while the arp plays steps.
+pub const STRIP_EMPTY: &str = "hold pads to see the next steps";
 
 /// The narrowest a step cell gets before the strip wraps onto a second row.
 pub const MIN_CELL_W: i32 = 44;
@@ -532,6 +581,7 @@ impl StepStrip {
             playing: None,
             cursor: None,
             min_cells,
+            empty: STRIP_EMPTY,
         }
     }
 
@@ -559,7 +609,7 @@ impl Widget for StepStrip {
                 r,
                 Align::Center,
                 t.text_faint,
-                "hold pads to see the next steps",
+                self.empty,
             );
             return;
         }
