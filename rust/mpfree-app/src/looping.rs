@@ -4087,6 +4087,16 @@ impl LoopHost {
         self.on_tracks.track(n)
     }
 
+    /// After [`LoopHost::run`]: the project track Listen is heard through
+    /// this period, when the loop it plays is on an audio track (phase
+    /// 4e.2: `TrackHost::loop_listen`); its frames are then the track's
+    /// (`track_loop(mpfree_audiotracks::LISTEN)`), not the Loop strip's.
+    pub fn listen_track(&self) -> Option<usize> {
+        let outs = self.looper.outs();
+        let (k, _) = outs.listen().filter(|l| outs.on_track(l.0))?;
+        self.on_tracks.track(k)
+    }
+
     /// One period without the mixer (the screen's samples): as
     /// [`LoopHost::run`], then the loop (and the line input, with Monitor
     /// on) added to the output, kept within ±1. Returns the output's peak,

@@ -99,7 +99,9 @@ impl LoopOuts {
     }
 
     /// What Listen played in the last period: the loop it played and its
-    /// frames.
+    /// frames. When that loop is on an audio track ([`LoopOuts::on_track`])
+    /// they are for its track (audio tracks phase 4e.2), and the looper's
+    /// mix leaves them out.
     pub fn listen(&self) -> Option<(usize, &[f32])> {
         self.listen_of.map(|k| (k, &self.listen[..2 * self.frames]))
     }
@@ -109,11 +111,12 @@ impl LoopOuts {
     /// each frame's loops summed in the looper's order, the loops not
     /// resampling by number and then the ones resampling by number. The
     /// same bits as [`crate::Looper::process`] adds. A loop on an audio
-    /// track ([`LoopOuts::on_track`]) is its track's, so it isn't in it.
+    /// track ([`LoopOuts::on_track`]) is its track's, so it isn't in it,
+    /// nor is Listen playing one.
     pub fn mix_into(&self, out: &mut [f32]) {
         let n = 2 * self.frames.min(out.len() / 2);
         let out = &mut out[..n];
-        if self.listen_of.is_some() {
+        if self.listen_of.is_some_and(|k| !self.on_track(k)) {
             for (o, v) in out.iter_mut().zip(&self.listen[..n]) {
                 *o += v;
             }

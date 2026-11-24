@@ -15818,6 +15818,8 @@ fn player_session(
         // What each audio track plays (its clips, its song or nothing)
         // comes from the player's last period, on its frames.
         if loops_on {
+            // Listen playing a loop on a track, through that track (4e.2).
+            tracks.loop_listen(looper.listen_track());
             // The Loop group (4e.1) on each loop's sound before its track:
             // every loop, or the armed audio track's (by its own arm).
             let (set, armed) = (loop_group.set(), time.audio_armed());
