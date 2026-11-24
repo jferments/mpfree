@@ -216,14 +216,22 @@ How often an idea passes every one of its checks, over 720 of each kind and leng
 
 | | 1 bar | 2 bars | 4 bars |
 |---|---|---|---|
-| Bass | 720 (329 differ) | 699 (500) | 646 (528) |
-| Riff | 720 (254) | 720 (330) | 712 (342) |
-| Chords | 720 (118) | 718 (249) | 707 (330) |
-| Arp lines | 720 (242) | 720 (306) | 715 (342) |
+| Bass | 720 (441 differ) | 672 (605) | 621 (671) |
+| Riff | 720 (430) | 720 (578) | 714 (612) |
+| Chords | 720 (160) | 704 (368) | 696 (523) |
+| Arp lines | 720 (343) | 720 (443) | 717 (497) |
+
+(Since Busy reaches, below. Before it: a bass 720 (329 differ), 699 (500) and 646 (528); a riff 720 (254), 720 (330), 712 (342); chords 720 (118), 718 (249), 707 (330); a line 720 (242), 720 (306), 715 (342). Ideas now differ far more, and a busy bass in Groove is the one that passes fewer: it plays between the kicks more than *plays together* allows on Support.)
 
 The checks were written beside the makers, so this shows that each does what it sets out to do, not that it sounds good: P2's gate is a blind listen, the composer's phrases beside a simple way of making one, and the ones the owner keeps. Open for that listen: a third to a half of 720 ideas differ, and one-bar chords fewer (118), so ideas may sound alike across seeds; one four-bar bass in ten misses a check of Add a part's own (its notes with the kick, or a bar that comes back); every shape of a riff's tune rises; the third and fourth bars of a sparse Minimal riff over a moved chord can come out on one note; a bass sits a fifth higher from the held note than a written bass; and one pair of the twelve, a bar of Minimal chords, is its simple way struck twice a bar (the same voicing), which stays in because the set is chosen by rule.
 
-Found while matching the simple riff, and open: **the Busy setting hardly moves how many notes play.** From Sparse (0.2) to Busy (0.8) a bass goes from 3.3 to 4.0 starts a bar in Minimal, 3.7 to 4.7 in Groove and 2.9 to 3.9 in Jazz-ish; a riff stays at 3.4 in Minimal and goes from 4.2 to 4.6 and 3.5 to 4.7; chords from 1.6 to 1.8, 2.1 to 2.5 and 1.9 to 2.2; a line from 12.4 to 13.5, and a swung line stays at 8. A riff's cells are drawn by how the style likes them and how they fit, and the aim only chooses among the 24 drawn, so it cannot ask for more than the draws hold. It has to reach before New idea's screen offers a Busy control.
+**Busy reaches** (it was found, while matching the simple riff, to hardly move how many notes play: a bass from 3.3 to 4.0 starts a bar in Minimal from Sparse (0.2) to Busy (0.8), a riff stuck at 3.4, a swung line always 8). A riff's cells were drawn by how the style likes them and how they fit, and the aim only chose among the 24 drawn, so it could not ask for more than the draws held. Three changes, each leaving the middle of Busy (0.5) exactly as it was, so ideas, Add a part and the twelve pairs at the middle are unchanged:
+
+- **The aim reaches further:** the density asked runs from about half (0.52) to one and a half (1.48) times the middle's, where it ran from 0.7 to 1.3.
+- **The cells drawn lean towards it** (`Aim::lean`, 0 at the middle, 1 at Sparse and Busy's ends): each cell's chance is weighed down by how far its notes are from the density asked, and missing the density costs up to three times as much when the 24 are scored.
+- **A line's pulse follows:** 3.25 notes a beat at the middle, from 2.5 at Sparse to 4 at Busy; a swung line plays quarter notes at Sparse.
+
+Starts a bar from Sparse to the middle to Busy (`print_the_simple_way_beside`): a bass 2.8, 3.5, 4.8 in Minimal, 2.6, 4.1, 5.9 in Groove and 2.1, 3.9, 3.9 in Jazz-ish (a walking bass walks in quarters once busy); a riff 2.3, 3.4, 3.1 in Minimal (its cells hold no busier riff), 2.6, 4.3, 5.0 in Groove and 2.7, 4.0, 4.9 in Jazz-ish; chords 1.0, 1.6, 1.7, then 1.3, 2.4, 3.1 and 1.3, 2.1, 2.6; a line 11.9, 12.5, 14.3 and 11.7, 12.5, 13.9, a swung one 4, 8, 8. Add a part's Activity reaches the same way, since it draws from the same cells.
 
 #### More like this
 
@@ -245,7 +253,7 @@ Weighed: placing each note at the chord's own shape (a phrase's 3 as the chord's
 
 MPFree's 64 phrases as parts over four bars of C minor's i, iv, VI and v with no drums (`print_the_64_as_parts`): most pass four or five of the six checks. *Plays together* is the one most missed (11 to 16 of 16 for each kind), since it asks a part on Support for the kick and the row's changes and these phrases were written to be held, not for a row; it is what the listen is for.
 
-Next in P2: the owner's blind listen on the twelve pairs (the gate), Busy's reach, then New idea's screen (with More like this and a phrase as a part), drawn and approved before it is built.
+Next in P2: the owner's blind listen on the twelve pairs (the gate), then New idea's screen (with More like this and a phrase as a part), drawn and approved before it is built.
 
 ## Continue in the time engine (phase 1)
 

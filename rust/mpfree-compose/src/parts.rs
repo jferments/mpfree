@@ -411,7 +411,9 @@ fn desire(req: &AddPart) -> Vec<f32> {
 
 fn aim(req: &AddPart) -> Aim {
     let st = &req.settings.style;
-    let act = 0.5 + req.settings.activity;
+    // 1 at the middle of Busy, from about a half at Sparse (0.2) to one
+    // and a half at Busy (0.8).
+    let act = 1.0 + 1.6 * (req.settings.activity - 0.5);
     let rel = match req.relation {
         Relation::Support | Relation::Interlock => 1.0,
         Relation::Answer => 0.6,
@@ -448,6 +450,7 @@ fn aim(req: &AddPart) -> Aim {
     Aim {
         density,
         syncopation: st.rhythm.syncopation * sync,
+        lean: ((req.settings.activity - 0.5).abs() * 2.0).min(1.0),
     }
 }
 

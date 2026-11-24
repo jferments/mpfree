@@ -163,9 +163,16 @@ pub(super) fn pulse(req: &NewIdea, row: &Row, settings: &Settings, dice: &mut Di
     let g = row.grid;
     let swing = req.style.rhythm.feel == Feel::Swing8;
     let cell: u8 = if swing || g.beat != 4 {
-        0b0101
+        // Sparse swings in quarter notes.
+        if settings.activity < 0.3 {
+            0b0001
+        } else {
+            0b0101
+        }
     } else {
-        let want = 2.5 + 1.5 * f64::from(settings.activity);
+        // 3.25 notes a beat at the middle of Busy, from 2.5 at Sparse
+        // (0.2) to 4 at Busy (0.8).
+        let want = 3.25 + 2.5 * (f64::from(settings.activity) - 0.5);
         let cells = [0b0101u8, 0b1101, 0b1011, 0b0111, 0b1111];
         let weights: Vec<f64> = cells
             .iter()
