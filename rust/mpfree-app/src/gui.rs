@@ -9530,7 +9530,30 @@ impl Player {
             stick: self.drive.as_ref().and_then(|d| d.get()).flatten(),
             heat: self.heat,
             engines: self.engines.as_deref().and_then(crate::engines::shares),
+            tracks: self.engines.as_deref().and_then(|e| self.status_tracks(e)),
         }
+    }
+
+    /// System status's tracks using the most (track_costs.rs), each with
+    /// its words: the track's number, and its name when you gave it one.
+    fn status_tracks(
+        &self,
+        e: &crate::engines::EngineShared,
+    ) -> Option<Vec<(crate::track_costs::Who, String, f64)>> {
+        use crate::track_costs::{label, Who};
+        let name = |w: Who| match w {
+            Who::Track(t) => {
+                let n = self.track_name(t);
+                (n != format!("Track {}", t + 1)).then_some(n)
+            }
+            Who::Kit(_) => None,
+        };
+        let top = e.tracks.top()?;
+        Some(
+            top.into_iter()
+                .map(|(w, p)| (w, label(w, name), p))
+                .collect(),
+        )
     }
 
     /// The watchers' look (status_watch.rs), each time the audio loop's

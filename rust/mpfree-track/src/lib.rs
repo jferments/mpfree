@@ -251,12 +251,18 @@ struct Work {
     /// The render's time, ns, smoothed over about 20 periods (timed only
     /// while the host has lanes).
     cost: f32,
+    /// The renders' time, ns, while the host was asked to count it
+    /// ([`TrackHost::set_spending`]), until taken
+    /// ([`TrackHost::take_spent`]).
+    spent: u64,
 }
 
 impl Work {
     /// The period's render of `n` frames, on whichever thread holds it.
-    fn render(&mut self, ctx: &Ctx, n: usize, profiling: bool, timing: bool) {
-        let t = timing.then(Instant::now);
+    fn render(&mut self, ctx: &Ctx, n: usize, profiling: bool, timing: bool, spend: bool) {
+        // A slot with nothing to play isn't counted.
+        let spend = spend && self.busy();
+        let t = (timing || spend).then(Instant::now);
         (self.wrote, self.ring_wrote, self.reset, self.ring_done) = (false, false, false, false);
         let (sl, sr) = (&mut self.left[..n], &mut self.right[..n]);
         if let Some(inst) = self.inst.as_mut() {
@@ -295,8 +301,13 @@ impl Work {
             self.ring_done = !finite || r.quiet >= QUIET_FRAMES || r.frames >= r.limit;
         }
         if let Some(t) = t {
-            let ns = t.elapsed().as_nanos() as f32;
-            self.cost += (ns - self.cost) * 0.05;
+            let ns = t.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+            if timing {
+                self.cost += (ns as f32 - self.cost) * 0.05;
+            }
+            if spend {
+                self.spent = self.spent.saturating_add(ns);
+            }
         }
     }
 
@@ -351,6 +362,8 @@ pub struct TrackHost {
     fade: u32,
     fading: bool,
     profiling: bool,
+    /// Counting each slot's render time this period ([`TrackHost::set_spending`]).
+    spend: bool,
     /// Frames a render was asked for past `max_block` (should stay 0).
     clipped_frames: u64,
     /// The lanes, one per group past the first (none: every slot here).
@@ -376,12 +389,13 @@ struct Group {
     ctx: Ctx<'static>,
     n: usize,
     profiling: bool,
+    spend: bool,
 }
 
 impl Job for Group {
     fn run(&mut self, _block: u64) {
         for w in &mut self.works {
-            w.render(&self.ctx, self.n, self.profiling, true);
+            w.render(&self.ctx, self.n, self.profiling, true, self.spend);
         }
     }
 }
@@ -443,6 +457,7 @@ impl TrackHost {
             fade: 0,
             fading: false,
             profiling: false,
+            spend: false,
             clipped_frames: 0,
             lanes: Vec::new(),
             deadline: None,
@@ -942,6 +957,7 @@ impl TrackHost {
             playing: ctx.playing,
             sidechain: None,
         };
+        let spend = self.spend;
         let TrackHost { slots, lanes, .. } = self;
         for (k, l) in lanes.iter_mut().enumerate() {
             let Some(job) = l.lane.job() else {
@@ -961,7 +977,7 @@ impl TrackHost {
             if job.works.is_empty() {
                 continue;
             }
-            (job.ctx, job.n, job.profiling) = (job_ctx, n, profiling);
+            (job.ctx, job.n, job.profiling, job.spend) = (job_ctx, n, profiling, spend);
             if l.lane.post(ctx.frame).is_ok() {
                 l.posted = true;
                 l.counts.periods += 1;
@@ -971,7 +987,7 @@ impl TrackHost {
             }
         }
         for s in slots.iter_mut().filter(|s| s.go && !s.away) {
-            s.work.render(&ctx, n, profiling, timing);
+            s.work.render(&ctx, n, profiling, timing, spend);
         }
         // The clock is read only when a lane was posted.
         let mut deadline = None;
@@ -1142,6 +1158,7 @@ impl TrackHost {
                         ctx: Ctx::new(self.rate, 0),
                         n: 0,
                         profiling: false,
+                        spend: false,
                     },
                     c,
                 ),
@@ -1305,6 +1322,27 @@ impl TrackHost {
     /// slot per block) while on.
     pub fn set_profiling(&mut self, on: bool) {
         self.profiling = on;
+    }
+
+    /// Counts each slot's render time from the next render on, while on
+    /// (two clock reads per slot that renders; a slot on a lane is timed
+    /// there anyway), for [`TrackHost::take_spent`]. System status's
+    /// "tracks using the most" turns it on one period in a few.
+    pub fn set_spending(&mut self, on: bool) {
+        self.spend = on;
+    }
+
+    /// Each slot's counted render time since the last take, ns, with the
+    /// slot's number and the track it feeds, and starts the count again.
+    /// A slot whose work is still on a late lane keeps its count until it
+    /// is back. Never allocates.
+    pub fn take_spent(&mut self, mut f: impl FnMut(usize, Option<usize>, u64)) {
+        for (i, s) in self.slots.iter_mut().enumerate().filter(|(_, s)| !s.away) {
+            let ns = std::mem::take(&mut s.work.spent);
+            if ns > 0 {
+                f(i, s.track, ns);
+            }
+        }
     }
 
     /// A slot's instrument timing, to take its window

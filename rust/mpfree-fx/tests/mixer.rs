@@ -1079,6 +1079,42 @@ fn profiling_times_the_mixer_its_strips_and_their_inserts_only_when_on() {
     assert_eq!(m.probe().lifetime().blocks, blocks_run);
 }
 
+/// Spending (System status's tracks): each strip's inserts' time counts
+/// while on, by strip, strips without inserts never; a take starts again;
+/// off, nothing counts; the output is the same either way.
+#[test]
+fn spending_counts_each_strips_inserts_only_while_on() {
+    let n = 2048;
+    let mut m = mixer(small());
+    m.chain_mut(StripId::Track(1)).unwrap().push(Lag::boxed(3));
+    let script = Script {
+        feeds: vec![
+            (StripId::Track(1), mono(sine(220.0, 0.3, n))),
+            (StripId::Track(2), mono(sine(330.0, 0.3, n))),
+        ],
+        ..Default::default()
+    };
+    let off = play(&mut m, &script, n, &mut blocks(128));
+    let mut seen = Vec::new();
+    m.take_spent(|s, ns| seen.push((s, ns)));
+    assert!(seen.is_empty(), "nothing while off: {seen:?}");
+    m.reset();
+    m.set_spending(true);
+    let on = play(&mut m, &script, n, &mut blocks(128));
+    close("spending", &on.out, &off.out, 0.0);
+    m.take_spent(|s, ns| seen.push((s, ns)));
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!(seen[0].0, StripId::Track(1));
+    assert!(seen[0].1 > 0);
+    seen.clear();
+    m.take_spent(|s, ns| seen.push((s, ns)));
+    assert!(seen.is_empty(), "a take starts again");
+    m.set_spending(false);
+    play(&mut m, &script, 512, &mut blocks(128));
+    m.take_spent(|s, ns| seen.push((s, ns)));
+    assert!(seen.is_empty(), "off again");
+}
+
 /// The busy mixer with inserts on more tracks and pad channels, so a lane
 /// has work: an EQ and a compressor on tracks 1, 3 and 5, a drive on pads
 /// 0 and 2 (track 2 is keyed by track 4, so those two stay).

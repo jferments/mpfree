@@ -377,3 +377,50 @@ fn all_off_reaches_every_kit() {
     }
     assert_eq!(e.active_voices(), 0);
 }
+
+/// What each kit's voices cost is counted by kit while counting is on
+/// (`Engine::count_kits`): two kits playing the same pads count the same,
+/// a kit playing fewer counts less, a kit playing nothing counts nothing,
+/// and nothing is counted while it is off. The sound is the same either
+/// way.
+#[test]
+fn each_kits_voices_are_counted_by_their_cost() {
+    let make = || {
+        let mut e = Engine::with_kits(RATE, 16, 4);
+        for k in 0..4 {
+            e.set_kit_view(k, view(&kit(k as u32 + 1)));
+        }
+        e
+    };
+    let on = |pad| Event::NoteOn { pad, velocity: 100 };
+    // Kits 0 and 2: pads 0 and 2; kit 1: pad 0; kit 3: none.
+    let hits = [
+        (0, 0, 0, on(0)),
+        (0, 0, 0, on(2)),
+        (0, 0, 1, on(0)),
+        (0, 0, 2, on(0)),
+        (0, 0, 2, on(2)),
+    ];
+    let mut e = make();
+    let quiet = run(&mut e, 4, 2, &hits);
+    let mut counts = [0u64; 4];
+    e.take_kit_counts(&mut counts);
+    assert_eq!(counts, [0; 4], "nothing counted while it is off");
+
+    let mut f = make();
+    f.count_kits(true);
+    let counted = run(&mut f, 4, 2, &hits);
+    assert_eq!(quiet, counted, "counting doesn't change the sound");
+    let mut counts = [0u64; 4];
+    f.take_kit_counts(&mut counts);
+    assert_eq!(
+        counts[0], counts[2],
+        "the same pads cost the same: {counts:?}"
+    );
+    assert!(counts[0] > counts[1] && counts[1] > 0, "{counts:?}");
+    assert_eq!(counts[3], 0);
+    // A take starts again.
+    let mut again = [0u64; 4];
+    f.take_kit_counts(&mut again);
+    assert_eq!(again, [0; 4]);
+}

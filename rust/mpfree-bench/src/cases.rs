@@ -924,7 +924,7 @@ fn drum_kit(name: &str, rate: u32, voices: usize, sixteen: bool) -> Case {
 /// one engine of `voices` voices with a copy of the kit on each of `kits`
 /// kits, a hit every block on the next kit in turn (the next pad round on
 /// each), so the pool stays full and steals across kits.
-fn drum_kits(name: &str, rate: u32, voices: usize, kits: usize) -> Case {
+fn drum_kits(name: &str, rate: u32, voices: usize, kits: usize, counted: bool) -> Case {
     let s = Source::new("drum", rate, 2, bench_sound(rate as usize * 2, false)).expect("source");
     let mut p = Project::new();
     p.add_source(s.clone());
@@ -938,6 +938,10 @@ fn drum_kits(name: &str, rate: u32, voices: usize, kits: usize) -> Case {
     for k in 0..kits {
         e.set_kit_view(k, EngineView::build(&p, rate));
     }
+    // System status's tracks: each kit's voices counted every block (the
+    // app counts one block in four) and taken every block.
+    e.count_kits(counted);
+    let mut counts = vec![0u64; kits];
     let allow = Allow {
         steals: true,
         ..Allow::default()
@@ -961,6 +965,10 @@ fn drum_kits(name: &str, rate: u32, voices: usize, kits: usize) -> Case {
             l.fill(0.0);
             r.fill(0.0);
             e.render(l, r);
+            if counted {
+                e.take_kit_counts(&mut counts);
+                std::hint::black_box(&counts);
+            }
         }),
         mem_bytes: 0,
     }
@@ -1021,6 +1029,10 @@ enum Inserts {
     /// The song's inserts with the six tracks that have inserts frozen,
     /// the transport rolling, and the drum bus printing all the while.
     SongFrozen,
+    /// The song's inserts, each strip's inserts timed for System status's
+    /// tracks every block (`Mixer::set_spending`; the app times one block
+    /// in four) and taken every block.
+    SongCounted,
 }
 
 /// The mixer at its default size (2 inputs, 32 pad channels, 16 tracks, 8
@@ -1115,6 +1127,8 @@ fn mixer_with(
         }
     }
     let frozen = with == Inserts::SongFrozen;
+    let counted = with == Inserts::SongCounted;
+    m.set_spending(counted);
     // Two beats of each frozen track, at 120 BPM.
     let beat = rate as usize / 2;
     if frozen {
@@ -1185,6 +1199,11 @@ fn mixer_with(
             }
             if !frozen {
                 m.process(&Ctx::new(rate, f0), out_l, out_r);
+                if counted {
+                    let mut spent = 0u64;
+                    m.take_spent(|_, ns| spent = spent.wrapping_add(ns));
+                    std::hint::black_box(spent);
+                }
                 return;
             }
             let ctx = Ctx {
@@ -1644,7 +1663,16 @@ pub fn all(rate: u32) -> Vec<Case> {
         drum_kit("Sampler, drum kit, 64 voices", rate, 64, false)
     }));
     v.push(measured(|| {
-        drum_kits("Sampler, 4 drum kits, 64 voices", rate, 64, 4)
+        drum_kits("Sampler, 4 drum kits, 64 voices", rate, 64, 4, false)
+    }));
+    v.push(measured(|| {
+        drum_kits(
+            "Sampler, 4 drum kits, 64 voices, counted for System status",
+            rate,
+            64,
+            4,
+            true,
+        )
     }));
     v.push(measured(|| {
         drum_kit(
@@ -2131,6 +2159,15 @@ pub fn all(rate: u32) -> Vec<Case> {
             12,
             8,
             Inserts::Song,
+        )
+    }));
+    v.push(measured(|| {
+        mixer(
+            "Mixer, 12 tracks and 8 pads, with a song's inserts, counted for System status",
+            rate,
+            12,
+            8,
+            Inserts::SongCounted,
         )
     }));
     v.push(measured(|| {

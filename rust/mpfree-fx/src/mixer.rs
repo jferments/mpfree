@@ -1897,6 +1897,31 @@ impl Mixer {
         self.profiling
     }
 
+    /// Counts each strip's inserts' time from the next block on, while on
+    /// (two clock reads a strip with inserts that runs; inserts on a lane
+    /// count there), for [`Mixer::take_spent`]. System status's "tracks
+    /// using the most" turns it on one block in a few. A chain away on a
+    /// late lane when this changes keeps its old setting until the next
+    /// change.
+    pub fn set_spending(&mut self, on: bool) {
+        for st in &mut self.strips {
+            st.chain.set_spending(on);
+        }
+    }
+
+    /// Each strip's counted insert time since the last take, ns (strips
+    /// with none left out), and starts the count again. A chain still on
+    /// a late lane keeps its count until it is back. Never allocates.
+    pub fn take_spent(&mut self, mut f: impl FnMut(StripId, u64)) {
+        let topo = self.plan.topo;
+        for (k, st) in self.strips.iter_mut().enumerate() {
+            let ns = st.chain.take_spent();
+            if ns > 0 {
+                f(topo.id(k), ns);
+            }
+        }
+    }
+
     /// The whole mixer's time per block, while profiling.
     pub fn probe(&self) -> &Probe {
         &self.probe

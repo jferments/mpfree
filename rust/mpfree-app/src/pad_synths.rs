@@ -501,6 +501,24 @@ impl PadSynths {
         }
     }
 
+    /// Counts each copy's time from the next render on, while on
+    /// (`TrackHost::set_spending`), for System status's tracks.
+    pub fn set_spending(&mut self, on: bool) {
+        self.host.set_spending(on);
+    }
+
+    /// Each copy's counted time since the last take, ns, with the kit of
+    /// the pad it plays for, and starts again. An old copy ringing out
+    /// after its pad moved on is left out. Never allocates.
+    pub fn take_spent(&mut self, mut f: impl FnMut(usize, u64)) {
+        let held = &self.held;
+        self.host.take_spent(|slot, _, ns| {
+            if let Some(h) = held.get(slot).copied().flatten() {
+                f(usize::from(h.kit), ns);
+            }
+        });
+    }
+
     /// A copy taken out (after its ring-out), to drop off the audio thread.
     pub fn pop_retired(&mut self) -> Option<Instrument> {
         self.host.pop_retired()

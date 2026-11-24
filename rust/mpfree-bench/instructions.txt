@@ -112,6 +112,7 @@
 1616279	Mixer, 12 tracks and 8 pads, with a song's inserts
 1092142	Mixer, 12 tracks and 8 pads, with a song's inserts, Eco reverb
 1197897	Mixer, 12 tracks and 8 pads, with a song's inserts, Light reverb
+1618342	Mixer, 12 tracks and 8 pads, with a song's inserts, counted for System status
 461668	Mixer, 16 tracks and 32 pads, routing only
 1442597	Mixer, a song's inserts, 6 tracks frozen, printing a bus
 44777	Mixer, idle (63 strips, nothing playing)
@@ -200,6 +201,7 @@
 1402092	Sampler, 20 pads
 1985137	Sampler, 20 pads + master grains
 80602	Sampler, 4 drum kits, 64 voices
+81951	Sampler, 4 drum kits, 64 voices, counted for System status
 42339	Sampler, drum kit, 24 voices
 44830	Sampler, drum kit, 24 voices, 16-bit sounds
 82504	Sampler, drum kit, 64 voices
