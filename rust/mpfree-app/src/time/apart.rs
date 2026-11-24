@@ -99,7 +99,7 @@ pub enum Told {
     Notes(Vec<String>),
     /// What Rec song put on audio tracks' lanes: its song edit and the
     /// blocks' spans ([`TimeControl::take_song_placed`]).
-    SongPlaced(u32, Vec<(TrackId, Tick, Tick)>),
+    SongPlaced(mpfree_transport::TransactionId, Vec<(TrackId, Tick, Tick)>),
 }
 
 /// An ask: run on the control half, perhaps with something to tell.

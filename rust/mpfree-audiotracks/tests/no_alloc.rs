@@ -14,6 +14,7 @@
 //! thread is watched, and counted, so tests running at once never count
 //! each other's calls. (The pattern of mpfree-looper's no_alloc test.)
 
+use mpfree_transport::TransactionId;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
@@ -139,12 +140,12 @@ fn commands_and_periods_never_allocate() {
                     A::Undo,
                     A::Redo,
                     A::Retime {
-                        song: 1,
+                        song: TransactionId(1),
                         retime: bar_in,
                     },
-                    A::SongUndo(1),
-                    A::SongRedo(1),
-                    A::ForgetSong(1),
+                    A::SongUndo(TransactionId(1)),
+                    A::SongRedo(TransactionId(1)),
+                    A::ForgetSong(TransactionId(1)),
                 ],
                 vec![T::SetTempo(200.0)],
             ),

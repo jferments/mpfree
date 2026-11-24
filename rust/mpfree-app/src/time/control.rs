@@ -341,11 +341,11 @@ pub trait SongAudio {
     fn moves(&self, r: &Retime) -> bool;
     /// The edit, as song edit `song`'s undo step; false when it moves no
     /// region (nothing to take back).
-    fn retime(&mut self, song: u32, r: Retime) -> bool;
+    fn retime(&mut self, song: mpfree_transport::TransactionId, r: Retime) -> bool;
     /// Where song edit `song`'s step is, for UNDO (`undo`) or REDO.
-    fn step(&self, song: u32, undo: bool) -> SongStep;
+    fn step(&self, song: mpfree_transport::TransactionId, undo: bool) -> SongStep;
     /// Take back (`undo`) or bring back song edit `song`'s steps.
-    fn song_undo(&mut self, song: u32, undo: bool);
+    fn song_undo(&mut self, song: mpfree_transport::TransactionId, undo: bool);
     /// Each audio track's regions as the song plays them, by its lasting
     /// id: in order, none overlapping, start and end in song ticks, and
     /// the rest (recording, first frame, gain, fades and what they were
@@ -569,7 +569,7 @@ pub struct TimeControl {
     /// number, with each edit made (+ Bar pressed in a row joins one take):
     /// their UNDO and REDO move the regions too (the Arrange refactor's
     /// 3.4, [`TimeControl::act_with_audio`]).
-    audio_edits: HashMap<u32, Vec<Retime>>,
+    audio_edits: HashMap<mpfree_transport::TransactionId, Vec<Retime>>,
     /// UNDOs of such an edit whose regions stayed where they were (the
     /// audio tracks' history no longer reached it): a fallback, counted
     /// and said.
@@ -3813,7 +3813,7 @@ impl TimeControl {
         // Song edits the song's history no longer holds can't come back.
         let takes = &self.takes;
         self.audio_edits.retain(|&n, _| {
-            let held = |t: &mpfree_play::Take| t.edited && t.number == n;
+            let held = |t: &mpfree_play::Take| t.edited && t.txn == n;
             takes.done().iter().chain(takes.undone()).any(held)
         });
         if matches!(a, TimeAction::Undo | TimeAction::Redo) {
@@ -3840,7 +3840,7 @@ impl TimeControl {
             .last()
             .filter(|t| t.edited && t.song.is_some());
         let last = last
-            .map(|t| t.number)
+            .map(|t| t.txn)
             .filter(|n| self.audio_edits.contains_key(n));
         (self.audio_moves, self.audio_apart) = (
             moves,
@@ -3858,7 +3858,7 @@ impl TimeControl {
             .done()
             .last()
             .filter(|t| t.edited && t.song.is_some());
-        if let Some(n) = take.map(|t| t.number) {
+        if let Some(n) = take.map(|t| t.txn) {
             if audio.retime(n, retime) {
                 self.audio_edits.entry(n).or_default().push(retime);
             }
@@ -3881,7 +3881,7 @@ impl TimeControl {
         };
         let Some(n) = next
             .filter(|t| t.edited && t.song.is_some())
-            .map(|t| t.number)
+            .map(|t| t.txn)
             .filter(|n| self.audio_edits.contains_key(n))
         else {
             return self.act(a);
@@ -3932,14 +3932,14 @@ impl TimeControl {
     /// edit `n`: for the audio tracks' own Undo and Redo, which stop at
     /// its step while it does and forget the step once it doesn't
     /// ([`mpfree_audiotracks::Command::ForgetSong`]).
-    pub fn song_reaches(&self, n: u32, undo: bool) -> bool {
+    pub fn song_reaches(&self, n: mpfree_transport::TransactionId, undo: bool) -> bool {
         let list = if undo {
             self.takes.done()
         } else {
             self.takes.undone()
         };
         list.iter()
-            .any(|t| t.edited && t.song.is_some() && t.number == n)
+            .any(|t| t.edited && t.song.is_some() && t.txn == n)
     }
 
     /// A take, or an import placing regions, has ended on audio track
@@ -3960,7 +3960,7 @@ impl TimeControl {
         &mut self,
         track: TrackId,
         (from, to): (Tick, Tick),
-    ) -> Result<Option<(u32, String)>, String> {
+    ) -> Result<Option<(mpfree_transport::TransactionId, String)>, String> {
         let tracks = &self.project.tracks;
         let Some(t) = tracks.iter().position(|tr| tr.id == track && tr.is_audio()) else {
             return Ok(None);
@@ -4005,7 +4005,11 @@ impl TimeControl {
             None,
         );
         self.changed = true;
-        let n = self.takes.done().last().map_or(0, |t| t.number);
+        let n = self
+            .takes
+            .done()
+            .last()
+            .map_or(mpfree_transport::TransactionId::NONE, |t| t.txn);
         // Tied: UNDO and REDO of it go through the audio tracks.
         self.audio_edits.entry(n).or_default();
         Ok(Some((n, said)))
@@ -5630,7 +5634,11 @@ impl TimeControl {
                 .song_edit_joining(&self.project, change, before, None);
             self.changed = true;
             if !placed.is_empty() {
-                let n = self.takes.done().last().map_or(0, |t| t.number);
+                let n = self
+                    .takes
+                    .done()
+                    .last()
+                    .map_or(mpfree_transport::TransactionId::NONE, |t| t.txn);
                 self.song_placed = Some((n, placed));
             }
         }
@@ -5646,11 +5654,20 @@ impl TimeControl {
         self.song_placed.take()
     }
 
+    /// The latest take's transaction (none before the first), for tests.
+    #[cfg(test)]
+    pub(crate) fn last_txn(&self) -> mpfree_transport::TransactionId {
+        self.takes
+            .done()
+            .last()
+            .map_or(mpfree_transport::TransactionId::NONE, |t| t.txn)
+    }
+
     /// The audio tracks made a step tied to song edit `n` (the regions
     /// under Rec song's blocks replaced): its UNDO and REDO take that step
     /// back and bring it back, through [`TimeControl::act_with_audio`].
     /// False when the song's history no longer holds `n`.
-    pub fn tie_audio(&mut self, n: u32) -> bool {
+    pub fn tie_audio(&mut self, n: mpfree_transport::TransactionId) -> bool {
         let held = self.song_reaches(n, true) || self.song_reaches(n, false);
         if held {
             self.audio_edits.entry(n).or_default();
