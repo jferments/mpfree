@@ -4107,6 +4107,17 @@ pub fn when(secs: u64) -> String {
     format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02} UTC")
 }
 
+/// `secs` said briefly against `now`, for a line with little room: "today
+/// 19:04 UTC" or "yesterday 19:04 UTC", else the date as [`when`] says it.
+pub fn when_short(secs: u64, now: u64) -> String {
+    let (_, _, _, h, mi) = mpfree_library::project::civil(secs);
+    match (now / 86_400).checked_sub(secs / 86_400) {
+        Some(0) => format!("today {h:02}:{mi:02} UTC"),
+        Some(1) => format!("yesterday {h:02}:{mi:02} UTC"),
+        _ => when(secs),
+    }
+}
+
 fn entry_detail(e: &Entry) -> String {
     match e.kind {
         Kind::Folder => String::new(),

@@ -171,6 +171,7 @@ mod screen_picture;
 mod script;
 // The SD card's read-only window, the pad player's side, for the Browser's "SD card" place.
 mod sd_card;
+mod set_checks;
 mod set_play;
 mod setup;
 mod shed;

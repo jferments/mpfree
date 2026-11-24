@@ -11954,7 +11954,12 @@ impl Player {
             ToUi::ExportOver(run) => self.export_over(run),
             ToUi::Printed(name, p) => self.save_print(name, p),
             ToUi::ProjectDefaults(d) => self.project_defaults = Some(*d),
-            ToUi::Plugins(p) => self.project_plugins = p,
+            ToUi::Plugins(p) => {
+                if let Some(b) = self.browser.as_mut() {
+                    b.set_app_checks(crate::set_checks::SetChecks::shared(p.clone()));
+                }
+                self.project_plugins = p;
+            }
             ToUi::Drive(d) => self.drive = Some(d),
             ToUi::TrackSounds(s) => {
                 self.track_sounds = *s;
@@ -13322,6 +13327,10 @@ impl Player {
     /// `lists`.
     pub(crate) fn set_browser(&mut self, mut b: mpfree_browser_ui::Browser, lists: &str) {
         b.load_lists(lists);
+        // The set check's app half (live shows B2): plugins and outputs.
+        b.set_app_checks(crate::set_checks::SetChecks::shared(
+            self.project_plugins.clone(),
+        ));
         self.browser = Some(Box::new(b));
         // Exported pads have somewhere to go: the Slice tool offers Files.
         self.sample.set_files(&mut self.ui, true);
@@ -13376,7 +13385,12 @@ impl Player {
         b.set_kit_target(kit_on);
         b.set_pad_map(map);
         if b.sets_shown() {
-            // The rig, for a set song's Needs and the set's check.
+            // The rig, for a set song's Needs and the set's check, and
+            // what the check knows of this MPC.
+            let machine = self.set_machine();
+            if let Some(b) = self.browser.as_mut() {
+                b.set_machine(machine);
+            }
             if let (Some(rig), Some(b)) = (self.rig(), self.browser.as_mut()) {
                 b.set_rig(rig);
             }
@@ -14562,7 +14576,9 @@ impl Player {
         self.set_play = Some(sp);
         (self.set_song_next, self.set_song_landing) = (false, false);
         self.change_from = Some((Instant::now(), "Play set"));
+        let machine = self.set_machine();
         if let Some(b) = self.browser.as_mut() {
+            b.set_machine(machine);
             b.set_playing(Some((loc.clone(), set)));
             b.check_set_now(&loc);
         }
@@ -14864,6 +14880,26 @@ impl Player {
         }
     }
 
+    /// What the set check knows of this MPC (live shows B2): the memory
+    /// free for songs (what is free now and what the open song's sounds
+    /// and copies hold, less what MPFree always keeps free) and the
+    /// stick's room, from the audio tracks' last look.
+    fn set_machine(&self) -> mpfree_library::preflight::Machine {
+        let held = self.sample.memory();
+        let free_for_songs = self.mem_free.map(|free| {
+            (free + held.sounds as u64 + held.copies as u64).saturating_sub(crate::memory::FLOOR)
+        });
+        let stick = self
+            .drive
+            .as_ref()
+            .and_then(|d| d.get())
+            .map(|seen| seen.map_or((false, 0), |room| (room.writable, room.free)));
+        mpfree_library::preflight::Machine {
+            free_for_songs,
+            stick,
+        }
+    }
+
     /// A row of the Show view's MENU.
     fn set_menu(&mut self, m: crate::app::SetMenu) {
         use crate::app::SetMenu;
@@ -14879,15 +14915,20 @@ impl Player {
                 self.outbox.push(FromUi::OpenSetEditor);
             }
             SetMenu::Check => {
+                // The check view, over the Show view, while the set plays
+                // on (layout spec 4p).
+                let machine = self.set_machine();
                 if let Some(rig) = self.rig() {
                     if let Some(b) = self.browser.as_mut() {
                         b.set_rig(rig);
                     }
                 }
                 if let Some(b) = self.browser.as_mut() {
-                    b.check_set_now(&loc);
+                    b.set_machine(machine);
+                    b.open_check(&loc);
+                    mpfree_browser_ui::show(&mut self.ui, b);
                 }
-                self.tell("Checking the set: each song's marks follow");
+                self.tell("Checking the set: every song's checks follow");
             }
             SetMenu::Close if self.set_changing() => {
                 self.tell("A song is changing: close the set once it has");
@@ -21784,6 +21825,47 @@ fn browser_sets(fonts: Fonts, edit: bool) -> Result<Player, String> {
     built
 }
 
+/// The whole browser (BROWSE) in its Sets place's check view (live shows
+/// B2, layout spec 4p): Check set on Friday at the Lantern, every song
+/// checked with its sounds, Glass harbour (a sound missing) picked. The
+/// MPC's memory and stick and the check's time are fixed, so it draws the
+/// same every run.
+fn browser_set_check(fonts: Fonts) -> Result<Player, String> {
+    use mpfree_browser_ui::sample::{
+        fill, fill_set_files, fill_sets, sample_rig, source, SAMPLE_CHECKED, SAMPLE_MACHINE,
+    };
+    use mpfree_browser_ui::{Input, SetButton, SetInput};
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("mpfree-set-check-{}-{nanos}", std::process::id()));
+    let built = (|| {
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let lib = fill(&dir)?;
+        fill_sets(&lib)?;
+        fill_set_files(&lib)?;
+        let mut p = sample_sampler(fonts);
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        p.take_actions();
+        p.apply(ToUi::Show(View::Browser));
+        let b = p.browser.as_mut().ok_or("no browser")?;
+        b.set_rig(sample_rig());
+        b.fix_set_clock(SAMPLE_CHECKED);
+        b.go_source(source("Sets"));
+        b.input(Input::Sets(SetInput::Row(1)));
+        // The sample's memory and stick are fixed, not this computer's
+        // (the check runs here, before the step reads the app's).
+        b.set_machine(SAMPLE_MACHINE);
+        b.input(Input::Sets(SetInput::Button(SetButton::CheckSet)));
+        p.step_browser();
+        p.take_actions();
+        Ok(p)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    built
+}
+
 /// The whole browser (BROWSE) on its SD card place: a stand-in card beside
 /// a scratch library, open read only as the pad player opens the real one
 /// (nothing is asked of the stick), Rhodes chord picked. Removed again once
@@ -21931,10 +22013,12 @@ pub fn on_screens_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
 /// "Q-Links 1-4: the marked knobs") changed to what they do in controller
 /// mode, which takes them on every page.
 /// The hint line of the browser's place, when it has its own: Plugins,
-/// Sets, or a set being edited.
+/// Sets, a set's check view, or a set being edited.
 fn place_hint(b: &mpfree_browser_ui::Browser) -> Option<&'static str> {
     if b.plugins_shown() {
         Some(mpfree_browser_ui::PLUGINS_HINT)
+    } else if b.set_check_shown() {
+        Some(mpfree_browser_ui::SET_CHECK_HINT)
     } else if b.set_adding() {
         Some(mpfree_browser_ui::SET_ADD_HINT)
     } else if b.set_editing() {
@@ -22031,6 +22115,7 @@ fn sample_set() -> mpfree_library::Set {
         },
     ));
     mpfree_library::Set {
+        media: None,
         songs: vec![
             song("Lanterns", Starts::CountIn, Ends::Cut),
             song("Copper sky", Starts::Playing, Ends::Finish),
@@ -25051,6 +25136,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     match browser_sets(fonts(), true) {
         Ok(song) => out.push(("browser-set-song", song)),
         Err(e) => eprintln!("browser-set-song: not drawn ({e})"),
+    }
+    // Check set on Friday at the Lantern: the check view (live shows B2).
+    match browser_set_check(fonts()) {
+        Ok(check) => out.push(("browser-sets-check", check)),
+        Err(e) => eprintln!("browser-sets-check: not drawn ({e})"),
     }
     // The Slice tool on the same pad: chopped at its hits, slice 3 picked
     // (Q-Link 2).

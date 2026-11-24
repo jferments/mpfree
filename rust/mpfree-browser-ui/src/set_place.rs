@@ -7,10 +7,13 @@
 
 use super::*;
 use crate::sets::{
-    NeedRow, RigThing, SetButton, SetField, SetInput, SetRow, SetsScreen, SetsView, Stepper, Tone,
+    CheckMark, CheckRow, NeedRow, RigThing, SetButton, SetField, SetInput, SetRow, SetsScreen,
+    SetsView, Stepper, Tone,
 };
+use mpfree_library::preflight::{AppCheck, AppChecks, Machine, Mark, SongPreflight};
 use mpfree_library::sets::{FADE_DEFAULT, FADE_MAX, FADE_MIN, MAX_NOTES};
 use mpfree_library::{Ends, Need, SetSong, SongCheck, Starts, SET_EXT};
+use std::sync::Arc;
 
 /// The longest name a set takes (layout spec 1).
 pub const SET_NAME_MAX: usize = 32;
@@ -38,6 +41,30 @@ pub(super) struct SetsPlace {
     /// place's: a check or a song's changes on stage land on it even when
     /// the place hasn't listed the sets.
     playing: Option<(Loc, Set)>,
+    /// The check view (live shows B2), while it shows.
+    viewing: Option<CheckView>,
+    /// What the app knows of this MPC, for the check.
+    machine: Machine,
+    /// The app's half of the check.
+    app: Option<AppCheck>,
+    /// A fixed time for checks that come back (the sample screens, so they
+    /// are the same every run); None: the clock.
+    clock: Option<u64>,
+}
+
+/// The check view: the set it checks, each song's last preflight, and the
+/// song picked.
+#[derive(Debug)]
+struct CheckView {
+    loc: Loc,
+    /// Each song's check, once it comes back.
+    songs: Option<Vec<SongPreflight>>,
+    picked: Option<usize>,
+    top: usize,
+    /// The last check read every file in full.
+    deep: bool,
+    /// When it came back, in seconds since 1970.
+    at: u64,
 }
 
 /// The set being edited.
@@ -84,6 +111,17 @@ fn chip(check: Option<&SongCheck>) -> (String, Tone) {
             (c.word().into(), tone)
         }
     }
+}
+
+/// A chip's word and its colour.
+fn chip_of(word: &str) -> (String, Tone) {
+    let tone = match word {
+        "READY" => Tone::Good,
+        "LIMITS" => Tone::Warn,
+        "NOT READY" => Tone::Bad,
+        _ => Tone::Dim,
+    };
+    (word.into(), tone)
 }
 
 /// How a set's songs did at their last check: (ready, with limits, not
@@ -215,6 +253,30 @@ impl Browser {
         self.sets.rig = rig;
     }
 
+    /// What the app knows of this MPC now (memory free for songs, the
+    /// stick's room), for the next check.
+    pub fn set_machine(&mut self, machine: Machine) {
+        self.sets.machine = machine;
+    }
+
+    /// The app's half of the set check: the lines only it can see in a
+    /// song (plugins, outputs), run on the library's worker.
+    pub fn set_app_checks(&mut self, app: Arc<dyn AppChecks>) {
+        self.sets.app = Some(AppCheck(app));
+    }
+
+    /// Checks that come back are stamped `secs` (seconds since 1970)
+    /// instead of the clock's time: for sample screens that must draw the
+    /// same every run.
+    pub fn fix_set_clock(&mut self, secs: u64) {
+        self.sets.clock = Some(secs);
+    }
+
+    /// The check view shows (the hint line says what the keys do there).
+    pub fn set_check_shown(&self) -> bool {
+        self.sets_shown() && self.sets.viewing.is_some()
+    }
+
     /// The rows the Sets place's list has room for (sets or projects, and
     /// a set's songs).
     pub fn set_set_rows(&mut self, list: usize, songs: usize) {
@@ -270,6 +332,29 @@ impl Browser {
         if set.songs.is_empty() || self.sets.checking.is_some() {
             return;
         }
+        self.send_check(loc.clone(), set, false);
+    }
+
+    /// The check view on the set at `loc`, checked now (the Show view's
+    /// MENU: Check the set): the Sets place, showing it.
+    pub fn open_check(&mut self, loc: &Loc) {
+        let Some(at) = SOURCES
+            .iter()
+            .position(|s| *s == Source::Place(Place::Sets))
+        else {
+            return;
+        };
+        self.go_source(at);
+        let Some(set) = self.set_at(loc) else {
+            return;
+        };
+        self.select_name = Some(loc.name().to_string());
+        self.check_view(loc.clone(), set, false);
+    }
+
+    /// Check `set` (at `loc`) on the library's worker, reading every file
+    /// in full when `deep`.
+    fn send_check(&mut self, loc: Loc, set: Set, deep: bool) {
         let connected = self
             .sets
             .rig
@@ -279,11 +364,51 @@ impl Browser {
             .collect();
         self.sets.checking = Some(loc.clone());
         self.send(Job::CheckSet {
-            loc: loc.clone(),
+            loc,
             set,
             connected,
-            deep: false,
+            deep,
+            machine: self.sets.machine,
+            app: self.sets.app.clone(),
         });
+    }
+
+    /// Open the check view on `set` and check it.
+    fn check_view(&mut self, loc: Loc, set: Set, deep: bool) {
+        if set.songs.is_empty() {
+            self.status = Some(("No songs to check yet: Add songs picks them".into(), false));
+            return;
+        }
+        let keep =
+            self.sets.viewing.take().filter(|v| {
+                v.loc == loc && v.songs.as_ref().map(Vec::len) == Some(set.songs.len())
+            });
+        self.status = Some((
+            format!(
+                "{} {}\u{2026}",
+                if deep {
+                    "Reading every file of"
+                } else {
+                    "Checking"
+                },
+                stem(loc.name())
+            ),
+            false,
+        ));
+        let mut view = keep.unwrap_or(CheckView {
+            loc: loc.clone(),
+            songs: None,
+            picked: None,
+            top: 0,
+            deep,
+            at: 0,
+        });
+        view.deep = deep;
+        self.sets.viewing = Some(view);
+        // A quick check of this set already on its way lands here too.
+        if deep || self.sets.checking.as_ref() != Some(&loc) {
+            self.send_check(loc, set, deep);
+        }
     }
 
     /// The Set editor on the set at `loc` (the Show view's MENU, live
@@ -346,6 +471,7 @@ impl Browser {
     /// The place was left or shown again: back to the list of sets.
     pub(super) fn sets_reset(&mut self) {
         self.sets.editing = None;
+        self.sets.viewing = None;
         self.sets.read = false;
     }
 
@@ -382,11 +508,29 @@ impl Browser {
 
     /// The check of a set came back: each song keeps it (and a song that
     /// was renamed or moved takes its new name), and the set is saved.
-    pub(super) fn sets_checked(&mut self, loc: Loc, checks: Vec<(Found, SongCheck)>) {
+    pub(super) fn sets_checked(&mut self, loc: Loc, checks: Vec<SongPreflight>) {
         if self.sets.checking.as_ref() == Some(&loc) {
             self.sets.checking = None;
         }
-        let now = now_utc();
+        let now = self.sets.clock.unwrap_or_else(now_utc);
+        if let Some(v) = self.sets.viewing.as_mut().filter(|v| v.loc == loc) {
+            // The first song not ready, else the first with limits, is
+            // picked; a song picked before stays.
+            let worst = |m: Mark| {
+                checks
+                    .iter()
+                    .position(|p| p.lines.iter().any(|l| l.mark == m))
+            };
+            if v.picked.is_none_or(|k| k >= checks.len()) {
+                v.picked = worst(Mark::NotReady)
+                    .or_else(|| worst(Mark::Limits))
+                    .or((!checks.is_empty()).then_some(0));
+            }
+            v.at = now;
+            v.songs = Some(checks.clone());
+        }
+        let checks: Vec<(Found, SongCheck)> =
+            checks.into_iter().map(|p| (p.found, p.check)).collect();
         let Some(mut set) = self.set_at(&loc) else {
             return;
         };
@@ -534,6 +678,16 @@ impl Browser {
         {
             return false;
         }
+        if self.sets.viewing.is_some() {
+            // The check view: the dial picks a song (its checks show), -
+            // goes back to the set.
+            match k {
+                SetKey::Dial(d) => self.sets_pick(d),
+                SetKey::Back => self.sets_input(SetInput::Back),
+                SetKey::Push | SetKey::Enter | SetKey::Erase => {}
+            }
+            return true;
+        }
         let editing = self.sets.editing.as_ref();
         let adding = editing.is_some_and(|e| e.adding.is_some());
         let focus = editing.and_then(|e| e.focus);
@@ -604,6 +758,12 @@ impl Browser {
                     self.sets_add(i);
                 }
             }
+            SetInput::Back if self.sets.viewing.is_some() => {
+                self.sets.viewing = None;
+                if self.sets.editing.is_none() {
+                    self.sets_refresh();
+                }
+            }
             SetInput::Back => {
                 let adding = self
                     .sets
@@ -621,6 +781,12 @@ impl Browser {
     }
 
     fn sets_row(&mut self, r: usize) {
+        if let Some(v) = self.sets.viewing.as_mut() {
+            if v.songs.as_ref().is_some_and(|s| r < s.len()) {
+                v.picked = Some(r);
+            }
+            return;
+        }
         let checking = self.sets.checking.is_some();
         match self.sets.editing.as_mut() {
             None => {
@@ -661,6 +827,12 @@ impl Browser {
         let (list, songs) = (self.list_rows(), self.song_rows());
         let n_songs = self.sets.songs.as_ref().map_or(0, Vec::len);
         let n_sets = self.sets.sets.len();
+        if let Some(v) = self.sets.viewing.as_mut() {
+            let n = v.songs.as_ref().map_or(0, Vec::len);
+            let max = n.saturating_sub(songs) as i32;
+            v.top = (v.top as i32 + d).clamp(0, max.max(0)) as usize;
+            return;
+        }
         let (top, n, vis) = match self.sets.editing.as_mut() {
             None => (&mut self.sets.top, n_sets, list),
             Some(e) => match e.adding.as_mut() {
@@ -683,6 +855,12 @@ impl Browser {
         let step = |sel: Option<usize>, n: usize| -> Option<usize> {
             (n > 0).then(|| sel.map_or(0, |s| s as i32 + d).clamp(0, n as i32 - 1) as usize)
         };
+        if let Some(v) = self.sets.viewing.as_mut() {
+            let n = v.songs.as_ref().map_or(0, Vec::len);
+            v.picked = step(v.picked, n);
+            v.top = in_view(v.picked, v.top, songs, n);
+            return;
+        }
         match self.sets.editing.as_mut() {
             None => {
                 self.sets.selected = step(self.sets.selected, n_sets);
@@ -711,9 +889,12 @@ impl Browser {
         Some((loc, s.clone()))
     }
 
-    /// The set a button on the card works on: the one edited, or the one
-    /// picked.
+    /// The set a button on the card works on: the one checked, the one
+    /// edited, or the one picked.
     fn this_set(&self) -> Option<(Loc, Set)> {
+        if let Some(v) = &self.sets.viewing {
+            return self.set_at(&v.loc).map(|s| (v.loc.clone(), s));
+        }
         if let Some(e) = &self.sets.editing {
             return Some((e.loc.clone(), e.set.clone()));
         }
@@ -781,38 +962,7 @@ impl Browser {
                 let Some((loc, set)) = self.this_set() else {
                     return self.set_unreadable();
                 };
-                if set.songs.is_empty() {
-                    self.status =
-                        Some(("No songs to check yet: Add songs picks them".into(), false));
-                    return;
-                }
-                let deep = b == SetButton::CheckEveryFile;
-                self.status = Some((
-                    format!(
-                        "{} {}\u{2026}",
-                        if deep {
-                            "Reading every file of"
-                        } else {
-                            "Checking"
-                        },
-                        stem(loc.name())
-                    ),
-                    false,
-                ));
-                let connected = self
-                    .sets
-                    .rig
-                    .iter()
-                    .filter(|r| r.connected)
-                    .map(|r| r.name.clone())
-                    .collect();
-                self.sets.checking = Some(loc.clone());
-                self.send(Job::CheckSet {
-                    loc,
-                    set,
-                    connected,
-                    deep,
-                });
+                self.check_view(loc, set, b == SetButton::CheckEveryFile);
             }
             SetButton::Rename => {
                 let Some((loc, _)) = self.picked_set() else {
@@ -992,6 +1142,25 @@ impl Browser {
     }
 
     fn picked_song(&self) -> Option<&SetSong> {
+        if let Some(v) = &self.sets.viewing {
+            let k = v.picked?;
+            return match &self.sets.editing {
+                Some(e) if e.loc == v.loc => e.set.songs.get(k),
+                _ => self
+                    .sets
+                    .sets
+                    .iter()
+                    .find(|(e, _)| e.name == v.loc.name())
+                    .and_then(|(_, s)| s.as_ref().ok())
+                    .or(self
+                        .sets
+                        .playing
+                        .as_ref()
+                        .filter(|(l, _)| *l == v.loc)
+                        .map(|(_, s)| s))
+                    .and_then(|s| s.songs.get(k)),
+            };
+        }
         let e = self.sets.editing.as_ref()?;
         e.set.songs.get(e.picked?)
     }
@@ -1179,10 +1348,11 @@ impl Browser {
             status_tone,
             ..SetsScreen::default()
         };
-        match &self.sets.editing {
-            None => self.list_screen(&mut s),
-            Some(e) if e.adding.is_some() => self.add_screen(e, &mut s),
-            Some(e) => self.edit_screen(e, &mut s),
+        match (&self.sets.viewing, &self.sets.editing) {
+            (Some(v), _) => self.check_screen(v, &mut s),
+            (None, None) => self.list_screen(&mut s),
+            (None, Some(e)) if e.adding.is_some() => self.add_screen(e, &mut s),
+            (None, Some(e)) => self.edit_screen(e, &mut s),
         }
         if checking {
             s.detail.faint = s
@@ -1287,6 +1457,8 @@ impl Browser {
         if !limits.is_empty() {
             d.lists.push(("With limits".into(), Tone::Warn, limits));
         }
+        // Check every file is on the check view's title line (live shows
+        // B2).
         d.buttons = vec![
             SetButton::PlaySet,
             SetButton::EditSet,
@@ -1294,8 +1466,135 @@ impl Browser {
             SetButton::Rename,
             SetButton::Copy,
             SetButton::Delete,
-            SetButton::CheckEveryFile,
         ];
+    }
+
+    /// The check view (live shows B2; layout spec 4p): each song with its
+    /// chip and numbers, the picked song's every check beside it.
+    fn check_screen(&self, v: &CheckView, s: &mut SetsScreen) {
+        s.view = SetsView::Check;
+        s.title = format!("Check \u{b7} {}", stem(v.loc.name()));
+        s.back = true;
+        s.head_buttons = vec![SetButton::CheckEveryFile];
+        s.empty = "Checking\u{2026}".into();
+        let set = self.set_at(&v.loc);
+        let d = &mut s.detail;
+        let (Some(songs), Some(set)) = (&v.songs, set) else {
+            s.sub = Some((None, "Checking every song\u{2026}".into()));
+            d.eyebrow = "Selected".into();
+            d.line = "Checking every song\u{2026}".into();
+            return;
+        };
+        let (mut ready, mut limits, mut not) = (0, 0, 0);
+        for p in songs {
+            match p.chip() {
+                "NOT READY" => not += 1,
+                "LIMITS" => limits += 1,
+                _ => ready += 1,
+            }
+        }
+        let mut counts = Vec::new();
+        if ready > 0 {
+            counts.push(format!("{ready} ready"));
+        }
+        if limits > 0 {
+            counts.push(format!("{limits} with limits"));
+        }
+        if not > 0 {
+            counts.push(format!("{not} not ready"));
+        }
+        // As the approved drawing has it: the soundcheck only once there is
+        // one (each song's line says "not soundchecked yet" until then).
+        let now = self.sets.clock.unwrap_or_else(now_utc);
+        let mut words = vec![counts.join(", ")];
+        words.push(format!(
+            "{} {}",
+            if v.deep {
+                "every file read"
+            } else {
+                "quick check"
+            },
+            when_short(v.at, now)
+        ));
+        let soundchecked = set
+            .songs
+            .iter()
+            .filter_map(|s| s.soundcheck.as_ref().map(|c| c.at))
+            .max();
+        if let Some(at) = soundchecked {
+            words.push(format!("soundchecked {}", when_short(at, now)));
+        }
+        let set_chip = if not > 0 {
+            chip_of("NOT READY")
+        } else if limits > 0 {
+            chip_of("LIMITS")
+        } else {
+            chip_of("READY")
+        };
+        s.sub = Some((Some(set_chip), words.join(" \u{b7} ")));
+        s.rows = songs
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let song = set.songs.get(i);
+                let name = song.map_or(String::new(), |s| s.name.clone());
+                let numbers = match (song.and_then(|s| s.soundcheck.as_ref()), p.estimate) {
+                    (Some(sc), _) => sc.line(),
+                    (None, Some(e)) => format!("{} \u{b7} not soundchecked yet", e.line()),
+                    (None, None) => String::new(),
+                };
+                let first_bad = p
+                    .lines
+                    .iter()
+                    .find(|l| l.mark == Mark::NotReady)
+                    .map(|l| l.words.clone());
+                let (sub, sub_tone) = match first_bad {
+                    Some(w) if numbers.is_empty() => (w, Tone::Bad),
+                    Some(w) => (format!("{w} \u{b7} {numbers}"), Tone::Bad),
+                    None => (numbers, Tone::Dim),
+                };
+                SetRow {
+                    number: Some(i + 1),
+                    name,
+                    sub,
+                    sub_tone,
+                    chip: Some(chip_of(p.chip())),
+                    add: false,
+                }
+            })
+            .collect();
+        s.selected = v.picked;
+        s.top = v.top;
+        let Some(k) = v.picked.filter(|&k| k < songs.len()) else {
+            d.eyebrow = "Selected".into();
+            d.line = "Pick a song to see every check".into();
+            return;
+        };
+        let p = &songs[k];
+        let song = set.songs.get(k);
+        d.eyebrow = format!("Song {} of {}", k + 1, songs.len());
+        d.title = song.map_or(String::new(), |s| s.name.clone());
+        d.chip = Some(chip_of(p.chip()));
+        let at = when_short(v.at, self.sets.clock.unwrap_or_else(now_utc));
+        d.line = match p.check.tempo() {
+            Some(tempo) => format!("{tempo} \u{b7} checked {at}"),
+            None => format!("checked {at}"),
+        };
+        d.checks = p
+            .lines
+            .iter()
+            .map(|l| CheckRow {
+                mark: match l.mark {
+                    Mark::Fine => CheckMark::Fine,
+                    Mark::Note => CheckMark::Note,
+                    Mark::Limits => CheckMark::Limits,
+                    Mark::NotReady => CheckMark::NotReady,
+                },
+                word: l.area.word().to_string(),
+                text: l.words.clone(),
+            })
+            .collect();
+        d.buttons = vec![SetButton::OpenInMake];
     }
 
     fn edit_screen(&self, e: &Editing, s: &mut SetsScreen) {

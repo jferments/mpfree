@@ -66,7 +66,7 @@ pub enum Do {
     /// Ask for the song's parts, for its recovery copy.
     SaveCopy,
     /// Open this song of the set (the browser's `open_set_song`).
-    Open(SetSong),
+    Open(Box<SetSong>),
     /// The song is in: start it so.
     Start(Starts),
     /// Full sound again, with no ending (Reopen).
@@ -156,7 +156,7 @@ impl SetPlay {
             finishing: None,
         };
         let fx = match first {
-            Some(s) => vec![Do::Open(s)],
+            Some(s) => vec![Do::Open(Box::new(s))],
             None => vec![Do::NotStarted],
         };
         (p, fx)
@@ -254,7 +254,7 @@ impl SetPlay {
         self.copy_first = false;
         self.step = Step::Opening;
         self.show.changed_to(Change::Opening);
-        vec![Do::Open(song)]
+        vec![Do::Open(Box::new(song))]
     }
 
     /// The recovery copy is written (the screen tells the set which song
@@ -677,6 +677,7 @@ mod tests {
         let (p, fx) = SetPlay::new(
             loc,
             Set {
+                media: None,
                 songs,
                 extra: vec![],
             },

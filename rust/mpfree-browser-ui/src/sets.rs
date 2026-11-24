@@ -2,8 +2,10 @@
 //! set is a list of songs in order, each a project in Projects, kept as
 //! `Sets/<name>.set`. The place lists the sets with their last check, a
 //! set picked shows its card (Play set, Edit set, Check set, Rename, Copy,
-//! Delete, Check every file), and Edit set lists its songs, each set in
-//! the Selected column: Starts, Ends, Fade, Needs and Notes.
+//! Delete), Check set opens the check view (each song with its chip and
+//! its numbers; Check every file reads every sound), and Edit set lists its
+//! songs, each set in the Selected column: Starts, Ends, Fade, Needs and
+//! Notes.
 //!
 //! This module draws the place from a [`SetsScreen`] and says what a touch
 //! meant as a [`SetInput`]; the browser's logic (`state::set_place`) keeps
@@ -24,6 +26,9 @@ pub enum SetsView {
     Edit,
     /// Projects to add to the set being edited.
     Add,
+    /// The check view (live shows B2): each song with its chip and its
+    /// numbers, a song picked showing every check.
+    Check,
 }
 
 /// The buttons of the list's title line and the Selected column.
@@ -154,6 +159,25 @@ pub struct NeedRow {
     pub connected_tone: Tone,
 }
 
+/// A check line's mark (live shows B2): ✓ green, i a blue note, ! amber
+/// limits, × red not ready.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckMark {
+    Fine,
+    Note,
+    Limits,
+    NotReady,
+}
+
+/// One line of a song's checks in the Selected column: its mark, what it
+/// is about ("Files") and what it found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CheckRow {
+    pub mark: CheckMark,
+    pub word: String,
+    pub text: String,
+}
+
 /// The Selected column.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SetDetail {
@@ -164,6 +188,10 @@ pub struct SetDetail {
     pub line: String,
     /// One more line under it (why a song isn't ready).
     pub reason: Option<(String, Tone)>,
+    /// A chip at the title's right (a song in the check view).
+    pub chip: Option<(String, Tone)>,
+    /// A song's checks, each with its mark (the check view).
+    pub checks: Vec<CheckRow>,
     /// Label, value and the value's colour.
     pub facts: Vec<(String, String, Tone)>,
     /// Boxed lists: a heading, its colour and its lines (Not ready, With
@@ -187,6 +215,9 @@ pub struct SetsScreen {
     pub title: String,
     /// The title starts with ‹ and a tap on it goes back.
     pub back: bool,
+    /// A line under the title: a chip and words (the check view's "NOT
+    /// READY 7 ready · 1 with limits ...").
+    pub sub: Option<(Option<(String, Tone)>, String)>,
     pub head_buttons: Vec<SetButton>,
     pub rows: Vec<SetRow>,
     pub selected: Option<usize>,
@@ -204,6 +235,7 @@ impl Default for SetsScreen {
             view: SetsView::List,
             title: "Sets".into(),
             back: false,
+            sub: None,
             head_buttons: vec![SetButton::NewSet],
             rows: Vec::new(),
             selected: None,
@@ -245,17 +277,20 @@ const STEP_PITCH: i32 = 50;
 const STEP_LABEL_W: i32 = 150;
 const NOTES_H: i32 = 100;
 const NEED_H: i32 = 52;
+const SUB_H: i32 = 30;
 
 /// A row's pitch: songs in a set are 50 px rows, sets and projects 48.
 pub fn row_h(view: SetsView) -> i32 {
     match view {
         SetsView::Edit => 54,
+        SetsView::Check => 58,
         SetsView::List | SetsView::Add => crate::view::ROW_H,
     }
 }
 
 struct Geo {
     head: Rect,
+    sub: Option<Rect>,
     back: Option<Rect>,
     head_buttons: Vec<(SetButton, Rect)>,
     rows: Rect,
@@ -274,6 +309,13 @@ impl Geo {
         let (head, body) = inner.take_top(HEAD_H);
         let (status, rows) = body.take_bottom(STATUS_H);
         let rows = rows.take_top(6).1;
+        let (sub, rows) = match s.sub {
+            Some(_) => {
+                let (sub, rows) = rows.take_top(SUB_H);
+                (Some(sub), rows)
+            }
+            None => (None, rows),
+        };
         // The title line's buttons at its right, sized to their words.
         let mut head_buttons = Vec::new();
         let mut right = head;
@@ -338,6 +380,7 @@ impl Geo {
         }
         Geo {
             head,
+            sub,
             back,
             head_buttons,
             rows,
@@ -377,7 +420,8 @@ fn title_h(d: &SetDetail) -> i32 {
 
 /// The rows that fit in the list drawn in `list`, in `view`.
 pub fn rows_in(list: Rect, view: SetsView) -> usize {
-    let h = list.inset(12).h - HEAD_H - STATUS_H - 6;
+    let sub = if view == SetsView::Check { SUB_H } else { 0 };
+    let h = list.inset(12).h - HEAD_H - STATUS_H - 6 - sub;
     (h / row_h(view)).max(1) as usize
 }
 
@@ -548,6 +592,21 @@ pub fn paint(cx: &mut PaintCx, list: Rect, detail: Rect, s: &SetsScreen) {
         Rect::new(g.head.x, g.head.bottom() - 1, g.head.w, 1),
         t.outline,
     );
+    if let (Some((chip, words)), Some(sr)) = (&s.sub, g.sub) {
+        let mut x = sr.x + 4;
+        if let Some((word, tone)) = chip {
+            let w = paint_chip(cx, x, sr.y + sr.h / 2, word, *tone);
+            x += w + 10;
+        }
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            Rect::new(x, sr.y, sr.right() - x, sr.h),
+            Align::Left,
+            t.text_dim,
+            words,
+        );
+    }
     let vis = g.visible();
     if s.rows.is_empty() {
         cx.text(
@@ -601,13 +660,13 @@ fn paint_row(cx: &mut PaintCx, rr: Rect, view: SetsView, row: &SetRow, selected:
         cx.canvas.fill_round_rect(rr, t.round(10), t.raised);
         cx.canvas
             .fill_round_rect(Rect::new(rr.x, rr.y + 12, 4, rr.h - 24), 2, t.accent);
-    } else if view == SetsView::Edit {
+    } else if matches!(view, SetsView::Edit | SetsView::Check) {
         cx.canvas
             .fill_rect(Rect::new(rr.x, rr.bottom() - 1, rr.w, 1), t.raised);
     }
     let inner = rr.inset_xy(14, 0);
     let rest = match (view, row.number) {
-        (SetsView::Edit, Some(n)) => {
+        (SetsView::Edit | SetsView::Check, Some(n)) => {
             let (num, rest) = inner.take_left(32);
             cx.text(
                 FontId::Mono,
@@ -643,6 +702,27 @@ fn paint_row(cx: &mut PaintCx, rr: Rect, view: SetsView, row: &SetRow, selected:
         cx.text(FontId::Bold, t.size_small * 0.8, r, Align::Center, c, word);
     }
     let name = rest.take_right(10).1.inset_xy(4, 0);
+    if view == SetsView::Check {
+        // The check view: the name, and its numbers under it.
+        let (top, bottom) = name.take_top(name.h / 2 + 2);
+        cx.text(
+            if selected { FontId::Bold } else { FontId::Sans },
+            t.size_body,
+            top.take_top(4).1,
+            Align::Left,
+            t.text,
+            &row.name,
+        );
+        cx.text(
+            FontId::Sans,
+            t.size_small * 0.9,
+            bottom.take_bottom(bottom.h - 2).1.take_top(bottom.h - 8).0,
+            Align::Left,
+            ink(cx, row.sub_tone),
+            &row.sub,
+        );
+        return;
+    }
     let nw = cx.text(
         if selected { FontId::Bold } else { FontId::Sans },
         t.size_body,
@@ -660,6 +740,109 @@ fn paint_row(cx: &mut PaintCx, rr: Rect, view: SetsView, row: &SetRow, selected:
             ink(cx, row.sub_tone),
             &row.sub,
         );
+    }
+}
+
+/// A chip (READY, LIMITS, NOT READY) outlined in its tone, its left at
+/// `x` and its middle at `y`: its width.
+fn paint_chip(cx: &mut PaintCx, x: i32, y: i32, word: &str, tone: Tone) -> i32 {
+    let t = cx.theme.clone();
+    let w = cx.measure(FontId::Bold, t.size_small * 0.8, word) + 16;
+    let c = ink(cx, tone);
+    let r = Rect::new(x, y - 12, w, 24);
+    cx.canvas.stroke_round_rect(r, t.round(6), 1, c);
+    cx.text(FontId::Bold, t.size_small * 0.8, r, Align::Center, c, word);
+    w
+}
+
+/// A check line's mark: a ring in its colour around ✓, i, ! or ×.
+fn paint_mark(cx: &mut PaintCx, x: i32, y: i32, mark: CheckMark) {
+    let t = cx.theme.clone();
+    let (c, glyph) = match mark {
+        CheckMark::Fine => (t.good, "\u{2713}"),
+        CheckMark::Note => (t.accent, "i"),
+        CheckMark::Limits => (t.warn, "!"),
+        CheckMark::NotReady => (t.bad, "\u{d7}"),
+    };
+    let r = Rect::new(x, y, 18, 18);
+    cx.canvas.stroke_round_rect(r, 9, 2, c);
+    cx.text(
+        FontId::Bold,
+        t.size_small * 0.75,
+        r,
+        Align::Center,
+        c,
+        glyph,
+    );
+}
+
+/// The check lines from `y` down to `bottom` in a column `x`..`x + w`:
+/// each its mark, then its word in bold and what it found, wrapped.
+fn paint_checks(cx: &mut PaintCx, x: i32, mut y: i32, w: i32, bottom: i32, rows: &[CheckRow]) {
+    let t = cx.theme.clone();
+    let px = t.size_small;
+    let lh = 20;
+    let text_x = x + 28;
+    let text_w = w - 28;
+    for row in rows {
+        if y + lh > bottom {
+            break;
+        }
+        paint_mark(cx, x, y + 1, row.mark);
+        let word = format!("{}:", row.word);
+        let ww = cx.measure(FontId::Bold, px, &word) + 6;
+        cx.text(
+            FontId::Bold,
+            px,
+            Rect::new(text_x, y, ww, lh),
+            Align::Left,
+            t.text,
+            &word,
+        );
+        // The first line starts after the word; the rest use the column.
+        let mut first = String::new();
+        let mut rest = Vec::new();
+        let mut words = row.text.split_whitespace();
+        for wd in words.by_ref() {
+            let try_line = if first.is_empty() {
+                wd.to_string()
+            } else {
+                format!("{first} {wd}")
+            };
+            if first.is_empty() || cx.measure(FontId::Sans, px, &try_line) <= text_w - ww {
+                first = try_line;
+            } else {
+                rest.push(wd.to_string());
+                break;
+            }
+        }
+        rest.extend(words.map(str::to_string));
+        cx.text(
+            FontId::Sans,
+            px,
+            Rect::new(text_x + ww, y, text_w - ww, lh),
+            Align::Left,
+            t.text_dim,
+            &first,
+        );
+        y += lh;
+        if !rest.is_empty() {
+            for l in wrap(cx, px, &rest.join(" "), text_w) {
+                if y + lh > bottom {
+                    return;
+                }
+                cx.text(
+                    FontId::Sans,
+                    px,
+                    Rect::new(text_x, y, text_w, lh),
+                    Align::Left,
+                    t.text_dim,
+                    &l,
+                );
+                y += lh;
+            }
+        }
+        y += 6;
     }
 }
 
@@ -688,6 +871,14 @@ fn paint_detail(cx: &mut PaintCx, detail: Rect, g: &Geo, d: &SetDetail) {
     draw::card(cx, detail, &d.eyebrow, "");
     let body = g.body;
     let (title, rest) = body.take_top(34);
+    let title = match &d.chip {
+        Some((word, tone)) => {
+            let w = cx.measure(FontId::Bold, t.size_small * 0.8, word) + 16;
+            paint_chip(cx, title.right() - w, title.y + title.h / 2, word, *tone);
+            title.take_right(w + 8).1
+        }
+        None => title,
+    };
     cx.text(
         FontId::Bold,
         t.size_title,
@@ -743,6 +934,9 @@ fn paint_detail(cx: &mut PaintCx, detail: Rect, g: &Geo, d: &SetDetail) {
     }
     // The boxed lists, in what is left above the buttons.
     let lists_bottom = g.buttons.first().map_or(body.bottom(), |(_, r)| r.y - 8);
+    if !d.checks.is_empty() {
+        paint_checks(cx, rest.x, rest.y, rest.w, lists_bottom, &d.checks);
+    }
     if !d.lists.is_empty() && rest.y + 60 < lists_bottom {
         let boxr = Rect::new(rest.x, rest.y + 4, rest.w, lists_bottom - rest.y - 8);
         cx.canvas.fill_round_rect(boxr, t.round(10), t.raised);

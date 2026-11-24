@@ -235,6 +235,8 @@ pub fn samples(fonts: impl Fn() -> Fonts, data: &Path) -> Result<Vec<Sample>, St
             PICKER_HINT
         } else if name.contains("set-add") {
             crate::SET_ADD_HINT
+        } else if name.contains("set-check") {
+            crate::SET_CHECK_HINT
         } else if name.contains("set-") {
             crate::SET_EDIT_HINT
         } else if name.contains("sets") {
@@ -467,7 +469,7 @@ pub fn samples(fonts: impl Fn() -> Fonts, data: &Path) -> Result<Vec<Sample>, St
     fill_sets(&lib)?;
     shot(
         "21-sets",
-        "The Sets place: three sets with their last check, Friday at the Lantern picked: its songs, when it was checked and what isn't ready; Play set, Edit set, Check set, Rename, Copy, Delete, Check every file",
+        "The Sets place: three sets with their last check, Friday at the Lantern picked: its songs, when it was checked and what isn't ready; Play set, Edit set, Check set, Rename, Copy, Delete",
         Theme::dark(),
         &|b| {
             b.set_rig(sample_rig());
@@ -498,6 +500,21 @@ pub fn samples(fonts: impl Fn() -> Fonts, data: &Path) -> Result<Vec<Sample>, St
             b.input(Input::Sets(SetInput::Button(SetButton::EditSet)));
             b.input(Input::Sets(SetInput::Button(SetButton::AddSongs)));
             b.dial(3);
+        },
+    )?;
+    // The check view (live shows B2): the songs get their sounds first.
+    fill_set_files(&lib)?;
+    shot(
+        "23-set-check",
+        "Check set on Friday at the Lantern: every song with its chip and its numbers, song 5 (Glass harbour, a sound missing) picked: every check with its mark; Check every file, Open in Make",
+        Theme::dark(),
+        &|b| {
+            b.set_rig(sample_rig());
+            b.set_machine(SAMPLE_MACHINE);
+            b.fix_set_clock(SAMPLE_CHECKED);
+            b.go_source(source("Sets"));
+            b.input(Input::Sets(SetInput::Row(1)));
+            b.input(Input::Sets(SetInput::Button(SetButton::CheckSet)));
         },
     )?;
     // The SD card place: a stand-in card beside the library, opened read
@@ -580,6 +597,61 @@ pub fn sample_rig() -> Vec<RigThing> {
     .collect()
 }
 
+/// What the check view's samples say of the MPC: 1,450 MB free for songs
+/// and 11.8 GB free on the stick.
+pub const SAMPLE_MACHINE: mpfree_library::preflight::Machine = mpfree_library::preflight::Machine {
+    free_for_songs: Some(1_450_000_000),
+    stick: Some((true, 11_800_000_000)),
+};
+
+/// When the check view's samples were checked (a fixed time, so they draw
+/// the same every run).
+pub const SAMPLE_CHECKED: u64 = 1_795_460_640;
+
+/// Sounds for the check view's samples (live shows B2): each of the sets'
+/// songs gets a sound, a second for Glass harbour, and its list of files;
+/// then Glass harbour's strings go to the Trash, so the check finds a file
+/// missing, as the approved board draws it. Call after [`fill_sets`].
+pub fn fill_set_files(lib: &Library) -> Result<(), String> {
+    let e = |err: std::io::Error| err.to_string();
+    let p = Loc::top(Place::Projects);
+    for (k, name) in [
+        "Lanterns",
+        "Copper sky",
+        "Undertow",
+        "Glass harbour",
+        "Paper moons",
+        "Slow signal",
+        "Kite string",
+        "Night drive",
+        "Sunday chops",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let loc = p.join(name).map_err(e)?;
+        let samples = loc.join("samples").map_err(e)?;
+        if lib.list(&samples).is_err() {
+            lib.new_folder(&loc, "samples").map_err(e)?;
+        }
+        // Half a second to a second and a half of stereo, so each song
+        // keeps a different amount.
+        let frames = 22_050 * (1 + k as u32 % 3);
+        let wav = mpfree_library::audio::wav_bytes(44_100, 2, 16, frames);
+        lib.write_new(&samples, "pad.wav", &wav).map_err(e)?;
+        let strings = (name == "Glass harbour")
+            .then(|| lib.write_new(&samples, "strings.wav", &wav))
+            .transpose()
+            .map_err(e)?;
+        lib.update_manifest(&loc).map_err(e)?;
+        // Its manifest lists strings.wav; then it goes to the Trash.
+        if let Some(strings) = strings {
+            lib.delete(&strings).map_err(e)?;
+        }
+    }
+    Ok(())
+}
+
 /// Songs and three sets for the Sets samples: Friday at the Lantern (nine
 /// songs, checked: one not ready, one with limits), Sunday rehearsal (all
 /// ready) and Festival short set (not checked yet). The checks are kept in
@@ -656,6 +728,7 @@ pub fn fill_sets(lib: &Library) -> Result<(), String> {
         needed: false,
     }];
     let friday = Set {
+        media: None,
         songs: vec![
             song("Lanterns", Starts::CountIn, Ends::Cut, ready()),
             song("Copper sky", Starts::Playing, Ends::Finish, ready()),
@@ -678,6 +751,7 @@ pub fn fill_sets(lib: &Library) -> Result<(), String> {
         extra: Vec::new(),
     };
     let sunday = Set {
+        media: None,
         songs: vec![
             song("Sunday chops", Starts::Stopped, Ends::Finish, ready()),
             song("Slow signal", Starts::Stopped, Ends::Fade(4), ready()),
@@ -686,6 +760,7 @@ pub fn fill_sets(lib: &Library) -> Result<(), String> {
         extra: Vec::new(),
     };
     let festival = Set {
+        media: None,
         songs: vec![
             song("Lanterns", Starts::CountIn, Ends::Cut, None),
             song("Copper sky", Starts::Playing, Ends::Finish, None),

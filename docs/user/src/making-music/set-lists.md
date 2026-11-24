@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-browser-ui/src/sets.rs rust/mpfree-browser-ui/src/set_place.rs rust/mpfree-library/src/sets.rs rust/mpfree-midi-ui/src/learn_section.rs rust/mpfree-time-ui/src/show.rs rust/mpfree-app/src/set_play.rs rust/mpfree-app/src/show.rs rust/mpfree-app/src/song_end.rs
+covers: rust/mpfree-browser-ui/src/sets.rs rust/mpfree-browser-ui/src/set_place.rs rust/mpfree-library/src/sets.rs rust/mpfree-library/src/preflight.rs rust/mpfree-app/src/set_checks.rs rust/mpfree-midi-ui/src/learn_section.rs rust/mpfree-time-ui/src/show.rs rust/mpfree-app/src/set_play.rs rust/mpfree-app/src/show.rs rust/mpfree-app/src/song_end.rs
 checked: 2026-11-22 cc300da5
 -->
 
@@ -41,14 +41,35 @@ Tap the left or right half of a row to step it back or on. You can also press th
 
 ## Checking a set
 
-**Check set** looks at every song: that it opens, that every sound and recording it uses is there and hasn't changed since it was saved, and that the keyboards it needs are plugged in. Each song then shows how it went:
+**Check set** opens the set's **check view**: every song in the set, each with how it went and its numbers. You can run it from the set's card, from the title line while you edit a set, and from the Show view's **MENU** while a set plays (the set plays on behind it).
+
+{{shot: browser-sets-check | Check set on Friday at the Lantern: nine songs with their chips and numbers, and song 5, Glass harbour, picked: a sound is missing, so it isn't ready, and the Selected column says what every check found.}}
+
+Each song shows one of these:
 
 - **READY**: everything is there.
-- **LIMITS**: it plays, but without something it would like, such as a keyboard marked Nice to have that isn't plugged in.
-- **NOT READY**: something it needs is missing. The set's card says what, for example "5 Glass harbour: the file samples/strings.wav is missing."
-- **NOT CHECKED**: it hasn't been checked yet, or it was saved by an older version of MPFree. Saving the song again lets the check look at its files.
+- **LIMITS**: it plays, but without something it would like, such as a keyboard marked Nice to have that isn't plugged in, or a stick that's nearly full.
+- **NOT READY**: something it needs is missing, or it's too big to open. It can't go on stage until that's fixed. The row says why in red, for example "samples/strings.wav is missing".
 
-The set keeps what the check found, so you see it next time too. Run it again before the show, after you've plugged everything in. **Check every file**, on the set's card, reads every file in full instead of only looking at its size and date. It takes longer, so it's for the day of the show.
+Under each song's name are its numbers: how long it should take to open and how much memory it uses ("about 5 s · about 460 MB"). For now these are estimates from the song's files. The line at the top counts the songs ("7 ready, 1 with limits, 1 not ready") and says when the set was checked.
+
+Turn the wheel or tap a song to see every check it ran, each with a mark (✓ fine, **i** a note, **!** limits, **×** not ready) and what it found:
+
+| Check | What it looks at |
+|---|---|
+| **Files** | Every sound and recording the song uses is there and hasn't changed since it was saved. |
+| **Parts** | Every part of the song reads. |
+| **Plugins** | Each plugin the song uses is on this stick. One that isn't makes the song NOT READY, named by its file. |
+| **Keyboards** | The keyboards the song **Needs** are plugged in. |
+| **Outputs** | Where the song plays: the stereo mix on Main out, as the MPC One has it. |
+| **Memory** | The memory the song uses at its peak, against what's free for songs. A song too big on its own is NOT READY. If it fits but not together with the next song, a note says so: that change will always have a pause while the next song loads. |
+| **Stick** | Room on the stick for takes and recovery copies. Under 1 GB free is LIMITS; under 100 MB, NOT READY. |
+| **Streams** | Audio track takes that play from the stick as the song plays. |
+| **Soundcheck** | What the last soundcheck measured, or "not soundchecked yet". |
+
+**Open in Make** opens the picked song as a normal project, so you can fix it. **Check every file**, at the top right, reads every file in full instead of only looking at its size and date. It takes longer, so it's for the day of the show. Tap **‹** by the title, or press **-**, to go back.
+
+The set keeps what the check found, so the chips show on the set's card and in the Set editor next time too. Run it again before the show, after you've plugged everything in. A song saved by an older version of MPFree shows a note under Files until you save it again, so the check can look at its files.
 
 ## Playing a set
 
@@ -99,7 +120,7 @@ Songs that changed on stage say **changed on stage** in the Set editor. Pick one
 | Wheel push | Go |
 | **Clips**, **Song**, **List** | Arrange's other views; **Show** on their title lines comes back |
 | **MAIN** | Show, Clips, Song, List and round (from another page in Perform, the Show view) |
-| **MENU** | **Open the Set editor**, **Check the set** (the quick check on every song), **Close the set** (the song playing stays open as a normal project and the Show view goes) |
+| **MENU** | **Open the Set editor**, **Check the set** (opens the check view over the Show view while the set plays on), **Close the set** (the song playing stays open as a normal project and the Show view goes) |
 
 Opening another project from BROWSE, or a new project, also closes the set.
 
