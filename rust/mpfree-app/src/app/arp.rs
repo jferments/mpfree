@@ -795,12 +795,25 @@ impl App {
 
     /// A Q-Link turned. While NOTE REPEAT is held or on the panel, Q-Links
     /// 1-4 set rate (on Phrase, the phrase's speed), gate, swing and
-    /// octaves; otherwise None leaves the knob to the page (Q-Link 1 is the
-    /// level). `absolute` is the value (0-127) when the controller sends
+    /// octaves (on the Phrase tab with When I stop, Answer's Variation,
+    /// Activity and Range, and Q-Link 4 nothing); otherwise None leaves
+    /// the knob to the page (Q-Link 1 is the level). `absolute` is the value (0-127) when the controller sends
     /// positions, without Akai's session.
     pub fn qlink(&mut self, knob: usize, delta: i32, absolute: Option<u8>) -> Option<Vec<Effect>> {
         if knob >= 4 || !(self.repeat_held || self.view == View::Arp) {
             return None;
+        }
+        if self.answer_shows() {
+            // When I stop: Variation, Activity and Range; Q-Link 4 is free.
+            if let Some(v) = absolute {
+                self.answer_set(knob, f32::from(v) / 127.0);
+            } else {
+                self.qlink_turns[knob] += delta;
+                let steps = self.qlink_turns[knob] / QLINK_UNITS[1];
+                self.qlink_turns[knob] -= steps * QLINK_UNITS[1];
+                self.answer_turn(knob, steps);
+            }
+            return Some(Vec::new());
         }
         let tab = self.arp_tab();
         let mut s = self.arp;

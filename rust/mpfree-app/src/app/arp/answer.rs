@@ -26,7 +26,7 @@
 use crate::app::{App, Effect};
 use crate::time::compose::Worker;
 use mpfree_arp::{AnswerNote, AnswerTurns, CallNote, Light, PhraseKind, PPQ};
-use mpfree_arp_ui::view::{AnswerAction, AnswerMode, AnswerNow, HeardNote, PlaysWhen};
+use mpfree_arp_ui::view::{AnswerAction, AnswerMode, AnswerNow, HeardNote, PlaysWhen, TRADE_BARS};
 use mpfree_compose::answer::{answer, Answered, Call, Reply};
 use mpfree_compose::event::Source;
 use mpfree_compose::profile::InstrumentKind;
@@ -38,9 +38,6 @@ use mpfree_compose::GROOVE;
 use mpfree_context::PartRole;
 use mpfree_time_ui::TimeAction;
 use mpfree_transport::time::{Meter, Swing};
-
-/// Trade's turns when Answers for is Like mine, in bars.
-pub const TRADE_BARS: u8 = 2;
 
 /// One answer to make: everything the composer reads, copied off the
 /// engine's call.
@@ -95,12 +92,13 @@ pub(in crate::app) struct Answer {
     made: Option<Answered>,
     refused: Option<String>,
     light: Option<Light>,
-    /// Notes of the call the screen has drawn.
+    /// Notes of the call the screen has drawn, and where the answer's
+    /// playhead was (in steps of the phrase cursor's).
     seen: usize,
-    /// Makes an answer a period after it is asked, in the caller's thread:
-    /// for tests that count periods.
-    #[cfg(test)]
-    pub(super) inline: bool,
+    at: Option<i64>,
+    /// Makes each answer as it is asked, in the caller's thread: for the
+    /// sample screens and the tests, which count periods.
+    pub(in crate::app) inline: bool,
 }
 
 impl Default for Answer {
@@ -119,7 +117,7 @@ impl Default for Answer {
             refused: None,
             light: None,
             seen: 0,
-            #[cfg(test)]
+            at: None,
             inline: false,
         }
     }
@@ -139,6 +137,21 @@ impl Answer {
             AnswerMode::Echo => Reply::Echo,
             AnswerMode::Answer | AnswerMode::Trade => Reply::Answer,
         }
+    }
+}
+
+/// Range's three places, narrow to wide.
+const RANGES: [RangeSetting; 3] = [
+    RangeSetting::Narrow,
+    RangeSetting::Medium,
+    RangeSetting::Wide,
+];
+
+fn range_place(r: RangeSetting) -> u8 {
+    match r {
+        RangeSetting::Narrow => 0,
+        RangeSetting::Medium => 1,
+        RangeSetting::Wide => 2,
     }
 }
 
@@ -202,7 +215,49 @@ impl App {
                 vec![Effect::Note("answer: now".to_string())]
             }
             AnswerAction::Capture => vec![Effect::Time(TimeAction::Capture)],
+            AnswerAction::Set { knob, value } => {
+                self.answer_set(knob, f32::from(value) / 1000.0);
+                Vec::new()
+            }
         }
+    }
+
+    /// The When I stop panel shows: its Q-Links are the reply's.
+    pub(super) fn answer_shows(&self) -> bool {
+        self.view == crate::app::View::Arp
+            && self.arp_mode == mpfree_arp::Mode::Phrase
+            && self.improvise.when == PlaysWhen::WhenIStop
+    }
+
+    /// Q-Link `knob` (Variation, Activity, Range) to `v`, 0 to 1.
+    pub(super) fn answer_set(&mut self, knob: usize, v: f32) {
+        let v = v.clamp(0.0, 1.0);
+        let a = &mut self.answer;
+        match knob {
+            0 => a.variation = v,
+            1 => a.activity = v,
+            2 => a.range = RANGES[((v * 2.0).round() as usize).min(2)],
+            _ => return,
+        }
+        self.arp_dirty = true;
+    }
+
+    /// Q-Link `knob` turned `steps` detents on the When I stop panel.
+    pub(super) fn answer_turn(&mut self, knob: usize, steps: i32) {
+        let a = &self.answer;
+        let now = match knob {
+            0 => a.variation,
+            1 => a.activity,
+            2 => range_place(a.range) as f32 / 2.0,
+            _ => return,
+        };
+        let step = if knob == 2 { 0.5 } else { 0.05 };
+        self.answer_set(knob, now + step * steps as f32);
+    }
+
+    /// Makes each answer in this thread as it is asked (sample screens).
+    pub(crate) fn answer_inline(&mut self, inline: bool) {
+        self.answer.inline = inline;
     }
 
     /// Once a period, from [`App::arp_poll`]: Answer on the armed track's
@@ -238,9 +293,11 @@ impl App {
         self.answer_done();
         let light = self.arps.engine_at(track).answer_light();
         let seen = self.arps.engine_at(track).answer_call().len();
-        if light != self.answer.light || seen != self.answer.seen {
+        let at = self.answer_at();
+        if light != self.answer.light || seen != self.answer.seen || at != self.answer.at {
             self.answer.light = light;
             self.answer.seen = seen;
+            self.answer.at = at;
             self.arp_dirty = true;
         }
     }
@@ -289,7 +346,6 @@ impl App {
         self.answer.made = None;
         self.answer.refused = None;
         self.arp_dirty = true;
-        #[cfg(test)]
         if self.answer.inline {
             let done = job.run();
             self.answer_hand_back(id, done);
@@ -364,6 +420,16 @@ impl App {
         }
     }
 
+    /// How far the answer has played, in the phrase cursor's steps, while
+    /// it plays.
+    fn answer_at(&self) -> Option<i64> {
+        let e = self.arps.engine_at(self.track);
+        let (id, from, len, _) = e.answer_playing()?;
+        let t = e.clock_now() - from;
+        (self.answer.asked == Some(id) && (0..len).contains(&t))
+            .then(|| t / i64::from(super::CURSOR_TICKS))
+    }
+
     /// What the When I stop panel shows.
     pub(super) fn answer_view(&self) -> AnswerNow {
         let a = &self.answer;
@@ -411,11 +477,9 @@ impl App {
                 })
                 .collect()
         });
-        let playhead = e
-            .answer_playing()
-            .filter(|(id, ..)| a.asked == Some(*id))
-            .map(|(_, from, _, _)| shift + (e.clock_now() - from))
-            .filter(|t| *t >= shift);
+        let playhead = self
+            .answer_at()
+            .map(|c| shift + c * i64::from(super::CURSOR_TICKS));
         AnswerNow {
             mode: a.mode,
             bars: a.bars,
@@ -441,6 +505,9 @@ impl App {
                 _ => "open",
             }),
             refused: a.refused.clone(),
+            variation: a.variation,
+            activity: a.activity,
+            range: range_place(a.range),
         }
     }
 }

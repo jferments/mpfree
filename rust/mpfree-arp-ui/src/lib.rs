@@ -29,6 +29,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod answer_panel;
 pub mod make_sheet;
 pub mod maker;
 pub mod phrase_tab;

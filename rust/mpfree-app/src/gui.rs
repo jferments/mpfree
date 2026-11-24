@@ -5725,15 +5725,23 @@ impl Player {
             held_title = format!("Q-Links · {name} · {bank}");
             (held_title.as_str(), cards)
         } else if arp {
-            let rows = self
-                .ui
-                .get::<SliderStack>(arp_view::QLINKS)
-                .map(|q| q.rows.clone())
-                .unwrap_or_default();
+            // On the Phrase tab with When I stop, Answer's three.
+            let answering = self.arp.answering();
+            let rows = if answering {
+                self.ui
+                    .get::<mpfree_arp_ui::answer_panel::AnswerPanel>(arp_view::ANSWER)
+                    .map(|w| w.sliders.rows.clone())
+            } else {
+                self.ui
+                    .get::<SliderStack>(arp_view::QLINKS)
+                    .map(|q| q.rows.clone())
+            }
+            .unwrap_or_default();
             let mut cards: [QLinkCard; 4] = Default::default();
+            let whose = if answering { "Answer" } else { "Arp" };
             for (card, row) in cards.iter_mut().zip(&rows) {
                 let name = row.label.split(" · ").next().unwrap_or(&row.label);
-                *card = QLinkCard::new(name, "Arp", &row.text, row.value);
+                *card = QLinkCard::new(name, whose, &row.text, row.value);
             }
             (ARP_QLINKS, cards)
         } else if let Some(p) = self
@@ -9884,6 +9892,11 @@ impl Player {
                 View::Arp if tab == Mode::Phrase => match &self.arp.phrase.kit_track {
                     Some(track) => format!("{track}'s instrument is a kit   ·   phrases play on a synth   ·   - / +: kind   ·   \
                                             MENU: options   ·   NOTE REPEAT + MENU: close"),
+                    // When I stop: Answer's panels.
+                    None if self.arp.answering() => "Play, then stop: it answers on the next bar   ·   \
+                             play again: it stops at once   ·   Q-Links: variation, activity, range   ·   \
+                             NOTE REPEAT + MENU: close"
+                        .to_string(),
                     // New idea or More like this open in the list's place.
                     None if self.arp.maker.is_some() => "Wheel: a row   ·   - / +: change it   ·   \
                              Q-Links: speed, gate, swing, octaves   ·   Keep: on Yours   ·   Back: nothing changes"
@@ -17542,6 +17555,7 @@ impl Player {
             self.ui
                 .get::<QLinkColumn>(play_page::QLINKS)
                 .is_some_and(|q| q.title == ARP_QLINKS)
+                && !self.arp.answering()
         };
         // The Phrase tab's own sliders are the same four, but its first is
         // the phrase's speed, a parameter of its own.
@@ -28112,9 +28126,10 @@ pub fn sample_sets(name: &str, fonts: Fonts) -> Result<Player, String> {
     }
 }
 
-pub const PHRASE_SAMPLES: [&str; 7] = [
+pub const PHRASE_SAMPLES: [&str; 8] = [
     "arp-phrase",
     "arp-phrase-evolve",
+    "arp-phrase-answer",
     "arp-phrase-next-bar",
     "arp-phrase-kit",
     "arp-quick-band-phrase",
@@ -28222,6 +28237,52 @@ pub fn sample_phrase(name: &str, fonts: Fonts) -> Player {
                 last = app.arp_poll().or(last);
             }
             apply_effects(&mut p, last.into_iter().collect());
+            p
+        }
+        // When I stop (S5, board B): a call of five eighths on the pads in
+        // bar 1, a beat of quiet, and its answer half way through bar 2.
+        "arp-phrase-answer" => {
+            use mpfree_arp_ui::view::{ImproviseAction, PlaysWhen};
+            let (mut p, mut app) = phrase_player(fonts);
+            let mut fx = app.toggle_panel();
+            fx.extend(app.arp_action(ArpAction::Mode(Mode::Phrase)));
+            fx.extend(app.arp_action(ArpAction::Phrase(phrase_named("Minor hook"))));
+            fx.extend(app.arp_action(ArpAction::Improvise(ImproviseAction::Plays(
+                PlaysWhen::WhenIStop,
+            ))));
+            app.answer_inline(true);
+            let mut ev = mpfree_arp::Events::new();
+            let mut last = None;
+            // Periods of 128 frames in an eighth at 120 BPM.
+            let eighth = 44_100 / 4 / 128;
+            let mut run = |app: &mut crate::app::App, periods: usize, last: &mut Option<_>| {
+                for _ in 0..periods {
+                    app.process(128, &mut ev);
+                    *last = app.arp_poll().or(last.take());
+                }
+            };
+            for pad in [5, 7, 9, 7, 12] {
+                fx.extend(app.pad_down(pad, 100));
+                run(&mut app, eighth * 4 / 5, &mut last);
+                app.pad_up(pad);
+                run(&mut app, eighth - eighth * 4 / 5, &mut last);
+            }
+            // On until the answer is three eighths in.
+            let into = |v: &Option<crate::app::Effect>| match v {
+                Some(crate::app::Effect::Arp(v)) => v.improvise.answer.playhead.map(|h| {
+                    let a = &v.improvise.answer;
+                    h - i64::from(a.call_bars) * a.bar_ticks
+                }),
+                _ => None,
+            };
+            for _ in 0..32 * eighth {
+                if into(&last).is_some_and(|t| t >= 3 * 480) {
+                    break;
+                }
+                run(&mut app, 1, &mut last);
+            }
+            fx.extend(last);
+            apply_effects(&mut p, fx);
             p
         }
         // NOTE REPEAT held on the synth with + pressed to Phrase: the band

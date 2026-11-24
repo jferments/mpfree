@@ -1266,7 +1266,8 @@ pub fn kinds(st: &ArpState) -> PhraseKinds {
             .map(|s| (s.label().to_string(), st.phrases.count(*s)))
             .collect(),
         shown: Shelf::ALL.iter().position(|s| *s == shown).unwrap_or(0),
-        dim: st.phrase.kit_track.is_some(),
+        // On a kit track, or while Answer makes its own notes.
+        dim: st.phrase.kit_track.is_some() || st.answering(),
     }
 }
 

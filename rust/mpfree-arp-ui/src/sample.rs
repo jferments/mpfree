@@ -388,6 +388,52 @@ fn maker_scene(
     Ok(s)
 }
 
+/// When I stop (S5, board B): a call of five eighths in A minor in bar 1,
+/// its answer in bar 2 playing, past half way, landing home.
+fn answer_scene(fonts: Fonts) -> Result<Sample, String> {
+    use crate::view::{AnswerNow, HeardNote, PlaysWhen};
+    let mut s = phrase_scene(
+        "phrase-answer",
+        "Phrase tab, When I stop: a call in bar 1 and Answer answering it in bar 2",
+        fonts,
+        PhraseSetup::default(),
+    )?;
+    let n = |at: i64, len: i64, pitch: u8| HeardNote { at, len, pitch };
+    s.state.improvise.when = PlaysWhen::WhenIStop;
+    s.state.improvise.answers = true;
+    s.state.improvise.answer = AnswerNow {
+        light: Some(mpfree_arp::Light::Answer),
+        call: vec![
+            n(0, 400, 57),
+            n(480, 400, 60),
+            n(960, 400, 62),
+            n(1440, 400, 60),
+            n(1920, 800, 64),
+        ],
+        answer: vec![
+            n(3840, 400, 64),
+            n(4320, 400, 62),
+            n(4800, 400, 60),
+            n(5280, 400, 62),
+            n(5760, 1600, 57),
+        ],
+        bar_ticks: 3840,
+        call_bars: 1,
+        answer_bars: 1,
+        playhead: Some(5500),
+        key: Some("A minor".to_string()),
+        ends: Some("home"),
+        variation: 0.3,
+        activity: 0.5,
+        ..AnswerNow::default()
+    };
+    s.page.update(&mut s.ui, &s.state)?;
+    if let Some(l) = s.ui.get_mut::<Label>("hint") {
+        *l = Label::new(&hint_for(&s.state), Tone::Dim, Align::Center);
+    }
+    Ok(s)
+}
+
 /// The Phrase tab's sample screens: the five boards the owner approved
 /// (23 Nov 2026), then the cases they left out.
 fn phrase_samples(fonts: &impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
@@ -473,6 +519,7 @@ fn phrase_samples(fonts: &impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
                 ..PhraseSetup::default()
             },
         )?,
+        answer_scene(fonts())?,
         maker_scene(
             "phrase-new-idea",
             "Phrase tab: New idea's panel, its third try in the detail panel",

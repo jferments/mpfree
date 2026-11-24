@@ -19,8 +19,8 @@
 //!
 //! What Evolve made belongs to the track's pick on the armed track: a new
 //! pick, another track, or a try of New idea or More like this starts it
-//! again from the phrase as picked. When I stop (Answer) comes with its
-//! own step; until then its half of the Plays row is faint.
+//! again from the phrase as picked. When I stop (Answer) is in
+//! `answer.rs`.
 
 use crate::app::{App, Effect};
 use mpfree_arp::scale::NOTE_NAMES;

@@ -171,7 +171,26 @@ Picking another phrase starts it again from that phrase as written; Evolve stays
 
 {{shot: arp-phrase-evolve | The Phrase tab with Minor hook latched over F major and Evolve on: the line reads Over F major, the chord you hold, and evolves in a few bars; the notes the next change brings are outlined.}}
 
-The **Plays** row picks when the phrase plays: **While I hold** is what this section describes. **When I stop**, where MPFree answers what you play, is not ready yet and stays faint.
+The **Plays** row picks when the phrase plays: **While I hold** is what this section describes. **When I stop** is call and response, below.
+
+#### When I stop: MPFree answers you
+
+Tap **When I stop** on the Plays row and the pads play as pressed. Play a phrase and stop: after a beat of quiet, MPFree answers it from the next bar line, in the track's sound. Play again while it answers and it stops at once, and your notes start the next call.
+
+The list's place shows **Call and answer**: what you played, then the answer, solid where it has played and outlined where it is still to come. Under it the turn light says whose turn it is: You played, Quiet, Answer, Your turn.
+
+The panel beside it sets how it answers:
+
+- **Mode**: **Echo** plays your phrase back a little changed, with your rhythm and the same ending. **Answer** replies with your rhythm, its own notes and the ending turned round: a call that leaves things open gets an answer that lands home, and the other way round. **Trade** takes turns: you play for a few bars, it answers for as many, then it is your turn again.
+- **Answers for**: **Like mine** answers for as long as you played (1, 2 or 4 bars); **1 bar**, **2 bars** or **4 bars** whatever you played. In Trade this row is **Turns**: how long each turn is.
+- **Key** is the key MPFree heard your phrase in. **Starts** says when the answer comes.
+- **Answer now** ends your call at once: the answer starts on the next beat, not the next bar.
+- **Capture both as a clip** keeps your call and its answer as one clip, as **SHIFT** + **REC** does.
+- **Q-Links 1 to 3** (and the sliders under the buttons): **Variation** from steady to restless, **Activity** from sparser through like mine to busier, **Range** narrow, medium or wide. They shape the next answer. Q-Link 4 does nothing here.
+
+{{shot: arp-phrase-answer | The Phrase tab with When I stop: a call of five notes in bar 1 and MPFree's answer in bar 2, playing, with the turn light on Answer.}}
+
+Tap **While I hold** to go back to the list: a held note plays the phrase again.
 
 **Follows**, under the moves, sets how the phrase finds its notes:
 

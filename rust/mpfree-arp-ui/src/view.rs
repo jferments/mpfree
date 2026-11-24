@@ -23,6 +23,7 @@
 //! pads, the header and the hint line belong to the app; the panel only adds
 //! its own widgets and the layouts that place them.
 
+use crate::answer_panel::{self, AnswerPanel, CallPicture};
 use crate::maker::{
     MakerView, PhraseMaker, MAKER_BACK, MAKER_CLOSE, MAKER_KEEP, MAKER_STEP, MAKER_TRY,
 };
@@ -61,6 +62,11 @@ pub const KINDS: &str = "arp-phrase-kinds";
 pub const PHRASES: &str = "arp-phrase-list";
 pub const PLAYS: &str = "arp-phrase-plays";
 pub const KIT: &str = "arp-phrase-kit";
+/// The Phrase tab with Plays: When I stop ([`crate::answer_panel`]): the
+/// call and its answer in the list's place, how Answer replies in the
+/// detail's.
+pub const CALL: &str = "arp-phrase-call";
+pub const ANSWER: &str = "arp-phrase-answer";
 pub use crate::maker::MAKER;
 
 /// Every layout but the Phrase tab's keeps the pads where the Play page has
@@ -91,6 +97,10 @@ pub const PHRASE_LAYOUT: &str =
 /// ([`crate::maker`]) in the list's place.
 pub const PHRASE_MAKER_LAYOUT: &str =
     "col(header:60, col(arp-modes:52, row(arp-phrase-kinds:166, arp-phrase-maker:*, arp-phrase-plays:397):*):*, hint:26)";
+/// Phrase with Plays: When I stop: the call and its answer in the list's
+/// place, how Answer replies in the detail's ([`crate::answer_panel`]).
+pub const PHRASE_ANSWER_LAYOUT: &str =
+    "col(header:60, col(arp-modes:52, row(arp-phrase-kinds:166, arp-phrase-call:*, arp-phrase-answer:397):*):*, hint:26)";
 /// Phrase on a kit track, whose pads play as pressed: the kinds, and one
 /// panel that says so in the place of the other two.
 pub const PHRASE_KIT_LAYOUT: &str =
@@ -272,6 +282,14 @@ impl ArpState {
         }
     }
 
+    /// The Phrase tab plays When I stop on a synth track: Answer's panels
+    /// show in place of the list and the phrase that plays.
+    pub fn answering(&self) -> bool {
+        self.tab() == Mode::Phrase
+            && self.phrase.kit_track.is_none()
+            && self.improvise.when == PlaysWhen::WhenIStop
+    }
+
     /// The kind the Phrase tab's list shows: the pick's, unless an empty
     /// one was stepped to ([`PhraseNow::shelf`]).
     pub fn shelf(&self) -> Shelf {
@@ -448,8 +466,11 @@ impl AnswerMode {
     }
 }
 
+/// Trade's turns when Answers for is Like mine, in bars.
+pub const TRADE_BARS: u8 = 2;
+
 /// The Answers for row: Like mine (None), or 1, 2 or 4 bars. In Trade it
-/// is how long each turn is (Like mine: 2 bars).
+/// is how long each turn is (Like mine: [`TRADE_BARS`]).
 pub const ANSWERS_FOR: [Option<u8>; 4] = [None, Some(1), Some(2), Some(4)];
 
 /// A touch on the When I stop panel.
@@ -460,6 +481,12 @@ pub enum AnswerAction {
     For(Option<u8>),
     /// The call is over: the answer plays from the next beat.
     Now,
+    /// Q-Link `knob` (Variation, Activity, Range) set to `value`
+    /// thousandths of its way.
+    Set {
+        knob: usize,
+        value: u16,
+    },
     /// Your call and its answer kept as one clip (CAPTURE).
     Capture,
 }
@@ -496,6 +523,11 @@ pub struct AnswerNow {
     pub ends: Option<&'static str>,
     /// Why nothing was answered, when the composer refused.
     pub refused: Option<String>,
+    /// The reply's Q-Links: Variation and Activity 0 to 1, Range 0
+    /// (narrow) to 2 (wide).
+    pub variation: f32,
+    pub activity: f32,
+    pub range: u8,
 }
 
 /// A touch on the New idea or More like this panel ([`crate::maker`]).
@@ -923,10 +955,15 @@ pub fn phrase_kit_hint(track: &str) -> String {
 pub fn hint_for(st: &ArpState) -> String {
     match &st.phrase.kit_track {
         Some(track) => phrase_kit_hint(track),
+        None if st.answering() => ANSWER_HINT.to_string(),
         None if st.maker.is_some() && st.tab() == Mode::Phrase => MAKER_HINT.to_string(),
         None => hint(st.tab()).to_string(),
     }
 }
+
+/// The hint with Plays: When I stop.
+pub const ANSWER_HINT: &str =
+    "Play, then stop: it answers on the next bar · play again: it stops at once · Q-Links: variation, activity, range";
 
 /// The hint while New idea or More like this is open.
 pub const MAKER_HINT: &str =
@@ -958,6 +995,8 @@ pub fn layout_for(mode: Mode) -> &'static str {
 pub fn layout_of(st: &ArpState) -> &'static str {
     if st.phrase.kit_track.is_some() {
         PHRASE_KIT_LAYOUT
+    } else if st.answering() {
+        PHRASE_ANSWER_LAYOUT
     } else if st.maker.is_some() && st.tab() == Mode::Phrase {
         PHRASE_MAKER_LAYOUT
     } else {
@@ -1029,6 +1068,8 @@ impl ArpPanel {
         ui.add(PHRASES, PhraseRows::default());
         ui.add(PLAYS, PhrasePlays::new(&PHRASE_QLINK_LABELS));
         ui.add(KIT, PhraseKit::default());
+        ui.add(CALL, CallPicture::default());
+        ui.add(ANSWER, AnswerPanel::default());
         ui.add(MAKER, PhraseMaker::default());
         ui.add_page(quick, QUICK_LAYOUT)?;
         let mut panel = ArpPanel {
@@ -1197,6 +1238,26 @@ impl ArpPanel {
             show(ui, KINDS, phrase_tab::kinds(st));
             if st.phrase.kit_track.is_some() {
                 show(ui, KIT, phrase_tab::kit(st));
+            } else if st.answering() {
+                show(
+                    ui,
+                    CALL,
+                    CallPicture {
+                        show: answer_panel::call_show(st),
+                    },
+                );
+                let shows = answer_panel::answer_show(st);
+                let rows = answer_panel::answer_sliders(st);
+                // Its sliders may be under a finger: changed in place.
+                if ui
+                    .get::<AnswerPanel>(ANSWER)
+                    .is_some_and(|w| w.show != shows || w.sliders.rows != rows)
+                {
+                    if let Some(w) = ui.get_mut::<AnswerPanel>(ANSWER) {
+                        w.show = shows;
+                        w.sliders.rows = rows.to_vec();
+                    }
+                }
             } else {
                 match &st.maker {
                     Some(m) => show(ui, MAKER, PhraseMaker { view: m.clone() }),
@@ -1251,6 +1312,32 @@ impl ArpPanel {
             }
             (QLINKS | PLAYS, EventKind::Value(v)) => {
                 qlink.map(|i| ArpAction::Settings(with_qlink(s, st.tab(), i, *v)))
+            }
+            // When I stop (S5, board B).
+            (ANSWER, EventKind::Select(i)) => {
+                *qlink = Some(*i);
+                None
+            }
+            (ANSWER, EventKind::Value(v)) => qlink.map(|knob| {
+                ArpAction::Answer(AnswerAction::Set {
+                    knob,
+                    value: (v.clamp(0.0, 1.0) * 1000.0).round() as u16,
+                })
+            }),
+            (ANSWER, EventKind::Tab(i)) if *i == phrase_tab::WHEN => Some(ArpAction::Improvise(
+                ImproviseAction::Plays(PlaysWhen::WhileIHold),
+            )),
+            (ANSWER, EventKind::Tab(i)) if *i >= answer_panel::FOR => ANSWERS_FOR
+                .get(*i - answer_panel::FOR)
+                .map(|b| ArpAction::Answer(AnswerAction::For(*b))),
+            (ANSWER, EventKind::Tab(i)) if *i >= answer_panel::MODE => AnswerMode::ALL
+                .get(*i - answer_panel::MODE)
+                .map(|m| ArpAction::Answer(AnswerAction::Mode(*m))),
+            (ANSWER, EventKind::Toggle(answer_panel::NOW)) => {
+                Some(ArpAction::Answer(AnswerAction::Now))
+            }
+            (ANSWER, EventKind::Toggle(answer_panel::CAPTURE)) => {
+                Some(ArpAction::Answer(AnswerAction::Capture))
             }
             (KINDS, EventKind::Select(i)) => Shelf::ALL.get(*i).map(|k| ArpAction::Shelf(*k)),
             (PHRASES, EventKind::Select(i)) => {
@@ -1484,7 +1571,7 @@ mod tests {
             let mode = s.state.settings.mode;
             let mut want = vec!["header", "hint"];
             let mut gone = vec![];
-            let phrase = [KINDS, PHRASES, PLAYS, KIT];
+            let phrase = [KINDS, PHRASES, PLAYS, KIT, CALL, ANSWER];
             if s.quick {
                 want.extend(["pads", MINI, STEPS]);
                 gone.extend([MODES, LIST, PATTERNS, QLINKS, ACTIONS]);
@@ -1495,6 +1582,9 @@ mod tests {
                 if s.state.phrase.kit_track.is_some() {
                     want.push(KIT);
                     gone.extend([PHRASES, PLAYS]);
+                } else if s.state.answering() {
+                    want.extend([CALL, ANSWER]);
+                    gone.extend([KIT, PHRASES, PLAYS, MAKER]);
                 } else if s.state.maker.is_some() {
                     want.extend([MAKER, PLAYS]);
                     gone.extend([KIT, PHRASES]);
