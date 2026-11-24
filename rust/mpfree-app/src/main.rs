@@ -190,6 +190,7 @@ mod time;
 mod touch_bell;
 mod touch_dev;
 mod touchlab_page;
+mod track_costs;
 mod tunings;
 mod undo;
 mod views;
@@ -10849,6 +10850,9 @@ fn player_session(
     // The period's parts outside the engines, timed so a slow period says
     // where its time went (parts.rs).
     let mut parts = parts::Parts::new(engines.shared());
+    // System status's tracks using the most: counted one period in a few,
+    // published with the engines (track_costs.rs).
+    let mut track_costs = track_costs::TrackCosts::new();
     cores.show(&engine_shared.cores);
     // MIDI from outside (midi_in.rs): the 5-pin MIDI In (cable 2, already
     // open with the controller's other cables) and USB keyboards, read only,
@@ -15586,6 +15590,20 @@ fn player_session(
                 "mixer: kit {kit}'s strip settings moved with it to track {track}'s strip"
             ));
         }
+        // One period in a few, the kits' voices, the instruments and the
+        // inserts count their cost for System status (track_costs.rs);
+        // the period after, they stop.
+        match i % track_costs::EVERY {
+            0 => {
+                player.count_kits(true);
+                mix.set_spending(true);
+            }
+            1 => {
+                player.count_kits(false);
+                mix.set_spending(false);
+            }
+            _ => {}
+        }
         let mut pads = mix.pads_homed(&homes);
         // With the drums split (Cores 3 and 2), the lane's voices are waited
         // for until the period's deadline at most.
@@ -15973,6 +15991,29 @@ fn player_session(
         // The metronome goes on top; it keeps the samples within ±1 itself.
         let p = p.max(time.mix_click(&mut left, &mut right));
         engines.stop(engines::MIX, t_mix);
+        // A counted period: where its time went, by track (track_costs.rs).
+        // A kit goes to the first track that plays it (kit 1 too, which
+        // sounds on the pad channels), the Synth tab's synth likewise.
+        if track_costs::TrackCosts::counts(i) {
+            let plays = |t: usize| !mix.instruments.plays(t) && !midi_out.takes(t as u16);
+            let mut owners = homes;
+            if owners[0] == 0 {
+                if let Some(t) = track_kits.first_on(0, plays) {
+                    owners[0] = (t + 1) as u8;
+                }
+            }
+            let synth_by = track_kits
+                .first_on(track_kits.synth(), plays)
+                .map(|t| (t, synth_took.as_nanos() as u64));
+            let pads_ns = (t_synth - t_render).as_nanos() as u64;
+            track_costs.add_period(
+                |u| player.take_kit_counts(u),
+                pads_ns,
+                synth_by,
+                &owners,
+                |sink| mix.take_spent(sink),
+            );
+        }
         // Export: the pass takes this period's capture points and notes;
         // once it is over, the transport goes back to where it was and the
         // pass goes to the screen to finish (export.rs).
@@ -16339,6 +16380,7 @@ fn player_session(
             }));
             window_peak = 0.0;
             engines.publish();
+            track_costs.publish(&engine_shared.tracks);
             let (failed, dropped, stalls) = ports.queue_counts();
             engine_shared
                 .parts

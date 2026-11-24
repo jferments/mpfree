@@ -189,6 +189,12 @@ A `Span` costs two clock reads (about 90 ns on the build container;
 the audio thread that is fine per engine or per slot; do not time per voice
 or per sample.
 
+System status's tracks using the most ([status.md](status.md), `track_costs.rs`)
+follow that rule: one period in four the track host times each instrument and
+the mixer each chain that runs (`set_spending`), and the sampler counts each
+kit's voices' cost in grains instead of timing them (`Engine::count_kits`),
+sharing out the `sampler` stage's time by those counts.
+
 ## mpfree-bench
 
 ```text

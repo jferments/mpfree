@@ -415,6 +415,17 @@ impl TrackKits {
         (e != usize::from(self.synth)).then_some(e)
     }
 
+    /// The first track that plays entry `entry` (a kit, or the synth's)
+    /// and `plays(t)` says plays it (not an instrument of its own or MIDI
+    /// Out), for System status's tracks (track_costs.rs). Never allocates.
+    pub fn first_on(&self, entry: usize, plays: impl Fn(usize) -> bool) -> Option<usize> {
+        self.entries
+            .iter()
+            .enumerate()
+            .find(|&(t, &e)| usize::from(e) == entry && plays(t))
+            .map(|(t, _)| t)
+    }
+
     /// The synth's entry.
     pub fn synth(&self) -> usize {
         usize::from(self.synth)
@@ -1511,6 +1522,18 @@ impl Player {
     pub fn render_routed_until(&mut self, frames: usize, out: &mut impl PadOut, deadline: Instant) {
         self.engine.render_routed_until(frames, out, deadline);
         self.peak_grains = self.peak_grains.max(self.engine.live_grains());
+    }
+
+    /// Counts what each kit's voices cost from the next render on, while
+    /// on (`Engine::count_kits`), for System status's tracks.
+    pub fn count_kits(&mut self, on: bool) {
+        self.engine.count_kits(on);
+    }
+
+    /// Each kit's count since the last take, added into `out`
+    /// (`Engine::take_kit_counts`). Never allocates.
+    pub fn take_kit_counts(&mut self, out: &mut [u64]) {
+        self.engine.take_kit_counts(out);
     }
 
     /// Splits the engine's voices over two cores: half render on a lane

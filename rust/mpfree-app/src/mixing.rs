@@ -170,6 +170,15 @@ const KIT_PADS: usize = 128;
 /// [`Pads::played`]'s first bit for the lent channels.
 const LENT_BIT: usize = PADS + 1;
 
+/// Whose time [`MixHost::take_spent`] counted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Spender {
+    /// Sequencer track `t` (0 is track 1).
+    Track(usize),
+    /// Kit `k` (0 is kit 1).
+    Kit(usize),
+}
+
 /// The pad channels lent past kit 1's A1-A16: which kit's pad holds each,
 /// and, for the audio thread, each pad's lent channel. Fixed size, made
 /// before the sound starts: lending and giving back never allocate.
@@ -3060,6 +3069,52 @@ impl MixHost {
                 },
             );
         }
+    }
+
+    /// Counts, from the next period on while on, the time of each
+    /// track's own instrument, each synth-voice pad's copy and each
+    /// strip's inserts, for System status's "tracks using the most"
+    /// ([`MixHost::take_spent`], `track_costs.rs`). Two clock reads for
+    /// each that runs.
+    pub fn set_spending(&mut self, on: bool) {
+        self.mixer.set_spending(on);
+        self.instruments.set_spending(on);
+        self.pad_synths.set_spending(on);
+    }
+
+    /// The time counted since the last take, ns, by whose it is: a
+    /// sequencer track's (its own instrument and its strip's inserts) or
+    /// a kit's (its pads' copies and the inserts on its pads' channels).
+    /// Time on the engines' strips, the submixes, the returns, the master
+    /// and the free places is no track's and is left out. Starts the
+    /// count again. Never allocates.
+    pub fn take_spent(&mut self, mut f: impl FnMut(Spender, u64)) {
+        let first = self.track_channel(0);
+        let track_of = |ch: usize| {
+            if ch == first {
+                Some(0)
+            } else {
+                channel_track(ch)
+            }
+        };
+        self.instruments.take_spent(|ch, ns| {
+            if let Some(t) = track_of(ch) {
+                f(Spender::Track(t), ns);
+            }
+        });
+        self.pad_synths
+            .take_spent(|kit, ns| f(Spender::Kit(kit), ns));
+        let channels = &self.pad_channels;
+        self.mixer.take_spent(|s, ns| {
+            let who = match s {
+                StripId::Track(ch) => track_of(ch).map(Spender::Track),
+                StripId::Pad(_) => channels.holder(s).map(|(kit, _)| Spender::Kit(kit)),
+                _ => None,
+            };
+            if let Some(who) = who {
+                f(who, ns);
+            }
+        });
     }
 
     /// The pad channels for the sampler's `render_routed` this period,

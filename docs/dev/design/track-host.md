@@ -63,7 +63,7 @@ A slot whose track the output doesn't want rests: it isn't rendered at all. `Out
 - `TrackHost::new` and `Instrument::new` allocate. Everything else never allocates, frees, locks or panics: the event queues, the render buffers and the retired list are all made in `new`.
 - The output is the same, sample for sample, for any block size. The one exception is the moment a ringing-out instrument is retired, which falls on a block boundary; it is silent by then.
 - Load shedding: `voices()` counts every slot's voices (`Node::sounding_voices`; a plugin counts none), `cull_candidate()` names the least audible voice across the slots with its slot, and `cull(slot)` gives it up with the instrument's steal fade. Old instruments ringing out are left be ([profiling.md](profiling.md#load-shedding-giving-up-voices-nobody-hears)).
-- `stats(slot)` gives notes started, events dropped, stray note-offs, resets, swaps and blocks rested. With `set_profiling(true)` each instrument's render is timed into its probe (`probe_mut(slot)`, `mpfree-prof`), so the pad player can log each instrument's share of the period as it does for Poly today.
+- `stats(slot)` gives notes started, events dropped, stray note-offs, resets, swaps and blocks rested. With `set_profiling(true)` each instrument's render is timed into its probe (`probe_mut(slot)`, `mpfree-prof`), so the pad player can log each instrument's share of the period as it does for Poly today. With `set_spending(true)` each slot that has something to play adds its render time to a count (a slot on a lane is timed there anyway), and `take_spent(f)` hands each slot's count with its slot and track and starts again: System status's tracks using the most ([status.md](status.md)).
 
 ## Other cores (lanes)
 
