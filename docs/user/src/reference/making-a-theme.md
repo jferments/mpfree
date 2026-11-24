@@ -1,12 +1,14 @@
 <!--
 status: changing
-covers: rust/mpfree-ui/src/theme.rs rust/mpfree-ui/src/roles.rs rust/mpfree-ui/themes rust/mpfree-app/src/main.rs rust/mpfree-app/src/app.rs
-checked: 2026-11-22 512dc09a
+covers: rust/mpfree-ui/src/theme.rs rust/mpfree-ui/src/roles.rs rust/mpfree-ui/themes rust/mpfree-app/src/main.rs rust/mpfree-app/src/app.rs rust/mpfree-app/src/theme_edit.rs
+checked: 2026-11-24 680edcc7
 -->
 
 # Making your own theme
 
 A theme sets MPFree's colours and the style of its panels. MPFree has seven built in: **Default**, **Slate**, **Light**, **Console**, **Synthwave**, **Spaceship** and **AbleTown** (**Prefs > Appearance**). You can make your own with a short text file.
+
+The easiest way is on the MPC: **Prefs > Appearance > Customise** changes the theme in use with knobs and saves it as a theme file for you ([Customise](prefs.md#customise)). This page is about the file itself, for when you want to write one on a computer or change one exactly.
 
 A theme changes colours, corners, glow, the pattern behind the panels and the startup screen. It never moves anything. The layout, the text sizes and the font are the same in every theme, so every button and every place you touch stays where it is. The pads' lights keep their colours, and so does a plugin's own skin.
 

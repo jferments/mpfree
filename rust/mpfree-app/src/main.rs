@@ -192,6 +192,7 @@ mod synth;
 mod sys;
 mod sysinfo;
 mod takes;
+mod theme_edit;
 mod time;
 mod touch_bell;
 mod touch_dev;
@@ -10433,6 +10434,7 @@ fn player_session(
         .iter()
         .map(|(f, t)| (f.clone(), t.name.clone()))
         .collect();
+    app.theme_looks = folder.found.clone();
     app.theme_problems = folder.problems;
     app.themes_left_out = folder.left_out;
     let themes_left_out = app.themes_left_out.len() as u64;
@@ -14370,6 +14372,15 @@ fn player_session(
                     {
                         out.note(&format!("arp phrases: not saved ({e})"));
                     }
+                }
+                // Customise's Save theme: the file in the themes folder
+                // (the store's thread writes it), and the screen's list of
+                // theme files gets it before the settings name it.
+                app::Effect::SaveTheme { file, text, theme } => {
+                    if let Err(e) = store.write(app::THEMES_FOLDER, &file, text.into_bytes()) {
+                        out.note(&format!("themes: {file} not saved ({e})"));
+                    }
+                    out.show(gui::ToUi::ThemeFile(file, theme));
                 }
                 // The desk's, taken above.
                 _ => {}

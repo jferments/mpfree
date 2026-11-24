@@ -418,6 +418,8 @@ impl Desk<'_> {
             gui::FromUi::MenuSelect(k) => fx.extend(app.select(k)),
             gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),
             gui::FromUi::PrefsTab(i) => fx.extend(app.pick_prefs_tab(i)),
+            gui::FromUi::NewTheme(fresh) => fx.extend(app.customise_from_themes(fresh)),
+            gui::FromUi::ThemeName(name) => fx.extend(app.name_theme(&name)),
             gui::FromUi::MenuChoose(i, k) => fx.extend(app.choose(i, k)),
             gui::FromUi::MenuValue(i, v) => fx.extend(app.set_value(i, v)),
             gui::FromUi::GuideButton(k) => fx.extend(app.guide_button(k)),
@@ -1053,6 +1055,8 @@ impl Desk<'_> {
             app::Effect::Guide(g) => out.show(gui::ToUi::Guide(g)),
             app::Effect::Status(s) => out.show(gui::ToUi::Status(s)),
             app::Effect::Settings(s) => out.show(gui::ToUi::Settings(s)),
+            app::Effect::LiveTheme(t) => out.show(gui::ToUi::LiveTheme(t)),
+            app::Effect::NameTheme(name) => out.show(gui::ToUi::NameTheme(name)),
             app::Effect::ClearLogs => out.show(gui::ToUi::ClearLogs),
             app::Effect::ClearConsole => out.show(gui::ToUi::ClearConsole),
             app::Effect::TouchLab => out.show(gui::ToUi::TouchLab),
@@ -1152,6 +1156,7 @@ impl Desk<'_> {
             | app::Effect::BankLights
             | app::Effect::SavePatterns(_)
             | app::Effect::SavePhrases(_)
+            | app::Effect::SaveTheme { .. }
             | app::Effect::SetupNextStart { .. }) => return Some(e),
         }
         None
