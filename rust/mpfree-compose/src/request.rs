@@ -638,6 +638,15 @@ pub enum Making {
         notes: Vec<(Tick, u8)>,
         attempt: u16,
     },
+    /// An aimed try (S5, Try again's ▾): these new bars of `before`
+    /// (every new bar when empty) again with one thing changed, the rest
+    /// kept ([`try_aimed`]).
+    Aimed {
+        before: Arc<Continued>,
+        aim: crate::settings::Aim,
+        bars: Vec<u16>,
+        attempt: u16,
+    },
 }
 
 /// Continue on a clip: read it and the others, carry it on, and the
@@ -764,6 +773,12 @@ pub fn continue_clip_how(
             notes,
             attempt,
         } => try_notes(&req, before, notes, *attempt),
+        Making::Aimed {
+            before,
+            aim,
+            bars,
+            attempt,
+        } => try_aimed(&req, before, *aim, &as_bars(bars), *attempt),
     };
     let result = made.and_then(|made| {
         let edit = continuation(clip, made.notes.clone(), made.to)?;
