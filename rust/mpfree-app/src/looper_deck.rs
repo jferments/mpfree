@@ -24,8 +24,8 @@
 //! tempo) and the memory every loop shares.
 
 use crate::looper_tab::{
-    card_in, landing_fill, level_frac, level_of_frac, level_text, paint_card, paint_spots, DropTo,
-    LayerDrag, LoopAct,
+    card_in, landing_fill, level_frac, level_of_frac, level_text, paint_card, paint_spots,
+    play_icon, DropTo, LayerDrag, LoopAct,
 };
 use mpfree_ui::draw::speaker_on;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Shape, Target, Touch, Widget};
@@ -69,6 +69,11 @@ pub enum RingState {
     Muted,
     /// On a Loop track where another loop plays: silent, in its place.
     Off,
+    /// A free loop (Sync: Free) while the free loops are stopped: it waits
+    /// at its place on the free clock's bar 1, and a tap plays the free
+    /// loops; true while that Play waits for the song's bar line (a tap
+    /// calls it off).
+    Stopped(bool),
 }
 
 impl RingState {
@@ -88,6 +93,26 @@ impl RingState {
             // loop is soloed.
             Phase::Playing if !l.on || l.solo_out => RingState::Off,
             Phase::Playing => RingState::Playing,
+        }
+    }
+
+    /// As [`RingState::of`], for a loop that may be a free loop: one that
+    /// plays (or is silent in its place) while the free clock is stopped
+    /// is [`RingState::Stopped`] (`free`: whether the free clock runs, and
+    /// whether a Play waits for the song's bar line). A muted one stays
+    /// muted: a tap lets it play.
+    pub fn of_free(
+        l: &mpfree_looper::Status,
+        next_bar: Option<i64>,
+        free: (bool, bool),
+    ) -> RingState {
+        match RingState::of(l, next_bar) {
+            RingState::Playing | RingState::Off
+                if l.clock == mpfree_looper::Clock::Free && !free.0 =>
+            {
+                RingState::Stopped(free.1)
+            }
+            s => s,
         }
     }
 
@@ -125,6 +150,9 @@ pub struct Channel {
     pub foot: String,
     /// Soloed: the S beside the speaker lit.
     pub solo: bool,
+    /// It keeps time with the free clock (Sync: Free; empty: it records
+    /// so): Play's loop row says "free" after its name.
+    pub free: bool,
     /// A loop on an audio track (phase 4, board 5): its name under its
     /// place ("Vox loop" under "Vocal · row 2"), both small on the name
     /// line; empty for the one-line name.
@@ -154,6 +182,7 @@ impl Default for Channel {
             meter: 0.0,
             foot: String::new(),
             solo: false,
+            free: false,
             sub: String::new(),
             track: String::new(),
             track_mute: false,
@@ -172,6 +201,11 @@ pub struct DeckHead {
     pub clock: String,
     /// "92 BPM".
     pub tempo: String,
+    /// While a free loop holds audio, the free group and its tempo: "Free
+    /// 93.4 BPM", drawn with ▶ or ■ after "Free" as it plays or not.
+    pub free_tempo: Option<String>,
+    /// The free group plays (▶ after "Free"), or is stopped (■).
+    pub free_plays: bool,
     /// "37 s of 5 min", and how full, 0 to 1.
     pub memory: (String, f32),
     /// The pads are the loop keys (SHIFT + SAMPLER): the Pads switch lit.
@@ -413,7 +447,10 @@ pub(crate) fn paint_ring(cx: &mut PaintCx, b: Rect, ch: &Channel, clearing: Opti
     let top = -PI / 2.0;
     let pos = ch.position.clamp(0.0, 1.0);
     let now = top + 2.0 * PI * pos;
-    let dim = matches!(ch.state, RingState::Muted | RingState::Off);
+    let dim = matches!(
+        ch.state,
+        RingState::Muted | RingState::Off | RingState::Stopped(_)
+    );
     match ch.state {
         RingState::Empty | RingState::Waiting(_) => {
             let pts: Vec<(f32, f32)> = (0..=96)
@@ -458,7 +495,11 @@ pub(crate) fn paint_ring(cx: &mut PaintCx, b: Rect, ch: &Channel, clearing: Opti
                 _ => ch.colour,
             };
             let mut s = Shape::new(bbox);
-            if dim {
+            if matches!(ch.state, RingState::Stopped(_)) {
+                // At rest: its whole ring in its colour, faint.
+                s.arc(ox, oy, rs, 0.0, 2.0 * PI, 4.0);
+                s.draw(cx.canvas, ch.colour.mix(t.surface, 0.5));
+            } else if dim {
                 s.arc(ox, oy, rs, 0.0, 2.0 * PI, 3.0);
                 s.draw(cx.canvas, t.text_faint);
             } else if pos > 0.001 {
@@ -493,7 +534,8 @@ pub(crate) fn paint_ring(cx: &mut PaintCx, b: Rect, ch: &Channel, clearing: Opti
         RingState::Waiting(_) | RingState::Recording => t.bad,
         RingState::Overdubbing => t.warn,
         RingState::Muted | RingState::Off => t.text_faint,
-        RingState::Playing => t.text,
+        // ▶: a tap plays the free loops.
+        RingState::Playing | RingState::Stopped(_) => t.text,
     };
     let big_px = (c * 0.5).clamp(14.0, 23.0);
     let (big, small) = &ch.centre;
@@ -503,12 +545,20 @@ pub(crate) fn paint_ring(cx: &mut PaintCx, b: Rect, ch: &Channel, clearing: Opti
         small
     };
     let mid = b.y + b.h / 2;
+    // ▶ is drawn: the UI font has none.
+    let big_text = |cx: &mut PaintCx, r: Rect| {
+        if big == "▶" {
+            let h = big_px * 0.95;
+            let x = ox - h * 0.87 / 2.0 + h * 0.08;
+            play_icon(cx, x, r.y as f32 + r.h as f32 / 2.0, h, big_ink);
+        } else {
+            cx.text(FontId::Bold, big_px, r, Align::Center, big_ink, big);
+        }
+    };
     if small.is_empty() {
-        let r = Rect::new(b.x, mid - 14, b.w, 28);
-        cx.text(FontId::Bold, big_px, r, Align::Center, big_ink, big);
+        big_text(cx, Rect::new(b.x, mid - 14, b.w, 28));
     } else {
-        let r = Rect::new(b.x, mid - 19, b.w, 26);
-        cx.text(FontId::Bold, big_px, r, Align::Center, big_ink, big);
+        big_text(cx, Rect::new(b.x, mid - 19, b.w, 26));
         let r = Rect::new(b.x + 6, mid + 6, b.w - 12, 15);
         let ink = if clearing.is_some() {
             t.bad
@@ -566,6 +616,57 @@ impl LoopDeck {
             t.text_dim,
             &self.head.tempo,
         );
+        // The free group, while a free loop holds audio: "· Free ▶ 93.4
+        // BPM" (■ while it is stopped), "Free" in bold, so the song and the
+        // free loops read as two groups (Jay's review, 23 Nov, 5.1);
+        // without "BPM" when the song's bar numbers leave no room for it
+        // before the Pads switch.
+        if let Some(free) = &self.head.free_tempo {
+            let tw = cx.measure(FontId::Sans, 15.0, &self.head.tempo);
+            let x = x + w + 14 + tw + 8;
+            let (word, rest) = free.split_once(' ').unwrap_or((free.as_str(), ""));
+            // "Free", then its ▶ or ■ (12 wide) before the tempo.
+            let ww = cx.measure(FontId::Bold, 15.0, word) + 18;
+            let room = LoopDeck::pads_rect(r).x - 10 - (x + 12 + ww + 6);
+            let short = rest.trim_end_matches(" BPM");
+            let rest = [rest, short]
+                .into_iter()
+                .find(|w| cx.measure(FontId::Sans, 15.0, w) <= room);
+            if let Some(rest) = rest {
+                cx.text(
+                    FontId::Sans,
+                    15.0,
+                    Rect::new(x, line.y, 14, line.h),
+                    Align::Left,
+                    t.text_dim,
+                    "·",
+                );
+                cx.text(
+                    FontId::Bold,
+                    15.0,
+                    Rect::new(x + 12, line.y, ww + 2, line.h),
+                    Align::Left,
+                    t.text,
+                    word,
+                );
+                let ix = x + 12 + ww - 12;
+                let cy = line.y as f32 + line.h as f32 / 2.0;
+                if self.head.free_plays {
+                    play_icon(cx, ix as f32, cy, 11.0, t.text);
+                } else {
+                    cx.canvas
+                        .fill_rect(Rect::new(ix + 1, cy as i32 - 4, 9, 9), t.text_dim);
+                }
+                cx.text(
+                    FontId::Sans,
+                    15.0,
+                    Rect::new(x + 12 + ww + 6, line.y, room.max(0) + 2, line.h),
+                    Align::Left,
+                    t.text_dim,
+                    rest,
+                );
+            }
+        }
         // The Pads switch: lit while the pads are the loop keys.
         let pads = LoopDeck::pads_rect(r);
         let pill = pads.inset_xy(0, 3);
@@ -766,7 +867,10 @@ impl LoopDeck {
             // The level bar: how loud it plays, and its level (the knob).
             cx.canvas.fill_round_rect(p.level, 4, t.raised);
             let m = (p.level.h as f32 * ch.meter.clamp(0.0, 1.0)) as i32;
-            let c = if matches!(ch.state, RingState::Muted | RingState::Off) {
+            let c = if matches!(
+                ch.state,
+                RingState::Muted | RingState::Off | RingState::Stopped(_)
+            ) {
                 t.text_faint
             } else {
                 ch.colour
@@ -844,14 +948,21 @@ impl LoopDeck {
                 );
             }
         } else {
-            // What it records from, on two lines when it doesn't fit on
-            // one ("Pads' / instrument").
-            let fits = cx.measure(FontId::Sans, 13.0, &ch.foot) <= p.mute.w - 8;
-            match ch.foot.split_once(' ').filter(|_| !fits) {
+            // What it records from ("Pads · free" when Sync is Free),
+            // centred where the speaker goes and kept in the card; on two
+            // lines when it doesn't fit on one ("Pads' / instrument").
+            let m = p.mute;
+            let row = Rect::new(m.x, m.y, p.solo.right() - m.x, m.h);
+            let w = cx.measure(FontId::Sans, 13.0, &ch.foot);
+            let split = ch
+                .foot
+                .split_once(" · ")
+                .map(|(a, b)| (a, format!("· {b}")))
+                .or_else(|| ch.foot.split_once(' ').map(|(a, b)| (a, b.to_string())));
+            match split.filter(|_| w > row.w - 4) {
                 Some((a, b)) => {
-                    let m = p.mute;
                     let half = m.h / 2;
-                    for (i, line) in [a, b].into_iter().enumerate() {
+                    for (i, line) in [a, b.as_str()].into_iter().enumerate() {
                         let y = m.y + half - 17 + i as i32 * 17;
                         cx.text(
                             FontId::Sans,
@@ -864,11 +975,12 @@ impl LoopDeck {
                     }
                 }
                 None => {
+                    let x = (m.x + (m.w - w) / 2).clamp(row.x, (row.right() - w).max(row.x));
                     cx.text(
                         FontId::Sans,
                         13.0,
-                        p.mute,
-                        Align::Center,
+                        Rect::new(x, m.y, w + 2, m.h),
+                        Align::Left,
                         t.text_dim,
                         &ch.foot,
                     );
@@ -990,6 +1102,8 @@ impl Widget for LoopDeck {
                 RingState::Playing => "overdub",
                 RingState::Muted => "unmute",
                 RingState::Off => "overdub",
+                RingState::Stopped(false) => "play the free loops",
+                RingState::Stopped(true) => "call off the free loops' Play",
             };
             out.push(Target::tap(
                 "ring",

@@ -431,6 +431,7 @@ fn continue_is_heard_on_the_drummer_kept_as_heard_and_undone() {
         meter: Meter::default(),
         bpm: BPM,
         budget: ReadBudget::default(),
+        row: None,
     };
     let settings = Settings {
         style: GROOVE,

@@ -1,6 +1,9 @@
 //! Continue (composing tools, phase 1) as the time engine's screens see
-//! it: what a touch asks for ([`ContinueAction`], [`ContinueAsk`]) and
-//! what the screens show while a clip is being carried on ([`Continuing`]).
+//! it: what a touch asks for ([`ContinueAction`], [`ContinueAsk`]), what
+//! each track plays as the screen knows it ([`Parts`]), and what the
+//! screens show while a clip is being carried on ([`Continuing`]). The
+//! note editor's Continue tool (`editor::compose`) asks through its own
+//! `Done`, which the time engine completes with the [`Parts`].
 //!
 //! The time engine runs it (mpfree-app's `time/compose.rs`): a result is
 //! heard in place of its clip from the next bar line, Keep writes it as
@@ -25,11 +28,29 @@ pub enum ContinueAction {
     Keep,
     /// Back: nothing written; the clip as it was from the next bar line.
     Back,
+    /// From the clip card's Continue row (phase 1 step 4): the note
+    /// editor opens on clip `slot` of `track` with Continue open, which
+    /// asks at once.
+    Open { track: usize, slot: usize },
+    /// Not a touch: what each track plays, as the screen knows it, sent
+    /// when that changes, for the note editor's asks.
+    Parts(Arc<Parts>),
 }
 
-/// Continue, or Try again on everything: a new result for clip `slot` of
-/// `track` with these settings. The time engine picks the seed, so each
-/// ask sounds new.
+/// What each track plays, as the screen knows it (the time engine
+/// doesn't): the kind of instrument, where it can tell, and the drum
+/// each pad of a kit plays.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Parts {
+    /// Track by track: None where the screen can't tell (a plug-in, MIDI
+    /// out), and the time engine reads it from the clip.
+    pub kinds: Vec<Option<InstrumentKind>>,
+    pub lanes: Lanes,
+}
+
+/// Continue, or Try again: a new result for clip `slot` of `track` with
+/// these settings, or part of the shown one again. The time engine picks
+/// the seed, so each ask sounds new.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ContinueAsk {
     pub track: usize,
@@ -39,6 +60,74 @@ pub struct ContinueAsk {
     pub kind: InstrumentKind,
     /// The drum each pad of a drum track plays, as the kit names them.
     pub lanes: Lanes,
+    /// Everything, or only the picked bars or notes of the shown result.
+    pub scope: Scope,
+    /// New bars (from 0, the clip's first bar) that stay exactly as the
+    /// shown result has them through every new try: locked.
+    pub locked: Vec<u16>,
+}
+
+/// What Try again makes again (phase 1 step 3).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Scope {
+    /// A new result: Continue, a setting changed, or Try again with
+    /// nothing picked. Locked bars stay.
+    #[default]
+    All,
+    /// The picked new bars of the shown result (from 0, the clip's first
+    /// bar), every other bar as it is.
+    Bars(Vec<u16>),
+    /// The picked new notes of the clip as heard with the shown result
+    /// (where each starts, in the clip's ticks), each in its place, every
+    /// other note as it is.
+    Notes(Vec<Tick>),
+}
+
+impl Scope {
+    /// What a try of it is, for the tries list: None for a whole new one.
+    pub fn again(&self) -> Option<Again> {
+        let n = |l: usize| u16::try_from(l).unwrap_or(u16::MAX);
+        match self {
+            Scope::All => None,
+            Scope::Bars(b) if b.len() == 1 => Some(Again::Bar(b[0])),
+            Scope::Bars(b) => Some(Again::Bars(n(b.len()))),
+            Scope::Notes(v) => Some(Again::Notes(n(v.len()))),
+        }
+    }
+}
+
+/// A try made of part of the one before it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Again {
+    /// One bar (from 0).
+    Bar(u16),
+    /// How many bars.
+    Bars(u16),
+    /// How many notes.
+    Notes(u16),
+}
+
+impl Again {
+    /// "bar 6 again", "2 bars again", "3 notes again".
+    pub fn words(self) -> String {
+        match self {
+            Again::Bar(b) => format!("bar {} again", b + 1),
+            Again::Bars(n) => format!("{n} bars again"),
+            Again::Notes(1) => "1 note again".to_string(),
+            Again::Notes(n) => format!("{n} notes again"),
+        }
+    }
+
+    /// The tries list's short form, where "+4 bars" stands for a whole
+    /// try: "bar 6", "2 bars", "3 notes".
+    pub fn short(self) -> String {
+        match self {
+            Again::Bar(b) => format!("bar {}", b + 1),
+            Again::Bars(n) => format!("{n} bars"),
+            Again::Notes(1) => "1 note".to_string(),
+            Again::Notes(n) => format!("{n} notes"),
+        }
+    }
 }
 
 /// Continue as the screens show it, while one is under way (from the ask
@@ -66,4 +155,16 @@ pub struct Continuing {
     /// clip changed, a setting is in the way, Keep was refused.
     pub words: Option<String>,
     pub settings: Settings,
+    /// The last 8 results, oldest first, for the tries list.
+    pub tries: Vec<Try>,
+}
+
+/// One result in the tries list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Try {
+    /// The style's name.
+    pub style: &'static str,
+    pub bars: u8,
+    /// Made of part of the try before it: which.
+    pub again: Option<Again>,
 }

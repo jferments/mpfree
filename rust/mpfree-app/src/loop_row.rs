@@ -367,14 +367,20 @@ impl LoopRow {
         } else {
             t.text
         };
-        cx.text(
-            FontId::Bold,
-            14.0,
-            Rect::new(p.name.x + 23, p.name.y + 3, p.name.w - 28, 20),
-            Align::Left,
-            ink,
-            &ch.name,
-        );
+        let name = Rect::new(p.name.x + 23, p.name.y + 3, p.name.w - 28, 20);
+        cx.text(FontId::Bold, 14.0, name, Align::Left, ink, &ch.name);
+        // A free loop: "free" after its name.
+        if ch.free && ch.state.has_sound() {
+            let nw = cx.measure(FontId::Bold, 14.0, &ch.name);
+            cx.text(
+                FontId::Sans,
+                12.0,
+                Rect::new(name.x + nw + 6, name.y + 1, (name.w - nw - 6).max(0), 20),
+                Align::Left,
+                t.text_dim,
+                "free",
+            );
+        }
         // A small ring has room for its big middle only.
         let clearing = look.clearing.map(|c| c as f32 / 1000.0);
         if p.ring.w < SMALL_RING && !ch.centre.1.is_empty() {
@@ -411,14 +417,26 @@ impl LoopRow {
                 p.card.right() - p.mute.x - 2,
                 p.ring.h,
             );
-            cx.text(
-                FontId::Sans,
-                12.0,
-                foot,
-                Align::Center,
-                t.text_dim,
-                &ch.foot,
-            );
+            // "Pads · free" on two lines: what it records from over how.
+            match ch.foot.split_once(" · ") {
+                Some((a, b)) => {
+                    let mid = foot.y + foot.h / 2;
+                    for (k, line) in [a, b].into_iter().enumerate() {
+                        let r = Rect::new(foot.x, mid - 16 + k as i32 * 16, foot.w, 16);
+                        cx.text(FontId::Sans, 12.0, r, Align::Center, t.text_dim, line);
+                    }
+                }
+                None => {
+                    cx.text(
+                        FontId::Sans,
+                        12.0,
+                        foot,
+                        Align::Center,
+                        t.text_dim,
+                        &ch.foot,
+                    );
+                }
+            }
         }
     }
 }
@@ -509,6 +527,8 @@ impl Widget for LoopRow {
                 RingState::Overdubbing => "play",
                 RingState::Playing | RingState::Off => "overdub",
                 RingState::Muted => "unmute",
+                RingState::Stopped(false) => "play the free loops",
+                RingState::Stopped(true) => "call off the free loops' Play",
             };
             out.push(Target::tap(
                 "ring",

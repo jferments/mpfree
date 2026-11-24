@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use mpfree_context::chord::{ChordSpan, ChordTimeline};
 use mpfree_context::groove::Lane;
+use mpfree_context::harmony::RowHarmony;
 use mpfree_context::{MusicalContext, PartRole, ReadBudget};
 use mpfree_seq::{Holds, Note, Project, Speed};
 use mpfree_transport::time::{Meter, Swing, Tick};
@@ -55,6 +56,11 @@ pub struct Continue<'a> {
     pub swing: Swing,
     /// The clip loops, so its last bar leads back into its first.
     pub loops: bool,
+    /// How far the row's chords reach, in the clip's ticks (contract 4):
+    /// a new bar wholly before it plays the chords the row plays there
+    /// (`context.chords`, the row's Harmony line heard again); past it the
+    /// new bars pick their own. 0: the clip's own bars only.
+    pub row_length: Tick,
 }
 
 /// What Continue makes.
@@ -519,6 +525,10 @@ pub struct OnClip<'a> {
     pub meter: Meter,
     pub bpm: f64,
     pub budget: ReadBudget,
+    /// The row's Harmony line over its length (contract 4,
+    /// `mpfree_seq::row_harmony`), if it has one: heard again with this
+    /// reading, the chords you set stay.
+    pub row: Option<&'a RowHarmony>,
 }
 
 /// What a Continue on a clip makes: a new result, or part of an earlier
@@ -600,6 +610,16 @@ pub fn continue_clip_how(
         on.meter,
         on.budget,
     );
+    // The row's chords (contract 4): its line heard again with this
+    // reading, over the row's length; without a line, the reading. The
+    // reading hears every clip looped over the longest, so it reaches as
+    // far as the row plays.
+    let heard_len = ctx.chords.len();
+    if let Some(r) = on.row {
+        ctx.chords = r.line.rehear(&ctx.chords);
+    }
+    let row_len = on.row.map_or(heard_len, |r| r.length).min(ctx.chords.len());
+    let row_length = clip.speed.to_clip(row_len as f64).round() as Tick;
     ctx.chords = in_clip_ticks(&ctx.chords, clip.speed);
     let length = clip.length.max(1);
     let notes: Vec<(PlainNote, Source)> = clip
@@ -637,6 +657,7 @@ pub fn continue_clip_how(
         bpm: on.bpm,
         swing,
         loops: !clip.once,
+        row_length,
     };
     let as_bars = |v: &[u16]| v.iter().map(|&b| usize::from(b)).collect::<Vec<usize>>();
     let made = match how {
@@ -750,6 +771,7 @@ mod tests {
             bpm: 120.0,
             swing: Swing::default(),
             loops: true,
+            row_length: 0,
         }
     }
 
@@ -1042,6 +1064,7 @@ mod tests {
             meter: Meter::default(),
             bpm: 120.0,
             budget: ReadBudget::default(),
+            row: None,
         }
     }
 

@@ -1353,6 +1353,7 @@ version = "0.1.0"
 name = "mpfree-seq"
 version = "0.1.0"
 dependencies = [
+ "mpfree-context",
  "mpfree-moves",
  "mpfree-notefx",
  "mpfree-param",
@@ -1476,6 +1477,7 @@ dependencies = [
  "mpfree-audiotracks",
  "mpfree-capture",
  "mpfree-compose",
+ "mpfree-context",
  "mpfree-play",
  "mpfree-seq",
  "mpfree-transport",

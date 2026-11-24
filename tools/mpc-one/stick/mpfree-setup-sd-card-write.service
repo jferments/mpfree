@@ -1,0 +1,13 @@
+[Unit]
+Description=MPFree: open the SD card for writing inside its MPFree folder until asked to close it
+DefaultDependencies=no
+After=mpfree-test-internal-off.service
+Requires=mpfree-test-internal-off.service
+Conflicts=shutdown.target
+Before=shutdown.target
+IgnoreOnIsolate=yes
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /etc/mpfree-test/setup-sd-card-write.sh
+TimeoutStartSec=infinity

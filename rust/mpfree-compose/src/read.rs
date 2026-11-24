@@ -18,6 +18,8 @@ use mpfree_seq::{Holds, Project};
 use mpfree_transport::time::{Meter, Swing, Tick};
 
 use crate::bind::revision;
+use crate::realize::PlainNote;
+use crate::row::{DrumHit, Heard as RowHeard, RowPart};
 use crate::timing::{heard, Playback};
 
 /// A clip to read, and what it is in the music.
@@ -155,6 +157,83 @@ pub fn read(
         },
         left,
     )
+}
+
+/// The row's parts as they play over `length` ticks (Add a part, S2.5),
+/// each clip round and round, on the song's beats: a pitched clip's notes
+/// before swing (as the chords are heard), a drum clip's hits with the
+/// swing playback applies, only on pads `lane_of` names. A pitched part
+/// made of pad hits, and a clip that isn't there, are left out.
+pub fn row_parts(
+    project: &Project,
+    clips: &[ToRead],
+    lane_of: &dyn Fn(usize, u8) -> Option<Lane>,
+    transport_swing: Swing,
+    length: Tick,
+) -> Vec<RowPart> {
+    let mut parts = Vec::new();
+    for r in clips {
+        let Some(c) = project.clip(r.track, r.slot) else {
+            continue;
+        };
+        let drums = r.role == PartRole::Drums;
+        if !drums && c.holds != Holds::Notes {
+            continue;
+        }
+        let swing = c
+            .swing
+            .or(project.tracks[r.track].swing)
+            .unwrap_or(transport_swing);
+        let pass = c.speed.to_song(c.length as f64);
+        if pass <= 0.0 {
+            continue;
+        }
+        let passes = (length as f64 / pass).ceil() as Tick;
+        let mut notes = Vec::new();
+        let mut hits = Vec::new();
+        for k in 0..passes {
+            let pb = Playback {
+                quantise: c.quantise,
+                speed: c.speed,
+                swing: if drums { swing } else { Swing::default() },
+                length: c.length,
+                start: (k as f64 * pass).round() as Tick,
+            };
+            for n in c.notes.iter().filter(|n| n.on) {
+                let at = heard(n.tick, &pb).round() as Tick;
+                if at >= length {
+                    continue;
+                }
+                if drums {
+                    if let Some(lane) = lane_of(r.track, n.note) {
+                        hits.push(DrumHit {
+                            at,
+                            lane,
+                            velocity: n.velocity,
+                        });
+                    }
+                } else {
+                    notes.push(PlainNote {
+                        at,
+                        len: c.speed.to_song(n.len as f64).round().max(1.0) as Tick,
+                        pitch: n.note,
+                        velocity: n.velocity,
+                    });
+                }
+            }
+        }
+        notes.sort_by_key(|n| (n.at, n.pitch));
+        hits.sort_by_key(|h| h.at);
+        parts.push(RowPart {
+            role: r.role,
+            heard: if drums {
+                RowHeard::Hits(hits)
+            } else {
+                RowHeard::Notes(notes)
+            },
+        });
+    }
+    parts
 }
 
 #[cfg(test)]

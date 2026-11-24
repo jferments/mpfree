@@ -59,8 +59,8 @@ pub use record::{
 pub use recorded::{Behind, Decisions, Includes, Rec, Recent, RECENT};
 pub use steps::StepOrder;
 pub use takes::{
-    ClipDrop, MovePut, MoveWrite, Recorded, Replaced, RowsWhat, SceneEdit, SongChange, SongEdit,
-    Take, Takes, TAKE_ROOM, TOUCH_RECLAIM_AT,
+    lowest_free_dest, ChordsEdit, ClipDrop, MovePut, MoveWrite, Recorded, Replaced, RowsWhat,
+    SceneEdit, SongChange, SongEdit, Take, Takes, TAKE_ROOM, TOUCH_RECLAIM_AT,
 };
 pub use view::{
     anchored, pass_into, CompileError, Cue, InPlace, Launch, MuteCue, MuteLanded, NowPlaying,

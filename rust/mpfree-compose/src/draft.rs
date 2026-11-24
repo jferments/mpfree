@@ -19,7 +19,7 @@
 //! ([`draft_keeping`]); Try again on picked bars fills them again from the
 //! result's plan, each keeping its anchor's note ([`try_bars_s1`]).
 
-use mpfree_context::chord::{ChordSpan, ChordTimeline};
+use mpfree_context::chord::{ChordSpan, ChordTimeline, Heard as ChordHeard};
 use mpfree_context::groove::STEP;
 use mpfree_transport::time::Tick;
 
@@ -605,6 +605,17 @@ pub fn draft_keeping(
     let kept = kept_bars(keeping, yours, total);
     let is_kept = |b: usize| kept.contains(&b);
     let old = keeping.map(|(before, _)| before);
+    // New bars inside the row play its chords (contract 4): those with a
+    // clear chord, or one you set, are locked like kept bars.
+    let row_bars: Vec<usize> = (yours..total)
+        .filter(|&b| !is_kept(b) && (b as Tick + 1) * bar_ticks <= req.row_length)
+        .filter(|&b| {
+            chords_in_bar(&req.context.chords, b, bar_ticks)
+                .iter()
+                .any(|s| s.answer.chord().is_some() || s.heard == ChordHeard::Set)
+        })
+        .collect();
+    let fixed = |b: usize| is_kept(b) || row_bars.contains(&b);
     // A kept bar's notes, from your first bar's start.
     let kept_notes = |b: usize| -> Vec<GridNote> {
         old.map_or_else(Vec::new, |o| {
@@ -622,7 +633,7 @@ pub fn draft_keeping(
     let mut needs: Vec<Need> = sk
         .anchors
         .iter()
-        .filter(|a| !is_kept(a.bar))
+        .filter(|a| !fixed(a.bar))
         .map(|a| {
             let at = Tick::from(a.on) * STEP;
             if a.kind == AnchorKind::Peak {
@@ -640,7 +651,7 @@ pub fn draft_keeping(
         })
         .collect();
     if let (Some(Surprise::Borrowed { bar }), Some(k)) = (sk.surprise, key) {
-        if !is_kept(bar) {
+        if !fixed(bar) {
             let at = (bar as i32 * gb + grid.half()) as Tick * STEP;
             needs.push(Need::Chord {
                 at,
@@ -648,13 +659,18 @@ pub fn draft_keeping(
             });
         }
     }
-    let locked_chords: Vec<(usize, Vec<ChordSpan>)> = match old {
+    let mut locked_chords: Vec<(usize, Vec<ChordSpan>)> = match old {
         Some(o) => kept
             .iter()
             .map(|&b| (b, chords_in_bar(&o.chords, b, bar_ticks)))
             .collect(),
         None => Vec::new(),
     };
+    locked_chords.extend(
+        row_bars
+            .iter()
+            .map(|&b| (b, chords_in_bar(&req.context.chords, b, bar_ticks))),
+    );
     let chords = progression_led(
         &req.context.chords,
         key,
@@ -1046,6 +1062,7 @@ mod tests {
             bpm: 120.0,
             swing: Swing::default(),
             loops: true,
+            row_length: 0,
         }
     }
 

@@ -39,10 +39,10 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::Arc;
 
 use mpfree_compose::{
-    Arrival, Ask, ContinueJob, Continued, Done, Preview, Refusal, Settings, State,
+    Arrival, Ask, ContinueJob, Continued, Done, Making, Preview, Refusal, Settings, State,
 };
 use mpfree_seq::{Clip, Project};
-use mpfree_time_ui::continuing::Continuing;
+use mpfree_time_ui::continuing::{Again, Continuing, Scope, Try};
 use mpfree_transport::time::Tick;
 
 /// What Continue gave way on, since the start. The status line says the
@@ -105,18 +105,27 @@ struct Made {
     clip: Arc<Clip>,
     new_from: Tick,
     bars: u8,
+    /// The style it was made in.
+    style: &'static str,
+    /// Its seed: a try on part of it keeps it, so the bars around play
+    /// as they did (step 3).
+    seed: u64,
+    /// Made of part of the try before it: which.
+    again: Option<Again>,
 }
 
-/// The composer's thread: jobs out, answers back, each with its request's
-/// number.
-struct Worker {
-    jobs: Sender<(u32, Box<ContinueJob>)>,
-    done: Receiver<(u32, Option<Box<Done>>)>,
+/// A composer's thread: jobs out, answers back, each with its request's
+/// number. Continue and Add a part each have one.
+pub(super) struct Worker<J, D> {
+    pub(super) jobs: Sender<(u32, Box<J>)>,
+    pub(super) done: Receiver<(u32, Option<Box<D>>)>,
 }
 
-impl Worker {
-    fn start() -> Result<Worker, String> {
-        let (jobs, rx) = mpsc::channel::<(u32, Box<ContinueJob>)>();
+impl<J: Send + 'static, D: Send + 'static> Worker<J, D> {
+    /// Start the thread: `run` makes each job's answer. `what` names the
+    /// tool in the words of a refusal ("continue", "add a part").
+    pub(super) fn start(what: &str, run: fn(&J) -> D) -> Result<Worker<J, D>, String> {
+        let (jobs, rx) = mpsc::channel::<(u32, Box<J>)>();
         let (tx, done) = mpsc::channel();
         std::thread::Builder::new()
             .name("compose".into())
@@ -140,12 +149,12 @@ impl Worker {
                         }
                     }
                     let (n, job) = job;
-                    if tx.send((n, Some(Box::new(job.run())))).is_err() {
+                    if tx.send((n, Some(Box::new(run(&job))))).is_err() {
                         return;
                     }
                 }
             })
-            .map_err(|e| format!("continue: the composer's thread didn't start: {e}"))?;
+            .map_err(|e| format!("{what}: the composer's thread didn't start: {e}"))?;
         Ok(Worker { jobs, done })
     }
 }
@@ -171,7 +180,7 @@ pub(super) struct LineWait {
 /// Continue's side of the time engine's control half.
 pub(super) struct Composing {
     pub(super) preview: Preview,
-    worker: Option<Worker>,
+    worker: Option<Worker<ContinueJob, Done>>,
     /// The results the preview keeps, in its order.
     made: Vec<Made>,
     next_id: u32,
@@ -235,19 +244,92 @@ impl Composing {
         z ^ (z >> 31)
     }
 
+    /// What an ask makes (step 3): everything, the locked bars of the
+    /// shown result kept; or the picked bars or notes of the shown result
+    /// again, with its seed. Refused for a part when nothing is shown for
+    /// that clip.
+    fn making(&mut self, ask: &mut Ask, scope: &Scope, locked: &[u16]) -> Result<Making, String> {
+        let shown = self
+            .shown()
+            .filter(|_| self.bound() == Some((ask.track, ask.slot)))
+            .map(|m| (m.made.clone(), m.seed, m.new_from, m.clip.clone()));
+        let bar = ask.meter.bar_ticks().max(1);
+        let attempt = |c: &mut Composing| {
+            c.seed();
+            (c.seeds % u64::from(u16::MAX)) as u16 + 1
+        };
+        Ok(match (scope, shown) {
+            (Scope::All, Some((before, ..))) if !locked.is_empty() => {
+                ask.settings.seed = self.seed();
+                Making::Keeping {
+                    before,
+                    locked: locked.to_vec(),
+                }
+            }
+            (Scope::All, _) => {
+                ask.settings.seed = self.seed();
+                Making::New
+            }
+            (Scope::Bars(bars), Some((before, seed, ..))) => {
+                ask.settings.seed = seed;
+                Making::Bars {
+                    before,
+                    bars: bars
+                        .iter()
+                        .copied()
+                        .filter(|b| !locked.contains(b))
+                        .collect(),
+                    attempt: attempt(self),
+                }
+            }
+            (Scope::Notes(ticks), Some((before, seed, new_from, clip))) => {
+                // Each picked tick's new note, out of locked bars.
+                let notes: Vec<(Tick, u8)> = clip
+                    .notes
+                    .iter()
+                    .filter(|n| n.on && n.tick >= new_from && ticks.contains(&n.tick))
+                    .filter(|n| !locked.contains(&u16::try_from(n.tick / bar).unwrap_or(u16::MAX)))
+                    .map(|n| (n.tick, n.note))
+                    .collect();
+                if notes.is_empty() {
+                    return Err(format!(
+                        "continue: {}",
+                        mpfree_compose::Refused::NoNewNotes.words()
+                    ));
+                }
+                ask.settings.seed = seed;
+                Making::Notes {
+                    before,
+                    notes,
+                    attempt: attempt(self),
+                }
+            }
+            (_, None) => {
+                return Err("continue: there's no try to work on yet: Try again makes one".into())
+            }
+        })
+    }
+
     /// Ask for a result: the preview is bound to the clip as it is now,
-    /// and the job goes to the composer's thread. The request's number.
-    pub(super) fn ask(&mut self, project: &Project, mut ask: Ask) -> Result<u32, String> {
+    /// and the job goes to the composer's thread. `scope` and `locked`
+    /// say what it makes ([`Self::making`]). The request's number.
+    pub(super) fn ask(
+        &mut self,
+        project: &Project,
+        mut ask: Ask,
+        scope: &Scope,
+        locked: &[u16],
+    ) -> Result<u32, String> {
         let b = mpfree_compose::Binding::of(project, ask.track, ask.slot)
             .ok_or_else(|| "continue: the clip has gone".to_string())?;
         let clip = project
             .clip(ask.track, ask.slot)
             .cloned()
             .ok_or_else(|| "continue: the clip has gone".to_string())?;
-        ask.settings.seed = self.seed();
+        ask.how = self.making(&mut ask, scope, locked)?;
         let job = ContinueJob::new(project, ask.clone()).map_err(|r| r.words())?;
         if self.worker.is_none() {
-            self.worker = Some(Worker::start()?);
+            self.worker = Some(Worker::start("continue", ContinueJob::run)?);
         }
         let n = self
             .preview
@@ -338,6 +420,9 @@ impl Composing {
                                 made: Arc::new(made),
                                 clip: Arc::new(heard),
                                 bars,
+                                style: ask.settings.style.name,
+                                seed: ask.settings.seed,
+                                again: again_of(&ask.how),
                             });
                             log.push(format!(
                                 "continue: {} ready",
@@ -538,7 +623,27 @@ impl Composing {
             line: self.line.map(|l| l.line),
             words,
             settings: self.settings.unwrap_or_default(),
+            tries: self
+                .made
+                .iter()
+                .map(|m| Try {
+                    style: m.style,
+                    bars: m.bars,
+                    again: m.again,
+                })
+                .collect(),
         }))
+    }
+}
+
+/// What a try made of part of the one before it is, for the tries list.
+fn again_of(how: &Making) -> Option<Again> {
+    let n = |l: usize| u16::try_from(l).unwrap_or(u16::MAX);
+    match how {
+        Making::New | Making::Keeping { .. } => None,
+        Making::Bars { bars, .. } if bars.len() == 1 => Some(Again::Bar(bars[0])),
+        Making::Bars { bars, .. } => Some(Again::Bars(n(bars.len()))),
+        Making::Notes { notes, .. } => Some(Again::Notes(n(notes.len()))),
     }
 }
 

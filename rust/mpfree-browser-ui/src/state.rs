@@ -978,6 +978,10 @@ pub struct Browser {
     /// The job [`Browser::send_tracked`] runs inline (no worker), while it
     /// runs.
     tracking_inline: Option<Tracked>,
+    /// How long the library took to read the last project opened (its
+    /// parts and the check of its files), until the app takes it for the
+    /// open's line (live shows A4).
+    open_read: Option<std::time::Duration>,
     modal: Modal,
     clip: Option<Clip>,
     recent: Vec<Loc>,
@@ -1089,6 +1093,7 @@ impl Browser {
             quiet: Vec::new(),
             tracked: Vec::new(),
             tracking_inline: None,
+            open_read: None,
             modal: Modal::None,
             clip: None,
             recent: Vec::new(),
@@ -1141,11 +1146,12 @@ impl Browser {
     fn send(&mut self, job: Job) {
         match &mut self.exec {
             Exec::Inline(lib) => {
+                let at = std::time::Instant::now();
                 let result = mpfree_library::worker::run(lib, job).map_err(|e| e.to_string());
                 self.apply(Done {
                     id: 0,
                     result,
-                    took_ms: 0,
+                    took_ms: at.elapsed().as_millis() as u64,
                 });
             }
             Exec::Thread(w, _) => {
@@ -1268,6 +1274,12 @@ impl Browser {
         };
         if let (Some(what), Err(e)) = (tracked, &d.result) {
             return self.tracked_failed(what, e.clone());
+        }
+        if matches!(
+            &d.result,
+            Ok(Outcome::Project(..) | Outcome::SetSong(_, Ok(_)) | Outcome::Version(..))
+        ) {
+            self.open_read = Some(std::time::Duration::from_millis(d.took_ms));
         }
         match d.result {
             Err(e) => {
@@ -2365,6 +2377,12 @@ impl Browser {
     /// last saved or opened (opening a project over it then asks first).
     pub fn set_unsaved(&mut self, unsaved: bool) {
         self.unsaved = unsaved;
+    }
+
+    /// How long the library took to read the project last opened, read
+    /// once: the app's line for the open starts with it (live shows A4).
+    pub fn take_open_read(&mut self) -> Option<std::time::Duration> {
+        self.open_read.take()
     }
 
     /// The app says an open has landed (the engines hold the project):

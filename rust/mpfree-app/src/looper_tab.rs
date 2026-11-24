@@ -65,6 +65,10 @@ pub enum Ctl {
     /// The header's Listen: the picked loop alone while the music is
     /// stopped (again: stop).
     Listen,
+    /// A free loop's header, in Listen's place: Stop the free loops while
+    /// they play, Play while they are stopped (again while it waits for
+    /// the song's bar line: call it off).
+    FreeGo,
     Send,
     Clear,
     /// A loop that plays.
@@ -83,8 +87,11 @@ pub enum Ctl {
     Merge,
     /// An empty loop: Records from (0 Pads, 1 Line in, 2 Loops).
     Source(u8),
+    /// Sync: 0 Song, 1 Free (the loop keeps its own time on the free
+    /// clock).
+    Sync(u8),
     Monitor,
-    /// Length: 0 Pattern, 1 Free, then 2 to 5: 1, 2, 4 and 8 bars.
+    /// Length: 0 Pattern, 1 Until tap, then 2 to 5: 1, 2, 4 and 8 bars.
     Bars(u8),
     /// Starts: 0 On the bar, 1 When I play.
     Starts(u8),
@@ -95,6 +102,14 @@ pub enum Ctl {
 /// The Starts choices: on the next bar line, or when you play (the first
 /// pad hit, or the line input's first note).
 pub const STARTS_CHOICES: [&str; 2] = ["On the bar", "When I play"];
+
+/// The Sync choices: the loop keeps time with the song, or on its own
+/// with the other free loops (the free clock).
+pub const SYNC_CHOICES: [&str; 2] = ["Song", "Free"];
+
+/// The Length choices as the strip names them, [`BAR_CHOICES`] in order:
+/// Until tap records until you tap again (free while nothing plays).
+pub const LENGTH_CHOICES: [&str; 6] = ["Pattern", "Until tap", "1", "2", "4", "8 bars"];
 
 /// The Overdubs choices: on top until Overdub again, in place of what was
 /// there, or one pass.
@@ -523,6 +538,11 @@ pub enum Strip {
     Records {
         /// 0 Pads, 1 Line in, 2 Loops.
         source: u8,
+        /// Into [`SYNC_CHOICES`], and whether it can change: an empty
+        /// loop's as last set (every empty loop records so), changeable;
+        /// once the loop records, its own clock, fixed (Jay's review,
+        /// 23 Nov, 5.2).
+        sync: (u8, bool),
         /// The monitor switch, shown for the line input.
         monitor: Option<bool>,
         /// Into [`BAR_CHOICES`].
@@ -539,6 +559,7 @@ impl Default for Strip {
     fn default() -> Self {
         Strip::Records {
             source: 0,
+            sync: (0, true),
             monitor: None,
             bars: 0,
             starts: (0, true),
@@ -783,6 +804,7 @@ struct EditorLook {
     sub: String,
     colour: Color,
     listen: (bool, bool),
+    free: Option<(bool, bool)>,
     has_sound: bool,
     wave: Option<usize>,
     bars: usize,
@@ -817,6 +839,10 @@ pub struct LoopEditor {
     /// Listen: whether it can play now (the loop has sound and the music
     /// is stopped), and whether it plays the whole loop now (lit: Stop).
     pub listen: (bool, bool),
+    /// A free loop with sound: the free loops' Stop and Play in Listen's
+    /// place. Whether they play (Stop), and whether a Play waits for the
+    /// song's bar line (Play lit).
+    pub free: Option<(bool, bool)>,
     /// Send and Clear work: the loop has sound.
     pub has_sound: bool,
     pub wave: Option<Arc<LoopWave>>,
@@ -890,6 +916,7 @@ impl Default for LoopEditor {
             sub: String::new(),
             colour: LOOP_COLOURS[0],
             listen: (false, false),
+            free: None,
             has_sound: false,
             wave: None,
             position: None,
@@ -1404,12 +1431,24 @@ impl LoopEditor {
                 ));
             }
             Strip::Records {
-                monitor, starts, ..
+                monitor,
+                starts,
+                sync,
+                ..
             } => {
                 // Records from is over the loops (the deck's header), for
-                // every loop; here, how this one records.
+                // every loop; here, how this one records. Sync first: the
+                // clock it keeps time with.
                 let x = s.x;
-                let mut x2 = x;
+                for (i, l) in SYNC_CHOICES.iter().enumerate() {
+                    out.push((
+                        Ctl::Sync(i as u8),
+                        Rect::new(x + 3 + [0, 68][i], y + 3, [64, 56][i], CTRL_H - 6),
+                        l.to_string(),
+                        sync.1,
+                    ));
+                }
+                let mut x2 = x + 146;
                 if let Some(on) = monitor {
                     out.push((
                         Ctl::Monitor,
@@ -1419,12 +1458,9 @@ impl LoopEditor {
                     ));
                     x2 += 100;
                 }
-                for (i, l) in ["Pattern", "Free", "1", "2", "4", "8 bars"]
-                    .iter()
-                    .enumerate()
-                {
-                    let w = [70, 50, 36, 36, 36, 62][i];
-                    let bx = x2 + 3 + [0, 74, 128, 168, 208, 248][i];
+                for (i, l) in LENGTH_CHOICES.iter().enumerate() {
+                    let w = [70, 84, 36, 36, 36, 62][i];
+                    let bx = x2 + 3 + [0, 74, 162, 202, 242, 282][i];
                     out.push((
                         Ctl::Bars(i as u8),
                         Rect::new(bx, y + 3, w, CTRL_H - 6),
@@ -1432,7 +1468,7 @@ impl LoopEditor {
                         true,
                     ));
                 }
-                let x3 = x2 + 330;
+                let x3 = x2 + 364;
                 for (i, l) in STARTS_CHOICES.iter().enumerate() {
                     out.push((
                         Ctl::Starts(i as u8),
@@ -1594,6 +1630,7 @@ impl LoopEditor {
             sub: self.sub.clone(),
             colour: self.colour,
             listen: self.listen,
+            free: self.free,
             has_sound: self.has_sound,
             wave: self.wave.as_ref().map(|w| Arc::as_ptr(w) as usize),
             bars: self.bars,
@@ -1671,6 +1708,37 @@ fn listen_button(cx: &mut PaintCx, b: Rect, works: bool, on: bool) {
     let x0 = b.x + (b.w - total) / 2;
     let cy = b.y as f32 + b.h as f32 / 2.0;
     if on {
+        cx.canvas
+            .fill_rect(Rect::new(x0, cy as i32 - 5, 11, 11), ink);
+    } else {
+        play_icon(cx, x0 as f32 + 1.0, cy, 12.0, ink);
+    }
+    cx.text(
+        FontId::Bold,
+        14.0,
+        Rect::new(x0 + 20, b.y, lw + 2, b.h),
+        Align::Left,
+        ink,
+        label,
+    );
+}
+
+/// A free loop's Stop free or Play free, in Listen's place: ■ Stop free
+/// while the free loops play; ▶ Play free while they are stopped, lit
+/// while a Play waits for the song's bar line. "free": they stop and
+/// start the free loops together, not this loop alone (Jay's review,
+/// 23 Nov, 5.3).
+fn free_button(cx: &mut PaintCx, b: Rect, runs: bool, cued: bool) {
+    let t = cx.theme.clone();
+    cx.canvas
+        .fill_round_rect(b, t.round(10), if cued { t.picked() } else { t.raised });
+    let ink = if cued { t.on_picked() } else { t.text };
+    let label = if runs { "Stop free" } else { "Play free" };
+    let lw = cx.measure(FontId::Bold, 14.0, label);
+    let total = 12 + 8 + lw;
+    let x0 = b.x + (b.w - total) / 2;
+    let cy = b.y as f32 + b.h as f32 / 2.0;
+    if runs {
         cx.canvas
             .fill_rect(Rect::new(x0, cy as i32 - 5, 11, 11), ink);
     } else {
@@ -1954,9 +2022,15 @@ impl LoopEditor {
             .as_ref()
             .and_then(|c| self.paint_chip(cx, c, sub_x + sw + 10, p.listen.x - 12, h));
         *self.chip_at.borrow_mut() = at;
-        // Listen: the loop alone while the music is stopped.
-        let (works, on) = self.listen;
-        listen_button(cx, p.listen, works || on, on);
+        // Listen: the loop alone while the music is stopped. A free loop
+        // has the free loops' Stop or Play there instead.
+        match self.free {
+            Some((runs, cued)) => free_button(cx, p.listen, runs, cued),
+            None => {
+                let (works, on) = self.listen;
+                listen_button(cx, p.listen, works || on, on);
+            }
+        }
         button(cx, p.send, "Send", self.has_sound, self.send_open, 14.0);
         let ink = if self.has_sound {
             t.bad
@@ -2693,9 +2767,27 @@ impl LoopEditor {
                 bars,
                 starts,
                 then,
+                sync,
                 ..
             } => {
+                let sy: Vec<(Rect, &str, bool)> = ctls
+                    .iter()
+                    .filter_map(|c| match c.0 {
+                        Ctl::Sync(i) => Some((c.1, c.2.as_str(), i == sync.0)),
+                        _ => None,
+                    })
+                    .collect();
+                if let Some(first) = sy.first() {
+                    group_label(cx, first.0.x - 3, s.y, "SYNC");
+                }
+                if sync.1 {
+                    segments(cx, &sy);
+                } else {
+                    faint_segments(cx, &sy);
+                }
                 if let (Some(on), Some(m)) = (monitor, rect(Ctl::Monitor)) {
+                    cx.canvas
+                        .fill_rect(Rect::new(m.x - 18, s.y + 2, 1, s.h - 4), t.outline);
                     group_label(cx, m.x, s.y, "MONITOR");
                     let sw = Rect::new(m.x, m.y + (m.h - 34) / 2, 62, 34);
                     cx.canvas
@@ -2827,8 +2919,18 @@ impl Widget for LoopEditor {
 
     fn targets(&self, r: Rect) -> Vec<Target> {
         let p = LoopEditor::parts(r);
-        let mut out = vec![
-            Target::tap(
+        let listen = match self.free {
+            Some((runs, cued)) => Target::tap(
+                "free-loops",
+                0,
+                match (runs, cued) {
+                    (true, _) => "Stop the free loops",
+                    (false, true) => "Call off the free loops' Play",
+                    (false, false) => "Play the free loops",
+                },
+                p.listen,
+            ),
+            None => Target::tap(
                 "listen",
                 0,
                 if self.listen.1 {
@@ -2839,6 +2941,9 @@ impl Widget for LoopEditor {
                 p.listen,
             )
             .disabled_if(!self.listen.0 && !self.listen.1),
+        };
+        let mut out = vec![
+            listen,
             Target::tap("send", 0, "Send", p.send).disabled_if(!self.has_sound),
             Target::tap("clear", 0, "Clear", p.clear).disabled_if(!self.has_sound),
         ];
@@ -2859,14 +2964,16 @@ impl Widget for LoopEditor {
                 Ctl::Redo => Target::tap("redo", 0, label, b),
                 Ctl::Merge => Target::tap("merge", 0, label, b),
                 Ctl::Source(i) => Target::tap("source", i as usize, label, b),
+                Ctl::Sync(i) => Target::tap("sync", i as usize, label, b),
                 Ctl::Monitor => Target::tap("monitor", 0, label, b),
                 Ctl::Bars(i) => Target::tap("bars", i as usize, label, b),
                 Ctl::Starts(i) => Target::tap("starts", i as usize, label, b),
                 Ctl::Then(i) => Target::tap("then", i as usize, label, b),
-                Ctl::Input | Ctl::Listen | Ctl::Send | Ctl::Clear => continue,
+                Ctl::Input | Ctl::Listen | Ctl::FreeGo | Ctl::Send | Ctl::Clear => continue,
             };
             let chosen = match (&self.strip, c) {
                 (Strip::Records { source, .. }, Ctl::Source(i)) => *source == i,
+                (Strip::Records { sync, .. }, Ctl::Sync(i)) => sync.0 == i,
                 (Strip::Records { bars, .. }, Ctl::Bars(i)) => *bars == i,
                 (Strip::Records { starts, .. }, Ctl::Starts(i)) => starts.0 == i,
                 (Strip::Records { then, .. }, Ctl::Then(i)) => *then == i,
@@ -3057,6 +3164,10 @@ impl Widget for LoopEditor {
         match phase {
             Touch::Down => {
                 // The header.
+                if p.listen.contains(x, y) && self.free.is_some() {
+                    self.acts.push(LoopAct::Strip(Ctl::FreeGo));
+                    return Some(EventKind::Tab(0));
+                }
                 if p.listen.contains(x, y) {
                     let (works, on) = self.listen;
                     self.acts.push(if works || on {
@@ -3745,6 +3856,80 @@ mod tests {
         assert!(!ui.get::<LoopEditor>(EDITOR).unwrap().point_open());
     }
 
+    /// Free loops (step F2): a free loop's header has Stop in Listen's
+    /// place while the free loops play, Play while they are stopped, and
+    /// "Call off" while a Play waits; each taps Ctl::FreeGo. An empty
+    /// loop's strip starts with Sync, Song or Free, the one lit can't be
+    /// tapped, and Length's second choice is Until tap.
+    #[test]
+    fn a_free_loops_header_stops_and_plays_them_and_the_strip_starts_with_sync() {
+        let mut ui = page_of(
+            EDITOR,
+            LoopEditor {
+                free: Some((true, false)),
+                ..editor(3)
+            },
+        );
+        assert!(target(&ui, "listen", 0).is_none(), "Listen's place");
+        let go = target(&ui, "free-loops", 0).expect("Stop");
+        assert_eq!(go.label, "Stop the free loops");
+        let p = LoopEditor::parts(ui.rect_of(EDITOR).unwrap());
+        assert_eq!(go.rect, p.listen);
+        assert_eq!(
+            tap_target(&mut ui, "free-loops", 0),
+            vec![LoopAct::Strip(Ctl::FreeGo)]
+        );
+        for (free, label) in [
+            ((false, false), "Play the free loops"),
+            ((false, true), "Call off the free loops' Play"),
+        ] {
+            ui.get_mut::<LoopEditor>(EDITOR).unwrap().free = Some(free);
+            ui.paint(&mut SoftCanvas::new(W, H));
+            assert_eq!(target(&ui, "free-loops", 0).unwrap().label, label);
+            assert_eq!(
+                tap_target(&mut ui, "free-loops", 0),
+                vec![LoopAct::Strip(Ctl::FreeGo)]
+            );
+        }
+        // An empty loop: Sync first, Free lit.
+        let e = ui.get_mut::<LoopEditor>(EDITOR).unwrap();
+        e.free = None;
+        e.layers.clear();
+        e.has_sound = false;
+        e.strip = Strip::Records {
+            source: 0,
+            sync: (1, true),
+            monitor: None,
+            bars: 1,
+            starts: (0, true),
+            then: 0,
+        };
+        ui.paint(&mut SoftCanvas::new(W, H));
+        let (song, free) = (
+            target(&ui, "sync", 0).unwrap(),
+            target(&ui, "sync", 1).unwrap(),
+        );
+        assert_eq!((song.label.as_str(), free.label.as_str()), ("Song", "Free"));
+        assert!(song.enabled && !free.enabled, "Free is lit");
+        assert!(free.rect.right() < target(&ui, "bars", 0).unwrap().rect.x);
+        assert_eq!(target(&ui, "bars", 1).unwrap().label, "Until tap");
+        assert_eq!(
+            tap_target(&mut ui, "sync", 0),
+            vec![LoopAct::Strip(Ctl::Sync(0))]
+        );
+        // Once the loop records, Sync shows its own clock, fixed: a tap
+        // only says why (Jay's review, 5.2).
+        if let Strip::Records { sync, .. } = &mut ui.get_mut::<LoopEditor>(EDITOR).unwrap().strip {
+            *sync = (1, false);
+        }
+        ui.paint(&mut SoftCanvas::new(W, H));
+        assert_eq!(
+            tap_target(&mut ui, "sync", 0),
+            vec![LoopAct::Faint(Ctl::Sync(0))]
+        );
+        assert_eq!(target(&ui, "listen", 0).unwrap().label, "Listen");
+    }
+
     #[test]
     fn the_loop_point_view_fits_its_place_and_keeps_its_buttons_apart() {
         let r = LoopEditor::parts(Rect::new(14, 336, 1112, 412)).point;
@@ -3936,6 +4121,7 @@ mod tests {
         e.layers.clear();
         e.strip = Strip::Records {
             source: 1,
+            sync: (0, true),
             monitor: Some(false),
             bars: 2,
             starts: (0, true),

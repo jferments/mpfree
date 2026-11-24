@@ -2471,7 +2471,7 @@ mod tests {
         let mut list = crate::instrument_list::InstrumentList::new();
         list.follow_kits(4);
         let inst = crate::instruments::Instruments::new(44_100, 128);
-        let saved = crate::project::track_kits_text(&k, &inst, &list);
+        let saved = crate::project::track_kits_text(&k, &inst, &list, crate::instruments::TRACKS);
         assert!(!saved.contains("track 4"), "not saved");
         assert!(!k.follow(3, false, true), "nothing more to set aside");
         // REDO brings track 4 back: with its kit.
@@ -2519,7 +2519,7 @@ mod tests {
         let mut list = crate::instrument_list::InstrumentList::new();
         list.follow_kits(3);
         let inst = crate::instruments::Instruments::new(44_100, 128);
-        let text = crate::project::track_kits_text(&k, &inst, &list);
+        let text = crate::project::track_kits_text(&k, &inst, &list, crate::instruments::TRACKS);
         assert_eq!(
             text,
             format!(
@@ -2532,7 +2532,12 @@ mod tests {
             crate::project::track_kits_parse(&text),
             Ok(vec![(1, id(4)), (2, id(4)), (4, id(1)), (5, id(3))])
         );
-        let none = crate::project::track_kits_text(&TrackKits::new(3), &inst, &list);
+        let none = crate::project::track_kits_text(
+            &TrackKits::new(3),
+            &inst,
+            &list,
+            crate::instruments::TRACKS,
+        );
         assert_eq!(none.lines().count(), 1);
     }
 

@@ -23,7 +23,7 @@ Every button works as soon as MPFree starts, with nothing to learn: the develope
 | **MENU** | Opens the options for the page you are on. In Prefs' System info, Backup and Akai kits or Touch screen rows, goes back to the main Prefs rows. On System status, closes it. | Works |
 | **SHIFT + MENU** | Opens Prefs. | Works |
 | **STOP** | Stops playback; sounds ring out and latched pads keep going. Press again to silence everything and go back to bar 1. | Works |
-| **SHIFT + STOP** | Stops, silences everything and goes back to the start of bar 1. | Works |
+| **SHIFT + STOP** | Stops, silences everything and goes back to the start of bar 1. [Free loops](../making-music/looping.md#free-loops) stop too. | Works |
 | **PLAY** | Starts playback from where it stopped. | Works |
 | **PLAY** while playing | Hold for a fill; press twice to keep the fill on, and again (or STOP) to end it. See [Playing live](../making-music/playing-live.md#fills). | Works |
 | **SHIFT + PLAY** | Plays again from where **PLAY** last started; while playing, jumps back there. Handy for going over the same part again and again. | Works (new: needs a device check) |

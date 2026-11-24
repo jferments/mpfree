@@ -254,6 +254,9 @@ const LANES_NO_VALUE_LINE: &str = "Velocity and Chance lanes: on a kit's sounds.
 pub const EDIT_CLIPS_PAGE: &str = "Edit clip";
 pub const EDIT_CLIPS_LAYOUT: &str =
     "col(header:60, row(edit-clips:*, edit-clips-card:440):*, hint:26)";
+/// The hint line under an empty clip's note editor (composing tools S2.6,
+/// board D).
+const EMPTY_CLIP_HINT: &str = "Add a part: Arrange's panel on this clip's row and track   ·   play or draw: the clip is yours as now   ·   Continue shows once the clip has notes";
 const EDIT_CLIPS_HINT: &str = "Tap a clip, or turn the wheel and push: the Sequencer edits it and nothing starts   ·   Back or a tab: close the list";
 /// The Sequencer's step size chip's list (step sequencer refactor D1).
 pub const STEP_SIZE_PAGE: &str = "Step size";
@@ -990,6 +993,17 @@ fn played(
     }
     let o = usize::from(sends.get(t).copied().flatten()?);
     sounds.get(o).copied().flatten().map(|h| (h, Some(o)))
+}
+
+/// How long a try of Add a part's New track waits for its synth, in
+/// seconds (composing tools S2.6b): the builder makes one in a few
+/// periods.
+const ADD_SYNTH_WAIT: f32 = 5.0;
+
+/// A synth's name from its node id ("Bass" for "mpfree.bass"), for the
+/// panel's words while it is made.
+fn synth_word(id: &str) -> &'static str {
+    crate::synth::Engine::from_node_id(id).map_or("new", |e| e.name())
 }
 
 /// An instrument's name as track `t` shows it: its own's ("FM"), or
@@ -1966,6 +1980,9 @@ pub enum FromUi {
     },
     /// A touch on the transport bar or the Arrange page.
     Time(TimeAction),
+    /// Add a part's New track (composing tools S2.6b): the synth its tries
+    /// play on, made, given up or kept (app/add_sound.rs).
+    AddPartSound(crate::app::AddSound),
     /// A change on the Synth page, for the synth on the audio thread.
     Synth(SynthAction),
     /// The plugin skin showing wants the plugin's values and texts
@@ -2645,6 +2662,12 @@ pub struct Player {
     project_rate: u32,
     /// When the last open landed ([`OPEN_SETTLE`]).
     opened_at: Option<Instant>,
+    /// The open going in, timed part by part for its line (live shows A4,
+    /// open_clock.rs).
+    open_clock: Option<crate::open_clock::OpenClock>,
+    /// When a set's song change began (Play set, or the song's end), for
+    /// the line saying when the next song is in.
+    change_from: Option<(Instant, &'static str)>,
     /// Opens sent to the audio loop whose replaced engines haven't come
     /// back yet ([`OPENS_ON_THEIR_WAY`] at most).
     opens_out: usize,
@@ -2842,6 +2865,9 @@ pub struct Player {
     // moved by value often enough (sample_screens) that its size matters.
     looper_page: Box<LooperPage>,
     pub looper: LooperView,
+    /// What the hint line last said STOP does ([`Player::stop_words`]):
+    /// it changes with the song and the free loops.
+    stop_said: &'static str,
     /// The Play page: its view (the screen's own choice, kept while other
     /// tabs show), pattern, throws, timing and Q-Links.
     pub play: PlayPage,
@@ -2861,6 +2887,15 @@ pub struct Player {
     filter: Filter,
     tuning: Tuning,
     saved_tuning: Tuning,
+    /// What each track plays, as last told the time engine for the note
+    /// editor's Continue ([`Player::refresh_compose_parts`]).
+    compose_parts: Option<Arc<mpfree_time_ui::continuing::Parts>>,
+    /// Add a part's New track (composing tools S2.6b): the synth asked for
+    /// its tries (the index the track will get, the synth's node id), and
+    /// a try held until that synth plays there, with the seconds it has
+    /// waited ([`Player::new_track_ask`]).
+    add_sound: Option<(usize, &'static str)>,
+    add_held: Option<(Box<mpfree_time_ui::adding::PartAsk>, f32)>,
     /// A line said in place of the hint ([`ToUi::Tell`]), the seconds it
     /// has left and its colour (yellow; red for a red problem's title,
     /// System status).
@@ -3415,6 +3450,8 @@ impl Player {
             export_job: None,
             project_rate: 44_100,
             opened_at: None,
+            open_clock: None,
+            change_from: None,
             opens_out: 0,
             set_play: None,
             set_song_next: false,
@@ -3495,6 +3532,7 @@ impl Player {
             status_chip: None,
             looper_page,
             looper: LooperView::default(),
+            stop_said: "STOP: silence",
             play: PlayPage::default(),
             chain_page: Box::default(),
             cpu_at: 0.0,
@@ -3503,6 +3541,9 @@ impl Player {
             filter: Filter::new((size.0 as f32, size.1 as f32)),
             tuning: Tuning::default(),
             saved_tuning: Tuning::default(),
+            compose_parts: None,
+            add_sound: None,
+            add_held: None,
         };
         p.time_page.update(&mut p.ui, &p.time);
         p.show_timing();
@@ -5601,6 +5642,21 @@ impl Player {
                 *card = QLinkCard::new(name, "Arp", &row.text, row.value);
             }
             (ARP_QLINKS, cards)
+        } else if let Some(p) = self
+            .time_page
+            .add
+            .as_ref()
+            .filter(|_| self.view == View::Arrange)
+        {
+            // Add a part's panel (composing tools S2.6): Continue's four,
+            // Similarity, Variation, Activity and Range.
+            let names = p.cards();
+            let pos = p.knob_pos();
+            let cards: [QLinkCard; 4] = std::array::from_fn(|k| {
+                let (name, value) = &names[k];
+                QLinkCard::new(name, "Add a part", value, pos[k])
+            });
+            ("Q-Links · Add a part", cards)
         } else if let Some((count, mut cards)) = notes {
             // Notes picked in the note editor: the note inspector, under
             // its header in the note edit colour, so a turn is known to
@@ -6147,6 +6203,256 @@ impl Player {
         };
         let bank = self.pad_page.min(7) as u8;
         self.time_page.set_pads(&mut self.ui, names, bank);
+    }
+
+    /// What each track plays, for the note editor's Continue (composing
+    /// tools, phase 1 step 2): the kind of instrument where the screen is
+    /// sure of it (the Drums engine or a kit of samples: hits; the Bass
+    /// and Squelch engines: a bass; the rest is read from the clip's
+    /// notes), and the drum each pad of a kit plays, read from its
+    /// sound's name. The message telling the time engine, when it changed
+    /// since it was last told; sent just before a touch that may make
+    /// Continue ask ([`Player::may_ask_continue`]).
+    fn compose_parts_if_new(&mut self) -> Option<FromUi> {
+        use crate::synth::Engine;
+        use mpfree_compose::{lane_named, InstrumentKind, Lanes};
+        let n = self.time.tracks.len();
+        let mut kinds = Vec::with_capacity(n);
+        let mut lanes = Vec::new();
+        for t in 0..n {
+            let kind = match played(&self.track_sounds, &self.track_sends, t) {
+                Some((h, _)) => match Engine::from_node_id(h.id) {
+                    Some(Engine::Drums) => Some(InstrumentKind::Percussive),
+                    Some(Engine::Bass | Engine::Squelch) => Some(InstrumentKind::Bass),
+                    _ => None,
+                },
+                None => match self.track_kits.kit_of(t).and_then(|k| self.kits.get(k)) {
+                    Some(k) if k.synth.is_none() => {
+                        for (p, name) in k.pads.iter().enumerate().take(128) {
+                            if let Some(l) = name.as_deref().and_then(lane_named) {
+                                lanes.push((t, p as u8, l));
+                            }
+                        }
+                        Some(InstrumentKind::Percussive)
+                    }
+                    _ => None,
+                },
+            };
+            kinds.push(kind);
+        }
+        let parts = mpfree_time_ui::continuing::Parts {
+            kinds,
+            lanes: Lanes::new(lanes),
+        };
+        if self.compose_parts.as_deref() == Some(&parts) {
+            return None;
+        }
+        let parts = Arc::new(parts);
+        self.compose_parts = Some(Arc::clone(&parts));
+        Some(FromUi::Time(TimeAction::Continue(
+            mpfree_time_ui::continuing::ContinueAction::Parts(parts),
+        )))
+    }
+
+    /// What the Clips page asks of the time engine on its own, sent: Snap
+    /// Auto's division, a note held picked, Add a part's tries (with what
+    /// plays them filled in, [`Gui::fill_part_ask`]; on New track held
+    /// until its synth plays there, [`Player::new_track_ask`]) and the
+    /// row's chords to hear.
+    fn send_page_asks(&mut self) {
+        use mpfree_time_ui::adding::AddAction;
+        // Keep kept a part on New track: the track plays its synth on.
+        if self.time_page.take_kept() && self.add_sound.take().is_some() {
+            self.add_held = None;
+            self.outbox
+                .push(FromUi::AddPartSound(crate::app::AddSound::Kept));
+        }
+        for a in self.time_page.take_asks() {
+            let a = match a {
+                TimeAction::Add(AddAction::Ask(mut ask)) => {
+                    self.fill_part_ask(&mut ask);
+                    match self.new_track_ask(ask) {
+                        Some(ask) => TimeAction::Add(AddAction::Ask(ask)),
+                        None => continue,
+                    }
+                }
+                TimeAction::Add(AddAction::Back) => {
+                    self.new_track_back();
+                    TimeAction::Add(AddAction::Back)
+                }
+                a => a,
+            };
+            self.outbox.push(FromUi::Time(a));
+        }
+    }
+
+    /// A try of Add a part (composing tools S2.6b) as it goes: on a track
+    /// that is there, at once (a synth made for New track goes); on New
+    /// track, the synth asked for first when it changed, and the try held
+    /// (None) until that synth plays on the track Keep would add, so no
+    /// try sounds on a kit ([`Player::add_held_tick`] sends it).
+    fn new_track_ask(
+        &mut self,
+        ask: Box<mpfree_time_ui::adding::PartAsk>,
+    ) -> Option<Box<mpfree_time_ui::adding::PartAsk>> {
+        let Some(id) = ask.new_track.as_ref().map(|n| n.sound) else {
+            self.new_track_back();
+            return Some(ask);
+        };
+        let want = (ask.track, id);
+        if self.add_sound != Some(want) {
+            self.add_sound = Some(want);
+            self.outbox
+                .push(FromUi::AddPartSound(crate::app::AddSound::Try {
+                    track: ask.track,
+                    id,
+                }));
+        }
+        if self.new_synth_plays(ask.track, id) {
+            self.add_held = None;
+            self.show_add_waiting(None);
+            return Some(ask);
+        }
+        let same = |held: &mpfree_time_ui::adding::PartAsk| {
+            held.track == ask.track && held.new_track.as_ref().map(|n| n.sound) == Some(id)
+        };
+        let waited = match &self.add_held {
+            Some((held, w)) if same(held) => *w,
+            _ => 0.0,
+        };
+        self.show_add_waiting(Some((
+            format!("Making the {} synth…", synth_word(id)),
+            false,
+        )));
+        self.add_held = Some((ask, waited));
+        None
+    }
+
+    /// What Add a part's status says while New track's synth is made
+    /// ([`TimePage::set_add_waiting`]), shown at once.
+    fn show_add_waiting(&mut self, waiting: Option<(String, bool)>) {
+        if self.time_page.set_add_waiting(waiting) {
+            self.time_page.update(&mut self.ui, &self.time);
+        }
+    }
+
+    /// Add a part's panel closed with nothing kept, or its part goes on a
+    /// track that is there: New track's synth goes, and a held try with it.
+    fn new_track_back(&mut self) {
+        self.add_held = None;
+        if self.add_sound.take().is_some() {
+            self.outbox
+                .push(FromUi::AddPartSound(crate::app::AddSound::Back));
+        }
+    }
+
+    /// Whether track `track` (the one Keep would add) plays synth `id` by
+    /// its send, as the audio loop last said.
+    fn new_synth_plays(&self, track: usize, id: &str) -> bool {
+        matches!(
+            played(&self.track_sounds, &self.track_sends, track),
+            Some((h, Some(_))) if h.id == id
+        )
+    }
+
+    /// A try held for New track's synth, `dt` seconds on: sent once the
+    /// synth plays there; after [`ADD_SYNTH_WAIT`] dropped, the panel
+    /// saying so, and the synth asked for again by Try again.
+    fn add_held_tick(&mut self, dt: f32) {
+        let Some((ask, waited)) = self.add_held.as_mut() else {
+            return;
+        };
+        *waited += dt.max(0.0);
+        // A track added or taken away since (+ Track, UNDO): the try was
+        // for another index, and Try again asks for the new one.
+        let stale = ask.track != self.time.tracks.len();
+        let Some(id) = ask.new_track.as_ref().map(|n| n.sound).filter(|_| !stale) else {
+            self.add_held = None;
+            self.add_sound = None;
+            self.show_add_waiting(None);
+            return;
+        };
+        let (track, waited) = (ask.track, *waited);
+        if self.new_synth_plays(track, id) {
+            if let Some((ask, _)) = self.add_held.take() {
+                self.show_add_waiting(None);
+                self.outbox.push(FromUi::Time(TimeAction::Add(
+                    mpfree_time_ui::adding::AddAction::Ask(ask),
+                )));
+            }
+        } else if waited > ADD_SYNTH_WAIT {
+            self.add_held = None;
+            self.add_sound = None;
+            self.show_add_waiting(Some((
+                format!("{} didn't come: Try again", synth_word(id)),
+                true,
+            )));
+        }
+    }
+
+    /// What plays Add a part's part (composing tools S2.6), which the page
+    /// doesn't know: the track's instrument where the screen is sure of it
+    /// (as Continue reads it, [`Gui::compose_parts_if_new`]), the drums
+    /// every kit's pads are named for, and for drums the track's kit's pad
+    /// for kick, snare, hats and the rest. A track with no kit gets no
+    /// drum pads, and the time engine says why.
+    fn fill_part_ask(&mut self, ask: &mut mpfree_time_ui::adding::PartAsk) {
+        use mpfree_compose::lane_named;
+        use mpfree_context::groove::Lane;
+        if let Some(parts) = self.compose_parts_if_new() {
+            self.outbox.push(parts);
+        }
+        if let Some(parts) = &self.compose_parts {
+            if let Some(Some(kind)) = parts.kinds.get(ask.track) {
+                ask.kind = *kind;
+            }
+            ask.lanes = parts.lanes.clone();
+        }
+        // New track's Drums play the Drums synth made for it: desk.rs
+        // reads its pads there.
+        if ask.part != mpfree_context::PartRole::Drums || ask.new_track.is_some() {
+            return;
+        }
+        let kit = match played(&self.track_sounds, &self.track_sends, ask.track) {
+            Some(_) => None,
+            None => self
+                .track_kits
+                .kit_of(ask.track)
+                .and_then(|k| self.kits.get(k))
+                .filter(|k| k.synth.is_none()),
+        };
+        let Some(kit) = kit else {
+            ask.pads = [None; 4];
+            return;
+        };
+        ask.pads = Lane::ALL.map(|lane| {
+            kit.pads
+                .iter()
+                .take(128)
+                .position(|n| n.as_deref().and_then(lane_named) == Some(lane))
+                .map(|p| p as u8)
+        });
+    }
+
+    /// A touch on the note editor that may make Continue ask: its row, or
+    /// any touch while it is open.
+    fn may_ask_continue(&self, a: &FromUi) -> bool {
+        // The clip card's Continue opens it, and it asks at once.
+        if let FromUi::Time(TimeAction::Continue(
+            mpfree_time_ui::continuing::ContinueAction::Open { .. },
+        )) = a
+        {
+            return true;
+        }
+        let FromUi::Time(TimeAction::Edit(e)) = a else {
+            return false;
+        };
+        let open = self
+            .time
+            .edit
+            .as_ref()
+            .is_some_and(|ed| ed.editor.continuing_open());
+        open || matches!(e, EditAction::Row { row, .. } if *row == mpfree_time_ui::editor::CONTINUE_ROW)
     }
 
     /// The note editor's lock lanes (piano roll plan 3A.2): while it is
@@ -8376,6 +8682,14 @@ impl Player {
                     } else if l.is_some_and(|l| l.capturing.is_some()) {
                         // Capturing: the tap calls it off.
                         out.push(FromUi::LoopCapture);
+                    } else if self.looper.free_stopped(n) {
+                        // A stopped free loop: its ring plays the free
+                        // loops (again while one waits: calls it off).
+                        out.push(FromUi::LoopCommand(if self.looper.free_cued {
+                            C::FreeStop
+                        } else {
+                            C::FreePlay
+                        }));
                     } else {
                         out.push(FromUi::Looper(crate::looper_page::B_RECORD));
                     }
@@ -8431,6 +8745,16 @@ impl Player {
                 }
                 LoopAct::Strip(Ctl::Source(i)) => self.loop_source(i, &mut out),
                 LoopAct::Strip(Ctl::Listen) => out.push(FromUi::LoopListen(Some(None))),
+                // A free loop's Stop or Play: the free loops stop at their
+                // tops, or start (on the song's next bar line while it
+                // plays; again before then: called off).
+                LoopAct::Strip(Ctl::FreeGo) => out.push(FromUi::LoopCommand(
+                    if self.looper.free_runs() || self.looper.free_cued {
+                        C::FreeStop
+                    } else {
+                        C::FreePlay
+                    },
+                )),
                 LoopAct::LayerListen(k) => {
                     if let Some(l) = self.looper_page.layer_info(k) {
                         out.push(FromUi::LoopListen(Some(Some(l.id))));
@@ -8901,12 +9225,33 @@ impl Player {
         }
     }
 
-    fn refresh_hint(&mut self) {
-        let stop = if self.timed {
-            "STOP: end"
-        } else {
-            "STOP: silence"
+    /// What STOP does now, as the hint line says it: "STOP: silence"; with
+    /// free loops (a free loop holds audio), "STOP: the song" while it
+    /// plays, "STOP: free loops" once it has stopped, and "PLAY: song and
+    /// free loops" once they have stopped too; "STOP: end" in a timed run.
+    fn stop_words(&self) -> &'static str {
+        if self.timed {
+            return "STOP: end";
+        }
+        let Some(c) = self.looper.free else {
+            return "STOP: silence";
         };
+        let song = matches!(
+            self.time.transport.state,
+            mpfree_transport::State::Playing
+                | mpfree_transport::State::Recording
+                | mpfree_transport::State::CountIn
+        );
+        match (song, c.running) {
+            (true, _) => "STOP: the song",
+            (false, true) => "STOP: free loops",
+            (false, false) => "PLAY: song and free loops",
+        }
+    }
+
+    fn refresh_hint(&mut self) {
+        let stop = self.stop_words();
+        self.stop_said = stop;
         let mode = self.arp.settings.mode;
         // The wheel and Q-Link 1 follow the tab: the mode the pads play
         // through, or Phrase while the panel shows that tab on a kit.
@@ -9116,11 +9461,17 @@ impl Player {
         } else {
             match self.view {
                 // The All view: the armed track's pads as rows (the Play,
-                // Pads and Sequencer redesign's board 1).
+                // Pads and Sequencer redesign's board 1). With free loops,
+                // what STOP does too: it isn't only silence any more.
                 View::Play if self.play.on_play_rows() => format!(
                     "Tap a step: in or out   ·   a name: mute   ·   \
-                     A–H: the bank   ·   swipe: the 16 pads   ·   ‹ {} ›: next track   ·   a loop's ring: its next step",
-                    self.play.track.name
+                     A–H: the bank   ·   swipe: the 16 pads   ·   ‹ {} ›: next track   ·   a loop's ring: its next step{}",
+                    self.play.track.name,
+                    if self.looper.free.is_some() {
+                        format!("   ·   {stop}")
+                    } else {
+                        String::new()
+                    }
                 ),
                 View::Play => format!("Tap a loop's ring: its next step, held: clear   ·   {WHEEL_HINT}   ·   PAD BANK: bank   ·   \
                                        NOTE REPEAT: repeat   ·   MENU: options   ·   {stop}"),
@@ -9137,6 +9488,16 @@ impl Player {
                         .as_ref()
                         .and_then(|e| e.editor.open_tool)
                         .map_or_else(String::new, |t| time_view::tool_hint(&t))
+                }
+                // An empty clip: its card's Add a part (S2.6, board D).
+                View::Sequencer
+                    if self.time.edit.as_ref().is_some_and(|e| {
+                        e.clip.notes.is_empty()
+                            && e.editor.lens == Lens::Grid
+                            && e.editor.open_tool.is_none()
+                    }) =>
+                {
+                    EMPTY_CLIP_HINT.to_string()
                 }
                 View::Sequencer if self.time.edit.is_some() => {
                     let (lens, tool) = self
@@ -9173,12 +9534,18 @@ impl Player {
                 View::Arrange if self.time_page.adding => mpfree_time_ui::song::ADD_HINT.to_string(),
                 // Link's chooser (the Arrange refactor's 4b.5).
                 View::Arrange if self.time_page.linking => time_view::LINK_HINT.to_string(),
+                // Add a part's panel, the chord picker, the Chords tab.
+                View::Arrange if self.time_page.compose_hint(&self.time).is_some() => {
+                    self.time_page.compose_hint(&self.time).unwrap_or_default()
+                }
                 View::Arrange if self.time.list_view && self.time.list_linked => {
                     time_view::LINKED_LIST_HINT.to_string()
                 }
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.clip_card => time_view::clip_card_hint(&self.time),
+                // Add a part is faint while Rec song is on: this says why.
+                View::Arrange if self.time.song_rec => time_view::REC_SONG_CLIPS_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 // A first pass waits on its Length: Read as and Discard
                 // float at this line's end.
@@ -11613,6 +11980,11 @@ impl Player {
                     self.chain_qlink(k, ticks);
                 } else if self.audio_qlink(k, ticks) {
                     // An audio region's knobs.
+                } else if self.view == View::Arrange && self.time_page.add_knob(k, ticks) {
+                    // Add a part's panel: Similarity, Variation, Activity
+                    // and Range, a new try with each change.
+                    self.send_page_asks();
+                    self.refresh_qlinks();
                 } else if self.note_inspector().is_some() {
                     // Notes picked in the note editor: the note inspector.
                     self.note_qlink(k, ticks);
@@ -11742,8 +12114,9 @@ impl Player {
                 if matches!(self.view, View::Looper | View::Play) {
                     self.refresh_looper();
                 }
-                // A snap asks, or was answered: the hint line says so.
-                if asked != self.looper.smart.asking {
+                // A snap asks, or was answered, or STOP's words changed
+                // (free loops): the hint line says so.
+                if asked != self.looper.smart.asking || self.stop_words() != self.stop_said {
                     self.refresh_hint();
                 }
                 // The Loop tracks' cells follow the loops.
@@ -12018,6 +12391,13 @@ impl Player {
                 drop(old);
                 self.opens_out = self.opens_out.saturating_sub(1);
                 self.opened_at = Some(Instant::now());
+                // Add a part's New track synth went with the old project:
+                // a try asks for one again.
+                self.add_sound = None;
+                self.add_held = None;
+                if let Some(c) = self.open_clock.as_mut().filter(|_| self.opens_out == 0) {
+                    c.done(crate::open_clock::Part::Engines, Instant::now());
+                }
                 if let Some(b) = self.browser.as_mut() {
                     b.open_landed();
                 }
@@ -12664,6 +13044,10 @@ impl Player {
                 if self.view == View::Looper {
                     self.looper_page.set_transport(&mut self.ui, info);
                 }
+                // With free loops, STOP's words follow the song.
+                if self.stop_words() != self.stop_said {
+                    self.refresh_hint();
+                }
                 self.sample.set_tempo(info.bpm);
                 self.time_page.update(&mut self.ui, &self.time);
                 self.refresh_show();
@@ -12710,7 +13094,14 @@ impl Player {
                     widget: list.to_string(),
                     kind: EventKind::Step { index, delta },
                 };
-                if let Some(a) = time_view::action(&ev, &self.time) {
+                if self.time_page.owns(&ev) {
+                    // Add a part's Role, or the Chords tab's row.
+                    if let Err(why) = self.time_page.compose(&ev, &self.time) {
+                        self.tell(&why);
+                    }
+                    self.time_page.update(&mut self.ui, &self.time);
+                    self.send_page_asks();
+                } else if let Some(a) = time_view::action(&ev, &self.time) {
                     self.outbox.push(FromUi::Time(a));
                 } else if let Some(why) = time_view::why_not(&ev, &self.time) {
                     self.tell(&why);
@@ -14308,10 +14699,14 @@ impl Player {
         what_reads: bool,
         stage: bool,
     ) -> Option<String> {
+        // The open's clock starts with the read's answer (live shows A4).
+        let start = Instant::now();
+        let read = self.browser.as_mut().and_then(|b| b.take_open_read());
         if self.opens_out >= OPENS_ON_THEIR_WAY {
             self.open_refused(loc.name(), OPENS_BUSY);
             return Some(OPENS_BUSY.to_string());
         }
+        let plugins_before = self.project_plugins.starts();
         let mut o = match self.project_opening(snap, loc.name()) {
             Ok(o) => o,
             Err(why) => {
@@ -14319,6 +14714,15 @@ impl Player {
                 return Some(why);
             }
         };
+        let mut clock = crate::open_clock::OpenClock::new(loc.name(), start, read);
+        let plugins = self.project_plugins.starts();
+        clock.built(
+            Instant::now(),
+            (
+                plugins.0 - plugins_before.0,
+                plugins.1.saturating_sub(plugins_before.1),
+            ),
+        );
         if stage && !o.left_out.is_empty() {
             let why = format!("it would leave out {}", o.left_out.join(", "));
             drop(o);
@@ -14356,15 +14760,16 @@ impl Player {
         self.left_out(std::mem::take(&mut o.left_out));
         let lib = self.browser.as_ref().map(|b| b.library().clone());
         if let (Some(text), Some(lib)) = (snap.part(crate::project::SAMPLER), lib) {
-            let loc = loc.clone();
+            let (loc, reads) = (loc.clone(), clock.reads());
             self.sample.open_part(
                 text.to_string(),
                 Box::new(move |f| {
                     lib.sample_path(&loc, f)
-                        .and_then(std::fs::read)
+                        .and_then(|p| reads.read(&p))
                         .map_err(|e| e.to_string())
                 }),
             );
+            clock.wait_for(crate::open_clock::Part::Kits);
         }
         // Learned pad settings and synth knobs that name their track (a
         // project from before sampler step 16) name what the track plays.
@@ -14399,14 +14804,14 @@ impl Player {
             if let Ok(dir) = lib.samples_dir(loc) {
                 self.keep_layer_dir(dir);
             }
-            let (text, loc) = (text.to_string(), loc.clone());
+            let (text, loc, reads) = (text.to_string(), loc.clone(), clock.reads());
             let (tx, rx) = std::sync::mpsc::channel();
             let read = std::thread::Builder::new()
                 .name("loops-open".into())
                 .spawn(move || {
                     let r = crate::project::loops_open(&text, |f| {
                         lib.sample_path(&loc, f)
-                            .and_then(std::fs::read)
+                            .and_then(|p| reads.read(&p))
                             .map_err(|e| e.to_string())
                     });
                     let _ = tx.send(r);
@@ -14449,6 +14854,14 @@ impl Player {
         self.opened_at = Some(Instant::now());
         self.open_actions = self.outbox.len();
         self.say(format!("project: opening {}", loc.name()));
+        clock.wait_for(crate::open_clock::Part::Engines);
+        if self.loops_load.is_some() {
+            clock.wait_for(crate::open_clock::Part::Loops);
+        }
+        if self.audio_load.is_some() {
+            clock.wait_for(crate::open_clock::Part::Takes);
+        }
+        self.open_clock = Some(clock);
         None
     }
 
@@ -14528,6 +14941,7 @@ impl Player {
         ));
         self.set_play = Some(sp);
         (self.set_song_next, self.set_song_landing) = (false, false);
+        self.change_from = Some((Instant::now(), "Play set"));
         if let Some(b) = self.browser.as_mut() {
             b.set_playing(Some((loc.clone(), set)));
             b.check_set_now(&loc);
@@ -14557,6 +14971,7 @@ impl Player {
         };
         self.say(format!("show: the set {} closed ({why})", sp.name()));
         (self.set_song_next, self.set_song_landing) = (false, false);
+        self.change_from = None;
         (self.on_stage_asked, self.on_stage_for) = (false, None);
         if let Some(b) = self.browser.as_mut() {
             b.set_playing(None);
@@ -14694,6 +15109,7 @@ impl Player {
                 }
                 Do::End(end) => {
                     self.say(format!("show: the song ends ({end:?})"));
+                    self.change_from = Some((Instant::now(), "Go"));
                     self.outbox.push(FromUi::SongEnd(end));
                 }
                 Do::SaveCopy => {
@@ -14737,7 +15153,38 @@ impl Player {
         if let Some(c) = command {
             self.outbox.push(FromUi::Time(TimeAction::Transport(c)));
         }
-        self.say(format!("show: {name} is in ({starts:?})"));
+        // How long the change took, from Go (or Play set) to the song in:
+        // its ending, its copy and the next song's open (live shows A4).
+        let after = self.change_from.take().map_or(String::new(), |(t, what)| {
+            format!(", {:.2} s after {what}", t.elapsed().as_secs_f64())
+        });
+        self.say(format!("show: {name} is in ({starts:?}){after}"));
+    }
+
+    /// Once a frame: the open going in hears which of its parts are done,
+    /// and once all are, its line says how long each took and the memory
+    /// it left (live shows A4, open_clock.rs).
+    fn open_clock_tick(&mut self) {
+        use crate::open_clock::{Memory, Part};
+        let Some(c) = self.open_clock.as_mut() else {
+            return;
+        };
+        let now = Instant::now();
+        for (part, done) in [
+            (Part::Engines, self.opens_out == 0),
+            (Part::Kits, !self.sample.opening()),
+            (Part::Loops, self.loops_load.is_none()),
+            (Part::Takes, self.audio_load.is_none()),
+        ] {
+            if done {
+                c.done(part, now);
+            }
+        }
+        if c.is_in() {
+            let line = c.line(&Memory::now());
+            self.open_clock = None;
+            self.say(line);
+        }
     }
 
     /// Once a frame: a set's song that went to the audio loop is in once
@@ -14942,6 +15389,7 @@ impl Player {
         self.opens_out += 1;
         self.outbox.push(FromUi::OpenProject(Box::new(o)));
         (self.loops_load, self.audio_load) = (None, None);
+        self.open_clock = None;
         self.opened_at = Some(Instant::now());
         self.factory_kits();
         self.open_actions = self.outbox.len();
@@ -15733,6 +16181,13 @@ impl Player {
         }
         // A stretched copy coming in says so.
         self.print_sample_lines();
+        // What each track plays goes just before a touch that may make
+        // Continue ask, when it changed.
+        if let Some(at) = self.outbox.iter().position(|a| self.may_ask_continue(a)) {
+            if let Some(parts) = self.compose_parts_if_new() {
+                self.outbox.insert(at, parts);
+            }
+        }
         let out: Vec<FromUi> = std::mem::take(&mut self.outbox)
             .into_iter()
             .map(|a| self.as_held_lock(a))
@@ -18091,16 +18546,60 @@ impl Player {
                 self.refresh_hint();
                 None
             }
+            // The empty clip's Add a part › on the Sequencer (composing
+            // tools S2.6, board D): Arrange's Clips, with Add a part's
+            // panel open on the clip's row and track. There is one panel.
+            (time_view::NOTES, EventKind::Tab(mpfree_time_ui::editor::EMPTY_ADD_PART)) => {
+                let (track, row) = self
+                    .time
+                    .edit
+                    .as_ref()
+                    .map(|e| (e.editor.track, e.editor.slot))?;
+                if let Err(why) = self.time_page.open_add(&self.time, row, Some(track)) {
+                    self.tell(&why);
+                    return None;
+                }
+                self.time_page.show_cell(track, row);
+                if self.time.song_view || self.time.list_view {
+                    self.outbox.push(FromUi::Time(TimeAction::SongView(false)));
+                }
+                if let Some(tab) = View::Arrange.tab_index(self.settings.debug_mode) {
+                    self.outbox.push(FromUi::Tab(tab));
+                }
+                self.time_page.update(&mut self.ui, &self.time);
+                self.send_page_asks();
+                None
+            }
+            // Add a part, the row's chords under its row, the chord picker
+            // and the Chords tab (composing tools S2.6, layout spec 4r):
+            // the page's own; what they ask of the time engine goes at
+            // once, and why not is said in place.
+            (time_view::CLIPS, EventKind::Toggle(_))
+            | (time_view::ADD_PANEL | time_view::CHORDS_CARD, _)
+                if self.time_page.owns(&ev) =>
+            {
+                if let Err(why) = self.time_page.compose(&ev, &self.time) {
+                    self.tell(&why);
+                }
+                self.time_page.update(&mut self.ui, &self.time);
+                self.send_page_asks();
+                self.refresh_qlinks();
+                self.refresh_hint();
+                None
+            }
             (time_view::CLIPS, EventKind::Toggle(_))
             | (time_view::NOTES, EventKind::Tab(_) | EventKind::View { .. })
             | (time_view::SONG, EventKind::Tab(_))
-            | (time_view::RECORD | time_view::CLIP_CARD, EventKind::Tab(_))
-                if self.time_page.page_tracks(&ev, &self.time) =>
-            {
+            | (
+                time_view::RECORD | time_view::CLIP_CARD | time_view::CHORDS_CARD,
+                EventKind::Tab(_),
+            ) if self.time_page.page_tracks(&ev, &self.time) => {
                 // The grid's pager, the Record panel's tabs, and the Song
                 // view's zoom and its bars scrolled at an edge (6.4): the
-                // page's own, nothing for the app but the hint line.
+                // page's own, nothing for the app but the hint line (and
+                // the Chords tab's ask to hear its row).
                 self.time_page.update(&mut self.ui, &self.time);
+                self.send_page_asks();
                 self.refresh_hint();
                 None
             }
@@ -18274,9 +18773,8 @@ impl Player {
         // page asks of the time engine on its own (that pick, Snap Auto's
         // division as the roll's zoom changes it).
         self.time_page.tick(&mut self.ui, &self.time, dt);
-        for a in self.time_page.take_asks() {
-            self.outbox.push(FromUi::Time(a));
-        }
+        self.send_page_asks();
+        self.add_held_tick(dt);
         self.hear_tick(dt);
         self.status_tick(dt);
         self.power_tick(dt);
@@ -18491,6 +18989,7 @@ impl Player {
         self.poll_midi();
         self.poll_loops();
         self.poll_audio();
+        self.open_clock_tick();
         self.set_play_tick();
         self.poll_audio_recover();
         self.open_at_start();
@@ -20266,6 +20765,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::TrackSound { .. }
             | Effect::TrackSend { .. }
             | Effect::TrackCopy { .. }
+            | Effect::AddPartSend { .. }
             | Effect::SynthOnTrack(_)
             | Effect::KitOnTrack { .. }
             | Effect::ProgEdit
@@ -21177,6 +21677,114 @@ fn looper_screen(fonts: Fonts, picked: usize, jam: bool) -> Result<Player, Strin
         p.looper_page.pick_layer(&mut p.ui, 1);
     }
     Ok(p)
+}
+
+/// Loops `free` of `v` made free loops (Sync: Free) on a free clock at
+/// `bpm`, running or stopped, its bar 1 on tick 0; Sync set to Free.
+fn free_loops_view(v: &mut LooperView, free: &[usize], bpm: f64, running: bool) {
+    use mpfree_looper::{Clock, FreeClock};
+    for &n in free {
+        v.loops[n].clock = Clock::Free;
+    }
+    v.status = v.loops[v.selected];
+    v.clock = Clock::Free;
+    let mut c = FreeClock::stopped(bpm, v.rate, mpfree_transport::time::Meter::default(), 0);
+    c.running = running;
+    v.free = Some(c);
+    v.free_now = 0.0;
+}
+
+/// The free loops' screens (the free loop mode's design, mockups 1 to 5):
+/// an empty loop set to Free while a free loop plays and the song is
+/// stopped; a free loop picked while the song plays (Stop in Listen's
+/// place); the free loops stopped (Play there, the rings at rest with ▶);
+/// a free loop recorded in your own time; and Play's loop row with the
+/// song stopped and a free loop playing on.
+fn sample_free_loops(fonts: &impl Fn() -> Fonts, out: &mut Vec<(&'static str, Player)>) {
+    use mpfree_looper::{Clock, Phase};
+    let stopped = TransportInfo {
+        state: mpfree_transport::State::Stopped,
+        bpm: 120.0,
+        ..TransportInfo::default()
+    };
+    // 1: Loop 5 picked, empty, Sync: Free; Loop 1 a free loop playing on
+    // at 93.4 BPM, the song stopped at 120.
+    match sample_looper_picking(fonts(), 4) {
+        Ok(mut p) => {
+            let mut v = p.looper.clone();
+            free_loops_view(&mut v, &[0], 93.4, true);
+            p.apply(ToUi::Transport(stopped));
+            p.apply(ToUi::Looper(Box::new(v)));
+            out.push(("looper-free-empty", p));
+        }
+        Err(e) => eprintln!("looper-free-empty sample: {e}"),
+    }
+    // 2: the jam with Loops 1 and 3 free, Loop 1 picked, the song playing
+    // (the free clock copied from it, 92 BPM): Stop in Listen's place.
+    match sample_looper_jam(fonts()) {
+        Ok(mut p) => {
+            let mut v = p.looper.clone();
+            free_loops_view(&mut v, &[0, 2], 92.0, true);
+            p.apply(ToUi::Looper(Box::new(v)));
+            out.push(("looper-free-picked", p));
+        }
+        Err(e) => eprintln!("looper-free-picked sample: {e}"),
+    }
+    // 3: after STOP, STOP: the song and the free loops stopped, the free
+    // loops' rings at rest where they start again, Play in Listen's place.
+    match sample_looper_jam(fonts()) {
+        Ok(mut p) => {
+            let mut v = p.looper.clone();
+            free_loops_view(&mut v, &[0, 2], 92.0, false);
+            for n in [0, 2] {
+                v.loops[n].position = 0.0;
+            }
+            v.status = v.loops[v.selected];
+            p.apply(ToUi::Transport(TransportInfo {
+                bpm: 92.0,
+                ..stopped
+            }));
+            p.apply(ToUi::Looper(Box::new(v)));
+            out.push(("looper-free-stopped", p));
+        }
+        Err(e) => eprintln!("looper-free-stopped sample: {e}"),
+    }
+    // 4: Loop 1 recording free in your own time, 2.4 s in, the song
+    // stopped and no free clock yet.
+    {
+        let mut p = sample_player(fonts());
+        p.apply(ToUi::Show(View::Looper));
+        p.take_actions();
+        let mut v = crate::looping::LooperView {
+            clock: Clock::Free,
+            ..Default::default()
+        };
+        let l = &mut v.loops[0];
+        l.phase = Phase::Recording;
+        l.clock = Clock::Free;
+        l.bars = None;
+        l.free = true;
+        l.recorded = 105_840;
+        v.status = v.loops[0];
+        p.apply(ToUi::Looper(Box::new(v)));
+        out.push(("looper-free-own-time", p));
+    }
+    // 5: Play's loop row, the song stopped: Loop 1 a free loop playing
+    // on, every empty loop records free.
+    {
+        let mut p = sample_play(fonts(), PlayView::All);
+        let mut v = p.looper.clone();
+        for n in 1..mpfree_looper::MAX_LOOPS {
+            v.loops[n] = mpfree_looper::Looper::new(v.rate, 0).status();
+        }
+        free_loops_view(&mut v, &[0], 92.0, true);
+        p.apply(ToUi::Transport(TransportInfo {
+            bpm: 92.0,
+            ..stopped
+        }));
+        p.apply(ToUi::Looper(Box::new(v)));
+        out.push(("play-free-loops", p));
+    }
 }
 
 /// Smart loop end on [`sample_looper`]'s loop 1 for screen `name`: 48 ms
@@ -22967,6 +23575,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         rows: None,
         row_tool: None,
         followed: None,
+        chords: None,
+        part: false,
     };
     st.done = vec![
         take(1, 0, false, false),
@@ -23278,6 +23888,26 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                 }
                 out.push(("clips-card-direction", p));
             }
+            // A clip of notes, scrolled to its Continue row (composing
+            // tools, phase 1 step 4): either arrow opens the note editor
+            // on it with Continue open.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                let mut st = st.clone();
+                if let Some(c) = st
+                    .focus()
+                    .and_then(|(t, s)| st.tracks.get_mut(t)?.slots.get_mut(s)?.as_mut())
+                {
+                    c.holds = mpfree_seq::Holds::Notes;
+                    c.notes = c.notes.max(8);
+                }
+                p.time_page.clip_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
+                    l.selected = time_view::CLIP_CONTINUE;
+                }
+                out.push(("clips-card-continue", p));
+            }
             // Mutated (S6): it plays a variant, its original kept for ‹.
             if let Ok(mut p) = sample_clips(fonts()) {
                 if let Some(c) = st
@@ -23317,6 +23947,84 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             }
         }
         Err(e) => eprintln!("clips-card sample: {e}"),
+    }
+    // Add a part (composing tools S2.6, boards A and B): the panel open
+    // on the busy jam's row 5, a Bass try playing in its cell, the row's
+    // chords under the row; then the chord picker open on the fourth
+    // chord with A♭7 picked.
+    match mpfree_time_ui::sample::add_part_state() {
+        Ok((st, pick)) => {
+            use mpfree_time_ui::add_view::ChordPick;
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.time_page.add = Some(pick.clone());
+            p.apply(ToUi::Time(Box::new(st.clone())));
+            p.apply(ToUi::Show(View::Arrange));
+            p.refresh_qlinks();
+            p.refresh_hint();
+            out.push(("clips-add-part", p));
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.time_page.add = Some(pick);
+            if let Some((row, rc)) = &st.row_chords {
+                let chip = mpfree_time_ui::sample::picked_chip(&rc.line);
+                p.time_page.chord_pick = ChordPick::open(*row, &rc.line, chip).map(|c| ChordPick {
+                    root: Some(8),
+                    kind: Some(2),
+                    ..c
+                });
+            }
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.refresh_qlinks();
+            p.refresh_hint();
+            out.push(("clips-chord-picker", p));
+        }
+        Err(e) => eprintln!("clips-add-part sample: {e}"),
+    }
+    // Add a part on New track (composing tools S2.6b): the Track row on
+    // New track, the Sound row picking its synth (Bass), a try playing
+    // with the row on the track Keep would add.
+    match mpfree_time_ui::sample::add_part_new_track_state() {
+        Ok((st, pick)) => {
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.time_page.add = Some(pick);
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.refresh_qlinks();
+            p.refresh_hint();
+            out.push(("clips-add-part-new-track", p));
+        }
+        Err(e) => eprintln!("clips-add-part-new-track sample: {e}"),
+    }
+    // The Chords tab (S2.6, board C): bar 4's chord set to A♭7 after
+    // the Bass was kept, so the Bass and the Solo don't fit: both marked
+    // in their cells and ticked on the tab.
+    match mpfree_time_ui::sample::chords_tab_state() {
+        Ok(st) => {
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.time_page.chords_card = true;
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.refresh_hint();
+            out.push(("clips-chords", p));
+        }
+        Err(e) => eprintln!("clips-chords sample: {e}"),
+    }
+    // The Sequencer's empty clip (S2.6, board D): its card, with Add a
+    // part ›.
+    match mpfree_time_ui::sample::empty_clip_state() {
+        Ok(st) => {
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.apply(ToUi::Time(Box::new(st)));
+            p.apply(ToUi::Show(View::Sequencer));
+            p.refresh_hint();
+            out.push(("sequencer-empty-clip", p));
+        }
+        Err(e) => eprintln!("sequencer-empty-clip sample: {e}"),
     }
     // The mute queue (sequencer S4): in Perform, Track 2's mute and
     // Track 3's solo wait for the next bar, their headers hatched and the
@@ -23695,6 +24403,46 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("sequencer-notes-tool", p));
         }
         Err(e) => eprintln!("sequencer-notes-tool sample: {e}"),
+    }
+    // Continue open on a two-bar riff (composing tools, phase 1 step 2):
+    // its second try plays, the new bars faint after yours with their jobs
+    // and chords, the drawer Continue's settings and the tries. Step 3's
+    // screen: bar 4 locked and bar 6 picked and tried again.
+    let continues = [
+        (
+            "sequencer-notes-continue",
+            mpfree_time_ui::sample::notes_continue_state(),
+        ),
+        (
+            "sequencer-notes-continue-picks",
+            mpfree_time_ui::sample::notes_continue_picks_state(),
+        ),
+    ];
+    for (name, made) in continues {
+        let state = match made {
+            Ok(state) => state,
+            Err(e) => {
+                eprintln!("{name} sample: {e}");
+                continue;
+            }
+        };
+        let mut p = quiet_player(fonts());
+        p.apply(ToUi::Time(Box::new(state)));
+        p.apply(ToUi::Show(View::Sequencer));
+        p.time_page.edit_drawer = true;
+        p.time_page.update(&mut p.ui, &p.time);
+        // The whole clip across and every note in sight: the riff's
+        // and the new ones.
+        let r = p.ui.rect_of(time_view::NOTES);
+        if let (Some(r), Some(g)) = (r, p.ui.get_mut::<NoteGrid>(time_view::NOTES)) {
+            let roll = g.roll_rect(r);
+            let lo = g.notes.iter().map(|n| n.note).min().unwrap_or(48);
+            let hi = g.notes.iter().map(|n| n.note).max().unwrap_or(59);
+            g.view = g.view.fit(roll, g.length, 128, (0, g.length), (lo, hi));
+        }
+        p.refresh_qlinks();
+        p.refresh_hint();
+        out.push((name, p));
     }
     // The Pressure lane (piano roll plan 3A.1) under the two notes that
     // carry pressure, picked: their swells as lines.
@@ -24431,6 +25179,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         p.apply(ToUi::Looper(Box::new(v)));
         out.push(("looper-free", p));
     }
+    // Free loops (Sync: Free), as the design's mockups drew them.
+    sample_free_loops(&fonts, &mut out);
     // The same with the undo history open: the bass and the chop overdubs.
     match sample_looper(fonts()) {
         Ok(mut p) => {
@@ -26399,6 +27149,88 @@ mod tests {
         );
         // A new engine's counts start again from nothing: no report.
         assert!(kinds_of(&t.note(&AudioNumbers::default(), 0)).is_empty());
+    }
+
+    /// Add a part's New track (composing tools S2.6b): a try asks for its
+    /// synth and waits for it, so it never sounds on a kit; it goes once
+    /// the synth plays on the track Keep would add; a try then goes at
+    /// once; another sound asks again; a synth that doesn't come is given
+    /// up after a while, so Try again asks for it again; and a try on a
+    /// track that is there lets the synth go.
+    #[test]
+    fn a_new_track_try_waits_for_its_synth() {
+        use crate::app::AddSound;
+        use crate::instruments::{free, Held, HOLDERS, TRACKS};
+        use mpfree_time_ui::adding::{AddAction, NewTrack, PartAsk};
+        let mut p = quiet_player(Fonts::embedded());
+        p.take_actions();
+        let n = p.time.tracks.len();
+        let ask = |sound| {
+            Box::new(PartAsk {
+                row: 0,
+                track: n,
+                part: mpfree_context::PartRole::Bass,
+                relation: mpfree_compose::Relation::Support,
+                settings: mpfree_compose::Settings::default(),
+                kind: mpfree_compose::InstrumentKind::Bass,
+                lanes: mpfree_compose::Lanes::default(),
+                pads: [None; 4],
+                bars: None,
+                new_track: Some(NewTrack {
+                    name: "Bass".into(),
+                    sound,
+                }),
+            })
+        };
+        let asks = |p: &mut Player| {
+            p.take_actions()
+                .into_iter()
+                .filter(|a| {
+                    matches!(
+                        a,
+                        FromUi::AddPartSound(_) | FromUi::Time(TimeAction::Add(_))
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let try_on = |id| FromUi::AddPartSound(AddSound::Try { track: n, id });
+        assert!(p.new_track_ask(ask("mpfree.bass")).is_none(), "held");
+        assert_eq!(asks(&mut p), [try_on("mpfree.bass")]);
+        p.add_held_tick(0.5);
+        assert!(asks(&mut p).is_empty(), "still waiting");
+        // The synth plays on the new track's index: the try goes.
+        let mut sounds: TrackSounds = [None; HOLDERS];
+        sounds[free(0)] = Some(Held {
+            id: "mpfree.bass",
+            name: "Bass",
+            instance: 0,
+        });
+        let mut sends: TrackSends = [None; TRACKS];
+        sends[n] = Some(free(0) as u8);
+        p.apply(ToUi::TrackSounds(Box::new(sounds)));
+        p.apply(ToUi::TrackSends(Box::new(sends)));
+        p.add_held_tick(0.02);
+        assert!(
+            matches!(&asks(&mut p)[..], [FromUi::Time(TimeAction::Add(AddAction::Ask(a)))] if a.track == n)
+        );
+        // Playing already: the next try goes at once, asking nothing more.
+        assert!(p.new_track_ask(ask("mpfree.bass")).is_some());
+        assert!(asks(&mut p).is_empty());
+        // Another sound: asked for, the try held until it plays.
+        assert!(p.new_track_ask(ask("mpfree.squelch")).is_none());
+        assert_eq!(asks(&mut p), [try_on("mpfree.squelch")]);
+        // It doesn't come: given up, and Try again asks for it again.
+        p.add_held_tick(ADD_SYNTH_WAIT + 0.1);
+        assert!(asks(&mut p).is_empty());
+        assert!(p.add_held.is_none());
+        assert!(p.new_track_ask(ask("mpfree.squelch")).is_none());
+        assert_eq!(asks(&mut p), [try_on("mpfree.squelch")]);
+        // A try on a track that is there: the synth goes, and the held try.
+        let mut there = ask("mpfree.bass");
+        there.new_track = None;
+        assert!(p.new_track_ask(there).is_some());
+        assert_eq!(asks(&mut p), [FromUi::AddPartSound(AddSound::Back)]);
+        assert!(p.add_held.is_none());
     }
 
     /// The held buttons' lines: hold MAIN (the pads pick a track), hold
@@ -29630,6 +30462,8 @@ mod tests {
             rows: None,
             row_tool: None,
             followed: None,
+            chords: None,
+            part: false,
         };
         let mut st = p.time.clone();
         st.done = vec![take(1), take(2), take(3)];
@@ -30418,6 +31252,8 @@ mod tests {
             rows: None,
             row_tool: None,
             followed: None,
+            chords: None,
+            part: false,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
@@ -32152,6 +32988,58 @@ mod tests {
         p.apply(ToUi::Time(st));
         p.tick(0.1);
         assert_eq!(low(&grid(&p)), 16);
+    }
+
+    /// Continue's asks carry what each track plays (composing tools,
+    /// phase 1 step 2): the first touch on its row goes after the
+    /// screen's word on every track, a kit's drums read from its pads'
+    /// names; told once while it stays the same, and not with other
+    /// touches.
+    #[test]
+    fn a_continue_touch_tells_the_time_engine_what_each_track_plays() {
+        use mpfree_compose::{lane_named, InstrumentKind};
+        use mpfree_time_ui::continuing::ContinueAction;
+        use mpfree_time_ui::editor::CONTINUE_ROW;
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let row = || {
+            FromUi::Time(TimeAction::Edit(EditAction::Row {
+                row: CONTINUE_ROW,
+                delta: 1,
+            }))
+        };
+        let is_row = |a: &FromUi| matches!(a, FromUi::Time(TimeAction::Edit(EditAction::Row { row, .. })) if *row == CONTINUE_ROW);
+        p.outbox.push(row());
+        let out = p.take_actions();
+        assert_eq!(out.len(), 2);
+        assert!(is_row(&out[1]));
+        let FromUi::Time(TimeAction::Continue(ContinueAction::Parts(parts))) = &out[0] else {
+            panic!("no word on the tracks first");
+        };
+        assert_eq!(parts.kinds.len(), p.time.tracks.len());
+        let kit = p.track_kits.kit_of(0).expect("track 1 plays a kit");
+        assert_eq!(parts.kinds[0], Some(InstrumentKind::Percussive));
+        let first = p.kits[kit].pads[0].clone().expect("its first pad is named");
+        assert_eq!(parts.lanes.lane(0, 0), lane_named(&first));
+        assert!(parts.lanes.lane(0, 0).is_some());
+        // The same again: not told twice; another touch: not told.
+        p.outbox.push(row());
+        assert_eq!(p.take_actions().len(), 1);
+        p.outbox
+            .push(FromUi::Time(TimeAction::Edit(EditAction::Correct)));
+        assert_eq!(p.take_actions().len(), 1);
+        // The clip card's Continue (step 4) asks as it opens: told first.
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let open = TimeAction::Continue(ContinueAction::Open { track: 0, slot: 0 });
+        p.outbox.push(FromUi::Time(open.clone()));
+        let out = p.take_actions();
+        assert_eq!(out.len(), 2);
+        assert!(matches!(
+            out[0],
+            FromUi::Time(TimeAction::Continue(ContinueAction::Parts(_)))
+        ));
+        assert!(matches!(&out[1], FromUi::Time(a) if *a == open));
     }
 
     /// The note editor's Pads write chip asks the time engine to switch
@@ -34244,6 +35132,8 @@ mod tests {
             rows: None,
             followed: None,
             row_tool: None,
+            chords: None,
+            part: false,
         });
         p.apply(ToUi::Time(Box::new(st)));
         assert_eq!(undo(&mut p, false), [FromUi::Time(TimeAction::Undo)]);
@@ -37171,6 +38061,28 @@ mod tests {
             .any(|a| matches!(a, FromUi::Time(TimeAction::Transport(_)))));
         assert_eq!(view(&p).0, "Sunday chops");
         assert_eq!(view(&p).1, "LOADED");
+        // The open's line, part by part, then the song in, timed from Play
+        // set (live shows A4).
+        let said = |p: &Player, start: &str| {
+            events_log(p)
+                .into_iter()
+                .filter(|l| l.starts_with(start))
+                .collect::<Vec<_>>()
+        };
+        let opened = said(&p, "project: Sunday chops opened in ");
+        assert_eq!(opened.len(), 1, "{:?}", events_log(&p));
+        assert!(opened[0].contains(": read in "), "{}", opened[0]);
+        assert!(
+            opened[0].contains(", in the audio loop at "),
+            "{}",
+            opened[0]
+        );
+        assert!(opened[0].contains("; memory "), "{}", opened[0]);
+        let is_in = said(&p, "show: Sunday chops is in (Stopped), ");
+        assert!(
+            is_in.len() == 1 && is_in[0].ends_with(" s after Play set"),
+            "{is_in:?}"
+        );
 
         // Next song arms Slow signal; Go ends Sunday chops by its Ends.
         p.apply(ToUi::ShowPress(show::NEXT_SONG));
@@ -37211,6 +38123,13 @@ mod tests {
             .iter()
             .any(|a| matches!(a, FromUi::Time(TimeAction::Transport(_)))));
         assert_eq!(view(&p).0, "Slow signal");
+        // The change is timed from Go: its ending, its copy and the open.
+        assert_eq!(said(&p, "project: Slow signal opened in ").len(), 1);
+        let is_in = said(&p, "show: Slow signal is in (");
+        assert!(
+            is_in.len() == 1 && is_in[0].ends_with(" s after Go"),
+            "{is_in:?}"
+        );
         assert_eq!(
             lib.load_set(&set).unwrap().songs[0].on_stage,
             ["Sunday chops on stage".to_string()]

@@ -120,6 +120,8 @@ fn a_scan_lists_each_file_in_its_own_process_and_says_what_it_left_out() {
     );
     assert!(Rack::is_plugin("clap:x") && !Rack::is_plugin("mpfree.fx.eq"));
     assert!(r.make("clap:org.nobody.nothing").is_err());
+    // A plugin it hasn't got is no start, and costs an open nothing.
+    assert_eq!(r.starts(), (0, Duration::ZERO));
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -127,6 +129,10 @@ fn a_scan_lists_each_file_in_its_own_process_and_says_what_it_left_out() {
 fn a_crashed_plugin_is_restarted_from_its_snapshot_then_left_off() {
     let (r, _, d) = scanned("crash");
     let mut n = r.make("clap:org.mpfree.test-gain").expect("make");
+    // One start, and the time it waited for its process (live shows A4).
+    let (starts, took) = r.starts();
+    assert_eq!(starts, 1);
+    assert!(took > Duration::ZERO, "{took:?}");
     n.prepare(RATE, 256);
     assert_eq!(n.info().id, "clap:org.mpfree.test-gain");
     let started = r.take_lines().expect("a line");

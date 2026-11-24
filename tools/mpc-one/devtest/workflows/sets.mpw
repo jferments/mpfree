@@ -1,0 +1,107 @@
+title Sets: the three demo songs saved, made into a set on screen, and played through from the Show view, each open and change timed
+covers set-changes, open-times
+needs demo-songs
+# Live shows A4: the opens' own lines (project: ... opened in ...) and each
+# change's (show: ... is in ..., N s after Go) say what an open and a change
+# cost the MPC; devtest_report.py puts them in one table. The demo songs are
+# put in the run's own library (RAM only on the MPC). Saved once each, so
+# their kits' sounds are files the set's opens read.
+wait 2
+mark songs-saved
+button BROWSE
+# Sets then Projects: the list starts again with its first row picked, so
+# the first tap on another song picks it and the second opens it.
+tap browser place Sets
+tap browser place Projects
+tap browser row Night Market
+tap browser row Night Market
+wait 1
+expect project: Night Market opened in
+tap header tab Arrange
+button SHIFT + BROWSE
+wait 1
+expect project: saved Night Market
+button BROWSE
+tap browser place Sets
+tap browser place Projects
+tap browser row Tidal Suite
+tap browser row Tidal Suite
+wait 1
+expect project: Tidal Suite opened in
+tap header tab Arrange
+button SHIFT + BROWSE
+wait 1
+expect project: saved Tidal Suite
+button BROWSE
+tap browser place Sets
+tap browser place Projects
+# Glass Garden is the first row, picked already: one tap opens it.
+tap browser row Glass Garden
+wait 1
+expect project: Glass Garden opened in
+tap header tab Arrange
+button SHIFT + BROWSE
+wait 1
+expect project: saved Glass Garden
+mark set-made
+tap header tab Arrange
+button BROWSE
+tap browser place Sets
+tap browser sets-button New set
+tap browser key Char('s')
+tap browser key Char('h')
+tap browser key Char('o')
+tap browser key Char('w')
+tap browser key Done
+wait 0.5
+tap browser sets-button Add songs
+wait 0.5
+tap browser sets-add Add Night Market
+tap browser sets-add Add Glass Garden
+tap browser sets-add Add Tidal Suite
+tap browser sets-button Done
+wait 0.5
+# Each starts playing; Night Market ends with a fade (4 s), Glass Garden
+# lets its tails finish (10 s at most), Tidal Suite is cut.
+tap browser sets-row Night Market
+tap browser sets-value Starts ›
+tap browser sets-value Ends ›
+tap browser sets-row Glass Garden
+tap browser sets-value Starts ›
+tap browser sets-row Tidal Suite
+tap browser sets-value Starts ›
+tap browser sets-value Ends ›
+tap browser sets-value Ends ›
+tap browser sets-back ‹ Show
+wait 0.5
+mark set-play
+tap browser sets-button Play set
+wait 3
+expect project: Night Market opened in
+expect show: Night Market is in (Playing)
+wait 8
+mark change-fade
+tap show song 2 Glass Garden
+tap show go Go
+wait 8
+expect show: the song ends (Fade(4))
+expect project: Glass Garden opened in
+expect show: Glass Garden is in (Playing)
+mark change-finish
+tap show song 3 Tidal Suite
+tap show go Go
+wait 14
+expect show: the song ends (Finish)
+expect project: Tidal Suite opened in
+expect show: Tidal Suite is in (Playing)
+mark change-cut
+tap show song 1 Night Market
+tap show go Go
+wait 6
+expect show: the song ends (Cut)
+expect project: Night Market opened in
+expect show: Night Market is in (Playing)
+mark set-end
+button STOP
+button STOP
+wait 1
