@@ -126,7 +126,7 @@ const HIGH_PASS: f32 = 1.0;
 const BAND_PASS: f32 = 2.0;
 const NOTCH: f32 = 3.0;
 const F_LOW_SHELF: f32 = 5.0;
-const F24: f32 = 1.0;
+const F24: f32 = filter::SLOPE_24;
 
 /// Multi filter: the shapes people reach for on a loop or a bass.
 pub static FILTER: &[Preset] = &[

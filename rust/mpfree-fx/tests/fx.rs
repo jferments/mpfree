@@ -339,7 +339,7 @@ fn filters_have_their_slopes_and_the_dj_filter_is_transparent_in_the_middle() {
     use ids::filter::*;
     let mut lp24 = set_up(
         Box::new(MultiFilter::new()),
-        &[(TYPE, 0.0), (SLOPE, 1.0), (CUTOFF, 1000.0)],
+        &[(TYPE, 0.0), (SLOPE, SLOPE_24), (CUTOFF, 1000.0)],
     );
     assert!(gain_at(&mut lp24, 100.0).abs() < 0.2);
     assert!(
@@ -350,11 +350,27 @@ fn filters_have_their_slopes_and_the_dj_filter_is_transparent_in_the_middle() {
     assert!(g < -66.0 && g > -78.0, "24 dB/oct, 3 octaves: {g}");
     let mut hp12 = set_up(
         Box::new(MultiFilter::new()),
-        &[(TYPE, 1.0), (SLOPE, 0.0), (CUTOFF, 1000.0)],
+        &[(TYPE, 1.0), (SLOPE, SLOPE_12), (CUTOFF, 1000.0)],
     );
     let g = gain_at(&mut hp12, 125.0);
     assert!(g < -33.0 && g > -39.0, "12 dB/oct, 3 octaves: {g}");
     assert!(gain_at(&mut hp12, 10_000.0).abs() < 0.2);
+    // The steepest and the gentlest (the filter gap plan's F4b).
+    let mut lp48 = set_up(
+        Box::new(MultiFilter::new()),
+        &[(TYPE, 0.0), (SLOPE, SLOPE_48), (CUTOFF, 1000.0)],
+    );
+    assert!(gain_at(&mut lp48, 100.0).abs() < 0.2);
+    assert!((gain_at(&mut lp48, 1000.0) + 3.0).abs() < 0.3);
+    let g = gain_at(&mut lp48, 2000.0);
+    assert!(g < -45.0 && g > -51.0, "48 dB/oct, an octave: {g}");
+    let mut hp6 = set_up(
+        Box::new(MultiFilter::new()),
+        &[(TYPE, 1.0), (SLOPE, SLOPE_6), (CUTOFF, 1000.0)],
+    );
+    assert!((gain_at(&mut hp6, 1000.0) + 3.0).abs() < 0.3);
+    let g = gain_at(&mut hp6, 125.0);
+    assert!(g < -15.0 && g > -21.0, "6 dB/oct, 3 octaves: {g}");
     let mut bell = set_up(
         Box::new(MultiFilter::new()),
         &[(TYPE, 4.0), (CUTOFF, 2000.0), (GAIN, -12.0)],

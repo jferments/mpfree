@@ -1,7 +1,7 @@
 //! MPFree's effects, built on the shared [`mpfree_node::Node`] interface.
 //!
 //! - [`MultiFilter`]: zero-delay-feedback state-variable filter (low-pass,
-//!   high-pass, band-pass, notch, bell, shelves; 12 or 24 dB) with drive.
+//!   high-pass, band-pass, notch, bell, shelves; 6 to 48 dB) with drive.
 //! - [`DjFilter`]: one knob, low-pass to the left, high-pass to the right,
 //!   off in the middle.
 //! - [`Drive`]: soft, hard, tube, foldback, fuzz and rectify shapers inside
@@ -164,6 +164,26 @@ pub use shift::FreqShifter;
 pub use stereo::{SampleDelay, StereoWidth};
 pub use strip::ChannelStrip;
 pub use svf::{DjFilter, MultiFilter, Svf, SvfCoefs, SvfMode};
+
+/// The version of a project's mixer part this build writes, its effects'
+/// settings in this build's meaning ([`mixer_upgrade`]). 2 (23 Nov 2026):
+/// the Filter effect's Slope runs 6 to 48 dB in order, where version 1 had
+/// 12 dB as 0 and 24 dB as 1.
+pub const MIXER_VERSION: u32 = 2;
+
+/// Setting `id` of the effect `node` (its id, `mpfree.fx.filter`) as a
+/// project's mixer part of `version` saved it, in this build's meaning, so
+/// an older project plays as it did.
+pub fn mixer_upgrade(version: u32, node: &str, id: u16, v: f32) -> f32 {
+    if version < 2 && node == "mpfree.fx.filter" && id == svf::multi::SLOPE {
+        return if v >= 0.5 {
+            svf::multi::SLOPE_24
+        } else {
+            svf::multi::SLOPE_12
+        };
+    }
+    v
+}
 pub use transient::TransientShaper;
 pub use tuner::Tuner;
 pub use vocal::{

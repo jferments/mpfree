@@ -1693,7 +1693,7 @@ pub fn all(rate: u32) -> Vec<Case> {
             Box::new(MultiFilter::new()),
             &[
                 (ids::filter::CUTOFF, 800.0),
-                (ids::filter::SLOPE, 1.0),
+                (ids::filter::SLOPE, ids::filter::SLOPE_24),
                 (ids::filter::DRIVE, 12.0),
             ],
         )

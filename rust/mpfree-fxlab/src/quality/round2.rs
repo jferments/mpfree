@@ -1570,7 +1570,18 @@ pub(super) fn filter(r: &mut Report) {
         .expect("the Filter family has DJ");
     let mname = multi.name.as_str();
 
-    for (slope, sl) in [(0.0, "12"), (1.0, "24")] {
+    // Every slope (the 6, 18, 36 and 48 dB since the filter gap plan's
+    // F4b).
+    let slopes = [
+        (m::SLOPE_6, "6"),
+        (m::SLOPE_12, "12"),
+        (m::SLOPE_18, "18"),
+        (m::SLOPE_24, "24"),
+        (m::SLOPE_36, "36"),
+        (m::SLOPE_48, "48"),
+    ]
+    .map(|(v, sl)| (f64::from(v), sl));
+    for (slope, sl) in slopes {
         // F1: the drawn -3 dB point against the cutoff.
         let mut worst_pct = 0.0f64;
         for hz in [100.0, 1000.0, 5000.0, 10_000.0, 16_000.0] {
@@ -1699,7 +1710,8 @@ pub(super) fn filter(r: &mut Report) {
     }
 
     // F5: type and slope changes.
-    let mut d = make_with(multi, rate, &[(m::CUTOFF, 1000.0), (m::SLOPE, 1.0)]);
+    let (s12, s24) = (f64::from(m::SLOPE_12), f64::from(m::SLOPE_24));
+    let mut d = make_with(multi, rate, &[(m::CUTOFF, 1000.0), (m::SLOPE, s24)]);
     r.put(
         "F5",
         mname,
@@ -1709,12 +1721,28 @@ pub(super) fn filter(r: &mut Report) {
         Some(3.0),
         1.0,
     );
-    let mut d = make_with(multi, rate, &[(m::CUTOFF, 300.0), (m::SLOPE, 0.0)]);
+    let mut d = make_with(multi, rate, &[(m::CUTOFF, 300.0), (m::SLOPE, s12)]);
     r.put(
         "F5",
         mname,
         "click_12_to_24db",
-        Some(switch_click(&mut d, m::SLOPE, 1.0, 1000.0)),
+        Some(switch_click(&mut d, m::SLOPE, s24, 1000.0)),
+        Better::Lower,
+        Some(3.0),
+        1.0,
+    );
+    // Stages that come in start from silence, under the crossfade.
+    let mut d = make_with(multi, rate, &[(m::CUTOFF, 300.0), (m::SLOPE, s24)]);
+    r.put(
+        "F5",
+        mname,
+        "click_24_to_48db",
+        Some(switch_click(
+            &mut d,
+            m::SLOPE,
+            f64::from(m::SLOPE_48),
+            1000.0,
+        )),
         Better::Lower,
         Some(3.0),
         1.0,
@@ -1863,7 +1891,7 @@ pub(super) fn filter(r: &mut Report) {
         v.extend_from_slice(values);
         v
     };
-    for (slope, sl) in [(0.0, "12"), (1.0, "24")] {
+    for (slope, sl) in [(s12, "12"), (s24, "24"), (f64::from(m::SLOPE_48), "48")] {
         let v = with_mode(0.0, 1.0, &[(m::SLOPE, slope), (m::RESONANCE, 100.0)]);
         let mut d = make_with(multi, rate, &v);
         r.put(
@@ -1935,7 +1963,7 @@ pub(super) fn filter(r: &mut Report) {
             mode,
             &[
                 (m::TYPE, 1.0),
-                (m::SLOPE, 1.0),
+                (m::SLOPE, s24),
                 (m::CUTOFF, 2000.0),
                 (m::RESONANCE, 100.0),
             ],
