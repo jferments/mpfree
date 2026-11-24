@@ -32,6 +32,7 @@
 mod arp;
 pub mod mapper;
 mod pad_layers;
+mod pad_map_panel;
 mod pads_focus;
 mod route_synths;
 pub mod saved;
@@ -47,6 +48,7 @@ pub use arp::{
 pub use mapper::{Code, MapView, Mark};
 use mpfree_arp::scale::pads::Pad as PadNotes;
 pub use pad_layers::{layer_names, LayerRec};
+pub use pad_map_panel::{MapAct, MapChange, MapRow, MapSound, PadMapView};
 pub use pads_focus::{
     layer_takes, synth_track, unfit, BankEntry, LayerEntry, LayerTake, PadFocus, PadMap, RecPlan,
     RecSound, SynthTake,
@@ -56,7 +58,7 @@ use pads_focus::{RecFrom, RecMore};
 pub use route_synths::REC_MORE;
 pub use step_pads::StepPads;
 pub use synth_pads::{sent_name, SynthItem};
-pub use synth_pick::SynthPickView;
+pub use synth_pick::{KitOn, SynthPickView};
 
 use crate::cores::SoundCores;
 use crate::looping::{LoopAction, LoopMemory, LoopSource};
@@ -1360,6 +1362,9 @@ pub enum Effect {
     /// The list of synths over the Synth tab (step 6, app/synth_pick.rs):
     /// open as it draws, or closed (None).
     SynthPick(Option<SynthPickView>),
+    /// What the pads play, the panel over the Synth tab (sampler step
+    /// 15e, app/pad_map_panel.rs): open as it draws, or closed (None).
+    PadMap(Option<PadMapView>),
     /// REC while the synth is chosen for the pads: this track plays the
     /// synth from now on (the Synth kit, as a pick in the list of kits), so
     /// the take plays the one instance that was heard (app/pads_focus.rs).
@@ -2001,6 +2006,12 @@ pub struct App {
     route_synths: [Option<crate::instrument_list::InstrumentId>; route_synths::ROUTE_SYNTHS],
     /// The list of synths, while open (app/synth_pick.rs).
     synth_pick: Option<synth_pick::SynthPick>,
+    /// What the pads play is open over the Synth tab (sampler step 15e,
+    /// app/pad_map_panel.rs).
+    map_panel: bool,
+    /// The pad map before each change made by a pick, Follow or Remove,
+    /// the last last: what UNDO takes back while the panel is open.
+    map_undo: Vec<PadMap>,
     /// The tracks that play the shared synth, a bit each
     /// ([`App::set_synth_tracks`]).
     synth_tracks: u128,
@@ -2212,6 +2223,8 @@ impl App {
             layer_to: [None; pad_layers::MORE],
             route_synths: [None; route_synths::ROUTE_SYNTHS],
             synth_pick: None,
+            map_panel: false,
+            map_undo: Vec::new(),
             synth_tracks: 0,
             kit_tracks: [(usize::MAX, 0); pads_focus::MAP_KITS],
             configured: 0,
@@ -3777,6 +3790,17 @@ impl App {
             // UNDO while a pad take records throws it away, on every page.
             fx.push(Effect::Undo { redo: false });
             fx.push(Effect::UndoButton(true));
+        } else if self.view == View::Synth && self.map_panel && Some(note) == self.map.undo {
+            // What the pads play (sampler step 15e): the last change to
+            // the pad map; it has no redo.
+            fx.extend(if shift {
+                vec![Effect::Tell(
+                    "What the pads play has no redo: pick it again".to_string(),
+                )]
+            } else {
+                self.pad_map_undo()
+            });
+            fx.push(Effect::UndoButton(true));
         } else if self.view == View::Looper && Some(note) == self.map.undo {
             fx.extend(self.looper_tap(if shift {
                 crate::looper_page::B_REDO
@@ -4464,6 +4488,7 @@ impl App {
         // what they play (step 6, app/synth_pick.rs).
         if v != View::Synth {
             self.synth_pick = None;
+            self.map_panel = false;
         }
         let was_editing = std::mem::take(&mut self.page_editing);
         if self.view != v

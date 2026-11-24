@@ -33,6 +33,8 @@
 //!   Analog (the oscillators, the filter, envelopes, LFO, the voice cards).
 //! - [`pick`]: the list of synths over the page, to pick what the track
 //!   plays (a tap on the instrument card).
+//! - [`pad_map`]: What the pads play, the whole pad map at once (a tap on
+//!   the header's "Pads: ..." chip).
 //! - [`format`]: value text (260 Hz, 2.5 kHz, +3.2 oct).
 //! - [`draw`]: anti-aliased lines and arcs through `Canvas::blend_mask`.
 //! - [`sample`]: sample screens for the workstation preview and the tests.
@@ -46,6 +48,7 @@ pub mod fm_visual;
 pub mod format;
 pub mod inst_visual;
 pub mod kit_visual;
+pub mod pad_map;
 pub mod pages;
 pub mod pick;
 pub mod qsets;

@@ -628,6 +628,58 @@ fn the_sidechain_refusals_match_what_set_key_refuses() {
     assert_eq!(Refusal::Loop.text(), "it listens to this one");
 }
 
+/// A strip's inserts move onto an empty strip of the same stage with their
+/// keys (a kit's strip settings following it to its track), and play
+/// there from the next block; a move that would break something is
+/// refused and changes nothing.
+#[test]
+fn move_chain_takes_the_inserts_and_their_keys_to_an_empty_strip() {
+    let mut m = mixer(small());
+    let (t0, t1, t2, t3) = (
+        StripId::Track(0),
+        StripId::Track(1),
+        StripId::Track(2),
+        StripId::Track(3),
+    );
+    let c = m.chain_mut(t0).unwrap();
+    c.push(Box::new(Gain(0.5)));
+    c.push(Box::new(Compressor::new()));
+    assert!(m.set_key(t0, 1, Some(StripId::Pad(0))));
+    m.chain_mut(t2).unwrap().push(Box::new(Gain(1.0)));
+    // Onto a strip with inserts, another stage, or itself: no.
+    assert!(!m.move_chain(t0, t2));
+    assert!(!m.move_chain(t0, StripId::Bus(0)));
+    assert!(!m.move_chain(t0, t0));
+    assert!(m.move_chain(t0, t1));
+    assert_eq!(m.chain(t0).unwrap().len(), 0);
+    assert_eq!(m.chain(t1).unwrap().len(), 2);
+    assert_eq!(m.key(t1, 1), Some(StripId::Pad(0)), "the key moves along");
+    // It plays there from the next block, as if built there.
+    let n = 2048;
+    let s = Script {
+        feeds: vec![(t1, mono(sine(200.0, 0.4, n)))],
+        ..Default::default()
+    };
+    let mut built = mixer(small());
+    let c = built.chain_mut(t1).unwrap();
+    c.push(Box::new(Gain(0.5)));
+    c.push(Box::new(Compressor::new()));
+    assert!(built.set_key(t1, 1, Some(StripId::Pad(0))));
+    built.chain_mut(t2).unwrap().push(Box::new(Gain(1.0)));
+    let want = play(&mut built, &s, n, &mut blocks(256)).out;
+    let got = play(&mut m, &s, n, &mut blocks(256)).out;
+    assert!(peak(&want.0) > 0.05);
+    assert_eq!(got, want);
+    // A strip another is keyed from stays put; so does one with an edit
+    // waiting.
+    assert!(m.set_key(t2, 0, Some(t1)));
+    assert!(!m.move_chain(t1, t3));
+    assert!(m.set_key(t2, 0, None));
+    assert!(m.edit(Edit::Remove { strip: t1, at: 0 }).is_ok());
+    assert!(!m.move_chain(t1, t3));
+    assert_eq!(m.chain(t1).unwrap().len(), 2);
+}
+
 #[test]
 fn capture_points_take_what_they_say() {
     let n = 4096;
