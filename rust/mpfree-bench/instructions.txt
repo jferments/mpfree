@@ -196,7 +196,8 @@
 669942	Sampler x16 held, 16-bit sound
 1489849	Sampler x16 held, LFO and pitch envelope
 881875	Sampler x16 held, comb
-1794930	Sampler x16 held, driven ladder
+3353015	Sampler x16 held, driven ladder
+3126470	Sampler x16 held, ladder
 721696	Sampler x16 held, vowel
 488150	Sampler x4 held, 4 layers each
 1402092	Sampler, 20 pads

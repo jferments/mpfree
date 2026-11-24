@@ -1693,6 +1693,9 @@ pub fn all(rate: u32) -> Vec<Case> {
         new_filter_pads(rate, 16, FilterKind::Ladder, 12.0)
     }));
     v.push(measured(|| {
+        new_filter_pads(rate, 16, FilterKind::Ladder, 0.0)
+    }));
+    v.push(measured(|| {
         new_filter_pads(rate, 16, FilterKind::Vowel, 0.0)
     }));
     v.push(measured(|| {
@@ -3141,8 +3144,8 @@ fn moving_pads(rate: u32, n: usize) -> Case {
 
 /// The sampler with `n` looping pads held down, as [`held_pads`], through
 /// one of sampler R5.6's filters with its envelope moving the cutoff (set
-/// again every 16 frames): the Ladder (with `drive_db` of Drive, its curve
-/// at twice the rate), the Vowel (two formants) or the Comb (its delay
+/// again every 16 frames): the Ladder (with `drive_db` of Drive; it runs at
+/// twice the rate with or without), the Vowel (two formants) or the Comb (its delay
 /// gliding to each new pitch).
 fn new_filter_pads(rate: u32, n: usize, kind: FilterKind, drive_db: f32) -> Case {
     let s = Source::new("noise", rate, 2, bench_sound(rate as usize, false)).expect("source");
@@ -3175,9 +3178,13 @@ fn new_filter_pads(rate: u32, n: usize, kind: FilterKind, drive_db: f32) -> Case
     let mut e = Engine::new(rate, n.max(1));
     e.set_view(EngineView::build(&p, rate));
     let (name, what) = match kind {
-        FilterKind::Ladder => (
+        FilterKind::Ladder if drive_db > 0.0 => (
             format!("Sampler x{n} held, driven ladder"),
             "looping pads held down through a ladder driven 12 dB, its envelope moving",
+        ),
+        FilterKind::Ladder => (
+            format!("Sampler x{n} held, ladder"),
+            "looping pads held down through a ladder with no Drive, its envelope moving",
         ),
         FilterKind::Comb => (
             format!("Sampler x{n} held, comb"),

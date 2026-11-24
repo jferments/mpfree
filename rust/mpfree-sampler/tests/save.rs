@@ -385,7 +385,7 @@ fn an_older_or_newer_builds_text_still_opens() {
 /// filters it was made with, and a kit saved before them whose pads use a
 /// filter that changed opens as saved, with a note that its filtered pads
 /// may sound different. One without such a pad, or saved now, opens
-/// without one.
+/// without one. F4's band-pass and F6's Ladder have notes of their own.
 #[test]
 fn a_kit_saved_before_the_filter_rework_opens_with_a_note() {
     let s = noise(3_000, 2, 4, "Bass");
@@ -434,6 +434,20 @@ fn a_kit_saved_before_the_filter_rework_opens_with_a_note() {
     }
     // Saved before F2, the one note covers it.
     assert_eq!(open(&old("band-pass")).notes.len(), 1);
+    assert_eq!(open(&old("ladder")).notes.len(), 1);
+
+    // Saved before F6 (version 2 or 3): a Ladder pad gets a note that the
+    // Ladder was rebuilt; the other types none.
+    let v3 = |kind: &str| old(kind).replace("kits = 1\n", "kits = 1\nfilters = 3\n");
+    for text in [v3("ladder"), v2("ladder", 4)] {
+        let notes = open(&text).notes;
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].starts_with("Old: saved before the Ladder was rebuilt"));
+    }
+    for kind in ["band-pass", "low-pass", "comb"] {
+        let notes = open(&v3(kind)).notes;
+        assert!(notes.is_empty(), "{kind}: {notes:?}");
+    }
 }
 
 /// The slopes and the Peak (the filter gap plan's F4) save and open as
