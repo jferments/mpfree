@@ -1051,9 +1051,9 @@ pub fn follow_lines(st: &ArpState) -> [String; 2] {
 /// it says only what is true today, and takes the boards' words as each
 /// way lands.)
 pub const OWN_NOTE: &str = "Phrases of your own are kept here. They play from any note, \
-                            like MPFree's own. New idea and More like this keep theirs \
-                            here; making one from a clip, a MIDI file or a pattern comes \
-                            next.";
+                            like MPFree's own. New idea, More like this and the Pattern \
+                            tab's Keep as a phrase keep theirs here; making one from a \
+                            clip or a MIDI file comes next.";
 
 // ---------------------------------------------------------------- models
 

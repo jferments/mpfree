@@ -339,6 +339,25 @@ impl Pattern {
         Ok(p)
     }
 
+    /// Whether the pattern is one rhythm on the held note: it plays, every
+    /// step that plays picks a note that one held note gives whatever is
+    /// held (the next, all, the lowest, the highest, a random one, or the
+    /// first), and no `deg` lane moves it. Such a pattern keeps what it is
+    /// as a phrase ([`crate::Phrase::from_pattern`]); one that picks the
+    /// second or third held note, or walks scale degrees, would become
+    /// the same note over and over.
+    pub fn on_one_note(&self) -> bool {
+        let plays = self.steps().iter().any(|s| matches!(s, Step::Play { .. }));
+        let one = self.steps().iter().all(|s| match s {
+            Step::Play {
+                pick: Pick::Index(n),
+                ..
+            } => *n <= 1,
+            _ => true,
+        });
+        plays && one && self.lanes.degree.is_off()
+    }
+
     /// The same pattern turned by `n` steps (positive = later). Lanes are
     /// left alone, as they loop on their own.
     pub fn rotated(&self, n: i32) -> Self {
@@ -759,6 +778,21 @@ mod tests {
                 Err(ParseError { token, reason }),
                 "{text:?}"
             );
+        }
+    }
+
+    #[test]
+    fn a_pattern_on_one_note_needs_no_second_note_or_degree() {
+        for on_one in ["x x . x", "x! x+ _ x'", "h l ? *", "1 . 1:2 . | oct 0 1"] {
+            assert!(Pattern::parse(on_one).unwrap().on_one_note(), "{on_one}");
+        }
+        for not in [
+            "1 3 2 3",
+            "l! . l l 2! . 2 2",
+            ". . . .",
+            "x x x x | deg 0 2 4",
+        ] {
+            assert!(!Pattern::parse(not).unwrap().on_one_note(), "{not}");
         }
     }
 

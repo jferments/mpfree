@@ -49,6 +49,10 @@ use mpfree_compose::{develop, next_idea, next_rework, reworkable, Develop, NewId
 /// Tries kept while the panel is open, as Add a part keeps.
 pub const KEPT: usize = 8;
 
+/// How loud Keep as a phrase writes a pattern's plain steps: a phrase's
+/// plain note (its accents are louder, a `vel` lane says its own).
+const PATTERN_VELOCITY: u8 = mpfree_arp::phrase::PLAIN_VELOCITY;
+
 /// The Bars row's values.
 const BARS: [u8; 3] = [1, 2, 4];
 
@@ -683,6 +687,48 @@ impl App {
         free_name(&t.base, first, self.phrases.iter().map(|(n, _)| n.as_str()))
     }
 
+    /// Keep as a phrase, on the Pattern tab (board G): the pattern as it
+    /// plays on one held note ([`Phrase::from_pattern`], at the arp's rate
+    /// and gate) joins Yours under the pattern's name (or the first free
+    /// "Name 2"), and with a store the owner's phrases are saved. The
+    /// track's pick and the tab stay as they are. Only for a pattern on one
+    /// note ([`mpfree_arp::Pattern::on_one_note`]): one that picks the
+    /// second held note or walks degrees would become one note over and
+    /// over.
+    pub(super) fn keep_pattern_as_phrase(&mut self) -> Vec<Effect> {
+        if !self.pattern.on_one_note() {
+            return Vec::new();
+        }
+        let base = self.pattern_name();
+        let names = self.phrases.iter().map(|(n, _)| n.as_str());
+        let name = if names.clone().any(|n| n.eq_ignore_ascii_case(&base)) {
+            free_name(&base, 2, names)
+        } else {
+            base.chars().take(mpfree_arp::library::MAX_NAME).collect()
+        };
+        let phrase = Phrase::from_pattern(
+            &self.pattern,
+            self.settings.rate,
+            4,
+            self.arp.gate,
+            PATTERN_VELOCITY,
+            60,
+        );
+        self.own_phrase(&name, phrase);
+        let mut fx = vec![
+            Effect::Phrases(self.phrase_list()),
+            Effect::Note(format!("arp-phrase-kept: {name} = {}", phrase.to_text())),
+            Effect::Note(format!(
+                "Keep as a phrase: {name} on one note, on the Phrase tab's Yours"
+            )),
+        ];
+        if self.pattern_file {
+            fx.extend(self.phrases_text().map(Effect::SavePhrases));
+        }
+        self.arp_dirty = true;
+        fx
+    }
+
     /// What the panel shows, while it is open ([`ArpView::maker`]).
     ///
     /// [`ArpView::maker`]: crate::app::ArpView::maker
@@ -881,6 +927,45 @@ mod tests {
         app.arp_action(ArpAction::Mode(Mode::Arp));
         app.arp_action(ArpAction::NewIdea);
         assert!(app.maker_view().is_none());
+    }
+
+    /// Keep as a phrase on the Pattern tab: Gallop on one note joins Yours
+    /// under its name (then "Gallop 2"), the pick stays, and a pattern
+    /// that needs a second held note is refused.
+    #[test]
+    fn keep_as_a_phrase_puts_a_pattern_on_one_note_on_yours() {
+        use mpfree_arp_ui::view::PatternButton;
+        let mut app = on_the_phrase_tab("Night drive");
+        let pick = app.phrase_index();
+        app.pattern_file = true;
+        app.arp_action(ArpAction::Mode(Mode::Pattern));
+        let at = |name: &str| {
+            crate::app::built_in_patterns()
+                .iter()
+                .position(|(n, _)| n == name)
+                .unwrap()
+        };
+        app.arp_action(ArpAction::Pattern(at("Gallop")));
+        let fx = app.arp_action(ArpAction::Button(PatternButton::KeepPhrase));
+        assert_eq!(app.phrases().len(), 65);
+        let (name, p) = &app.phrases()[64];
+        assert_eq!(name, "Gallop");
+        // x x . x at 1/16, repeated to a bar: three of every four 1/16s.
+        assert_eq!(p.notes().len(), 12);
+        assert!(p.notes().iter().all(|n| n.semis == 0));
+        assert_eq!(app.phrase_index(), pick, "the pick stays");
+        assert!(fx.contains(&Effect::Phrases(app.phrase_list())));
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::SavePhrases(t) if t.contains("Gallop ="))));
+        app.arp_action(ArpAction::Button(PatternButton::KeepPhrase));
+        assert_eq!(app.phrases()[65].0, "Gallop 2");
+        // Bounce picks the third held note: nothing.
+        app.arp_action(ArpAction::Pattern(at("Bounce")));
+        assert!(app
+            .arp_action(ArpAction::Button(PatternButton::KeepPhrase))
+            .is_empty());
+        assert_eq!(app.phrases().len(), 66);
     }
 
     /// More like this: the changes the phrase can take, Try again only

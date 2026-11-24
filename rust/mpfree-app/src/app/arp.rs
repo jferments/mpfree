@@ -677,6 +677,7 @@ impl App {
                 self.set_pattern(self.pattern.mutated(self.mutations, MUTATE_AMOUNT))
             }
             PatternButton::Original => self.load_pattern(self.pattern_index),
+            PatternButton::KeepPhrase => self.keep_pattern_as_phrase(),
         }
     }
 

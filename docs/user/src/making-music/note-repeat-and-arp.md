@@ -125,12 +125,13 @@ Each row has a picture of the pattern's first bar, so you can see its rhythm bef
 
 Every pattern plays the notes you hold, so it follows your chord. [Arp patterns](../reference/arp-patterns.md) lists all 74 and what each one plays.
 
-Under the list, four buttons work on the pattern:
+Under the list, five buttons work on the pattern:
 
 - **Edit pattern** opens the pattern workspace (below).
 - **Record on pads** opens the workspace and records a new pattern from the pads.
 - **Mutate** changes some of the pattern's steps at random. Press it again for more.
 - **Original** puts back the pattern as it was in the list.
+- **Keep as a phrase** puts the pattern, as it plays on one held note, on the Phrase tab's **Yours** under the pattern's name (Gallop, or Gallop 2 when you have one), with its rhythm, accents, octaves and gate. It is for a pattern that plays one note whatever you hold, such as Gallop (`x x . x`); one that picks your second or third note, or walks the scale, would become the same note over and over, so the button is faint there.
 
 ### Phrases
 
@@ -138,7 +139,7 @@ A **phrase** is a short piece of music, a bar or two long, that plays from the n
 
 {{shot: arp-phrase | The Phrase tab: the kinds of phrase on the left, the basses in the middle with Night drive picked, and on the right its notes over two bars with a line where it is playing, what it follows, and the four Q-Link settings.}}
 
-MPFree comes with 64 phrases of its own, 16 of each kind: **Bass**, **Riff**, **Chords** and **Arp lines**. **Yours** is for phrases of your own: the ones you make with **New idea** and **More like this** (below) go there.
+MPFree comes with 64 phrases of its own, 16 of each kind: **Bass**, **Riff**, **Chords** and **Arp lines**. **Yours** is for phrases of your own: the ones you make with **New idea** and **More like this** (below), and patterns you keep with **Keep as a phrase** on the Pattern tab, go there.
 
 1. Open the Arp panel on a synth track and tap **Phrase**.
 2. Tap a kind on the left, then a phrase in the list, or turn the data wheel.

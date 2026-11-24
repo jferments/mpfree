@@ -1129,6 +1129,10 @@ pub struct ButtonRow {
     pub buttons: Vec<Button>,
     /// Buttons on each line.
     pub per_line: usize,
+    /// Buttons on each line, line by line, where lines differ (the Pattern
+    /// tab's two, then three); empty for [`ButtonRow::per_line`] on every
+    /// line.
+    pub lines: Vec<usize>,
 }
 
 const BUTTON_H: i32 = 44;
@@ -1145,6 +1149,7 @@ impl ButtonRow {
                 })
                 .collect(),
             per_line: 2,
+            lines: Vec::new(),
         }
     }
 
@@ -1156,13 +1161,32 @@ impl ButtonRow {
         }
     }
 
-    /// Buttons share each line equally, [`ButtonRow::per_line`] to a line.
+    /// Buttons share each line equally, [`ButtonRow::per_line`] to a line
+    /// (or as many as [`ButtonRow::lines`] gives that line).
     pub fn button_rect(&self, r: Rect, i: usize) -> Rect {
         let inner = r.inset(12);
-        let per_line = self.per_line.max(1) as i32;
+        let (mut line, mut col, mut per_line) = (0, i, self.per_line.max(1));
+        for &n in &self.lines {
+            let n = n.max(1);
+            if col < n {
+                per_line = n;
+                break;
+            }
+            col -= n;
+            line += 1;
+        }
+        if !self.lines.is_empty() && line == self.lines.len() {
+            // Past the lines given: the uniform lines after them.
+            let per = self.per_line.max(1);
+            line += col / per;
+            col %= per;
+        } else if self.lines.is_empty() {
+            line = i / per_line;
+            col = i % per_line;
+        }
+        let (per_line, line, col) = (per_line as i32, line as i32, col as i32);
         let gap = 10;
         let w = (inner.w - gap * (per_line - 1)) / per_line;
-        let (line, col) = ((i as i32) / per_line, (i as i32) % per_line);
         Rect::new(
             inner.x + col * (w + gap),
             inner.y + line * (BUTTON_H + gap),

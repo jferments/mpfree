@@ -132,12 +132,16 @@ pub const PHRASE_QLINK_LABELS: [&str; 4] =
 pub const SWING_TRIPLETS: &str = "Swing · Q3 · triplets";
 pub const STRAIGHT: &str = "straight";
 /// The pattern buttons, in [`PatternButton`] order.
-pub const PATTERN_BUTTONS: [(&str, Tone); 4] = [
+pub const PATTERN_BUTTONS: [(&str, Tone); 5] = [
     ("Edit pattern", Tone::Accent),
     ("Record on pads", Tone::Bad),
     ("Mutate", Tone::Normal),
     ("Original", Tone::Normal),
+    ("Keep as a phrase", Tone::Normal),
 ];
+/// The pattern buttons' lines: Edit pattern and Record on pads, then
+/// Mutate, Original and Keep as a phrase (the owner's board G).
+pub const PATTERN_BUTTON_LINES: [usize; 2] = [2, 3];
 /// The most cells the step strip shows at once.
 pub const STRIP_CELLS: usize = 16;
 
@@ -349,6 +353,9 @@ pub enum PatternButton {
     Record,
     Mutate,
     Original,
+    /// The pattern on one held note joins the Phrase tab's Yours
+    /// (answers only for a pattern on one note: `Pattern::on_one_note`).
+    KeepPhrase,
 }
 
 /// A pad or MIDI note as the screen names it: pads by number (slot 0 is
@@ -841,7 +848,13 @@ impl ArpPanel {
         ui.add(LIST, ListView::new("Order · Wheel"));
         ui.add(PATTERNS, PatternList::default());
         ui.add(QLINKS, SliderStack::new("Q-Links 1–4", &QLINK_LABELS));
-        ui.add(ACTIONS, ButtonRow::new(&PATTERN_BUTTONS));
+        ui.add(
+            ACTIONS,
+            ButtonRow {
+                lines: PATTERN_BUTTON_LINES.to_vec(),
+                ..ButtonRow::new(&PATTERN_BUTTONS)
+            },
+        );
         ui.add(STEPS, StepStrip::new(8));
         ui.add(MINI, MiniBar::default());
         ui.add(MODBOX, ModBox::default());
@@ -987,6 +1000,10 @@ impl ArpPanel {
                 disabled: !st.pattern_changed,
                 ..b.buttons[3].clone()
             };
+            b.buttons[4] = Button {
+                disabled: !st.pattern.on_one_note(),
+                ..b.buttons[4].clone()
+            };
         }
         let (cells, first, playing) = if s.mode == Mode::Pattern {
             pattern_cells(st)
@@ -1097,6 +1114,7 @@ impl ArpPanel {
                 PatternButton::Record,
                 PatternButton::Mutate,
                 PatternButton::Original,
+                PatternButton::KeepPhrase,
             ]
             .get(*i)
             .map(|b| ArpAction::Button(*b)),
