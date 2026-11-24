@@ -1295,6 +1295,7 @@ pub fn clips_audio_state() -> Result<TimeState, String> {
                 missing: None,
                 ring: None,
             }),
+            loop_id: None,
         }
     };
     // A cell: its name, bars, wave seed and shape.

@@ -489,6 +489,15 @@ impl Apart {
             (!lines.is_empty()).then_some(Told::Notes(lines))
         }));
     }
+
+    /// [`Apart::loops_are`] with each loop's lasting id
+    /// ([`TimeControl::loops_are_on`]).
+    pub fn loops_are_on(&mut self, now: [LoopNow; LOOPS], ids: [u128; LOOPS]) {
+        self.ask(Box::new(move |c| {
+            let lines = c.loops_are_on(&now, &ids);
+            (!lines.is_empty()).then_some(Told::Notes(lines))
+        }));
+    }
 }
 
 impl Drop for Apart {

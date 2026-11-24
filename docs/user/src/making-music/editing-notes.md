@@ -1,12 +1,12 @@
 <!--
 status: changing
 covers: rust/mpfree-time-ui/src/editor.rs rust/mpfree-time-ui/src/editor/zoom.rs rust/mpfree-time-ui/src/editor/gesture.rs rust/mpfree-seq/src/notes.rs rust/mpfree-seq/src/save.rs rust/mpfree-app/src/time.rs rust/mpfree-app/src/hearing.rs
-checked: 2026-11-22 75ce108d
+checked: 2026-11-23 f3a60843
 -->
 
-# Editing notes
+# Editing notes in the piano roll
 
-The note editor shows a clip's notes so you can fix what you played: pull notes into time, move them, change how hard they hit, draw new ones and erase others. It is the **Sequencer** tab's **Notes** view: tap **Notes** at the right end of the Sequencer's transport bar, or **Edit ›** over the clip grid on Arrange, which takes you there. It opens the clip the Sequencer's Steps show, which is the armed track's playing clip, or its first clip.
+The note editor is MPFree's piano roll. It shows a clip's notes so you can fix what you played: pull notes into time, move them, change how hard they hit, draw new ones and erase others. It is the **Sequencer** tab's **Notes** view: tap **Notes** at the right end of the Sequencer's transport bar, or **Edit ›** over the clip grid on Arrange, which takes you there. It opens the clip the Sequencer's Steps show, which is the armed track's playing clip, or its first clip.
 
 {{shot: sequencer-notes | The note editor's piano roll across the screen, the overview strip over it. Two long melody notes show the pressure they were played with.}}
 
@@ -23,26 +23,63 @@ The Notes view has the Arrange tab's transport bar along the top (**Stop**, **Pl
 | **Delete** | Takes the picked notes out (in Perform, hold it). |
 | **Edit** | Opens the drawer with the Edit options (Timing Correct and more) and the clip's Takes; lit while it shows. Tap it again to close it. |
 
+## Your first edit
+
+A quick tour, on a clip of a synth track with a few notes in it (record a bass line, or tap one in on Steps):
+
+1. Open the **Sequencer** tab and tap **Notes**. The clip's notes fill the roll.
+2. Tap **Draw** so it lights, then tap an empty spot: a note goes in, one snap long. Tap it again and it comes out.
+3. Tap **Draw** again to turn it off. Drag across an empty spot to draw a box round a few notes: they are picked.
+4. Turn **Q-Link 4** to make the picked notes softer or louder, or drag one of them up a few rows: the others move with it.
+5. Draw a rising line along the velocity lane under the roll, from left to right: a crescendo in one stroke.
+6. Press **UNDO** to take the last change back, and **SHIFT + UNDO** to put it back.
+7. Tap **‹ Steps**, or press **STEP SEQ**, to go back to the steps.
+
+The sections below go through each of these, and everything else the roll does.
+
 ## The piano roll
 
 The notes are bars on a piano roll: higher notes higher up, time running left to right, longer notes longer. A drum clip shows a row for each of the kit's pads instead of keys (see [Drum clips](#drum-clips)); a clip of notes on a synth track shows the keys even while it is empty. Under the roll, a lane shows how hard each note plays, how likely it is to play, how many times it repeats, or the picked notes' pressure (see [The lane under the roll](#the-lane-under-the-roll)). A note played with [pad pressure](clips.md#pad-pressure) shows it as a lighter shape along its bottom: it rises where you pressed harder and falls where you let up.
 
 Notes are drawn as they will play. A note whose step is off (tapped off on Steps) is only an outline: it keeps its place and settings and plays nothing. A note that repeats (a ratchet) shows each hit, lighter or darker as its velocity ramps, and each hit shows in the velocity lane too. A tied note has a short level mark just before it, and a sliding note a short slanting one.
 
+### Draw notes
+
 - **Draw on: tap a beat in.** With **Draw** lit, the roll works like the Steps view. Tap an empty spot to put a note there, one snap long and as loud as the last note you used. Tap a short note (a step long or less) to take it out again. A longer note is picked instead, so a quick tap never loses a long note. Drag along an empty row to draw a note as long as your drag. Hold a note for a moment to pick it without taking it out.
-- **Draw off: pick and change.** Tap a note to pick it, just that one. A tap just beside a note, in its row, picks it too, so you don't have to hit a short note exactly. Tap an empty spot to let the picks go, or tap it twice quickly to put a note there.
+- **Nothing happens until you lift.** A finger on a note is a tap when it lifts, a hold once it has stayed still for 0.4 seconds, or a drag once it moves about 3 mm. Nothing goes in or comes out before your finger lifts.
+- With **Draw** off, tap an empty spot twice quickly to put a note there. A [scale](#scale) on the clip puts new notes in key, and the **Chord** chip draws whole [chords](#chords).
+
+### Pick notes
+
+Picked notes are the ones the Q-Links, **Duplicate**, **Delete** and a drag act on. They are lit, and the top of the Q-Link column says how many there are.
+
+- **Draw off: pick and change.** Tap a note to pick it, just that one. A tap just beside a note, in its row, picks it too, so you don't have to hit a short note exactly. Tap an empty spot to let the picks go.
 - **Pick a group.** With Draw off, drag across an empty spot to draw a box: when you lift, every note sounding inside it is picked instead of the ones before. Or hold one note (with Draw on or off) and, still holding it, tap other notes: each tap adds a note to the picks, or takes it out if it was picked, as holding steps does on the step pads.
 - **The Select menu.** Tap **Select** for a menu over the roll. **All** picks every note, **None** lets them go, and **Invert** picks the notes that weren't picked instead of the ones that were. **Fit to picked** zooms the roll to the picked notes. The rest pick from the whole clip: **Same pitch** (every note at the pitch of the picked ones, or of the sound you last worked on), **Pitch range** (every note from the lowest picked note to the highest), **Time range** (every note starting from the first picked note to the end of the last; for both ranges, pick a few notes first), **Quiet notes** and **Loud notes** (softer, or harder, than halfway between the clip's softest and loudest), **With a condition**, **With repeats** (a ratchet), **Overlapping** (notes that sound over another note of the same pitch) and **Off the scale** (notes off the clip's scale, see [Scale](#scale)). Tap anywhere else to close the menu.
 - **Add to pick.** In the Select menu, **Add to pick** is a switch: while it is on, it and **Select** stay lit. Then a tap on a note adds it to the picks or takes it out (with Draw on, a short note still comes out), a box adds the notes in it, and the menu's choices add to the picks you have, so you can gather notes of several kinds: **Same pitch**, then a box somewhere else. Tap it again to turn it off. **All**, **None** and **Invert** always replace the picks.
-- **Nothing happens until you lift.** A finger on a note is a tap when it lifts, a hold once it has stayed still for 0.4 seconds, or a drag once it moves about 3 mm. Nothing goes in or comes out before your finger lifts.
-- **Erase.** Hold **ERASE** and tap a note to take it out, with Draw on or off. To take out several, hold **ERASE** and drag across them: each note your finger passes over is marked, with a count above your finger, and they all come out when you lift it, so one **UNDO** brings them all back. Drag along a row of hi-hats to clear it, or zigzag over a messy fill. A second finger on the roll calls it off.
-- **Copy and paste.** Hold **COPY** and tap a note: the picked notes are copied, or just that note if it isn't picked. Then hold **COPY** again and tap an empty spot, in this clip or in another track's clip: the copy goes in starting where you tap, each note keeping its pitch and its place after the first. The notes bring their pad pressure and their locks. A lock on the instrument comes into another track's clip when that track plays the same kind of instrument the lock was made for, so it turns the same control there; a clip's instrument locks are all for one instrument, so it doesn't come into a clip whose instrument locks are for another. A lock on a kit pad, an insert or MIDI out comes only into another clip of the same track, since another track may play another kit or send to other gear. The hint line says how many locks were left out and what they were on, and for instrument locks which instrument they were made for ("made for Poly, Lead plays FM"). Pad hits paste only into a clip of pad hits, and notes into a clip of notes. A chord whose notes play together or not at all (a chord pad's) stays one when you copy all of it, and stays apart from a chord already where it lands; copy only some of its notes and each of them rolls its own chance. The pasted notes are picked, and one **UNDO** takes the paste back. The copy stays until you copy again, so you can paste it as many times as you like. In the tracker, tap an empty line to paste there.
+
+### Move and stretch
+
 - **Move them.** Drag a note to move it, along time and up or down in pitch. If it is picked, every picked note moves with it; if not, it moves on its own and is picked after. With **Auto** snap a move goes by whole grid steps and each note keeps its feel: a note played a little late stays a little late. With a fixed snap, the note you drag lands on a line. While you drag, the notes show where they will land, an outline shows where they were, and a box above your finger says where the note you hold lands ("2.3.000 · D3").
 - **Change their length.** A picked note has a handle at each end, just outside it; on a note too short to grab, the two handles hang just under it. Drag the right handle to change where the picked notes end, or the left one to change where they start (their ends stay put). The box above your finger shows the new length or start, and it all goes in when you lift. Handles show while up to 64 picked notes are on the screen; for more, use the **Length** option.
 - **Velocity, chance and repeats.** Draw along the lane under the roll: each note you pass takes the height under your finger (see below).
 - **One finger edits, two move the view.** A drag belongs to the finger that started it. If a second finger touches the roll while you drag, the drag stops, the notes stay where they were, and the two fingers zoom and scroll instead (see below).
-- **Duplicate** copies the picked notes to just after them. **Delete** takes them out (in Perform, hold it for half a second).
-- **Grid, List, Tracker.** The second button says which view is showing (**Grid** to begin with) and switches to the next. **List** shows the notes as a list, one row per note, with its position, note, velocity, length and chance. An off note's row is faint and its note says "off"; a tied or sliding note's says "tie" or "slide". **Tracker** shows every step, described below.
+
+### Erase notes
+
+Hold **ERASE** and tap a note to take it out, with Draw on or off. To take out several, hold **ERASE** and drag across them: each note your finger passes over is marked, with a count above your finger, and they all come out when you lift it, so one **UNDO** brings them all back. Drag along a row of hi-hats to clear it, or zigzag over a messy fill. A second finger on the roll calls it off.
+
+**Delete** under the roll takes the picked notes out (in Perform, hold it for half a second).
+
+### Copy and paste
+
+Hold **COPY** and tap a note: the picked notes are copied, or just that note if it isn't picked. Then hold **COPY** again and tap an empty spot, in this clip or in another track's clip: the copy goes in starting where you tap, each note keeping its pitch and its place after the first. The notes bring their pad pressure and their locks. A lock on the instrument comes into another track's clip when that track plays the same kind of instrument the lock was made for, so it turns the same control there; a clip's instrument locks are all for one instrument, so it doesn't come into a clip whose instrument locks are for another. A lock on a kit pad, an insert or MIDI out comes only into another clip of the same track, since another track may play another kit or send to other gear. The hint line says how many locks were left out and what they were on, and for instrument locks which instrument they were made for ("made for Poly, Lead plays FM"). Pad hits paste only into a clip of pad hits, and notes into a clip of notes. A chord whose notes play together or not at all (a chord pad's) stays one when you copy all of it, and stays apart from a chord already where it lands; copy only some of its notes and each of them rolls its own chance. The pasted notes are picked, and one **UNDO** takes the paste back. The copy stays until you copy again, so you can paste it as many times as you like. In the tracker, tap an empty line to paste there.
+
+**Duplicate** under the roll copies the picked notes to just after them.
+
+### Grid, list and tracker
+
+The second button says which view is showing (**Grid** to begin with) and switches to the next. **List** shows the notes as a list, one row per note, with its position, note, velocity, length and chance. An off note's row is faint and its note says "off"; a tied or sliding note's says "tie" or "slide". **Tracker** shows every step, described below.
 
 {{shot: sequencer-notes-list | The same notes as a list, the picked ones lit.}}
 
@@ -110,7 +147,7 @@ With the drawer open, the wheel, – and + work the Edit options as before.
 
 ### Hold a note and turn the wheel
 
-Rest a finger on a note and turn the data wheel: the note gets louder or softer, one step of velocity a click, and the hint line shows the velocity it has now. **–** and **+** step it the same way while your finger is there, and pushing the wheel does nothing, so a slip of the thumb changes nothing. This works with the drawer open or closed and with Draw on or off, but not while **ERASE** is held.
+Rest a finger on a note and turn the data wheel: the note gets louder or softer, one step of velocity a click, and the hint line shows the velocity it has now. **–** and **+** step it the same way while your finger is there, and pushing the wheel does nothing, so a slip of the thumb changes nothing. **SHIFT + push** puts its velocity back to 100, the velocity a note you draw gets (the picked notes' too, when the note is one of them), and one **UNDO** takes back everything that hold did. This works with the drawer open or closed and with Draw on or off, but not while **ERASE** is held.
 
 - **A picked note** turns with all the picks, as **Q4** turns them: each keeps its difference from the others. Hold **SHIFT** as you turn to widen or narrow the gap between the softest and the loudest instead.
 - **A note that isn't picked** is picked on its own as you start turning (or added to the picks, with **Add to pick** on).
@@ -278,6 +315,7 @@ The very last row, **Continue**, carries the clip on: it listens to your bars (a
 An empty clip shows a card on the roll: play it in, double tap to draw a note, or tap **Add a part ›**. That opens the Arrange tab with Add a part's panel on this clip's row and track, so the new part plays with what the row already has (see [Adding a part to a row](arranging.md#adding-a-part-to-a-row)). Its **Bars** starts at the clip's length. **Keep** puts the part in the empty clip's place, and **UNDO** brings the empty clip back. Once the clip has notes the card goes, and Continue is what the editor offers.
 
 {{shot: sequencer-empty-clip | An empty two-bar Bass clip on row 5: the card says the row's Break, Ride and Solo are there, with Add a part ›, which opens on Arrange.}}
+### Undo, and when the clip changes
 
 Every edit is a take, so **UNDO** takes it back and **SHIFT + UNDO** puts it back again.
 

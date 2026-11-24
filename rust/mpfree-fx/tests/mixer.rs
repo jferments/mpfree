@@ -667,6 +667,230 @@ fn capture_points_take_what_they_say() {
     assert_eq!(m.capture_latency(3), Some(m.latency()));
 }
 
+/// Plays tracks 0 to 2 (track 1 behind a look-ahead insert, so the others
+/// wait for it) into the master, track 0 moving to a submix and back on
+/// the way, with capture 0 at `from` (None: the master's way in too) and
+/// capture 1 at the master's way in. `quiet` leaves track 1 silent.
+fn three_tracks(from: Option<CaptureFrom>, quiet: bool, n: usize) -> Run {
+    let mut m = mixer(small());
+    m.chain_mut(StripId::Track(1)).unwrap().push(Lag::boxed(37));
+    m.set_now(StripId::Track(1), mx::VOLUME, -4.0);
+    m.set_now(StripId::Track(2), mx::PAN, 60.0);
+    m.set_now(StripId::Bus(0), mx::VOLUME, -2.0);
+    let master_in = (StripId::Master, CapturePoint::BeforeInserts);
+    match from {
+        Some(_) => assert!(m.set_capture_from(0, from)),
+        None => assert!(m.set_capture(0, Some(master_in))),
+    }
+    assert!(m.set_capture(1, Some(master_in)));
+    let a = mono(sine(220.0, 0.3, n));
+    let b = (sine(330.0, 0.3, n), sine(440.0, 0.2, n));
+    let c = mono(sine(550.0, 0.2, n));
+    let b = if quiet {
+        (vec![0.0; n], vec![0.0; n])
+    } else {
+        b
+    };
+    let s = Script {
+        feeds: vec![
+            (StripId::Track(0), a),
+            (StripId::Track(1), b),
+            (StripId::Track(2), c),
+        ],
+        events: vec![
+            (2000, StripId::Track(0), mx::OUTPUT, output::bus(0)),
+            (5000, StripId::Track(0), mx::OUTPUT, output::MASTER),
+        ],
+        caps: vec![0, 1],
+        ..Default::default()
+    };
+    play(&mut m, &s, n, &mut blocks(100))
+}
+
+#[test]
+fn the_master_without_a_track_is_a_second_sum_not_a_subtraction() {
+    let n = 8000;
+    let mut m = mixer(small());
+    let from = m
+        .capture_for(
+            (StripId::Master, CapturePoint::BeforeInserts),
+            StripId::Track(1),
+        )
+        .unwrap();
+    assert_eq!(from.without, Some(StripId::Track(1)));
+    let got = three_tracks(Some(from), false, n);
+    let want = three_tracks(None, true, n);
+    // To the sample, through the submix and the glides: the same sum the
+    // master makes when track 1 is silent.
+    close("master without track 1", &got.caps[0], &want.caps[1], 0.0);
+    // The master itself still hears track 1 (0.3 at -4 dB, after the
+    // first glide), and nothing else changed.
+    let track1: Vec<f32> = (got.caps[1].0.iter().zip(&got.caps[0].0))
+        .map(|(a, b)| a - b)
+        .collect();
+    assert!((rms(&track1[1000..]) - 0.3 * db_to_gain(-4.0) / 2f32.sqrt()).abs() < 0.01);
+    let plain = three_tracks(None, false, n);
+    close("the master is as it was", &got.out, &plain.out, 0.0);
+    close("its way in too", &got.caps[1], &plain.caps[1], 0.0);
+    assert_eq!(m.capture_latency(0), None);
+    m.chain_mut(StripId::Track(1)).unwrap().push(Lag::boxed(37));
+    assert!(m.set_capture_from(0, Some(from)));
+    assert!(m.set_capture(1, Some((StripId::Master, CapturePoint::BeforeInserts))));
+    let (mut l, mut r) = (vec![0.0; 64], vec![0.0; 64]);
+    m.process(&Ctx::new(RATE, 0), &mut l, &mut r);
+    assert_eq!(m.capture_latency(0), Some(37));
+    assert_eq!(m.capture_latency(0), m.capture_latency(1));
+    // Pointed plainly again, the capture is the whole way in.
+    assert!(m.set_capture(0, Some((StripId::Master, CapturePoint::BeforeInserts))));
+    let r = play(
+        &mut m,
+        &Script {
+            feeds: vec![(StripId::Track(1), mono(sine(330.0, 0.3, 2000)))],
+            caps: vec![0, 1],
+            ..Default::default()
+        },
+        2000,
+        &mut blocks(128),
+    );
+    close("plain again", &r.caps[0], &r.caps[1], 0.0);
+    assert!(peak(&r.caps[0].0) > 0.2);
+}
+
+#[test]
+fn capture_for_answers_on_the_graph() {
+    use CaptureRefusal as No;
+    let mut m = mixer(small());
+    let t = StripId::Track(1);
+    let master_in = (StripId::Master, CapturePoint::BeforeInserts);
+    let plain = |strip, point| CaptureFrom {
+        strip,
+        point,
+        without: None,
+    };
+    // Straight into the master: the master's way in without it.
+    assert_eq!(
+        m.capture_for(master_in, t),
+        Ok(CaptureFrom {
+            without: Some(t),
+            ..plain(StripId::Master, CapturePoint::BeforeInserts)
+        })
+    );
+    for p in [
+        CapturePoint::BeforeFader,
+        CapturePoint::AfterFader,
+        CapturePoint::AfterSafety,
+    ] {
+        assert_eq!(
+            m.capture_for((StripId::Master, p), t),
+            Err(No::PastItsWayIn)
+        );
+    }
+    // Another track, a submix it doesn't reach: as they are.
+    let other = (StripId::Track(0), CapturePoint::AfterFader);
+    assert_eq!(m.capture_for(other, t), Ok(plain(other.0, other.1)));
+    let bus = (StripId::Bus(0), CapturePoint::BeforeInserts);
+    assert_eq!(m.capture_for(bus, t), Ok(plain(bus.0, bus.1)));
+    assert_eq!(
+        m.capture_for((t, CapturePoint::BeforeInserts), t),
+        Err(No::Itself)
+    );
+    assert_eq!(
+        m.capture_for((StripId::Track(9), CapturePoint::AfterFader), t),
+        Err(No::NotInMix)
+    );
+    assert_eq!(m.capture_for(master_in, StripId::Bus(9)), Err(No::NotInMix));
+    assert_eq!(
+        m.capture_for((StripId::Track(0), CapturePoint::AfterSafety), t),
+        Err(No::NotInMix)
+    );
+    // Into submix 1, and on to submix 3 and the master.
+    m.set_now(t, mx::OUTPUT, output::bus(0));
+    m.set_now(StripId::Bus(0), mx::OUTPUT, output::bus(2));
+    assert_eq!(
+        m.capture_for(master_in, t),
+        Err(No::Through(StripId::Bus(0)))
+    );
+    let bus3 = (StripId::Bus(2), CapturePoint::BeforeInserts);
+    assert_eq!(m.capture_for(bus3, t), Err(No::Through(StripId::Bus(0))));
+    assert_eq!(
+        m.capture_for(bus, t),
+        Ok(CaptureFrom {
+            without: Some(t),
+            ..plain(bus.0, bus.1)
+        })
+    );
+    assert_eq!(
+        m.capture_for((StripId::Bus(0), CapturePoint::AfterFader), t),
+        Err(No::PastItsWayIn)
+    );
+    // Back on the master with a send to Return B: its echoes would be in.
+    m.set_now(t, mx::OUTPUT, output::MASTER);
+    m.set_now(t, mx::send(1), -12.0);
+    assert_eq!(m.capture_for(master_in, t), Err(No::Sends(1)));
+    assert_eq!(
+        m.capture_for((StripId::Return(1), CapturePoint::BeforeInserts), t),
+        Err(No::Sends(1))
+    );
+    // A submix the send doesn't reach is fine; the send down, all is.
+    assert_eq!(m.capture_for(bus, t), Ok(plain(bus.0, bus.1)));
+    m.set_now(t, mx::send(1), SILENT_DB);
+    assert!(m.capture_for(master_in, t).is_ok());
+    // A submix that sends: through it, to the master.
+    m.set_now(t, mx::OUTPUT, output::bus(0));
+    m.set_now(StripId::Bus(0), mx::OUTPUT, output::MASTER);
+    m.set_now(StripId::Bus(0), mx::send(0), 0.0);
+    assert_eq!(
+        m.capture_for(master_in, t),
+        Err(No::Through(StripId::Bus(0)))
+    );
+    // Going nowhere: nothing to leave out.
+    m.set_now(t, mx::OUTPUT, output::NONE);
+    assert_eq!(
+        m.capture_for(master_in, t),
+        Ok(plain(master_in.0, master_in.1))
+    );
+    // Every answer is one the mixer takes; what it can't leave out, it
+    // refuses.
+    assert!(m.set_capture_from(0, Some(m.capture_for(bus, t).unwrap())));
+    let bad = |strip, point, without| CaptureFrom {
+        strip,
+        point,
+        without: Some(without),
+    };
+    assert!(!m.set_capture_from(
+        0,
+        Some(bad(StripId::Track(0), CapturePoint::BeforeInserts, t))
+    ));
+    assert!(!m.set_capture_from(0, Some(bad(StripId::Master, CapturePoint::BeforeFader, t))));
+    assert!(!m.set_capture_from(
+        0,
+        Some(bad(
+            StripId::Master,
+            CapturePoint::BeforeInserts,
+            StripId::Master
+        ))
+    ));
+    assert!(!m.set_capture_from(
+        0,
+        Some(bad(
+            StripId::Master,
+            CapturePoint::BeforeInserts,
+            StripId::Track(9)
+        ))
+    ));
+    assert!(m.set_capture_from(0, None));
+    assert!(m.capture(0).is_none());
+    for no in [
+        No::NotInMix,
+        No::Itself,
+        No::PastItsWayIn,
+        No::Through(StripId::Bus(0)),
+        No::Sends(0),
+    ] {
+        assert!(!no.text().is_empty());
+    }
+}
+
 #[test]
 fn inputs_follow_their_source_and_monitoring() {
     let n = 9600;

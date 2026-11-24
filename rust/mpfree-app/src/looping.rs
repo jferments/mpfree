@@ -272,7 +272,7 @@ pub const PADS_ON_MIDI_OUT: &str = "the pads play MIDI out, which sounds outside
 
 /// What a take records from, in words for the log: the source and, for the
 /// pads, their instrument.
-fn source_words(s: LoopSource, pads: Option<Instrument>) -> String {
+pub(crate) fn source_words(s: LoopSource, pads: Option<Instrument>) -> String {
     match (s, pads) {
         (LoopSource::Pads, Some(Instrument::MidiOut)) => format!("silence ({PADS_ON_MIDI_OUT})"),
         (LoopSource::Pads, Some(i)) => format!("the pads ({})", i.name()),
@@ -280,6 +280,24 @@ fn source_words(s: LoopSource, pads: Option<Instrument>) -> String {
         (LoopSource::Line, _) => "the line input".to_string(),
         (LoopSource::Mix(mpfree_fx::StripId::Master), _) => "the master".to_string(),
         (LoopSource::Mix(m), _) => crate::mixing::name(m),
+        (LoopSource::Track(t), _) => match t.from {
+            TrackFrom::Line(i) => {
+                format!("the track's input, {}", crate::audiotracks::input_words(i))
+            }
+            TrackFrom::Mix(m, p) => format!(
+                "the track's input, {} {} its effects",
+                if m == mpfree_fx::StripId::Master {
+                    "the master".to_string()
+                } else {
+                    crate::mixing::name(m)
+                },
+                if p == mpfree_fx::CapturePoint::BeforeInserts {
+                    "before"
+                } else {
+                    "after"
+                }
+            ),
+        },
     }
 }
 
@@ -302,6 +320,57 @@ pub enum LoopSource {
     /// submix, after its fader ([`crate::mixing::MixHost::loop_take`]).
     /// Heard in time, like the pads; never the Loop track itself.
     Mix(mpfree_fx::StripId),
+    /// An audio track's own input, for a loop recorded into one of its
+    /// cells (audio tracks phase 4b, behind Dev's switch): what a take on
+    /// the track would record. Set by arming the cell, never saved.
+    Track(TrackInput),
+}
+
+/// What a loop recorded into an audio track's cell records (audio tracks
+/// phase 4b, [`LoopSource::Track`]): the track's own input, as its panel
+/// sets it, and the track's own channel, which is never in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TrackInput {
+    /// The track's own channel strip (`MixHost::track_channel`).
+    pub channel: mpfree_fx::StripId,
+    pub from: TrackFrom,
+}
+
+/// Where an audio track records from, for a loop in its cell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrackFrom {
+    /// The line input as the track picks it; a mono pick (left, right or
+    /// both summed, as the track's take sums them) fills both sides of
+    /// the loop.
+    Line(mpfree_audiotracks::Input),
+    /// Inside the mix: a strip at a point, before its effects or after
+    /// them and before its fader, as the track's take has it
+    /// (`MixHost::audio_take`), where the mixer says a recording into the
+    /// track takes it (`MixHost::track_loop_take`, `Mixer::capture_for`).
+    Mix(mpfree_fx::StripId, mpfree_fx::CapturePoint),
+}
+
+/// The line input as `pick` takes it, into `left` and `right`: the take's
+/// own sum for Sum (half of each), one jack on both sides for Left and
+/// Right, both as they are for Stereo.
+fn pick_line(
+    pick: mpfree_audiotracks::Input,
+    (l, r): (&[f32; PERIOD], &[f32; PERIOD]),
+    left: &mut [f32; PERIOD],
+    right: &mut [f32; PERIOD],
+) {
+    use mpfree_audiotracks::Input;
+    for f in 0..PERIOD {
+        (left[f], right[f]) = match pick {
+            Input::Left => (l[f], l[f]),
+            Input::Right => (r[f], r[f]),
+            Input::Stereo => (l[f], r[f]),
+            Input::Sum => {
+                let v = 0.5 * (l[f] + r[f]);
+                (v, v)
+            }
+        };
+    }
 }
 
 impl LoopSource {
@@ -314,6 +383,7 @@ impl LoopSource {
             LoopSource::Pads => "Pads",
             LoopSource::Line => "Line input",
             LoopSource::Mix(_) => "A mix (Looper tab)",
+            LoopSource::Track(_) => "An audio track's input",
         }
     }
 
@@ -321,7 +391,19 @@ impl LoopSource {
     /// time with the transport but for the mix's own latency, which the
     /// host makes up: not the line input.
     pub fn inside(self) -> bool {
-        !matches!(self, LoopSource::Line)
+        !self.line()
+    }
+
+    /// Whether it is the line input: Line, or an audio track's line pick.
+    pub fn line(self) -> bool {
+        matches!(
+            self,
+            LoopSource::Line
+                | LoopSource::Track(TrackInput {
+                    from: TrackFrom::Line(_),
+                    ..
+                })
+        )
     }
 }
 
@@ -1323,6 +1405,10 @@ pub struct LooperView {
     /// The pattern's length in bars as last told
     /// ([`LoopHost::set_pattern_bars`]); None: no pattern plays.
     pub pattern_bars: Option<u32>,
+    /// Loops on audio tracks: each slot's loop's lasting id (0: none
+    /// yet), so the grid's loop cells find their loops
+    /// ([`LoopHost::loop_ids`]).
+    pub ids: [u128; MAX_LOOPS],
 }
 
 impl Default for LooperView {
@@ -1356,6 +1442,7 @@ impl Default for LooperView {
             free_tempo: false,
             match_pattern: false,
             pattern_bars: None,
+            ids: [0; MAX_LOOPS],
             listening: None,
         }
     }
@@ -1391,6 +1478,9 @@ pub struct LoopHost {
     pads: Option<Instrument>,
     /// What the pads play now ([`LoopHost::follow_pads`]).
     pads_now: Option<Instrument>,
+    /// Where it sounds in the mixer ([`LoopHost::set_pads_strip`]), for an
+    /// audio track's input list's Pads (phase 4, board 4).
+    pads_strip: Option<mpfree_fx::StripId>,
     /// The source a take held back, as the log was told (once).
     held_said: Option<(LoopSource, Option<Instrument>)>,
     /// Takes that recorded silence for a while: their source was lost
@@ -1544,6 +1634,9 @@ pub struct LoopHost {
     heard_peaks: Vec<f32>,
     /// A bar's ticks as the last period played.
     bar_ticks: Tick,
+    /// Loops on audio tracks (phase 4b, behind Dev's switch): each slot's
+    /// loop's lasting id, and which are on tracks.
+    pub on_tracks: crate::loops_on_tracks::OnTracks,
 }
 
 /// A whole loop copying into an empty one, a layer at a time
@@ -1989,6 +2082,7 @@ impl LoopHost {
             pads_dry: None,
             pads: None,
             pads_now: None,
+            pads_strip: None,
             held_said: None,
             dropouts: 0,
             latency_set: 0,
@@ -2046,6 +2140,7 @@ impl LoopHost {
             picked: 0,
             copy: None,
             copy_end: None,
+            on_tracks: Default::default(),
             heard_peaks: vec![
                 0.0;
                 if seconds > 0 {
@@ -2139,6 +2234,7 @@ impl LoopHost {
         self.steps_left = 0;
         self.clear_next = true;
         self.emptying = true;
+        self.on_tracks.forget();
         self.tend_open();
         "looper: every loop fades out for the project".into()
     }
@@ -2206,9 +2302,11 @@ impl LoopHost {
         let (mut done, mut kept, mut free, mut unclocked) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (n, f) in saved.loops {
+            let id = f.id;
             let on_free = f.clock == Clock::Free;
             match self.looper.load(n, f) {
                 Ok(()) => {
+                    self.on_tracks.set(n, id);
                     done.push((n + 1).to_string());
                     if on_free {
                         free.push((n + 1).to_string());
@@ -2290,7 +2388,12 @@ impl LoopHost {
                         rate: self.rate,
                         selected: self.looper.selected(),
                         loops: (0..MAX_LOOPS)
-                            .filter_map(|n| self.looper.loop_file(n).map(|f| (n, f)))
+                            .filter_map(|n| {
+                                let mut f = self.looper.loop_file(n)?;
+                                // Its lasting id, if it has one (phase 4b).
+                                f.id = self.on_tracks.id(n).map_or(0, |i| i.0);
+                                Some((n, f))
+                            })
                             .collect(),
                         free_clock: self
                             .looper
@@ -3061,7 +3164,10 @@ impl LoopHost {
                 (Some(cue), Some(t)) => cue == (on, t),
                 (Some(_), None) => false,
             };
-            if there || s.phase == Phase::Empty || self.looper.room() == 0 {
+            // A loop on an audio track goes where its track says, not
+            // where the Loop tracks' plan does.
+            let on_track = self.looper.on_track(n);
+            if there || on_track || s.phase == Phase::Empty || self.looper.room() == 0 {
                 continue;
             }
             lines.push(self.launch(n, on, at));
@@ -3174,6 +3280,20 @@ impl LoopHost {
         self.settle()
     }
 
+    /// Where what the pads play sounds in the mixer
+    /// ([`crate::mixing::MixHost::instrument_strip`]; None on MIDI out),
+    /// told each period with [`LoopHost::follow_pads`].
+    pub fn set_pads_strip(&mut self, s: Option<mpfree_fx::StripId>) {
+        self.pads_strip = s;
+    }
+
+    /// What the pads play now and where it sounds in the mixer: an audio
+    /// track's input list's Pads (phase 4, board 4). None before the pads
+    /// were first told.
+    pub fn pads_play(&self) -> Option<(Instrument, Option<mpfree_fx::StripId>)> {
+        Some((self.pads_now?, self.pads_strip))
+    }
+
     /// Records from picked (the Looper tab, Prefs): this take keeps its
     /// source, so it records from the next one, or at once if none
     /// records now ([`LoopHost::settle`]).
@@ -3257,9 +3377,9 @@ impl LoopHost {
     /// None lets it through (and every press that ends or calls off a
     /// take, and Loops, which records the loops).
     pub fn refuse(&self, c: Command) -> Option<String> {
-        let why = match self.source {
-            LoopSource::Line => None,
-            LoopSource::Pads | LoopSource::Mix(_) => self.pads_dry,
+        let why = match self.source.line() {
+            true => None,
+            false => self.pads_dry,
         }?;
         let s = self.looper.loop_status(self.picked)?;
         let starts = match (c, s.phase) {
@@ -3346,6 +3466,80 @@ impl LoopHost {
         (&self.input_l, &self.input_r)
     }
 
+    /// Loops on audio tracks (phase 4b, behind Dev's switch): a loop with
+    /// sound and no lasting id yet gets one, `fresh()` (the audio tracks'
+    /// id maker), one a period at most; a first pass starting is a new
+    /// loop, so its slot's old id goes first
+    /// ([`crate::loops_on_tracks::OnTracks::follow_passes`]).
+    pub fn give_loop_id(&mut self, fresh: impl FnOnce() -> u128) {
+        let looper = &self.looper;
+        self.on_tracks
+            .follow_passes(|n| crate::loops_on_tracks::OnTracks::first_pass(looper, n));
+        if let Some(n) = self.on_tracks.needs_id(&self.looper) {
+            self.on_tracks.set(n, fresh());
+        }
+    }
+
+    /// The slot holding the loop with lasting id `id` (audio tracks phase
+    /// 4b), if one does.
+    pub fn slot_of(&self, id: u128) -> Option<usize> {
+        self.on_tracks.slot_of(mpfree_seq::LoopId(id))
+    }
+
+    /// Slot `n`'s loop takes lasting id `id` (0: none), as a copy of an
+    /// audio track's loop cell gives the copy before its audio goes in.
+    pub fn set_loop_id(&mut self, n: usize, id: u128) {
+        self.on_tracks.set(n, id);
+    }
+
+    /// Loops on audio tracks, before [`LoopHost::run`]: each slot a loop
+    /// cell names is told its runs from the track player (`loops`, planned
+    /// on this period: `TrackHost::plan_loops`). Does not allocate.
+    pub fn tell_tracks(
+        &mut self,
+        project: &mpfree_seq::Project,
+        loops: &mpfree_audiotracks::LoopPlayer,
+    ) {
+        self.on_tracks.tell(&mut self.looper, project, loops);
+    }
+
+    /// Loops on audio tracks: every slot's loop's lasting id (0: none
+    /// yet), for the time engine (`TimeHost::loops_are_on`).
+    pub fn loop_ids(&self) -> [u128; MAX_LOOPS] {
+        self.on_tracks.ids()
+    }
+
+    /// Loops on audio tracks: the loops heard on the Loop strip now, by
+    /// their lasting ids (0 where none): playing or overdubbing, launched,
+    /// not muted, on no track. One that goes on a track carries on there
+    /// unfaded (`TrackHost::loops_moving`).
+    pub fn moving_ids(&self) -> [u128; MAX_LOOPS] {
+        let ids = self.on_tracks.ids();
+        std::array::from_fn(|n| {
+            let heard = self.looper.loop_status(n).is_some_and(|s| {
+                matches!(s.phase, Phase::Playing | Phase::Overdubbing) && s.on && !s.muted
+            });
+            if heard && !self.looper.on_track(n) {
+                ids[n]
+            } else {
+                0
+            }
+        })
+    }
+
+    /// Loops on audio tracks: a loop cell was just made (a loop landed in
+    /// an audio track's cell), so its loop goes on its track at the next
+    /// [`LoopHost::tell_tracks`], straight on from where it plays.
+    pub fn look_again(&mut self) {
+        self.on_tracks.look_again();
+    }
+
+    /// After [`LoopHost::run`]: loop `id`'s sound in the period, for its
+    /// audio track (`TrackHost::period_with_loops`).
+    pub fn track_loop(&self, id: u128) -> Option<&[f32]> {
+        self.on_tracks.out(&self.looper, id)
+    }
+
     /// One period without the mixer (the screen's samples): as
     /// [`LoopHost::run`], then the loop (and the line input, with Monitor
     /// on) added to the output, kept within ±1. Returns the output's peak,
@@ -3382,9 +3576,19 @@ impl LoopHost {
     fn record(&mut self, block: &Block) -> Option<String> {
         self.queue_steps();
         let note = self.line.period(&mut self.input_l, &mut self.input_r);
+        // An audio track's line pick is the line input as its take has
+        // it, in the pads' buffers (they are not heard from then).
+        if let LoopSource::Track(TrackInput {
+            from: TrackFrom::Line(pick),
+            ..
+        }) = self.source
+        {
+            let line = (&self.input_l, &self.input_r);
+            pick_line(pick, line, &mut self.pads_l, &mut self.pads_r);
+        }
         let (src_l, src_r) = match self.source {
-            LoopSource::Pads | LoopSource::Mix(_) => (&self.pads_l, &self.pads_r),
             LoopSource::Line => (&self.input_l, &self.input_r),
+            _ => (&self.pads_l, &self.pads_r),
         };
         for f in 0..PERIOD {
             self.input[2 * f] = src_l[f];
@@ -3416,7 +3620,7 @@ impl LoopHost {
         }
         // A loop that starts when you play listens to the line input; the
         // pads' sound has the song in it, so a pad hit is told instead.
-        let by_ear = self.source == LoopSource::Line;
+        let by_ear = self.source.line();
         if by_ear != self.by_ear_set && self.looper.command(Command::StartsByEar(by_ear)) {
             self.by_ear_set = by_ear;
         }
@@ -3872,6 +4076,7 @@ impl LoopHost {
             match_pattern: self.match_pattern,
             pattern_bars: self.pattern_bars,
             listening: self.looper.listening(),
+            ids: self.on_tracks.ids(),
         }
     }
 
@@ -4167,9 +4372,9 @@ impl LoopHost {
     /// What starts a loop set to start when you play, for the log and
     /// the screen: "(the first pad you play)".
     pub fn first_note(&self) -> &'static str {
-        match self.source {
-            LoopSource::Pads | LoopSource::Mix(_) => "(the first pad you play)",
-            LoopSource::Line => "(the line input's first note over -40 dB)",
+        match self.source.line() {
+            false => "(the first pad you play)",
+            true => "(the line input's first note over -40 dB)",
         }
     }
 
@@ -5183,6 +5388,40 @@ pub fn estimated_latency(periods: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An audio track's line pick, as a loop in its cell hears it (phase
+    /// 4b): one jack on both sides, half of each for Sum (as the take
+    /// sums them), both as they are for Stereo.
+    #[test]
+    fn a_track_line_pick_fills_both_sides_as_its_take_hears_it() {
+        use mpfree_audiotracks::Input;
+        let (l, r) = ([0.5f32; PERIOD], [-0.25f32; PERIOD]);
+        let pick = |p: Input| {
+            let (mut a, mut b) = ([9f32; PERIOD], [9f32; PERIOD]);
+            pick_line(p, (&l, &r), &mut a, &mut b);
+            (a[PERIOD - 1], b[0])
+        };
+        assert_eq!(pick(Input::Left), (0.5, 0.5));
+        assert_eq!(pick(Input::Right), (-0.25, -0.25));
+        assert_eq!(pick(Input::Stereo), (0.5, -0.25));
+        assert_eq!(pick(Input::Sum), (0.125, 0.125));
+        let src = |from| {
+            LoopSource::Track(TrackInput {
+                channel: mpfree_fx::StripId::Track(3),
+                from,
+            })
+        };
+        assert!(src(TrackFrom::Line(Input::Left)).line());
+        let mix = TrackFrom::Mix(
+            mpfree_fx::StripId::Master,
+            mpfree_fx::CapturePoint::BeforeInserts,
+        );
+        assert!(src(mix).inside() && !src(mix).line());
+        assert_eq!(
+            source_words(src(mix), None),
+            "the track's input, the master before its effects"
+        );
+    }
     use mpfree_transport::{Command as T, Transport};
 
     fn s32(v: f32) -> i32 {

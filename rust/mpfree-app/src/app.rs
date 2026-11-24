@@ -810,6 +810,16 @@ pub struct Settings {
     /// as it was at start, if the stream layer started): a project opening
     /// then reads only its takes' headers. Never saved.
     pub audio_streams: bool,
+    /// Dev's options "Loops on audio tracks" (the audio tracks rethink,
+    /// phase 4, steps 4b to 4d: docs/dev/design/loops-on-audio-tracks.md):
+    /// from the next start, a loop a loop cell of an audio track names
+    /// plays on that track, where the arranger says. Off by default until
+    /// 4e switches it on for good; a project saved with it on is a
+    /// development file.
+    pub loops_on_tracks: bool,
+    /// Whether loops play on audio tracks in this start (the switch above
+    /// as it was at start). Never saved.
+    pub loops_on: bool,
     /// Prefs "At start": open the last project (true, the default since
     /// round 4 of the creator run: a restart lost the pads the owner had
     /// set) or start with a new one. The screen opens it once the sound is
@@ -852,9 +862,9 @@ impl Settings {
     /// which are in time with the transport (the host makes up the mix's
     /// own).
     pub fn loop_latency_now(&self) -> u32 {
-        match self.loop_source {
-            LoopSource::Pads | LoopSource::Mix(_) => 0,
-            LoopSource::Line => self.loop_latency,
+        match self.loop_source.line() {
+            false => 0,
+            true => self.loop_latency,
         }
     }
 }
@@ -896,6 +906,8 @@ impl Default for Settings {
             audio_memory: crate::audiotracks::AudioMemory::default(),
             stream_audio: false,
             audio_streams: false,
+            loops_on_tracks: false,
+            loops_on: false,
             open_last: true,
             export_mode: mpfree_export::Mode::Fast,
             export_bits: mpfree_fx::Bits::I24,
@@ -982,6 +994,8 @@ pub enum Item {
     ClearLogs,
     /// Dev's options: takes play from their files from the next start.
     StreamAudio,
+    /// Dev's options: loops play on audio tracks from the next start.
+    LoopsOnTracks,
     ConsoleFollow,
     ClearConsole,
     LineInput,
@@ -5026,6 +5040,26 @@ impl App {
         fx
     }
 
+    /// An audio track's empty cell armed for a loop (audio tracks phase 4b,
+    /// behind Dev's switch): the looper records the track's own input, as
+    /// a take on the track would ([`crate::looping::TrackInput`]). A line
+    /// pick switches the line input on, as a Loop track's Line in does.
+    /// Records from shows it until another source is picked or a Loop
+    /// cell is armed.
+    pub fn loop_track_input(&mut self, input: crate::looping::TrackInput) -> Vec<Effect> {
+        let mut fx = Vec::new();
+        if matches!(input.from, crate::looping::TrackFrom::Line(_)) && !self.settings.line_input {
+            fx.extend(self.looper_setting(Item::LineInput, 1));
+        }
+        let set = self.set_loop_source(LoopSource::Track(input));
+        if !set.is_empty() {
+            self.save_dirty = true;
+            fx.extend(set);
+            fx.push(Effect::Settings(self.settings.clone()));
+        }
+        fx
+    }
+
     /// Records from (the Looper tab's picker): a mix, the master or one
     /// strip (a track or a submix), as `mixing::MixHost::loop_take` takes it.
     pub fn loop_mix(&mut self, strip: mpfree_fx::StripId) -> Vec<Effect> {
@@ -5087,7 +5121,12 @@ impl App {
                 | View::StatusBoard,
             ) => {
                 // The MIDI page's monitor has its own Hold.
-                &[Item::ShowPressure, Item::ClearLogs, Item::StreamAudio]
+                &[
+                    Item::ShowPressure,
+                    Item::ClearLogs,
+                    Item::StreamAudio,
+                    Item::LoopsOnTracks,
+                ]
             }
             // The full-screen touch checks, also in Prefs > Touch screen.
             (_, View::Touch) => &[Item::CalibrateTouch, Item::TouchLab],
@@ -5219,6 +5258,16 @@ impl App {
             Item::StreamAudio => (
                 "Audio tracks from their files",
                 match (s.stream_audio, s.stream_audio == s.audio_streams) {
+                    (true, true) => "On",
+                    (false, true) => "Off",
+                    (true, false) => "On (next start)",
+                    (false, false) => "Off (next start)",
+                }
+                .to_string(),
+            ),
+            Item::LoopsOnTracks => (
+                "Loops on audio tracks",
+                match (s.loops_on_tracks, s.loops_on_tracks == s.loops_on) {
                     (true, true) => "On",
                     (false, true) => "Off",
                     (true, false) => "On (next start)",
@@ -5512,6 +5561,13 @@ impl App {
                 "memory, which then only holds what records.",
                 "From the next start. A test: off on the MPC",
                 "until the stick tests have run.",
+            ],
+            Item::LoopsOnTracks => vec![
+                "A loop a loop cell of an audio track names",
+                "plays on that track, where the song and the",
+                "launches say. From the next start. Being",
+                "built: a project saved with it on may not",
+                "open in a later build.",
             ],
             Item::ConsoleFollow => vec![
                 "Pause the console to read it; it keeps",
@@ -6132,6 +6188,20 @@ impl App {
                 fx.extend(self.arp_changed());
             }
             Item::ShowPressure => s.show_pressure = d > 0,
+            Item::LoopsOnTracks => {
+                let on = d > 0;
+                if on != s.loops_on_tracks {
+                    s.loops_on_tracks = on;
+                    fx.push(Effect::Note(format!(
+                        "looper: loops play {} from the next start",
+                        if on {
+                            "on audio tracks"
+                        } else {
+                            "on the Loop track"
+                        }
+                    )));
+                }
+            }
             Item::StreamAudio => {
                 let on = d > 0;
                 if on != s.stream_audio {
@@ -7956,6 +8026,37 @@ mod tests {
         // Off again: from the next start too.
         next.settings.stream_audio = false;
         assert_eq!(next.item_text(Item::StreamAudio).1, "Off (next start)");
+    }
+
+    /// The audio tracks rethink, phase 4b: Dev's options "Loops on audio
+    /// tracks", off by default, kept, from the next start.
+    #[test]
+    fn loops_on_audio_tracks_is_a_dev_option_from_the_next_start() {
+        let mut app = App::new(44_100, false);
+        app.set_debug_mode(true);
+        app.debug_page(1);
+        app.button(MENU, true, 0.0);
+        app.button(MENU, false, 0.0);
+        let at = row(&app, Item::LoopsOnTracks);
+        assert_eq!(
+            app.item_text(Item::LoopsOnTracks),
+            ("Loops on audio tracks", "Off".to_string())
+        );
+        let fx = app.step_item(at, 1);
+        assert!(app.settings.loops_on_tracks && !app.settings.loops_on);
+        assert_eq!(app.item_text(Item::LoopsOnTracks).1, "On (next start)");
+        assert!(fx.contains(&Effect::Note(
+            "looper: loops play on audio tracks from the next start".into()
+        )));
+        let kept = app.app_settings();
+        assert_eq!(kept.get_bool("loops-on-tracks"), Some(true));
+        let mut next = App::new(44_100, false);
+        next.restore(&kept, &mpfree_store::Settings::default());
+        assert!(next.settings.loops_on_tracks && !next.settings.loops_on);
+        next.settings.loops_on = true;
+        assert_eq!(next.item_text(Item::LoopsOnTracks).1, "On");
+        next.settings.loops_on_tracks = false;
+        assert_eq!(next.item_text(Item::LoopsOnTracks).1, "Off (next start)");
     }
 
     /// Layout spec 4c: Prefs "Audio track memory", right after Loop

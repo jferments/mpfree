@@ -60,9 +60,9 @@ use mpfree_audiotracks::host::{AudioHost, CueAudio, ImportRefused, TakeWave, MAX
 use mpfree_audiotracks::save::{Saved, TrackFile};
 use mpfree_audiotracks::streaming::StreamConfig;
 use mpfree_audiotracks::{
-    Answer, Change, ClipPlay, ClipRegion, Command, Input, Monitor, Plays, RecordingId, Retime,
-    RetimeRefused, SongStep, TakeInfo, MAX_CHANGES, MAX_CLIP_REGIONS, MAX_REGIONS, MAX_TAKES,
-    MAX_TRACKS, PEAK_BLOCK,
+    Answer, Change, ClipPlay, ClipRegion, Command, Input, LoopPlay, LoopPlayer, Monitor, Plays,
+    RecordingId, Retime, RetimeRefused, SongStep, TakeInfo, MAX_CHANGES, MAX_CLIP_REGIONS,
+    MAX_REGIONS, MAX_TAKES, MAX_TRACKS, PEAK_BLOCK,
 };
 use mpfree_play::{AudioAnswer, AudioPlays};
 use mpfree_seq::{RecId, TrackId};
@@ -274,12 +274,52 @@ const SONG_REDO: &str = "the next redo is the song edit that moved the regions: 
 
 /// Where an audio track records from inside the mix (the instrument
 /// redesign's step 9): a strip (an instrument's, a submix or the master)
-/// and whether after its effects. Before its fader either way, so the
-/// strip's level never changes the take.
+/// and whether after its effects, before its fader (the Song view panel's
+/// Mix, so the strip's level never changes the take); or after its fader
+/// (`after_fader`, which implies after its effects: the input list's
+/// Pads and Mix › a strip, phase 4's board 4).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Inside {
     pub strip: mpfree_fx::StripId,
     pub after_effects: bool,
+    pub after_fader: bool,
+}
+
+impl Inside {
+    /// Where the mixer takes it.
+    pub fn point(self) -> mpfree_fx::CapturePoint {
+        use mpfree_fx::CapturePoint;
+        if self.after_fader {
+            CapturePoint::AfterFader
+        } else if self.after_effects {
+            CapturePoint::BeforeFader
+        } else {
+            CapturePoint::BeforeInserts
+        }
+    }
+}
+
+/// How the input list names the pads' instrument ("Pads · Kit 1"): a name
+/// [`TrackHost::offer`] keeps, as the strip's own would lose the pads.
+pub const PADS_NAME: &str = "Pads \u{b7} ";
+
+/// What the input list offered track `track` (phase 4, board 4), by the
+/// list's `Select` index ([`mpfree_time_ui::inputs`]): where each choice
+/// is inside the mix, and why the mixer refuses those it does.
+#[derive(Clone, Debug, Default)]
+struct Offered {
+    track: usize,
+    places: Vec<(usize, String, Inside)>,
+    refused: Vec<(usize, String)>,
+}
+
+/// A strip the input list offers, as the app knows it: the mixer's
+/// strip, its name, and the project track whose instrument plays into it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InputSource {
+    pub strip: mpfree_fx::StripId,
+    pub name: String,
+    pub owner: Option<usize>,
 }
 
 /// The audio tracks, their host and what the Song view was last given.
@@ -337,6 +377,31 @@ fn plays_in<'r>(p: &AudioPlays, room: &'r mut [ClipRegion; MAX_CLIP_REGIONS]) ->
                 stamp,
             })
         }
+        // A loop cell (phase 4b): the track player's loops play it with
+        // Dev's switch on; without it, the region player hears nothing.
+        AudioPlays::Loop { .. } => loop_plays(p),
+    }
+}
+
+/// What a track plays as the loops see it (phase 4b): a loop as it is,
+/// anything else as nothing (the loop player only tells a loop from what
+/// isn't one), so no regions are copied.
+fn loop_plays(p: &AudioPlays) -> Plays<'static> {
+    match *p {
+        AudioPlays::Loop {
+            id,
+            origin,
+            len,
+            clip,
+            stamp,
+        } => Plays::Loop(LoopPlay {
+            id: id.0,
+            origin,
+            len,
+            clip: clip.0,
+            stamp,
+        }),
+        _ => Plays::Nothing,
     }
 }
 
@@ -376,6 +441,9 @@ pub struct TrackHost {
     /// ([`TrackHost::offer`]).
     inside_last: [Option<Inside>; MAX_TRACKS],
     sources: Vec<(String, mpfree_fx::StripId)>,
+    /// What the input list offered last (phase 4, board 4), so a pick
+    /// names one ([`AudioAction::InputPick`]).
+    offered: Option<Offered>,
     /// Periods a track recording from inside got silence because its
     /// strip wasn't in the mix (counted, and said in the log).
     pub inside_silent: u64,
@@ -466,6 +534,10 @@ pub struct TrackHost {
     opened: Vec<(RecId, String)>,
     /// The song's meter, for the bar a dropout was at.
     time_sig: mpfree_transport::time::Meter,
+    /// Loops on audio tracks (phase 4b, behind Dev's switch): where each
+    /// track's loops sound this period and how loud
+    /// ([`TrackHost::plan_loops`]).
+    loops: LoopPlayer,
 }
 
 /// Playing takes from their files, for Dev's Performance page.
@@ -502,6 +574,7 @@ impl TrackHost {
             inside_lost: [false; MAX_TRACKS],
             inside_last: [None; MAX_TRACKS],
             sources: Vec::new(),
+            offered: None,
             inside_silent: 0,
             volume: [1.0; MAX_TRACKS],
             pan: [0.0; MAX_TRACKS],
@@ -543,6 +616,7 @@ impl TrackHost {
             frame_now: 0,
             opened: Vec::new(),
             time_sig: mpfree_transport::time::Meter::default(),
+            loops: LoopPlayer::new(),
         }
     }
 
@@ -933,6 +1007,56 @@ impl TrackHost {
         }
     }
 
+    /// Loops on audio tracks (Dev's "Loops on audio tracks", phase 4,
+    /// board 6; layout spec 3a, No Loop strip): each audio strip's input
+    /// in words ("Line L", "Mix › Bass", after the wave mark) and a tag
+    /// for what its track plays now, "loop · row 2" and the loop's name or
+    /// "take · row 3" and the clip's (`plays`: the clip each track plays,
+    /// by its place in the track list, and whether it is a loop cell). The
+    /// Loop strip goes while the project has no Loop track: each loop
+    /// plays through its own track's channel.
+    pub fn dress_loop_strips(
+        &self,
+        st: &mut mpfree_mixer_ui::MixState,
+        project: &mpfree_seq::Project,
+        plays: impl Fn(usize) -> Option<(bool, mpfree_seq::ClipId)>,
+        mix: &MixHost,
+    ) {
+        for s in 0..MAX_TRACKS {
+            let Some(p) = self.place[s] else {
+                continue;
+            };
+            let Some(t) = project.tracks.get(p) else {
+                continue;
+            };
+            let id = mpfree_fx::StripId::Track(mix.track_channel(p));
+            let input = match self.inside[s] {
+                Some(_) if self.inside_name[s].starts_with(PADS_NAME) => {
+                    self.inside_name[s].clone()
+                }
+                Some(_) => format!("Mix \u{203a} {}", self.inside_name[s]),
+                None => format!("Line {}", input_chip(self.inputs[s])),
+            };
+            let tag = plays(p).and_then(|(looped, clip)| {
+                let (slot, c) = t.slots.iter().find(|(_, c)| c.id == clip)?;
+                let row = match project.scenes.get(slot).filter(|sc| !sc.name.is_empty()) {
+                    Some(sc) => sc.name.clone(),
+                    None => format!("row {}", slot + 1),
+                };
+                let kind = if looped { "loop" } else { "take" };
+                Some((format!("{kind} \u{b7} {row}"), c.name.clone()))
+            });
+            for v in st.strips.iter_mut().filter(|v| v.id == id) {
+                v.audio = Some(input.clone());
+                v.tag.clone_from(&tag);
+            }
+        }
+        if !project.tracks.iter().any(|t| t.is_loops()) {
+            let looper = mpfree_fx::StripId::Track(crate::mixing::LOOP);
+            st.strips.retain(|v| v.id != looper);
+        }
+    }
+
     /// The audio tracks that sound, for Stems by Track (export.rs): each
     /// with something on it that the project doesn't silence (its mute, a
     /// solo elsewhere: `silenced`), by its place in `project`, with its
@@ -1031,6 +1155,96 @@ impl TrackHost {
         line: (&[f32; PERIOD], &[f32; PERIOD]),
         plays: Option<&dyn Fn(usize) -> AudioAnswer<'a>>,
     ) {
+        self.period_inner(block, map, song_on, line, plays, None);
+    }
+
+    /// Loops on audio tracks (phase 4b, behind Dev's switch), before the
+    /// looper runs: where each track's loops sound this period, from what
+    /// the arranger's player says each plays (`plays`, as for
+    /// [`TrackHost::period`]), for the loop host to tell the looper
+    /// ([`TrackHost::loop_player`]). Does not allocate.
+    pub fn plan_loops<'a>(&mut self, block: &Block, plays: &dyn Fn(usize) -> AudioAnswer<'a>) {
+        let none = Change {
+            frame: 0,
+            tick: 0.0,
+            plays: Plays::Nothing,
+            muted: false,
+            ring: false,
+        };
+        let mut changes = [[none; MAX_CHANGES]; MAX_TRACKS];
+        let mut answers = [Answer::default(); MAX_TRACKS];
+        for (s, (ch, ans)) in changes.iter_mut().zip(answers.iter_mut()).enumerate() {
+            let Some(p) = self.place[s] else {
+                continue;
+            };
+            let a = plays(p);
+            let mut k = 0;
+            for (c, slot) in a.changes().iter().zip(ch.iter_mut()) {
+                *slot = Change {
+                    frame: c.frame,
+                    tick: c.tick,
+                    plays: loop_plays(&c.plays),
+                    muted: c.muted,
+                    ring: c.ring,
+                };
+                k += 1;
+            }
+            let ch: &[Change] = ch;
+            *ans = Answer {
+                start: loop_plays(&a.start),
+                muted: a.muted,
+                changes: &ch[..k],
+                superseded: a.superseded,
+            };
+        }
+        self.loops.plan(block, &answers);
+    }
+
+    /// Where each track's loops sound this period
+    /// ([`TrackHost::plan_loops`]).
+    pub fn loop_player(&self) -> &LoopPlayer {
+        &self.loops
+    }
+
+    /// Before [`TrackHost::plan_loops`]: the loops heard off any track
+    /// now (the Loop strip's, by id: `LoopHost::moving_ids`). One that
+    /// opens on a track carries on there unfaded ([`LoopPlayer::moving`]).
+    pub fn loops_moving(&mut self, ids: &[u128]) {
+        self.loops.moving(ids);
+    }
+
+    /// A new lasting id for a loop (phase 4b: `mpfree_seq::LoopId`), from
+    /// the audio tracks' id maker: never 0, never given twice.
+    pub fn fresh_loop_id(&mut self) -> u128 {
+        self.host.tracks.fresh_rec().0
+    }
+
+    /// [`TrackHost::period`] with the tracks' loops (phase 4b, behind
+    /// Dev's switch): planned before the looper ran
+    /// ([`TrackHost::plan_loops`]), and each loop's sound in the period by
+    /// its id (`src`: the loop host's [`crate::looping::LoopHost::track_loop`]),
+    /// into its track before the track's level, pan, mute and solo.
+    pub fn period_with_loops<'a, 's>(
+        &mut self,
+        block: &Block,
+        map: &TempoMap,
+        song_on: bool,
+        line: (&[f32; PERIOD], &[f32; PERIOD]),
+        plays: &dyn Fn(usize) -> AudioAnswer<'a>,
+        src: &dyn Fn(u128) -> Option<&'s [f32]>,
+    ) {
+        self.period_inner(block, map, song_on, line, Some(plays), Some(src));
+    }
+
+    fn period_inner<'a, 's>(
+        &mut self,
+        block: &Block,
+        map: &TempoMap,
+        song_on: bool,
+        line: (&[f32; PERIOD], &[f32; PERIOD]),
+        plays: Option<&dyn Fn(usize) -> AudioAnswer<'a>>,
+        src: Option<&dyn Fn(u128) -> Option<&'s [f32]>>,
+    ) {
         if song_on != self.active && self.host.command(Command::SetActive(song_on)) {
             self.active = song_on;
         }
@@ -1085,13 +1299,24 @@ impl TrackHost {
         }
         // The engine's sum is no one's since phase 1b: each track plays
         // through its own channel (`play_into`).
-        self.host.period_with(
-            block,
-            map,
-            &self.input[..],
-            &mut self.out[..],
-            &answers[..n],
-        );
+        match src {
+            Some(src) => self.host.period_with_loops(
+                block,
+                map,
+                &self.input[..],
+                &mut self.out[..],
+                &answers[..n],
+                &self.loops,
+                src,
+            ),
+            None => self.host.period_with(
+                block,
+                map,
+                &self.input[..],
+                &mut self.out[..],
+                &answers[..n],
+            ),
+        }
         if let Some(sp) = block.spans().last() {
             self.time_sig = sp.meter;
         }
@@ -1134,8 +1359,11 @@ impl TrackHost {
                 self.inside[t] = Some(f);
                 self.inside_last[t] = Some(f);
                 self.inside_name[t] = name.to_string();
-                let when = if f.after_effects { "after" } else { "before" };
-                format!("{n} records {name}, {when} its effects")
+                match (f.after_fader, f.after_effects) {
+                    (true, _) => format!("{n} records {name}, after its fader"),
+                    (false, true) => format!("{n} records {name}, after its effects"),
+                    (false, false) => format!("{n} records {name}, before its effects"),
+                }
             }
         };
         self.inside_lat[t] = None;
@@ -1197,6 +1425,9 @@ impl TrackHost {
     pub fn offer(&mut self, sources: Vec<(String, mpfree_fx::StripId)>) {
         for t in 0..MAX_TRACKS {
             let Some(f) = self.inside[t] else { continue };
+            if self.inside_name[t].starts_with(PADS_NAME) {
+                continue;
+            }
             if let Some((name, _)) = sources.iter().find(|s| s.1 == f.strip) {
                 if *name != self.inside_name[t] {
                     self.inside_name[t] = name.clone();
@@ -1234,8 +1465,232 @@ impl TrackHost {
         let f = Inside {
             strip,
             after_effects: after,
+            after_fader: false,
         };
         self.set_inside(t, Some((f, &name)))
+    }
+
+    /// What a loop recorded into project track `p`'s cell records (audio
+    /// tracks phase 4b, behind Dev's switch): the track's own input, as a
+    /// take on it would (inside the mix at its point, or its line pick),
+    /// and its own channel, which is never in it. None when `p` is not an
+    /// audio track here.
+    pub fn loop_input(&self, p: usize, mix: &MixHost) -> Option<crate::looping::TrackInput> {
+        use crate::looping::{TrackFrom, TrackInput};
+        let s = (0..MAX_TRACKS).find(|&s| self.place[s] == Some(p))?;
+        let from = match self.inside[s] {
+            Some(f) => TrackFrom::Mix(f.strip, f.point()),
+            None => TrackFrom::Line(self.inputs[s]),
+        };
+        Some(TrackInput {
+            channel: mpfree_fx::StripId::Track(mix.track_channel(p)),
+            from,
+        })
+    }
+
+    /// What track `t`'s input list offers (the audio tracks rethink's
+    /// phase 4, board 4): the line input's picks, the pads' instrument
+    /// (`pads`, after its fader; None while they play MIDI out), each
+    /// strip of `sources` after its fader (not its own `channel`, the
+    /// pads' or the master) and the master before its effects, each dim
+    /// with the mixer's reason where `refusal` gives one for a recording
+    /// into `channel`. Kept, so a pick names one ([`AudioAction::InputPick`]).
+    pub fn input_choices(
+        &mut self,
+        t: usize,
+        sources: &[InputSource],
+        pads: Option<InputSource>,
+        channel: mpfree_fx::StripId,
+        refusal: impl Fn(
+            (mpfree_fx::StripId, mpfree_fx::CapturePoint),
+        ) -> Option<mpfree_fx::CaptureRefusal>,
+    ) -> Result<mpfree_time_ui::inputs::InputChoices, String> {
+        use mpfree_fx::{CapturePoint, StripId};
+        use mpfree_time_ui::inputs::{Choice, InputChoices, MASTER, PADS, STRIP};
+        let n = self.track_no(t)?;
+        let name_of = |s: StripId| {
+            sources
+                .iter()
+                .find(|x| x.strip == s)
+                .map_or_else(|| crate::mixing::name(s), |x| x.name.clone())
+        };
+        let why = |name: &str, r: mpfree_fx::CaptureRefusal| {
+            use mpfree_fx::CaptureRefusal as No;
+            match r {
+                No::NotInMix => format!("{name} isn't in the mix"),
+                No::Itself => format!("{name} is {n}'s own: it would record itself"),
+                No::PastItsWayIn => format!("{n} plays into {name}, so it would record itself"),
+                No::Through(b) => format!(
+                    "{n} plays into {name} through {}, so it would record itself",
+                    name_of(b)
+                ),
+                No::Sends(r) => format!(
+                    "{n} sends to {}, which plays into {name}, so it would record its own echoes",
+                    crate::mixing::name(StripId::Return(r))
+                ),
+            }
+        };
+        let mut offered = Offered {
+            track: t,
+            ..Offered::default()
+        };
+        let after_fader = |strip| Inside {
+            strip,
+            after_effects: true,
+            after_fader: true,
+        };
+        let picked_inside = self.inside[t];
+        let mut picked = None;
+        let mut choice = |k: usize, src: &InputSource, at: Inside, offered: &mut Offered| {
+            let refused = refusal((at.strip, at.point())).map(|r| why(&src.name, r));
+            if let Some(r) = &refused {
+                offered.refused.push((k, r.clone()));
+            }
+            offered.places.push((k, src.name.clone(), at));
+            if picked_inside == Some(at) {
+                picked = Some(k);
+            }
+            Choice {
+                name: src.name.clone(),
+                owner: src.owner,
+                color: None,
+                refused,
+            }
+        };
+        let pads_choice = pads.as_ref().map(|p| {
+            let named = InputSource {
+                name: format!("{PADS_NAME}{}", p.name),
+                ..p.clone()
+            };
+            choice(PADS, &named, after_fader(p.strip), &mut offered)
+        });
+        let pads_why = match &pads_choice {
+            None => "The pads play MIDI out: nothing here to record".to_string(),
+            Some(c) => c.refused.clone().unwrap_or_default(),
+        };
+        let mut strips = Vec::new();
+        // The first dim strip's reason, short, for the line under them.
+        let mut first_dim = None;
+        let listed = sources.iter().filter(|x| {
+            x.strip != channel
+                && x.strip != StripId::Master
+                && pads.as_ref().is_none_or(|p| p.strip != x.strip)
+        });
+        for (i, src) in listed.enumerate() {
+            let at = after_fader(src.strip);
+            if first_dim.is_none() {
+                first_dim = refusal((at.strip, at.point()));
+            }
+            strips.push(choice(STRIP + i, src, at, &mut offered));
+        }
+        let master_src = InputSource {
+            strip: StripId::Master,
+            name: "Master".to_string(),
+            owner: None,
+        };
+        let master_at = Inside {
+            strip: StripId::Master,
+            after_effects: false,
+            after_fader: false,
+        };
+        let master = choice(MASTER, &master_src, master_at, &mut offered);
+        // The lines under the strips and beside Master.
+        let dim: Vec<&str> = strips
+            .iter()
+            .filter(|c| c.refused.is_some())
+            .map(|c| c.name.as_str())
+            .collect();
+        let strips_why = match dim.as_slice() {
+            [] => String::new(),
+            [one] => {
+                use mpfree_fx::CaptureRefusal as No;
+                let r = match first_dim {
+                    Some(No::Through(b)) => format!("{n} plays into it through {}", name_of(b)),
+                    Some(No::Sends(r)) => format!(
+                        "{n} sends to {}, which plays into it",
+                        crate::mixing::name(StripId::Return(r))
+                    ),
+                    Some(No::NotInMix) => "it isn't in the mix".to_string(),
+                    _ => format!("{n} plays into it"),
+                };
+                format!("{one} is dim: {r}. Pick a strip {n} doesn't feed.")
+            }
+            [rest @ .., last] => format!(
+                "{} and {last} are dim: {n} feeds them. Pick a strip {n} doesn't feed.",
+                rest.join(", ")
+            ),
+        };
+        let master_why = match refusal((StripId::Master, CapturePoint::BeforeInserts)) {
+            None => String::new(),
+            Some(mpfree_fx::CaptureRefusal::Through(b)) => format!(
+                "{n} plays into Master through {}: pick another input, or send {n} straight to Master.",
+                name_of(b)
+            ),
+            Some(mpfree_fx::CaptureRefusal::Sends(r)) => format!(
+                "{n} sends to {}, which plays into Master: pick another input, or turn that send down.",
+                crate::mixing::name(StripId::Return(r))
+            ),
+            Some(r) => format!("{}.", why("Master", r)),
+        };
+        self.offered = Some(offered);
+        Ok(InputChoices {
+            track: t,
+            name: n,
+            line: picked_inside.is_none().then_some(self.inputs[t]),
+            picked,
+            pads: pads_choice,
+            pads_why,
+            strips,
+            strips_why,
+            master,
+            master_why,
+        })
+    }
+
+    /// A pick on the input list offered last ([`TrackHost::input_choices`]):
+    /// a line input pick, or a place inside the mix; refused, with the
+    /// mixer's reason, where it refused it, or while the track records.
+    fn input_pick(&mut self, t: usize, k: usize) -> Result<String, String> {
+        use mpfree_time_ui::inputs::{LINES, PADS};
+        let n = self.track_no(t)?;
+        if k < PADS {
+            let input = LINES.get(k).ok_or("no such input")?.1;
+            return self.set_line(t, input);
+        }
+        let offered = self
+            .offered
+            .as_ref()
+            .filter(|o| o.track == t)
+            .ok_or_else(|| format!("{n}'s input list has closed: open it again"))?;
+        if let Some((_, why)) = offered.refused.iter().find(|x| x.0 == k) {
+            return Err(why.clone());
+        }
+        let (_, name, at) = offered
+            .places
+            .iter()
+            .find(|x| x.0 == k)
+            .cloned()
+            .ok_or("that input has gone from the list")?;
+        if self.inside[t] == Some(at) {
+            return Ok(String::new());
+        }
+        self.set_inside(t, Some((at, &name)))
+    }
+
+    /// Track `t` records line input `input` (the panel's chips, the input
+    /// list's Line): refused while it records.
+    fn set_line(&mut self, t: usize, input: Input) -> Result<String, String> {
+        let n = self.track_no(t)?;
+        if self.host.tracks.recording(t).is_some() {
+            return Err(format!("{n} is recording: change its input after it stops"));
+        }
+        if self.inside[t].is_some() {
+            self.set_inside(t, None)?;
+        }
+        self.send(Command::SetInput(t, input))?;
+        self.inputs[t] = input;
+        self.changed = true;
+        Ok(format!("{n} records {}", input_words(input)))
     }
 
     /// What track `t` records from inside the mix, and the name it was
@@ -2338,31 +2793,23 @@ impl TrackHost {
             // The app opens the Mix tab at the track's strip (main.rs's
             // `time_action`): nothing here.
             AudioAction::Strip(_) => String::new(),
-            AudioAction::Input { track, input } => {
-                let n = self.track_no(track)?;
-                if tr.recording(track).is_some() {
-                    return Err(format!("{n} is recording: change its input after it stops"));
-                }
-                if self.inside[track].is_some() {
-                    self.set_inside(track, None)?;
-                }
-                self.send(Command::SetInput(track, input))?;
-                self.inputs[track] = input;
-                self.changed = true;
-                format!("{n} records {}", input_words(input))
-            }
+            AudioAction::Input { track, input } => self.set_line(track, input)?,
+            // The app answers with what the mixer offers (main.rs).
+            AudioAction::Inputs(_) => String::new(),
+            AudioAction::InputPick { track, k } => self.input_pick(track, k)?,
             AudioAction::Mix { track, step } => self.mix_step(track, step)?,
             AudioAction::MixEffects { track, after } => {
                 let n = self.track_no(track)?;
                 let Some(f) = self.inside[track] else {
                     return Err(format!("{n} records the line input: pick Mix first"));
                 };
-                if f.after_effects == after {
+                if f.after_effects == after && !f.after_fader {
                     return Ok(String::new());
                 }
                 let name = self.inside_name[track].clone();
                 let f = Inside {
                     after_effects: after,
+                    after_fader: false,
                     ..f
                 };
                 self.set_inside(track, Some((f, &name)))?
@@ -3022,7 +3469,7 @@ fn bar_beat(tick: Tick, t: &TransportInfo) -> String {
 }
 
 /// What an input records, for the log.
-fn input_words(i: Input) -> &'static str {
+pub(crate) fn input_words(i: Input) -> &'static str {
     match i {
         Input::Left => "the left input (mono)",
         Input::Right => "the right input (mono)",
@@ -3033,9 +3480,13 @@ fn input_words(i: Input) -> &'static str {
 
 /// Where a track records from inside the mix, as the project saves it:
 /// the strip as the mixer's part writes it, then `:before` or `:after`
-/// its effects (`t12:after`).
+/// its effects, or `:fader` after its fader (`t12:after`, `b0:fader`).
 fn inside_text(f: Inside) -> String {
-    let when = if f.after_effects { "after" } else { "before" };
+    let when = match (f.after_fader, f.after_effects) {
+        (true, _) => "fader",
+        (false, true) => "after",
+        (false, false) => "before",
+    };
     format!("{}:{when}", crate::project::strip_text(f.strip))
 }
 
@@ -3043,13 +3494,16 @@ fn inside_text(f: Inside) -> String {
 /// it doesn't know.
 fn parse_inside(w: &str) -> Option<Inside> {
     let (strip, when) = w.split_once(':')?;
+    let (after_effects, after_fader) = match when {
+        "fader" => (true, true),
+        "after" => (true, false),
+        "before" => (false, false),
+        _ => return None,
+    };
     Some(Inside {
         strip: crate::project::parse_strip(strip)?,
-        after_effects: match when {
-            "after" => true,
-            "before" => false,
-            _ => return None,
-        },
+        after_effects,
+        after_fader,
     })
 }
 
@@ -3735,6 +4189,135 @@ mod tests {
     /// after, an input chip goes back to the line input, nothing changes
     /// while the track records, and the project keeps it, a track with
     /// only that set too.
+    /// The audio tracks rethink's phase 4, board 4: the input list offers
+    /// the line's picks, the pads' instrument, each strip but the track's
+    /// own and the pads' (after its fader) and the master (before its
+    /// effects), dim where the mixer refuses them with its reason in the
+    /// track's words; a pick sets the input, a dim one is refused, and the
+    /// line goes back to the line input.
+    #[test]
+    fn the_input_list_offers_the_mix_and_says_what_it_refuses() {
+        use mpfree_fx::{CapturePoint, CaptureRefusal, StripId};
+        use mpfree_time_ui::inputs::{LINE, MASTER, PADS, STRIP};
+        let mut r = Rig::new();
+        let act = |r: &mut Rig, a| r.h.action(a, &r.info(), true);
+        for s in 0..2 {
+            assert_eq!(r.add(), s);
+        }
+        let own = StripId::Track(40);
+        let src = |name: &str, strip, owner| InputSource {
+            strip,
+            name: name.to_string(),
+            owner,
+        };
+        let sources = vec![
+            src("Drums", StripId::Track(0), Some(0)),
+            src("Bass", StripId::Track(31), Some(1)),
+            src("Bus A", StripId::Bus(0), None),
+            src("Bus B", StripId::Bus(1), None),
+            src("Master", StripId::Master, None),
+        ];
+        // Audio 2 plays into Bus A, which plays into the master.
+        let refusal = |from: (StripId, CapturePoint)| match from {
+            (StripId::Bus(0), _) => Some(CaptureRefusal::PastItsWayIn),
+            (StripId::Master, _) => Some(CaptureRefusal::Through(StripId::Bus(0))),
+            _ => None,
+        };
+        let pads = Some(src("Kit 1", StripId::Track(0), Some(0)));
+        let c =
+            r.h.input_choices(1, &sources, pads.clone(), own, refusal)
+                .unwrap();
+        assert_eq!((c.track, c.name.as_str()), (1, "Audio 2"));
+        assert_eq!((c.line, c.picked), (Some(Input::Left), None));
+        assert_eq!(
+            c.pads.as_ref().map(|p| p.name.as_str()),
+            Some("Pads · Kit 1")
+        );
+        assert_eq!(c.pads_why, "");
+        let names: Vec<&str> = c.strips.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Bass", "Bus A", "Bus B"],
+            "not the pads', not the master"
+        );
+        assert_eq!(c.strips[0].owner, Some(1));
+        assert_eq!(
+            c.strips[1].refused.as_deref(),
+            Some("Audio 2 plays into Bus A, so it would record itself")
+        );
+        assert_eq!(
+            c.strips_why,
+            "Bus A is dim: Audio 2 plays into it. Pick a strip Audio 2 doesn't feed."
+        );
+        assert_eq!(
+            c.master_why,
+            "Audio 2 plays into Master through Bus A: pick another input, or send \
+             Audio 2 straight to Master."
+        );
+        assert!(c.master.refused.is_some());
+        // A pick: after the strip's fader, as the list says.
+        let line = act(&mut r, AudioAction::InputPick { track: 1, k: STRIP }).unwrap();
+        assert_eq!(line, "Audio 2 records Bass, after its fader");
+        let (f, name) = r.h.inside(1).unwrap();
+        assert_eq!(
+            (f.strip, f.point(), name),
+            (StripId::Track(31), CapturePoint::AfterFader, "Bass")
+        );
+        // The same again: nothing to say.
+        let line = act(&mut r, AudioAction::InputPick { track: 1, k: STRIP }).unwrap();
+        assert_eq!(line, "");
+        // A dim one is refused with the mixer's reason; the master too.
+        let e = act(
+            &mut r,
+            AudioAction::InputPick {
+                track: 1,
+                k: STRIP + 1,
+            },
+        )
+        .unwrap_err();
+        assert!(e.contains("plays into Bus A"), "{e}");
+        let e = act(
+            &mut r,
+            AudioAction::InputPick {
+                track: 1,
+                k: MASTER,
+            },
+        )
+        .unwrap_err();
+        assert!(e.contains("through Bus A"), "{e}");
+        // The pads: named so, and an offer of the mix keeps the name.
+        let line = act(&mut r, AudioAction::InputPick { track: 1, k: PADS }).unwrap();
+        assert_eq!(line, "Audio 2 records Pads · Kit 1, after its fader");
+        r.h.offer(vec![("Drums".into(), StripId::Track(0))]);
+        assert_eq!(r.h.inside(1).unwrap().1, "Pads · Kit 1");
+        // Offered again, the list knows what is picked.
+        let c = r.h.input_choices(1, &sources, pads, own, refusal).unwrap();
+        assert_eq!((c.line, c.picked), (None, Some(PADS)));
+        // The pads on MIDI out: no Pads, and why.
+        let c = r.h.input_choices(1, &sources, None, own, |_| None).unwrap();
+        assert!(
+            c.pads.is_none() && c.pads_why.contains("MIDI out"),
+            "{}",
+            c.pads_why
+        );
+        assert_eq!(c.strips.len(), 4, "Drums is a strip again");
+        assert_eq!((c.strips_why.as_str(), c.master_why.as_str()), ("", ""));
+        // A line pick goes back to the line input.
+        let line = act(
+            &mut r,
+            AudioAction::InputPick {
+                track: 1,
+                k: LINE + 3,
+            },
+        )
+        .unwrap();
+        assert!(line.contains("both inputs (stereo)"), "{line}");
+        assert!(r.h.inside(1).is_none());
+        // Another track's pick needs its own list.
+        let e = act(&mut r, AudioAction::InputPick { track: 0, k: STRIP }).unwrap_err();
+        assert!(e.contains("open it again"), "{e}");
+    }
+
     #[test]
     fn mix_and_from_pick_what_the_mix_offers_and_the_project_keeps_it() {
         use mpfree_fx::StripId;
@@ -3821,9 +4404,18 @@ mod tests {
             parse_inside("t200:before"),
             Some(Inside {
                 strip: StripId::Track(200),
-                after_effects: false
+                after_effects: false,
+                after_fader: false,
             })
         );
+        // After its fader (the input list's Pads and strips, phase 4).
+        let f = Inside {
+            strip: StripId::Bus(1),
+            after_effects: true,
+            after_fader: true,
+        };
+        assert_eq!(parse_inside(&inside_text(f)), Some(f));
+        assert_eq!(f.point(), mpfree_fx::CapturePoint::AfterFader);
         assert_eq!(parse_inside(""), None);
         assert_eq!(parse_inside("t200:sideways"), None);
         // Opened again: it records from there, named as the mixer names

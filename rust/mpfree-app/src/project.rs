@@ -143,8 +143,9 @@ pub const FORMAT: u32 = mpfree_library::project::PARTS_FORMAT;
 /// audio track ([`AUDIO_TRACKS`]), an audio clip ([`AUDIO_CLIPS`]), a
 /// linked song list ([`LINKED_SONG_LIST`]), a scene that keeps a track
 /// playing ([`SCENE_KEEP`]), patches ([`PATCHES_NEED`]), a free loop
-/// ([`FREE_LOOPS`]), a scene that sets the tempo ([`SCENE_TEMPO`]) or an
-/// instrument with a tuning of its own ([`OWN_TUNINGS`]).
+/// ([`FREE_LOOPS`]), a scene that sets the tempo ([`SCENE_TEMPO`]), an
+/// instrument with a tuning of its own ([`OWN_TUNINGS`]) or a loop cell on
+/// an audio track ([`AUDIO_LOOPS`]).
 pub const NEEDS_KEY: &str = "needs";
 /// A project with a synth in a free place (the instrument redesign's step
 /// 6: one picked for the pads, no track's): an older build would read the
@@ -190,6 +191,14 @@ pub const SCENE_TEMPO: &str = "scene-tempo";
 /// an older build would play it in the song's tuning without saying so,
 /// and lose its own at the next save.
 pub const OWN_TUNINGS: &str = "own-tunings";
+
+/// A project with a loop cell on an audio track, or a block of one (the
+/// audio tracks rethink, phase 4b, made with Dev's "Loops on audio
+/// tracks"): a build from before phase 4 would read its `loopclip` line as
+/// unknown and open it as an empty note clip, so it refuses the project
+/// instead.
+pub const AUDIO_LOOPS: &str = "audio-loops";
+
 /// The features this build has, of those a project can need.
 pub const KNOWN_NEEDS: &[&str] = &[
     SYNTHS_WITHOUT_TRACKS,
@@ -201,6 +210,7 @@ pub const KNOWN_NEEDS: &[&str] = &[
     FREE_LOOPS,
     SCENE_TEMPO,
     OWN_TUNINGS,
+    AUDIO_LOOPS,
 ];
 
 // ------------------------------------------------------------ the loop's side
@@ -439,6 +449,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     }
     if own_tunings {
         needs.push(OWN_TUNINGS);
+    }
+    if c.clips.loop_places().next().is_some() {
+        needs.push(AUDIO_LOOPS);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -2673,6 +2686,7 @@ mod tests {
                     fade_old: 1.0,
                     speed: 0,
                     rate: 0,
+                    id: 0,
                     clock: mpfree_looper::Clock::Song,
                     layers,
                 },
@@ -3527,6 +3541,44 @@ mod tests {
         assert_eq!(check_against(&snap, &phase_1), Ok(FORMAT));
     }
 
+    /// Phase 4b: a project with a loop cell on an audio track says it
+    /// needs audio loops, and a build from before phase 4 refuses it in
+    /// plain words; this build opens it.
+    #[test]
+    fn a_project_with_a_loop_cell_needs_audio_loops_and_phase_2_refuses_it() {
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        let mut t = mpfree_seq::Track::new_audio("Audio 1", 0);
+        c.clips.give_track_id(&mut t);
+        t.slots[0] = Some(mpfree_seq::Clip::new_audio_loop(
+            mpfree_seq::LoopId(0x5eed),
+            "Loop",
+            3840,
+        ));
+        c.clips.tracks.push(t);
+        c.clips.give_clip_ids();
+        c.clips.check().unwrap();
+        let snap = snapshot(&c, Vec::new());
+        let line = snap.meta.extra.iter().find(|(k, _)| k == NEEDS_KEY);
+        assert_eq!(
+            line.map(|(_, v)| v.as_str()),
+            Some("audio-tracks audio-loops")
+        );
+        assert_eq!(check(&snap), Ok(FORMAT));
+        let phase_2 = [
+            SYNTHS_WITHOUT_TRACKS,
+            AUDIO_TRACKS,
+            AUDIO_CLIPS,
+            LINKED_SONG_LIST,
+        ];
+        assert_eq!(
+            check_against(&snap, &phase_2),
+            Err(
+                "it needs audio-loops, which this MPFree hasn't got. Update MPFree to open it"
+                    .to_string()
+            )
+        );
+    }
+
     /// A project with a free loop (Sync: Free) says it needs free loops,
     /// so an older build doesn't open its free loops as song loops; with
     /// song loops only, it needs nothing. This build opens it.
@@ -3548,6 +3600,7 @@ mod tests {
                 fade_old: 1.0,
                 speed: 0,
                 rate: 0,
+                id: 0,
                 clock,
                 layers: vec![LayerFile {
                     level: 1.0,

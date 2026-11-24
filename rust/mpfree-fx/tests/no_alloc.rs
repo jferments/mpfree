@@ -424,6 +424,11 @@ fn mixer_never_allocates(lane: bool, pipe: bool) {
             m.set_capture((rng.next() % CAPTURES as u64) as usize, Some((src, point)));
         }
         m.set_capture(7, Some((StripId::Master, CapturePoint::AfterSafety)));
+        // A recording into a track, asked again each block: the master's
+        // way in without it, when it can be had.
+        let rec = tracks[rng.next() as usize % tracks.len()];
+        let from = m.capture_for((StripId::Master, CapturePoint::BeforeInserts), rec);
+        m.set_capture_from(9, from.ok());
         let ctx = Ctx {
             bpm: 90.0,
             ..Ctx::new(rate, frame)
