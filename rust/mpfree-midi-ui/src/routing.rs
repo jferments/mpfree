@@ -25,7 +25,10 @@
 //!   and track, and for thru each channel it sends. A route's track
 //!   stepper goes on past the tracks to the synths no track has of its
 //!   own, by their channel names ("FM · Pads"; the instrument redesign's
-//!   step 11e): the route plays that synth. The wheel moves across
+//!   step 11e): the route plays that synth. Past the synths come the kits
+//!   with sounds, by name and number ("Big Kit · kit 2"; sampler step
+//!   15e's follow-up): the route plays that kit as its Keys play sends
+//!   it. The wheel moves across
 //!   the squares, - and + take a route away or add it, and the Q-Links
 //!   turn the picked route's channel and track.
 //! - **Blocks** (board 5): a port's Armed track square, and each route
@@ -181,7 +184,8 @@ fn track_count(m: &IoModel) -> usize {
 }
 
 /// What route `r` plays, in words: its track's name, or the synth it
-/// names (step 11e) by its channel name.
+/// names (step 11e) by its channel name, or the kit by its name and
+/// number (sampler step 15e's follow-up).
 fn route_to(m: &IoModel, r: &TrackRoute) -> String {
     match r.synth {
         Some(id) => crate::synth_name(m, id),
@@ -207,14 +211,14 @@ fn synth_room(m: &IoModel, i: usize, id: u32) -> bool {
 }
 
 /// Where route `r` stands on its stepper: the tracks from 0, then the
-/// synths a route can name ([`crate::Live::synths`]). A synth that isn't
-/// here now stands past the last.
+/// synths a route can name ([`crate::Live::synths`]), then the kits
+/// ([`crate::Live::kits`]). One that isn't here now stands past the last.
 fn route_place(m: &IoModel, r: &TrackRoute) -> usize {
     let tracks = track_count(m);
     match r.synth {
         Some(id) => {
-            let all = &m.live.synths;
-            tracks + all.iter().position(|s| s.0 == id).unwrap_or(all.len())
+            let n = crate::routables(m).count();
+            tracks + crate::routables(m).position(|s| s.0 == id).unwrap_or(n)
         }
         None => usize::from(r.track),
     }
@@ -1291,15 +1295,20 @@ impl Routing {
         let changed = self.edit(|m| {
             let i = *routes_from(m, &name).get(k).ok_or("No route picked")?;
             let r = m.setup.routes[i].clone();
-            // The tracks, then the synths no track has (step 11e).
+            // The tracks, then the synths no track has (step 11e), then
+            // the kits with sounds (sampler step 15e's follow-up).
             let tracks = track_count(m);
             let to = route_place(m, &r) as i32 + d;
-            let last = (tracks + m.live.synths.len()) as i32 - 1;
+            let last = (tracks + crate::routables(m).count()) as i32 - 1;
             if !(0..=last).contains(&to) {
-                let what = if d < 0 || m.live.synths.is_empty() {
+                let what = if d < 0 {
                     "track"
-                } else {
+                } else if !m.live.kits.is_empty() {
+                    "kit"
+                } else if !m.live.synths.is_empty() {
                     "synth"
+                } else {
+                    "track"
                 };
                 return Err(format!(
                     "The route plays the {} {what}: {} picks another",
@@ -1308,10 +1317,13 @@ impl Routing {
                 ));
             }
             let to = to as usize;
-            let r = match to.checked_sub(tracks).and_then(|j| m.live.synths.get(j)) {
+            let named = to
+                .checked_sub(tracks)
+                .and_then(|j| crate::routables(m).nth(j));
+            let r = match named {
                 Some(&(id, _)) if !synth_room(m, i, id) => {
                     return Err(format!(
-                        "{} synths can have routes at once: take one away first",
+                        "{} synths and kits can have routes at once: take one away first",
                         mpfree_midi::setup::ROUTE_SYNTHS
                     ));
                 }
@@ -2865,7 +2877,7 @@ impl IoSection for Routing {
                         pos: at as f32 / 16.0,
                         enabled: true,
                     };
-                    let n = track_count(&m) + m.live.synths.len();
+                    let n = track_count(&m) + crate::routables(&m).count();
                     knobs[1] = IoKnob {
                         label: "Track".to_string(),
                         text: route_to(&m, r),
@@ -3441,7 +3453,47 @@ mod tests {
         assert!(s
             .take_note()
             .unwrap()
-            .contains("4 synths can have routes at once"));
+            .contains("4 synths and kits can have routes at once"));
+    }
+
+    /// Past the synths, a route's track stepper goes on to the kits with
+    /// sounds, by name and number (sampler step 15e's follow-up); the
+    /// square, the card and the Q-Link name the kit, and past the last
+    /// kit the note says so.
+    #[test]
+    fn a_routes_track_steps_on_past_the_synths_to_the_kits() {
+        let m = model();
+        {
+            let mut v = m.lock().unwrap();
+            v.live.synths = vec![(1, "Synth".into())];
+            v.live.kits = vec![(9, "Drums · kit 1".into()), (10, "Big Kit · kit 2".into())];
+        }
+        let mut s = Routing::new(m.clone());
+        let _ = paint(&s);
+        let (x, y) = centre(square_at(&s, "MIDI in", "Tracks"));
+        tap(&mut s, x, y);
+        let tracks = track_count(&m.lock().unwrap());
+        for _ in 0..tracks + 2 {
+            s.qlink_turn(1, 1, false);
+        }
+        let route = || m.lock().unwrap().setup.routes[0].clone();
+        assert_eq!((route().synth, route().track), (Some(10), 0));
+        let _ = paint(&s);
+        assert!(
+            s.targets(AREA)
+                .iter()
+                .any(|t| t.label == "MIDI in → Tracks: Big Kit · kit 2"),
+            "{:?}",
+            s.targets(AREA).iter().map(|t| &t.label).collect::<Vec<_>>()
+        );
+        assert_eq!(s.qlinks().unwrap()[1].text, "Big Kit · kit 2");
+        s.qlink_turn(1, 1, false);
+        assert!(s.take_note().unwrap().contains("the last kit"));
+        // Back to the first kit, then the synth.
+        s.qlink_turn(1, -1, false);
+        assert_eq!(route().synth, Some(9));
+        s.qlink_turn(1, -1, false);
+        assert_eq!(route().synth, Some(1));
     }
 
     #[test]

@@ -345,6 +345,15 @@ pub enum Command {
     /// go back to where they sat on a song that is gone. Changes no
     /// region.
     ForgetSong(TransactionId),
+    /// Forget every step Redo could bring back, a song edit's too: a new
+    /// step elsewhere took their place in the one UNDO across the engines
+    /// (audio tracks phase 4d.3). Changes no region.
+    ForgetRedo,
+    /// Let go of every step Undo could take back made at or before this
+    /// transaction, from the oldest, a song edit's with its take: another
+    /// engine let go of a step that old (audio tracks phase 4d.3). Changes
+    /// no region.
+    RetireThrough(TransactionId),
     /// Take `take`'s file is open as stream source generation `gen` (the
     /// source is the take's id): finished, or, when `growing`, still
     /// being written while the take records (opened at the frames
@@ -1968,6 +1977,23 @@ impl AudioTracks {
         }
     }
 
+    /// Let go of every step made at or before transaction `txn` from the
+    /// oldest end of the Undo side, whole steps ([`Command::RetireThrough`]).
+    fn retire_through(&mut self, txn: TransactionId) {
+        while self.h_done > 0 {
+            let s = &self.hist[self.h_base];
+            if s.txn > txn {
+                break;
+            }
+            let (step, gone) = (s.step, s.txn);
+            self.let_go_txn = self.let_go_txn.max(gone);
+            while self.h_done > 0 && self.hist[self.h_base].step == step {
+                self.h_base = (self.h_base + 1) % HISTORY;
+                self.h_done -= 1;
+            }
+        }
+    }
+
     /// Whether a command sent now might not do what the tracks say now
     /// ([`AudioTracks::retime_refused`], [`AudioTracks::song_step`]): one
     /// waiting for the next period changes the regions or the history
@@ -2393,6 +2419,8 @@ impl AudioTracks {
                 }
             }
             Command::ForgetSong(song) => self.forget_song(song),
+            Command::ForgetRedo => self.h_redo = 0,
+            Command::RetireThrough(txn) => self.retire_through(txn),
             Command::Forget(id) => {
                 if !self.free_to_forget(id) || self.in_use(id) {
                     return self.refuse();

@@ -2033,7 +2033,7 @@ impl MusicIn {
         }
         if self.synth_routes_left > 0 {
             lines.push(format!(
-                "Routing: {} routes to synths left out ({ROUTE_SYNTHS} synths can have routes at once)",
+                "Routing: {} routes to synths or kits left out ({ROUTE_SYNTHS} synths and kits can have routes at once)",
                 self.synth_routes_left
             ));
         }
@@ -2768,7 +2768,7 @@ mod tests {
         assert!(
             m.summary()
                 .iter()
-                .any(|l| l.contains("1 routes to synths left out")),
+                .any(|l| l.contains("1 routes to synths or kits left out")),
             "{:?}",
             m.summary()
         );

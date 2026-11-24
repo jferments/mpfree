@@ -2279,8 +2279,10 @@ mod looper {
     /// on the drawings, 22 Nov): the chip says how late the tap was, and
     /// its Snap snaps on the downbeat; then it says what the snap did, and
     /// its words open the loop point view with the audio round the press
-    /// and the tap. A/B swaps the two sides on the downbeats until Keep my
-    /// tap, which puts the chip and the view away.
+    /// and the tap. A/B on the seam plays each side's last beat into the
+    /// downbeat in turn, with no snap and no tempo change (the owner's
+    /// looper review, 5.6), until Keep my tap, which puts the chip and the
+    /// view away.
     #[test]
     fn the_chip_snaps_and_the_loop_point_view_swaps_and_keeps_a_side() {
         on_big_stack(|| {
@@ -2315,18 +2317,44 @@ mod looper {
                 look.end.peaks.iter().any(|&p| p > 50),
                 "the hit played again is in the end's window"
             );
-            // A/B: back to the tap on a downbeat, then the snap again.
+            // A/B on the seam: the loop stays snapped and the tempo stays;
+            // from half way each time round, its last beat runs into the
+            // downbeat as your tap has it, then as the snap does.
+            let bpm = s.time.info().bpm;
             s.press("leditor", "point-ab", "A/B");
-            until_moved(&mut s, None);
-            assert_eq!(status(&s).offer, Some(by));
-            until_moved(&mut s, Some(by));
-            assert!(smart_editor(&s).point.as_ref().unwrap().ab == Some(true));
+            s.run_for(0.1);
+            let look = smart_editor(&s).point.clone().expect("the view's look");
+            assert_eq!(look.ab, Some(true));
+            assert!(
+                look.line.starts_with(
+                    "A/B: each time round, the end runs into the start as the snap has it, \
+                     then as your tap would. The tempo stays "
+                ),
+                "{}",
+                look.line
+            );
+            let mut sides = Vec::new();
+            let end = s.t() + 5.0;
+            while s.t() < end {
+                s.run_periods(8);
+                let st = status(&s);
+                assert_eq!(st.moved, Some(by), "no snap");
+                assert_eq!(s.time.info().bpm, bpm, "the tempo stays");
+                let side = st.ab.expect("A/B runs");
+                if sides.last() != Some(&side) {
+                    sides.push(side);
+                }
+            }
+            assert!(sides.len() >= 3, "each side in turn: {sides:?}");
+            let note = &smart_editor(&s).point.as_ref().unwrap().end.note;
+            assert!(note.starts_with("now: "), "{note}");
             // Keep my tap: A/B stops, the tap on the next downbeat, and
             // the chip and the view go.
             s.press("leditor", "point-pick", "Keep my tap");
             until_moved(&mut s, None);
             s.run_for(2.5);
             assert_eq!(status(&s).moved, None, "A/B stopped");
+            assert_eq!(status(&s).ab, None);
             assert_eq!(status(&s).offer, Some(by), "still found");
             let e = smart_editor(&s);
             assert!(e.chip.is_none(), "put away");

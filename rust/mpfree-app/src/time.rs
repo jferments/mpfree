@@ -2387,6 +2387,15 @@ impl TimeHost {
         }
     }
 
+    /// Forget the takes REDO could bring back (`redo`), else let go of
+    /// those UNDO could take back made at or before `through`, for the one
+    /// UNDO across the engines (audio tracks phase 4d.3,
+    /// [`TimeControl::forget_takes`]). Apart, the control half is borrowed
+    /// back for it. True if any went.
+    pub fn forget_takes(&mut self, redo: bool, through: mpfree_transport::TransactionId) -> bool {
+        self.with(|c| c.forget_takes(redo, through))
+    }
+
     /// What take `txn` is, as UNDO says it ("take 3 · Drums / 1"). Apart,
     /// as last published, shorter ("take 3").
     pub fn take_words(&self, txn: mpfree_transport::TransactionId) -> Option<String> {

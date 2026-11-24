@@ -1372,6 +1372,11 @@ pub enum ToUi {
     /// selected track's: a hit there shows that kit's pad on the Sample
     /// page (sampler step 15d).
     PadsKit(Option<usize>),
+    /// The kit each of the pads' layers plays now, with the bank of it a
+    /// hit takes (`App::pads_layer_kits`; None: no layer there, or a
+    /// synth): a hit shows a chip for each on the Sample page's bar
+    /// (sampler step 15e's follow-up).
+    PadsLayerKits([Option<(u8, u8)>; crate::instruments::PAD_LAYERS - 1]),
     /// The bank of the kit the 16 pads play while it isn't the bank shown:
     /// a bank's own kit from another of its banks (sampler step 15e, bank
     /// D playing a kit's bank A); None: the bank shown. Pad n is the kit's
@@ -2567,6 +2572,9 @@ pub struct Player {
     /// ([`ToUi::PadsKit`]): the Sample page follows a hit there (sampler
     /// step 15d).
     pads_kit: Option<usize>,
+    /// The kit each of the pads' layers plays, with its bank
+    /// ([`ToUi::PadsLayerKits`]).
+    pads_layer_kits: [Option<(u8, u8)>; crate::instruments::PAD_LAYERS - 1],
     /// The source bank the pads play while it isn't the bank shown
     /// ([`ToUi::KitSource`], sampler step 15e).
     kit_source: Option<usize>,
@@ -3465,6 +3473,7 @@ impl Player {
             kits: Vec::new(),
             kit: 0,
             pads_kit: None,
+            pads_layer_kits: [None; crate::instruments::PAD_LAYERS - 1],
             kit_source: None,
             pad_page: 0,
             midi: 0,
@@ -3696,6 +3705,33 @@ impl Player {
         let names = self.time.tracks.iter().map(|t| &t.name);
         if !m.live.tracks.iter().eq(names.clone()) {
             m.live.tracks = names.cloned().collect();
+        }
+    }
+
+    /// The kits a MIDI route can name on the I/O view's Routing card, past
+    /// the synths (sampler step 15e's follow-up): each kit with sounds but
+    /// the synth's entry, by place, by its id and its name and number
+    /// ("Big Kit · kit 2"). Written only when they change.
+    fn name_io_kits(&self) {
+        let Some(m) = &self.io_model else { return };
+        let kits: Vec<(u32, String)> = self
+            .kits
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.synth.is_none())
+            .filter(|&(k, _)| {
+                self.sample
+                    .project(k)
+                    .is_some_and(|p| (0..128).any(|i| p.pad(i).is_some()))
+            })
+            .filter_map(|(k, v)| {
+                let id = self.sample.kit_number(k)?;
+                Some((id, format!("{} · kit {}", chip_kit_name(&v.name, k), k + 1)))
+            })
+            .collect();
+        let mut m = m.lock().unwrap_or_else(|e| e.into_inner());
+        if m.live.kits != kits {
+            m.live.kits = kits;
         }
     }
 
@@ -11625,6 +11661,20 @@ impl Player {
         }
     }
 
+    /// The kit layers' pads hit cell `cell` plays (sampler step 15f), by
+    /// kit place and pad: each layer's bank of its kit. None while the
+    /// synth has the pads.
+    fn hit_layer_pads(&self, cell: usize) -> Vec<(usize, usize)> {
+        if self.pads_on_synth_entry() {
+            return Vec::new();
+        }
+        self.pads_layer_kits
+            .iter()
+            .flatten()
+            .map(|&(k, bank)| (usize::from(k), usize::from(bank) * 16 + cell))
+            .collect()
+    }
+
     fn pick_pad_quietly(&mut self, cell: usize) {
         let pad = self.kit_pad(cell);
         let synth_plays = self.kits.get(self.kit).is_some_and(|k| k.synth.is_some());
@@ -11886,9 +11936,16 @@ impl Player {
                 // The Sample page edits the pad hit last, on the kit it
                 // played (sampler step 15d), and the Play page's Tune and
                 // Decay turn it.
-                self.sample_follows_hit();
+                // And the kit layers it played: chips on the page's bar,
+                // and the layer picked there shown (step 15e's follow-up).
+                let layers = self.hit_layer_pads(cell);
+                if !self.sample.keeps_layer(&layers) {
+                    self.sample_follows_hit();
+                }
+                let base = (self.pads_kit.unwrap_or(self.kit), pad);
+                let shown_pad = self.sample.follow_layers(base, &layers);
                 let shown = self.view.sampler();
-                self.sample.press(&mut self.ui, pad, velocity, shown);
+                self.sample.press(&mut self.ui, shown_pad, velocity, shown);
                 self.levels_hit(cell, pad, true);
                 // Load to pad or Send to pad may have put a sound on it.
                 self.sample_names();
@@ -11947,6 +12004,15 @@ impl Player {
                 }
             }
             ToUi::PadsKit(k) => self.pads_kit = k,
+            ToUi::PadsLayerKits(kits) => {
+                if kits != self.pads_layer_kits {
+                    self.pads_layer_kits = kits;
+                    // Another layer or none: the Sample page's chips go
+                    // until a hit plays kit layers again.
+                    self.sample.clear_layers();
+                    self.sample_changed();
+                }
+            }
             ToUi::KitSource(b) => {
                 if b != self.kit_source {
                     self.kit_source = b;
@@ -11959,6 +12025,7 @@ impl Player {
             }
             ToUi::Kit(k) => {
                 self.set_kit(k);
+                self.sample.clear_layers();
                 // The synth's entry: the Sample page keeps its kit (Jay's
                 // device notes, 20 Nov 2026).
                 let synth = self.kits.get(k).is_some_and(|v| v.synth.is_some());
@@ -12416,6 +12483,7 @@ impl Player {
                     mpfree_midi_ui::DevMonitor::new(model.clone()),
                 );
                 self.io_model = Some(model);
+                self.name_io_kits();
             }
             ToUi::ProjectParts(c) => self.save_project(c),
             ToUi::ExportFacts(f) => self.export_facts(f),
@@ -13088,6 +13156,7 @@ impl Player {
                 st.chips = std::mem::take(&mut self.time.chips);
                 self.time = *st;
                 self.name_io_tracks();
+                self.name_io_kits();
                 self.kit_track_armed();
                 self.sound_track_armed();
                 // Another track armed: the Play on the pads button follows.
@@ -22484,7 +22553,7 @@ fn sample_free_loops(fonts: &impl Fn() -> Fonts, out: &mut Vec<(&'static str, Pl
 /// with peaks as a hit round the press and one 48 ms before the tap.
 fn sample_smart_loop_end(p: &mut Player, name: &str, open: bool) {
     use crate::looping::{LoopPoint, POINT_BARS, POINT_END_FROM_MS, POINT_MS, POINT_START_FROM_MS};
-    use mpfree_looper::{Shift, Snap};
+    use mpfree_looper::{Bounds, Shift, Snap, KEEP_BEFORE};
     let rate = p.looper.rate;
     let ms = |m: f64| (m * f64::from(rate) / 1000.0).round() as i64;
     let mut v = p.looper.clone();
@@ -22512,8 +22581,25 @@ fn sample_smart_loop_end(p: &mut Player, name: &str, open: bool) {
             })
         }
     }
+    // Loop memory was full as the pass closed: nothing kept after the
+    // tap.
+    if name == "looper-smart-point-memory-full" {
+        let (kb, end) = (KEEP_BEFORE as i64, (KEEP_BEFORE + s.frames) as i64);
+        s.bounds = Some(Bounds {
+            src: kb,
+            start: kb,
+            captured: (kb, end),
+            kept: end,
+            short: true,
+        });
+    }
     if name == "looper-smart-ask" {
         v.smart.asking = Some((Snap::Found, false));
+    }
+    // A/B on the seam, the round that plays the snap's end.
+    if name == "looper-smart-point-ab" {
+        v.smart.ab = true;
+        v.status.ab = Some(true);
     }
     v.loops[v.selected] = v.status;
     // A hit 3 ms after the press, and again 48 ms before the tap: each
@@ -25913,6 +25999,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         ("looper-smart-point", true),
         ("looper-smart-snapped", false),
         ("looper-smart-point-snapped", true),
+        ("looper-smart-point-memory-full", true),
+        ("looper-smart-point-ab", true),
         ("looper-smart-start", false),
         ("looper-smart-close-call", false),
         ("looper-smart-ask", false),
@@ -26937,6 +27025,40 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         from.take_actions();
     }
     out.push(("sample-recall-from", from));
+    // A hit that also played a kit layer (sampler step 15e's follow-up,
+    // board 1 of the canvas "Kit layers and routes"), the layer's chip
+    // tapped: the page edits Lo-Fi's pad, and the bar says so.
+    let mut layers = sample_sampler(fonts());
+    {
+        use mpfree_sampler_ui::sample::PAD;
+        use mpfree_sampler_ui::widgets::LAYER_CHIP;
+        let kit = layers.sample.project(0).cloned();
+        if let Some(kit) = kit {
+            layers.apply(ToUi::SampleKits {
+                projects: vec![kit.clone(), kit],
+                rate: mpfree_sampler_ui::sample::RATE,
+            });
+        }
+        layers
+            .sample
+            .set_names(vec!["Big Kit".to_string(), "Lo-Fi".to_string()]);
+        settle_views(&mut layers);
+        layers.apply(ToUi::Show(View::Sample));
+        layers.apply(ToUi::PadsLayerKits([Some((1, 0)), None, None]));
+        layers.apply(ToUi::PadDown {
+            pad: PAD,
+            velocity: 100,
+        });
+        layers.apply(ToUi::PadUp(PAD));
+        layers.on_event(UiEvent {
+            widget: mpfree_sampler_ui::wave_tab::BAR.into(),
+            kind: EventKind::Tab(LAYER_CHIP + 1),
+        });
+        settle_views(&mut layers);
+        layers.tick(0.2);
+        layers.take_actions();
+    }
+    out.push(("sample-layer-chips", layers));
     // Auto-sample on the Synth tab's patch, which the recorder's REC opens
     // with Auto-sample its Source: every 5 semitones, 10 notes onto the
     // empty pads after the break.
@@ -34361,6 +34483,36 @@ mod tests {
             (names[0].as_str(), names[19].as_str()),
             ("Part 1", "Part 20")
         );
+    }
+
+    /// The Routing card's kits (sampler step 15e's follow-up): each kit
+    /// with sounds, by its id in the project's list and its name and
+    /// number; an empty kit isn't listed.
+    #[test]
+    fn the_routing_card_lists_the_kits_with_sounds_by_id_and_name() {
+        use crate::instrument_list::{InstrumentList, KITS};
+        let mut p = sample_sampler(Fonts::embedded());
+        let mut list = InstrumentList::new();
+        list.follow(1);
+        list.follow_kits(KITS);
+        p.apply(ToUi::KitIds(Box::new(list.kit_ids())));
+        let io = crate::midi_in::io_model();
+        p.apply(ToUi::IoModel(io.clone()));
+        let kits = io.lock().unwrap().live.kits.clone();
+        let name = chip_kit_name(&p.kits[0].name, 0);
+        assert_eq!(
+            kits.first(),
+            Some(&(3, format!("{name} · kit 1"))),
+            "{kits:?}"
+        );
+        let filled = (0..p.kits.len())
+            .filter(|&k| {
+                p.sample
+                    .project(k)
+                    .is_some_and(|pr| (0..128).any(|i| pr.pad(i).is_some()))
+            })
+            .count();
+        assert_eq!(kits.len(), filled, "{kits:?}");
     }
 
     /// REC's arm pinned on Drums and Bass selected (refactor C1): the REC
@@ -46913,6 +47065,87 @@ mod tests {
             p.ui.get::<ButtonRow>(send::SEND).unwrap().enabled,
             [false, false]
         );
+    }
+
+    /// Sampler step 15e's follow-up (the canvas "Kit layers and routes",
+    /// board 1): a hit that also plays a kit layer gives the Sample page's
+    /// bar a chip for each sound, the pads' own first. A tap on the
+    /// layer's chip shows its kit's pad, the bar names it a layer, and the
+    /// next hits keep it (question 2); "Track 1's kit" and a change of the
+    /// pads' layers take the chips away.
+    #[test]
+    fn a_hit_on_a_kit_layer_gives_the_sample_page_chips_that_pick_the_sound() {
+        use mpfree_sampler_ui::wave_tab::BAR;
+        use mpfree_sampler_ui::widgets::{PadBar, LAYER_CHIP, TRACK_KIT};
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_player(Fonts::embedded());
+        let (kit, _) = mpfree_sampler_ui::sample::project();
+        p.apply(ToUi::SampleKits {
+            projects: vec![kit.clone(), kit.clone(), kit],
+            rate: 44_100,
+        });
+        p.apply(ToUi::Kit(0));
+        p.apply(ToUi::Show(View::Sample));
+        let hit = |p: &mut Player, cell: usize| {
+            p.apply(ToUi::PadDown {
+                pad: cell,
+                velocity: 100,
+            });
+            p.apply(ToUi::PadUp(cell));
+        };
+        let bar = |p: &Player| {
+            let b = p.ui.get::<PadBar>(BAR).unwrap();
+            (
+                b.layers.clone(),
+                b.layer_on,
+                b.kit_note.clone(),
+                b.track_kit.clone(),
+            )
+        };
+        // No layer: no chips.
+        hit(&mut p, pad);
+        assert!(bar(&p).0.is_empty());
+        // Kit 3 plays as a layer, from its bank A.
+        p.apply(ToUi::PadsLayerKits([Some((2, 0)), None, None]));
+        hit(&mut p, pad);
+        let (chips, on, ..) = bar(&p);
+        assert_eq!(chips.len(), 2, "{chips:?}");
+        assert!(chips[1].ends_with("· layer"), "{chips:?}");
+        assert_eq!(on, 0);
+        assert_eq!(p.sample.edit_kit(), 0);
+        // The layer's chip: kit 3's pad, named a layer of the pads.
+        p.on_event(UiEvent {
+            widget: BAR.into(),
+            kind: EventKind::Tab(LAYER_CHIP + 1),
+        });
+        assert_eq!((p.sample.edit_kit(), p.sample.pad()), (2, pad));
+        let (_, on, note, chip) = bar(&p);
+        assert_eq!(on, 1);
+        assert!(note.unwrap().ends_with(", a layer of the pads"));
+        assert_eq!(chip.as_deref(), Some("Track 1's kit"));
+        // The next hit, on another pad, keeps the layer.
+        hit(&mut p, 1);
+        assert_eq!((p.sample.edit_kit(), p.sample.pad()), (2, 1));
+        assert_eq!(bar(&p).1, 1);
+        // Track 1's kit: kit 1 again, no chips.
+        p.on_event(UiEvent {
+            widget: BAR.into(),
+            kind: EventKind::Tab(TRACK_KIT),
+        });
+        assert_eq!(p.sample.edit_kit(), 0);
+        assert!(bar(&p).0.is_empty());
+        // The chip picked again, then the layer taken away: the chips go
+        // and the next hit shows kit 1.
+        hit(&mut p, pad);
+        p.on_event(UiEvent {
+            widget: BAR.into(),
+            kind: EventKind::Tab(LAYER_CHIP + 1),
+        });
+        assert_eq!(p.sample.edit_kit(), 2);
+        p.apply(ToUi::PadsLayerKits([None; 3]));
+        assert!(bar(&p).0.is_empty());
+        hit(&mut p, pad);
+        assert_eq!(p.sample.edit_kit(), 0);
     }
 
     /// Sampler step 15d: a pad hit while the pads play a kit of their own

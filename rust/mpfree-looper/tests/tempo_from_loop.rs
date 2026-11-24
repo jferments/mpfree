@@ -15,7 +15,7 @@ use mpfree_looper::close::{Bars, Boundary, Confidence, Start, Tempo};
 use mpfree_looper::{
     read_bars, After, Command as L, Edit, Looper, NoteStart, Phase, Reading, Shift, SmartEnd,
     SmartOutcome, Snap, SnapPlan, Starts, Step, Sure, TempoHint, TempoKind, FADE, KEEP_AFTER,
-    KEEP_BEFORE, LOOP_MAX_BPM,
+    KEEP_BEFORE, LOOP_MAX_BPM, MEMORY_FULL,
 };
 use mpfree_transport::time::PPQ;
 use mpfree_transport::{Block, Command as T, Meter, State, Transport};
@@ -53,9 +53,14 @@ struct Rig {
 impl Rig {
     /// Stopped at 100 BPM, tempo from the loop on, loop 1 on Free length.
     fn new(period: usize) -> Rig {
+        Rig::with_memory(period, 30)
+    }
+
+    /// As [`Rig::new`], with `seconds` of loop memory.
+    fn with_memory(period: usize, seconds: u32) -> Rig {
         let mut r = Rig {
             t: Transport::new(RATE, 100.0).unwrap(),
-            l: Looper::new(RATE, 30),
+            l: Looper::new(RATE, seconds),
             b: Block::new(),
             period,
             frame: 0,
@@ -637,7 +642,12 @@ fn pads_beat(from: u64, beats: u64) -> Vec<NoteStart> {
 /// the pass started on, and the tap: the frame it would close on without
 /// smart loop end.
 fn late_tap(mode: SmartEnd, notes: bool) -> (Rig, u64, u64) {
-    let mut r = Rig::new(256);
+    late_tap_in(mode, notes, 30)
+}
+
+/// As [`late_tap`], with `seconds` of loop memory.
+fn late_tap_in(mode: SmartEnd, notes: bool, seconds: u32) -> (Rig, u64, u64) {
+    let mut r = Rig::with_memory(256, seconds);
     r.cmd(L::SetSmartEnd(mode));
     r.run(10_000);
     r.cmd(L::Record);
@@ -1184,4 +1194,210 @@ fn with_no_note_near_the_tap_auto_keeps_it() {
     // round since.
     let into = (at - tap) as f64 * s.ticks as f64 / s.frames as f64;
     assert_eq!(r.into, into.round() as i64);
+}
+
+/// Two bars at 120 BPM on the pads from Record, and Record again up to
+/// 60 ms before the downbeat that ends them, with `seconds` of loop
+/// memory: the end found is after the tap.
+fn early_tap(mode: SmartEnd, seconds: u32) -> (Rig, u64, u64) {
+    let mut r = Rig::with_memory(256, seconds);
+    r.cmd(L::SetSmartEnd(mode));
+    r.run(10_000);
+    r.cmd(L::Record);
+    let rec_from = r.frame;
+    r.notes = pads_beat(rec_from, 8);
+    r.run(rec_from + 88_200 - 1_323);
+    r.cmd(L::Record);
+    let f = r.frame + 256;
+    r.run(f);
+    (r, rec_from, f)
+}
+
+/// Loop memory full as the pass closes (four seconds: the two bars and
+/// what came before them, not what follows): nothing after the tap is
+/// kept ([`mpfree_looper::Bounds::short`]), so Suggest can't offer the end
+/// after it, and says why; the end before a late tap it still offers.
+#[test]
+fn with_loop_memory_full_suggest_says_why_it_keeps_a_tap_before_the_end() {
+    // Room to spare: the end after the tap is on offer.
+    let (mut r, rec_from, tap) = early_tap(SmartEnd::Suggest, 30);
+    assert!(tap < rec_from + 88_200);
+    r.until_playing(512);
+    r.run(tap + 2_205 + 256);
+    let s = r.l.status();
+    assert!(!s.bounds.expect("bounds").short);
+    let by = (rec_from + 88_200) as i64 - tap as i64;
+    assert_eq!(s.offer.map(|o| o.end), Some(by));
+    assert_eq!(r.l.take_smart().unwrap().outcome, SmartOutcome::Offered(by));
+    assert_eq!(r.l.stats().kept_short, 0);
+    // Memory full: the tap stands, and the word on it says why.
+    let (mut r, _, tap) = early_tap(SmartEnd::Suggest, 4);
+    r.until_playing(512);
+    r.run(tap + 2_205 + 256);
+    let s = r.l.status();
+    let b = s.bounds.expect("bounds");
+    assert!(b.short);
+    assert_eq!(b.kept, b.captured.1, "nothing after the tap");
+    assert_eq!(s.offer, None);
+    assert_eq!(
+        r.l.take_smart().unwrap().outcome,
+        SmartOutcome::Kept(MEMORY_FULL)
+    );
+    assert_eq!(r.l.stats().kept_short, 1);
+    // A late tap: the end found is before it, inside what was kept.
+    let (mut r, rec_from, tap) = late_tap_in(SmartEnd::Suggest, true, 4);
+    r.until_playing(512);
+    r.run(tap + 2_205 + 256);
+    let s = r.l.status();
+    assert!(s.bounds.expect("bounds").short);
+    let by = (rec_from + 88_200) as i64 - tap as i64;
+    assert_eq!(s.offer.map(|o| o.end), Some(by));
+    assert!(r.l.snap_plan(0, Snap::Found, r.frame).is_ok());
+}
+
+/// Auto with loop memory full: it closes on the downbeat before a late
+/// tap, and nothing after that is kept, so Use my tap is out of reach and
+/// says why.
+#[test]
+fn with_loop_memory_full_your_tap_after_autos_end_is_out_of_reach() {
+    let (mut r, ..) = late_tap_in(SmartEnd::Auto, true, 4);
+    r.until_playing(2_205 + 512);
+    // (The song plays from the next period.)
+    r.run(r.frame + 512);
+    let s = r.l.status();
+    assert_eq!(s.frames, 88_200);
+    assert!(s.bounds.expect("bounds").short);
+    assert_eq!(r.l.snap_plan(0, Snap::Tap, r.frame), Err(MEMORY_FULL));
+    // With room, it goes back to the tap.
+    let (mut r, ..) = late_tap(SmartEnd::Auto, true);
+    r.until_playing(2_205 + 512);
+    r.run(r.frame + 512);
+    assert!(!r.l.status().bounds.expect("bounds").short);
+    assert!(r.l.snap_plan(0, Snap::Tap, r.frame).is_ok());
+}
+
+/// A/B on the seam (the owner's looper review, 5.6): from half way, the
+/// loop's last beat runs into its downbeat as the snap has it, the next
+/// time round as your tap has it, one cut's crossfade a beat before the
+/// seam; the loop's length, the song's tempo, the offer and the version
+/// stay, and nothing is asked of the time engine. Off, it goes off at
+/// the next half way, on the loop's own side.
+#[test]
+fn ab_on_the_seam_swaps_the_last_beat_and_never_the_tempo() {
+    let (mut r, rec_from, tap) = late_tap(SmartEnd::Suggest, true);
+    r.until_playing(512);
+    let (_, bpm, at) = r.tempo.expect("a tempo");
+    r.run(tap + 2_205 + 256);
+    let s0 = r.l.status();
+    let by = s0.offer.expect("the end found, on offer");
+    assert!(by.end < 0 && by.start == 0, "{by:?}");
+    let len = s0.frames as u64;
+    assert_eq!(len, tap - rec_from);
+    // A quarter of two bars, and where each round's downbeat is.
+    let beat = len / 8;
+    let down = |k: u64| at + k * len;
+    assert!(r.frame < down(0) + len / 2, "before the first half way");
+    let refused = r.l.stats().refused;
+    r.cmd(L::AbSeam(true));
+    r.run(r.frame + 256);
+    assert_eq!(r.l.status().ab, Some(false), "its own side till half way");
+    // Round 0's last beat is the snap's; round 1's your tap's; round 2's
+    // the snap's again. Away from the crossfade and the loop point's.
+    let seam = s0.seam as u64;
+    let snap_beat = |r: &Rig, k: u64| {
+        (len - beat + seam + 10..len - seam - 10)
+            .step_by(97)
+            .all(|p| {
+                close(
+                    r.out_at(down(k) + p),
+                    sound(rec_from + (p as i64 + by.end) as u64),
+                )
+            })
+    };
+    let tap_beat = |r: &Rig, k: u64| {
+        (len - beat + seam + 10..len - seam - 10)
+            .step_by(97)
+            .all(|p| close(r.out_at(down(k) + p), sound(rec_from + p)))
+    };
+    r.run(down(1) + 256);
+    assert!(snap_beat(&r, 0), "the snap's last beat into the downbeat");
+    assert!(!tap_beat(&r, 0));
+    // The first half of a round is the same either way.
+    r.run(down(1) + len / 4);
+    for p in (FADE as u64 * 2..len / 4).step_by(101) {
+        assert!(
+            close(r.out_at(down(1) + p), sound(rec_from + p)),
+            "frame {p}"
+        );
+    }
+    r.run(down(2) + 256);
+    assert!(tap_beat(&r, 1), "your tap's the next time round");
+    r.run(down(3) + 256);
+    assert!(snap_beat(&r, 2));
+    // Nothing else changed.
+    let s = r.l.status();
+    assert_eq!((s.frames as u64, s.offer, s.moved), (len, Some(by), None));
+    assert_eq!((s.version, s.ticks), (s0.version, s0.ticks));
+    assert_eq!(r.t.bpm(), bpm);
+    assert_eq!(r.l.stats().refused, refused);
+    assert!(r.l.take_snap().is_none());
+    // Off in round 3's first half (on the snap's side since round 2's
+    // half way): its own side from half way, and A/B is off.
+    assert_eq!(s.ab, Some(true));
+    r.cmd(L::AbSeam(false));
+    r.run(r.frame + 256);
+    assert_eq!(r.l.status().ab, Some(true), "till half way");
+    r.run(down(4) + 256);
+    assert_eq!(r.l.status().ab, None);
+    assert!(tap_beat(&r, 3));
+    r.run(down(5) + 256);
+    assert!(tap_beat(&r, 4));
+}
+
+/// A/B on the seam needs another side: with nothing found (smart loop
+/// end Off) it is refused, counted.
+#[test]
+fn ab_on_the_seam_needs_another_side() {
+    let (mut r, _, tap) = late_tap(SmartEnd::Off, true);
+    r.until_playing(512);
+    r.run(tap + 2_205 + 256);
+    assert_eq!(r.l.status().offer, None);
+    let refused = r.l.stats().refused;
+    r.cmd(L::AbSeam(true));
+    r.run(r.frame + 256);
+    assert_eq!(r.l.status().ab, None);
+    assert_eq!(r.l.stats().refused, refused + 1);
+}
+
+/// A/B on the seam from the snap: the other side is your tap, its last
+/// beat (later in what was played) into the snap's downbeat.
+#[test]
+fn ab_on_the_seam_from_the_snap_plays_your_taps_last_beat() {
+    let (mut r, rec_from, tap) = late_tap(SmartEnd::Suggest, true);
+    r.until_playing(512);
+    r.run(tap + 2_205 + 256);
+    let by = r.l.status().offer.expect("on offer");
+    let p = r.l.snap_plan(0, Snap::Found, r.frame).unwrap();
+    r.snap = Some(p);
+    r.run(p.at + 256);
+    assert_eq!(r.l.take_snap().map(|d| d.landed), Some(true));
+    let s0 = r.l.status();
+    assert_eq!((s0.frames, s0.moved), (88_200, Some(by)));
+    let bpm = r.t.bpm();
+    r.cmd(L::AbSeam(true));
+    r.run(r.frame + 256);
+    assert_eq!(r.l.status().ab, Some(false));
+    let (len, beat, seam) = (88_200u64, 88_200u64 / 8, s0.seam as u64);
+    let down = |k: u64| p.at + k * len;
+    r.run(down(1) + 256);
+    for q in (len - beat + seam + 10..len - seam - 10).step_by(97) {
+        let want = sound(rec_from + (q as i64 - by.end) as u64);
+        assert!(close(r.out_at(down(0) + q), want), "frame {q}");
+    }
+    let s = r.l.status();
+    assert_eq!(
+        (s.frames, s.moved, s.version),
+        (88_200, Some(by), s0.version)
+    );
+    assert_eq!(r.t.bpm(), bpm);
 }

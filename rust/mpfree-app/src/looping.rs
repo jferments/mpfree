@@ -577,7 +577,10 @@ pub struct SmartView {
     /// ([`Status::asks`]): how it read. The hint line asks
     /// ([`length_ask_words`]), Read as and Discard answer.
     pub length: Option<Reading>,
-    /// A/B: the loop swaps your tap and the snap on each downbeat.
+    /// A/B on the seam runs on the picked loop ([`LoopHost::set_ab`]):
+    /// each time round its last beat runs into the downbeat as the other
+    /// side has it, then as it is ([`mpfree_looper::Status::ab`] says
+    /// which comes next).
     pub ab: bool,
     /// The loop point view's audio, while the view is open.
     pub point: Option<LoopPoint>,
@@ -1585,13 +1588,14 @@ pub struct LoopHost {
     /// ([`LoopHost::take_asks`]), a bit each.
     asks_told: u32,
     /// A side picked for a loop (the loop point view's Snap, Keep my tap,
-    /// Use my tap, Keep the snap, and A/B's swaps): the snap that gets
+    /// Use my tap, Keep the snap): the snap that gets
     /// there is worked out when no other is under way
     /// ([`LoopHost::side`]); true: the chip is put away once there.
     side_want: Option<(usize, Side, bool)>,
-    /// A/B on loop `n`: each snap that lands asks for the other side on
-    /// the next downbeat ([`LoopHost::set_ab`]).
-    ab: Option<usize>,
+    /// A/B on the seam on loop `n` ([`LoopHost::set_ab`]), started at
+    /// the loop's version `v`: the looper ends it when the loop changes,
+    /// so it shows only while the loop is still at it.
+    ab: Option<(usize, u64)>,
     /// Keep my tap or Keep the snap: the chip is put away while loop `n`
     /// is at this version.
     kept: Option<(usize, u64)>,
@@ -2975,6 +2979,12 @@ impl LoopHost {
                 bars_words_n(b)
             ),
             (Command::NewInput, _) => "Capture forgets what it heard before".to_string(),
+            (Command::ForgetRedo, _) => "every loop forgets what Redo could bring back".into(),
+            (Command::RetireThrough(t), _) => {
+                format!("every loop lets go of its steps up to transaction {}", t.0)
+            }
+            (Command::AbSeam(true), _) => "A/B on the seam".to_string(),
+            (Command::AbSeam(false), _) => "A/B off".to_string(),
         };
         if !self.looper.command(c) {
             return format!("looper: {what}: NOT done, the command queue is full");
@@ -4927,7 +4937,7 @@ impl LoopHost {
     /// [`LoopHost::snap`] on loop `n`, picked or not.
     fn snap_on(&mut self, n: usize, s: Snap) -> String {
         self.snap_ask = None;
-        self.ab = None;
+        self.ab_stop();
         self.side_want = None;
         self.snap_want = Some((n, s, false));
         format!(
@@ -4946,7 +4956,7 @@ impl LoopHost {
     pub fn side(&mut self, side: Side, keep: bool) -> String {
         let n = self.looper.selected();
         self.snap_ask = None;
-        self.ab = None;
+        self.ab_stop();
         self.side_want = Some((n, side, keep));
         let what = match (side, keep) {
             (Side::Snap, false) => "Snap",
@@ -4987,30 +4997,48 @@ impl LoopHost {
         format!("{}, from a footswitch", self.side(side, false))
     }
 
-    /// A/B on the picked loop: it swaps between your tap and the snap on
-    /// each downbeat, with the tempo, until a side is picked
-    /// ([`LoopHost::side`]) or A/B goes off (it stays where it is). The
-    /// line for the log, or why not.
+    /// A/B on the seam on the picked loop ([`Command::AbSeam`]): each
+    /// time round, from half way, its last beat runs into its downbeat as
+    /// the other side (the snap, or your tap) has it, then as it is. Its
+    /// length and the tempo never change, so the time engine is asked
+    /// nothing (the owner's looper review, 5.6). Until a side is kept
+    /// ([`LoopHost::side`]) or A/B goes off (the loop stays as it is,
+    /// from the next half way). The line for the log, or why not.
     pub fn set_ab(&mut self, on: bool) -> String {
         let n = self.looper.selected();
         if !on {
-            self.ab = None;
-            self.side_want = None;
+            self.ab_stop();
             return format!("looper: A/B off: Loop {} stays as it is", n + 1);
         }
-        let Some(now) = self.side_of(n) else {
+        let (Some(now), Some(s)) = (self.side_of(n), self.looper.loop_status(n)) else {
             return format!(
                 "looper: Loop {}: A/B needs your tap and a snap to swap between",
                 n + 1
             );
         };
         self.snap_ask = None;
-        self.ab = Some(n);
-        self.side_want = Some((n, other_side(now), false));
+        self.side_want = None;
+        if !self.looper.command(Command::AbSeam(true)) {
+            return "looper: A/B: NOT done, the command queue is full".to_string();
+        }
+        self.ab = Some((n, s.version));
+        let other = match now {
+            Side::Tap => "the snap",
+            Side::Snap => "your tap",
+        };
         format!(
-            "looper: A/B: Loop {} swaps your tap and the snap on each downbeat",
+            "looper: A/B: each time round, Loop {}'s last beat runs into its downbeat as \
+             {other} has it, then as it is; the tempo stays",
             n + 1
         )
+    }
+
+    /// A/B goes off, if it is on: the looper finishes the round it is in
+    /// on the loop's own side.
+    fn ab_stop(&mut self) {
+        if self.ab.take().is_some() {
+            self.looper.command(Command::AbSeam(false));
+        }
     }
 
     /// The loop point view opened or closed: while open, the picked
@@ -5075,7 +5103,7 @@ impl LoopHost {
                 .filter(|a| a.0 == n)
                 .map(|a| (a.1, self.reads_again(a.1))),
             length: s.asks,
-            ab: self.ab == Some(n),
+            ab: self.ab == Some((n, s.version)) && s.ab.is_some(),
             point: self
                 .point
                 .filter(|p| self.point_open && p.0 == n)
@@ -5334,7 +5362,7 @@ impl LoopHost {
             Allowed::Ask(_) => {
                 self.snap_ask = Some((n, s));
                 self.side_want = None;
-                self.ab = None;
+                self.ab_stop();
                 return Some((
                     format!("looper: {}", ask_words(n, s, self.reads_again(s))),
                     true,
@@ -5357,7 +5385,7 @@ impl LoopHost {
         self.snaps_refused += 1;
         // A side asked for, and A/B, stop there.
         self.side_want = None;
-        self.ab = None;
+        self.ab_stop();
         (
             format!(
                 "looper: Loop {}: can't {}: {why}",
@@ -5406,15 +5434,6 @@ impl LoopHost {
         let Some(s) = self.looper.loop_status(p.n) else {
             return (None, song_bpm);
         };
-        // A/B: the other side on the next downbeat. Its swaps go in the
-        // log, not on the screen.
-        let swapping = self.ab == Some(p.n);
-        if swapping {
-            match self.side_of(p.n) {
-                Some(now) => self.side_want = Some((p.n, other_side(now), false)),
-                None => self.ab = None,
-            }
-        }
         let bar_ticks = match self.looper.free_clock().filter(|_| free) {
             Some(c) => c.meter.bar_ticks(),
             None => self.bar_ticks,
@@ -5441,7 +5460,7 @@ impl LoopHost {
                     "looper: Loop {n}: {what}: {bars}{at} {:.2} BPM, from its downbeat",
                     p.bpm
                 ),
-                !swapping,
+                true,
             )),
             song_bpm,
         )
@@ -5619,14 +5638,6 @@ pub fn overdubs_text(o: mpfree_looper::Overdubs) -> &'static str {
             "Replace (what you play takes the place of what was there)"
         }
         mpfree_looper::Overdubs::Once => "Once (one pass, then back to playing)",
-    }
-}
-
-/// The other side of smart loop end's choice.
-fn other_side(s: Side) -> Side {
-    match s {
-        Side::Tap => Side::Snap,
-        Side::Snap => Side::Tap,
     }
 }
 
@@ -6120,6 +6131,14 @@ mod tests {
         assert_eq!(
             line,
             "looper: Loop 1: smart loop end kept your tap: no note near it"
+        );
+        // Loop memory was full: the screen says why the end after the tap
+        // couldn't be offered.
+        note.outcome = SmartOutcome::Kept(mpfree_looper::MEMORY_FULL);
+        let (_, words) = smart_words(&note, SmartEnd::Suggest, 44_100);
+        assert_eq!(
+            words.as_deref(),
+            Some("Kept your tap: loop memory was full, so nothing after it was kept.")
         );
     }
 
