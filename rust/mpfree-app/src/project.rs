@@ -21,6 +21,7 @@
 //! | `perform` | the Perform set (`perform_pads.rs`) | `PerformSet::text` | `PerformSet::parse`, then `App::set_perform_set` |
 //! | `xy` | your XY layouts and which one plays (`xy_song.rs`), written only while there are some | `XySong::text` | `XySong::parse` on the audio loop; the one it played plays once the mixer is in |
 //! | `pads` | what the pads play, the pad map (`app/pads_focus.rs`, sampler step 15b): the base for every bank (the selected track's instrument, or one chosen for them), each bank's own entry and the layers | `App::pads_part` (`PadMap::text`) | `App::open_pads`, after the list; none (New) follows the track |
+//! | `tunings` | the instruments with a tuning of their own (`crate::tunings`), written only while one has | `App::tunings_part` | `App::open_tunings`, after the synth part (the song's tuning) and the list of instruments |
 //! | `audiotracks` | the audio tracks | [`audio_part`]: each track's settings and regions, a WAV a take in `samples/` | [`audio_open`] on a thread, then [`crate::audiotracks::TrackHost::open`] |
 //!
 //! The project's tempo is `project.txt`'s `tempo`, and its format
@@ -87,6 +88,9 @@ pub const INSTRUMENT_LIST: &str = "instrument-list";
 pub const PADS: &str = "pads";
 /// The Song view's audio tracks and their takes ([`audio_part`]).
 pub const AUDIOTRACKS: &str = "audiotracks";
+/// The instruments with a tuning of their own (tunings step T5): a line
+/// each by id, written only while one has (`crate::tunings::Tunings`).
+pub const TUNINGS: &str = "tunings";
 /// The song's patches (live shows C1, `mpfree_patch::Patches`): what the
 /// keys play. Written only while there are some.
 pub const PATCHES: &str = "patches";
@@ -139,7 +143,8 @@ pub const FORMAT: u32 = mpfree_library::project::PARTS_FORMAT;
 /// audio track ([`AUDIO_TRACKS`]), an audio clip ([`AUDIO_CLIPS`]), a
 /// linked song list ([`LINKED_SONG_LIST`]), a scene that keeps a track
 /// playing ([`SCENE_KEEP`]), patches ([`PATCHES_NEED`]), a free loop
-/// ([`FREE_LOOPS`]) or a scene that sets the tempo ([`SCENE_TEMPO`]).
+/// ([`FREE_LOOPS`]), a scene that sets the tempo ([`SCENE_TEMPO`]) or an
+/// instrument with a tuning of its own ([`OWN_TUNINGS`]).
 pub const NEEDS_KEY: &str = "needs";
 /// A project with a synth in a free place (the instrument redesign's step
 /// 6: one picked for the pads, no track's): an older build would read the
@@ -181,6 +186,10 @@ pub const FREE_LOOPS: &str = "free-loops";
 /// scene's `bpm` line and play on at the tempo before, so it must not
 /// open it.
 pub const SCENE_TEMPO: &str = "scene-tempo";
+/// A project with an instrument on a tuning of its own (tunings step T5):
+/// an older build would play it in the song's tuning without saying so,
+/// and lose its own at the next save.
+pub const OWN_TUNINGS: &str = "own-tunings";
 /// The features this build has, of those a project can need.
 pub const KNOWN_NEEDS: &[&str] = &[
     SYNTHS_WITHOUT_TRACKS,
@@ -191,6 +200,7 @@ pub const KNOWN_NEEDS: &[&str] = &[
     SCENE_KEEP,
     FREE_LOOPS,
     SCENE_TEMPO,
+    OWN_TUNINGS,
 ];
 
 // ------------------------------------------------------------ the loop's side
@@ -221,6 +231,9 @@ pub struct Collected {
     /// What the pads play ([`crate::app::App::pads_part`]); not saved
     /// when empty.
     pub pads: String,
+    /// The instruments' own tunings ([`crate::app::App::tunings_part`]);
+    /// not saved while it has no instrument (just its first line).
+    pub tunings: String,
     /// The Looper's loops with their layers' audio (read as they play:
     /// [`crate::looping::LoopHost::save`]); None when the looper couldn't
     /// save. Freed on the screen thread.
@@ -280,6 +293,9 @@ pub struct Opening {
     /// What the pads play (the pads part); None (New, or a project saved
     /// before it had one): they follow the selected track.
     pub pads: Option<String>,
+    /// The instruments' own tunings (the tunings part); None: every
+    /// instrument on the song's.
+    pub tunings: Option<String>,
     /// Lines for the log: parts that didn't read.
     pub notes: Vec<String>,
     /// What of the project's was left out (an effect or instrument this
@@ -377,6 +393,10 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     if !c.xy.is_empty() {
         parts.push((XY.to_string(), c.xy.clone()));
     }
+    let own_tunings = c.tunings.lines().count() > 1;
+    if own_tunings {
+        parts.push((TUNINGS.to_string(), c.tunings.clone()));
+    }
     parts.extend(extra);
     let mut extra = vec![
         (FORMAT_KEY.to_string(), FORMAT.to_string()),
@@ -416,6 +436,9 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
     }
     if c.clips.scenes.iter().any(|s| s.tempo.is_some()) {
         needs.push(SCENE_TEMPO);
+    }
+    if own_tunings {
+        needs.push(OWN_TUNINGS);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -500,7 +523,7 @@ fn check_against(snap: &Snapshot, known: &[&str]) -> Result<u32, String> {
     // song, so one that doesn't read is said and the pads follow the track
     // (`App::open_pads`).
     type Reads = fn(&str) -> Result<(), String>;
-    let checks: [(&str, Reads); 7] = [
+    let checks: [(&str, Reads); 8] = [
         (SAMPLER, |t| starts_with(t, mpfree_sampler::save::FORMAT)),
         (LOOPER, |t| mpfree_looper::save::from_text(t).map(drop)),
         (AUDIOTRACKS, |t| {
@@ -509,6 +532,11 @@ fn check_against(snap: &Snapshot, known: &[&str]) -> Result<u32, String> {
         (ARP, |t| starts_with(t, crate::app::ARP_HEADER)),
         (INSTRUMENT_LIST, |t| InstrumentList::parse(t).map(drop)),
         (TRACK_KITS, |t| track_kits_parse(t).map(drop)),
+        // Any file name reads here: one that isn't here is said at the
+        // open, and its instrument plays the song's.
+        (TUNINGS, |t| {
+            crate::tunings::Tunings::parse(t, |_| Some(0)).map(drop)
+        }),
         (PATCHES, |t| {
             mpfree_patch::Patches::parse(t)
                 .map(drop)
@@ -548,6 +576,7 @@ fn part_words(part: &str) -> String {
         INSTRUMENT_LIST => "list of instruments",
         PADS => "pads settings",
         AUDIOTRACKS => "audio tracks",
+        TUNINGS => "tunings",
         PATCHES => "patches",
         other => other,
     };
@@ -865,6 +894,7 @@ pub fn opening(
         sends,
         instrument_list,
         pads: snap.part(PADS).map(str::to_string),
+        tunings: snap.part(TUNINGS).map(str::to_string),
         notes,
         left_out,
         what: what.to_string(),
@@ -2969,6 +2999,7 @@ mod tests {
             track_kits,
             instrument_list: InstrumentList::new().text(),
             pads: String::new(),
+            tunings: String::new(),
             loops: None,
             audio: None,
         };
@@ -3034,6 +3065,7 @@ mod tests {
             track_kits,
             instrument_list,
             pads: String::new(),
+            tunings: String::new(),
             loops: None,
             audio: None,
         }
@@ -3904,6 +3936,7 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
                 pads: String::new(),
+                tunings: String::new(),
                 loops: None,
                 audio: None,
             };
@@ -3942,6 +3975,7 @@ mod tests {
             track_kits: String::new(),
             instrument_list: InstrumentList::new().text(),
             pads: String::new(),
+            tunings: String::new(),
             loops: None,
             audio: None,
         };
@@ -4025,6 +4059,7 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
                 pads: String::new(),
+                tunings: String::new(),
                 loops: None,
                 audio: None,
             };
@@ -4115,6 +4150,7 @@ mod tests {
                 track_kits: String::new(),
                 instrument_list: InstrumentList::new().text(),
                 pads: String::new(),
+                tunings: String::new(),
                 loops: None,
                 audio: None,
             };
@@ -4152,6 +4188,7 @@ mod tests {
             track_kits: String::new(),
             instrument_list: InstrumentList::new().text(),
             pads: String::new(),
+            tunings: String::new(),
             loops: None,
             audio: None,
         };

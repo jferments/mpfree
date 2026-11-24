@@ -1,5 +1,5 @@
 <!--
-covers: rust/mpfree-app/src/instrument_list.rs rust/mpfree-app/src/instruments.rs rust/mpfree-app/src/locks.rs rust/mpfree-app/src/project.rs rust/mpfree-app/src/app/pads_focus.rs rust/mpfree-app/src/time/strips.rs rust/mpfree-seq/src/lib.rs rust/mpfree-seq/src/save.rs
+covers: rust/mpfree-app/src/instrument_list.rs rust/mpfree-app/src/instruments.rs rust/mpfree-app/src/tunings.rs rust/mpfree-app/src/locks.rs rust/mpfree-app/src/project.rs rust/mpfree-app/src/app/pads_focus.rs rust/mpfree-app/src/time/strips.rs rust/mpfree-seq/src/lib.rs rust/mpfree-seq/src/save.rs
 checked: 2026-11-20 c5b97009
 -->
 # Instruments apart from tracks
@@ -445,3 +445,6 @@ The rest of steps 7 and 8, left out until each had a place on the screen or a wa
 - **A route to a kit** (sampler step 15f, part 3; [sampler-architecture.md](sampler-architecture.md#kits-play-like-any-instrument-step-15)): a route's instrument number can name a kit of the list too (`App::route_synth_kits`). Its row then plays the kit as that kit's Keys play sends each note (`RouteSynths::kit_key`, `play_route_kit_key`), and REC records it on a track of its own pointed at the kit. The Routing card's stepper still lists synths only; picking a kit there comes with step 15e's pickers.
 - **Tests:** `mpfree_midi::setup::tests::a_route_to_a_synth_reads_back_by_its_number`; `midi_in::tests::a_route_that_names_a_synth_plays_it_and_the_monitor_says_so`; `instruments::tests::a_route_row_plays_the_synth_its_route_names`; `mpfree_midi_ui::routing::tests::a_routes_track_steps_on_past_the_tracks_to_the_synths`; the monitor's words in `mpfree_midi_ui::monitor::tests`; `smoke::workflows::tests::a_route_that_names_a_synth_plays_it_and_rec_records_it_on_its_own_track` (FM kept by the route after Follow track, its key on the row, the chip, REC on Track 2 in one take with Track 1's kit).
 
+## Tunings (tunings step T5)
+
+A tuning is the instrument's, not the track's ([tunings.md](tunings.md)): every instrument in the list (the shared synth, each track's own, each free place's, each kit) plays the song's tuning ("Song's") or one of its own, kept by its id (`tunings.rs`). Tracks that play one instrument share its tuning; Duplicate copies it; a preset doesn't carry one. An instrument taken out loses its tuning with its id, so whatever takes its place starts on Song's. The audio loop hands each its tuning when its pick changes (`TuningsHanded`); the project keeps the picks in the `tunings` part, by id. The Synth tab's Tuning row sets its instrument's, and the Tunings page every instrument's and the song's. As built: [tunings.md](tunings.md#t5-as-built) and [the screens](tunings.md#t6-as-built-the-screens).

@@ -98,7 +98,7 @@ use mpfree_sampler_ui::auto_tab::{
 };
 use mpfree_sampler_ui::grain_tab::{self, CloudNow};
 use mpfree_sampler_ui::pads_tab::{self, PadsAction, PadsState, PadsTab};
-use mpfree_sampler_ui::play_tab::{self, PlayAction, PlayState, PlayTab, SceneAction};
+use mpfree_sampler_ui::play_tab::{self, KitTuning, PlayAction, PlayState, PlayTab, SceneAction};
 use mpfree_sampler_ui::rec_tab;
 use mpfree_sampler_ui::rec_widgets::Strip;
 use mpfree_sampler_ui::recall::RecallFrom;
@@ -915,6 +915,9 @@ pub struct SamplePage {
     /// Pad list's Effects row ([`SamplePage::set_pad_fx`]); None until the
     /// mixer says.
     pad_fx: Option<Vec<PadFx>>,
+    /// Each kit's tuning as the app names it, in kit order (tunings step
+    /// T6): the Edit pad's Tuning and pad line ([`SamplePage::set_kit_tunings`]).
+    kit_tunings: Vec<KitTuning>,
     /// The MIDI outputs a MIDI out pad can send to, for the Pads tab
     /// ([`SamplePage::set_pad_ports`]).
     pad_ports: Vec<pads_tab::OutPort>,
@@ -1259,6 +1262,7 @@ impl SamplePage {
             pads: None,
             pads_state: None,
             pad_fx: None,
+            kit_tunings: Vec::new(),
             pad_ports: Vec::new(),
             pads_on_synth: Vec::new(),
             cloud: Some(Box::default()),
@@ -1645,6 +1649,14 @@ impl SamplePage {
     /// Whether the Play tab shows its keyboard.
     pub fn play_keys_shown(&self) -> bool {
         self.play.as_ref().is_some_and(PlayTab::keys_shown)
+    }
+
+    /// The Play page's row picked, while it shows.
+    pub fn play_row(&self, ui: &Ui) -> Option<play_tab::Row> {
+        if self.page() != PLAY_PAGE {
+            return None;
+        }
+        self.play.as_ref().map(|t| t.row(ui))
     }
 
     /// What Q-Links 1 to 4 turn on the Play page now, for the hint line
@@ -2233,9 +2245,11 @@ impl SamplePage {
             (None, Some(i)) => PlayState::of_take(project, i, |s| sources.get(s)),
             (None, None) => PlayState::from_project(project, self.pad, |s| sources.get(s)),
         };
+        let kit_tuning = self.kit_tuning();
         st.map(|mut ps| {
             // For an LFO synced to it (sampler R5 part 4).
             ps.bpm = bpm;
+            ps.kit_tuning = kit_tuning;
             ps
         })
     }
@@ -2950,6 +2964,30 @@ impl SamplePage {
         }
     }
 
+    /// Each kit's tuning as the app names it, in kit order (tunings step
+    /// T6, layout spec 4e): Edit pad's Tuning, under The kit's pads, and
+    /// the pad's line show the kit's.
+    pub fn set_kit_tunings(&mut self, ui: &mut Ui, tunings: Vec<KitTuning>) {
+        if self.kit_tunings == tunings {
+            return;
+        }
+        self.kit_tunings = tunings;
+        let now = self.kit_tuning();
+        if self.editor != Editor::Play {
+            return;
+        }
+        if let (Some(tab), Some(st)) = (self.play.as_mut(), self.play_state.as_mut()) {
+            st.kit_tuning = now;
+            tab.update(ui, st);
+        }
+    }
+
+    /// The kit's tuning as the app last named it (Song's 12-TET until it
+    /// says).
+    fn kit_tuning(&self) -> KitTuning {
+        self.kit_tunings.get(self.kit).cloned().unwrap_or_default()
+    }
+
     /// The synth-voice pads that play through the Synth channel now (past
     /// the sixteen with a synth of their own, or whose own couldn't be
     /// made), by kit and pad: the Pad list says so under such a pad.
@@ -3644,6 +3682,13 @@ impl SamplePage {
                 self.refresh(ui);
             }
             PlayAction::Scene(s) => self.scene(ui, *s, out),
+            // The app keeps each kit's tuning with the project's
+            // instruments (tunings step T6); it names the kit's back
+            // ([`SamplePage::set_kit_tunings`]).
+            PlayAction::KitTuning(delta) => out.push(FromUi::KitTuning {
+                kit: self.kit,
+                delta: *delta,
+            }),
             PlayAction::AddLayer { pad, .. }
             | PlayAction::RemoveLayer { pad, .. }
             | PlayAction::LayerSound { pad, .. } => {

@@ -2640,7 +2640,7 @@ AREAS = (
       "a_pad_past_a16_is_lent_a_channel_and_gives_it_back_plain"]),
     ("Synth, Grains and Prefs",
      ["the_synth_options_pick_the_engine_the_scale_and_the_pad_layouts",
-      "the_synth_options_pick_the_tuning_its_root_and_a4",
+      "the_synth_tuning_row_gives_the_instrument_its_own_tuning",
       "the_synth_page_shows_poly_and_sends_its_changes",
       "the_grain_tool_sets_the_grains_and_says_what_the_audio_thread_plays",
       "the_grain_tools_device_checks_log_what_they_set_and_end_where_they_began",

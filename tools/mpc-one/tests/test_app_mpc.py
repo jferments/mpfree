@@ -1501,11 +1501,14 @@ class StaticTests(unittest.TestCase):
 
     def test_arp_patterns_are_saved_only_through_the_store(self):
         """The pad player has no --save-patterns any more: Save keeps the arp's patterns in mpfree-store
-        (arp/patterns.txt under --data), and --patterns FILE is only read."""
+        (arp/patterns.txt under --data), and --patterns FILE is only read. The owner's phrases go the same
+        way, to arp/phrases.txt beside them."""
         main = dict(self.program_sources())["mpfree-app/main.rs"]
         self.assertNotIn('"--save-patterns"', main)
         self.assertNotIn("fn write_patterns", main)
         self.assertIn("store.write(app::saved::ARP, app::saved::ARP_PATTERNS, text.into_bytes())", main)
+        self.assertIn("store.write(app::saved::ARP, app::saved::ARP_PHRASES, text.into_bytes())", main)
+        self.assertNotIn("fn write_phrases", main)
         with open(os.path.join(os.path.dirname(HERE), "offline-kexec-stick.py")) as fh:
             starts = [ln for ln in fh.read().splitlines() if "mpfree app" in ln]
         # With the data partition mounted, and without; in start-app.sh as root and as --app-user's mpfree.
