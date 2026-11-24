@@ -344,6 +344,7 @@ impl ContinueSet {
             .map(|(r, name)| OptionRow {
                 name: name.to_string(),
                 value: self.value(r),
+                ..OptionRow::default()
             })
             .collect()
     }

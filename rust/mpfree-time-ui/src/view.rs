@@ -3946,6 +3946,7 @@ pub fn clip_rows(st: &TimeState) -> Vec<OptionRow> {
             rows.push(OptionRow {
                 name: CLIP_ROWS[CLIP_CONTINUE].to_string(),
                 value: continue_card_value(c),
+                ..OptionRow::default()
             });
             rows
         }
