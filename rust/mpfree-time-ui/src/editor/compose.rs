@@ -19,7 +19,7 @@
 
 use mpfree_compose::{
     style_at, style_count, style_name, Aim, Character, ClipStyle, Ending, Keeps, RangeSetting,
-    Settings, STYLES,
+    Settings, SoundLevel, STYLES,
 };
 use mpfree_transport::time::Tick;
 use mpfree_ui::widgets::OptionRow;
@@ -28,26 +28,29 @@ use crate::continuing::Scope;
 
 /// The drawer's rows while Continue is open, top to bottom: the style,
 /// the Character (S5: what the new bars are for, in a word), the bars it
-/// adds, how the last bar closes, then what stays exactly as yours (the
+/// adds, how the last bar closes, how much the sound follows the phrase
+/// (S3: Off, Subtle or Bold), then what stays exactly as yours (the
 /// design's Keeps: Shape is the tune's shape, each step going the way
 /// yours did), each "yours" or "free".
-pub const CONTINUE_ROWS: [&str; 8] = [
+pub const CONTINUE_ROWS: [&str; 9] = [
     "Style",
     "Character",
     "Bars",
     "Ending",
+    "Sound",
     "Rhythm",
     "Shape",
     "Chords",
     "Accents",
 ];
-/// [`CONTINUE_ROWS`]' places of Style, Character, Bars and Ending.
+/// [`CONTINUE_ROWS`]' places of Style, Character, Bars, Ending and Sound.
 pub const STYLE_ROW: usize = 0;
 pub const CHARACTER_ROW: usize = 1;
 pub const BARS_ROW: usize = 2;
 pub const ENDING_ROW: usize = 3;
+pub const SOUND_ROW: usize = 4;
 /// The first of the Keeps in [`CONTINUE_ROWS`].
-pub const KEEP_ROW: usize = 4;
+pub const KEEP_ROW: usize = 5;
 /// The bars Continue adds, as the Bars row steps them.
 pub const BARS: [u8; 5] = [1, 2, 4, 8, 16];
 /// The endings, as the Ending row steps them.
@@ -71,6 +74,10 @@ pub struct ContinueSet {
     pub ending: Ending,
     /// What the new bars are for (S5): As the style until stepped.
     pub character: Character,
+    /// How much the sound follows the phrase (S3): Subtle until stepped.
+    /// Not a setting of the composer's: a step changes what is heard of
+    /// the tries made, never makes a new one ([`Compose::Sound`]).
+    pub sound: SoundLevel,
     pub keeps: Keeps,
     /// The Q-Links' settings ([`opening_q`]'s order), as the tool last
     /// left them.
@@ -90,6 +97,7 @@ impl Default for ContinueSet {
             bars: s.bars,
             ending: s.ending,
             character: s.character,
+            sound: SoundLevel::default(),
             keeps: s.keeps,
             q: opening_q(),
             row: 0,
@@ -119,6 +127,9 @@ pub enum Compose {
     /// or Try again (on everything, or on what is picked). The time engine
     /// picks the seed.
     Ask(Box<Asking>),
+    /// The Sound row stepped (S3): the tries' sound moves heard at this
+    /// level, no new try.
+    Sound(SoundLevel),
     /// Done: the result shown, as one take.
     Keep,
     /// Cancel: the clip as it was.
@@ -132,6 +143,8 @@ pub struct Asking {
     pub scope: Scope,
     /// The new bars locked (from 0).
     pub locked: Vec<u16>,
+    /// The Sound row (S3): how much the sound of the result moves.
+    pub sound: SoundLevel,
 }
 
 /// What Try again works on while Continue is open, and the new bars
@@ -312,8 +325,8 @@ impl ContinueSet {
     }
 
     /// Row `row` stepped `delta`: true when a setting changed. Style,
-    /// Character, Bars and Ending stop at their ends; a Keep is "yours"
-    /// with a step up and "free" with a step down.
+    /// Character, Bars, Ending and Sound stop at their ends; a Keep is
+    /// "yours" with a step up and "free" with a step down.
     pub fn step(&mut self, row: usize, delta: i32, made: &[ClipStyle]) -> bool {
         let by = |i: usize, n: usize| (i as i64 + i64::from(delta)).clamp(0, n as i64 - 1) as usize;
         match row {
@@ -340,6 +353,13 @@ impl ContinueSet {
                 let was = self.ending;
                 self.ending = ENDINGS[by(at, ENDINGS.len())];
                 self.ending != was
+            }
+            SOUND_ROW => {
+                let all = SoundLevel::ALL;
+                let at = all.iter().position(|&l| l == self.sound).unwrap_or(1);
+                let was = self.sound;
+                self.sound = all[by(at, all.len())];
+                self.sound != was
             }
             r if delta != 0 => match self.keep(r.wrapping_sub(KEEP_ROW)) {
                 Some(k) => {
@@ -377,10 +397,11 @@ impl ContinueSet {
                 Ending::LoopsBack => "Loop",
             }
             .to_string(),
-            4 => on(k.rhythm),
-            5 => on(k.tune_shape),
-            6 => on(k.chords),
-            7 => on(k.accents),
+            SOUND_ROW => self.sound.name().to_string(),
+            r if r == KEEP_ROW => on(k.rhythm),
+            r if r == KEEP_ROW + 1 => on(k.tune_shape),
+            r if r == KEEP_ROW + 2 => on(k.chords),
+            r if r == KEEP_ROW + 3 => on(k.accents),
             _ => String::new(),
         }
     }
@@ -411,6 +432,10 @@ impl ContinueSet {
             ),
             BARS_ROW => bars_words(self.bars),
             ENDING_ROW => self.ending.words().to_lowercase(),
+            SOUND_ROW => match self.sound {
+                SoundLevel::Off => "the sound stays as your patch".to_string(),
+                l => format!("sound {}", l.name().to_lowercase()),
+            },
             r => {
                 let name = CONTINUE_ROWS.get(r).copied().unwrap_or("").to_lowercase();
                 match self.value(r, made).as_str() {

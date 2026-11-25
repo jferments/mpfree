@@ -324,3 +324,42 @@ fn the_same_moves_at_any_period_size() {
         assert_eq!(got.project, want.project, "period {period}");
     }
 }
+
+/// A gesture over a lane of Continue's (composing tools S3) makes it
+/// yours: its points kept where the gesture doesn't reach while it was
+/// on, none of them while it was off; UNDO gives Continue's back whole,
+/// and the view keeps up in place as a compile makes it.
+#[test]
+fn a_gesture_takes_continues_lane_over_and_undo_gives_it_back() {
+    use mpfree_seq::mpfree_moves::By;
+    let target = Target::Track(RelAddr::new(OnTrack::Inst, 3));
+    for on in [true, false] {
+        let mut s = session(3840);
+        let c = s.project.tracks[0].slots[3].as_mut().unwrap();
+        let theirs = [(2000.0, 0.8, Kind::Step), (2400.0, 0.0, Kind::End)];
+        c.moves
+            .put(target, Map::linear(0.0, 1.0), &theirs, 3840)
+            .unwrap();
+        c.moves.set_by(target, By::Continue { on, base: 0.5 });
+        let was = c.moves.clone();
+        s.moves = vec![
+            (100.0, mv(cut(), 0.2)),
+            (200.0, mv(cut(), 0.5)),
+            (300.0, Input::End { addr: cut() }),
+        ];
+        s.frames = frame(1000.0);
+        let mut r = run(&s, 128);
+        assert_eq!(r.taken.len(), 1);
+        let moves = &r.project.clip(0, 3).unwrap().moves;
+        assert_eq!(moves.by(target), Some(By::Hand), "on {on}: yours");
+        let ticks: Vec<u32> = lane(&r.project, target).iter().map(|p| p.tick).collect();
+        match on {
+            true => assert_eq!(ticks, [100, 200, 300, 2000, 2400]),
+            false => assert_eq!(ticks, [100, 200, 300]),
+        }
+        r.takes.undo(&mut r.project).unwrap();
+        assert_eq!(r.project.clip(0, 3).unwrap().moves, was, "on {on}: UNDO");
+        r.takes.redo(&mut r.project).unwrap();
+        assert_eq!(lane(&r.project, target).len(), ticks.len(), "on {on}: REDO");
+    }
+}

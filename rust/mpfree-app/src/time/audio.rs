@@ -2092,10 +2092,16 @@ impl TimeAudio {
                         self.send_to_mixer(&*pads, &o, addr, Ev::End);
                     }
                 }
-                // A move lane's value goes to the mod engine too, where any
-                // hand on the control beats it.
+                // A move lane's value: as a lock, a kit pad's sound and an
+                // instrument take it on the frame (Continue's playing lanes
+                // on the instrument's knobs, composing tools S3; a turn on
+                // the Synth tab under it is what its end goes back to);
+                // the rest go to the mod engine, where any hand on the
+                // control beats it.
                 Event::Lane { addr, value } => {
-                    self.send_to_mixer(&*pads, &o, addr, Ev::Lane(value))
+                    if !pads.lock_at(addr, Some(value), o.offset) {
+                        self.send_to_mixer(&*pads, &o, addr, Ev::Lane(value))
+                    }
                 }
                 // A clip's program change goes to outside gear alone
                 // (`Pads::out`, S5): the pads have no programs.

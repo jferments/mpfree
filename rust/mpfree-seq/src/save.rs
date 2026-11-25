@@ -217,7 +217,7 @@ use std::fmt::Write as _;
 use std::str::FromStr;
 
 use mpfree_context::chord::{Chord, ChordAnswer, ChordSpan, ChordTimeline, Heard, Quality};
-use mpfree_moves::{Kind, Map, Moves, Point, Steps, Target};
+use mpfree_moves::{By, Kind, Map, Moves, Point, Steps, Target};
 use mpfree_notefx::{Slot, MAX_FX};
 use mpfree_param::{ParamAddr, RelAddr};
 use mpfree_transport::time::{Swing, Tick};
@@ -576,9 +576,15 @@ fn lanes_text(s: &mut String, prefix: &str, moves: &Moves) {
             Steps::Whole => "w",
             Steps::Toggle => "t",
         };
+        // Continue's (composing tools S3): on or off, and the knob it was
+        // written against. An older build reads the lane as yours.
+        let by = match lane.by {
+            By::Hand => String::new(),
+            By::Continue { on, base } => format!(" c {} {base}", u8::from(on)),
+        };
         let _ = writeln!(
             s,
-            "{prefix}lane {target} {} {} {} {steps}",
+            "{prefix}lane {target} {} {} {} {steps}{by}",
             lane.map.min,
             lane.map.max,
             u8::from(lane.map.log)
@@ -802,6 +808,7 @@ struct LaneAt {
     target: Target,
     map: Map,
     points: Vec<Point>,
+    by: By,
 }
 
 /// Reads a project from text [`to_text`] made (or a newer build's).
@@ -1451,7 +1458,9 @@ fn put_lane(moves: &mut Moves, l: LaneAt) -> Result<(), String> {
     moves
         .reserve(l.target, l.map, l.points.len())
         .and_then(|_| moves.restore(l.target, l.map, 0, u32::MAX, &l.points))
-        .map_err(|e| format!("lane {e:?}"))
+        .map_err(|e| format!("lane {e:?}"))?;
+    moves.set_by(l.target, l.by);
+    Ok(())
 }
 
 fn lane_head<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<LaneAt> {
@@ -1473,6 +1482,12 @@ fn lane_head<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<LaneAt> {
     if !min.is_finite() || !max.is_finite() {
         return None;
     }
+    // `c <on> <base>`: Continue's (S3). Anything else after is a newer
+    // build's, and the lane is read as yours.
+    let by = match (w.next(), flag(w.next()), num::<f32>(w.next())) {
+        (Some("c"), Some(on), Some(base)) if base.is_finite() => By::Continue { on, base },
+        _ => By::Hand,
+    };
     Some(LaneAt {
         target,
         map: Map {
@@ -1482,6 +1497,7 @@ fn lane_head<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<LaneAt> {
             steps,
         },
         points: Vec::new(),
+        by,
     })
 }
 
@@ -1888,6 +1904,39 @@ place 1 11520 3840 0 slot 1
 mod tests {
     use super::*;
     use mpfree_param::OnTrack;
+
+    /// Continue's lane (composing tools S3) reads back on or off with the
+    /// knob it was written against; the same line without them, as an
+    /// older build wrote it or reads it, is a lane of yours.
+    #[test]
+    fn continues_lane_reads_back_with_its_on_and_base() {
+        use mpfree_moves::{By, Kind, Map, Target};
+        let mut p = Project::new();
+        p.tracks.push(Track::new("Lead", 0));
+        let mut c = Clip::new("riff", 3840);
+        let target = Target::Track(RelAddr::new(OnTrack::Inst, 3));
+        let points = [(0.0, 2400.0, Kind::Step), (900.0, 0.0, Kind::End)];
+        let map = Map {
+            log: true,
+            ..Map::linear(20.0, 20_000.0)
+        };
+        c.moves.put(target, map, &points, 3840).unwrap();
+        c.moves.set_by(
+            target,
+            By::Continue {
+                on: false,
+                base: 1200.0,
+            },
+        );
+        p.tracks[0].slots[0] = Some(c);
+        let text = to_text(&p);
+        assert!(text.contains(" n c 0 1200\n"), "{text}");
+        let back = from_text(&text).unwrap();
+        assert_eq!(back, p);
+        let older = from_text(&text.replace(" n c 0 1200\n", " n\n")).unwrap();
+        let lane = older.clip(0, 0).unwrap().moves.lane(target).unwrap();
+        assert_eq!((lane.by, lane.points.len()), (By::Hand, 2));
+    }
 
     fn full() -> Project {
         let mut p = Project::new();

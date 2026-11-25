@@ -2440,6 +2440,7 @@ fn turned_moves(moves: &Moves, by: Tick, len: Tick) -> Moves {
         points.sort_by_key(|p| p.tick);
         // Room was checked when the clip's lanes were made.
         let _ = out.restore(lane.target, lane.map, 0, len, &points);
+        out.set_by(lane.target, lane.by);
     }
     out
 }

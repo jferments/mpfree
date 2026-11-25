@@ -6466,6 +6466,7 @@ impl Player {
         let parts = mpfree_time_ui::continuing::Parts {
             kinds,
             lanes: Lanes::new(lanes),
+            sound: self.sound_controls(),
         };
         if self.compose_parts.as_deref() == Some(&parts) {
             return None;
@@ -6475,6 +6476,36 @@ impl Player {
         Some(FromUi::Time(TimeAction::Continue(
             mpfree_time_ui::continuing::ContinueAction::Parts(parts),
         )))
+    }
+
+    /// The knobs Continue's sound moves may turn (composing tools S3): on
+    /// the track the steps show, while it plays the instrument the Synth
+    /// tab shows, its brightness and length as `safe_controls` picks
+    /// them from the knobs as they are set now. None otherwise: another
+    /// track's instrument is not known here.
+    fn sound_controls(&self) -> Option<(usize, mpfree_compose::SafeControls)> {
+        use mpfree_node::Curve;
+        if !self.held_plays_synth() {
+            return None;
+        }
+        let st = &self.synth.as_ref()?.state;
+        let knobs: Vec<mpfree_compose::Knob> = st
+            .params
+            .iter()
+            .zip(st.values.iter())
+            .filter(|(p, _)| !p.readonly)
+            .map(|(p, &value)| mpfree_compose::Knob {
+                id: p.id,
+                name: p.name,
+                group: p.group,
+                min: p.min,
+                max: p.max,
+                log: matches!(p.curve, Curve::Log),
+                value,
+            })
+            .collect();
+        let safe = mpfree_compose::safe_controls(&knobs);
+        (safe != mpfree_compose::SafeControls::default()).then_some((self.play.steps.track, safe))
     }
 
     /// What the Clips page asks of the time engine on its own, sent: Snap
@@ -26396,6 +26427,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             mpfree_time_ui::sample::notes_continue_state(),
             true,
         ),
+        (
+            "sequencer-notes-continue-sound",
+            mpfree_time_ui::sample::notes_continue_sound_state(),
+            false,
+        ),
     ];
     for (name, made, aim) in continues {
         let state = match made {
@@ -26423,6 +26459,29 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         p.refresh_qlinks();
         p.refresh_hint();
         out.push((name, p));
+    }
+    // Continue's lane (composing tools S3, board B): the riff kept with
+    // its four new bars, the lane under the roll on Continue's Cutoff.
+    match mpfree_time_ui::sample::notes_continue_lane_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.time_page.edit_lane = mpfree_time_ui::editor::LaneShow {
+                kind: mpfree_time_ui::editor::LaneKind::Sound(mpfree_time_ui::sample::lead_addr()),
+                ..Default::default()
+            };
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Sequencer));
+            let r = p.ui.rect_of(time_view::NOTES);
+            if let (Some(r), Some(g)) = (r, p.ui.get_mut::<NoteGrid>(time_view::NOTES)) {
+                let roll = g.roll_rect(r);
+                let lo = g.notes.iter().map(|n| n.note).min().unwrap_or(48);
+                let hi = g.notes.iter().map(|n| n.note).max().unwrap_or(59);
+                g.view = g.view.fit(roll, g.length, 128, (0, g.length), (lo, hi));
+            }
+            p.refresh_hint();
+            out.push(("sequencer-notes-continue-lane", p));
+        }
+        Err(e) => eprintln!("sequencer-notes-continue-lane sample: {e}"),
     }
     // The Pressure lane (piano roll plan 3A.1) under the two notes that
     // carry pressure, picked: their swells as lines.
@@ -35922,6 +35981,76 @@ mod tests {
         // Another clip: no lock lanes.
         open(&mut p, track, slot + 1, &clip);
         assert!(p.time.edit.as_ref().unwrap().locks.is_empty());
+    }
+
+    /// Continue's lane (composing tools S3): a clip whose Continue moved
+    /// a knob shows the lane on the roll, and its On and Remove ask the
+    /// time engine to turn that lane off or take it out.
+    #[test]
+    fn the_note_editor_shows_continues_lane_and_its_on_and_remove() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::mpfree_moves::{By, Kind, Map, Target};
+        use mpfree_time_ui::editor::{Editor, SOUND_LANE, SOUND_OFF, SOUND_REMOVE};
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let addr = RelAddr::new(OnTrack::Inst, 7);
+        let target = Target::Track(addr);
+        let mut clip = mpfree_seq::Clip::new("Line", 3840);
+        clip.holds = mpfree_seq::Holds::Notes;
+        clip.add_note(mpfree_seq::Note::new(0, 240, 60, 100))
+            .unwrap();
+        let points = [(0.0, 0.7, Kind::Step), (900.0, 0.0, Kind::End)];
+        clip.moves
+            .put(target, Map::linear(0.0, 1.0), &points, 3840)
+            .unwrap();
+        clip.moves.set_by(
+            target,
+            By::Continue {
+                on: true,
+                base: 0.5,
+            },
+        );
+        let mut st = Box::new(p.time.clone());
+        st.edit = Some(Box::new(time_view::EditInfo {
+            editor: Editor::new(0, 0, &clip),
+            clip: clip.clone().into(),
+            rev: 3,
+            track_name: "Track 1".into(),
+            bar: 3840,
+            answer: Default::default(),
+            locks: Default::default(),
+            ghosts: Default::default(),
+        }));
+        p.apply(ToUi::Time(st));
+        let grid = p.ui.get::<NoteGrid>(time_view::NOTES).unwrap();
+        assert_eq!(grid.sound_lanes.len(), 1);
+        assert_eq!(grid.sound_lanes[0].addr, addr);
+        assert!(grid.sound_lanes[0].on);
+        let press = |op| UiEvent {
+            widget: time_view::NOTES.into(),
+            kind: EventKind::Values {
+                index: SOUND_LANE,
+                set: vec![(0, op)],
+            },
+        };
+        let action = |on| {
+            Some(FromUi::Time(TimeAction::Edit(EditAction::SoundLane {
+                rev: 3,
+                addr,
+                on,
+            })))
+        };
+        assert_eq!(p.on_event(press(SOUND_OFF)), action(Some(false)));
+        assert_eq!(p.on_event(press(SOUND_REMOVE)), action(None));
+        // A lane the clip doesn't have: nothing.
+        let none = UiEvent {
+            widget: time_view::NOTES.into(),
+            kind: EventKind::Values {
+                index: SOUND_LANE,
+                set: vec![(1, SOUND_OFF)],
+            },
+        };
+        assert_eq!(p.on_event(none), None);
     }
 
     #[test]
