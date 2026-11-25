@@ -179,7 +179,7 @@ pub struct Desk<'a> {
     pub card: u32,
     /// The one history across the engines, for UNDO with Dev's "Loops on
     /// audio tracks" on (audio tracks phase 4d.1).
-    pub undo: &'a crate::one_undo::OneUndo,
+    pub undo: &'a mut crate::one_undo::OneUndo,
 }
 
 impl Desk<'_> {

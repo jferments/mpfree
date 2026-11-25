@@ -1348,8 +1348,9 @@ class StaticTests(unittest.TestCase):
                     ("mpfree-audiotracks/files.rs", "std::fs::rename(&from, &to)?;"),
                     # Loop layers' files (files.rs, audio tracks phase 4c.3): written in the same work folder
                     # through mpfree-stream's StdFs (above); once a project save holds a layer's copy in its
-                    # samples/, the work folder's copy goes (only a file directly in that folder).
-                    ("mpfree-audiotracks/files.rs", "} let _ = std::fs::remove_file(path);"),
+                    # samples/, the work folder's copy goes (only a file directly in that folder), and the
+                    # layer is read back from the project's copy from then on (phase 4d.4, reads only).
+                    ("mpfree-audiotracks/files.rs", "let _ = std::fs::remove_file(&*path);"),
                     # The SD card's read-only window, the pad player's side (sd_card.rs, SD card step S1): its
                     # request and close are small files in /run/mpfree-app (RAM, Paths::on_the_stick with
                     # REPORT_DIR), written whole under a hidden name there (one an earlier try left removed

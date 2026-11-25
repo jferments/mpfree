@@ -2787,6 +2787,16 @@ impl LoopHost {
         match c {
             Command::Undo if tempo(h.done().last()) => return self.snap(Snap::Undo),
             Command::Redo if tempo(h.redo().first()) => return self.snap(Snap::Redo),
+            // One whose layer is away (phase 4d.4) waits for it, as the
+            // undo history's presses do.
+            Command::Undo | Command::Redo
+                if self
+                    .looper
+                    .away_for(self.looper.selected(), c == Command::Redo)
+                    .is_some() =>
+            {
+                return self.steps(if c == Command::Redo { 1 } else { -1 });
+            }
             _ => {}
         }
         // The app's latency is the line input's; the pads have their own.
@@ -3241,6 +3251,12 @@ impl LoopHost {
         format!("looper: loop {}: {c:?}, from the one history", n + 1)
     }
 
+    /// The recording of loop `n`'s layer numbered `born` (0: none yet), to
+    /// bring it back from its file (phase 4d.4).
+    pub fn layer_rec(&self, n: usize, born: u64) -> u128 {
+        self.layer_recs.rec_of(n, born)
+    }
+
     /// Loop `n`'s step as UNDO names it ("Overdub · Layer 2"), its layers
     /// by their place in the loop now; None is its Clear, kept for Undo
     /// ([`mpfree_looper::Looper::loop_steps`]).
@@ -3254,19 +3270,48 @@ impl LoopHost {
         crate::looper_page::step_text(s, &layers, self.rate)
     }
 
-    /// As many of the undo history's presses as the queue takes.
+    /// As many of the undo history's presses as the queue takes, up to
+    /// the first whose layer is away (audio tracks phase 4d.4): that one
+    /// and those after it wait until it is brought back
+    /// ([`LoopHost::waits_for_layer`]).
     fn queue_steps(&mut self) {
-        while self.steps_left != 0 {
-            let c = if self.steps_left < 0 {
-                Command::Undo
-            } else {
-                Command::Redo
-            };
+        if self.steps_left == 0 {
+            return;
+        }
+        let redo = self.steps_left > 0;
+        let c = if redo { Command::Redo } else { Command::Undo };
+        let left = self.steps_left.unsigned_abs() as usize;
+        let queued = self.looper.steps_queued();
+        let n = self.looper.selected();
+        let free = self
+            .looper
+            .steps_before_away(n, redo, queued + left)
+            .saturating_sub(queued);
+        for _ in 0..free.min(left) {
             if !self.looper.command(c) {
                 break;
             }
             self.steps_left -= self.steps_left.signum();
         }
+    }
+
+    /// The undo history's presses still to go are called off.
+    pub fn stop_steps(&mut self) {
+        self.steps_left = 0;
+    }
+
+    /// The loop and way (Redo: true) the undo history's presses wait on
+    /// for a layer that is away to be brought back from its file (audio
+    /// tracks phase 4d.4: the one UNDO's [`crate::one_undo::OneUndo`]
+    /// brings it back). None if they don't wait.
+    pub fn waits_for_layer(&self) -> Option<(usize, bool)> {
+        let redo = self.steps_left > 0;
+        let n = self.looper.selected();
+        let waits = self.steps_left != 0
+            && self.looper.steps_queued() == 0
+            && !self.looper.step_waits(n, redo)
+            && self.looper.away_for(n, redo).is_some();
+        waits.then_some((n, redo))
     }
 
     /// Pick loop `n` for the presses and controls after this, with its
@@ -3933,6 +3978,11 @@ impl LoopHost {
             files,
             frames * SAVE_SPEED,
         );
+        // A layer in a synced file this run wrote may leave memory while
+        // only UNDO needs it (phase 4d.4).
+        for (n, born) in self.layer_recs.written_here() {
+            self.looper.set_synced(n, born);
+        }
         let why = self.layer_writer.take_failure()?;
         Some(format!(
             "looper: a layer's file couldn't be written ({why}); its audio stays in memory \
@@ -8574,6 +8624,101 @@ mod tests {
         fn written(&mut self) -> Option<(u128, Option<String>)> {
             (!self.said.is_empty()).then(|| self.said.remove(0))
         }
+    }
+
+    /// Phase 4d.4: a layer whose file this run wrote and synced may leave
+    /// memory while only UNDO needs it, when a new layer needs the room;
+    /// the save still names its file, and its file holds what the looper
+    /// takes back, so it comes back exactly before that UNDO.
+    #[test]
+    fn a_layer_in_its_file_leaves_memory_and_comes_back_from_it_exactly() {
+        // Seven seconds: a first pass of a bar (two seconds) with what it
+        // keeps and two overdubs, not a third.
+        let mut h = LoopHost::new(44_100, 7);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        let mut f = 0u64;
+        let mut period = |h: &mut LoopHost, t: &mut Transport, b: &mut Block, hz: f64| {
+            assert!(t.process(PERIOD as u32, b));
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            for i in 0..PERIOD {
+                l[i] = 0.2
+                    * ((f + i as u64) as f64 * hz * std::f64::consts::TAU / 44_100.0).sin() as f32;
+                r[i] = -l[i];
+            }
+            h.take_pads(&l, &r);
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            h.period(b, &mut l, &mut r);
+            f += PERIOD as u64;
+        };
+        h.set_recordings(true);
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        while h.looper.status().phase != Phase::Playing {
+            period(&mut h, &mut t, &mut b, 441.0);
+        }
+        let bar = 2 * 44_100 / PERIOD + 1;
+        let mut overdub = |h: &mut LoopHost, t: &mut Transport, b: &mut Block, hz: f64| {
+            h.command(Command::Overdub);
+            for _ in 0..bar {
+                period(h, t, b, hz);
+            }
+            h.command(Command::Overdub);
+            for _ in 0..20 {
+                period(h, t, b, 0.0);
+            }
+        };
+        overdub(&mut h, &mut t, &mut b, 660.0);
+        overdub(&mut h, &mut t, &mut b, 880.0);
+        assert_eq!(h.looper.status().layers, 3);
+        // Every layer to its file.
+        let mut files = FakeFiles::new();
+        let next = std::cell::Cell::new(0u128);
+        h.give_layer_recs(|| {
+            next.set(next.get() + 1);
+            0xbac0_0000 + next.get()
+        });
+        while h.unsaved_layers(0) > 0 {
+            assert_eq!(h.write_layers(&mut files, PERIOD), None);
+            run_host(&mut h, &mut t, &mut b, 1);
+        }
+        assert_eq!(h.write_layers(&mut files, PERIOD), None);
+        let second = h.looper.layer_info(1).unwrap();
+        let rec = h.layer_rec(0, second.born);
+        assert_ne!(rec, 0);
+        // Deleted, then a new overdub needs its room: it leaves memory,
+        // and no step is let go.
+        h.layer_command(second.id, LayerCommand::Delete);
+        run_host(&mut h, &mut t, &mut b, 20);
+        overdub(&mut h, &mut t, &mut b, 990.0);
+        assert_eq!(h.looper.status().layers, 3, "the overdub had room");
+        assert!(h.looper.is_away(0, second.born));
+        let file = format!("loop_{rec:032x}.wav");
+        assert!(
+            h.layer_recs.held_files(&h.looper).contains(&file),
+            "the save names its file"
+        );
+        // The new overdub undone and its Redo forgotten: the Delete is
+        // next, and waits for the layer.
+        h.command(Command::Undo);
+        run_host(&mut h, &mut t, &mut b, 20);
+        h.looper.command(Command::ForgetRedo);
+        run_host(&mut h, &mut t, &mut b, 2);
+        let (lp, slot, born) = h.looper.away_for(0, false).expect("the Delete needs it");
+        assert_eq!((lp, born), (0, second.born));
+        assert_eq!(h.layer_rec(lp, born), rec);
+        // Its file, as the worker reads it back, goes in.
+        let audio = files.done[&rec].clone();
+        let size = h.looper.begin_back(lp, slot).unwrap();
+        assert_eq!(audio.len(), 2 * size);
+        assert!(h.looper.put_back(&audio));
+        h.command(Command::Undo);
+        run_host(&mut h, &mut t, &mut b, 20);
+        assert_eq!(h.looper.status().layers, 3, "the deleted layer is back");
+        let mut again = vec![0.0; 2 * size];
+        assert_eq!(h.looper.raw_of(0, born, 0, &mut again), Some(size));
+        assert_eq!(again, audio, "exactly as it was written");
     }
 
     /// Phase 4c.3: with recordings on, each closed layer goes to its
