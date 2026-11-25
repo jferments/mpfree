@@ -158,6 +158,9 @@ pub enum LoopAct {
     Level(usize, f32),
     /// The deck's Pads switch: the pads as loop keys, or playing again.
     PadKeys,
+    /// Play's Loop group (audio tracks phase 4e, board 7): a knob turned
+    /// or the switch moved, the whole group as it is now.
+    Group(crate::loop_group::GroupSet),
     /// Capture (the deck's, What you played's): the last bars heard
     /// become a loop.
     Capture,

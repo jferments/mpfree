@@ -31,6 +31,9 @@ pub struct OnTracks {
     ids: [u128; MAX_LOOPS],
     /// The slots whose loop the project names, as last looked.
     named: [bool; MAX_LOOPS],
+    /// The project track each slot's loop is on, as last looked (the Loop
+    /// group's switch: phase 4e.1).
+    track: [Option<u8>; MAX_LOOPS],
     /// The slots in a first pass last period ([`OnTracks::follow_passes`]).
     passing: [bool; MAX_LOOPS],
     /// Periods since the last look.
@@ -45,6 +48,12 @@ impl OnTracks {
     /// Slot `n`'s loop's id, if it has one.
     pub fn id(&self, n: usize) -> Option<LoopId> {
         self.ids.get(n).filter(|&&i| i != 0).map(|&i| LoopId(i))
+    }
+
+    /// The project track slot `n`'s loop is on, as last looked (up to
+    /// [`LOOK_EVERY`] periods old).
+    pub fn track(&self, n: usize) -> Option<usize> {
+        self.track.get(n).copied().flatten().map(usize::from)
     }
 
     /// The slot holding loop `id`.
@@ -118,7 +127,9 @@ impl OnTracks {
         if self.since == 0 {
             for n in 0..MAX_LOOPS {
                 let id = self.ids[n];
-                self.named[n] = id != 0 && project.loop_track(LoopId(id)).is_some();
+                let t = (id != 0).then(|| project.loop_track(LoopId(id))).flatten();
+                self.named[n] = t.is_some();
+                self.track[n] = t.and_then(|t| u8::try_from(t).ok());
             }
         }
         self.since = (self.since + 1) % LOOK_EVERY;
@@ -727,6 +738,207 @@ mod tests {
         assert!(!h.looper.on_track(0));
         assert!(on_loop > 0.1, "back on the Loop track: {on_loop}");
         assert!(on_track < 1e-6, "the audio track is silent: {on_track}");
+    }
+
+    /// Phase 4e.1's proof, the Play page's Loop group on the looper and
+    /// the track player as main.rs runs them, a loop cell playing on Audio
+    /// 1, which then switches to a take clip (silent here):
+    ///
+    /// - At rest the track's sound is, to the bit, what it is with no
+    ///   group at all, and nothing is added to its Send A.
+    /// - Turned (Level -12 dB, Delay 50 %), the track's sound is the loop's
+    ///   at -12 dB once the first period's glide is done, and Send A has
+    ///   0.5 on top of its own value, which is never written.
+    /// - The switch to the take clip leaves the group behind: the outgoing
+    ///   loop keeps -12 dB to the end of its fade, then nothing of the loop
+    ///   is heard and nothing is added to Send A.
+    /// - With the switch on another track (or none armed) the group
+    ///   reaches nothing here: the sound is as at rest.
+    #[test]
+    fn the_loop_group_at_rest_leaves_the_track_as_it_was_and_a_take_clip_leaves_it_behind() {
+        use crate::audiotracks::TrackHost;
+        use crate::loop_group::{reaches, GroupSet, LoopGroup, SEND_A};
+        use crate::looping::LoopHost;
+        use mpfree_fx::{Mixer, MixerConfig, StripId};
+        use mpfree_looper::Command;
+        use mpfree_play::{AudioAnswer, AudioPlays};
+        use mpfree_seq::ClipId;
+        use mpfree_transport::time::PPQ;
+        use mpfree_transport::{Block, Command as T, Transport};
+
+        const RATE: u32 = 44_100;
+        let (loop_periods, take_periods) = (2 * LOOK_EVERY as usize + 400, 40);
+        let send = mpfree_fx::ids::mixer::send(SEND_A);
+        // One run: Loop 1 recorded (one bar of a tone from the pads), its
+        // cell on Audio 1, then the take clip; `group` None runs without
+        // one. Audio 1's left side each period, and Send A's added value
+        // and own value after each.
+        let run = |group: Option<GroupSet>, armed: Option<usize>| {
+            let mut h = LoopHost::new(RATE, 20);
+            let mut t = Transport::new(RATE, 120.0).unwrap();
+            let mut b = Block::new();
+            let mut tracks = TrackHost::new(RATE, 10);
+            let mut mixer = Mixer::new(
+                MixerConfig {
+                    inputs: 2,
+                    pads: 4,
+                    tracks: 4,
+                    slots: 4,
+                    max_latency_ms: 50.0,
+                },
+                RATE,
+                PERIOD,
+            );
+            let mut lg = LoopGroup::new(RATE);
+            if let Some(set) = group {
+                lg.set_to(set);
+            }
+            let mut p = Project::new();
+            let mut a = Track::new_audio("Audio 1", 0);
+            p.give_track_id(&mut a);
+            let audio_id = a.id;
+            p.tracks.push(a);
+            tracks.sync(&p, 0, true);
+            let slot = tracks.slots.slot_of(audio_id).expect("an engine track");
+            h.command(Command::SetBars(Some(1)));
+            h.command(Command::Record);
+            t.command(0, T::Play);
+            let mut f = 0u64;
+            while h.looper.status().phase != Phase::Playing {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                for i in 0..PERIOD {
+                    let g = (f + i as u64) as f64;
+                    l[i] = 0.3 * (g * 441.0 * std::f64::consts::TAU / RATE as f64).sin() as f32;
+                    r[i] = -l[i];
+                }
+                h.take_pads(&l, &r);
+                h.run(&b, &mut [0.0; PERIOD], &mut [0.0; PERIOD]);
+                f += PERIOD as u64;
+            }
+            h.give_loop_id(|| tracks.fresh_loop_id());
+            let id = h.on_tracks.id(0).expect("a loop with sound gets an id");
+            p.tracks[0].slots[0] = Some(Clip::new_audio_loop(id, "Loop 1", i64::from(4 * PPQ)));
+            p.give_clip_ids();
+            let c = p.tracks[0].slots[0].as_ref().unwrap();
+            let mut on_loop = AudioAnswer::default();
+            on_loop.start = AudioPlays::Loop {
+                id,
+                origin: h.looper.loop_status(0).unwrap().origin as f64,
+                len: c.length,
+                clip: c.id,
+                stamp: 1,
+            };
+            let mut on_take = AudioAnswer::default();
+            on_take.start = AudioPlays::Clip {
+                regions: &[],
+                origin: 0.0,
+                len: c.length,
+                last_frame: 0,
+                gain: 1.0,
+                clip: ClipId(c.id.0 + 1),
+                stamp: 2,
+            };
+            let own = mixer.param(StripId::Track(0), send);
+            let (mut heard, mut added) = (Vec::new(), Vec::new());
+            for k in 0..loop_periods + take_periods {
+                let ans = if k < loop_periods { on_loop } else { on_take };
+                assert!(t.process(PERIOD as u32, &mut b));
+                h.take_pads(&[0.0; PERIOD], &[0.0; PERIOD]);
+                tracks.sync(&p, 0, false);
+                tracks.plan_loops(&b, &|_| ans);
+                h.give_loop_id(|| tracks.fresh_loop_id());
+                h.tell_tracks(&p, tracks.loop_player());
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                h.run(&b, &mut l, &mut r);
+                let map = *t.tempo_map();
+                if group.is_some() {
+                    let set = lg.set();
+                    lg.run(
+                        PERIOD,
+                        |n| h.slot_out(n),
+                        |n| reaches(&set, armed, h.slot_track(n)),
+                    );
+                    let src = |i: u128| {
+                        h.slot_of(i)
+                            .and_then(|n| lg.out(n))
+                            .or_else(|| h.track_loop(i))
+                    };
+                    tracks.period_with_loops(&b, &map, true, h.input(), &|_| ans, &src);
+                    // Audio 1 on the mixer's first track channel.
+                    let plays: [Option<(usize, bool)>; MAX_TRACKS] = std::array::from_fn(|s| {
+                        let p = tracks.place(s)?;
+                        let on = !tracks.loop_player().runs(s).is_empty();
+                        Some((p, on && reaches(&set, armed, Some(p))))
+                    });
+                    lg.sends(&mut mixer, |s| plays[s]);
+                } else {
+                    let src = |i: u128| h.track_loop(i);
+                    tracks.period_with_loops(&b, &map, true, h.input(), &|_| ans, &src);
+                }
+                let out = tracks.host.tracks.track_out(slot, PERIOD);
+                heard.push(
+                    out.iter()
+                        .step_by(2)
+                        .take(PERIOD)
+                        .copied()
+                        .collect::<Vec<f32>>(),
+                );
+                added.push(mixer.send_add(StripId::Track(0), SEND_A));
+                assert_eq!(mixer.param(StripId::Track(0), send), own, "never written");
+            }
+            assert!(h.looper.on_track(0));
+            (heard, added)
+        };
+        let peak = |v: &[f32]| v.iter().fold(0.0f32, |m, x| m.max(x.abs()));
+
+        let (plain, _) = run(None, None);
+        let (rest, added) = run(Some(GroupSet::default()), Some(0));
+        assert_eq!(rest, plain, "at rest, to the bit");
+        assert!(added.iter().all(|&a| a == 0.0));
+        let steady = loop_periods - 20;
+        assert!(peak(&plain[steady]) > 0.1, "the loop plays on Audio 1");
+
+        let turned = GroupSet {
+            level_db: -12.0,
+            delay: 0.5,
+            ..GroupSet::default()
+        };
+        let gain = turned.gain();
+        let (down, added) = run(Some(turned), None);
+        for k in [1, steady, loop_periods - 1] {
+            for (d, p) in down[k].iter().zip(&plain[k]) {
+                assert!((d - p * gain).abs() < 1e-5, "period {k}: {d} for {p}");
+            }
+        }
+        assert_eq!(added[steady], 0.5, "the Delay on Send A");
+        // The switch: the fade's frames still at -12 dB, then nothing.
+        let at = loop_periods;
+        let fade = mpfree_audiotracks::FADE;
+        assert!(peak(&plain[at][..fade]) > 0.01, "the loop fades out");
+        for (d, p) in down[at][..fade].iter().zip(&plain[at][..fade]) {
+            assert!((d - p * gain).abs() < 1e-5, "in the fade: {d} for {p}");
+        }
+        for k in at + 1..at + take_periods {
+            assert_eq!(peak(&down[k]), 0.0, "period {k}: the loop is gone");
+            assert_eq!(peak(&plain[k]), 0.0);
+            assert_eq!(added[k], 0.0, "period {k}: nothing on Send A");
+        }
+        assert_eq!(added[at], 0.5, "while the loop fades");
+
+        // The switch on the armed track: Audio 1 (track 0) armed, reached;
+        // another armed, or none, as at rest.
+        let armed_only = GroupSet {
+            armed_only: true,
+            ..turned
+        };
+        let (on_armed, _) = run(Some(armed_only), Some(0));
+        assert_eq!(on_armed[steady], down[steady]);
+        for armed in [Some(1), None] {
+            let (other, added) = run(Some(armed_only), armed);
+            assert_eq!(other[steady], plain[steady], "{armed:?}");
+            assert!(added.iter().all(|&a| a == 0.0));
+        }
     }
 
     /// Making a loop cell, as main.rs runs it with Dev's switch on: an

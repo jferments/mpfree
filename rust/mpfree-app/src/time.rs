@@ -980,6 +980,15 @@ impl TimeHost {
         }
     }
 
+    /// The audio track armed by its own arm (see
+    /// `TimeControl::audio_armed`): the Loop group's "Armed" half.
+    pub fn audio_armed(&self) -> Option<usize> {
+        match &self.control {
+            Half::Here(c) => c.audio_armed(),
+            Half::Apart(a) => a.light.audio_armed,
+        }
+    }
+
     /// The selected track (the one the Sequencer edits, and the pads and
     /// the arp panel follow): the armed track unless a track was picked
     /// while REC's arm is pinned (refactor C1).

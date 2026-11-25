@@ -4075,6 +4075,18 @@ impl LoopHost {
         self.on_tracks.out(&self.looper, id)
     }
 
+    /// Slot `n`'s sound this period, for its track (None: it isn't on
+    /// one), after [`LoopHost::run`]: the Loop group's (phase 4e.1).
+    pub fn slot_out(&self, n: usize) -> Option<&[f32]> {
+        let id = self.on_tracks.id(n)?;
+        self.on_tracks.out(&self.looper, id.0)
+    }
+
+    /// The project track slot `n`'s loop is on, as last looked.
+    pub fn slot_track(&self, n: usize) -> Option<usize> {
+        self.on_tracks.track(n)
+    }
+
     /// One period without the mixer (the screen's samples): as
     /// [`LoopHost::run`], then the loop (and the line input, with Monitor
     /// on) added to the output, kept within ±1. Returns the output's peak,

@@ -116,6 +116,7 @@ enum ToThread {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Light {
     pub armed: Option<usize>,
+    pub audio_armed: Option<usize>,
     pub selected: Option<usize>,
     pub also: u128,
     pub loop_cell: Option<(usize, usize)>,
@@ -143,6 +144,7 @@ impl Light {
     pub fn of(c: &TimeControl) -> Light {
         Light {
             armed: c.armed(),
+            audio_armed: c.audio_armed(),
             selected: c.selected(),
             also: c.also(),
             loop_cell: c.loop_cell(),
