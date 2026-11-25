@@ -10104,6 +10104,27 @@ impl Loop {
             // The gap before this run: only a writer still going is run.
             let (a, b) = (at.max(off), from.min(end));
             at = at.max(to);
+            // A load or a copy still coming into it (an opened project's
+            // loop that a cell names, phase 4e.3): it finishes on its
+            // frame in a gap too, as off the track, nothing of it heard.
+            if a < b && self.phase == Phase::Empty && (self.loading || self.adding) {
+                let (j, m) = (a - off, b - a);
+                let cut = Run {
+                    from: r.from + j,
+                    ticks: &r.ticks[j..j + m],
+                    input: &r.input[2 * j..2 * (j + m)],
+                    f: r.f + j as u64,
+                    playing: r.playing,
+                    first: None,
+                };
+                let mut gone = [[0f32; 2]; RUN];
+                self.run(store, stats, me, &cut, print, waiting, &mut gone[..m]);
+                // In, it is at full gain at once, as a loop on a track
+                // always is: the track fades it, not the looper.
+                if self.phase != Phase::Empty {
+                    self.gain = 1.0;
+                }
+            }
             let tail = self.phase == Phase::Overdubbing || self.od_open;
             let gap = t
                 .last

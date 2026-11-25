@@ -72,8 +72,8 @@
 use crate::report::ReportCard;
 use crate::view::PlacementInfo;
 use crate::widgets::{
-    dashed_outline, hatch, rec_song_pill, view_chip_rect, view_part_at, view_part_rect, view_title,
-    ArrangeView, REC_SONG_W,
+    dashed_outline, hatch, loop_mark, rec_song_pill, view_chip_rect, view_part_at, view_part_rect,
+    view_title, ArrangeView, CELL_WAVE, REC_SONG_W,
 };
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{frames_from, Input, Monitor, Region, TakeInfo};
@@ -546,6 +546,10 @@ pub struct ClipBlock {
     pub once: bool,
     /// What one pass plays, in ticks from the pass's start.
     pub pieces: Vec<ClipPiece>,
+    /// A block of a loop cell's clip (the rethink's phase 4e.3, board 8):
+    /// the loop's lasting id. Its header has the loop mark, its wave is
+    /// the loop's ([`SongLanes::loop_waves`]) and `pieces` is empty.
+    pub looped: Option<u128>,
 }
 
 /// One region of an audio clip as its block draws it ([`ClipBlock`]):
@@ -612,6 +616,9 @@ pub struct SongLanes {
     pub audio: Vec<AudioLane>,
     /// The waveforms read so far, a take each.
     pub waves: Vec<TakeWave>,
+    /// The loops' small waves by lasting id, one pass's peaks, 0 to 255
+    /// ([`crate::view::LoopFacts::wave`]): a loop block's wave (phase 4e.3).
+    pub loop_waves: Vec<(u128, [u8; CELL_WAVE])>,
     /// The picked audio region: (audio track, region index).
     pub region: Option<(usize, usize)>,
     /// The audio track whose panel is open over the lanes.
@@ -872,6 +879,7 @@ impl Default for SongLanes {
             show_button: false,
             audio: Vec::new(),
             waves: Vec::new(),
+            loop_waves: Vec::new(),
             region: None,
             panel: None,
             takes_open: None,
@@ -925,6 +933,37 @@ impl PartialEq for Painted {
 impl fmt::Debug for Painted {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Painted")
+    }
+}
+
+/// A loop block's wave (phase 4e.3, board 8): the loop's small wave `w`
+/// (one pass's peaks, 0 to 255) over its pass from x `pass.0` to
+/// `pass.1`, as 2-pixel bars every 3 pixels about the middle of `wave`,
+/// each column between two of the wave's points drawn between them, in
+/// the columns `cols.0..cols.1` only.
+fn paint_loop_wave(
+    cx: &mut PaintCx,
+    w: &[u8; CELL_WAVE],
+    wave: Rect,
+    pass: (i32, i32),
+    cols: (i32, i32),
+    ink: Color,
+) {
+    let (x0, x1) = pass;
+    let span = f64::from((x1 - x0).max(1));
+    let half = f64::from((wave.h - 2).max(2)) / 2.0;
+    let mid = wave.y + wave.h / 2;
+    let from = x0.max(cols.0);
+    // On the bars' grid from the pass's start.
+    let first = from + (x0 - from).rem_euclid(3);
+    for x in (first..x1.min(cols.1)).step_by(3) {
+        let at = f64::from(x - x0) / span * CELL_WAVE as f64;
+        let k = (at.floor() as usize).min(CELL_WAVE - 1);
+        let (a, b) = (f64::from(w[k]), f64::from(w[(k + 1) % CELL_WAVE]));
+        let v = (a + (b - a) * at.fract()) / 255.0;
+        let h = (v * half).round().max(1.0) as i32;
+        cx.canvas
+            .fill_rect(Rect::new(x, mid - h, 2.min(cols.1 - x), 2 * h), ink);
     }
 }
 
@@ -1194,6 +1233,7 @@ impl SongLanes {
             show_button: self.show_button,
             audio: self.audio.clone(),
             waves,
+            loop_waves: self.loop_waves.clone(),
             region: self.region,
             panel: self.panel,
             takes_open: self.takes_open,
@@ -3042,6 +3082,11 @@ impl SongLanes {
     /// pass after pass, with a faint line where each pass after the first
     /// starts. Lanes too thin for the strip (under 24 pixels) show the
     /// name over the wave.
+    ///
+    /// A loop cell's block (phase 4e.3, board 8) has the loop mark before
+    /// its name, the loop's small wave pass after pass as bars about the
+    /// middle, and where it starts inside its loop, a dark chip after the
+    /// name saying where ("from bar 2").
     fn paint_clip_block(
         &self,
         cx: &mut PaintCx,
@@ -3084,10 +3129,23 @@ impl SongLanes {
         let (from, to) = self.ticks_shown();
         let (lo, hi) = (start.max(from), end.min(to));
         let pass_px = self.x_of(g.lanes, c.origin + pass) - self.x_of(g.lanes, c.origin);
+        let loop_wave = c
+            .looped
+            .and_then(|id| self.loop_waves.iter().find(|w| w.0 == id))
+            .map(|w| &w.1);
         if pass_px >= 3 {
             let seam = t.text.with_alpha(0x38);
             let mut o = c.origin + (lo - c.origin).div_euclid(pass) * pass;
             while o < hi {
+                if let Some(w) = loop_wave {
+                    let px0 = self.x_of(g.lanes, o);
+                    let px1 = self.x_of(g.lanes, o + pass).max(px0 + 1);
+                    let cols = (
+                        self.x_of(g.lanes, lo).max(br.x),
+                        self.x_of(g.lanes, hi).min(br.right()),
+                    );
+                    paint_loop_wave(cx, w, wave, (px0, px1), cols, ink);
+                }
                 for p in &c.pieces {
                     let (s, e) = (o + p.start, o + p.end);
                     if e <= lo || s >= hi {
@@ -3110,25 +3168,43 @@ impl SongLanes {
         }
         cx.canvas.stroke_round_rect(full, t.round(6), 1, ink);
         if br.w > 30 {
-            let name = if c.once {
+            // Where a loop block starts inside its loop (board 8).
+            let off = (start - c.origin).rem_euclid(pass);
+            let from =
+                (c.looped.is_some() && off > 0).then(|| format!("from {}", self.at_text(off)));
+            let mut name = if c.once {
                 format!("{} · once", b.name)
             } else {
                 b.name.clone()
             };
-            let room = br.w - 10 - if b.unique { 10 } else { 0 };
-            let (at, text) = if strip_h > 0 {
+            let mut room = br.w - 10 - if b.unique { 10 } else { 0 };
+            let (mut at, text) = if strip_h > 0 {
                 (Rect::new(br.x + 5, br.y, room, strip_h), t.ink_on(color))
             } else {
                 (Rect::new(br.x + 5, br.y, room, br.h), t.text)
             };
-            cx.text(
-                FontId::Bold,
-                t.size_small - 3.0,
-                at,
-                Align::Left,
-                text,
-                &name,
-            );
+            if c.looped.is_some() {
+                let size = (strip_h - 3).clamp(9, 12);
+                let mark = Rect::new(at.x, at.y + (at.h.min(20) - size) / 2, size, size);
+                loop_mark(cx.canvas, mark, text);
+                at = at.take_left(size + 4).1;
+                room -= size + 4;
+            }
+            let size = t.size_small - 3.0;
+            match from {
+                Some(f) if strip_h > 0 => {
+                    let w = cx.measure(FontId::Bold, size, &name).min(room);
+                    let chip_w = cx.measure(FontId::Bold, size - 1.0, &f) + 10;
+                    if w + 6 + chip_w <= room {
+                        let chip = Rect::new(at.x + w + 6, at.y + 1, chip_w, strip_h - 2);
+                        cx.canvas.fill_round_rect(chip, 3, t.ink_on(color));
+                        cx.text(FontId::Bold, size - 1.0, chip, Align::Center, color, &f);
+                    }
+                }
+                Some(f) => name = format!("{name} · {f}"),
+                None => {}
+            }
+            cx.text(FontId::Bold, size, at, Align::Left, text, &name);
         }
     }
 
@@ -5161,6 +5237,7 @@ mod tests {
                 src: 0,
                 frames: 1000.0,
             }],
+            looped: None,
         });
         let mut ui = mpfree_ui::Ui::new(
             mpfree_ui::Theme::dark(),
@@ -5206,6 +5283,97 @@ mod tests {
             s.touch(2, Touch::Up, to, y, r),
             Some(EventKind::Place { index, row, at: 0 })
         );
+    }
+
+    /// A loop cell's block (phase 4e.3, board 8): drawn as a clip block,
+    /// the loop mark before its name in the strip, the loop's small wave
+    /// pass after pass as bars about the middle (none while the screen
+    /// has no wave for its loop), a faint line where each pass starts,
+    /// and, starting a bar into its loop, a dark chip saying "from bar 2"
+    /// after its name.
+    #[test]
+    fn a_loop_block_draws_the_loops_wave_pass_after_pass_and_where_it_starts() {
+        let bar = 3840;
+        let mut s = lanes();
+        put_audio(&mut s, vec![audio_lane(0, "Vocal", Vec::new())]);
+        let row = s.audio[0].row;
+        let mut all: Vec<SongBlock> = s.blocks.iter().cloned().collect();
+        let index = all.len();
+        all.push(SongBlock {
+            index,
+            track: row,
+            start: 4 * bar,
+            length: 8 * bar,
+            name: "Vox loop".into(),
+            unique: false,
+        });
+        s.blocks = SongBlocks::new(all);
+        s.audio[0].clips.push(ClipBlock {
+            index,
+            origin: 4 * bar,
+            pass: 2 * bar,
+            once: false,
+            pieces: Vec::new(),
+            looped: Some(7),
+        });
+        let paint = |s: &SongLanes| {
+            let mut ui = mpfree_ui::Ui::new(
+                mpfree_ui::Theme::dark(),
+                mpfree_ui::Fonts::embedded(),
+                1280,
+                800,
+            );
+            ui.add("song", s.clone());
+            ui.add_page("p", "song").unwrap();
+            ui.show("p").unwrap();
+            let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
+            ui.paint(&mut c);
+            (c, ui.rect_of("song").unwrap())
+        };
+        let t = mpfree_ui::Theme::dark();
+        let colour = s.audio[0].color;
+        let ink = colour.mix(t.text, 0.6);
+        // Pixels of `want` in the rows `y0..y1` of the block, inside its
+        // edge.
+        let count = |c: &mpfree_ui::SoftCanvas, br: Rect, y0: i32, y1: i32, want: Color| {
+            (y0..y1)
+                .flat_map(|y| (br.x + 3..br.right() - 3).map(move |x| (x, y)))
+                .filter(|&(x, y)| c.pixel(x, y).xrgb() == want.xrgb())
+                .count()
+        };
+        // No wave for its loop yet: a header and an empty body.
+        let (c, r) = paint(&s);
+        let br = s.block_rect(r, s.block(index).unwrap()).unwrap();
+        let strip = 15.min(br.h);
+        let body = (br.y + strip + 3, br.bottom() - 3);
+        assert_eq!(count(&c, br, body.0, body.1, ink), 0, "no wave");
+        let header = count(&c, br, br.y + 1, br.y + strip - 1, t.ink_on(colour));
+        // The loop's wave: bars about the middle, pass after pass.
+        s.loop_waves = vec![(7, [180; CELL_WAVE])];
+        let (c, _) = paint(&s);
+        let mid = br.y + strip + (br.h - strip) / 2;
+        let lit = count(&c, br, mid, mid + 1, ink);
+        assert!(lit > br.w as usize / 2, "bars across the block: {lit}");
+        let pass_px = br.w / 4;
+        for k in 0..4 {
+            let x0 = br.x + k * pass_px + 4;
+            let x1 = x0 + pass_px - 8;
+            let n = (x0..x1)
+                .filter(|&x| c.pixel(x, mid).xrgb() == ink.xrgb())
+                .count();
+            assert!(n > (x1 - x0) as usize / 2, "pass {k}: {n}");
+        }
+        // Started a bar into its loop: "from bar 2" on a dark chip after
+        // the name.
+        s.audio[0].clips[0].origin = 3 * bar;
+        let (c, _) = paint(&s);
+        let chip = count(&c, br, br.y + 2, br.y + strip - 2, t.ink_on(colour));
+        assert!(chip > header + 300, "a chip: {chip} against {header}");
+        // Lanes from a pass's start show no chip.
+        s.audio[0].clips[0].origin = 2 * bar;
+        let (c, _) = paint(&s);
+        let none = count(&c, br, br.y + 2, br.y + strip - 2, t.ink_on(colour));
+        assert!(none < header + 50, "no chip: {none} against {header}");
     }
 
     #[test]

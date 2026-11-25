@@ -19898,6 +19898,120 @@ mod tests {
         assert_eq!(regions(&tracks), [(end, 4 * bar)]);
     }
 
+    /// Phase 4e.3's proof: a loop cell launched with Rec song over two of
+    /// its passes, on a lane that recorded those two bars, goes into the
+    /// song as a block that leaves no region under it; the song's UNDO
+    /// brings the region back (and takes the block away), REDO both again.
+    #[test]
+    fn rec_songs_loop_block_over_two_passes_of_a_region_leaves_no_region_and_undo_brings_it_back() {
+        use mpfree_seq::{Clip, LoopId, Project, Track};
+        use mpfree_transport::Tick;
+        let bar = 3840;
+        let bar_frames = 2 * RATE as usize;
+        let mut p = Project::new();
+        let mut t = Track::new_audio("Vocal", 0);
+        t.slots[0] = Some(Clip::new_audio_loop(LoopId(0x4e3), "Vox loop", bar));
+        p.tracks.push(t);
+        p.give_track_ids();
+        p.give_clip_ids();
+        let mut time = time::TimeHost::with_project(RATE, 120.0, p).unwrap();
+        time.set_loops_on(true);
+        let mut tracks = audiotracks::TrackHost::new(RATE, 10);
+        let mut out = Out {
+            console: None,
+            sink: None,
+            dropped: 0,
+            report: None,
+            queued: None,
+            last_draw: Instant::now(),
+        };
+        let run = |time: &mut time::TimeHost,
+                   tracks: &mut audiotracks::TrackHost,
+                   out: &mut Out,
+                   periods: usize| {
+            let z = [0f32; PERIOD];
+            for _ in 0..periods {
+                time.advance(PERIOD as u32);
+                time.period(PERIOD as u32, &mut QuietPads);
+                tracks.sync(time.project(), time.silenced(), true);
+                let t: &time::TimeHost = time;
+                tracks.period(
+                    t.block(),
+                    t.tempo_map(),
+                    t.song_on(),
+                    (&z, &z),
+                    Some(&|p| t.audio(p)),
+                );
+                cut_blocks_under_takes(out, time, tracks);
+            }
+        };
+        run(&mut time, &mut tracks, &mut out, 1);
+        let s = (0..mpfree_audiotracks::MAX_TRACKS)
+            .find(|&s| tracks.place(s) == Some(0))
+            .expect("an engine track for Vocal");
+        // Two bars the track recorded on the song from bar 1.
+        let take = mpfree_audiotracks::save::TakeFile {
+            id: 0,
+            rec: mpfree_audiotracks::RecordingId(8),
+            track: s as _,
+            group: 0,
+            pass: 0,
+            bpm: 120.0,
+            anchor: 0.0,
+            frames: 2 * bar_frames,
+            channels: 1,
+            file: String::new(),
+            path: None,
+            audio: vec![0.25; 2 * bar_frames],
+        };
+        assert!(tracks.host.tracks.load_take(take).is_ok());
+        for _ in 0..100 {
+            if tracks.host.tracks.loading() == 0 {
+                break;
+            }
+            run(&mut time, &mut tracks, &mut out, 10);
+        }
+        let map = *time.tempo_map();
+        assert!(tracks.host.tracks.place(0, &[], &map));
+        let regions = |tracks: &audiotracks::TrackHost| -> Vec<(Tick, Tick)> {
+            let tr = &tracks.host.tracks;
+            tr.regions(s).iter().map(|r| (r.start, r.end)).collect()
+        };
+        assert_eq!(regions(&tracks), [(0, 2 * bar)]);
+        // Rec song: the loop cell launched, PLAY, two passes and a little
+        // more, STOP.
+        time.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        time.act(TimeAction::RecSong(true)).unwrap();
+        time.act(TimeAction::Transport(mpfree_transport::Command::Play))
+            .unwrap();
+        run(
+            &mut time,
+            &mut tracks,
+            &mut out,
+            2 * bar_frames / PERIOD + 20,
+        );
+        time.act(TimeAction::Transport(mpfree_transport::Command::Stop))
+            .unwrap();
+        run(&mut time, &mut tracks, &mut out, 4);
+        let song = time.project().arrangement.clone();
+        assert_eq!(song.placements.len(), 1, "one block");
+        let b = &song.placements[0];
+        assert_eq!((b.track, b.start, b.offset), (0, 0, 0));
+        assert!(b.end() > 2 * bar && b.end() < 3 * bar, "{}", b.end());
+        let clip = time.project().block_clip(b).unwrap();
+        assert_eq!(clip.loop_id(), Some(LoopId(0x4e3)), "the loop's block");
+        assert_eq!(regions(&tracks), [], "no region under it");
+        // The song's UNDO brings the region back; REDO takes it again.
+        time.act_with_audio(TimeAction::Undo, &mut tracks).unwrap();
+        run(&mut time, &mut tracks, &mut out, 4);
+        assert!(time.project().arrangement.placements.is_empty());
+        assert_eq!(regions(&tracks), [(0, 2 * bar)], "the region back");
+        time.act_with_audio(TimeAction::Redo, &mut tracks).unwrap();
+        run(&mut time, &mut tracks, &mut out, 4);
+        assert_eq!(time.project().arrangement, song);
+        assert_eq!(regions(&tracks), []);
+    }
+
     /// Phase 2, step 2d: a take recorded over a block of an audio clip
     /// cuts the block at the take's edges, as a song edit the take's undo
     /// step is tied to: the song's UNDO takes back both (the block whole
@@ -20639,6 +20753,291 @@ mod tests {
         // REDO went away to make room, so there is more free now).
         assert!(r.looper.looper.memory().used <= used);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase 4e.3's rig: on the real engines with Dev's switch on, a
+    /// project of one audio track, Vocal, its first cell a three-bar loop
+    /// the looper holds, opened as a project's loop is, so its audio is
+    /// known: every frame its own value ([`loop_frame`]). Song mode on,
+    /// with blocks of the loop cell on Vocal's lane.
+    struct LoopSong {
+        time: time::TimeHost,
+        tracks: audiotracks::TrackHost,
+        looper: looping::LoopHost,
+        /// Vocal's engine track.
+        s: usize,
+        id: mpfree_seq::LoopId,
+    }
+
+    /// A bar at 120 BPM, in frames and ticks.
+    const SONG_BAR: usize = 2 * RATE as usize;
+    const SONG_BAR_TICKS: mpfree_transport::Tick = 3840;
+
+    /// The loop's frame `f` (of its three bars): each its own value,
+    /// neighbours far apart, so a frame early or late shows.
+    fn loop_frame(f: usize) -> f32 {
+        0.1 + 0.6 * ((f * 7919) % 10_007) as f32 / 10_007.0
+    }
+
+    impl LoopSong {
+        /// With `blocks` on Vocal's lane: each one's start, length and
+        /// offset into the loop, in song ticks.
+        fn new(
+            blocks: &[(
+                mpfree_transport::Tick,
+                mpfree_transport::Tick,
+                mpfree_transport::Tick,
+            )],
+        ) -> Box<LoopSong> {
+            use mpfree_looper::save::{LayerFile, LoopFile, Saved};
+            use mpfree_seq::{Clip, LoopId, Placement, Project, Track};
+            let id = LoopId(0x4e3);
+            let mut p = Project::new();
+            p.tracks.push(Track::new_audio("Vocal", 0));
+            p.give_track_ids();
+            p.tracks[0].slots[0] = Some(Clip::new_audio_loop(id, "Vox loop", 3 * SONG_BAR_TICKS));
+            p.give_clip_ids();
+            for &(start, length, offset) in blocks {
+                let mut b = Placement::of(&p.tracks, 0, 0, start, length);
+                b.offset = offset;
+                p.arrangement.place(b).unwrap();
+            }
+            let mut time = time::TimeHost::with_project(RATE, 120.0, p).unwrap();
+            time.set_loops_on(true);
+            time.act(TimeAction::SongMode(true)).unwrap();
+            let mut tracks = audiotracks::TrackHost::new(RATE, 10);
+            tracks.sync(time.project(), 0, true);
+            let s = (0..mpfree_audiotracks::MAX_TRACKS)
+                .find(|&s| tracks.place(s) == Some(0))
+                .expect("an engine track for Vocal");
+            let mut looper = looping::LoopHost::new(RATE, 20);
+            let frames = 3 * SONG_BAR;
+            let layer = LayerFile {
+                level: 1.0,
+                pan: 0.0,
+                muted: false,
+                solo: false,
+                faded: 1.0,
+                file: String::new(),
+                audio: (0..frames).flat_map(|f| [loop_frame(f); 2]).collect(),
+                raw: None,
+            };
+            let f = LoopFile {
+                frames,
+                ticks: 3 * SONG_BAR_TICKS,
+                origin: 0,
+                level: 1.0,
+                muted: false,
+                bars: None,
+                after: mpfree_looper::After::Play,
+                starts: mpfree_looper::Starts::Bar,
+                fade_old: 1.0,
+                speed: 0,
+                rate: 0,
+                id: id.0,
+                clock: mpfree_looper::Clock::Song,
+                layers: vec![layer],
+                raw: None,
+            };
+            let said = looper.load(Saved {
+                rate: RATE,
+                selected: 0,
+                loops: vec![(0, f)],
+                free_clock: None,
+                kept: Vec::new(),
+            });
+            assert_eq!(said, "looper: loading loops 1");
+            let mut r = Box::new(LoopSong {
+                time,
+                tracks,
+                looper,
+                s,
+                id,
+            });
+            let t0 = Instant::now();
+            while r.looper.looper.loop_status(0).map(|s| s.phase)
+                != Some(mpfree_looper::Phase::Playing)
+            {
+                assert!(
+                    t0.elapsed() < Duration::from_secs(30),
+                    "the loop never loaded"
+                );
+                r.period();
+            }
+            for _ in 0..2 * crate::loops_on_tracks::LOOK_EVERY {
+                r.period();
+            }
+            assert_eq!(r.time.project().tracks.len(), 1, "it lands nowhere new");
+            r
+        }
+
+        /// A period as the audio loop runs one with the switch on
+        /// (main.rs): the arranger, the track player's plan, the looper
+        /// told its runs and run, the time engine told the loops, then
+        /// the audio tracks with each loop into its track. Vocal's left
+        /// channel.
+        fn period(&mut self) -> Vec<f32> {
+            let z = [0f32; PERIOD];
+            let (time, tracks, looper) = (&mut self.time, &mut self.tracks, &mut self.looper);
+            time.advance(PERIOD as u32);
+            time.period(PERIOD as u32, &mut QuietPads);
+            let _ = looper.follow_plan(&time.loop_plan());
+            tracks.sync(time.project(), time.silenced(), false);
+            tracks.loops_moving(&looper.moving_ids());
+            tracks.plan_loops(time.block(), &|p| time.audio(p));
+            looper.give_loop_id(|| tracks.fresh_loop_id());
+            looper.tell_tracks(time.project(), tracks.loop_player());
+            looper.take_pads(&z, &z);
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            looper.run(time.block(), &mut l, &mut r);
+            if let Some(now) = looper.grid_now() {
+                if !time.loops_are_on(&now, &looper.loop_ids()).is_empty() {
+                    looper.look_again();
+                }
+            }
+            tracks.sync(time.project(), time.silenced(), false);
+            tracks.loop_listen(looper.listen_track());
+            let t: &time::TimeHost = time;
+            let lp: &looping::LoopHost = looper;
+            tracks.period_with_loops(
+                t.block(),
+                t.tempo_map(),
+                t.song_on(),
+                lp.input(),
+                &|p| t.audio(p),
+                &|id| lp.track_loop(id),
+            );
+            let o = tracks.host.tracks.track_out(self.s, PERIOD);
+            o.chunks_exact(2).map(|f| f[0]).collect()
+        }
+
+        /// From song tick `from`, PLAY for `bars` bars, then STOP: Vocal's
+        /// left channel, and the frame in it that each of `ticks` landed on.
+        fn play(
+            &mut self,
+            from: mpfree_transport::Tick,
+            bars: f64,
+            ticks: &[mpfree_transport::Tick],
+        ) -> (Vec<f32>, Vec<usize>) {
+            use mpfree_transport::Command;
+            assert!(self.time.command(Command::Locate(from)));
+            assert!(self.time.command(Command::Play));
+            let mut out = Vec::new();
+            let mut at = vec![None; ticks.len()];
+            let periods = (bars * SONG_BAR as f64) as usize / PERIOD;
+            for _ in 0..periods {
+                let o = self.period();
+                for sp in self.time.block().spans() {
+                    for (a, &t) in at.iter_mut().zip(ticks) {
+                        if let (None, Some(k)) = (*a, sp.offset_of(t as f64)) {
+                            *a = Some(out.len() + k as usize);
+                        }
+                    }
+                }
+                out.extend(o);
+            }
+            assert!(self.time.command(Command::Stop));
+            for _ in 0..8 {
+                self.period();
+            }
+            let at = at
+                .into_iter()
+                .map(|a| a.expect("every tick played"))
+                .collect();
+            (out, at)
+        }
+    }
+
+    /// Whether `out` from frame `at` plays the loop's frames from `from`
+    /// (of the edited loop, `len` frames a pass) for `n` frames, past the
+    /// track's entry fade and clear of the loop's seam, at one gain
+    /// throughout, to float rounding: the gain.
+    fn plays_loop_from(out: &[f32], at: usize, from: usize, len: usize, n: usize) -> f32 {
+        let want = |k: usize| loop_frame((from + k) % len);
+        let g = out[at + 4096] / want(4096);
+        assert!(g > 0.3, "it plays: gain {g}");
+        for k in 4096..n {
+            let (got, w) = (out[at + k], g * want(k));
+            assert!(
+                (got - w).abs() < 1e-4,
+                "frame {k} after {at}: {got}, not {w}"
+            );
+        }
+        g
+    }
+
+    /// Phase 4e.3's proof, on the real engines (layout spec board 8): a
+    /// three-bar loop's block (bars A, B and C of it) at bar 6 plays bar A
+    /// at bar 6 to the frame, nothing before; with its start trimmed by a
+    /// bar, its end kept, it plays bar B from bar 7, as a take clip's
+    /// block does.
+    #[test]
+    fn a_loop_block_plays_its_offsets_frames_and_trimmed_by_a_bar_plays_the_next() {
+        let bar = SONG_BAR_TICKS;
+        let mut r = LoopSong::new(&[(5 * bar, 4 * bar, 0)]);
+        let (out, at) = r.play(4 * bar, 2.0, &[5 * bar]);
+        let six = at[0];
+        assert!(out[..six].iter().all(|&v| v == 0.0), "nothing before bar 6");
+        plays_loop_from(&out, six, 0, 3 * SONG_BAR, SONG_BAR - 64);
+        // Trimmed by a bar: bar 7 plays bar B, bar 6 nothing.
+        r.time
+            .act(TimeAction::TrimPlacement {
+                index: 0,
+                start: 6 * bar,
+            })
+            .unwrap();
+        let b = r.time.project().arrangement.placements[0].clone();
+        assert_eq!((b.start, b.length, b.offset), (6 * bar, 3 * bar, bar));
+        let (out, at) = r.play(5 * bar, 2.0, &[6 * bar]);
+        let seven = at[0];
+        assert!(
+            out[..seven].iter().all(|&v| v == 0.0),
+            "nothing at bar 6 now"
+        );
+        plays_loop_from(&out, seven, SONG_BAR, 3 * SONG_BAR, SONG_BAR - 64);
+    }
+
+    /// Phase 4e.3's proof: the loop placed in two blocks with different
+    /// offsets, then edited (trimmed to its first two bars, A and B):
+    /// both blocks stay where they were, as long, and each plays the
+    /// frames its offset says of the loop as it is now, which repeats
+    /// sooner inside the same block. Its cell follows its new length.
+    #[test]
+    fn a_loop_edited_after_it_is_placed_leaves_its_blocks_where_they_were() {
+        use mpfree_looper::{Command as L, Edit};
+        let bar = SONG_BAR_TICKS;
+        let mut r = LoopSong::new(&[(0, 3 * bar, 0), (6 * bar, 3 * bar, bar)]);
+        let blocks = r.time.project().arrangement.placements.clone();
+        r.looper.command(L::Edit(Edit::Trim {
+            from: 0,
+            to: 2 * bar,
+        }));
+        let t0 = Instant::now();
+        while r.time.project().clip(0, 0).map(|c| c.length) != Some(2 * bar) {
+            assert!(
+                t0.elapsed() < Duration::from_secs(10),
+                "the cell never followed"
+            );
+            r.period();
+        }
+        assert_eq!(
+            r.time.project().arrangement.placements,
+            blocks,
+            "the blocks stay"
+        );
+        let len = 2 * SONG_BAR;
+        // Bar 1 plays A, bar 2 B, bar 3 A again.
+        let (out, at) = r.play(0, 3.0, &[0, bar, 2 * bar]);
+        plays_loop_from(&out, at[0], 0, len, SONG_BAR - 64);
+        plays_loop_from(&out, at[1], SONG_BAR, len, SONG_BAR - 4096);
+        plays_loop_from(&out, at[2], 0, len, SONG_BAR - 64);
+        // The block at bar 7, a bar into the loop: B, then A.
+        let (out, at) = r.play(6 * bar - bar / 2, 2.75, &[6 * bar, 7 * bar]);
+        assert!(out[..at[0]].iter().all(|&v| v == 0.0), "nothing before it");
+        plays_loop_from(&out, at[0], SONG_BAR, len, SONG_BAR - 4096);
+        plays_loop_from(&out, at[1], 0, len, SONG_BAR - 64);
+        assert_eq!(r.time.project().arrangement.placements, blocks);
+        let _ = r.id;
     }
 
     /// The same apart (--time-thread): the control half is lent for the

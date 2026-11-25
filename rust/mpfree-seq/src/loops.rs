@@ -18,7 +18,7 @@
 use mpfree_transport::time::Tick;
 
 use crate::{
-    Clip, DestId, LoopId, Project, Track, LOOPS, MAX_CLIP_TICKS, MAX_TRACKS, MIN_CLIP_TICKS,
+    Clip, ClipId, DestId, LoopId, Project, Track, LOOPS, MAX_CLIP_TICKS, MAX_TRACKS, MIN_CLIP_TICKS,
 };
 
 /// A loop's cell length for a loop of `ticks`: within a clip's range.
@@ -194,12 +194,28 @@ pub fn audio_cells(p: &Project, id: LoopId) -> impl Iterator<Item = (usize, usiz
 }
 
 /// Loop `id`'s cells on audio tracks take its new length, as a Loop
-/// track's cells do ([`set_length`]). How many changed.
+/// track's cells do ([`set_length`]), and so do the song's own clips of
+/// it (a cell made unique, or deleted while the song plays it: phase
+/// 4e.3), so its blocks' passes follow the loop. The blocks themselves
+/// never move or change length. How many changed.
 pub fn set_audio_length(p: &mut Project, id: LoopId, ticks: Tick) -> usize {
     let len = length(ticks);
     let mut changed = 0;
     for c in p.tracks.iter_mut().flat_map(|t| t.slots.clips_mut()) {
         if c.loop_id() == Some(id) && c.length != len {
+            c.length = len;
+            changed += 1;
+        }
+    }
+    let own: Vec<ClipId> = p
+        .arrangement
+        .clips
+        .iter()
+        .filter(|c| c.loop_id() == Some(id) && c.length != len)
+        .map(|c| c.id)
+        .collect();
+    for k in own {
+        if let Some(c) = p.arrangement.clips.get_mut(k) {
             c.length = len;
             changed += 1;
         }
@@ -324,6 +340,41 @@ mod tests {
         assert!(!jumped.on[0]);
         // A launch on the track (or its mute) keeps the song off it.
         assert!(!song_plan(&p, std::iter::once(2 * BAR..2 * BAR + 9), |t| t != 2).on[0]);
+    }
+
+    /// Phase 4e.3: a loop made shorter on an audio track: its cells and
+    /// the song's own clips of it take the new length, so its blocks'
+    /// passes come sooner, and its blocks stay where they were, as long.
+    /// Another loop's clips are left alone.
+    #[test]
+    fn a_loops_cells_and_the_songs_own_clips_of_it_follow_its_length_and_its_blocks_stay() {
+        use crate::arrange::Placement;
+        let mut p = project();
+        let mut a = Track::new_audio("Vocal", 2);
+        p.give_track_id(&mut a);
+        p.tracks.push(a);
+        let (id, other) = (LoopId(0xa), LoopId(0xb));
+        p.tracks[2].slots[0] = Some(Clip::new_audio_loop(id, "Vox", 4 * BAR));
+        p.tracks[2].slots[1] = Some(Clip::new_audio_loop(other, "Hum", 4 * BAR));
+        p.give_clip_ids();
+        let mut own = Clip::new_audio_loop(id, "Vox", 4 * BAR);
+        own.id = p.new_clip_id();
+        let own_id = own.id;
+        p.arrangement.clips.keep(own).unwrap();
+        let cell = p.tracks[2].slots[0].as_ref().unwrap().id;
+        let mut late = Placement::new(2, own_id, 8 * BAR, 8 * BAR);
+        late.offset = BAR;
+        p.arrangement.placements = vec![Placement::new(2, cell, 0, 8 * BAR), late];
+        p.check().unwrap();
+        let blocks = p.arrangement.placements.clone();
+        assert_eq!(set_audio_length(&mut p, id, 2 * BAR), 2);
+        let len = |c: Option<&Clip>| c.map(|c| c.length);
+        assert_eq!(len(p.clip(2, 0)), Some(2 * BAR));
+        assert_eq!(len(p.arrangement.clips.get(own_id)), Some(2 * BAR));
+        assert_eq!(len(p.clip(2, 1)), Some(4 * BAR), "another loop");
+        assert_eq!(p.arrangement.placements, blocks, "the blocks stay");
+        assert_eq!(set_audio_length(&mut p, id, 2 * BAR), 0, "once");
+        p.check().unwrap();
     }
 
     #[test]
