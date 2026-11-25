@@ -381,6 +381,9 @@ pub struct Take {
     /// A part added by Add a part ([`Takes::add_part`]): its clip is in
     /// `made`.
     pub part: bool,
+    /// The project's styles made from clips, before and after (composing
+    /// step 6: [`Takes::set_styles`]).
+    pub styles: Option<Box<(Vec<String>, Vec<String>)>>,
 }
 
 impl Take {
@@ -1063,6 +1066,35 @@ impl Takes {
             number,
             edited: true,
             chords: Some(Box::new(edit)),
+            ..Take::default()
+        });
+        Ok(number)
+    }
+
+    /// The project's styles made from clips become `styles` (composing
+    /// step 6: Make a style's Keep), as an edit of its own that UNDO takes
+    /// back while the project still has them, and REDO puts back. The
+    /// edit's number, or the latest edit's when nothing changes (no take
+    /// then). `TooManyStyles` past [`mpfree_seq::MAX_STYLES`]; nothing changes
+    /// then.
+    pub fn set_styles(
+        &mut self,
+        project: &mut Project,
+        styles: Vec<String>,
+    ) -> Result<u32, ModelError> {
+        if styles.len() > mpfree_seq::MAX_STYLES {
+            return Err(ModelError::TooManyStyles);
+        }
+        if project.styles == styles {
+            return Ok(self.edits);
+        }
+        let before = std::mem::replace(&mut project.styles, styles.clone());
+        self.edits += 1;
+        let number = self.edits;
+        self.push(Take {
+            number,
+            edited: true,
+            styles: Some(Box::new((before, styles))),
             ..Take::default()
         });
         Ok(number)
@@ -1871,6 +1903,11 @@ impl Takes {
                 put_row_chords(project, e.row, &e.before);
             }
         }
+        if let Some((before, after)) = take.styles.as_deref() {
+            if project.styles == *after {
+                project.styles.clone_from(before);
+            }
+        }
         if let Some((index, kept)) = &mut take.track_added {
             // Kept as it is now (its name, its clips), for redo.
             if project.tracks.len() == *index + 1 {
@@ -1936,6 +1973,11 @@ impl Takes {
         if let Some(e) = take.chords.as_deref() {
             if row_chords(project, e.row) == e.before {
                 put_row_chords(project, e.row, &e.after);
+            }
+        }
+        if let Some((before, after)) = take.styles.as_deref() {
+            if project.styles == *before {
+                project.styles.clone_from(after);
             }
         }
         remove_each(project, &take.erased);
@@ -2356,6 +2398,26 @@ mod tests {
         assert_eq!(names(&p, &k), [RecId(9)], "the history let go of it");
         k.clear();
         assert_eq!(k.recordings().count(), 0);
+    }
+
+    /// Composing step 6: a style kept is one edit that UNDO takes back and
+    /// REDO puts back; the same styles again is no edit; too many is
+    /// refused.
+    #[test]
+    fn a_style_kept_is_one_edit_undo_takes_back() {
+        let mut p = project();
+        let mut t = Takes::new(8);
+        let one = vec!["plan=Groove name=Clip 1 groove".to_string()];
+        let n = t.set_styles(&mut p, one.clone()).unwrap();
+        assert_eq!(p.styles, one);
+        assert_eq!(t.set_styles(&mut p, one.clone()), Ok(n), "nothing new");
+        t.undo(&mut p);
+        assert!(p.styles.is_empty());
+        t.redo(&mut p);
+        assert_eq!(p.styles, one);
+        let many = vec![String::from("x"); mpfree_seq::MAX_STYLES + 1];
+        assert_eq!(t.set_styles(&mut p, many), Err(ModelError::TooManyStyles));
+        assert_eq!(p.styles, one);
     }
 
     /// Composing tools S2.5: a chord set on a row is one edit that UNDO

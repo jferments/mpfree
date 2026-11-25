@@ -84,6 +84,7 @@ use super::{
 mod linked;
 mod parts;
 mod sections;
+mod styles;
 pub use linked::edits_steps;
 
 /// What a cue waiting for its audio needs from the control half
@@ -526,6 +527,17 @@ pub struct TimeControl {
     /// The scales the editor's Scale option offers, from the host (piano
     /// roll plan 2B.1, [`TimeControl::set_scale_offers`]).
     scale_offers: Arc<ScaleOffers>,
+    /// Make a style's sheet, open from the clip card (composing step 6,
+    /// board D; styles.rs).
+    style_sheet: Option<Box<mpfree_time_ui::style_sheet::StyleSheet>>,
+    /// The song's styles made from clips, read from `project.styles`, and
+    /// the lines they were read from ([`TimeControl::sync_styles`]).
+    styles: Arc<[mpfree_compose::ClipStyle]>,
+    style_lines: Vec<String>,
+    /// The Song view's Chords lane: each row the song's sections play,
+    /// heard in turn while the Song view shows (composing step 6, board
+    /// C; `song_chords.rs`).
+    song_hear: super::song_chords::SongHearing,
     /// The armed track: REC records it, and the audio half's recorder
     /// takes live notes only for it. Kept by its lasting id
     /// (`armed_id`), so a track added, taken away by UNDO or brought back
@@ -808,6 +820,8 @@ impl TimeControl {
         rx: Rx<ToControl>,
         tracks: Tracks,
     ) -> Result<TimeControl, String> {
+        let style_lines = project.styles.clone();
+        let styles = Arc::from(mpfree_compose::clip_styles(&style_lines));
         let mut c = TimeControl {
             project,
             launches: Vec::new(),
@@ -845,6 +859,10 @@ impl TimeControl {
             edit_rev: 0,
             edit_answer: EditAnswer::default(),
             scale_offers: Arc::default(),
+            style_sheet: None,
+            styles,
+            style_lines,
+            song_hear: super::song_chords::SongHearing::new(),
             armed: None,
             armed_id: TrackId::NONE,
             track_pick: None,
@@ -1899,6 +1917,7 @@ impl TimeControl {
         }
         self.refresh_unfit();
         self.hear_row();
+        self.hear_song();
         self.continue_anchor();
         let mut v = self.view_with_add()?;
         // Each new decision in it gets its revision and the frame the
@@ -3406,6 +3425,7 @@ impl TimeControl {
             let line = format!("edit: {} on {name}", clip.name);
             let mut ed = Editor::new(track, slot, clip);
             ed.offers = Arc::clone(&self.scale_offers);
+            ed.styles = Arc::clone(&self.styles);
             self.editor = Some(ed);
             self.edit_seen = Some(Arc::new(clip.clone()));
             self.edit_rev += 1;
@@ -3756,6 +3776,7 @@ impl TimeControl {
         );
         let mut ed = Editor::new(track, slot, clip);
         ed.offers = Arc::clone(&self.scale_offers);
+        ed.styles = Arc::clone(&self.styles);
         ed.show = show;
         self.editor = Some(ed);
         self.edit_seen = Some(Arc::new(clip.clone()));
@@ -4078,6 +4099,8 @@ impl TimeControl {
         };
         let edits = self.takes.edits();
         let mut r = self.act_in(a);
+        self.sync_styles();
+        self.hear_song();
         if let (Ok(line), false) = (&mut r, rows.is_empty()) {
             if let Some(more) = self.follow_rows(&rows, edits) {
                 // Before "(UNDO takes it back)" where the line ends so.
@@ -4817,6 +4840,8 @@ impl TimeControl {
             // The Make a phrase sheet is the arp's: the app opens it
             // (desk.rs), and nothing here changes.
             TimeAction::MakePhrase { .. } => Ok(String::new()),
+            TimeAction::MakeStyle { track, slot } => self.make_style(track, slot),
+            TimeAction::Style(s) => self.style_action(s),
             TimeAction::Convert { track, slot } => self.convert(track, slot),
             TimeAction::ConvertCancel => {
                 self.convert_asked = None;
@@ -8315,6 +8340,11 @@ impl TimeControl {
         if self.add.heard_answers() {
             self.changed = true;
         }
+        // The Song view's Chords lane: a row heard, then the next.
+        if self.song_hear.answers() {
+            self.changed = true;
+            self.hear_song();
+        }
         if !self.add.active() {
             return false;
         }
@@ -8605,6 +8635,41 @@ impl TimeControl {
         if let Err(e) = self.add.hear(&self.project, row, hearing) {
             self.add.stop_hearing();
             self.note_later(e);
+        }
+    }
+
+    /// While the Song view shows, hear the next row the song's sections
+    /// play whose clips or chords changed since it was heard, for its
+    /// Chords lane (composing step 6, board C). A composer that can't
+    /// start is said on the status line.
+    fn hear_song(&mut self) {
+        if !self.song_view {
+            return;
+        }
+        let bar = self.info.meter.bar_ticks().max(1);
+        let mut rows: Vec<usize> = mpfree_seq::arrange::scene_sections(&self.project, bar)
+            .iter()
+            .map(|s| s.2)
+            .collect();
+        rows.sort_unstable();
+        rows.dedup();
+        let wanted = rows
+            .into_iter()
+            .map(|row| {
+                let hearing = Hearing {
+                    parts: self.row_parts(row, None),
+                    swing: self.info.swing,
+                    transport_swing: self.info.swing,
+                    meter: self.info.meter,
+                    bpm: self.info.bpm,
+                };
+                (row, hearing)
+            })
+            .collect();
+        match self.song_hear.hear(&self.project, wanted) {
+            Ok(true) => self.changed = true,
+            Ok(false) => {}
+            Err(e) => self.note_later(e),
         }
     }
 
@@ -9579,6 +9644,9 @@ impl TimeControl {
         st.adding = self.add.screen();
         st.unfit = self.unfit.clone();
         st.row_chords = self.add.heard.clone();
+        st.styles = Arc::clone(&self.styles);
+        st.song_chords = self.song_hear.shown();
+        st.style_sheet = self.style_sheet.clone();
         st.also = self.also();
         st.capture = self.pending.map(|p| bars_label(p.bars));
         st.clipboard = self.clipboard.as_ref().map(|c| c.name.clone());

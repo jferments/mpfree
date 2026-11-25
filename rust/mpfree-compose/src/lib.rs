@@ -152,7 +152,10 @@ pub mod timing;
 pub use answer::{answer, Answered, Call, Reply};
 pub use beat::{continue_drums, Drummed, DrumsAsk, DrumsRefused, Hit as BeatHit};
 pub use bind::{audition, revision, revision_in, Binding, Stale};
-pub use clip_style::{read_clip, ClipStyle, Read as ClipRead, Subdivision};
+pub use clip_style::{
+    clip_styles, read_clip, style_at, style_count, style_name, ClipStyle, Read as ClipRead,
+    Subdivision,
+};
 pub use dice::{Dice, DiceName, Job};
 pub use event::{Event, MotifRef, Motion, NoteDecision, Part, PartId, Role, Source};
 pub use fit::{fit_clip, marks, FitRefused};

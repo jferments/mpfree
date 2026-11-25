@@ -219,25 +219,7 @@ impl Adding {
         if self.heard_on == Some((row, print)) {
             return Ok(());
         }
-        let ask = AddAsk {
-            row,
-            parts: hearing.parts,
-            lanes: mpfree_compose::Lanes::default(),
-            part: PartRole::Melody,
-            relation: mpfree_compose::Relation::Support,
-            kind: InstrumentKind::OneNote,
-            pads: [None; 4],
-            swing: hearing.swing,
-            transport_swing: hearing.transport_swing,
-            meter: hearing.meter,
-            bpm: hearing.bpm,
-            budget: ReadBudget::default(),
-            settings: mpfree_compose::Settings::default(),
-            bars: None,
-            attempt: 0,
-            phrase: None,
-        };
-        let job = AddPartJob::new(project, ask);
+        let job = hear_job(project, row, hearing);
         if self.hear_worker.is_none() {
             self.hear_worker = Some(Worker::start("chords", AddPartJob::hear)?);
         }
@@ -712,7 +694,34 @@ impl Adding {
 
 /// A fingerprint of what hearing row `row` reads: each clip it hears at
 /// its revision, and the row's own chords.
-fn fingerprint(project: &Project, row: usize, parts: &[mpfree_compose::ToRead]) -> u64 {
+/// A job that hears row `row`'s chords: the reading's ask with what
+/// `hearing` says, on the row's clips (the screens' strip, and the Song
+/// view's Chords lane, `song_chords.rs`).
+pub(super) fn hear_job(project: &Project, row: usize, hearing: Hearing) -> AddPartJob {
+    let ask = AddAsk {
+        row,
+        parts: hearing.parts,
+        lanes: mpfree_compose::Lanes::default(),
+        part: PartRole::Melody,
+        relation: mpfree_compose::Relation::Support,
+        kind: InstrumentKind::OneNote,
+        pads: [None; 4],
+        swing: hearing.swing,
+        transport_swing: hearing.transport_swing,
+        meter: hearing.meter,
+        bpm: hearing.bpm,
+        budget: ReadBudget::default(),
+        settings: mpfree_compose::Settings::default(),
+        bars: None,
+        attempt: 0,
+        phrase: None,
+    };
+    AddPartJob::new(project, ask)
+}
+
+/// Row `row`'s clips' and chords' fingerprint: a hearing is asked again
+/// only when it changes.
+pub(super) fn fingerprint(project: &Project, row: usize, parts: &[mpfree_compose::ToRead]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     for p in parts {

@@ -37,14 +37,16 @@
 //! 24 Nov 2026), and the panel says nothing is new rather than retrying
 //! for ever ([`mpfree_compose::idea::TRIES`]).
 
+use std::sync::Arc;
+
 use crate::app::{App, Effect, View};
 use mpfree_arp::{Mode, Phrase, PhraseKind, Scale, Written};
 use mpfree_arp_ui::maker::{MakerRow, MakerView};
 use mpfree_arp_ui::phrase_tab::key_name;
 use mpfree_arp_ui::phrases::Shelf;
 use mpfree_arp_ui::view::MakerAction;
-use mpfree_compose::style::STYLES;
 use mpfree_compose::{develop, next_idea, next_rework, reworkable, Develop, NewIdea, Rework};
+use mpfree_compose::{style_at, style_count, style_name, ClipStyle};
 
 /// Tries kept while the panel is open, as Add a part keeps.
 pub const KEPT: usize = 8;
@@ -128,7 +130,8 @@ impl Change {
 /// The choices kept between openings, as Continue keeps its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::app) struct MakerSet {
-    /// A place in [`STYLES`].
+    /// A place among the styles: the built-in ones, then those made from
+    /// clips ([`mpfree_compose::style_at`]).
     style: usize,
     /// A place in [`BARS`].
     bars: usize,
@@ -173,6 +176,9 @@ pub(in crate::app) struct Maker {
     reworkable: bool,
     kind: PhraseKind,
     set: MakerSet,
+    /// The song's styles made from clips, as it opened: the Style row runs
+    /// on into them after the built-in ones.
+    made: Arc<[ClipStyle]>,
     change: Change,
     /// Written in minor: the key the phrase follows is minor (or of no
     /// kind, or none).
@@ -265,7 +271,7 @@ impl Maker {
     fn request(&self) -> NewIdea {
         NewIdea {
             kind: self.kind,
-            style: STYLES[self.set.style],
+            style: style_at(self.set.style, &self.made),
             minor: self.minor,
             bars: BARS[self.set.bars],
             activity: ACTIVITY[self.set.activity].1,
@@ -277,7 +283,11 @@ impl Maker {
     /// The name a try of the choices as they are takes before its number.
     fn base(&self) -> String {
         match &self.from {
-            None => format!("{} {}", STYLES[self.set.style].name, self.kind.word()),
+            None => format!(
+                "{} {}",
+                style_name(self.set.style, &self.made),
+                self.kind.word()
+            ),
             Some((name, _)) => base_of(name).to_string(),
         }
     }
@@ -302,7 +312,7 @@ impl Maker {
                 self.kind = PhraseKind::ALL[at];
                 c
             }
-            RowName::Style => moved(&mut self.set.style, STYLES.len(), delta),
+            RowName::Style => moved(&mut self.set.style, style_count(&self.made), delta),
             RowName::Bars => moved(&mut self.set.bars, BARS.len(), delta),
             RowName::Activity => moved(&mut self.set.activity, ACTIVITY.len(), delta),
             RowName::Change => {
@@ -395,7 +405,11 @@ impl Maker {
         let row = |name: RowName| {
             let (n, value, note) = match name {
                 RowName::Kind => ("Kind", self.kind.label().to_string(), ""),
-                RowName::Style => ("Style", STYLES[self.set.style].name.to_string(), ""),
+                RowName::Style => (
+                    "Style",
+                    style_name(self.set.style, &self.made).to_string(),
+                    "",
+                ),
                 RowName::Bars => match BARS[self.set.bars] {
                     1 => ("Bars", "1 bar".to_string(), ""),
                     b => ("Bars", format!("{b} bars"), ""),
@@ -525,6 +539,7 @@ impl App {
             reworkable,
             kind,
             set: self.maker_set,
+            made: Arc::clone(&self.made_styles),
             minor,
             seed: self.maker_seed,
             attempt: 0,
@@ -886,6 +901,30 @@ mod tests {
         assert_eq!(v.rows[1].value, "Jazz-ish");
         assert_eq!(shown(&app).0, "Jazz-ish bass 2");
         assert_ne!(shown(&app).1, third, "each opening asks anew");
+    }
+
+    /// New idea's Style row runs on into the song's styles made from
+    /// clips after the built-in ones (composing step 6), and a try is
+    /// named after the made style.
+    #[test]
+    fn new_ideas_style_row_runs_on_into_the_songs_made_styles() {
+        let mut app = on_the_phrase_tab("Night drive");
+        let made = mpfree_time_ui::sample::style_sheet_sample().made;
+        app.styles_from(&[made.to_text()]);
+        app.arp_action(ArpAction::NewIdea);
+        app.wheel(1);
+        while !app.arp_mode_step(1).is_empty() {}
+        let v = view(&app);
+        assert_eq!(v.rows[1].value, "Clip 1 groove");
+        assert_eq!(shown(&app).0, "Clip 1 groove bass 1");
+        // Taken away (UNDO), the row ends at the last built-in style.
+        app.styles_from(&[]);
+        act(&mut app, MakerAction::Back);
+        app.arp_action(ArpAction::NewIdea);
+        assert_eq!(
+            view(&app).rows[1].value,
+            mpfree_compose::STYLES[mpfree_compose::STYLES.len() - 1].name
+        );
     }
 
     /// Back, ×, and anything that takes the tab away close the panel and
