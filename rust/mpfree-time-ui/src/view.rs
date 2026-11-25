@@ -196,6 +196,11 @@ pub const REC_SONG_CLIPS_HINT: &str =
     "Rec song is on: Add a part waits, as a try would be recorded into the song   ·   tap a clip: it plays from the next Launch line   ·   + records   ·   a track's name arms it";
 pub const CLIPS_HINT: &str =
     "Tap a clip: it plays or stops on the next Launch line   ·   drag it: move it (SHIFT as you lift: copy)   ·   a row's number plays it, held: its card   ·   + records   ·   a track's name arms it";
+/// The hint line under the Clips grid in Perform: nothing on the grid
+/// drags there, and an empty slot needs a hold to make a clip (the touch
+/// usability review, 25 Nov 2026).
+pub const PERFORM_CLIPS_HINT: &str =
+    "Tap a clip: it plays or stops on the next Launch line   ·   nothing drags (Make moves clips)   ·   a row's number plays it, held: its card   ·   hold +: records   ·   a track's name arms it";
 /// The hint line while the scene card is open (5.2).
 pub const SCENE_CARD_HINT: &str =
     "‹ ›: change a setting   ·   a setting's name: the wheel turns it   ·   Tempo or Mutes: tap it to take what plays now   ·   Empty cells: tap a track, Stop or Keep   ·   Done or a tap off the card: close";
