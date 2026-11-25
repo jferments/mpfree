@@ -42,11 +42,18 @@
 //!   nothing short is ever sent to be played.
 //! - **Memory sources** are handed to the sound thread whole and never
 //!   read from disk; they take no room in the cache.
+//! - **Devices.** Files read on the first device unless they are under a
+//!   folder given a device of its own ([`Coordinator::add_device`]: the SD
+//!   card, beside the stick). Each device has its own I/O, its own
+//!   measured speed and stalls, its own reads in flight and job step, and
+//!   its own [`Gate`]: playback's cushion on that device alone, so the
+//!   recording writer on the card never waits for a stick read, and a
+//!   stick that stalls holds up nothing on the card.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::Arc;
@@ -61,6 +68,7 @@ use crate::msg::{FromPlayer, Tag, ToPlayer, Where, MAX_SOURCES};
 use crate::player::{unit_frames, Config, UNIT};
 use crate::resample::Rate;
 use crate::storage::{Card, Located};
+use crate::times::{Summary, Times};
 use crate::writer::Gate;
 
 /// How far ahead to read, and how reads are made.
@@ -271,6 +279,21 @@ pub struct Stats {
     pub flac_failed: u32,
 }
 
+/// One device's reads, for Dev and the device rounds' logs
+/// ([`Coordinator::drives`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DriveTimes {
+    /// The folder its files are under; None for the first device, which
+    /// reads every other file.
+    pub root: Option<PathBuf>,
+    /// How long its reads took, since it was added.
+    pub reads: Summary,
+    /// Reads asked of it and not back yet.
+    pub queue: usize,
+    /// Its measured speed, bytes a second.
+    pub speed: f64,
+}
+
 /// Whether what plays, what is held and what is reserved fits the cache.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Admission {
@@ -360,6 +383,8 @@ struct Src {
     rate: Option<Rate>,
     /// The card it is on: read only while that insertion holds.
     card: Option<Card>,
+    /// The device it reads from ([`Coordinator::add_device`]).
+    lane: usize,
     /// Its card went and that was reported ([`Coordinator::lost`]).
     reported: bool,
     /// Why it can't be read any further, once it can't (a stale FLAC
@@ -466,6 +491,8 @@ struct Job {
     tier: JobTier,
     /// The card it reads from, if any.
     card: Option<Card>,
+    /// The device it reads from.
+    lane: usize,
     file: Arc<File>,
     len: u64,
     data: Vec<u8>,
@@ -495,6 +522,8 @@ enum Kind {
 /// A read in flight.
 struct Flight {
     kind: Kind,
+    /// The device it was asked of.
+    lane: usize,
     cancel: Arc<AtomicBool>,
     bytes: usize,
     /// Seconds decoding what it brings will take (FLAC), counted in its
@@ -518,11 +547,47 @@ struct MSlot {
 /// What a round wants: each unit's earliest deadline in seconds.
 type Wants = HashMap<(u16, u32), (f64, Tag)>;
 
+/// A device the coordinator reads from: its I/O, what it has shown of its
+/// speed and stalls, and playback's cushion on it.
+struct Lane {
+    /// Files under this folder read here; None for the first device, which
+    /// reads every other file.
+    root: Option<PathBuf>,
+    dev: Box<dyn Device>,
+    /// Its measured speed, bytes a second.
+    speed: f64,
+    /// How long its last reads took, newest last (at most 64).
+    took: VecDeque<f64>,
+    /// How long every read that came back took, since it was added.
+    times: Times,
+    /// Seconds until a playing cursor needs a unit of a file on it not in
+    /// hand, as of the last round.
+    cushion_s: f64,
+    /// The cushion, shared with the recording writer on this device.
+    gate: Arc<Gate>,
+}
+
+impl Lane {
+    fn new(root: Option<PathBuf>, dev: Box<dyn Device>, gate: Arc<Gate>) -> Lane {
+        Lane {
+            root,
+            dev,
+            // A slow stick, until measured.
+            speed: 2.0e6,
+            took: VecDeque::with_capacity(64),
+            times: Times::default(),
+            cushion_s: f64::INFINITY,
+            gate,
+        }
+    }
+}
+
 pub struct Coordinator {
     plan: Plan,
     rx: Receiver<FromPlayer>,
     tx: SyncSender<ToPlayer>,
-    dev: Box<dyn Device>,
+    /// The devices: the first reads every file not under another's folder.
+    lanes: Vec<Lane>,
     project: u32,
     next_gen: u32,
     sources: Vec<Option<Src>>,
@@ -553,15 +618,6 @@ pub struct Coordinator {
     /// The newest of the sound thread's rounds heard of.
     heard: u32,
     request: u32,
-    /// The device's measured speed, bytes a second.
-    speed: f64,
-    /// How long the last reads took, newest last (at most 64).
-    took: VecDeque<f64>,
-    /// Seconds until a playing cursor needs a unit not in hand, as of the
-    /// last round.
-    cushion_s: f64,
-    /// The cushion, shared with the recording writer's thread.
-    gate: Arc<Gate>,
     admission: Admission,
     /// Sources whose card went, not yet asked for.
     lost: VecDeque<Tag>,
@@ -588,7 +644,7 @@ impl Coordinator {
             plan,
             rx,
             tx,
-            dev,
+            lanes: vec![Lane::new(None, dev, Arc::new(Gate::new()))],
             project: 0,
             next_gen: 1,
             sources,
@@ -618,11 +674,6 @@ impl Coordinator {
             round: 1,
             heard: 0,
             request: 0,
-            // A slow stick, until measured.
-            speed: 2.0e6,
-            took: VecDeque::with_capacity(64),
-            cushion_s: f64::INFINITY,
-            gate: Arc::new(Gate::new()),
             admission: Admission::default(),
             lost: VecDeque::new(),
             unplayable: VecDeque::new(),
@@ -650,9 +701,49 @@ impl Coordinator {
         self.flights.len()
     }
 
-    /// The device's measured speed, bytes a second.
+    /// Each device's reads: how long they took (the median, the slowest
+    /// 1 in 100 and 1 in 1,000, the worst), how many wait, and its speed,
+    /// the first device first. Allocates.
+    pub fn drives(&self) -> Vec<DriveTimes> {
+        self.lanes
+            .iter()
+            .enumerate()
+            .map(|(i, l)| DriveTimes {
+                root: l.root.clone(),
+                reads: l.times.summary(),
+                queue: self.flights.values().filter(|f| f.lane == i).count(),
+                speed: l.speed,
+            })
+            .collect()
+    }
+
+    /// The first device's measured speed, bytes a second.
     pub fn device_speed(&self) -> f64 {
-        self.speed
+        self.lanes[0].speed
+    }
+
+    /// From now on files under `root` (a folder on another drive: the SD
+    /// card's mount point) read on `dev`, and `gate` carries playback's
+    /// cushion on that drive alone, for the recording writer there. Only
+    /// files opened after this. A root given again keeps its first device
+    /// (and says so: false).
+    pub fn add_device(&mut self, root: PathBuf, dev: Box<dyn Device>, gate: Arc<Gate>) -> bool {
+        if self.lanes.iter().any(|l| l.root.as_ref() == Some(&root)) {
+            return false;
+        }
+        self.lanes.push(Lane::new(Some(root), dev, gate));
+        true
+    }
+
+    /// The device a file at `path` reads from: the one whose folder holds
+    /// it (the deepest, if folders nest), else the first.
+    fn lane_of(&self, path: &Path) -> usize {
+        self.lanes
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.root.as_ref().is_some_and(|r| path.starts_with(r)))
+            .max_by_key(|(_, l)| l.root.as_ref().map_or(0, |r| r.components().count()))
+            .map_or(0, |(i, _)| i)
     }
 
     /// Whether the workload fits, as of the last planning round.
@@ -712,19 +803,31 @@ impl Coordinator {
     /// infinite when nothing plays): the cushion playback has against a
     /// stall.
     pub fn cushion(&self) -> f64 {
-        self.cushion_s
+        self.lanes
+            .iter()
+            .map(|l| l.cushion_s)
+            .fold(f64::INFINITY, f64::min)
     }
 
-    /// The cushion, shared: the recording writer's syncs wait while it is
-    /// shorter than the stick's worst commit time.
+    /// The first device's cushion, shared: the recording writer's syncs
+    /// wait while it is shorter than the stick's worst commit time. A
+    /// device added later has its own ([`Coordinator::add_device`]).
     pub fn gate(&self) -> Arc<Gate> {
-        Arc::clone(&self.gate)
+        Arc::clone(&self.lanes[0].gate)
     }
 
-    /// The stall whole-file reads leave room for: the plan's, or the
-    /// longest of the last 64 reads if longer.
+    /// The stall whole-file reads leave room for on the first device: the
+    /// plan's, or the longest of its last 64 reads if longer.
     pub fn stall(&self) -> f64 {
-        self.took.iter().copied().fold(self.plan.stall_s, f64::max)
+        self.lane_stall(0)
+    }
+
+    fn lane_stall(&self, lane: usize) -> f64 {
+        self.lanes[lane]
+            .took
+            .iter()
+            .copied()
+            .fold(self.plan.stall_s, f64::max)
     }
 
     /// Cache units kept for recordings (their capture memory). Holds that
@@ -968,6 +1071,28 @@ impl Coordinator {
         self.open_as(source, &loc.path, engine, loc.card.clone(), None, None)
     }
 
+    /// [`Coordinator::open_growing`] for a file the storage manager found:
+    /// a take still being written on the card is read only while its
+    /// insertion holds, as [`Coordinator::open_located`] says.
+    pub fn open_located_growing(
+        &mut self,
+        source: u16,
+        loc: &Located,
+        frames: u64,
+    ) -> Result<Tag, String> {
+        if !loc.valid() {
+            return Err(format!("{}: the SD card isn't there", loc.path.display()));
+        }
+        self.open_as(
+            source,
+            &loc.path,
+            false,
+            loc.card.clone(),
+            None,
+            Some(frames),
+        )
+    }
+
     /// Open `source` from a file played at the engine's rate
     /// ([`Plan::rate`]): a stem or a clip. A file at another rate is
     /// resampled ahead into engine-rate units ([`crate::resample`]), so
@@ -1020,6 +1145,7 @@ impl Coordinator {
             store,
             rate,
             card,
+            lane: self.lane_of(path),
             reported: false,
             unplayable: None,
             cursors: Vec::new(),
@@ -1059,6 +1185,7 @@ impl Coordinator {
             },
             rate: None,
             card: None,
+            lane: 0,
             reported: false,
             unplayable: None,
             cursors: Vec::new(),
@@ -1409,9 +1536,11 @@ impl Coordinator {
                 }
             }
         }
-        while let Some(r) = self.dev.poll() {
-            busy = true;
-            self.reply(r);
+        for lane in 0..self.lanes.len() {
+            while let Some(r) = self.lanes[lane].dev.poll() {
+                busy = true;
+                self.reply(r);
+            }
         }
         self.note_lost();
         busy |= self.fill();
@@ -1504,13 +1633,15 @@ impl Coordinator {
             }
         };
         let secs = r.took.as_secs_f64();
-        if self.took.len() == 64 {
-            self.took.pop_front();
+        let lane = &mut self.lanes[fl.lane];
+        if lane.took.len() == 64 {
+            lane.took.pop_front();
         }
-        self.took.push_back(secs);
+        lane.took.push_back(secs);
+        lane.times.add(secs);
         if n >= 16 * 1024 && secs > 0.0 {
             let sample = (n as f64 / secs).clamp(1.0e5, 1.0e10);
-            self.speed = 0.8 * self.speed + 0.2 * sample;
+            lane.speed = 0.8 * lane.speed + 0.2 * sample;
         }
         if units == 1 {
             if n == fl.bytes {
@@ -1619,10 +1750,12 @@ impl Coordinator {
         if len == 0 {
             self.finished.insert(id, Ok(Vec::new()));
         } else {
+            let lane = self.lane_of(path);
             self.jobs.push(Job {
                 id,
                 tier,
                 card,
+                lane,
                 file: Arc::new(file),
                 len,
                 data: Vec::new(),
@@ -1649,9 +1782,10 @@ impl Coordinator {
         self.jobs.len()
     }
 
-    /// One step of the most wanted job, if none is in flight.
-    fn job_step(&mut self) -> bool {
-        if self.jobs.iter().any(|j| j.busy) {
+    /// One step of the most wanted job on device `lane`, if none of its
+    /// jobs has one in flight.
+    fn job_step(&mut self, lane: usize) -> bool {
+        if self.jobs.iter().any(|j| j.busy && j.lane == lane) {
             return false;
         }
         // Jobs on a card that went fail now, not at their next step.
@@ -1665,11 +1799,13 @@ impl Coordinator {
             self.jobs.retain(|j| j.id != id);
             self.finished.insert(id, Err(CARD_GONE.into()));
         }
-        // Recording pressure: while anything records, background work
-        // waits (the stick can't take a recording and a heavy read at once:
-        // D2b on the MPC, 23 Nov); the next song still prepares.
-        let pressed = self.gate.recording();
+        // Recording pressure: while anything records on this device,
+        // background work on it waits (the stick can't take a recording and
+        // a heavy read at once: D2b on the MPC, 23 Nov); the next song still
+        // prepares.
+        let pressed = self.lanes[lane].gate.recording();
         let Some(i) = (0..self.jobs.len())
+            .filter(|&i| self.jobs[i].lane == lane)
             .filter(|&i| !pressed || self.jobs[i].tier == JobTier::NextSong)
             .min_by_key(|&i| (self.jobs[i].tier, self.jobs[i].id))
         else {
@@ -1688,12 +1824,13 @@ impl Coordinator {
             request,
             Flight {
                 kind: Kind::Job(id),
+                lane,
                 cancel: cancel.clone(),
                 bytes: len,
                 decode_s: 0.0,
             },
         );
-        self.dev.submit(ReadReq {
+        self.lanes[lane].dev.submit(ReadReq {
             request,
             file,
             at,
@@ -1925,9 +2062,17 @@ impl Coordinator {
         out
     }
 
-    /// How long a read of `bytes` should take, from the measured speed.
-    fn read_time(&self, bytes: usize) -> f64 {
-        bytes as f64 / self.speed.max(1.0)
+    /// How long a read of `bytes` on device `lane` should take, from its
+    /// measured speed.
+    fn read_time(&self, lane: usize, bytes: usize) -> f64 {
+        bytes as f64 / self.lanes[lane].speed.max(1.0)
+    }
+
+    /// The device source `s` reads from.
+    fn lane_of_source(&self, s: u16) -> usize {
+        self.sources[usize::from(s)]
+            .as_ref()
+            .map_or(0, |src| src.lane)
     }
 
     /// Plan: work out what fits, mark what is wanted, cancel what isn't,
@@ -1974,18 +2119,21 @@ impl Coordinator {
             covered,
             safe: window >= self.plan.min_window_s,
         };
-        // The cushion: how long until a playing cursor needs a unit not in
-        // hand (cached, not just asked for); the window when all of it is.
-        self.cushion_s = if wants.is_empty() {
-            f64::INFINITY
-        } else {
-            wants
-                .iter()
-                .filter(|(k, _)| !self.map.contains_key(k))
-                .map(|(_, &(d, _))| d)
-                .fold(window, f64::min)
-        };
-        self.gate.set_cushion(self.cushion_s);
+        // The cushion on each device: how long until a playing cursor needs
+        // a unit of a file on it not in hand (cached, not just asked for);
+        // the window when all of it is, infinite when nothing on it plays.
+        let mut cushion = vec![f64::INFINITY; self.lanes.len()];
+        for (&(s, u), &(d, _)) in &wants {
+            let c = &mut cushion[self.lane_of_source(s)];
+            *c = c.min(window);
+            if !self.map.contains_key(&(s, u)) {
+                *c = c.min(d);
+            }
+        }
+        for (lane, c) in self.lanes.iter_mut().zip(cushion) {
+            lane.cushion_s = c;
+            lane.gate.set_cushion(c);
+        }
         // Holds: by their deadline, or after everything playing.
         let now = Instant::now();
         for h in &self.holds {
@@ -2051,29 +2199,41 @@ impl Coordinator {
         });
         let missing_set: HashSet<(u16, u32)> =
             missing.iter().map(|&(_, t, u)| (t.source, u)).collect();
-        let mut queue_s: f64 = self
-            .flights
-            .values()
-            .map(|f| self.read_time(f.bytes) + f.decode_s)
-            .sum();
+        // Each device's queue (the time its reads in flight will take) and
+        // reads in flight: a device's reads wait only behind its own.
+        let lanes = self.lanes.len();
+        let mut queue_s = vec![0.0f64; lanes];
+        let mut flying = vec![0usize; lanes];
+        for f in self.flights.values() {
+            queue_s[f.lane] += self.read_time(f.lane, f.bytes) + f.decode_s;
+            flying[f.lane] += 1;
+        }
         let mut busy = false;
-        let mut all_asked = true;
+        let mut all_asked = vec![true; lanes];
         for i in 0..missing.len() {
-            if self.flights.len() >= self.plan.in_flight {
-                all_asked = false;
-                break;
-            }
             let (_, tag, unit) = missing[i];
             let s = tag.source;
+            let lane = self.lane_of_source(s);
+            if flying[lane] >= self.plan.in_flight {
+                all_asked[lane] = false;
+                if flying.iter().all(|&n| n >= self.plan.in_flight) {
+                    break;
+                }
+                continue;
+            }
             if self.asked.contains_key(&(s, unit)) {
                 continue;
             }
             let mut bytes = self.read_bytes(s, unit, 1);
             let mut decode_s = self.decode_time(s, unit, 1);
-            // The next deadline that isn't one of this file's next units.
+            // The next deadline on this device that isn't one of this
+            // file's next units.
             let other = missing[i + 1..]
                 .iter()
-                .find(|&&(_, t, u)| t.source != s || u < unit || u > unit + 64)
+                .find(|&&(_, t, u)| {
+                    self.lane_of_source(t.source) == lane
+                        && (t.source != s || u < unit || u > unit + 64)
+                })
                 .map_or(f64::INFINITY, |m| m.0);
             let mut units = 1u32;
             loop {
@@ -2085,7 +2245,7 @@ impl Coordinator {
                 let decoded = self.decode_time(s, unit, units + 1);
                 if joined == 0
                     || joined > self.plan.join_bytes
-                    || queue_s + self.read_time(joined) + decoded > 0.5 * other
+                    || queue_s[lane] + self.read_time(lane, joined) + decoded > 0.5 * other
                 {
                     break;
                 }
@@ -2126,24 +2286,31 @@ impl Coordinator {
                         first: unit,
                         units,
                     },
+                    lane,
                     cancel,
                     bytes,
                     decode_s,
                 },
             );
-            queue_s += self.read_time(bytes) + decode_s;
+            queue_s[lane] += self.read_time(lane, bytes) + decode_s;
+            flying[lane] += 1;
             self.stats.reads += 1;
             self.stats.joined += u64::from(units - 1);
-            self.dev.submit(req);
+            self.lanes[lane].dev.submit(req);
             busy = true;
         }
-        // Whole-file reads: only once every playback read wanted is asked
-        // for, one step at a time, so a playback read never waits behind
-        // more than one step, and only while playback's cushion is longer
-        // than a stall: a step capped at 512 KiB still stalls as long as
-        // the stick does.
-        if all_asked && self.flights.len() < self.plan.in_flight && self.cushion_s > self.stall() {
-            busy |= self.job_step();
+        // Whole-file reads, on each device: only once every playback read
+        // wanted from it is asked for, one step at a time, so a playback
+        // read never waits behind more than one step, and only while
+        // playback's cushion there is longer than a stall: a step capped at
+        // 512 KiB still stalls as long as the device does.
+        for lane in 0..lanes {
+            if all_asked[lane]
+                && flying[lane] < self.plan.in_flight
+                && self.lanes[lane].cushion_s > self.lane_stall(lane)
+            {
+                busy |= self.job_step(lane);
+            }
         }
         busy
     }

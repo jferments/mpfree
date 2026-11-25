@@ -11,7 +11,7 @@ use mpfree_stream::coord::{Coordinator, Device, Inline, JobTier, Plan, ReadReply
 use mpfree_stream::cursor::Cursor;
 use mpfree_stream::player::{Config, Player};
 use mpfree_stream::policy::Device as Place;
-use mpfree_stream::storage::{Refusal, Storage};
+use mpfree_stream::storage::{CardHandle, Lease, Refusal, Storage};
 use mpfree_stream::testkit::{folder, played, wav, PretendCard, Store};
 
 /// A stick folder and a card folder, each with a marked sound.
@@ -414,4 +414,37 @@ fn a_whole_file_read_from_the_card_fails_when_the_card_goes() {
     // Nothing found on the pulled card can be read or opened again.
     assert!(r.c.read_located(&song, JobTier::Background).is_err());
     assert!(r.c.open_located(0, &song, false).is_err());
+}
+
+#[test]
+fn a_take_still_being_written_on_the_card_is_read_only_while_its_lease_holds() {
+    let (stick, card) = libraries("storage-growing", 50_000);
+    let mut s = Storage::new(&stick);
+    let lease = Lease::new(&card);
+    assert_eq!(lease.root(), card);
+    s.card_inserted(lease.clone());
+    let take = s.locate(Place::Card, Path::new("song.wav")).expect("take");
+    let mut r = rig();
+    r.c.new_project();
+    let tag =
+        r.c.open_located_growing(0, &take, 10_000)
+            .expect("opens as it grows");
+    assert_eq!(r.c.frames(0), Some(10_000), "what is committed, no more");
+    r.c.grow(0, 20_000).expect("grows");
+    assert_eq!(r.c.frames(0), Some(20_000));
+
+    // The slot hears the card closed: its lease goes, and with it the
+    // source.
+    lease.revoke();
+    s.card_removed();
+    assert!(!lease.valid());
+    let mut k = Cursor::new(0, 0);
+    r.period(&mut [(&mut k, 3)]);
+    assert_eq!(r.c.lost(), Some(tag));
+    assert!(r.c.open_located_growing(0, &take, 10_000).is_err());
+
+    // A lease is one opening: the same card opened again is another.
+    let again = Lease::new(&card);
+    assert!(*again != *lease);
+    assert!(*lease == *lease);
 }

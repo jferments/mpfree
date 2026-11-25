@@ -682,7 +682,8 @@ impl Slot {
         if c.is_open() {
             return;
         }
-        let why = read_status(&self.paths)
+        // Its own window's word: the write window's, when it opened the card.
+        let why = read_status(&c.paths)
             .filter(|s| s.ask == c.ask)
             .map_or_else(|| "The SD card's window closed.".to_string(), |s| s.message);
         if let Some(mut c) = self.open.take() {

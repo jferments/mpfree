@@ -491,3 +491,180 @@ fn a_loops_layer_goes_to_a_file_of_its_own_and_is_found_after_a_cut_off_run() {
         let _ = std::fs::remove_dir_all(d);
     }
 }
+
+/// Record a bar on the armed track from a little after now, and run a
+/// period past the stop: the new take's id.
+fn record_a_bar(r: &mut Rig) -> u16 {
+    let start = r.frame + 100;
+    r.t.command(start, T::Record);
+    r.t.command(start + BAR, T::Stop);
+    r.run_until(|r| r.frame > start + 100 && r.h.tracks.takes().count() > 0);
+    let id = r.h.tracks.takes().map(|k| k.id).max().unwrap();
+    r.run_to(start + BAR + P);
+    id
+}
+
+/// SD card plan, S2b: recording moves to another folder (the card's,
+/// when it opens). An armed track's files for its next take go from the
+/// folder before and are made again in the new one, and the next take
+/// records there; takes saved before stay where they are, and a project
+/// save takes the files over from both folders. Refused, the folder
+/// given back, while a take is still being saved, while a save runs,
+/// and while a loop layer's file is open.
+#[test]
+fn recording_moves_to_another_folder_only_with_nothing_in_flight() {
+    let a = scratch("move-a");
+    let b = scratch("move-b");
+    let project = scratch("move-project");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut r = Rig::new(&a);
+    r.h.set_name(0, "Vocal");
+    r.h.command(A::Arm(0, true));
+    r.run_until(|r| r.h.armed_file(0) == Some(true));
+    // A take in the first folder. Just stopped, the writer hasn't said
+    // it is saved: refused.
+    let first = record_a_bar(&mut r);
+    assert_eq!(r.h.record_to(b.clone(), quick()), Err(b.clone()));
+    r.run_until(|r| r.h.file(first).is_some_and(|f| f.state == TakeState::Saved));
+    let (before, _) = r.h.tracks.next_recording(0).unwrap();
+    let armed_before = a.join(format!("Vocal_{before}.wav.recording"));
+    r.run_until(|r| r.h.armed_file(0) == Some(true));
+    assert!(armed_before.exists());
+    // A loop layer's file open: refused; dropped, no longer.
+    let layer = RecordingId(0xfeed_0101);
+    assert!(r.h.layer_begin(layer, 1_000, 2));
+    assert_eq!(r.h.record_to(b.clone(), quick()), Err(b.clone()));
+    r.h.layer_drop(layer);
+    // A save running: refused.
+    assert!(r.h.save());
+    assert_eq!(r.h.record_to(b.clone(), quick()), Err(b.clone()));
+    let mut saved = None;
+    r.run_until(|r| {
+        saved = r.h.take_saved();
+        saved.is_some()
+    });
+    let in_a = saved.unwrap().takes.remove(0).path.unwrap();
+    assert_eq!(in_a.parent(), Some(a.as_path()));
+    // Nothing in flight: it moves. The armed track's files are made
+    // again in the new folder, under a new id, and the old ones go.
+    assert!(r.h.record_to(b.clone(), quick()).is_ok());
+    r.run_until(|r| {
+        r.h.armed_file(0) == Some(true)
+            && r.h
+                .tracks
+                .next_recording(0)
+                .is_some_and(|(n, _)| n != before)
+    });
+    let (after, _) = r.h.tracks.next_recording(0).unwrap();
+    assert!(b.join(format!("Vocal_{after}.wav.recording")).exists());
+    assert!(
+        !armed_before.exists(),
+        "the files made in the old folder go"
+    );
+    // The next take records into the new folder, frame for frame; the
+    // one before stays where it was.
+    let second = record_a_bar(&mut r);
+    r.h.command(A::Arm(0, false));
+    r.run_until(|r| {
+        r.h.file(second)
+            .is_some_and(|f| f.state == TakeState::Saved)
+    });
+    assert!(in_a.exists());
+    assert!(r.events().is_empty());
+    assert!(r.h.save());
+    let mut saved = None;
+    r.run_until(|r| {
+        saved = r.h.take_saved();
+        saved.is_some()
+    });
+    let saved = saved.unwrap();
+    let k = saved.takes.iter().find(|k| k.id == second).unwrap();
+    let in_b = k.path.clone().expect("copied whole from its file");
+    assert_eq!(in_b, b.join(format!("Vocal_{after}.wav")));
+    let take = r.h.tracks.take(second).unwrap();
+    let (audio, ch) = wav_at(&in_b);
+    assert_eq!(audio.len(), take.frames * ch);
+    let mut mem = vec![0.0; audio.len()];
+    assert_eq!(r.h.tracks.read_take(second, 0, &mut mem), Some(take.frames));
+    assert!(audio == mem, "the file in the new folder is the take");
+    // A project save that holds both takes takes them over from both
+    // folders.
+    for k in &saved.takes {
+        std::fs::copy(k.path.as_ref().unwrap(), project.join(&k.file)).unwrap();
+    }
+    r.h.saved_into(project.clone());
+    r.run_until(|_| !in_a.exists() && !in_b.exists());
+    for d in [&a, &b, &project] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+/// A take the writer can never finish (its folder gone, so the rename
+/// fails and it stays At risk: the writer retries for ever) doesn't keep
+/// recording in the folder before. Recording moves, the armed track's
+/// files are made in the new folder, and the take is still saved, from
+/// memory.
+#[test]
+fn a_take_that_cant_be_finished_doesnt_hold_recording_in_the_old_folder() {
+    let a = scratch("stuck-a");
+    let b = scratch("stuck-b");
+    let mut r = Rig::new(&a);
+    r.h.set_name(0, "Vocal");
+    r.h.command(A::Arm(0, true));
+    r.run_until(|r| r.h.armed_file(0) == Some(true));
+    let start = r.frame + 100;
+    r.t.command(start, T::Record);
+    r.run_until(|r| r.frame > start + BAR / 2 && r.h.tracks.takes().count() > 0);
+    let id = r.h.tracks.takes().map(|k| k.id).max().unwrap();
+    std::fs::remove_dir_all(&a).unwrap();
+    let stop = r.frame + P;
+    r.t.command(stop, T::Stop);
+    r.run_to(stop + P);
+    r.run_until(|r| {
+        r.h.file(id)
+            .is_some_and(|f| matches!(f.state, TakeState::AtRisk(_)))
+    });
+    let mut dir = Some(b.clone());
+    r.run_until(|r| match r.h.record_to(dir.take().unwrap(), quick()) {
+        Ok(()) => true,
+        Err(d) => {
+            dir = Some(d);
+            false
+        }
+    });
+    r.run_until(|r| r.h.armed_file(0) == Some(true));
+    let (next, _) = r.h.tracks.next_recording(0).unwrap();
+    assert!(b.join(format!("Vocal_{next}.wav.recording")).exists());
+    r.h.command(A::Arm(0, false));
+    assert!(r.h.save());
+    let mut saved = None;
+    r.run_until(|r| {
+        saved = r.h.take_saved();
+        saved.is_some()
+    });
+    let k = saved.unwrap().takes.remove(0);
+    let take = r.h.tracks.take(id).unwrap();
+    assert!(k.path.is_none(), "not a finished file");
+    assert_eq!(k.audio.len(), take.frames * take.channels);
+    let _ = std::fs::remove_dir_all(&b);
+}
+
+/// A loop layer begun twice (the worker replaces the first write) holds
+/// a move to another folder only until its one answer comes.
+#[test]
+fn a_layer_begun_twice_holds_a_move_only_until_its_one_answer() {
+    let a = scratch("twice-a");
+    let b = scratch("twice-b");
+    let mut r = Rig::new(&a);
+    let audio: Vec<f32> = (0..2 * 1_000u64)
+        .map(|i| sig(i / 2, (i % 2) as usize))
+        .collect();
+    let rec = RecordingId(0xfeed_0201);
+    assert!(r.h.layer_begin(rec, 1_000, 2));
+    r.give_layer(rec, &audio, true);
+    assert_eq!(r.layer_said(), (rec, None));
+    assert!(r.h.record_to(b.clone(), quick()).is_ok());
+    for d in [&a, &b] {
+        let _ = std::fs::remove_dir_all(d);
+    }
+}

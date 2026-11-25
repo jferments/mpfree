@@ -202,6 +202,10 @@ fn rounds_commit_on_the_interval_and_a_stop_finishes_the_take() {
     assert!(!shown, "never past twice the interval");
     assert_eq!(b.w.stats().late, 0);
     assert_eq!(b.w.interval(), 2.0);
+    // Each round that wrote is a sync time, for Dev and the logs.
+    let syncs = b.w.stats().syncs;
+    assert_eq!(syncs.count, 5);
+    assert!(syncs.median <= syncs.worst && syncs.worst <= b.w.worst_commit());
     b.w.stop(no);
     b.passes();
     b.check_saved(no);
@@ -222,6 +226,7 @@ fn an_armed_take_that_never_recorded_is_disarmed_and_its_files_go() {
     b.passes();
     assert_eq!(b.w.stats().rounds, 1);
     assert_eq!(b.w.worst_commit(), 1.0, "still the one assumed");
+    assert_eq!(b.w.stats().syncs.count, 0, "and no sync time");
     assert!(b.w.disarm(no));
     assert!(!b.stick.with(|st| st.exists(&recording_path(&media(), &s))));
     assert!(!b.stick.with(|st| st.exists(&checkpoint_path(&media(), &s))));
