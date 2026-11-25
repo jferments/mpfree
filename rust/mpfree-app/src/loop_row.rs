@@ -730,8 +730,8 @@ impl LoopRow {
             p.card.inset(-SMALL_GAP / 2).intersect(self.body_at(r)),
             t.surface,
         );
-        cx.canvas
-            .fill_round_rect(p.card, t.round(10), t.surface.mix(t.raised, 0.4));
+        let fill = t.surface.mix(t.raised, 0.4);
+        cx.canvas.fill_round_rect(p.card, t.round(10), fill);
         if look.picked {
             cx.canvas
                 .stroke_round_rect(p.card, t.round(10), 2, t.accent);
@@ -739,10 +739,12 @@ impl LoopRow {
             cx.canvas
                 .stroke_round_rect(p.card, t.round(10), 1, t.outline);
         }
+        // The place in its loop's colour, moved just far enough to read on
+        // the card in a light theme.
         let ink = if ch.state == RingState::Empty {
             t.text_dim
         } else {
-            ch.colour
+            t.readable(ch.colour, fill)
         };
         cx.text(
             FontId::Bold,
@@ -825,7 +827,9 @@ impl LoopRow {
             if armed {
                 let (who, ink2) = match &g.armed {
                     Some(n) => (n.as_str(), ink),
-                    None => ("none", if on { ink } else { t.text_faint }),
+                    // Faint while the switch is off, but never under
+                    // 3:1 on the button (`faded`).
+                    None => ("none", if on { ink } else { t.faded(ink, bg) }),
                 };
                 let top = Rect::new(b.x + 2, b.y + 2, b.w - 4, b.h / 2 - 1);
                 let low = Rect::new(b.x + 2, b.y + b.h / 2 - 1, b.w - 4, b.h / 2 - 1);
