@@ -9449,8 +9449,43 @@ impl TimeControl {
         let was_free = self.free_ids;
         self.free_ids = std::array::from_fn(|n| if now[n].free { ids[n] } else { 0 });
         let audio_armed = self.audio_armed();
-        // A loop free now, or no longer: its cells follow (compile).
+        // A loop free now, or no longer: its cells follow (compile). A free
+        // cell playing whose loop Make song made a song loop (phase 4d.2)
+        // plays on as a song cell, launched from the loop's own origin, so
+        // its track takes it straight on; made free again, its launch goes
+        // back to being a free cell's (`free_cells_follow`).
         let mut compile = was_free != self.free_ids;
+        for n in 0..LOOPS {
+            let id = was_free[n];
+            if id == 0 || self.free_ids[n] != 0 || ids[n] != id || !now[n].pass {
+                continue;
+            }
+            let p = &self.project;
+            let cells =
+                |&(t, s): &(usize, usize)| p.clip(t, s).and_then(Clip::loop_id) == Some(LoopId(id));
+            for (track, slot) in self
+                .free_on
+                .iter()
+                .copied()
+                .filter(cells)
+                .collect::<Vec<_>>()
+            {
+                self.launches.retain(|l| l.track != track);
+                self.launches.push(Launch {
+                    track,
+                    slot,
+                    origin: now[n].origin,
+                    start: now[n].origin,
+                });
+                lines.push(format!(
+                    "Loop {} plays on as a song loop on {}, row {}",
+                    n + 1,
+                    self.project.tracks[track].name,
+                    slot + 1
+                ));
+            }
+            self.free_on.retain(|f| !cells(f));
+        }
         // What is seen now, but for a first pass waiting for its id.
         let mut seen = *now;
         for (n, (&is, was)) in now.iter().zip(self.loops_seen).enumerate() {

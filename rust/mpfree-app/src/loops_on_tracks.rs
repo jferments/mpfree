@@ -1317,6 +1317,211 @@ mod tests {
             .all(|&(s, t)| s == 0.0 && t > 0.05));
     }
 
+    /// Make song on a free cell (phase 4d.2), as main.rs runs it with Dev's
+    /// switch on: a free loop playing in Audio 1's free cell with the song
+    /// stopped becomes a song loop on the free clock's bar line, the song
+    /// starting there, and its cell a song cell launched from the loop's
+    /// origin, which Audio 1 takes over; what Audio 1 plays is what it
+    /// plays with the loop left free, to under 1e-5 (no gap, no step), and
+    /// never on the Loop strip. It is a step on the one history: UNDO
+    /// makes the loop free and its cell a free cell again, the song
+    /// stopped; REDO makes the song again.
+    #[test]
+    fn make_song_on_a_free_cell_plays_on_through_its_track_and_the_one_undo_takes_it_back() {
+        use crate::audiotracks::TrackHost;
+        use crate::looping::LoopHost;
+        use crate::one_undo::{OneUndo, Part};
+        use crate::time::{Pads, TimeHost};
+        use mpfree_looper::{Clock, Command, Phase};
+        use mpfree_transport::Command as T;
+
+        struct Quiet;
+        impl Pads for Quiet {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        struct Rig {
+            time: TimeHost,
+            h: LoopHost,
+            tracks: TrackHost,
+            slot: usize,
+            frame: u64,
+            lines: Vec<String>,
+        }
+        const RATE: u32 = 44_100;
+        let tone = |f: u64| {
+            let t = f as f64 / RATE as f64;
+            (0.3 * (std::f64::consts::TAU * 441.0 * t).sin()) as f32
+        };
+        // A period as main.rs runs it: the Loop strip's loudest sample and
+        // Audio 1's left side.
+        let period = |r: &mut Rig| {
+            let (time, h, tracks) = (&mut r.time, &mut r.h, &mut r.tracks);
+            time.advance(PERIOD as u32);
+            time.period(PERIOD as u32, &mut Quiet);
+            let _ = h.follow_plan(&time.loop_plan());
+            let (mut l, mut rr) = ([0.0; PERIOD], [0.0; PERIOD]);
+            if h.looper.status().phase != Phase::Playing {
+                for i in 0..PERIOD {
+                    l[i] = tone(r.frame + i as u64);
+                    rr[i] = -l[i];
+                }
+            }
+            h.take_pads(&l, &rr);
+            if let (Some((line, _)), _) = h.tend_song(time, false) {
+                r.lines.push(line);
+            }
+            tracks.sync(time.project(), time.silenced(), false);
+            tracks.loops_moving(&h.moving_ids());
+            tracks.plan_loops(time.block(), &|q| time.audio(q));
+            h.give_loop_id(|| tracks.fresh_loop_id());
+            h.tell_tracks(time.project(), tracks.loop_player());
+            let _ = h.follow_free(&time.free_plan());
+            let (mut l, mut rr) = ([0.0; PERIOD], [0.0; PERIOD]);
+            h.run(time.block(), &mut l, &mut rr);
+            if let Some((line, _)) = h.take_song() {
+                r.lines.push(line);
+            }
+            tracks.loop_free(&h.free_cells());
+            let src = |i: u128| h.track_loop(i);
+            tracks.period_with_loops(
+                time.block(),
+                time.tempo_map(),
+                time.song_on(),
+                h.input(),
+                &|q| time.audio(q),
+                &src,
+            );
+            let strip = l.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+            let out = tracks.host.tracks.track_out(r.slot, PERIOD);
+            let track: Vec<f32> = out.iter().step_by(2).take(PERIOD).copied().collect();
+            if let Some(now) = h.grid_now() {
+                let lines = time.loops_are_on(&now, &h.loop_ids(), true);
+                if !lines.is_empty() {
+                    h.look_again();
+                    tracks.sync(time.project(), time.silenced(), true);
+                    r.lines.extend(lines);
+                }
+            }
+            r.frame += PERIOD as u64;
+            (strip, track)
+        };
+        // A free loop recorded with the song, landed in Audio 1's free
+        // cell, playing on with the song stopped.
+        let setup = || {
+            let mut p = Project::new();
+            let mut a = Track::new_audio("Audio 1", 0);
+            p.give_track_id(&mut a);
+            let audio_id = a.id;
+            p.tracks.push(a);
+            let mut time = TimeHost::with_project(RATE, 120.0, p).unwrap();
+            time.set_loops_on(true);
+            let mut tracks = TrackHost::new(RATE, 10);
+            tracks.sync(time.project(), 0, true);
+            let slot = tracks.slots.slot_of(audio_id).expect("an engine track");
+            let mut r = Rig {
+                time,
+                h: LoopHost::new(RATE, 20),
+                tracks,
+                slot,
+                frame: 0,
+                lines: Vec::new(),
+            };
+            r.h.command(Command::SetClock(Clock::Free));
+            r.h.command(Command::SetBars(Some(1)));
+            r.h.command(Command::Record);
+            assert!(r.time.command(T::Play));
+            for _ in 0..(3 * RATE as usize / PERIOD) {
+                period(&mut r);
+            }
+            assert!(r.time.command(T::Stop));
+            for _ in 0..(RATE as usize / PERIOD) {
+                period(&mut r);
+            }
+            assert!(r.h.looper.free_tracked(0));
+            assert_eq!(r.time.free_plan()[0], Some(true));
+            r.lines.clear();
+            r
+        };
+        let audio = 0;
+        let periods = 4 * RATE as usize / PERIOD;
+        let mut free = setup();
+        let left_free: Vec<(f32, Vec<f32>)> = (0..periods).map(|_| period(&mut free)).collect();
+        let mut r = setup();
+        r.h.make_song();
+        let made: Vec<(f32, Vec<f32>)> = (0..periods).map(|_| period(&mut r)).collect();
+        assert!(
+            r.lines
+                .iter()
+                .any(|l| l.contains("Made a song from 1 free loop")),
+            "{:?}",
+            r.lines
+        );
+        assert!(
+            r.lines
+                .contains(&"Loop 1 plays on as a song loop on Audio 1, row 1".to_string()),
+            "{:?}",
+            r.lines
+        );
+        let s = r.h.looper.loop_status(0).unwrap();
+        assert_eq!(s.clock, Clock::Song);
+        assert!(
+            r.h.looper.on_track(0) && !r.h.looper.free_tracked(0),
+            "Audio 1's"
+        );
+        assert!(r.time.launched(audio), "a song cell, launched");
+        assert_eq!(r.time.free_plan()[0], None);
+        assert!(r.time.info().state.rolling(), "the song plays");
+        // What Audio 1 played: the same as left free, never on the strip.
+        let mut most = 0.0f32;
+        for ((s0, a), (s1, b)) in left_free.iter().zip(&made) {
+            assert_eq!((*s0, *s1), (0.0, 0.0), "never on the Loop strip");
+            for (x, y) in a.iter().zip(b) {
+                most = most.max((x - y).abs());
+            }
+        }
+        assert!(made.iter().all(|(_, t)| t.iter().any(|v| v.abs() > 0.05)));
+        assert!(most < 1e-5, "Audio 1 plays on as it did: {most}");
+        // The one history: Make song is the step UNDO takes back.
+        let mut one = OneUndo::default();
+        one.follow(&r.time, &r.tracks, &r.h);
+        let e = one.next(false).expect("a step");
+        assert_eq!(
+            (e.part, e.words.as_str()),
+            (Part::Song, "Make song · Loop 1")
+        );
+        assert_eq!(
+            r.h.song_undo(false),
+            "looper: UNDO: Make song, the loops free again"
+        );
+        let undone: Vec<_> = (0..periods / 2).map(|_| period(&mut r)).collect();
+        assert_eq!(r.h.looper.loop_status(0).unwrap().clock, Clock::Free);
+        assert!(r.h.looper.free_tracked(0) && !r.h.looper.on_track(0));
+        assert_eq!(r.time.free_plan()[0], Some(true), "a free cell again");
+        assert!(!r.time.launched(audio));
+        assert!(!r.time.info().state.rolling(), "the song stopped");
+        assert!(undone
+            .iter()
+            .all(|(s, t)| *s == 0.0 && t.iter().any(|v| v.abs() > 0.05)));
+        one.follow(&r.time, &r.tracks, &r.h);
+        assert_eq!(one.next(false).map(|e| e.part), None);
+        assert_eq!(one.next(true).map(|e| e.part), Some(Part::Song));
+        // REDO: the song again, the same step.
+        assert_eq!(r.h.song_undo(true), "looper: REDO: Make song");
+        for _ in 0..periods / 2 {
+            period(&mut r);
+        }
+        assert_eq!(r.h.looper.loop_status(0).unwrap().clock, Clock::Song);
+        assert!(r.time.launched(audio));
+        one.follow(&r.time, &r.tracks, &r.h);
+        assert_eq!(one.next(false).map(|e| e.part), Some(Part::Song));
+        assert_eq!(one.next(true).map(|e| e.part), None);
+    }
+
     /// What [`a_loop_recorded_into_an_armed_audio_cell_plays_on_in_that_track`]
     /// heard.
     struct Heard {

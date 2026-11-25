@@ -5659,6 +5659,36 @@ mod tests {
         assert!(rows[0].y - 36 >= r.y, "its title too");
     }
 
+    /// On a song of 10 tracks the Chords lane (layout spec 4f) leaves no
+    /// room for "+ Track" under the last track: the lanes scroll as
+    /// before, and a drag up on the names brings it into view, where it
+    /// opens its chooser beside it, inside the view.
+    #[test]
+    fn plus_track_on_a_ten_track_song_is_a_drag_up_on_the_names_away() {
+        let st = crate::sample::song_audio_state().unwrap();
+        let mut s = crate::view::song_lanes(&st, 0);
+        let r = Rect::new(12, 140, 814, 534);
+        assert!(s.can_add_track);
+        assert_eq!(s.tracks.len(), 10);
+        assert!(s.add_track_rect(r).is_none(), "under the lanes shown");
+        // The first track's name, well clear of an audio track's arm.
+        let g = s.geo(r);
+        let first = s.lane_rect(&g, 0).unwrap();
+        let (x, y) = (first.x + 8, first.y + first.h / 2);
+        assert_eq!(s.touch(1, Touch::Down, x, y, r), None);
+        assert_eq!(s.touch(1, Touch::Move, x, y - 3 * g.lane_h, r), None);
+        assert_eq!(s.touch(1, Touch::Up, x, y - 3 * g.lane_h, r), None);
+        let b = s.add_track_rect(r).expect("in view after the drag");
+        assert_eq!(
+            s.touch(2, Touch::Down, b.x + 4, b.y + 4, r),
+            Some(EventKind::Tab(ADD_TRACK))
+        );
+        s.adding = true;
+        let rows = s.chooser_rects(r).expect("its chooser");
+        assert!(rows[0].x > b.right(), "beside it");
+        assert!(rows[2].bottom() < r.bottom(), "inside the view");
+    }
+
     fn take(id: u16, name: &str, start: Tick, end: Tick, used: Vec<(Tick, Tick)>) -> TakeLane {
         TakeLane {
             take: id,

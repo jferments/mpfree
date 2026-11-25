@@ -23,8 +23,8 @@
 
 use mpfree_looper::save::{from_text, to_text, ClockFile, Saved};
 use mpfree_looper::{
-    Clock, Command as L, FreeClock, Looper, NoteStart, Phase, Shift, SmartEnd, Snap, SongDone,
-    SongPlan, Starts, Status, FADE,
+    Clock, Command as L, FreeClock, Looper, NoteStart, Phase, PlayRun, Shift, SmartEnd, Snap,
+    SongDone, SongPlan, Starts, Status, FADE,
 };
 use mpfree_transport::{Block, Command as T, Meter, State, Transport};
 
@@ -2025,4 +2025,69 @@ fn period_mix(r: &mut Rig) -> f32 {
     r.out[r.out.len() - 256..]
         .iter()
         .fold(0.0f32, |m, v| m.max(v.abs()))
+}
+
+/// Make song on a free cell's loop (audio tracks 4d.2): it becomes a song
+/// loop playing itself, still for its track, until the track's first runs
+/// take it over; runs from its own origin go straight on, its buffer the
+/// same as if it had played on by itself, and runs from another origin
+/// crossfade from where it was rather than jump. Undo makes its cell a
+/// free cell again at once: off the track, launching itself.
+#[test]
+fn a_free_cells_loop_made_a_song_loop_is_taken_over_by_its_track_with_no_step() {
+    // `off`: the take-over's origin, ticks from the loop's (None: none).
+    let go = |off: Option<f64>| {
+        let mut r = Rig::new(128);
+        record_with_the_song(&mut r, Clock::Free, 2);
+        let stop = START + 4 * BAR;
+        r.at(stop, T::Stop);
+        r.run(stop + BAR, &noise);
+        assert!(r.l.free_on_track(0, true));
+        let p = make_song(&mut r);
+        let at = p.at.expect("on the free clock's bar line");
+        r.run(at + BAR, &noise);
+        assert!(r.l.take_song().is_some_and(|d| d.refused.is_none()));
+        let s = r.status(0);
+        assert_eq!(s.clock, Clock::Song);
+        assert!(r.l.free_tracked(0), "it plays itself on");
+        assert!(!r.l.on_track(0));
+        let mut own = Vec::new();
+        for _ in 0..40 {
+            if let Some(off) = off {
+                let run = PlayRun {
+                    from: 0,
+                    to: 128,
+                    origin: s.origin as f64 + off,
+                };
+                assert!(r.l.play(0, &[run]));
+            }
+            let f = r.frame + 128;
+            r.run(f, &noise);
+            assert!(r.l.outs().on_track(0), "for its track");
+            own.extend_from_slice(&r.l.outs().loop_out(0)[..256]);
+        }
+        (r, p, own)
+    };
+    let (_, _, by_itself) = go(None);
+    let (mut r, p, taken) = go(Some(0.0));
+    assert!(by_itself.iter().any(|v| v.abs() > 0.1), "it plays");
+    let d = most_apart(&by_itself, &taken);
+    assert!(d < 1e-6, "no step at the take-over: {d}");
+    assert!(r.l.on_track(0) && !r.l.free_tracked(0), "its track's now");
+    // Another origin (64 ticks on): from where it was, crossfading.
+    let (_, _, moved) = go(Some(64.0));
+    let d = most_apart(&by_itself[..8], &moved[..8]);
+    assert!(d < 0.05, "it starts where it was (no jump): {d}");
+    assert!(
+        most_apart(&by_itself, &moved) > 0.01,
+        "then plays from there"
+    );
+    // Undo: a free cell again, launching itself, from this period.
+    r.l.make_free(p).unwrap();
+    assert_eq!(r.status(0).clock, Clock::Free);
+    assert!(r.l.free_tracked(0) && !r.l.on_track(0));
+    let f = r.frame + 128;
+    r.run(f, &noise);
+    assert!(r.l.outs().on_track(0), "still for its track");
+    assert!(r.l.outs().loop_out(0).iter().any(|v| v.abs() > 0.1));
 }

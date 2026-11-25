@@ -177,6 +177,9 @@ pub enum Picture {
     /// A curve from (0, 0) to (1, 1), x and y from 0 to 1, with a straight
     /// line under it for comparison.
     Curve(Vec<(f32, f32)>),
+    /// The MPC's 16 pads, pad 1 at the bottom left, each in its colour as
+    /// it would light (Prefs › Screen and lights).
+    Pads(Vec<Color>),
 }
 
 /// One setting: a row of the menu, in the wheel's order.
@@ -1118,8 +1121,10 @@ impl PrefsPage {
                 );
             }
         }
-        if let (Some(r), Some(Picture::Curve(pts))) = (geo.picture, &row.picture) {
-            paint_curve(cx, r, pts, fill);
+        match (geo.picture, &row.picture) {
+            (Some(r), Some(Picture::Curve(pts))) => paint_curve(cx, r, pts, fill),
+            (Some(r), Some(Picture::Pads(colours))) => paint_pads(cx, r, colours),
+            _ => {}
         }
         let Some(control) = &row.control else {
             return;
@@ -2041,6 +2046,39 @@ fn paint_slider(cx: &mut PaintCx, track: Rect, pos: f32, fill: Color) {
 
 /// The velocity curve: a faint straight line, the curve over it and the
 /// area under it tinted.
+/// The 16 pads as a 4 by 4 grid of squares, pad 1 at the bottom left as
+/// on the MPC, centred in `r` on a sunken panel, with "as they'd light".
+fn paint_pads(cx: &mut PaintCx, r: Rect, colours: &[Color]) {
+    let t = cx.theme.clone();
+    cx.canvas
+        .fill_round_rect(r, t.round(10), t.panel().mix(t.raised, 0.6));
+    let words = 20;
+    let inner = r.inset_xy(14, 12);
+    let gap = 8;
+    let side = ((inner.h - words - 3 * gap) / 4)
+        .min((inner.w - 3 * gap) / 4)
+        .max(8);
+    let grid = 4 * side + 3 * gap;
+    let x0 = inner.x + (inner.w - grid) / 2;
+    let y0 = inner.y + (inner.h - words - grid) / 2;
+    for (p, &c) in colours.iter().enumerate().take(16) {
+        let (col, row) = ((p % 4) as i32, 3 - (p / 4) as i32);
+        let cell = Rect::new(x0 + col * (side + gap), y0 + row * (side + gap), side, side);
+        cx.canvas.fill_round_rect(cell, t.round(6), c);
+        // An unlit pad still shows as a pad.
+        cx.canvas.stroke_round_rect(cell, t.round(6), 1, t.outline);
+    }
+    let caption = Rect::new(inner.x, y0 + grid + 4, inner.w, words);
+    cx.text(
+        FontId::Sans,
+        t.size_small,
+        caption,
+        Align::Center,
+        t.text_dim,
+        "as they'd light",
+    );
+}
+
 fn paint_curve(cx: &mut PaintCx, r: Rect, pts: &[(f32, f32)], fill: Color) {
     let t = cx.theme.clone();
     cx.canvas

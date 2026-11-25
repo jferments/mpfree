@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-app/src/app.rs rust/mpfree-app/src/app/prefs_tabs.rs rust/mpfree-app/src/app/customise.rs rust/mpfree-app/src/theme_edit.rs rust/mpfree-app/src/prefs_page.rs rust/mpfree-app/src/gui.rs rust/mpfree-app/src/app/saved.rs rust/mpfree-app/src/setup.rs
+covers: rust/mpfree-app/src/app.rs rust/mpfree-app/src/app/prefs_tabs.rs rust/mpfree-app/src/app/customise.rs rust/mpfree-app/src/theme_edit.rs rust/mpfree-app/src/pad_look.rs rust/mpfree-app/src/prefs_page.rs rust/mpfree-app/src/gui.rs rust/mpfree-app/src/app/saved.rs rust/mpfree-app/src/setup.rs
 checked: 2026-11-24 680edcc7
 -->
 
@@ -45,7 +45,7 @@ The audio, the line input, memory and MIDI out.
 
 ## Appearance
 
-The theme: MPFree's colours and the style of its panels. Appearance has two views, listed under it on the left while it is open: **Themes**, to pick a theme, and **Customise**, to change one. The layout and the font are the same in every theme.
+The theme, MPFree's colours and the style of its panels, and how the pads light. Appearance has three views, listed under it on the left while it is open: **Themes**, to pick a theme, **Customise**, to change one, and **Screen and lights**, for the pads' lights and the help line. The layout and the font are the same in every theme.
 
 ### Themes
 
@@ -86,6 +86,23 @@ Customise works on a copy of the theme in use, called **My theme** (or, for a th
 The line at the foot says how well the words, the dim words and the accent read on a panel as you go. MPFree won't make a change that leaves the words too hard to read: the line then says **Stopped there**.
 
 {{shot: prefs-customise-colour | Prefs, Customise: the words' colour on the knobs.}}
+
+### Screen and lights
+
+How the 16 pads on the MPC light, and the help line along the foot of the screen. Every change shows at once.
+
+{{shot: prefs-lights | Prefs, Screen and lights: Hit heat, with pad 6 held.}}
+
+| Setting | What it does |
+|---|---|
+| **Brightness** | How bright every pad light is, from 10 to 100 % (the default). It dims the pads at rest, held, on the sequencer's steps and on the mute pages alike; a lit pad never goes fully dark. |
+| **A held pad** | What a pad shows while you hold it down. **Brighter** (the default): its own colour at full strength. **White.** **Same:** no change. |
+| **Empty pads** | What a pad with no sound on it shows. **Dark** (the default), or **Dim**: a faint grey, so you can see the grid. |
+| **Hint line** | **On** (the default): the line at the foot of every page says what the controls do there. **Off:** it stays empty, except while you hold a button that changes what the pads do (such as MAIN, FULL LEVEL, COPY or SHIFT), when MPFree tells you something (such as **Saved**), and on the letters pad. |
+| **Pads show** | The colour a pad with a sound rests in. **Kit colour** (the default): each kit's own. **Track:** the colour of the armed track, in the theme in use. **Accent:** the theme's accent. **Hit heat:** how hard you hit the pad last, from blue for soft, through green and amber, to red for hard (a pad you haven't hit yet shows the kit's colour). The pads drawn above show how they'd light with your settings, with pad 6 held. The mute pages keep their own colours. |
+
+> [!NOTE]
+> Most of these colours (dimmed pads, white, the track and accent colours, the heat colours and the dim grey) haven't been checked on an MPC yet.
 
 ## Projects
 

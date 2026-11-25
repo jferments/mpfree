@@ -19,6 +19,8 @@ pub enum PrefsTab {
     Themes,
     /// Appearance: Customise, a copy of the theme in use changed.
     Customise,
+    /// Appearance: Screen and lights, the pads' lights and the hint line.
+    Lights,
     Projects,
     System,
 }
@@ -107,6 +109,27 @@ const SOUND: &[CardPlan] = &[
 ];
 
 const THEMES: &[CardPlan] = &[card("Themes", "", Hue::Grey, 0, &[Item::Appearance])];
+
+const LIGHTS: &[CardPlan] = &[
+    card(
+        "Pad lights",
+        "the 16 pads on the MPC",
+        Hue::Pink,
+        0,
+        &[Item::PadBrightness, Item::HeldPad, Item::EmptyPads],
+    ),
+    card("Screen", "on every page", Hue::Cyan, 0, &[Item::HintLine]),
+    CardPlan {
+        fill: true,
+        ..card(
+            "Pads show",
+            "as they'd light",
+            Hue::Lime,
+            1,
+            &[Item::PadsShow],
+        )
+    },
+];
 
 const fn th(t: ThemeItem) -> Item {
     Item::Theme(t)
@@ -250,6 +273,13 @@ const SOUND_ROWS: &[Item] = &[
     Item::SendsMidi,
 ];
 const THEMES_ROWS: &[Item] = &[Item::Appearance];
+const LIGHTS_ROWS: &[Item] = &[
+    Item::PadBrightness,
+    Item::HeldPad,
+    Item::EmptyPads,
+    Item::HintLine,
+    Item::PadsShow,
+];
 const PROJECTS_ROWS: &[Item] = &[
     Item::Export,
     Item::ExportFile,
@@ -273,12 +303,13 @@ const LATENCY_KNOB_FRAMES: f32 = 2048.0;
 
 impl PrefsTab {
     /// Every tab in SHIFT + the wheel's order, Appearance's views
-    /// (Themes, Customise) where Appearance sits.
-    pub const ALL: [PrefsTab; 6] = [
+    /// (Themes, Customise, Screen and lights) where Appearance sits.
+    pub const ALL: [PrefsTab; 7] = [
         PrefsTab::Playing,
         PrefsTab::Sound,
         PrefsTab::Themes,
         PrefsTab::Customise,
+        PrefsTab::Lights,
         PrefsTab::Projects,
         PrefsTab::System,
     ];
@@ -297,7 +328,7 @@ impl PrefsTab {
         match self {
             PrefsTab::Playing => "Playing",
             PrefsTab::Sound => "Sound",
-            PrefsTab::Themes | PrefsTab::Customise => "Appearance",
+            PrefsTab::Themes | PrefsTab::Customise | PrefsTab::Lights => "Appearance",
             PrefsTab::Projects => "Projects",
             PrefsTab::System => "System",
         }
@@ -308,6 +339,7 @@ impl PrefsTab {
         match self {
             PrefsTab::Themes => Some("Themes"),
             PrefsTab::Customise => Some("Customise"),
+            PrefsTab::Lights => Some("Screen and lights"),
             _ => None,
         }
     }
@@ -317,7 +349,7 @@ impl PrefsTab {
         match self {
             PrefsTab::Playing => "Pads, latch, touch",
             PrefsTab::Sound => "Buffer, memory, input",
-            PrefsTab::Themes | PrefsTab::Customise => "Themes, customise",
+            PrefsTab::Themes | PrefsTab::Customise | PrefsTab::Lights => "Themes and lights",
             PrefsTab::Projects => "Start, export, sets",
             PrefsTab::System => "Info, setup, checks",
         }
@@ -329,6 +361,7 @@ impl PrefsTab {
             PrefsTab::Sound => SOUND,
             PrefsTab::Themes => THEMES,
             PrefsTab::Customise => CUSTOMISE,
+            PrefsTab::Lights => LIGHTS,
             PrefsTab::Projects => PROJECTS,
             PrefsTab::System => SYSTEM,
         }
@@ -341,6 +374,7 @@ impl PrefsTab {
             PrefsTab::Sound => SOUND_ROWS,
             PrefsTab::Themes => THEMES_ROWS,
             PrefsTab::Customise => CUSTOMISE_ROWS,
+            PrefsTab::Lights => LIGHTS_ROWS,
             PrefsTab::Projects => PROJECTS_ROWS,
             PrefsTab::System => SYSTEM_ROWS,
         }
@@ -394,6 +428,42 @@ impl App {
         }
         fx.push(self.menu_view());
         fx
+    }
+
+    /// How the pads light, as Prefs › Screen and lights sets it; Track
+    /// and Accent rest in the theme in use's colours (the armed track's).
+    pub fn pad_look(&self) -> crate::pad_look::PadLook {
+        use crate::pad_look::{rest_level, PadLook, PadsShow};
+        let s = &self.settings;
+        let tint = match s.pads_show {
+            PadsShow::Kit | PadsShow::Heat => [0; 3],
+            show => {
+                let theme = self.theme_in_use();
+                rest_level(if show == PadsShow::Accent {
+                    theme.accent
+                } else {
+                    theme.track[self.track() % theme.track.len()]
+                })
+            }
+        };
+        PadLook {
+            brightness: s.pad_brightness,
+            held: s.held_pad,
+            show: s.pads_show,
+            empty: s.empty_pads,
+            tint,
+        }
+    }
+
+    /// The theme `settings.theme` names: built in, or a theme file's.
+    fn theme_in_use(&self) -> mpfree_ui::Theme {
+        let key = &self.settings.theme;
+        mpfree_ui::Theme::builtin(key).unwrap_or_else(|| {
+            self.theme_looks
+                .iter()
+                .find(|(f, _)| f == key)
+                .map_or_else(mpfree_ui::Theme::dark, |(_, t)| t.clone())
+        })
     }
 
     /// SHIFT + the wheel in Prefs: the tab after or before, stopping at
@@ -480,6 +550,15 @@ impl App {
                     return Vec::new();
                 }
                 s.screen_velocity = v;
+            }
+            Item::PadBrightness => {
+                use crate::pad_look::{BRIGHTNESS_MAX, BRIGHTNESS_MIN};
+                let span = f32::from(BRIGHTNESS_MAX - BRIGHTNESS_MIN);
+                let v = (f32::from(BRIGHTNESS_MIN) + p * span).round() as u8;
+                if v == s.pad_brightness {
+                    return Vec::new();
+                }
+                s.pad_brightness = v;
             }
             Item::LoopLatency => {
                 let f = (p * LATENCY_KNOB_FRAMES / 16.0).round() as u32 * 16;
@@ -628,6 +707,31 @@ impl App {
                 ]),
                 usize::from(s.open_last),
             ),
+            Item::HeldPad => (
+                options(&[
+                    ("Brighter", "its own colour"),
+                    ("White", ""),
+                    ("Same", "no change"),
+                ]),
+                crate::pad_look::HeldPad::ALL
+                    .iter()
+                    .position(|&h| h == s.held_pad)
+                    .unwrap_or(0),
+            ),
+            Item::PadsShow => (
+                crate::pad_look::PadsShow::ALL
+                    .iter()
+                    .map(|p| (p.name().to_string(), p.line().to_string()))
+                    .collect(),
+                crate::pad_look::PadsShow::ALL
+                    .iter()
+                    .position(|&p| p == s.pads_show)
+                    .unwrap_or(0),
+            ),
+            Item::EmptyPads => (
+                options(&[("Dark", ""), ("Dim", "")]),
+                usize::from(s.empty_pads == crate::pad_look::EmptyPads::Dim),
+            ),
             Item::QuickAdvance => (
                 options(&[
                     (
@@ -757,6 +861,27 @@ impl App {
             Item::ExportRate => choice("48 kHz is for video, converted as the files are written"),
             Item::AtStart => tiles(),
             Item::QuickAdvance => tiles(),
+            Item::PadBrightness => RowView {
+                value: format!("{} %", s.pad_brightness),
+                ..row(
+                    "Every pad light, at rest and held",
+                    Control::Slider {
+                        pos: f32::from(s.pad_brightness - crate::pad_look::BRIGHTNESS_MIN)
+                            / f32::from(
+                                crate::pad_look::BRIGHTNESS_MAX - crate::pad_look::BRIGHTNESS_MIN,
+                            ),
+                    },
+                )
+            },
+            Item::HeldPad => choice("While you hold a pad down"),
+            Item::EmptyPads => choice("Pads with no sound on them"),
+            Item::HintLine => switch("The help line along the foot of every page", s.hint_line),
+            Item::PadsShow => RowView {
+                picture: Some(Picture::Pads(
+                    crate::pad_look::example(crate::akai::kit_colour(0), &self.pad_look()).to_vec(),
+                )),
+                ..choice("The colour a pad with a sound rests in")
+            },
             Item::SystemStatus => RowView {
                 name: name.to_string(),
                 // The screen fills in the status board's words.
@@ -894,7 +1019,7 @@ impl App {
                 icon,
             });
             if t.appearance() && tab.appearance() {
-                for v in [PrefsTab::Themes, PrefsTab::Customise] {
+                for v in [PrefsTab::Themes, PrefsTab::Customise, PrefsTab::Lights] {
                     tabs.push(SideTab {
                         name: v.view_name().unwrap_or_default().to_string(),
                         sub: true,
@@ -1009,5 +1134,45 @@ mod tests {
         ] {
             assert!(PrefsTab::of(item).is_some(), "{item:?}");
         }
+    }
+
+    /// Screen and lights' rows change the settings, and the pads' look
+    /// follows them: Track rests in the armed track's colour in the
+    /// theme in use, Accent in its accent.
+    #[test]
+    fn screen_and_lights_rows_set_how_the_pads_light() {
+        use crate::pad_look::{rest_level, EmptyPads, HeldPad, PadsShow};
+        let mut app = App::new(44_100, false);
+        app.open_tab(View::Prefs);
+        let bright = app.prefs_go_to(Item::PadBrightness).expect("a row");
+        assert_eq!(app.prefs_tab, PrefsTab::Lights);
+        app.set_value(bright, 0);
+        assert_eq!(app.settings.pad_brightness, 10);
+        app.set_value(bright, 1000);
+        assert_eq!(app.settings.pad_brightness, 100);
+        app.step_item(bright, -1);
+        assert_eq!(app.pad_look().brightness, 90);
+
+        let held = app.prefs_go_to(Item::HeldPad).expect("a row");
+        app.choose(held, 1);
+        assert_eq!(app.pad_look().held, HeldPad::White);
+        let empty = app.prefs_go_to(Item::EmptyPads).expect("a row");
+        app.choose(empty, 1);
+        assert_eq!(app.pad_look().empty, EmptyPads::Dim);
+        let hint = app.prefs_go_to(Item::HintLine).expect("a row");
+        app.step_item(hint, -1);
+        assert!(!app.settings.hint_line);
+
+        let show = app.prefs_go_to(Item::PadsShow).expect("a row");
+        let theme = app.theme_in_use();
+        app.choose(show, 1);
+        let look = app.pad_look();
+        assert_eq!(look.show, PadsShow::Track);
+        let track = app.track() % theme.track.len();
+        assert_eq!(look.tint, rest_level(theme.track[track]));
+        app.choose(show, 2);
+        assert_eq!(app.pad_look().tint, rest_level(theme.accent));
+        app.choose(show, 3);
+        assert_eq!(app.pad_look().show, PadsShow::Heat);
     }
 }
