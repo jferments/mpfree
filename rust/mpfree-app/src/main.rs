@@ -154,6 +154,7 @@ mod plugin_store;
 mod plugins;
 mod port_writer;
 mod power;
+mod prefs_page;
 mod presets;
 mod preview;
 mod project;
