@@ -980,6 +980,15 @@ impl TimeHost {
         }
     }
 
+    /// The audio track armed by its own arm (see
+    /// `TimeControl::audio_armed`): the Loop group's "Armed" half.
+    pub fn audio_armed(&self) -> Option<usize> {
+        match &self.control {
+            Half::Here(c) => c.audio_armed(),
+            Half::Apart(a) => a.light.audio_armed,
+        }
+    }
+
     /// The selected track (the one the Sequencer edits, and the pads and
     /// the arp panel follow): the armed track unless a track was picked
     /// while REC's arm is pinned (refactor C1).
@@ -2304,6 +2313,26 @@ impl TimeHost {
     /// The transport's description of the last period (for the looper).
     pub fn block(&self) -> &Block {
         self.audio.block()
+    }
+
+    /// The clock the arps, Note Repeat and the mixer's context followed
+    /// in the last period: the free loops' while Tempo follows: Free loops
+    /// and their clock runs, else the song's ([`TimeHost::set_lead`]).
+    pub fn tempo_block(&self) -> &Block {
+        self.audio.tempo_block()
+    }
+
+    /// Tempo follows: Free loops (the looper refactor's R2): the free
+    /// loops' clock as a span (`LoopHost::tempo_lead`), set before each
+    /// period; None follows the song.
+    pub fn set_lead(&mut self, lead: Option<mpfree_transport::Span>) {
+        self.audio.set_lead(lead);
+    }
+
+    /// The free loops' tempo while it led the last period
+    /// ([`TimeHost::set_lead`]): warped pads play at it.
+    pub fn lead_bpm(&self) -> Option<f64> {
+        self.audio.lead_bpm()
     }
 
     /// The transport's tempo map (for the audio tracks, which place their
@@ -6278,6 +6307,74 @@ mod tests {
             ..Settings::default()
         });
         arps
+    }
+
+    /// Tempo follows: Free loops (the looper refactor's R2, tempo
+    /// context): with the song stopped, a held pad's arp plays its
+    /// sixteenths on the free loops' clock (at their tempo, on their
+    /// grid from their anchor), not free-running at the song's, and the
+    /// mixer's context takes the same clock; with no lead the arp
+    /// free-runs at the song's tempo, as before.
+    #[test]
+    fn the_arps_keep_the_free_loops_time_while_tempo_follows_them() {
+        // The free loops at 93 BPM, their bar 1 on frame 1000.
+        let free = mpfree_looper::FreeClock {
+            anchor_frame: 1000,
+            anchor_tick: 0,
+            bpm: 93.0,
+            rate: RATE,
+            meter: mpfree_transport::Meter::new(4, 4).unwrap(),
+            running: true,
+            top: 0,
+        };
+        let run = |lead: Option<mpfree_transport::Span>| {
+            let mut h = TimeHost::new(RATE, 120.0).unwrap();
+            let mut pads = Fake::default();
+            let mut arps = arp_up(1);
+            h.set_lead(lead);
+            while pads.frame < 2 * BAR {
+                if pads.frame == 10 * u64::from(PERIOD) {
+                    let on = Event::NoteOn {
+                        note: 4,
+                        velocity: 100,
+                    };
+                    arps.pad(1, 0, on);
+                }
+                h.period_arps(PERIOD, &mut pads, &mut arps);
+                let s = h.tempo_block().spans()[0];
+                // A clock that starts on a frame to come leads from the
+                // first period it has started by.
+                if lead.is_some() && pads.frame >= 1000 {
+                    assert_eq!((s.bpm, s.state), (93.0, State::Playing), "led");
+                    assert_eq!(h.lead_bpm(), Some(93.0));
+                    let beats = s.tick_at(s.frame) / f64::from(mpfree_transport::PPQ);
+                    let want = (s.frame - 1000) as f64 * 93.0 / 60.0 / f64::from(RATE);
+                    assert!((beats - want).abs() < 1e-9, "the mixer's beats");
+                } else {
+                    assert_eq!((s.bpm, s.state), (120.0, State::Stopped));
+                    assert_eq!(h.lead_bpm(), None);
+                }
+                pads.frame += u64::from(PERIOD);
+            }
+            assert_eq!(h.dropped() + arps.dropped(), 0);
+            pads.hits.iter().map(|&(f, _, _)| f).collect::<Vec<u64>>()
+        };
+        let led = run(Some(crate::looping::lead_span(&free)));
+        let step = 60.0 * f64::from(RATE) / 93.0 / 4.0;
+        assert!(led.len() >= 20, "it plays: {led:?}");
+        for &f in &led {
+            let steps = (f - 1000) as f64 / step;
+            assert!(
+                (steps - steps.round()).abs() * step <= 1.0,
+                "{f} is on the free loops' sixteenths"
+            );
+        }
+        let song = run(None);
+        assert!(song.len() >= 20, "it plays: {song:?}");
+        for w in song.windows(2) {
+            let gap = (w[1] - w[0]) as f64;
+            assert!((gap - 5512.5).abs() <= 1.0, "free-running at 120: {gap}");
+        }
     }
 
     /// Records one bar into a new clip on track 3 (a two-bar loop) through

@@ -1969,6 +1969,23 @@ impl TimeControl {
         Ok(())
     }
 
+    /// The audio track armed last by its own arm, while it stays armed
+    /// and no note track has been armed since ([`TimeControl::focus_audio`]):
+    /// the one the Loop group's "Armed" half reaches (audio tracks phase
+    /// 4e.1), where an armed audio track is meant. Note tracks are armed
+    /// with [`TimeControl::armed`]; an audio track never is.
+    pub fn audio_armed(&self) -> Option<usize> {
+        let id = self.audio_focus;
+        id.is_given()
+            .then(|| {
+                self.project
+                    .tracks
+                    .iter()
+                    .position(|t| t.id == id && t.is_audio())
+            })
+            .flatten()
+    }
+
     /// Audio track `track` armed (`on`) by its own arm, or disarmed: the
     /// Clip tab shows its clip until a note track is armed (layout spec
     /// 4j); disarmed, the tab goes back to the armed note track.
@@ -9655,10 +9672,7 @@ impl TimeControl {
         st.mute_wait = self.mute_wait().cloned();
         st.audio_waits = self.audio_waits.counts();
         st.audio_late = self.audio_waits.late();
-        st.audio_focus =
-            self.project.tracks.iter().position(|t| {
-                self.audio_focus.is_given() && t.id == self.audio_focus && t.is_audio()
-            });
+        st.audio_focus = self.audio_armed();
         // Launched again since: no longer "not ready".
         st.not_ready = self
             .not_ready

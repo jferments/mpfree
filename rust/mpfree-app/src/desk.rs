@@ -882,7 +882,9 @@ impl Desk<'_> {
             // The Q-Links' values, for MIDI Follow's Send values back.
             | gui::FromUi::QLinkValues(_)
             // Your XY layouts: the loop names each setting (xy_song.rs).
-            | gui::FromUi::Xy(_)) => return Some(a),
+            | gui::FromUi::Xy(_)
+            // The Loop group runs in the audio loop (loop_group.rs).
+            | gui::FromUi::LoopGroup(_)) => return Some(a),
         }
         None
     }
