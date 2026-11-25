@@ -311,6 +311,7 @@ fn note(tick: i64) -> Note {
         ramp: 0,
         join: mpfree_seq::Join::Attack,
         group: 0,
+        heard: false,
     }
 }
 

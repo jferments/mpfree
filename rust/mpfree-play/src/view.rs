@@ -1666,6 +1666,7 @@ fn note_hash(v: &NoteView) -> u64 {
         ramp,
         join,
         group,
+        heard,
     } = src;
     let mut h = Fnv::new();
     h.word(local.to_bits());
@@ -1686,7 +1687,7 @@ fn note_hash(v: &NoteView) -> u64 {
     touch.hash(&mut h);
     // One word for both: a word a note is what compiling the big song
     // costs (the Arrange bench).
-    h.word(join as u64 | u64::from(group) << 8);
+    h.word(join as u64 | u64::from(group) << 8 | u64::from(heard) << 16);
     h.done()
 }
 
@@ -2332,6 +2333,7 @@ mod tests {
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
                 group: 0,
+                heard: false,
             },
             Note {
                 tick: 0,
@@ -2346,6 +2348,7 @@ mod tests {
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
                 group: 0,
+                heard: false,
             },
             Note {
                 tick: 950,
@@ -2360,6 +2363,7 @@ mod tests {
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
                 group: 0,
+                heard: false,
             },
         ];
         c.quantise = Quantise::new(240, 100);

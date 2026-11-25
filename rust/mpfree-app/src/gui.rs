@@ -5811,7 +5811,7 @@ impl Player {
             let rows = if answering {
                 self.ui
                     .get::<mpfree_arp_ui::answer_panel::AnswerPanel>(arp_view::ANSWER)
-                    .map(|w| w.sliders.rows.clone())
+                    .map(|w| w.qlinks.clone())
             } else {
                 self.ui
                     .get::<SliderStack>(arp_view::QLINKS)

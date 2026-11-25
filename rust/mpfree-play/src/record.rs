@@ -218,6 +218,8 @@ struct Held {
     velocity: u8,
     /// Its trigger group ([`Recorder::input_grouped`]).
     group: u8,
+    /// It plays as heard ([`Recorder::set_heard`] when it was pressed).
+    heard: bool,
     /// The speed of the clip it went into, for its pressure's clip ticks.
     speed: Speed,
     /// Its pressure buffer, or [`NO_BUF`] before the first value kept.
@@ -250,6 +252,7 @@ const NOT_HELD: Held = Held {
     tick: 0,
     velocity: 0,
     group: 0,
+    heard: false,
     speed: Speed::NORMAL,
     buf: NO_BUF,
     kept: 0,
@@ -283,6 +286,7 @@ const NO_TAKE: Taken = Taken {
         ramp: 0,
         join: mpfree_seq::Join::Attack,
         group: 0,
+        heard: false,
     },
     take: 0,
 };
@@ -301,6 +305,8 @@ enum Which {
 pub struct Recorder {
     /// Which armed track it records.
     which: Which,
+    /// The notes pressed from now on play as heard ([`Recorder::set_heard`]).
+    heard: bool,
     /// The track it recorded in the last view, to notice a change.
     armed: Option<usize>,
     /// Notes and knob moves in offset order, each with its trigger group.
@@ -391,6 +397,7 @@ impl Recorder {
     fn make(which: Which, points: usize, taken_points: usize, touch: usize) -> Recorder {
         Recorder {
             which,
+            heard: false,
             armed: None,
             input: [(0, Event::AllOff, 0); MAX_INPUT],
             n_input: 0,
@@ -564,6 +571,14 @@ impl Recorder {
     /// notes and the notes it erased carry the same number.
     pub fn take(&self) -> u32 {
         self.take
+    }
+
+    /// Whether the notes pressed from the next [`Recorder::process`] on
+    /// play as heard (`Note::heard`): the host's say, for what a live
+    /// tool played (its Records row: mpfree or Both). A note keeps what it
+    /// was pressed with. Real-time safe.
+    pub fn set_heard(&mut self, on: bool) {
+        self.heard = on;
     }
 
     /// Count takes on from `take`: a recorder for another armed track
@@ -879,6 +894,7 @@ impl Recorder {
                     tick,
                     velocity,
                     group,
+                    heard: self.heard,
                     speed,
                     ..NOT_HELD
                 };
@@ -1374,6 +1390,7 @@ impl Recorder {
             ramp: 0,
             join: mpfree_seq::Join::Attack,
             group: h.group,
+            heard: h.heard,
         };
         let taken = Taken {
             track,

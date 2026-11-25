@@ -15,7 +15,7 @@
 use mpfree_capture::Took;
 use mpfree_notefx::{Chain, Slot, TrackFx, MAX_FX};
 use mpfree_play::{
-    is_gear_control, Ahead, AheadCounts, Event, Out, PadRows, PlayView, Player, Rec, Recent,
+    is_gear_control, Ahead, AheadCounts, Event, Keeps, Out, PadRows, PlayView, Player, Rec, Recent,
     Recorder, TrackArps, LAYOUT_PADS, PAD_NOTES,
 };
 use mpfree_play::{MOVE_POINTS, TOUCH_POINTS};
@@ -114,6 +114,17 @@ pub struct TimeAudio {
     /// ([`TimeAudio::pad_pressure`]) in a take of notes and in CAPTURE's
     /// history: (notes, how many).
     pad_notes: [([u8; HEARD_NOTES], u8); 128],
+    /// What REC keeps of the armed track, as its arp says
+    /// ([`TrackArps::keeps`]: a live tool's Records row), taken each
+    /// period ([`TimeAudio::dress_arps`]).
+    keeps: Keeps,
+    /// The notes the pads hold on the armed track, by number (bit `n`):
+    /// with Records mpfree, the arp's notes of the same number are yours
+    /// played through it ([`TimeAudio::yours`]), not kept.
+    yours: u128,
+    /// The arp's notes left out as yours that still sound: their pressure
+    /// and endings are left out too.
+    left_out: u128,
     /// The notes each track's 16 pads play ([`ToAudio::Pads`]): a key
     /// routed to a track comes as a pad, and records these on a clip of
     /// notes (step sequencer refactor E4).
@@ -297,6 +308,9 @@ impl TimeAudio {
             also_dropped: 0,
             kind_refused: 0,
             pad_notes: [([0; HEARD_NOTES], 0); 128],
+            keeps: Keeps::Switch,
+            yours: 0,
+            left_out: 0,
             pad_rows: Box::new([PadRows::PADS; MAX_TRACKS]),
             routed_notes: Box::new([[([0; PAD_NOTES], 0); LAYOUT_PADS]; MAX_TRACKS]),
             erase_pads: 0,
@@ -401,6 +415,9 @@ impl TimeAudio {
                 }
                 ToAudio::Tracks { n, armed } => {
                     self.tracks.n = n.min(MAX_TRACKS);
+                    if self.tracks.armed != armed {
+                        (self.yours, self.left_out) = (0, 0);
+                    }
                     self.tracks.armed = armed;
                 }
                 ToAudio::Track(t, s) => {
@@ -1210,11 +1227,82 @@ impl TimeAudio {
         0
     }
 
+    /// Whether REC keeps the armed track's pads as pressed (its switch
+    /// on, or Records: You) rather than what its arp played.
+    fn records_pressed(&self) -> bool {
+        self.keeps.pads(self.tracks.records_pressed())
+    }
+
+    /// The pads' notes held on the armed track, for Records mpfree: a
+    /// note's number from its press to its let-go (each of a pad's notes,
+    /// or the pad's own number where it plays none).
+    fn hold_yours(&mut self, h: &Heard) {
+        let Some(event) = h.pad else {
+            return;
+        };
+        let bits = |n: u8| 1u128 << (n & 127);
+        let notes = h.notes();
+        let mut each = |on: bool, n: u8| {
+            if on {
+                self.yours |= bits(n);
+            } else {
+                self.yours &= !bits(n);
+            }
+        };
+        match event {
+            Event::NoteOn { note, velocity } if notes.is_empty() => each(velocity > 0, note),
+            Event::NoteOff { note } if notes.is_empty() => each(false, note),
+            Event::NoteOn { .. } | Event::NoteOff { .. } => {
+                for e in notes {
+                    match *e {
+                        Event::NoteOn { note, velocity } => each(velocity > 0, note),
+                        Event::NoteOff { note } => each(false, note),
+                        _ => {}
+                    }
+                }
+            }
+            Event::AllOff => self.yours = 0,
+            _ => {}
+        }
+    }
+
+    /// Whether the arp's note `o` on the armed track is yours, played
+    /// through it as pressed (Answer's call), which Records mpfree leaves
+    /// out with its pressure and its end. Only then (`Keeps::Its`).
+    fn yours(&mut self, o: &Out) -> bool {
+        if self.keeps != Keeps::Its {
+            self.left_out = 0;
+            return false;
+        }
+        let bit = |n: u8| 1u128 << (n & 127);
+        match o.event {
+            Event::NoteOn { note, .. } if self.yours & bit(note) != 0 => {
+                self.left_out |= bit(note);
+                true
+            }
+            Event::NoteOn { note, .. } => {
+                self.left_out &= !bit(note);
+                false
+            }
+            Event::NoteOff { note } if self.left_out & bit(note) != 0 => {
+                self.left_out &= !bit(note);
+                true
+            }
+            Event::Pressure { note, .. } => self.left_out & bit(note) != 0,
+            Event::AllOff => {
+                self.left_out = 0;
+                false
+            }
+            _ => false,
+        }
+    }
+
     pub fn pad_pressed(&mut self, offset: u32, h: &Heard) {
         let Some(event) = h.pad else {
             return;
         };
-        if self.tracks.records_pressed() {
+        self.hold_yours(h);
+        if self.records_pressed() {
             if self.takes_notes() {
                 // A clip of notes takes the pad's notes as pressed (step
                 // 5d); a pad with none to give is counted, not recorded.
@@ -1250,7 +1338,7 @@ impl TimeAudio {
     }
 
     pub fn pad(&mut self, offset: u32, event: Event) {
-        if !self.tracks.records_pressed() {
+        if !self.records_pressed() {
             self.recorder.input(offset, event);
             // A pad alone: it started no notes.
             if let Event::NoteOn { note, .. } = event {
@@ -1278,8 +1366,8 @@ impl TimeAudio {
     /// their pressure. CAPTURE's history takes them as the armed track's
     /// takes do ([`TimeAudio::history`]), the Play page's timing the pad.
     /// Pads as pressed keep their own notes ([`TimeAudio::pad_pressed`]).
-    fn heard(&mut self, offset: u32, h: &Heard) {
-        if !self.tracks.records_pressed() {
+    fn heard(&mut self, offset: u32, h: &Heard, yours: bool) {
+        if !self.records_pressed() && !yours {
             if self.takes_notes() {
                 for &e in h.notes() {
                     self.recorder.input_grouped(offset, e, h.group());
@@ -1301,11 +1389,14 @@ impl TimeAudio {
     /// record (refactor E4). The arp's notes come with no pad.
     fn history(&mut self, offset: u32, h: &Heard) {
         let notes = h.notes();
+        // What a live tool played, kept as REC keeps it: to play as heard.
+        let heard = !self.records_pressed() && self.keeps.as_heard();
         if let Some(ev) = h.pad {
             let took = Took {
                 holds: Holds::Hits,
                 paired: !notes.is_empty(),
                 group: 0,
+                heard,
             };
             self.played(offset, ev, took);
         }
@@ -1313,6 +1404,7 @@ impl TimeAudio {
             holds: Holds::Notes,
             paired: h.pad.is_some(),
             group: h.group(),
+            heard,
         };
         for &e in notes {
             self.send(ToControl::Played(offset, e, took));
@@ -1372,12 +1464,14 @@ impl TimeAudio {
                 holds: Holds::Hits,
                 paired: !notes.is_empty(),
                 group: 0,
+                heard: false,
             };
             self.send(ToControl::Played(offset, event, took));
             let took = Took {
                 holds: Holds::Notes,
                 paired: true,
                 group: mpfree_seq::groups::pad_group(pad),
+                heard: false,
             };
             for &note in notes {
                 self.send(ToControl::Played(
@@ -1446,12 +1540,14 @@ impl TimeAudio {
                 holds: Holds::Hits,
                 paired: !notes.is_empty(),
                 group: 0,
+                heard: false,
             };
             self.send(ToControl::PlayedOn(track, offset, event, took));
             let took = Took {
                 holds: Holds::Notes,
                 paired: true,
                 group: heard.group(),
+                heard: false,
             };
             for &e in notes {
                 self.send(ToControl::PlayedOn(track, offset, e, took));
@@ -1495,6 +1591,7 @@ impl TimeAudio {
             holds: Holds::Notes,
             paired: false,
             group: 0,
+            heard: false,
         };
         self.send(ToControl::PlayedOn(track, offset, event, took));
     }
@@ -1773,6 +1870,14 @@ impl TimeAudio {
     /// effects, and a chain to run the effects in once the control half
     /// has sent one.
     pub fn dress_arps(&mut self, arps: &mut TrackArps) {
+        // What REC keeps of the armed track: a live tool's Records row
+        // says it there; what it keeps of the arp plays as heard.
+        self.keeps = self
+            .tracks
+            .armed
+            .filter(|&t| t < self.tracks.n)
+            .map_or(Keeps::Switch, |t| arps.keeps(t));
+        self.recorder.set_heard(self.keeps.as_heard());
         for t in 0..self.tracks.n {
             arps.set_through(t, self.tracks.set[t].through_arp);
             arps.set_dest(t, self.tracks.set[t].dest);
@@ -1938,7 +2043,8 @@ impl TimeAudio {
                 let f = self.block.start_frame + u64::from(o.offset);
                 self.note_started(f, o.track, o.event);
                 if self.tracks.armed == Some(usize::from(o.track)) {
-                    self.heard(o.offset, &heard);
+                    let yours = self.yours(&o);
+                    self.heard(o.offset, &heard, yours);
                 }
                 continue;
             }

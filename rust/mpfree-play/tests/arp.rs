@@ -61,6 +61,7 @@ fn view() -> PlayView {
             ramp: 0,
             join: mpfree_seq::Join::Attack,
             group: 0,
+            heard: false,
         })
         .collect();
     arp.slots[0] = Some(c);
@@ -79,6 +80,7 @@ fn view() -> PlayView {
         ramp: 0,
         join: mpfree_seq::Join::Attack,
         group: 0,
+        heard: false,
     }];
     drums.slots[0] = Some(k);
     p.tracks = vec![arp, drums];

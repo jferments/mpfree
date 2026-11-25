@@ -69,6 +69,7 @@ fn note_hash(n: &Note) -> u64 {
         ramp,
         join,
         group,
+        heard,
     } = *n;
     let mut h = Fnv::new();
     h.word(tick as u64);
@@ -81,7 +82,9 @@ fn note_hash(n: &Note) -> u64 {
             | u64::from(ramp as u8) << 32
             | u64::from(on) << 40
             // Which notes roll their chance as one: changes what plays.
-            | u64::from(group) << 48,
+            | u64::from(group) << 48
+            // Played as heard, past the arp: changes what plays.
+            | u64::from(heard) << 56,
     );
     cond.hash(&mut h);
     touch.hash(&mut h);

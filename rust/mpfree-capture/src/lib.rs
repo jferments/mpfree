@@ -131,6 +131,9 @@ pub struct Took {
     /// (`mpfree_seq::groups::pad_group`), so a pad of chords is kept as
     /// one trigger; 0 for a pad, or a note no pad played.
     pub group: u8,
+    /// What a live tool played, kept to play as heard (`Note::heard`): the
+    /// arp's notes while its Records row says mpfree or Both.
+    pub heard: bool,
 }
 
 impl Took {
@@ -139,6 +142,7 @@ impl Took {
         holds: Holds::Hits,
         paired: false,
         group: 0,
+        heard: false,
     };
 }
 
@@ -165,6 +169,8 @@ struct Hit {
     paired: bool,
     /// Its trigger group ([`Took::group`]).
     group: u8,
+    /// It plays as heard ([`Took::heard`]).
+    heard: bool,
     note: u8,
     velocity: u8,
 }
@@ -177,6 +183,7 @@ const NO_HIT: Hit = Hit {
     holds: Holds::Hits,
     paired: false,
     group: 0,
+    heard: false,
     note: 0,
     velocity: 0,
 };
@@ -721,6 +728,7 @@ impl Capture {
             holds,
             paired: took.paired,
             group: took.group,
+            heard: took.heard,
             note: 0,
             velocity: 0,
         };
@@ -925,6 +933,7 @@ impl Capture {
                         ramp: 0,
                         join: mpfree_seq::Join::Attack,
                         group: x.group,
+                        heard: x.heard,
                     };
                     open.insert((x.track, key(x.holds, x.note)), (played.len(), x.at));
                     played.push(Played {

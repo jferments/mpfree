@@ -3465,6 +3465,7 @@ fn time_song(tracks: usize, trigs: bool) -> (Song, Vec<Launch>) {
                     ramp: 0,
                     join: mpfree_seq::Join::Attack,
                     group: 0,
+                    heard: false,
                 })
             })
             .collect();
@@ -3592,6 +3593,7 @@ fn time_ahead(rate: u32, tracks: usize, ahead: usize) -> Case {
             dest: 0,
             event: mpfree_play::Event::AllOff,
             notes: false,
+            heard: false,
         }; REAL_PASS],
         n: 0,
     });
