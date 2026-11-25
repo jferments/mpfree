@@ -419,6 +419,7 @@ impl Desk<'_> {
             gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),
             gui::FromUi::PrefsTab(i) => fx.extend(app.pick_prefs_tab(i)),
             gui::FromUi::NewTheme(fresh) => fx.extend(app.customise_from_themes(fresh)),
+            gui::FromUi::PrefsReset => fx.extend(app.prefs_reset()),
             gui::FromUi::ThemeName(name) => fx.extend(app.name_theme(&name)),
             gui::FromUi::MenuChoose(i, k) => fx.extend(app.choose(i, k)),
             gui::FromUi::MenuValue(i, v) => fx.extend(app.set_value(i, v)),
@@ -1110,6 +1111,7 @@ impl Desk<'_> {
                 time.metronome = on;
                 time.click_gain = crate::time::click_gain(f32::from(db));
             }
+            app::Effect::ClickSound(sound) => time.set_click_sound(sound),
             // What it gives back (the tempo's status line and note) is
             // handled with the next period's effects.
             app::Effect::Time(a) => {

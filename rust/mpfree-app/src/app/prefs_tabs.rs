@@ -62,7 +62,19 @@ const fn card(
 const PLAYING: &[CardPlan] = &[
     CardPlan {
         fill: true,
-        ..card("Pads", "how hard you hit", Hue::Cyan, 0, &[Item::Curve])
+        ..card(
+            "Pads",
+            "how hard you hit",
+            Hue::Cyan,
+            0,
+            &[
+                Item::Curve,
+                Item::CurveShape,
+                Item::CurveSoftest,
+                Item::CurveLoudest,
+                Item::PadThreshold,
+            ],
+        )
     },
     card(
         "Latch and pedal",
@@ -73,10 +85,22 @@ const PLAYING: &[CardPlan] = &[
     ),
     card(
         "Touch screen",
-        "its pads and its checks",
+        "pads tapped on the screen",
         Hue::Pink,
         1,
-        &[Item::ScreenVelocity, Item::CalibrateTouch, Item::TouchLab],
+        &[Item::ScreenVelocity],
+    ),
+    card(
+        "Controls",
+        "the Q-Links and the data wheel",
+        Hue::Lime,
+        1,
+        &[
+            Item::QLinkSpeed,
+            Item::WheelSpeed,
+            Item::WheelSpeedUp,
+            Item::FineShift,
+        ],
     ),
 ];
 
@@ -88,24 +112,37 @@ const SOUND: &[CardPlan] = &[
         0,
         &[Item::Buffer, Item::SoundCores],
     ),
-    card(
-        "Line input",
-        "the INPUTS on the back",
-        Hue::Coral,
-        0,
-        &[Item::LineInput, Item::LoopLatency],
-    ),
     CardPlan {
         split: true,
         ..card(
             "Memory",
             "set aside when MPFree starts",
-            Hue::Lime,
-            1,
+            Hue::Grey,
+            0,
             &[Item::LoopMemory, Item::AudioMemory],
         )
     },
-    card("MIDI and CV out", "", Hue::Pink, 1, &[Item::SendsMidi]),
+    card(
+        "Line input",
+        "the INPUTS on the back",
+        Hue::Coral,
+        1,
+        &[Item::LineInput, Item::LoopLatency, Item::InputMeter],
+    ),
+    card(
+        "MIDI and CV out",
+        "ports and sync: Mix › I/O",
+        Hue::Lime,
+        1,
+        &[Item::SendsMidi],
+    ),
+    card(
+        "Listening",
+        "",
+        Hue::Pink,
+        1,
+        &[Item::AuditionLevel, Item::MetronomeSound],
+    ),
 ];
 
 const THEMES: &[CardPlan] = &[card("Themes", "", Hue::Grey, 0, &[Item::Appearance])];
@@ -204,7 +241,12 @@ const PROJECTS: &[CardPlan] = &[
             "the Export panel starts from these",
             Hue::Coral,
             0,
-            &[Item::Export, Item::ExportFile, Item::ExportRate],
+            &[
+                Item::Export,
+                Item::ExportFile,
+                Item::ExportRate,
+                Item::StemsBy,
+            ],
         )
     },
     card(
@@ -243,13 +285,19 @@ const SYSTEM: &[CardPlan] = &[
         &[Item::SetupBackup, Item::SetupAkaiKits],
     ),
     card(
-        "Buttons",
-        "",
+        "Buttons and touch",
+        "checks",
         Hue::Lime,
         1,
-        &[Item::FindButtons, Item::MapControls],
+        &[Item::FindButtons, Item::CalibrateTouch, Item::TouchLab],
     ),
-    card("Developers", "", Hue::Coral, 1, &[Item::DebugMode]),
+    card(
+        "Developers",
+        "",
+        Hue::Coral,
+        0,
+        &[Item::DebugMode, Item::MapControls],
+    ),
 ];
 
 /// Each tab's settings in the wheel's order: the left column's cards top
@@ -257,20 +305,29 @@ const SYSTEM: &[CardPlan] = &[
 /// cards).
 const PLAYING_ROWS: &[Item] = &[
     Item::Curve,
+    Item::CurveShape,
+    Item::CurveSoftest,
+    Item::CurveLoudest,
+    Item::PadThreshold,
     Item::LatchMode,
     Item::PedalLatch,
     Item::ScreenVelocity,
-    Item::CalibrateTouch,
-    Item::TouchLab,
+    Item::QLinkSpeed,
+    Item::WheelSpeed,
+    Item::WheelSpeedUp,
+    Item::FineShift,
 ];
 const SOUND_ROWS: &[Item] = &[
     Item::Buffer,
     Item::SoundCores,
-    Item::LineInput,
-    Item::LoopLatency,
     Item::LoopMemory,
     Item::AudioMemory,
+    Item::LineInput,
+    Item::LoopLatency,
+    Item::InputMeter,
     Item::SendsMidi,
+    Item::AuditionLevel,
+    Item::MetronomeSound,
 ];
 const THEMES_ROWS: &[Item] = &[Item::Appearance];
 const LIGHTS_ROWS: &[Item] = &[
@@ -284,17 +341,20 @@ const PROJECTS_ROWS: &[Item] = &[
     Item::Export,
     Item::ExportFile,
     Item::ExportRate,
+    Item::StemsBy,
     Item::AtStart,
     Item::QuickAdvance,
 ];
 const SYSTEM_ROWS: &[Item] = &[
     Item::SystemStatus,
     Item::SystemInfo,
+    Item::DebugMode,
+    Item::MapControls,
     Item::SetupBackup,
     Item::SetupAkaiKits,
     Item::FindButtons,
-    Item::MapControls,
-    Item::DebugMode,
+    Item::CalibrateTouch,
+    Item::TouchLab,
 ];
 
 /// The most frames the latency knob turns to (46 ms at 44.1 kHz); - and +
@@ -323,6 +383,15 @@ impl PrefsTab {
         PrefsTab::System,
     ];
 
+    /// Whether the sidebar has a Reset button on it (Playing, Sound,
+    /// Projects: the tabs of plain settings).
+    pub fn resets(self) -> bool {
+        matches!(
+            self,
+            PrefsTab::Playing | PrefsTab::Sound | PrefsTab::Projects
+        )
+    }
+
     /// Its tab's name in the sidebar (Appearance for its views).
     pub fn name(self) -> &'static str {
         match self {
@@ -347,7 +416,7 @@ impl PrefsTab {
     /// The line under its name in the sidebar.
     pub fn line(self) -> &'static str {
         match self {
-            PrefsTab::Playing => "Pads, latch, touch",
+            PrefsTab::Playing => "Pads, latch, controls",
             PrefsTab::Sound => "Buffer, memory, input",
             PrefsTab::Themes | PrefsTab::Customise | PrefsTab::Lights => "Themes and lights",
             PrefsTab::Projects => "Start, export, sets",
@@ -423,6 +492,7 @@ impl App {
         self.prefs_tab = tab;
         self.selected = 0;
         self.menu_editing = false;
+        self.reset_armed = false;
         if tab == PrefsTab::Customise {
             fx.extend(self.custom_open(false));
         }
@@ -496,6 +566,7 @@ impl App {
         let item = items[i];
         self.selected = i;
         self.menu_editing = false;
+        self.reset_armed = false;
         if item == Item::Appearance {
             return self.pick_theme(k);
         }
@@ -538,6 +609,7 @@ impl App {
         self.selected = i;
         self.menu_editing = false;
         let p = permille.clamp(0, 1000) as f32 / 1000.0;
+        self.reset_armed = false;
         if let Item::Theme(ti) = items[i] {
             return self.custom_value(ti, p);
         }
@@ -570,6 +642,45 @@ impl App {
                 fx.push(Effect::Looper(LoopAction::Command(
                     LoopCommand::SetLatency(s.loop_latency_now()),
                 )));
+            }
+            Item::CurveShape | Item::CurveSoftest | Item::CurveLoudest => {
+                let mut b = s.curve_bend;
+                match items[i] {
+                    Item::CurveShape => b.shape = (p * 200.0 - 100.0).round() as i8,
+                    Item::CurveSoftest => b.softest = (1.0 + p * 126.0).round() as u8,
+                    _ => b.loudest = (1.0 + p * 126.0).round() as u8,
+                }
+                if b == s.curve_bend && s.curve == Curve::Custom(b) {
+                    return Vec::new();
+                }
+                s.curve_bend = b;
+                s.curve = Curve::Custom(b);
+            }
+            Item::PadThreshold => {
+                use crate::play_feel::{THRESHOLD_MAX, THRESHOLD_MIN};
+                let span = f32::from(THRESHOLD_MAX - THRESHOLD_MIN);
+                let v = (f32::from(THRESHOLD_MIN) + p * span).round() as u8;
+                if v == s.pad_threshold {
+                    return Vec::new();
+                }
+                s.pad_threshold = v;
+            }
+            Item::AuditionLevel => {
+                use crate::preview::{LEVEL_MAX_DB, LEVEL_MIN_DB};
+                let v = (LEVEL_MIN_DB + p * (LEVEL_MAX_DB - LEVEL_MIN_DB)).round() as i8;
+                if v == s.audition_db {
+                    return Vec::new();
+                }
+                s.audition_db = v;
+            }
+            Item::QLinkSpeed | Item::WheelSpeed | Item::WheelSpeedUp => {
+                use crate::play_feel::{Speed, SpeedUp};
+                let k = (p * 2.0).round() as usize;
+                match items[i] {
+                    Item::QLinkSpeed => s.qlink_speed = Speed::ALL[k],
+                    Item::WheelSpeed => s.wheel_speed = Speed::ALL[k],
+                    _ => s.wheel_speed_up = SpeedUp::ALL[k],
+                }
             }
             _ => return Vec::new(),
         }
@@ -609,11 +720,12 @@ impl App {
         Some(match item {
             Item::Curve => (
                 options(&[
-                    ("Soft", "loud comes easily"),
+                    ("Soft", "loud is easy"),
                     ("Linear", "the pad's own"),
                     ("Hard", "more dynamics"),
+                    ("Custom", "your own"),
                 ]),
-                Curve::ALL.iter().position(|&c| c == s.curve).unwrap_or(1),
+                s.curve.index(),
             ),
             Item::LatchMode => (
                 options(&[
@@ -626,6 +738,17 @@ impl App {
                     s.latch_mode == LatchMode::Toggle,
                     s.latch_mode == LatchMode::Add,
                 ]),
+            ),
+            Item::StemsBy => (
+                options(&[("Track", ""), ("Channel", "")]),
+                usize::from(s.stems_by == mpfree_browser_ui::StemsBy::Channel),
+            ),
+            Item::MetronomeSound => (
+                crate::time::ClickSound::ALL
+                    .iter()
+                    .map(|c| (c.name().to_string(), String::new()))
+                    .collect(),
+                s.metronome_sound as usize,
             ),
             Item::Buffer => (
                 vec![
@@ -800,9 +923,79 @@ impl App {
                             (v as f32 / 127.0, s.curve.apply(v) as f32 / 127.0)
                         })
                         .collect(),
+                    self.last_hit().map(|v| (v, s.curve.apply(v))),
                 )),
                 ..choice("How hard a pad must be hit for a loud note")
             },
+            Item::CurveShape | Item::CurveSoftest | Item::CurveLoudest => {
+                let b = s.curve_bend;
+                let pos = match item {
+                    Item::CurveShape => (f32::from(b.shape) + 100.0) / 200.0,
+                    Item::CurveSoftest => f32::from(b.softest - 1) / 126.0,
+                    _ => f32::from(b.loudest - 1) / 126.0,
+                };
+                RowView {
+                    share: 1,
+                    value: self.item_text(item).1,
+                    // The custom curve's: a turn chooses Custom.
+                    faded: !matches!(s.curve, Curve::Custom(_)),
+                    ..row("", Control::Dial { pos, dot: None })
+                }
+            }
+            Item::PadThreshold => RowView {
+                value: s.pad_threshold.to_string(),
+                ..row(
+                    "How light a touch still plays a note (1 plays every hit)",
+                    Control::Slider {
+                        pos: f32::from(s.pad_threshold - crate::play_feel::THRESHOLD_MIN)
+                            / f32::from(
+                                crate::play_feel::THRESHOLD_MAX - crate::play_feel::THRESHOLD_MIN,
+                            ),
+                    },
+                )
+            },
+            Item::QLinkSpeed | Item::WheelSpeed | Item::WheelSpeedUp => {
+                let k = match item {
+                    Item::QLinkSpeed => s.qlink_speed as usize,
+                    Item::WheelSpeed => s.wheel_speed as usize,
+                    _ => s.wheel_speed_up as usize,
+                };
+                RowView {
+                    share: 1,
+                    value: self.item_text(item).1,
+                    ..row(
+                        "",
+                        Control::Dial {
+                            pos: k as f32 / 2.0,
+                            dot: None,
+                        },
+                    )
+                }
+            }
+            Item::InputMeter => RowView {
+                value: if s.line_input {
+                    String::new()
+                } else {
+                    "turn it on to see its level".to_string()
+                },
+                faded: !s.line_input,
+                ..row("", Control::Meter)
+            },
+            Item::AuditionLevel => RowView {
+                value: self.item_text(item).1,
+                ..row("How loud BROWSE plays a sound you pick", {
+                    use crate::preview::{LEVEL_MAX_DB, LEVEL_MIN_DB};
+                    Control::Slider {
+                        pos: (f32::from(s.audition_db) - LEVEL_MIN_DB)
+                            / (LEVEL_MAX_DB - LEVEL_MIN_DB),
+                    }
+                })
+            },
+            Item::MetronomeSound => RowView {
+                share: 1,
+                ..choice("")
+            },
+            Item::FineShift => switch("SHIFT + a Q-Link or the wheel turns finer", s.fine_shift),
             Item::LatchMode => choice("With Latch on, what a fresh press does"),
             Item::PedalLatch => switch("The pedal holds the arp as Latch does", s.pedal_latches),
             Item::ScreenVelocity => RowView {
@@ -859,6 +1052,7 @@ impl App {
             Item::Export => choice("Listen plays it through the speakers as it goes"),
             Item::ExportFile => choice("16-bit adds a little dither, for CDs and older gear"),
             Item::ExportRate => choice("48 kHz is for video, converted as the files are written"),
+            Item::StemsBy => choice("One file for each track, or for each mixer channel"),
             Item::AtStart => tiles(),
             Item::QuickAdvance => tiles(),
             Item::PadBrightness => RowView {
@@ -1041,7 +1235,115 @@ impl App {
             hint: (tab == PrefsTab::Customise)
                 .then(|| self.custom_hint())
                 .flatten(),
+            reset: tab.resets().then(|| {
+                if self.reset_armed {
+                    "Tap again to reset".to_string()
+                } else {
+                    format!("Reset {}", tab.name())
+                }
+            }),
         }
+    }
+
+    /// Prefs' Reset: the first tap asks for a second, which puts the
+    /// tab's settings back to how they came (as a new stick has them).
+    pub fn prefs_reset(&mut self) -> Vec<Effect> {
+        if self.view != View::Prefs || !self.prefs_tab.resets() {
+            return Vec::new();
+        }
+        if !self.reset_armed {
+            self.reset_armed = true;
+            return vec![self.menu_view()];
+        }
+        self.reset_armed = false;
+        let tab = self.prefs_tab;
+        let mut fx = self.reset_tab(tab);
+        fx.push(Effect::Note(format!(
+            "prefs: {} set back to how they came",
+            tab.name()
+        )));
+        self.save_dirty = true;
+        fx.push(Effect::Settings(self.settings.clone()));
+        fx.push(Effect::Tell(format!("{} reset", tab.name())));
+        fx.push(self.menu_view());
+        fx
+    }
+
+    /// `tab`'s settings back to the defaults, with what a change of each
+    /// tells the rest of the app.
+    fn reset_tab(&mut self, tab: PrefsTab) -> Vec<Effect> {
+        let d = Settings::default();
+        let mut fx = Vec::new();
+        // A setting that tells the rest of the app steps there as a turn
+        // would, so the same effects go out.
+        let toward = |now: bool, want: bool| if want && !now { 1 } else { -1 };
+        match tab {
+            PrefsTab::Playing => {
+                let s = &mut self.settings;
+                s.curve = d.curve;
+                s.curve_bend = d.curve_bend;
+                s.pad_threshold = d.pad_threshold;
+                s.screen_velocity = d.screen_velocity;
+                s.qlink_speed = d.qlink_speed;
+                s.wheel_speed = d.wheel_speed;
+                s.wheel_speed_up = d.wheel_speed_up;
+                s.fine_shift = d.fine_shift;
+                if s.latch_mode != d.latch_mode {
+                    s.latch_mode = d.latch_mode;
+                    self.update_engine();
+                }
+                if self.settings.pedal_latches != d.pedal_latches {
+                    let dir = toward(self.settings.pedal_latches, d.pedal_latches);
+                    fx.extend(self.apply_item(Item::PedalLatch, dir));
+                }
+            }
+            PrefsTab::Sound => {
+                while self.settings.periods != d.periods {
+                    let dir = if d.periods > self.settings.periods {
+                        1
+                    } else {
+                        -1
+                    };
+                    let was = self.settings.periods;
+                    fx.extend(self.apply_item(Item::Buffer, dir));
+                    if self.settings.periods == was {
+                        break;
+                    }
+                }
+                if self.settings.sends_midi != d.sends_midi {
+                    let dir = toward(self.settings.sends_midi, d.sends_midi);
+                    fx.extend(self.apply_item(Item::SendsMidi, dir));
+                }
+                if self.settings.line_input {
+                    fx.extend(self.apply_item(Item::LineInput, -1));
+                }
+                if self.settings.metronome_sound != d.metronome_sound {
+                    self.settings.metronome_sound = d.metronome_sound;
+                    fx.push(Effect::ClickSound(d.metronome_sound));
+                }
+                let s = &mut self.settings;
+                s.audition_db = d.audition_db;
+                s.sound_cores = d.sound_cores;
+                s.loop_memory = d.loop_memory;
+                s.audio_memory = d.audio_memory;
+                s.loop_latency_set = false;
+                s.loop_latency = crate::looping::estimated_latency(s.periods);
+                fx.push(Effect::Looper(LoopAction::Command(
+                    LoopCommand::SetLatency(s.loop_latency_now()),
+                )));
+            }
+            PrefsTab::Projects => {
+                let s = &mut self.settings;
+                s.export_mode = d.export_mode;
+                s.export_bits = d.export_bits;
+                s.export_rate = d.export_rate;
+                s.open_last = d.open_last;
+                s.quick_advance = d.quick_advance;
+                s.stems_by = d.stems_by;
+            }
+            _ => {}
+        }
+        fx
     }
 
     /// What the two memories set aside together.
@@ -1134,6 +1436,144 @@ mod tests {
         ] {
             assert!(PrefsTab::of(item).is_some(), "{item:?}");
         }
+    }
+
+    /// The custom curve's knobs choose Custom, a hit on the MPC is marked
+    /// on the curve, the Controls card sets how turns feel, and Reset
+    /// asks once before it puts the tab back as it came.
+    #[test]
+    fn playing_sets_the_custom_curve_and_reset_takes_two_taps() {
+        use crate::play_feel::{Bend, Speed, SpeedUp};
+        let mut app = App::new(44_100, false);
+        app.open_tab(View::Prefs);
+        assert_eq!(app.prefs_tab, PrefsTab::Playing);
+        let shape = app.prefs_go_to(Item::CurveShape).expect("a row");
+        app.step_item(shape, 1);
+        assert_eq!(
+            app.settings.curve,
+            Curve::Custom(Bend {
+                shape: 10,
+                ..Bend::default()
+            })
+        );
+        let softest = app.prefs_go_to(Item::CurveSoftest).expect("a row");
+        app.set_value(softest, 500);
+        assert_eq!(app.settings.curve_bend.softest, 64);
+        // Another curve, then Custom again: the knobs are kept.
+        let curve = app.prefs_go_to(Item::Curve).expect("a row");
+        app.choose(curve, 0);
+        assert_eq!(app.settings.curve, Curve::Soft);
+        app.choose(curve, 3);
+        assert_eq!(app.settings.curve, Curve::Custom(app.settings.curve_bend));
+        assert_eq!(app.settings.curve_bend.softest, 64);
+
+        let fx = app.pad_hit(30);
+        let view = |fx: &[Effect]| match fx.last() {
+            Some(Effect::Menu(m)) => m.prefs.clone().expect("Prefs"),
+            _ => panic!("no menu: {fx:?}"),
+        };
+        match &view(&fx).rows[curve].picture {
+            Some(Picture::Curve(_, hit)) => {
+                assert_eq!(*hit, Some((30, app.settings.curve.apply(30))))
+            }
+            p => panic!("{p:?}"),
+        }
+
+        let threshold = app.prefs_go_to(Item::PadThreshold).expect("a row");
+        app.set_value(threshold, 1000);
+        let wheel = app.prefs_go_to(Item::WheelSpeed).expect("a row");
+        app.set_value(wheel, 1000);
+        let up = app.prefs_go_to(Item::WheelSpeedUp).expect("a row");
+        app.step_item(up, 1);
+        let fine = app.prefs_go_to(Item::FineShift).expect("a row");
+        app.step_item(fine, -1);
+        let feel = app.feel();
+        assert_eq!(
+            (
+                feel.threshold,
+                feel.wheel,
+                feel.speed_up,
+                app.settings.fine_shift
+            ),
+            (40, Speed::Fast, SpeedUp::Some, false)
+        );
+
+        let fx = app.prefs_reset();
+        assert_eq!(view(&fx).reset.as_deref(), Some("Tap again to reset"));
+        assert_eq!(app.settings.pad_threshold, 40, "the first tap only asks");
+        let fx = app.prefs_reset();
+        assert_eq!(view(&fx).reset.as_deref(), Some("Reset Playing"));
+        let d = Settings::default();
+        let s = &app.settings;
+        assert_eq!(
+            (
+                s.curve,
+                s.curve_bend,
+                s.pad_threshold,
+                s.wheel_speed,
+                s.fine_shift
+            ),
+            (
+                d.curve,
+                d.curve_bend,
+                d.pad_threshold,
+                d.wheel_speed,
+                d.fine_shift
+            )
+        );
+        // A change in between: Reset asks again.
+        app.prefs_reset();
+        app.step_item(fine, -1);
+        app.prefs_reset();
+        assert!(!app.settings.fine_shift);
+        // Themes has no Reset.
+        app.pick_prefs_tab(PrefsTab::Themes.index());
+        assert!(app.prefs_reset().is_empty());
+    }
+
+    #[test]
+    fn sound_sets_the_metronome_and_audition_and_projects_the_stems() {
+        use crate::time::ClickSound;
+        use mpfree_browser_ui::StemsBy;
+        let mut app = App::new(44_100, false);
+        app.open_tab(View::Prefs);
+        let click = app.prefs_go_to(Item::MetronomeSound).expect("a row");
+        assert_eq!(app.prefs_tab, PrefsTab::Sound);
+        let fx = app.choose(click, 1);
+        assert!(
+            fx.iter()
+                .any(|e| matches!(e, Effect::ClickSound(ClickSound::Wood))),
+            "{fx:?}"
+        );
+        let level = app.prefs_go_to(Item::AuditionLevel).expect("a row");
+        app.step_item(level, 1);
+        assert_eq!(app.settings.audition_db, -5);
+        app.set_value(level, 0);
+        assert_eq!(app.settings.audition_db, -40);
+        // The meter reads the line input; with it off it says so.
+        let meter = app.prefs_go_to(Item::InputMeter).expect("a row");
+        let fx = app.prefs_reset();
+        let view = |fx: &[Effect]| match fx.last() {
+            Some(Effect::Menu(m)) => m.prefs.clone().expect("Prefs"),
+            _ => panic!("no menu: {fx:?}"),
+        };
+        assert!(view(&fx).rows[meter].faded);
+        let fx = app.prefs_reset();
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::ClickSound(ClickSound::Click))));
+        assert_eq!(
+            (app.settings.audition_db, app.settings.metronome_sound),
+            (-6, ClickSound::Click)
+        );
+
+        let stems = app.prefs_go_to(Item::StemsBy).expect("a row");
+        assert_eq!(app.prefs_tab, PrefsTab::Projects);
+        app.choose(stems, 0);
+        assert_eq!(app.settings.stems_by, StemsBy::Track);
+        app.prefs_reset();
+        app.prefs_reset();
+        assert_eq!(app.settings.stems_by, StemsBy::Channel);
     }
 
     /// Screen and lights' rows change the settings, and the pads' look

@@ -645,7 +645,52 @@ impl Pads for crate::sampler::Player {
     }
 }
 
-/// The metronome: a short sine blip on each beat, higher on the bar.
+/// What the metronome sounds like (Prefs › Sound › Metronome sound).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ClickSound {
+    /// A short high blip, as always (the default).
+    #[default]
+    Click,
+    /// A lower, woody knock: two partials that die away fast.
+    Wood,
+    /// A steady tone a little longer than the click.
+    Beep,
+}
+
+impl ClickSound {
+    pub const ALL: [ClickSound; 3] = [ClickSound::Click, ClickSound::Wood, ClickSound::Beep];
+    pub fn name(self) -> &'static str {
+        ["Click", "Wood", "Beep"][self as usize]
+    }
+    pub fn key(self) -> &'static str {
+        ["click", "wood", "beep"][self as usize]
+    }
+    pub fn parse(v: &str) -> Option<ClickSound> {
+        ClickSound::ALL.into_iter().find(|c| c.key() == v.trim())
+    }
+    /// The bar's and the beat's pitch, Hz.
+    fn pitch(self, accent: bool) -> f32 {
+        match (self, accent) {
+            (ClickSound::Click, true) => 1760.0,
+            (ClickSound::Click, false) => 1320.0,
+            (ClickSound::Wood, true) => 1100.0,
+            (ClickSound::Wood, false) => 830.0,
+            (ClickSound::Beep, true) => 1000.0,
+            (ClickSound::Beep, false) => 750.0,
+        }
+    }
+    /// How long it takes to fall to a quarter, ms, and how long it holds
+    /// first.
+    fn shape(self) -> (f32, f32) {
+        match self {
+            ClickSound::Click => (CLICK_MS, 0.0),
+            ClickSound::Wood => (8.0, 0.0),
+            ClickSound::Beep => (10.0, 40.0),
+        }
+    }
+}
+
+/// The metronome: a short blip on each beat, higher on the bar.
 #[derive(Clone, Copy, Debug)]
 struct Click {
     rate: f32,
@@ -655,8 +700,11 @@ struct Click {
     phase: f32,
     freq: f32,
     env: f32,
+    /// Frames the tone holds before it falls (Beep's).
+    hold: u32,
     /// The click's level, as a gain.
     pub gain: f32,
+    pub sound: ClickSound,
 }
 
 /// The click's level by default (-24 dBFS; it was -12 until live test 3,
@@ -679,7 +727,9 @@ impl Click {
             phase: 0.0,
             freq: 0.0,
             env: 0.0,
+            hold: 0,
             gain: click_gain(CLICK_DB),
+            sound: ClickSound::Click,
         }
     }
 
@@ -693,20 +743,34 @@ impl Click {
     /// Add the click to `left` and `right` (keeping them within ±1);
     /// returns the peak afterwards.
     fn mix(&mut self, left: &mut [f32], right: &mut [f32]) -> f32 {
-        let decay = 0.25f32.powf(1.0 / (CLICK_MS * 1e-3 * self.rate));
+        let (fall_ms, hold_ms) = self.sound.shape();
+        let decay = 0.25f32.powf(1.0 / (fall_ms * 1e-3 * self.rate));
+        let wood = self.sound == ClickSound::Wood;
         let mut peak = 0f32;
         let mut next = 0;
         for f in 0..left.len().min(right.len()) {
             while next < self.n && self.starts[next].0 as usize == f {
-                self.freq = if self.starts[next].1 { 1760.0 } else { 1320.0 };
+                self.freq = self.sound.pitch(self.starts[next].1);
                 self.phase = 0.0;
                 self.env = 1.0;
+                self.hold = (hold_ms * 1e-3 * self.rate) as u32;
                 next += 1;
             }
             if self.env > 1e-4 {
-                let s = self.gain * self.env * (self.phase * TAU).sin();
+                let a = self.phase * TAU;
+                // Wood: a second partial 2.76 times up (a block's), quieter.
+                let tone = if wood {
+                    0.7 * a.sin() + 0.3 * (a * 2.76).sin()
+                } else {
+                    a.sin()
+                };
+                let s = self.gain * self.env * tone;
                 self.phase = (self.phase + self.freq / self.rate).fract();
-                self.env *= decay;
+                if self.hold > 0 {
+                    self.hold -= 1;
+                } else {
+                    self.env *= decay;
+                }
                 left[f] = (left[f] + s).clamp(-1.0, 1.0);
                 right[f] = (right[f] + s).clamp(-1.0, 1.0);
             }
@@ -940,6 +1004,15 @@ impl TimeHost {
             play_from,
             count_in_was,
         })
+    }
+
+    /// What the metronome sounds like (Prefs' Metronome sound).
+    pub fn set_click_sound(&mut self, sound: ClickSound) {
+        self.audio.set_click_sound(sound);
+    }
+
+    pub fn click_sound(&self) -> ClickSound {
+        self.audio.click_sound()
     }
 
     /// The control half runs on its own thread.
@@ -2521,6 +2594,39 @@ mod tests {
     use mpfree_transport::time::Tick;
     use mpfree_transport::State;
     use std::sync::Arc;
+
+    #[test]
+    fn every_metronome_sound_stays_at_its_level_and_dies_away() {
+        // Prefs › Sound › Metronome sound: each sound starts at the click's
+        // level, Beep holds before it falls, and all are quiet by 100 ms.
+        let level = |sound| {
+            let mut c = Click::new(48_000);
+            c.sound = sound;
+            c.schedule(0, true);
+            let (mut l, mut r) = (vec![0f32; 4800], vec![0f32; 4800]);
+            let peak = c.mix(&mut l, &mut r);
+            let at = |ms: usize| {
+                l[ms * 48..(ms + 1) * 48]
+                    .iter()
+                    .fold(0f32, |m, s| m.max(s.abs()))
+            };
+            (peak, at(20), at(99))
+        };
+        let gain = click_gain(CLICK_DB);
+        let (click, wood, beep) = (
+            level(ClickSound::Click),
+            level(ClickSound::Wood),
+            level(ClickSound::Beep),
+        );
+        for (peak, _, tail) in [click, wood, beep] {
+            assert!(peak > gain * 0.5 && peak <= gain * 1.01, "{peak} vs {gain}");
+            assert!(tail < gain * 0.01, "{tail}");
+        }
+        assert!(beep.1 > gain * 0.9, "Beep still holds at 20 ms: {}", beep.1);
+        assert!(click.1 < beep.1 && wood.1 < click.1);
+        assert_eq!(ClickSound::parse("wood"), Some(ClickSound::Wood));
+        assert_eq!(ClickSound::parse("drum"), None);
+    }
 
     #[test]
     fn the_morph_bar_runs_the_scene_morph_on_the_mixers_mod_engine() {

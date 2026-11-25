@@ -15,7 +15,7 @@ checked: 2026-11-14 97a6b00
    - **Mixdown**: the whole song in one stereo file, as the speakers play it.
    - **Stems**: a stereo file for each part of the mixer, so each instrument (or each track: see the next step), after its fader, pan and mute.
    - **MIDI file**: the notes and controls each track played.
-3. Pick what a stem is, under **Stems by** (see [Stems by track or by channel](#stems-by-track-or-by-channel)):
+3. Pick what a stem is, under **Stems by** (see [Stems by track or by channel](#stems-by-track-or-by-channel)). It starts as **Prefs › Projects › Stems by** has it, and what you pick here is for this export only:
    - **Channel** (the default): one stem per part of the mixer, in a single pass: each instrument (a kit, the synth, a synth of a track's own or one picked for the pads), the Loop, Audio and each return.
    - **Track**: one stem per track, as the MPC makes them.
 4. Pick the **Range**:

@@ -348,7 +348,7 @@ The plan's step 8: "Layers, who plays what, mute and solo scopes, stems." Rule 7
 
 ### 8a as built (stems per instrument by default)
 
-- The export panel's **Stems by** starts on **Channel** (`mpfree_browser_ui::export::StemsBy`'s default; a choice made in the panel is still kept for the next export). Each instrument sounds on a channel of its own, a kit's on its drum channel, the shared synth's on Synth, a track's own synth and a synth picked for the pads on theirs, so these stems are one per instrument, from one pass, and add up to the mix. **Track** stays the separate choice that renders each track alone through a shared instrument, replaying the range.
+- The export panel's **Stems by** starts on **Channel** (`mpfree_browser_ui::export::StemsBy`'s default, and Prefs › Projects › Stems by's; since the Prefs redesign the panel starts from Prefs each time it opens, and a choice made in the panel is for that export). Each instrument sounds on a channel of its own, a kit's on its drum channel, the shared synth's on Synth, a track's own synth and a synth picked for the pads on theirs, so these stems are one per instrument, from one pass, and add up to the mix. **Track** stays the separate choice that renders each track alone through a shared instrument, replaying the range.
 - **Tests:** mpfree-browser-ui's `stems_by_track_or_channel_say_how_many_passes` and `export_asks_the_app_and_its_panel_takes_the_screen`; `smoke::song_workflows::tests::night_market_exports_its_arrangement_as_mixdown_stems_and_midi` now picks Track.
 
 ### 8b as built (who plays what, on the Synth tab)

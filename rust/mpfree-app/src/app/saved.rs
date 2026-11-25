@@ -56,6 +56,7 @@ fn curve_key(c: Curve) -> &'static str {
         Curve::Soft => "soft",
         Curve::Linear => "linear",
         Curve::Hard => "hard",
+        Curve::Custom(_) => "custom",
     }
 }
 
@@ -133,6 +134,23 @@ impl App {
         out.set_str("pads-show", s.pads_show.key());
         out.set_str("empty-pads", s.empty_pads.key());
         out.set_bool("hint-line", s.hint_line);
+        out.set_i64("curve-shape", i64::from(s.curve_bend.shape));
+        out.set_i64("curve-softest", i64::from(s.curve_bend.softest));
+        out.set_i64("curve-loudest", i64::from(s.curve_bend.loudest));
+        out.set_i64("pad-threshold", i64::from(s.pad_threshold));
+        out.set_str("qlink-speed", s.qlink_speed.key());
+        out.set_str("wheel-speed", s.wheel_speed.key());
+        out.set_str("wheel-speeds-up", s.wheel_speed_up.key());
+        out.set_bool("fine-with-shift", s.fine_shift);
+        out.set_i64("audition-level", i64::from(s.audition_db));
+        out.set_str("metronome-sound", s.metronome_sound.key());
+        out.set_str(
+            "stems-by",
+            match s.stems_by {
+                mpfree_browser_ui::StemsBy::Track => "track",
+                mpfree_browser_ui::StemsBy::Channel => "channel",
+            },
+        );
         // The Looper's level, and the line input's latency once it was set
         // by hand (measured with a cable). The line input itself, and so
         // what the Looper records from, is off at every start.
@@ -185,11 +203,68 @@ impl App {
         let s = &mut self.settings;
         for (k, v) in app.iter() {
             let ok = match k {
-                "pad-curve" => Curve::ALL
+                // Custom takes its bend after the loop, whichever line
+                // comes first.
+                "pad-curve" => Curve::choices(s.curve_bend)
                     .iter()
                     .find(|&&c| curve_key(c) == v)
                     .map(|&c| s.curve = c)
                     .is_some(),
+                "curve-shape" => app
+                    .get_i64(k)
+                    .filter(|n| (-100..=100).contains(n))
+                    .map(|n| s.curve_bend.shape = n as i8)
+                    .is_some(),
+                "curve-softest" => app
+                    .get_i64(k)
+                    .filter(|n| (1..=127).contains(n))
+                    .map(|n| s.curve_bend.softest = n as u8)
+                    .is_some(),
+                "curve-loudest" => app
+                    .get_i64(k)
+                    .filter(|n| (1..=127).contains(n))
+                    .map(|n| s.curve_bend.loudest = n as u8)
+                    .is_some(),
+                "pad-threshold" => {
+                    use crate::play_feel::{THRESHOLD_MAX, THRESHOLD_MIN};
+                    app.get_i64(k)
+                        .filter(|n| {
+                            (i64::from(THRESHOLD_MIN)..=i64::from(THRESHOLD_MAX)).contains(n)
+                        })
+                        .map(|n| s.pad_threshold = n as u8)
+                        .is_some()
+                }
+                "qlink-speed" => crate::play_feel::Speed::parse(v)
+                    .map(|x| s.qlink_speed = x)
+                    .is_some(),
+                "wheel-speed" => crate::play_feel::Speed::parse(v)
+                    .map(|x| s.wheel_speed = x)
+                    .is_some(),
+                "wheel-speeds-up" => crate::play_feel::SpeedUp::parse(v)
+                    .map(|x| s.wheel_speed_up = x)
+                    .is_some(),
+                "fine-with-shift" => app.get_bool(k).map(|b| s.fine_shift = b).is_some(),
+                "audition-level" => {
+                    use crate::preview::{LEVEL_MAX_DB, LEVEL_MIN_DB};
+                    app.get_i64(k)
+                        .filter(|n| (LEVEL_MIN_DB as i64..=LEVEL_MAX_DB as i64).contains(n))
+                        .map(|n| s.audition_db = n as i8)
+                        .is_some()
+                }
+                "metronome-sound" => crate::time::ClickSound::parse(v)
+                    .map(|c| s.metronome_sound = c)
+                    .is_some(),
+                "stems-by" => match v {
+                    "track" => {
+                        s.stems_by = mpfree_browser_ui::StemsBy::Track;
+                        true
+                    }
+                    "channel" => {
+                        s.stems_by = mpfree_browser_ui::StemsBy::Channel;
+                        true
+                    }
+                    _ => false,
+                },
                 "screen-velocity" => app
                     .get_i64(k)
                     .filter(|n| (10..=127).contains(n))
@@ -346,6 +421,9 @@ impl App {
             if !ok {
                 skipped.push(format!("{k} = {v}"));
             }
+        }
+        if let Curve::Custom(_) = s.curve {
+            s.curve = Curve::Custom(s.curve_bend);
         }
         if !app.is_empty() {
             let s = &self.settings;
@@ -661,6 +739,67 @@ mod tests {
             (c.settings.pad_brightness, c.settings.held_pad),
             (100, HeldPad::Brighter)
         );
+    }
+
+    /// The custom curve, the pad threshold and the Controls card are
+    /// kept; the custom curve comes back with its bend whichever line is
+    /// read first.
+    #[test]
+    fn the_custom_curve_threshold_and_controls_are_kept() {
+        use crate::play_feel::{Bend, Speed, SpeedUp};
+        let bend = Bend {
+            shape: 30,
+            softest: 10,
+            loudest: 120,
+        };
+        let mut a = App::new(44_100, false);
+        a.settings.curve_bend = bend;
+        a.settings.curve = Curve::Custom(bend);
+        a.settings.pad_threshold = 6;
+        a.settings.qlink_speed = Speed::Slow;
+        a.settings.wheel_speed = Speed::Fast;
+        a.settings.wheel_speed_up = SpeedUp::Some;
+        a.settings.fine_shift = false;
+        a.settings.audition_db = -12;
+        a.settings.metronome_sound = crate::time::ClickSound::Beep;
+        a.settings.stems_by = mpfree_browser_ui::StemsBy::Track;
+        let text = a.app_settings().to_text();
+        assert!(text.contains("pad-curve = custom"), "{text}");
+        let mut b = App::new(44_100, false);
+        b.restore(&Settings::parse(&text), &Settings::default());
+        let s = &b.settings;
+        assert_eq!(s.curve, Curve::Custom(bend));
+        assert_eq!(
+            (
+                s.pad_threshold,
+                s.qlink_speed,
+                s.wheel_speed,
+                s.wheel_speed_up,
+                s.fine_shift
+            ),
+            (6, Speed::Slow, Speed::Fast, SpeedUp::Some, false)
+        );
+        assert_eq!(
+            (s.audition_db, s.metronome_sound, s.stems_by),
+            (
+                -12,
+                crate::time::ClickSound::Beep,
+                mpfree_browser_ui::StemsBy::Track
+            )
+        );
+        let mut c = App::new(44_100, false);
+        c.restore(
+            &Settings::parse("pad-curve = custom\ncurve-shape = -40\npad-threshold = 99\n"),
+            &Settings::default(),
+        );
+        assert_eq!(
+            c.settings.curve,
+            Curve::Custom(Bend {
+                shape: -40,
+                ..Bend::default()
+            })
+        );
+        assert_eq!(c.settings.pad_threshold, 1);
     }
 
     /// REC, OVERDUB, UNDO and PLAY START work on a fresh MPFree with

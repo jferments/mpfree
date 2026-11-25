@@ -339,16 +339,32 @@ pub enum Curve {
     Soft,
     Linear,
     Hard,
+    /// Prefs' Custom: Shape, Softest and Loudest (play_feel.rs).
+    Custom(crate::play_feel::Bend),
 }
 
 impl Curve {
-    const ALL: [Curve; 3] = [Curve::Soft, Curve::Linear, Curve::Hard];
+    /// The four choices Prefs offers, Custom with `bend`.
+    pub fn choices(bend: crate::play_feel::Bend) -> [Curve; 4] {
+        [Curve::Soft, Curve::Linear, Curve::Hard, Curve::Custom(bend)]
+    }
+
+    /// Its place among [`Curve::choices`].
+    pub fn index(self) -> usize {
+        match self {
+            Curve::Soft => 0,
+            Curve::Linear => 1,
+            Curve::Hard => 2,
+            Curve::Custom(_) => 3,
+        }
+    }
 
     fn label(self) -> &'static str {
         match self {
             Curve::Soft => "Soft",
             Curve::Linear => "Linear",
             Curve::Hard => "Hard",
+            Curve::Custom(_) => "Custom",
         }
     }
 
@@ -360,6 +376,7 @@ impl Curve {
             Curve::Soft => x.powf(0.6),
             Curve::Linear => x,
             Curve::Hard => x.powf(1.7),
+            Curve::Custom(b) => return b.apply(v),
         };
         ((y * 127.0).round() as u8).clamp(1, 127)
     }
@@ -858,6 +875,28 @@ pub struct Settings {
     /// the default). Off, it shows only what a held button does and what
     /// the app tells.
     pub hint_line: bool,
+    /// Prefs › Playing: the custom curve's Shape, Softest and Loudest,
+    /// kept while another curve is chosen.
+    pub curve_bend: crate::play_feel::Bend,
+    /// Prefs "Pad threshold": hits softer than this play nothing (1 plays
+    /// every hit).
+    pub pad_threshold: u8,
+    /// Prefs › Playing › Controls: how far a Q-Link's and the data
+    /// wheel's turn goes, whether a quick spin goes further, and whether
+    /// SHIFT makes a turn finer where a page does that.
+    pub qlink_speed: crate::play_feel::Speed,
+    pub wheel_speed: crate::play_feel::Speed,
+    pub wheel_speed_up: crate::play_feel::SpeedUp,
+    pub fine_shift: bool,
+    /// Prefs › Sound › Listening: how loud BROWSE previews a sound, dB
+    /// (its Q-Link 3 changes it for the moment), and what the metronome
+    /// sounds like.
+    pub audition_db: i8,
+    pub metronome_sound: crate::time::ClickSound,
+    /// Prefs "Stems by": what the Export panel's stems start as, a file
+    /// for each track or for each mixer channel (a pick on the panel is
+    /// for that export only).
+    pub stems_by: mpfree_browser_ui::StemsBy,
 }
 
 /// Half Level's velocity until FULL LEVEL held and a pad hit set another.
@@ -943,6 +982,15 @@ impl Default for Settings {
             pads_show: crate::pad_look::PadsShow::Kit,
             empty_pads: crate::pad_look::EmptyPads::Dark,
             hint_line: true,
+            curve_bend: crate::play_feel::Bend::default(),
+            pad_threshold: crate::play_feel::THRESHOLD_MIN,
+            qlink_speed: crate::play_feel::Speed::Normal,
+            wheel_speed: crate::play_feel::Speed::Normal,
+            wheel_speed_up: crate::play_feel::SpeedUp::Off,
+            fine_shift: true,
+            audition_db: crate::preview::LEVEL_DB as i8,
+            metronome_sound: crate::time::ClickSound::Click,
+            stems_by: mpfree_browser_ui::StemsBy::Channel,
         }
     }
 }
@@ -1046,6 +1094,25 @@ pub enum Item {
     EmptyPads,
     /// Prefs › Screen and lights: the hint line on or off.
     HintLine,
+    /// Prefs › Playing: the custom curve's Shape, Softest and Loudest.
+    CurveShape,
+    CurveSoftest,
+    CurveLoudest,
+    /// Prefs › Playing: the lightest hit that plays.
+    PadThreshold,
+    /// Prefs › Playing › Controls.
+    QLinkSpeed,
+    WheelSpeed,
+    WheelSpeedUp,
+    FineShift,
+    /// Prefs › Sound: the line input's level as it comes in (a meter).
+    InputMeter,
+    /// Prefs › Sound › Listening: BROWSE's preview level.
+    AuditionLevel,
+    /// Prefs › Sound › Listening: Click, Wood or Beep.
+    MetronomeSound,
+    /// Prefs › Projects › Export: stems by track or by channel.
+    StemsBy,
     /// Prefs: the export's WAV files: 24-bit, 16-bit or 32-bit float.
     ExportFile,
     /// Prefs: the export's rate: 44.1 or 48 kHz.
@@ -1676,6 +1743,9 @@ pub enum Effect {
         on: bool,
         db: i8,
     },
+    /// What the metronome sounds like (Prefs' Metronome sound, and at the
+    /// start).
+    ClickSound(crate::time::ClickSound),
     /// FILL on or off from the coming period: notes with the FILL and
     /// !FILL trig conditions follow it.
     Fill(bool),
@@ -2128,6 +2198,12 @@ pub struct App {
     /// Where the sound runs in this start (cores.rs); Prefs' "Sound cores"
     /// says "(next start)" while the setting differs.
     sound_cores_now: SoundCores,
+    /// The last pad hit on the MPC, as it came (Prefs marks it on the
+    /// velocity curve).
+    last_hit: Option<u8>,
+    /// Prefs' Reset was tapped once on the tab showing: a second tap
+    /// resets it.
+    reset_armed: bool,
     /// The looper's size in this start, and the rate it is counted at;
     /// Prefs' "Loop memory" says "(next start)" while the setting differs.
     loop_memory_now: LoopMemory,
@@ -2307,6 +2383,8 @@ impl App {
             tick_t: 0.0,
             tuning_files: Vec::new(),
             sound_cores_now: SoundCores::Shared,
+            last_hit: None,
+            reset_armed: false,
             loop_memory_now: LoopMemory::default(),
             audio_memory_now: crate::audiotracks::AudioMemory::default(),
             sample_rate,
@@ -2697,6 +2775,7 @@ impl App {
         ];
         fx.extend(self.repeat_light());
         fx.push(self.metronome());
+        fx.push(Effect::ClickSound(self.settings.metronome_sound));
         let s = &self.settings;
         fx.push(Effect::Looper(LoopAction::Source(s.loop_source)));
         fx.push(Effect::Looper(LoopAction::Command(LoopCommand::SetBars(
@@ -2713,6 +2792,34 @@ impl App {
         // give one another number.
         fx.push(Effect::Show(self.view));
         fx
+    }
+
+    /// A pad hit on the MPC at `velocity` as it came: Prefs' Playing tab
+    /// marks it on the velocity curve, with what the curve made of it.
+    pub fn pad_hit(&mut self, velocity: u8) -> Vec<Effect> {
+        self.last_hit = Some(velocity.max(1));
+        if self.view == View::Prefs && self.prefs_tab == PrefsTab::Playing {
+            vec![self.menu_view()]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The last pad hit on the MPC, as it came.
+    pub fn last_hit(&self) -> Option<u8> {
+        self.last_hit
+    }
+
+    /// How the pads and knobs feel, as Prefs › Playing sets it
+    /// (play_feel.rs).
+    pub fn feel(&self) -> crate::play_feel::Feel {
+        let s = &self.settings;
+        crate::play_feel::Feel {
+            qlink: s.qlink_speed,
+            wheel: s.wheel_speed,
+            speed_up: s.wheel_speed_up,
+            threshold: s.pad_threshold,
+        }
     }
 
     /// The velocity a hit plays at, after Full or Half Level and the curve.
@@ -4440,7 +4547,7 @@ impl App {
             // A finger on a control: the wheel turns it (SHIFT: finer).
             return vec![Effect::Held {
                 delta,
-                fine: self.shift,
+                fine: self.shift && self.settings.fine_shift,
             }];
         }
         match self.view {
@@ -4580,6 +4687,7 @@ impl App {
         let opening = v == View::Prefs && self.view != View::Prefs;
         if self.view == View::Prefs && v != View::Prefs {
             back.extend(self.custom_leave());
+            self.reset_armed = false;
         }
         let mut fx = self.show_inner(v);
         if opening && self.view == View::Prefs && self.prefs_tab == PrefsTab::Customise {
@@ -5506,6 +5614,28 @@ impl App {
                 "Hint line",
                 if s.hint_line { "On" } else { "Off" }.to_string(),
             ),
+            Item::CurveShape => ("Shape", s.curve_bend.shape_text()),
+            Item::CurveSoftest => ("Softest", s.curve_bend.softest.to_string()),
+            Item::CurveLoudest => ("Loudest", s.curve_bend.loudest.to_string()),
+            Item::PadThreshold => ("Pad threshold", s.pad_threshold.to_string()),
+            Item::QLinkSpeed => ("Q-Link speed", s.qlink_speed.name().to_string()),
+            Item::WheelSpeed => ("Wheel speed", s.wheel_speed.name().to_string()),
+            Item::WheelSpeedUp => ("Wheel speeds up", s.wheel_speed_up.name().to_string()),
+            Item::FineShift => (
+                "Fine with SHIFT",
+                if s.fine_shift { "On" } else { "Off" }.to_string(),
+            ),
+            Item::InputMeter => ("Coming in now", String::new()),
+            Item::AuditionLevel => ("Audition level", format!("{:+} dB", s.audition_db)),
+            Item::MetronomeSound => ("Metronome sound", s.metronome_sound.name().to_string()),
+            Item::StemsBy => (
+                "Stems by",
+                match s.stems_by {
+                    mpfree_browser_ui::StemsBy::Track => "Track",
+                    mpfree_browser_ui::StemsBy::Channel => "Channel",
+                }
+                .to_string(),
+            ),
             Item::ExportFile => (
                 "Export file",
                 match s.export_bits {
@@ -5842,7 +5972,19 @@ impl App {
             | Item::HeldPad
             | Item::PadsShow
             | Item::EmptyPads
-            | Item::HintLine => Vec::new(),
+            | Item::HintLine
+            | Item::CurveShape
+            | Item::CurveSoftest
+            | Item::CurveLoudest
+            | Item::PadThreshold
+            | Item::QLinkSpeed
+            | Item::WheelSpeed
+            | Item::WheelSpeedUp
+            | Item::FineShift
+            | Item::InputMeter
+            | Item::AuditionLevel
+            | Item::MetronomeSound
+            | Item::StemsBy => Vec::new(),
         }
     }
 
@@ -6146,6 +6288,8 @@ impl App {
         let d = delta.signum();
         let mut fx = Vec::new();
         self.save_dirty = true;
+        // Another change: Reset asks again.
+        self.reset_armed = false;
         fn cycle<T: Copy + PartialEq>(all: &[T], now: T, d: i32) -> T {
             let at = all.iter().position(|&x| x == now).unwrap_or(0) as i32;
             all[(at + d).clamp(0, all.len() as i32 - 1) as usize]
@@ -6158,7 +6302,7 @@ impl App {
         };
         let s = &mut self.settings;
         match item {
-            Item::Curve => s.curve = cycle(&Curve::ALL, s.curve, d),
+            Item::Curve => s.curve = cycle(&Curve::choices(s.curve_bend), s.curve, d),
             Item::ScreenVelocity => {
                 s.screen_velocity = (s.screen_velocity as i32 + 10 * d).clamp(10, 127) as u8
             }
@@ -6277,6 +6421,56 @@ impl App {
                 s.empty_pads = cycle(&crate::pad_look::EmptyPads::ALL, s.empty_pads, d)
             }
             Item::HintLine => s.hint_line = d > 0,
+            Item::CurveShape | Item::CurveSoftest | Item::CurveLoudest => {
+                use crate::play_feel::Bend;
+                let b = &mut s.curve_bend;
+                let v = |x: u8, step: u8| (i32::from(x) + i32::from(step) * d).clamp(1, 127) as u8;
+                match item {
+                    Item::CurveShape => {
+                        b.shape = (i32::from(b.shape) + i32::from(Bend::SHAPE_STEP) * d)
+                            .clamp(-100, 100) as i8
+                    }
+                    Item::CurveSoftest => b.softest = v(b.softest, Bend::VELOCITY_STEP),
+                    _ => b.loudest = v(b.loudest, Bend::VELOCITY_STEP),
+                }
+                // A turn of the custom curve's knobs chooses Custom.
+                s.curve = Curve::Custom(s.curve_bend);
+            }
+            Item::PadThreshold => {
+                use crate::play_feel::{THRESHOLD_MAX, THRESHOLD_MIN};
+                s.pad_threshold = (i32::from(s.pad_threshold) + d)
+                    .clamp(i32::from(THRESHOLD_MIN), i32::from(THRESHOLD_MAX))
+                    as u8;
+            }
+            Item::QLinkSpeed => {
+                s.qlink_speed = cycle(&crate::play_feel::Speed::ALL, s.qlink_speed, d)
+            }
+            Item::WheelSpeed => {
+                s.wheel_speed = cycle(&crate::play_feel::Speed::ALL, s.wheel_speed, d)
+            }
+            Item::WheelSpeedUp => {
+                s.wheel_speed_up = cycle(&crate::play_feel::SpeedUp::ALL, s.wheel_speed_up, d)
+            }
+            Item::FineShift => s.fine_shift = d > 0,
+            Item::InputMeter => {}
+            Item::AuditionLevel => {
+                use crate::preview::{LEVEL_MAX_DB, LEVEL_MIN_DB};
+                s.audition_db = (i32::from(s.audition_db) + d)
+                    .clamp(LEVEL_MIN_DB as i32, LEVEL_MAX_DB as i32)
+                    as i8
+            }
+            Item::MetronomeSound => {
+                s.metronome_sound = cycle(&crate::time::ClickSound::ALL, s.metronome_sound, d);
+                fx.push(Effect::ClickSound(s.metronome_sound));
+            }
+            Item::StemsBy => {
+                use mpfree_browser_ui::StemsBy;
+                s.stems_by = if d > 0 {
+                    StemsBy::Channel
+                } else {
+                    StemsBy::Track
+                }
+            }
             Item::LoopMemory => {
                 let next = cycle(&LoopMemory::ALL, s.loop_memory, d);
                 if next != s.loop_memory {
@@ -7053,7 +7247,7 @@ mod tests {
 
     #[test]
     fn curves_keep_the_ends_and_bend_the_middle() {
-        for c in Curve::ALL {
+        for c in Curve::choices(crate::play_feel::Bend::default()) {
             assert_eq!(c.apply(127), 127);
             assert_eq!(c.apply(0), 1);
         }
@@ -8143,8 +8337,8 @@ mod tests {
     }
 
     /// Prefs "Send MIDI and CV out" (layout spec 5, Jay's card of 16 Nov
-    /// 23:16Z): the Sound tab's last card, off until turned on, and it says
-    /// what it does when it changes.
+    /// 23:16Z): on the Sound tab's MIDI and CV out card, off until turned
+    /// on, and it says what it does when it changes.
     #[test]
     fn prefs_send_midi_and_cv_out_is_off_until_turned_on() {
         let mut app = App::new(44_100, false);
@@ -8154,7 +8348,12 @@ mod tests {
         app.button(button::SHIFT, false, 0.0);
         let at = go(&mut app, Item::SendsMidi);
         assert_eq!(app.prefs_tab, PrefsTab::Sound);
-        assert_eq!(app.items().last(), Some(&Item::SendsMidi), "the last card");
+        let items = app.items();
+        assert_eq!(
+            items[at..].iter().take(2).copied().collect::<Vec<_>>(),
+            [Item::SendsMidi, Item::AuditionLevel],
+            "before Listening"
+        );
         assert!(!app.settings.sends_midi);
         assert_eq!(app.item_text(Item::SendsMidi).0, "Send MIDI and CV out");
         assert_eq!(app.item_text(Item::SendsMidi).1, "Off");
@@ -8314,10 +8513,11 @@ mod tests {
         assert_eq!(names, mpfree_ui::theme::BUILTIN);
     }
 
-    /// Prefs' Playing tab has the touch screen's settings on a card of
-    /// their own (layout spec 5), where the section had them.
+    /// Prefs' Playing tab has the touch screen's pad velocity on a card of
+    /// its own, and System's Buttons and touch card the touch checks
+    /// (layout spec 5).
     #[test]
-    fn prefs_keeps_touch_settings_on_the_playing_tabs_touch_screen_card() {
+    fn prefs_keeps_screen_velocity_on_playing_and_the_touch_checks_on_system() {
         let mut app = App::new(44_100, false);
         app.map.menu = Some(MENU);
         app.button(button::SHIFT, true, 0.0);
@@ -8328,9 +8528,9 @@ mod tests {
             PrefsTab::Playing,
             "a new stick opens on Playing"
         );
-        let touch = |fx: &Effect| match fx {
+        let card = |fx: &Effect, title: &str| match fx {
             Effect::Menu(m) => m.prefs.as_ref().and_then(|p| {
-                let card = p.cards.iter().find(|c| c.title == "Touch screen")?;
+                let card = p.cards.iter().find(|c| c.title == title)?;
                 Some(
                     card.rows
                         .iter()
@@ -8341,16 +8541,22 @@ mod tests {
             _ => None,
         };
         assert_eq!(
-            touch(&app.menu_view()),
-            Some(vec![
-                "Screen pad velocity".to_string(),
-                "Calibrate touch".to_string(),
-                "Touch lab".to_string()
-            ])
+            card(&app.menu_view(), "Touch screen"),
+            Some(vec!["Screen pad velocity".to_string()])
         );
         // Its rows work as before.
         app.step_item(row(&app, Item::ScreenVelocity), 1);
         assert_eq!(app.settings.screen_velocity, 110);
+        app.prefs_go_to(Item::TouchLab);
+        assert_eq!(app.prefs_tab, PrefsTab::System);
+        assert_eq!(
+            card(&app.menu_view(), "Buttons and touch"),
+            Some(vec![
+                "Find the buttons again".to_string(),
+                "Calibrate touch".to_string(),
+                "Touch lab".to_string()
+            ])
+        );
         assert_eq!(
             app.step_item(row(&app, Item::TouchLab), 1),
             vec![Effect::TouchLab]
