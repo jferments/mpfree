@@ -41,7 +41,7 @@ The pattern's length, the step inspector and your timing are on the [Sequencer](
 
 ## The XY pad
 
-The **XY pad** plays an effect on the whole mix under one finger. The chip at its top left says what it plays, for example **XY · Filter + echo**.
+The **XY pad** plays an effect on the whole mix under one finger. What it plays is written in its top left corner, for example **Filter + echo**, and the **XY ▾** button at its left is its chip. (On the full-screen pad the chip sits over the pad: **XY · Filter + echo**.)
 
 **Filter + echo** (what it plays at first) is a filter and an echo together. Left of the middle is a low-pass filter (darker), right of it a high-pass filter (thinner), and the middle is no filter at all. Higher up adds more echo. When you lift your finger the pad glides back to the middle and the bottom, so the sound comes back clean. One finger plays it: a second finger on the pad does nothing until the first lifts. Its label says where it is, for example "HP 173 Hz · echo 62 %".
 

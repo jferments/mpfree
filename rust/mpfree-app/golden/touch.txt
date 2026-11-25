@@ -171,17 +171,17 @@ gap patch-edit/learn-high patch-edit/remove 8 24 # before the touch audit (25 No
 gap patch-edit/zone patch-edit/zone-high 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap patch-edit/zone patch-edit/zone-low 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap patch-edit/zone-high patch-edit/zone-low 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-gap play-loop/arm play-loop/loop 5 8 # the Play page (touch plan A6)
-gap play-loop/capture play-loop/loop 4 8 # the Play page (touch plan A6)
-gap play-loop/group-knob play-loop/group-switch 6 8 # the Play page (touch plan A6)
-gap play-loop/layer-mute play-loop/loop 5 8 # the Play page (touch plan A6)
-gap play-loop/loop play-loop/loop-mute 2 8 # the Play page (touch plan A6)
-gap play-loop/loop play-loop/pads-keys 4 8 # the Play page (touch plan A6)
-gap play-loop/loop play-loop/ring 2 8 # the Play page (touch plan A6)
-gap play-loop/loop-mute play-loop/loop-solo 6 8 # the Play page (touch plan A6)
-gap play-loop/loop-mute play-loop/ring 6 8 # the Play page (touch plan A6)
-gap play-loop/loop-solo play-loop/ring 6 8 # the Play page (touch plan A6)
-gap play-transport/rec play-transport/tempo 3 8 # the Play page (touch plan A6)
+gap play-loop/arm play-loop/loop 5 8 # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+gap play-loop/capture play-loop/loop 4 8 # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+gap play-loop/group-knob play-loop/group-switch 6 8 # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+gap play-loop/layer-mute play-loop/loop 4 8 # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+gap play-loop/loop play-loop/loop-mute 2 8 # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+gap play-loop/loop play-loop/pads-keys 4 8 # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+gap play-loop/loop play-loop/ring 2 8 # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+gap play-loop/loop-mute play-loop/loop-solo 6 8 # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+gap play-loop/loop-mute play-loop/ring 6 8 # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+gap play-loop/loop-solo play-loop/ring 6 8 # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+gap play-transport/rec play-transport/tempo 3 8 # Play's transport bar, which the touch design set's tab 3 keeps as it is; until its own redraw
 gap prf-list/row prf-list/row-less 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap qlinks/knob-card xy-banner/cancel 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap qlinks/knob-card xy-banner/done 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -275,7 +275,7 @@ gap ttune/row-minus ttune/row-plus 6 8 # before the touch audit (25 Nov 2026 bas
 gap xy-setup/add xy-setup/set 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap xy-setup/delete xy-setup/done 10 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap xy-setup/delete xy-setup/save 10 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-gap xy/xy xy/xy-chip 4 8 # the Play page (touch plan A6)
+gap xy/xy xy/xy-chip 4 8 # the full-screen XY page's head chip (layout spec 4o); Play's chip has its own column since touch plan A6a; until the XY page is redone
 overlap browser/row browser/star # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap clips/add-close clips/add-kind # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap clips/chord-button clips/chord-dismiss # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -297,9 +297,9 @@ overlap pad-map/layer pad-map/row # before the touch audit (25 Nov 2026 baseline
 overlap patch-edit/zone patch-edit/zone-high # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap patch-edit/zone patch-edit/zone-low # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap patch-list/edit patch-list/patch # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-overlap play-loop/arm play-loop/loop # the Play page (touch plan A6)
-overlap play-loop/layer-mute play-loop/loop # the Play page (touch plan A6)
-overlap play-loop/loop play-loop/ring # the Play page (touch plan A6)
+overlap play-loop/arm play-loop/loop # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+overlap play-loop/layer-mute play-loop/loop # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+overlap play-loop/loop play-loop/ring # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
 overlap smp-bar/layer-chip smp-bar/name # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap smp-keep/keep smp-keep/keep-recall # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap smp-play-env/point smp-play-env/point # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -360,7 +360,7 @@ size arp-phrase-plays/plays-when 44 normal # before the touch audit (25 Nov 2026
 size arp-phrase-plays/records 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size arp-phrase-plays/slider 42 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size arp-qlinks/slider 43 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size arp-steps/step 59 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-steps/step 61 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size arp-ws-tools/button 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size browser/back 56 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size browser/button 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -479,7 +479,6 @@ size edit-options/row-more 39 normal # before the touch audit (25 Nov 2026 basel
 size guide/button 54 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size header/chip 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size header/folder-icon 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size header/tab 44 normal # spec 1a lets the tabs answer over the whole 60 px top bar; today they answer over 44 px of it
 size help/link 62 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size kits-card/button 54 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size kits/row 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -695,20 +694,20 @@ size patch-edit/zone-low 14 normal # before the touch audit (25 Nov 2026 baselin
 size patch-list/close 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size patch-list/edit 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size patch-list/new 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size play-loop/arm 39 normal # the Play page (touch plan A6)
-size play-loop/capture 24 normal # the Play page (touch plan A6)
-size play-loop/group-knob 60 normal # the Play page (touch plan A6)
-size play-loop/group-switch 34 normal # the Play page (touch plan A6)
-size play-loop/layer-mute 39 normal # the Play page (touch plan A6)
-size play-loop/loop 24 normal # the Play page (touch plan A6)
-size play-loop/loop-mute 30 normal # the Play page (touch plan A6)
-size play-loop/loop-solo 30 normal # the Play page (touch plan A6)
-size play-loop/pads-keys 24 normal # the Play page (touch plan A6)
-size play-loop/ring 48 normal # the Play page (touch plan A6)
-size play-transport/keys 52 normal # the Play page (touch plan A6)
-size play-transport/pads 52 normal # the Play page (touch plan A6)
-size play-transport/rec 52 normal # the Play page (touch plan A6)
-size play-transport/view 44 normal # the Play page (touch plan A6)
+size play-loop/arm 39 normal # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+size play-loop/capture 24 normal # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+size play-loop/group-knob 60 normal # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+size play-loop/group-switch 34 normal # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+size play-loop/layer-mute 39 normal # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+size play-loop/loop 24 normal # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+size play-loop/loop-mute 30 normal # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+size play-loop/loop-solo 30 normal # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+size play-loop/pads-keys 24 normal # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+size play-loop/ring 48 normal # Play's loop row, which the touch design set's tab 3 keeps as it is; until its own redraw
+size play-transport/keys 52 normal # Play's transport bar, which the touch design set's tab 3 keeps as it is; until its own redraw
+size play-transport/pads 52 normal # Play's transport bar, which the touch design set's tab 3 keeps as it is; until its own redraw
+size play-transport/rec 52 normal # Play's transport bar, which the touch design set's tab 3 keeps as it is; until its own redraw
+size play-transport/view 44 normal # Play's transport bar, which the touch design set's tab 3 keeps as it is; until its own redraw
 size prefs/back 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size prefs/button 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size prefs/choice 61 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -892,17 +891,17 @@ size steps-continue/more 40 normal # before the touch audit (25 Nov 2026 baselin
 size steps-continue/row 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size steps/arm 39 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size steps/head 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size steps/lane-rows 35 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/lane-rows 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size steps/length 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size steps/lock 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size steps/lock-lane-off 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size steps/mute 39 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size steps/note 39 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/lock 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/lock-lane-off 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/mute 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/note 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size steps/row-depth 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size steps/row-off 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size steps/rows-add 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size steps/step 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size steps/value 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/step 35 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/value 39 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size synth-pads-head/layout 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size synth-pads-head/play 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size synth-pick/all-banks 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -927,6 +926,7 @@ size systemstatus/save-report 44 normal # before the touch audit (25 Nov 2026 ba
 size systemstatus/switch 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size systemstatus/system 60 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size takes/button 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size throws/throw 71 performance # the throws declare Performance since touch plan A6a; the Sequencer's Steps' two rows of throws are 71 px until its screen is redone
 size touchlab/button 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size transport/chip 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size transport/mode 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -960,5 +960,4 @@ size xy-setup/row 40 normal # before the touch audit (25 Nov 2026 baseline); unt
 size xy-setup/save 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size xy-setup/set 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size xy-setup/take-off 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size xy/xy 56 normal # the Play page (touch plan A6)
-size xy/xy-chip 32 normal # the Play page (touch plan A6)
+size xy/xy-chip 32 secondary # the full-screen XY page's head chip (layout spec 4o); Play's chip has its own column since touch plan A6a; until the XY page is redone
