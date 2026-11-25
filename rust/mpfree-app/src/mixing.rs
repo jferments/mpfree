@@ -3725,6 +3725,7 @@ impl MixHost {
             | MixAction::FocusInsert { .. }
             | MixAction::SetInsert { .. }
             | MixAction::ReleaseInsert { .. }
+            | MixAction::TypeLevel { .. }
             | MixAction::Look(_) => None,
             // Freeze, Thaw and Print need the song: `MixHost::take_action`.
             MixAction::Freeze(_)

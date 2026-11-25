@@ -759,9 +759,27 @@ mod tests {
             s.press("mixer", "fader", "Drums fader");
             assert!(p(&s, mx::VOLUME) > v0, "the fader went up");
             shows(&mut s, "fader");
-            s.press("mixer", "value", "Drums level (to 0 dB)");
-            assert_eq!(p(&s, mx::VOLUME), 0.0, "the level tap is 0 dB");
-            shows(&mut s, "0 dB");
+            // A tap on the level asks for a number and changes nothing
+            // until Enter (the touch usability review, 25 Nov 2026: it
+            // used to put the fader at 0 dB, a few pixels above M and S).
+            let v1 = p(&s, mx::VOLUME);
+            s.press("mixer", "value", "Drums level (type it)");
+            assert_eq!(s.page(), crate::gui::NUMPAD_PAGE);
+            assert_eq!(p(&s, mx::VOLUME), v1, "the tap changes nothing");
+            let ask = s
+                .screen
+                .ui
+                .get::<mpfree_ui::numpad::NumPad>(crate::gui::NUMPAD)
+                .and_then(|n| n.ask.clone())
+                .expect("the pad asks");
+            assert_eq!(
+                (ask.title.as_str(), ask.unit.as_str(), ask.min, ask.max),
+                ("Drums level", "dB", -80.0, 6.0)
+            );
+            s.type_number("-6.5");
+            assert_eq!(s.page(), mpfree_mixer_ui::MIXER_PAGE);
+            assert_eq!(p(&s, mx::VOLUME), -6.5, "the level typed");
+            shows(&mut s, "typed");
 
             s.press("mixer", "mute", "Drums M");
             assert_eq!(p(&s, mx::MUTE), 1.0);
@@ -3277,9 +3295,10 @@ mod tests {
 
             s.press("header", "tab", "Mix").run_for(0.1);
             assert!((strip(&s, "Master").volume_db - s.level_db).abs() < 0.05);
-            s.press("mixer", "value", "Master level (to 0 dB)")
-                .run_for(0.1);
+            s.press("mixer", "value", "Master level (type it)");
+            s.type_number("-3").run_for(0.1);
             let lv = s.level_db;
+            assert!((lv + 3.0).abs() < 0.05, "the level typed: {lv}");
             assert!((s.mix.mixer.param(StripId::Master, mx::VOLUME) - lv).abs() < 0.05);
             s.press("header", "tab", "Play");
             let bar = s.control("master", "level", "").unwrap().target.label;

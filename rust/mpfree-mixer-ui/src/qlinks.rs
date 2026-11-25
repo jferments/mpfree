@@ -30,7 +30,7 @@ pub const PAN_STEP: f32 = 2.0;
 pub const PAN_FINE: f32 = 1.0;
 
 /// The top of a level's range, dB.
-const MAX_DB: f32 = 6.0;
+pub const MAX_DB: f32 = 6.0;
 
 /// One Q-Link's card.
 #[derive(Clone, Debug, PartialEq)]
