@@ -922,6 +922,8 @@ fn takes_on_the_card_open_again_when_the_card_comes_back() {
     assert!(r.h.load(saved.clone()).is_ok());
     r.run_until(|r| r.h.opening() == 0);
     assert!(r.all_on_file());
+    // The opening counts the takes playing from it, which hold the card.
+    r.run_until(|_| lease.users() == 2);
     assert!(r.play_song() == want);
     r.run_until(|r| r.h.heads_wanted > 0 && r.h.heads_held == r.h.heads_wanted);
     let gens = |r: &Rig| -> Vec<Option<u32>> {
@@ -968,6 +970,8 @@ fn takes_on_the_card_open_again_when_the_card_comes_back() {
             .all(|(now, was)| now.is_some() && now != was)
     });
     r.run_until(|r| r.h.heads_held == r.h.heads_wanted);
+    r.run_until(|_| again.users() == 2);
+    assert_eq!(lease.users(), 0, "the opening before holds nothing");
     assert!(r.play_song() == want, "read again from the card, the same");
     assert_eq!(r.h.tracks.stats().missed, 0);
     let ev = r.events();
@@ -975,8 +979,9 @@ fn takes_on_the_card_open_again_when_the_card_comes_back() {
 
     // Out again, and the project opened again meanwhile: its takes are
     // left out, and why is said.
-    again.revoke();
     assert!(r.h.clear());
+    r.run_until(|_| again.users() == 0);
+    again.revoke();
     r.run_to(r.frame + 4 * P);
     assert!(r.h.load(saved).is_ok());
     r.run_until(|r| r.h.opening() == 0);

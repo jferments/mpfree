@@ -570,6 +570,21 @@ impl Side {
                 live &= self.let_go_of(tag.source, true, answer);
             }
         }
+        // Each card holds while takes play from its files (B2c): it isn't
+        // put away under them.
+        for (_, card) in &self.cards {
+            let n = self
+                .on_card
+                .iter()
+                .flatten()
+                .filter(|o| {
+                    !o.away
+                        && card_of(&self.cards, &o.path)
+                            .is_some_and(|c| c.insertion == card.insertion)
+                })
+                .count();
+            card.handle.set_users(n);
+        }
         let mut tell = |r| live &= answer(FromStream::Problem(r));
         self.watch.admission(&self.c.admission(), &mut tell);
         self.watch.card_lost(lost, &mut tell);

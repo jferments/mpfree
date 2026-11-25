@@ -27,7 +27,7 @@ use std::fmt;
 use std::fs::File;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::policy::Device;
@@ -46,6 +46,10 @@ pub trait CardHandle: Send + Sync {
     fn mark(&self) -> Option<CardMark> {
         None
     }
+    /// How many of its files are open to play from now, as the reader
+    /// last counted them: the card is held while any are (the SD card
+    /// plan's B2c), so it isn't put away under a take playing from it.
+    fn set_users(&self, _n: usize) {}
 }
 
 /// Which card: the random id in its `MPFree` folder's marker file
@@ -144,6 +148,7 @@ pub struct Lease {
     root: PathBuf,
     valid: AtomicBool,
     mark: OnceLock<CardMark>,
+    users: AtomicUsize,
 }
 
 impl Lease {
@@ -153,7 +158,15 @@ impl Lease {
             root: root.to_path_buf(),
             valid: AtomicBool::new(true),
             mark: OnceLock::new(),
+            users: AtomicUsize::new(0),
         })
+    }
+
+    /// How many files on this opening are open to play from, as the reader
+    /// last said ([`CardHandle::set_users`]): while any are, the card is in
+    /// use.
+    pub fn users(&self) -> usize {
+        self.users.load(Ordering::Acquire)
     }
 
     /// Which card this opening is, once its marker is read or made: said
@@ -178,6 +191,9 @@ impl CardHandle for Lease {
     }
     fn mark(&self) -> Option<CardMark> {
         self.mark.get().copied()
+    }
+    fn set_users(&self, n: usize) {
+        self.users.store(n, Ordering::Release);
     }
 }
 

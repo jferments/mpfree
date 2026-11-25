@@ -14826,10 +14826,12 @@ impl Player {
     /// place says). The card is in use while the browser shows or its
     /// worker has jobs (a copy from the card, say).
     fn sd_card_tick(&mut self) {
-        // The card is in use while takes record on it, too.
+        // The card is in use while takes record on it, and while takes play
+        // from their files there (its opening counts them), too.
         let using = self.browsing()
             || self.browser.as_ref().is_some_and(|b| b.busy())
-            || self.card_takes.holds();
+            || self.card_takes.holds()
+            || self.card_lease.as_ref().is_some_and(|l| l.users() > 0);
         let dos = self.card_takes.tick(std::time::Instant::now());
         self.card_do(dos);
         for h in self.sd_card.tick(using) {
@@ -42251,6 +42253,84 @@ mod tests {
             !lease.valid(),
             "its opening is over: nothing more is read on it"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The SD card plan's B2c: the card is held while takes play from their
+    /// files there (its opening counts them), browser hidden and nothing
+    /// recording on it, and put away once none does.
+    #[test]
+    fn a_card_takes_play_from_is_not_put_away_under_them() {
+        use crate::sd_card::{Paths, Slot, Timing};
+        use mpfree_stream::storage::CardHandle;
+        use std::time::Duration;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("mpfree-card-held-{}-{nanos}", std::process::id()));
+        let card = dir.join("card");
+        std::fs::create_dir_all(card.join("MPFree")).unwrap();
+        std::fs::create_dir_all(dir.join("run")).unwrap();
+        std::fs::write(dir.join("setup-sd-card.sh"), "# service\n").unwrap();
+        std::fs::write(
+            dir.join("mounts"),
+            format!("card {} exfat ro 0 0\n", card.display()),
+        )
+        .unwrap();
+        let open = format!(
+            "state=open\nmessage=The SD card is open, read-only.\nask=00ee\ncard=mmcblk1\nfs=exfat\nsectors=124735488\nmount={}\ndirty=no\n",
+            card.display()
+        );
+        std::fs::write(dir.join("run/sd-card-status"), &open).unwrap();
+        let mut p = browser_samples(Fonts::embedded()).unwrap();
+        let paths = Paths {
+            service: dir.join("setup-sd-card.sh"),
+            status: dir.join("run/sd-card-status"),
+            request: dir.join("run/sd-card.request"),
+            close: dir.join("run/sd-card.close"),
+            alive: dir.join("run/sd-card.alive"),
+            mounts: dir.join("mounts"),
+        };
+        let timing = Timing {
+            poll: Duration::from_millis(5),
+            answer: Duration::from_millis(500),
+            close: Duration::from_millis(50),
+            beat: Duration::from_millis(10),
+        };
+        p.sd_card = Slot::new(paths, timing, Duration::from_millis(100));
+        p.apply(ToUi::Show(View::Play));
+        p.sd_card.open();
+        let end = Instant::now() + Duration::from_secs(5);
+        let lease = loop {
+            let l = p.outbox.iter().find_map(|a| match a {
+                FromUi::AudioDrive(l) => Some(l.clone()),
+                _ => None,
+            });
+            if let Some(l) = l {
+                break l;
+            }
+            assert!(Instant::now() < end, "never opened: {:?}", p.said_all);
+            p.tick(0.01);
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        // Two takes play from it: past the put-away time, still open.
+        lease.set_users(2);
+        std::thread::sleep(Duration::from_millis(150));
+        for _ in 0..5 {
+            p.tick(0.01);
+        }
+        assert!(!dir.join("run/sd-card.close").exists(), "held");
+        assert!(lease.valid());
+        // None any more: put away after the put-away time.
+        lease.set_users(0);
+        let end = Instant::now() + Duration::from_secs(5);
+        while !dir.join("run/sd-card.close").exists() {
+            assert!(Instant::now() < end, "never put away: {:?}", p.said_all);
+            p.tick(0.01);
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
