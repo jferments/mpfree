@@ -883,6 +883,10 @@ pub struct AudioCellInfo {
     /// A once clip still sounding past its stop, this far through its
     /// sound (its playhead is drawn dimmed). The app sets it.
     pub ring: Option<f32>,
+    /// What it plays on Stretch while it plays (phase 5c.2): as made,
+    /// Repitch for want of its copy, or on in pitch off the bars. The app
+    /// sets it.
+    pub stretch_now: StretchNow,
 }
 
 impl AudioCellInfo {
@@ -890,6 +894,34 @@ impl AudioCellInfo {
     pub fn follow(&self) -> Option<(mpfree_seq::FollowTempo, bool)> {
         (!self.mixed).then_some(self.tempo)
     }
+
+    /// How far its tempo copy for the tempo now is made, while it is
+    /// being made or waits its turn (the cell's "copy 40 %").
+    pub fn copy_making(&self) -> Option<f32> {
+        match self.copy {
+            CopyState::Making(p) => Some(p.clamp(0.0, 1.0)),
+            CopyState::Waiting => Some(0.0),
+            _ => None,
+        }
+    }
+}
+
+/// What a playing audio clip on Stretch plays now, as its track says
+/// (phase 5c.2, layout spec 4f): the cells' "repitch now" and "rejoins
+/// 9.1".
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum StretchNow {
+    /// As made: its copy, or its recording at its own tempo; or it isn't
+    /// playing.
+    #[default]
+    AsMade,
+    /// Repitch for want of its copy, to the end of its pass (Until ready:
+    /// on time).
+    Repitch,
+    /// On in pitch from where it was, off the bars (Until ready: keep
+    /// pitch), rejoining them on that bar line (song tick) once its copy
+    /// is here.
+    Drift(Option<Tick>),
 }
 
 /// What the looper says of a loop, for its cells on the Clips grid: the
@@ -1332,10 +1364,15 @@ pub struct TimeState {
     /// The tracks whose cue waits for its audio and has moved to a later
     /// line, with that line (the cell says "waits 18.1"). The app sets it.
     pub audio_late: Vec<(usize, Tick)>,
+    /// Of [`TimeState::audio_late`], the tracks whose cue waits for its
+    /// tempo copies alone, its audio held (phase 5c.2: the cell says
+    /// "waits copy"). The app sets it.
+    pub copy_late: Vec<usize>,
     /// Audio clips whose launch was cancelled, their audio not ready in
-    /// time, as (track, slot, ticks it waited), until launched again (the
-    /// cell says "not ready"). The app sets it.
-    pub not_ready: Vec<(usize, usize, Tick)>,
+    /// time, as (track, slot, ticks it waited, whether it waited for its
+    /// tempo copies alone on Keep pitch), until launched again (the cell
+    /// says "not ready"). The app sets it.
+    pub not_ready: Vec<(usize, usize, Tick, bool)>,
     /// The audio track armed last by its own arm, while no note track has
     /// been armed since: the Clip tab shows its clip ([`TimeState::focus`]).
     /// The app sets it.
@@ -1716,6 +1753,7 @@ impl TimeState {
             mute_wait: None,
             audio_waits: AudioWaitCounts::default(),
             audio_late: Vec::new(),
+            copy_late: Vec::new(),
             not_ready: Vec::new(),
             audio_focus: None,
             saved: Vec::new(),
@@ -6080,10 +6118,13 @@ fn clip_cell(st: &TimeState, track: usize, slot: usize) -> GridCell {
 /// them (Perform) its length, "2 bars", or a once clip's time, "3:17
 /// once". A word that matters takes the wave's place while it is stopped
 /// or queued (Make) and the length's (Perform): "from 17.1" or, its audio
-/// late, "waits 18.1" (amber) while queued; stopped, "missing" or "not
-/// ready" (red), or "made at 120" (amber) for a loop made at another
-/// tempo. A once clip still sounding past its stop shows how far it has
-/// got, its playhead dimmed; a missing clip a flat dashed line.
+/// late, "waits 18.1" (amber) while queued, "waits copy" its tempo copy
+/// late, "copy 40 %" (the accent, a line filling along its foot) while
+/// its copy is made; stopped, "missing", "not ready" or "too fast" (red),
+/// or "made at 120" (amber) for a loop made at another tempo. Playing on
+/// Stretch, "repitch now" or "rejoins 9.1" (amber) while it isn't as made
+/// (phase 5c.2). A once clip still sounding past its stop shows how far
+/// it has got, its playhead dimmed; a missing clip a flat dashed line.
 fn audio_cell(
     st: &TimeState,
     track: usize,
@@ -6114,8 +6155,12 @@ fn audio_cell(
         let line = st.cue_line(track);
         let at = late.unwrap_or_else(|| cue_tick(t, line));
         st.queued_foot(&mut cell, at, line.line(t.meter.bar_ticks()));
-        if late.is_some() {
+        if st.copy_late.contains(&track) && late.is_some() {
+            cell.foot = "waits copy".to_string();
+        } else if late.is_some() {
             cell.foot = format!("waits {}", bar_beat(at, t.meter));
+        } else {
+            copy_word(&mut cell, a);
         }
         return cell;
     }
@@ -6124,6 +6169,7 @@ fn audio_cell(
             cell.state = CellState::Queued;
             cell.alert = CellAlert::Warn;
             st.queued_foot(&mut cell, l.origin, t.meter.bar_ticks());
+            copy_word(&mut cell, a);
         }
         Some(l) => {
             let frac = ((t.position - l.origin) as f64).rem_euclid(len) / len;
@@ -6136,6 +6182,25 @@ fn audio_cell(
                     bar_beat(cue_tick(t, st.cue_line(track)), t.meter)
                 );
             }
+            // Playing, a word stays while it isn't as made (5c.2).
+            if too_fast_clip(a, t.bpm) {
+                cell.foot = "too fast".to_string();
+                cell.alert = CellAlert::Bad;
+            } else {
+                match a.stretch_now {
+                    StretchNow::Drift(Some(j)) => {
+                        cell.foot = format!("rejoins {}", bar_beat(j, t.meter));
+                        cell.alert = CellAlert::Warn;
+                    }
+                    StretchNow::Drift(None) => copy_word(&mut cell, a),
+                    StretchNow::Repitch => {
+                        cell.foot = "repitch now".to_string();
+                        cell.alert = CellAlert::Warn;
+                    }
+                    StretchNow::AsMade => {}
+                }
+            }
+            cell.word_plays = cell.alert != CellAlert::None;
         }
         None => {
             if let Some(r) = a.ring {
@@ -6146,14 +6211,44 @@ fn audio_cell(
             if let Some((word, alert)) = word.filter(|_| !cell.ringing) {
                 cell.foot = word;
                 cell.alert = alert;
+                if alert == CellAlert::Info {
+                    cell.copy = a.copy_making();
+                }
             }
         }
     }
     cell
 }
 
+/// "copy 40 %" (the accent, a line filling along its foot) on an audio
+/// clip's cell while its tempo copy for the tempo now is made or waits
+/// its turn (layout spec 4f, phase 5c.2); nothing otherwise.
+fn copy_word(cell: &mut GridCell, a: &AudioCellInfo) {
+    if let Some(p) = a.copy_making() {
+        cell.foot = format!("copy {} %", (p * 100.0).floor() as u32);
+        cell.alert = CellAlert::Info;
+        cell.copy = Some(p);
+    }
+}
+
+/// An audio clip following the tempo that would play past
+/// `mpfree_audiotracks::MAX_SPEED` at `bpm`: silent (the cell's "too
+/// fast", phase 5c.2).
+fn too_fast_clip(a: &AudioCellInfo, bpm: f64) -> bool {
+    let follows = a
+        .follow()
+        .is_none_or(|f| f.0 != mpfree_seq::FollowTempo::Off);
+    let tempos = match made_at(a) {
+        MadeAt::One(m) => vec![m],
+        MadeAt::Several(t) => t,
+        MadeAt::Unknown => return false,
+    };
+    follows && too_fast(&tempos, bpm)
+}
+
 /// What a stopped audio clip's cell says in its wave's place, if anything:
-/// "missing", "not ready" (red), or "made at 120" (amber) for a loop made
+/// "missing", "not ready", "too fast" (red), "copy 40 %" (the accent)
+/// while its tempo copy is made, or "made at 120" (amber) for a loop made
 /// at another tempo than the project's now.
 fn audio_word(
     st: &TimeState,
@@ -6166,6 +6261,13 @@ fn audio_word(
         Some(("missing".to_string(), CellAlert::Bad))
     } else if st.not_ready.iter().any(|n| (n.0, n.1) == (track, slot)) {
         Some(("not ready".to_string(), CellAlert::Bad))
+    } else if too_fast_clip(a, st.transport.bpm) {
+        Some(("too fast".to_string(), CellAlert::Bad))
+    } else if let Some(p) = a.copy_making() {
+        Some((
+            format!("copy {} %", (p * 100.0).floor() as u32),
+            CellAlert::Info,
+        ))
     } else {
         off_tempo(clip, a, st.transport.bpm)
             .map(|m| (format!("made at {}", tempo_short(m)), CellAlert::Warn))
@@ -6205,6 +6307,17 @@ pub fn clock_time(secs: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
+/// Where an audio clip's tempo copy stands, for the hint line: "40 %
+/// made", "waiting its turn", "it couldn't be made" or "ready".
+fn copy_how(a: &AudioCellInfo) -> String {
+    match a.copy {
+        CopyState::Making(p) => format!("{} % made", (p.clamp(0.0, 1.0) * 100.0).floor() as u32),
+        CopyState::Waiting => "waiting its turn".to_string(),
+        CopyState::Unmade => "it couldn't be made".to_string(),
+        CopyState::Ready | CopyState::None => "ready".to_string(),
+    }
+}
+
 /// What a tap on an audio clip's cell says in full on the hint line
 /// (layout spec 4f): its word's meaning, or an empty cell's. None when it
 /// has nothing to say.
@@ -6224,18 +6337,97 @@ pub fn audio_cell_hint(st: &TimeState, track: usize, slot: usize) -> Option<Stri
     if let Some(why) = &a.missing {
         return Some(format!("{name}'s audio is missing: {why}."));
     }
+    let keep = a.follow().is_some_and(|f| f.1);
+    let at = tempo_short(t.bpm);
     if let Some(&(_, line)) = st.audio_late.iter().find(|l| l.0 == track) {
         if st.cue(track).is_some_and(|c| c.slot == Some(slot)) {
-            return Some(format!(
-                "{name} waits for its audio: it starts on {}.",
-                bar_beat(line, t.meter)
-            ));
+            let line = bar_beat(line, t.meter);
+            if !st.copy_late.contains(&track) {
+                return Some(format!("{name} waits for its audio: it starts on {line}."));
+            }
+            let how = copy_how(a);
+            return Some(if keep {
+                format!("{name} waits for its copy for {at} BPM ({how}): it starts on {line} if the copy is ready by then, else it's cancelled rather than start off pitch (Until ready: keep pitch).")
+            } else {
+                format!("{name} waits for its copy for {at} BPM ({how}): it starts on {line}, from its copy if it's ready by then, else on Repitch (Until ready: on time).")
+            });
         }
     }
     if let Some(n) = st.not_ready.iter().find(|n| (n.0, n.1) == (track, slot)) {
+        let within = length_label(n.2 as f64, t.meter);
+        return Some(if n.3 {
+            format!("{name}'s copy wasn't ready within {within}, so it didn't start rather than play off pitch (Until ready: keep pitch). Tap to try again.")
+        } else {
+            format!("{name}'s audio wasn't ready within {within}. Tap to try again.")
+        });
+    }
+    if too_fast_clip(a, t.bpm) {
         return Some(format!(
-            "{name}'s audio wasn't ready within {}. Tap to try again.",
-            length_label(n.2 as f64, t.meter)
+            "{name} would play more than {} times its speed at {at}: it's silent. Set the tempo it was made at on the Clip tab.",
+            mpfree_audiotracks::MAX_SPEED
+        ));
+    }
+    let tempos = match made_at(a) {
+        MadeAt::One(m) => vec![m],
+        MadeAt::Several(t) => t,
+        MadeAt::Unknown => Vec::new(),
+    };
+    let semis = || semitones_words(&tempos, t.bpm, false);
+    match a.stretch_now {
+        StretchNow::Drift(Some(j)) => {
+            return Some(format!(
+                "{name} plays on in pitch from where it was and rejoins the bars on {}.",
+                bar_beat(j, t.meter)
+            ))
+        }
+        StretchNow::Drift(None) => {
+            return Some(format!(
+                "{name} plays on in pitch from where it was, off the bars, while its copy for {at} BPM is made ({}): it rejoins them on the bar line after.",
+                copy_how(a)
+            ))
+        }
+        StretchNow::Repitch if !tempos.is_empty() => {
+            return Some(match a.copy {
+                CopyState::Ready | CopyState::None => format!(
+                    "{name} plays Repitch to the end of this pass, {}: its copy for {at} BPM is ready for the next.",
+                    semis()
+                ),
+                CopyState::Unmade => format!(
+                    "{name} plays Repitch, {}: its copy for {at} BPM couldn't be made, as there's no room for it now.",
+                    semis()
+                ),
+                _ => format!(
+                    "{name} plays Repitch for now, {}; its own pitch from its next pass once its copy for {at} BPM is ready ({}).",
+                    semis(),
+                    copy_how(a)
+                ),
+            });
+        }
+        _ => {}
+    }
+    if !tempos.is_empty() && a.copy_making().is_some() {
+        let first = match a.copy {
+            CopyState::Making(p) => format!(
+                "{name} is making its copy for {at} BPM: {} %.",
+                (p.clamp(0.0, 1.0) * 100.0).floor() as u32
+            ),
+            _ => format!("{name}'s copy for {at} BPM waits its turn behind the others."),
+        };
+        return Some(match a.follow() {
+            Some((_, true)) => format!(
+                "{first} Until ready is keep pitch: a launch waits for it, at most 2 launch lines."
+            ),
+            Some(_) => format!(
+                "{first} It plays Repitch until then, {}, and its own pitch from its next pass.",
+                semis()
+            ),
+            None => first,
+        });
+    }
+    if !tempos.is_empty() && a.copy == CopyState::Unmade {
+        return Some(format!(
+            "{name}'s copy for {at} BPM couldn't be made: there's no room for it now. It plays Repitch, {}, until there is.",
+            semis()
         ));
     }
     if let Some(m) = off_tempo(clip, a, t.bpm) {
@@ -11787,7 +11979,7 @@ mod tests {
         set(&mut st, &|c| c.settings.once = false);
         st.transport.bpm = 120.0;
         // Its audio wasn't ready in time: red, and how long it waited.
-        st.not_ready = vec![(2, 0, 2 * BAR)];
+        st.not_ready = vec![(2, 0, 2 * BAR, false)];
         let c = cell_of(&st, 2, 0);
         assert_eq!((c.foot.as_str(), c.alert), ("not ready", CellAlert::Bad));
         assert_eq!(
@@ -11830,6 +12022,156 @@ mod tests {
         assert_eq!(
             audio_cell_hint(&st, 2, 0).as_deref(),
             Some("A waits for its audio: it starts on 18.1.")
+        );
+    }
+
+    /// Layout spec 4f, phase 5c.2 (board 3): an audio clip on Stretch says
+    /// where its tempo copy stands, stopped, queued or playing, and a tap
+    /// says each in full.
+    #[test]
+    fn an_audio_cell_on_stretch_says_where_its_copy_stands() {
+        use mpfree_seq::FollowTempo as F;
+        let mut st = state();
+        st.armed = None;
+        st.tracks[2].audio = true;
+        st.transport.bpm = 92.0;
+        st.tracks[2].slots[0].as_mut().unwrap().audio = Some(AudioCellInfo {
+            bpm: 120.0,
+            tempo: (F::Stretch, false),
+            copy: CopyState::Making(0.4),
+            gain: 1.0,
+            secs: 4.0,
+            wave: [9; crate::widgets::CELL_WAVE],
+            ..AudioCellInfo::default()
+        });
+        let set = |st: &mut TimeState, f: &dyn Fn(&mut AudioCellInfo)| {
+            f(st.tracks[2].slots[0]
+                .as_mut()
+                .unwrap()
+                .audio
+                .as_mut()
+                .unwrap())
+        };
+        let word = |st: &TimeState| {
+            let c = cell_of(st, 2, 0);
+            (c.foot, c.alert, c.copy, c.word_plays)
+        };
+        let hint = |st: &TimeState| audio_cell_hint(st, 2, 0).unwrap_or_default();
+        // Stopped, its copy being made: "copy 40 %", a line along its foot.
+        assert_eq!(
+            word(&st),
+            ("copy 40 %".into(), CellAlert::Info, Some(0.4), false)
+        );
+        assert_eq!(
+            hint(&st),
+            "A is making its copy for 92 BPM: 40 %. It plays Repitch until then, \
+             4.6 semitones down, and its own pitch from its next pass."
+        );
+        set(&mut st, &|a| a.tempo.1 = true);
+        assert!(hint(&st).ends_with(
+            "Until ready is keep pitch: a launch waits for it, at most 2 launch lines."
+        ));
+        // Waiting its turn, it says 0 %; made, its wave and nothing to say.
+        set(&mut st, &|a| a.copy = CopyState::Waiting);
+        assert_eq!(word(&st).0, "copy 0 %");
+        assert!(hint(&st).starts_with("A's copy for 92 BPM waits its turn behind the others."));
+        set(&mut st, &|a| a.copy = CopyState::Ready);
+        assert_eq!(word(&st), (String::new(), CellAlert::None, None, false));
+        assert_eq!(audio_cell_hint(&st, 2, 0), None);
+        // No room for it: no word, and a tap says why it plays Repitch.
+        set(&mut st, &|a| a.copy = CopyState::Unmade);
+        assert_eq!(word(&st).0, "");
+        assert_eq!(
+            hint(&st),
+            "A's copy for 92 BPM couldn't be made: there's no room for it now. \
+             It plays Repitch, 4.6 semitones down, until there is."
+        );
+        // Past 4 times its speed: "too fast", red, stopped or playing.
+        set(&mut st, &|a| a.bpm = 20.0);
+        assert_eq!(word(&st).0, "too fast");
+        assert_eq!(word(&st).1, CellAlert::Bad);
+        assert_eq!(
+            hint(&st),
+            "A would play more than 4 times its speed at 92: it's silent. \
+             Set the tempo it was made at on the Clip tab."
+        );
+        set(&mut st, &|a| a.bpm = 120.0);
+        // Queued with its copy late: "waits copy", and when it starts.
+        set(&mut st, &|a| a.copy = CopyState::Making(0.25));
+        st.cues = vec![Cue {
+            track: 2,
+            slot: Some(0),
+        }];
+        assert_eq!(word(&st).0, "copy 25 %", "queued, not late yet");
+        assert_eq!(cell_of(&st, 2, 0).state, CellState::Queued);
+        st.audio_late = vec![(2, 17 * BAR)];
+        st.copy_late = vec![2];
+        assert_eq!(word(&st).0, "waits copy");
+        assert_eq!(
+            hint(&st),
+            "A waits for its copy for 92 BPM (25 % made): it starts on 18.1 if the copy \
+             is ready by then, else it's cancelled rather than start off pitch (Until \
+             ready: keep pitch)."
+        );
+        set(&mut st, &|a| a.tempo.1 = false);
+        assert!(hint(&st).contains("from its copy if it's ready by then, else on Repitch"));
+        set(&mut st, &|a| a.tempo.1 = true);
+        // Cancelled on Keep pitch: "not ready", and why.
+        st.cues.clear();
+        st.audio_late.clear();
+        st.copy_late.clear();
+        st.not_ready = vec![(2, 0, 2 * BAR, true)];
+        assert_eq!(word(&st).0, "not ready");
+        assert_eq!(
+            hint(&st),
+            "A's copy wasn't ready within 2 bars, so it didn't start rather than play \
+             off pitch (Until ready: keep pitch). Tap to try again."
+        );
+        st.not_ready.clear();
+        // Playing: a word only while it isn't as made, and it stays.
+        st.launches = vec![Launch {
+            track: 2,
+            slot: 0,
+            origin: st.transport.position - BAR / 4,
+            start: 0,
+        }];
+        set(&mut st, &|a| a.copy = CopyState::Ready);
+        assert_eq!(cell_of(&st, 2, 0).state, CellState::Playing);
+        assert_eq!(word(&st), (String::new(), CellAlert::None, None, false));
+        set(&mut st, &|a| a.stretch_now = StretchNow::Repitch);
+        assert_eq!(
+            word(&st),
+            ("repitch now".into(), CellAlert::Warn, None, true)
+        );
+        assert_eq!(
+            hint(&st),
+            "A plays Repitch to the end of this pass, 4.6 semitones down: its copy for \
+             92 BPM is ready for the next."
+        );
+        set(&mut st, &|a| a.copy = CopyState::Making(0.4));
+        assert_eq!(
+            hint(&st),
+            "A plays Repitch for now, 4.6 semitones down; its own pitch from its next \
+             pass once its copy for 92 BPM is ready (40 % made)."
+        );
+        // On Keep pitch through a change: "copy 40 %" while its copy is
+        // made, then "rejoins 9.1".
+        set(&mut st, &|a| a.stretch_now = StretchNow::Drift(None));
+        assert_eq!(
+            word(&st),
+            ("copy 40 %".into(), CellAlert::Info, Some(0.4), true)
+        );
+        assert!(hint(&st).starts_with("A plays on in pitch from where it was, off the bars"));
+        set(&mut st, &|a| {
+            a.stretch_now = StretchNow::Drift(Some(8 * BAR))
+        });
+        assert_eq!(
+            word(&st),
+            ("rejoins 9.1".into(), CellAlert::Warn, None, true)
+        );
+        assert_eq!(
+            hint(&st),
+            "A plays on in pitch from where it was and rejoins the bars on 9.1."
         );
     }
 

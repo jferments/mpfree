@@ -1544,7 +1544,8 @@ impl Reader<'_> {
             run: *run,
             rate,
         });
-        self.copies.source(id, key, run.f, decide, keep.as_ref())
+        self.copies
+            .source(id, owner, key, run.f, decide, keep.as_ref())
     }
 
     /// Adds the copy in `slot` into `dst` (a run's frames), from `e0`
@@ -2222,6 +2223,41 @@ impl AudioTracks {
         let total = (s.last_frame - first).max(1) as f64;
         let done = now.saturating_sub(v.since) as f64;
         Some((v.clip, (done / total).clamp(0.0, 1.0) as f32))
+    }
+
+    /// What track `t`'s voices playing clip `clip` play on Stretch now
+    /// (phase 5c.2, the cells' words): Repitch for want of its copy, or
+    /// drifting on Keep pitch and the bar line it rejoins on. Nothing
+    /// allocates.
+    pub fn on_stretch(&self, t: usize, clip: u32) -> copies::OnStretch {
+        let Some(tr) = self.tracks.get(t) else {
+            return copies::OnStretch::default();
+        };
+        let mut lanes = 0u16;
+        for (k, v) in tr.lane.voices.iter().enumerate() {
+            if v.on && v.clip == clip {
+                lanes |= 1 << (k + 1);
+            }
+        }
+        if lanes == 0 {
+            return copies::OnStretch::default();
+        }
+        // A voice's lane is its track's number over its own (the song's
+        // lane is 0), as [`Reader::source`] is given it.
+        let track = t as u16;
+        self.copies
+            .on_stretch(&|o| o >> 3 == track && lanes & (1 << (o & 7)) != 0)
+    }
+
+    /// Each clip track `t`'s voices play, with what it plays on Stretch now
+    /// ([`TrackPlayer::on_stretch`]), for the host's fingerprint.
+    pub fn on_stretch_each(&self, t: usize, f: &mut dyn FnMut(u32, copies::OnStretch)) {
+        let Some(tr) = self.tracks.get(t) else {
+            return;
+        };
+        for v in tr.lane.voices.iter().filter(|v| v.on) {
+            f(v.clip, self.on_stretch(t, v.clip));
+        }
     }
 
     /// The take a track is recording, if any.

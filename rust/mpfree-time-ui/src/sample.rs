@@ -1450,10 +1450,53 @@ pub fn clips_audio_state() -> Result<TimeState, String> {
         slot: Some(1),
     });
     state.audio_late = vec![(guitar, 17 * BAR)];
-    state.not_ready = vec![(brk_row, 1, 2 * BAR)];
+    state.not_ready = vec![(brk_row, 1, 2 * BAR, false)];
     state.armed = None;
     state.audio[1].armed = true;
     state.audio_focus = Some(guitar);
+    Ok(state)
+}
+
+/// The audio cells' words for their tempo copies (layout spec 4f, phase
+/// 5c.2, board 3), on [`clips_audio_state`]'s grid at 92 BPM: Hook vox
+/// playing Repitch until its copy is made ("repitch now"), Guitar's Riff
+/// on Keep pitch through a tempo change ("rejoins 17.1"), Outro cued with
+/// its copy 40 % made ("copy 40 %"), Break's Amen cued and waiting for its
+/// copy ("waits copy"), Intro cancelled as its copy wasn't ready ("not
+/// ready") and Pad wash past 4 times its speed ("too fast").
+pub fn clips_audio_copies_state() -> Result<TimeState, String> {
+    use mpfree_audiotracks::copying::CopyState;
+    use mpfree_seq::FollowTempo::Stretch;
+    let mut state = clips_audio_state()?;
+    let (vocal, guitar, brk) = (state.audio[0].row, state.audio[1].row, state.audio[2].row);
+    let stretch = |st: &mut TimeState, track, slot, keep, made: f64, copy| {
+        let a = audio_of(st, track, slot)?;
+        (a.tempo, a.bpm, a.copy) = ((Stretch, keep), made, copy);
+        Ok::<_, String>(())
+    };
+    stretch(&mut state, vocal, 1, false, 120.0, CopyState::Making(0.6))?;
+    audio_of(&mut state, vocal, 1)?.stretch_now = crate::view::StretchNow::Repitch;
+    stretch(&mut state, guitar, 0, true, 120.0, CopyState::Ready)?;
+    audio_of(&mut state, guitar, 0)?.stretch_now = crate::view::StretchNow::Drift(Some(16 * BAR));
+    stretch(&mut state, guitar, 1, false, 120.0, CopyState::Making(0.4))?;
+    stretch(&mut state, brk, 0, true, 100.0, CopyState::Ready)?;
+    audio_of(&mut state, brk, 0)?.ring = None;
+    stretch(&mut state, brk, 1, true, 100.0, CopyState::Making(0.2))?;
+    stretch(&mut state, brk, 2, false, 22.0, CopyState::None)?;
+    // Riff plays; Outro and Amen are cued, Amen's line moved for its copy.
+    state.launches.push(Launch {
+        track: guitar,
+        slot: 0,
+        origin: 15 * BAR,
+        start: 0,
+    });
+    state.cues.push(Cue {
+        track: brk,
+        slot: Some(1),
+    });
+    state.audio_late = vec![(brk, 17 * BAR)];
+    state.copy_late = vec![brk];
+    state.not_ready = vec![(brk, 0, 2 * BAR, true)];
     Ok(state)
 }
 

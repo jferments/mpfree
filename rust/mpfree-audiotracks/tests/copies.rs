@@ -750,6 +750,90 @@ fn a_clip_on_keep_pitch_drifts_through_a_tempo_change_and_rejoins_within_its_pas
     assert!(st.drifted > 0 && st.copied > 0, "{st:?}");
 }
 
+#[test]
+fn a_clips_voice_says_when_it_plays_repitch_for_want_of_its_copy_to_the_end_of_its_pass() {
+    // Phase 5c.2: the cell's "repitch now".
+    let tk = tone_take();
+    let audio = tk.audio.clone();
+    let mut r = Rig::new(90.0, tk, vec![]);
+    let clip = loop_clip(&LOOP);
+    let Plays::Clip(cp) = clip else {
+        unreachable!()
+    };
+    assert_eq!(
+        r.a.on_stretch(0, 1),
+        copies::OnStretch::default(),
+        "not playing"
+    );
+    r.plays.push((START, clip));
+    assert!(r.t.command(START, T::PlayStart));
+    r.run(START + beat_frames(90.0) as u64);
+    let now = r.a.on_stretch(0, 1);
+    assert!(now.repitch && !now.drift, "{now:?}");
+    assert_eq!(
+        r.a.on_stretch(0, 2),
+        copies::OnStretch::default(),
+        "another clip"
+    );
+    // Its copy comes mid-pass: Repitch to the end of it, its copy after.
+    let mut k90 = None;
+    r.a.clip_copy_keys(&cp, 90.0, &mut |_, k| k90 = Some(k));
+    assert!(r.a.put_copy(copy_for(k90.unwrap(), &audio)).is_ok());
+    let pass = 8.0 * beat_frames(90.0);
+    r.run(START + (0.9 * pass) as u64);
+    assert!(r.a.on_stretch(0, 1).repitch, "to the end of its pass");
+    r.run(START + (1.1 * pass) as u64);
+    assert_eq!(
+        r.a.on_stretch(0, 1),
+        copies::OnStretch::default(),
+        "its copy"
+    );
+}
+
+#[test]
+fn a_clip_drifting_on_keep_pitch_says_so_and_the_bar_it_rejoins_on_once_its_copy_is_here() {
+    // Phase 5c.2: the cell's "rejoins 9.1".
+    let tk = tone_take();
+    let audio = tk.audio.clone();
+    let mut r = Rig::new(90.0, tk, vec![]);
+    let clip = loop_clip(&KEEP_LOOP);
+    let Plays::Clip(cp) = clip else {
+        unreachable!()
+    };
+    let key_at = |a: &AudioTracks, bpm: f64| {
+        let mut k = None;
+        a.clip_copy_keys(&cp, bpm, &mut |_, key| k = Some(key));
+        k.unwrap()
+    };
+    let (k90, k100) = (key_at(&r.a, 90.0), key_at(&r.a, 100.0));
+    assert!(r.a.put_copy(copy_for(k90, &audio)).is_ok());
+    r.plays.push((START, clip));
+    assert!(r.t.command(START, T::PlayStart));
+    let c = START + (1.25 * beat_frames(90.0)) as u64;
+    r.run(c);
+    assert_eq!(
+        r.a.on_stretch(0, 1),
+        copies::OnStretch::default(),
+        "its copy for 90"
+    );
+    assert!(r.t.command(c, T::TempoNow(100.0)));
+    r.run(frame_at(1.5, 1.25, 100.0) as u64);
+    let now = r.a.on_stretch(0, 1);
+    assert!(now.drift && now.join.is_none() && !now.repitch, "{now:?}");
+    // Its copy for 100 comes: it rejoins on the next bar line, bar 2.
+    assert!(r.a.put_copy(copy_for(k100, &audio)).is_ok());
+    r.run(frame_at(2.0, 1.25, 100.0) as u64);
+    let now = r.a.on_stretch(0, 1);
+    assert!(now.drift, "{now:?}");
+    assert_eq!(now.join, Some(BAR as f64));
+    r.run(frame_at(5.0, 1.25, 100.0) as u64);
+    assert_eq!(
+        r.a.on_stretch(0, 1),
+        copies::OnStretch::default(),
+        "rejoined"
+    );
+}
+
 impl Rig {
     /// The frames over `a..b` that drop to nothing between two loud ones:
     /// a frame of silence where two regions meet.

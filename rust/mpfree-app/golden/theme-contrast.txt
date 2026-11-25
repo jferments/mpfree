@@ -69,6 +69,7 @@ console arp-quick-band-pushed 1 # the same runs as arp-quick-band (the Play page
 console arrange-clips-audio 1 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
 console arrange-clips-audio-card 2 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has; 5c.1: the card's faint Until ready ("—" off Stretch), a row that does nothing there, as a once clip's faint Fit to tempo
 console arrange-clips-audio-cells 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+console arrange-clips-audio-copies 1 # new screen (audio tracks 5c.2): the faint labels arrange-clips-audio has
 console arrange-clips-audio-fitting 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
 console arrange-clips-audio-made-at 1 # new screen (audio tracks 5c.1): the faint labels arrange-clips-audio has, and in Spaceship its faint card text
 console arrange-clips-audio-once 2 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has, and a once clip's faint Fit to tempo; 5c.1: the card's faint Until ready ("—" off Stretch), a row that does nothing there, as a once clip's faint Fit to tempo
@@ -239,6 +240,7 @@ default arp-workspace-record 3 # before the theme refactor (phase 0 baseline)
 default arrange-clips-audio 1 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
 default arrange-clips-audio-card 2 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has; 5c.1: the card's faint Until ready ("—" off Stretch), a row that does nothing there, as a once clip's faint Fit to tempo
 default arrange-clips-audio-cells 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+default arrange-clips-audio-copies 1 # new screen (audio tracks 5c.2): the faint labels arrange-clips-audio has
 default arrange-clips-audio-fitting 1 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
 default arrange-clips-audio-made-at 1 # new screen (audio tracks 5c.1): the faint labels arrange-clips-audio has, and in Spaceship its faint card text
 default arrange-clips-audio-once 2 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has, and a once clip's faint Fit to tempo; 5c.1: the card's faint Until ready ("—" off Stretch), a row that does nothing there, as a once clip's faint Fit to tempo
@@ -522,6 +524,7 @@ spaceship arp-workspace-record 18 # before the theme refactor (phase 0 baseline)
 spaceship arrange-clips-audio 9 # new screen (audio tracks rethink, phase 1): the faint labels its neighbours have
 spaceship arrange-clips-audio-card 11 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has; 5c.1: the card's faint Until ready ("—" off Stretch), a row that does nothing there, as a once clip's faint Fit to tempo
 spaceship arrange-clips-audio-cells 9 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
+spaceship arrange-clips-audio-copies 9 # new screen (audio tracks 5c.2): the faint labels arrange-clips-audio has
 spaceship arrange-clips-audio-fitting 9 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has
 spaceship arrange-clips-audio-made-at 10 # new screen (audio tracks 5c.1): the faint labels arrange-clips-audio has, and in Spaceship its faint card text
 spaceship arrange-clips-audio-once 11 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has, and a once clip's faint Fit to tempo; 5c.1: the card's faint Until ready ("—" off Stretch), a row that does nothing there, as a once clip's faint Fit to tempo

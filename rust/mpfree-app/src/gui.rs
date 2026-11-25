@@ -27034,6 +27034,23 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-clips-audio-cells sample: {e}"),
     }
+    // The cells' words for their tempo copies (4f, phase 5c.2, board 3),
+    // with what a tap on Outro says on the hint line.
+    match mpfree_time_ui::sample::clips_audio_copies_state() {
+        Ok(state) => {
+            let guitar = state.audio[1].row;
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.time_page.first_track = mpfree_time_ui::widgets::GRID_COLS;
+            p.time_page.update(&mut p.ui, &p.time);
+            if let Some(h) = time_view::audio_cell_hint(&p.time, guitar, 1) {
+                p.tell(&h);
+            }
+            out.push(("arrange-clips-audio-copies", p));
+        }
+        Err(e) => eprintln!("arrange-clips-audio-copies sample: {e}"),
+    }
     // The Song view with "+ Track"'s chooser open beside it (4c, as
     // drawn): Note track, Audio track. Ten tracks and the Chords lane
     // don't fit, so the lanes are scrolled to their end, as a drag up on

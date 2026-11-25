@@ -782,8 +782,9 @@ pub struct TimeControl {
     /// their files (`audio_wait.rs`).
     audio_waits: AudioWaits,
     /// Audio clips whose launch was cancelled, their audio not ready, as
-    /// (track, slot, ticks it waited), until launched again.
-    not_ready: Vec<(usize, usize, Tick)>,
+    /// (track, slot, ticks it waited, whether it waited on its tempo
+    /// copies alone), until launched again.
+    not_ready: Vec<(usize, usize, Tick, bool)>,
     /// The audio track armed last, by its lasting id, while no note track
     /// has been armed since: the Clip tab shows its clip (layout spec 4j).
     audio_focus: TrackId,
@@ -2365,10 +2366,12 @@ impl TimeControl {
     fn cancel_wait(&mut self, w: Wait) {
         // Their cells say "not ready" until launched again.
         let waited = w.waited(self.info.meter.bar_ticks().max(1));
+        // Waiting on its tempo copies alone, it was Keep pitch's.
+        let copy = w.copies_only();
         for c in &w.cues {
             if let Some(slot) = c.slot {
                 self.not_ready.retain(|n| (n.0, n.1) != (c.track, slot));
-                self.not_ready.push((c.track, slot, waited));
+                self.not_ready.push((c.track, slot, waited, copy));
             }
         }
         for c in &w.cues {
@@ -9880,6 +9883,7 @@ impl TimeControl {
         st.mute_wait = self.mute_wait().cloned();
         st.audio_waits = self.audio_waits.counts();
         st.audio_late = self.audio_waits.late();
+        st.copy_late = self.audio_waits.copy_late();
         st.audio_focus = self.audio_armed();
         // Launched again since: no longer "not ready".
         st.not_ready = self

@@ -71,7 +71,7 @@ use mpfree_time_ui::song::{
     audio_blocks, input_chip, take_lanes, AudioLane, ClipBlock, ClipPiece, MixFrom, MONITORS,
 };
 use mpfree_time_ui::view::{
-    audio_color, track_color, AudioAction, RegionId, TimeState, TransportInfo,
+    audio_color, track_color, AudioAction, RegionId, StretchNow, TimeState, TransportInfo,
 };
 use mpfree_time_ui::widgets::CELL_WAVE;
 use mpfree_transport::{Block, TempoMap, Tick};
@@ -2323,6 +2323,13 @@ impl TrackHost {
                 h.add(u64::from(clip));
                 h.add((f * 64.0) as u64);
             }
+            // What each playing clip plays on Stretch (the cells' "repitch
+            // now", "rejoins 9.1", phase 5c.2).
+            tr.on_stretch_each(t, &mut |clip, s| {
+                h.add(u64::from(clip));
+                h.add(u64::from(s.repitch) | u64::from(s.drift) << 1);
+                h.add(s.join.map_or(u64::MAX, f64::to_bits));
+            });
         }
         let s = tr.stats();
         h.add(u64::from(s.refused));
@@ -2489,10 +2496,8 @@ impl TrackHost {
             if !t.is_audio() {
                 continue;
             }
-            let ring = self
-                .slots
-                .slot_of(t.id)
-                .and_then(|s| tr.ringing(s, self.frame_now));
+            let at = self.slots.slot_of(t.id);
+            let ring = at.and_then(|s| tr.ringing(s, self.frame_now));
             for (row, c) in t.slots.shown().enumerate() {
                 let Some((c, a)) = c.as_ref().and_then(|c| Some((c, c.audio.as_ref()?))) else {
                     continue;
@@ -2539,6 +2544,14 @@ impl TrackHost {
                     })
                     .collect();
                 info.copy = self.clip_copy_state(c, bpm);
+                // Playing on Stretch: as made, Repitch for want of its
+                // copy, or drifting on Keep pitch (phase 5c.2).
+                let now = at.map(|s| tr.on_stretch(s, c.id.0)).unwrap_or_default();
+                info.stretch_now = match (now.drift, now.join) {
+                    (true, join) => StretchNow::Drift(join.map(|j| j.round() as Tick)),
+                    (false, _) if now.repitch => StretchNow::Repitch,
+                    _ => StretchNow::AsMade,
+                };
             }
         }
     }

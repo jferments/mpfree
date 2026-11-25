@@ -19290,6 +19290,97 @@ mod tests {
         assert_eq!(regions(&time), (120.0, 0.0, FollowTempo::Off));
     }
 
+    /// Phase 5c.2 (board 3): an audio clip on Stretch playing before its
+    /// copy is made plays Repitch for want of it, and its cell says
+    /// "repitch now" to the end of that pass; from the pass after its copy
+    /// came it plays its copy, and says nothing.
+    #[test]
+    fn an_audio_clip_playing_repitch_for_want_of_its_copy_says_so_until_its_copy_plays() {
+        use mpfree_audiotracks::copying::CopyState;
+        use mpfree_audiotracks::RecordingId;
+        use mpfree_seq::{AudioClip, Clip, FollowTempo, Project, RecId, Track};
+        use mpfree_time_ui::view::{cell_of, AudioSet, StretchNow};
+        // One bar at 120 (2 s), in a project at 90.
+        let made = 2 * RATE as usize;
+        let mut p = Project::new();
+        p.tracks.push(Track::new_audio("Vocal", 0));
+        p.give_track_ids();
+        let mut time = time::TimeHost::with_project(RATE, 90.0, p).unwrap();
+        let mut tracks = audiotracks::TrackHost::new(RATE, 20);
+        tracks.sync(time.project(), 0, true);
+        let s = (0..mpfree_audiotracks::MAX_TRACKS)
+            .find(|&s| tracks.place(s) == Some(0))
+            .expect("an engine track for Vocal");
+        let take = mpfree_audiotracks::save::TakeFile {
+            id: 0,
+            rec: RecordingId(42),
+            track: s,
+            group: 0,
+            pass: 0,
+            bpm: 120.0,
+            anchor: 0.0,
+            frames: made,
+            channels: 1,
+            file: String::new(),
+            path: None,
+            audio: vec![0.5; made],
+            varied: false,
+        };
+        assert!(tracks.host.tracks.load_take(take).is_ok());
+        let mut rest = Vec::new();
+        while tracks.host.tracks.loading() != 0 {
+            run_audio(&mut time, &mut tracks, 10, s, 0.0, &mut rest, &mut None);
+        }
+        let mut clip = Clip::new("Riff", 3840);
+        clip.audio = Some(AudioClip::of(RecId(42), 0, made as i64, 3840, 120.0));
+        assert_eq!(time.put_audio_clip(0, clip), Ok(0));
+        time.act(TimeAction::AudioClip {
+            track: 0,
+            slot: 0,
+            row: mpfree_time_ui::view::AUDIO_TEMPO as u8,
+            set: AudioSet::Follow(FollowTempo::Stretch, false),
+        })
+        .unwrap();
+        let cell = |time: &time::TimeHost, tracks: &audiotracks::TrackHost| {
+            let st = time_state(time, tracks);
+            let a = st.tracks[0].slots[0]
+                .as_ref()
+                .and_then(|c| c.audio.clone())
+                .expect("an audio cell");
+            (
+                cell_of(&st, 0, 0).foot,
+                a.stretch_now,
+                a.copy,
+                st.transport.position,
+            )
+        };
+        assert_eq!(cell(&time, &tracks).1, StretchNow::AsMade, "stopped");
+        time.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        time.act(TimeAction::Transport(mpfree_transport::Command::Play))
+            .unwrap();
+        run_audio(&mut time, &mut tracks, 50, s, 0.0, &mut rest, &mut None);
+        let (word, now, _, at) = cell(&time, &tracks);
+        assert!(at > 0 && at < 3840, "{at}");
+        assert_eq!((word.as_str(), now), ("repitch now", StretchNow::Repitch));
+        // Its copy comes: Repitch to the end of the pass, its copy after.
+        tracks.clip_copies(time.project());
+        let t0 = std::time::Instant::now();
+        while cell(&time, &tracks).2 != CopyState::Ready {
+            assert!(t0.elapsed().as_secs() < 30, "the copy never came");
+            run_audio(&mut time, &mut tracks, 1, s, 0.0, &mut rest, &mut None);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let (word, now, _, at) = cell(&time, &tracks);
+        if at < 3840 {
+            assert_eq!((word.as_str(), now), ("repitch now", StretchNow::Repitch));
+        }
+        while cell(&time, &tracks).3 < 3840 + 960 {
+            run_audio(&mut time, &mut tracks, 20, s, 0.0, &mut rest, &mut None);
+        }
+        let (word, now, _, _) = cell(&time, &tracks);
+        assert_eq!((word.as_str(), now), ("", StretchNow::AsMade), "its copy");
+    }
+
     /// [`an_audio_clip_launched_in_its_cell_plays_from_its_line`], with the
     /// cues waiting for their audio if `waits`.
     fn clip_launch(waits: bool) {

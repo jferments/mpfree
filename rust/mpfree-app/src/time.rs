@@ -16166,6 +16166,16 @@ mod tests {
             launch(&mut h, VOCAL, 1);
             run(&mut h, &mut pads, BAR + BAR / 8, &[]);
             assert!(h.take_later_note().unwrap().contains("moves to bar 3"));
+            // Its cell says "waits copy" (phase 5c.2).
+            let st = h.state();
+            assert_eq!(
+                (st.audio_late.clone(), st.copy_late.clone()),
+                (vec![(VOCAL, 2 * TICKS)], vec![VOCAL])
+            );
+            assert_eq!(
+                mpfree_time_ui::view::cell_of(&st, VOCAL, 1).foot,
+                "waits copy"
+            );
             run(&mut h, &mut pads, 2 * BAR + BAR / 8, &[]);
             assert!(h.take_later_note().unwrap().contains("moves to bar 4"));
             assert_eq!(cued_in_view(&h, VOCAL), None, "still out");
@@ -16174,6 +16184,18 @@ mod tests {
             assert!(
                 said.contains("copy not ready: Vocal: Chorus cancelled after 2 moves"),
                 "{said}"
+            );
+            // Its cell says "not ready", and a tap why: Keep pitch's.
+            let st = h.state();
+            assert!(st.copy_late.is_empty());
+            assert!(
+                matches!(st.not_ready[..], [(VOCAL, 1, _, true)]),
+                "{:?}",
+                st.not_ready
+            );
+            assert_eq!(
+                mpfree_time_ui::view::cell_of(&st, VOCAL, 1).foot,
+                "not ready"
             );
             assert!(h.control.cues.is_empty());
             assert!(h.copy_needs().is_empty());

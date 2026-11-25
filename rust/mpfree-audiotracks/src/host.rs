@@ -2795,8 +2795,20 @@ fn keep_problem(room: &mut Vec<Problem>, lost: &mut u64, p: Problem) {
 /// The scheduler's kind for the tracks' copies.
 const COPY_KIND: &str = "audio tracks copy";
 
-fn copy_key(key: &crate::copies::CopyKey) -> sched::Key {
-    sched::Key::new(COPY_KIND, key.id())
+/// The next host's number among the scheduler's copy jobs.
+static NEXT_OWNER: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(1);
+
+/// A copy's job on the process's one scheduler, for host `owner`: its
+/// number in the id's low 16 bits, so two hosts making the same copy (two
+/// projects' engines, tests side by side) never replace each other's job,
+/// and Clear copies stops only its own ([`ours`]).
+fn copy_key(owner: u16, key: &crate::copies::CopyKey) -> sched::Key {
+    sched::Key::new(COPY_KIND, (key.id() & !0xffff) | u128::from(owner))
+}
+
+/// Whether job `k` is one of host `owner`'s copies.
+fn ours(owner: u16, k: sched::Key) -> bool {
+    k.kind == COPY_KIND && k.id as u16 == owner
 }
 
 /// A copy being made on the scheduler: its job starts (finding the hits)
@@ -2906,6 +2918,7 @@ fn work(
         drive_stop: None,
         layers: Vec::new(),
         sched: None,
+        owner: NEXT_OWNER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
     };
     loop {
         let m = if w.files.writing() || !w.layers.is_empty() {
@@ -2990,6 +3003,8 @@ struct Worker {
     /// Where copies are made: the process's scheduler unless a test gave
     /// its own ([`ToWorker::Sched`]).
     sched: Option<Sched>,
+    /// Its number among the scheduler's copy jobs ([`copy_key`]).
+    owner: u16,
 }
 
 impl Worker {
@@ -3230,18 +3245,19 @@ impl Worker {
                     progress,
                     slot,
                 };
-                s.submit(sched::Job::new(copy_key(&key), priority, work).needs(need));
+                s.submit(sched::Job::new(copy_key(self.owner, &key), priority, work).needs(need));
                 return None;
             }
             ToWorker::Copy(Ask::Cancel(key)) => {
                 if let Some(s) = &self.sched {
-                    s.cancel(copy_key(&key));
+                    s.cancel(copy_key(self.owner, &key));
                 }
                 return None;
             }
             ToWorker::Copy(Ask::CancelAll) => {
                 if let Some(s) = &self.sched {
-                    s.retain(|k| k.kind != COPY_KIND);
+                    let owner = self.owner;
+                    s.retain(|k| !ours(owner, k));
                 }
                 return None;
             }

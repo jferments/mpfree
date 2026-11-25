@@ -528,6 +528,13 @@ pub struct GridCell {
     /// A layer of its loop not yet on the stick: an amber dot at the
     /// name's right, until its file is written.
     pub writing: bool,
+    /// Its word stays while it plays (an audio clip's "repitch now",
+    /// "rejoins 9.1", "copy 40 %", "too fast": phase 5c.2), in Make in
+    /// the wave's place.
+    pub word_plays: bool,
+    /// An audio clip's tempo copy being made, this far (layout spec 4f,
+    /// "copy 40 %"): a 3 px line in the accent filling along its foot.
+    pub copy: Option<f32>,
 }
 
 /// The colour of a cell's word ([`GridCell::alert`]).
@@ -539,6 +546,8 @@ pub enum CellAlert {
     Warn,
     /// Red: it can't play ("not ready", "missing").
     Bad,
+    /// The accent: it is being got ready ("copy 40 %", phase 5c.2).
+    Info,
 }
 
 /// A mark on a cell (composing tools S2.6, layout spec 4r).
@@ -2951,6 +2960,7 @@ fn paint_cell_body(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
     let foot_ink = match cell.state {
         _ if cell.alert == CellAlert::Bad => t.readable(t.bad, fill),
         _ if cell.alert == CellAlert::Warn => t.readable(t.warn, fill),
+        _ if cell.alert == CellAlert::Info => t.readable(t.accent, fill),
         CellState::Queued => t.readable(t.warn, fill),
         CellState::Recording => t.readable(t.bad.mix(t.text, 0.2), fill),
         _ => t.text_faint,
@@ -3048,6 +3058,24 @@ fn paint_cell_body(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
         let w = (track.w as f32 * cell.progress.min(1.0)) as i32;
         cx.canvas
             .fill_round_rect(Rect::new(track.x, track.y, w.max(2), 3), 1, t.warn);
+    }
+    copy_line(cx, cr, cell);
+}
+
+/// An audio clip's tempo copy being made (layout spec 4f, "copy 40 %"): a
+/// 3 px line along the cell's foot, filling in the accent.
+fn copy_line(cx: &mut PaintCx, cr: Rect, cell: &GridCell) {
+    let Some(done) = cell.copy else {
+        return;
+    };
+    let t = &cx.theme;
+    let track = Rect::new(cr.x + 6, cr.bottom() - 4, (cr.w - 12).max(0), 3);
+    let (dim, lit) = (t.surface.mix(t.text_faint, 0.35), t.accent);
+    cx.canvas.fill_rect(track, dim);
+    let w = (track.w as f32 * done.clamp(0.0, 1.0)) as i32;
+    if w > 0 {
+        cx.canvas
+            .fill_rect(Rect::new(track.x, track.y, w, track.h), lit);
     }
 }
 
@@ -3170,8 +3198,9 @@ fn paint_compact(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color, fill:
     );
     let queued = cell.state == CellState::Queued;
     // A word that matters takes the wave's place while the clip is
-    // stopped or queued (an audio clip's "made at 120", "missing").
-    let said = cell.alert != CellAlert::None && !rolling && !cell.ringing;
+    // stopped or queued (an audio clip's "made at 120", "missing"), and
+    // while it plays when it matters then too ("repitch now").
+    let said = cell.alert != CellAlert::None && (!rolling || cell.word_plays) && !cell.ringing;
     match &cell.wave {
         Some(wave) if !queued && !said => {
             paint_wave(cx, line.inset_xy(0, 3), wave, cell, base, fill)
@@ -3179,6 +3208,7 @@ fn paint_compact(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color, fill:
         _ => {
             let (words, ink) = match cell.state {
                 _ if said && cell.alert == CellAlert::Bad => (&cell.foot, t.bad),
+                _ if said && cell.alert == CellAlert::Info => (&cell.foot, t.accent),
                 _ if said => (&cell.foot, t.warn),
                 _ if cell.mark != CellMark::None => (&cell.detail, marked_ink),
                 CellState::Queued => (&cell.foot, t.warn),
@@ -3209,6 +3239,7 @@ fn paint_compact(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color, fill:
             color,
         );
     }
+    copy_line(cx, cr, cell);
 }
 
 // ---------------------------------------------------------------- takes

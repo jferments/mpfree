@@ -67,15 +67,24 @@ An empty audio cell is drawn dashed; a tap on it says how to fill it.
 
 {{shot: arrange-clips-audio-cells | Audio clips at 92 BPM: Hook vox playing, Ad libs and Outro waiting to start, Riff made at 120, Solo missing its audio, Intro still ringing past its stop, and Amen not ready.}}
 
-**What a cell says.** Each audio cell shows the clip's name and a small wave of one pass. Playing, the wave lights up to the playhead. Under the name, in the wave's place while the clip is stopped or waiting, a word says what matters, and a tap on the cell says it in full on the hint line:
+**What a cell says.** Each audio cell shows the clip's name and a small wave of one pass. Playing, the wave lights up to the playhead. Under the name, in the wave's place while the clip is stopped or waiting (and while it plays, for the words about its tempo), a word says what matters, and a tap on the cell says it in full on the hint line:
 
 | Word | What it means |
 |---|---|
 | **from 17.1** (amber) | Launched: it starts at bar 17. |
 | **waits 18.1** (amber) | Its audio is still loading from the drive, so it starts a little later, on bar 18, in time with the bar. |
 | **made at 120** (amber) | It was made at 120 BPM, its **Tempo** is **Off**, and the project plays at another tempo, so each pass leaves a gap or cuts its end off. **Repitch** or **Stretch** on the Clip tab keeps it on the bars (below). |
-| **not ready** (red) | Its audio couldn't be loaded in time, so the launch was cancelled. Tap it to try again. |
+| **not ready** (red) | Its audio couldn't be loaded in time, or on **Stretch** with **Until ready** set to **keep pitch** its copy wasn't made in time, so the launch was cancelled. Tap it to try again. |
 | **missing** (red) | A recording it plays wasn't found when the project opened. It can't play. |
+| **copy 40 %** (blue, a line filling along its foot) | On **Stretch**, its copy for the tempo now is being made (0 % while it waits its turn behind others). |
+| **waits copy** (amber) | Launched on **Stretch**, it moved to a later line to wait for its copy. On **on time** it starts there anyway, on Repitch if the copy still isn't ready; on **keep pitch** it is cancelled rather than start out of pitch. |
+| **repitch now** (amber) | Playing on **Stretch** before its copy was ready, so this pass plays faster and higher (or slower and lower), like tape. Its own pitch comes back at the start of its next pass once the copy is ready. |
+| **rejoins 9.1** (amber) | On **keep pitch**, the tempo changed while it played: it plays on in its own pitch, off the bars, and comes back onto them at bar 9 once its new copy is ready (it says **copy 40 %** until then). |
+| **too fast** (red) | It would play more than 4 times its speed at this tempo, so it's silent. Check the tempo it was made at on the Clip tab. |
+
+{{shot: arrange-clips-audio-copies | Audio clips at 92 BPM following the tempo: Hook vox playing Repitch until its copy is made, Riff rejoining the bars at bar 17, Outro's copy 40 % made, Amen waiting for its copy, Intro not ready, Pad wash too fast.}}
+
+A clip on **Stretch** that plays its copy, or any clip at its own tempo, shows its wave and no word. If a copy couldn't be made (there was no room for it), the clip plays Repitch; its cell has no word, and a tap on it says so.
 
 A clip set to play **once** shows its playhead dimmed while its sound rings on after its track stopped, so the grid never looks silent while you hear it. In Perform the cell's foot gives its length ("2 bars"), or a once clip's time ("3:17 once").
 

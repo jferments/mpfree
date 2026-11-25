@@ -310,6 +310,30 @@ fn where_a_clips_copy_stands_goes_from_waiting_through_making_to_ready() {
 }
 
 #[test]
+fn two_hosts_making_the_same_copy_on_one_scheduler_each_get_it() {
+    // The process has one scheduler, where a newer job with a key
+    // replaces an older: two hosts' jobs for one copy (two engines, tests
+    // side by side) once took each other's place and neither came.
+    let mut a = Rig::new(90.0, vec![]);
+    let mut b = Rig::new(90.0, vec![]);
+    b.h.copies_on(a.s.clone());
+    let w = clip_of(FollowTempo::Stretch);
+    a.h.clip_copies(vec![w]);
+    b.h.clip_copies(vec![w]);
+    let t0 = Instant::now();
+    while a.h.clip_copy_state(&play(&w), 90.0) != CopyState::Ready
+        || b.h.clip_copy_state(&play(&w), 90.0) != CopyState::Ready
+    {
+        assert!(t0.elapsed() < Duration::from_secs(60), "{:?}", a.s.counts());
+        a.period();
+        b.period();
+        a.s.step();
+        std::thread::sleep(Duration::from_micros(200));
+    }
+    assert_eq!((a.copies(), b.copies()), (1, 1));
+}
+
+#[test]
 fn a_clips_copy_with_no_room_says_it_couldnt_be_made() {
     let mut r = Rig::new(90.0, vec![]);
     r.s.budget().set_total(10_000);
