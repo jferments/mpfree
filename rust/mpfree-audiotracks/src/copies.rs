@@ -32,6 +32,13 @@
 //!   for the next start and the pitch never moves mid-pass; a tempo change
 //!   that leaves its copy behind plays Repitch to its end. A locate, a
 //!   jump or the transport stopping starts the latches again.
+//! - **A clip at a tempo point** (5d.2). A clip's region plays the copy
+//!   for the tempo now, and where the key changes at a tempo point of the
+//!   map it switches on the point's frame ([`Copies::switch`]),
+//!   crossfaded, to the copy for the tempo there if it is held, else (on
+//!   Play on time) to Repitch, where a ramp begins too; Keep pitch drifts
+//!   as below. A tempo change nobody planned replaces the map and has no
+//!   point, so it goes on as below.
 //! - **Keep pitch through a tempo change** (5b.4). A region on Keep pitch
 //!   latched to a copy, or to its recording at its own tempo, doesn't
 //!   switch to Repitch when the tempo moves away from it: it plays on from
@@ -422,6 +429,27 @@ pub fn shape_of(map: &TempoMap, at: f64, len: f64) -> u64 {
     h | 1
 }
 
+/// The tempo `map` plays steadily at song tick `t`: its segment's, or
+/// None through a ramp's glide (a clip's region's copy is for the tempo
+/// now, 5d.2).
+pub fn tempo_now(map: &TempoMap, t: f64) -> Option<f64> {
+    let segs = map.segments();
+    let i = segs.iter().rposition(|s| s.start as f64 <= t).unwrap_or(0);
+    let gliding = map.is_ramp(i) && t >= segs[i].start as f64;
+    (!gliding).then(|| segs[i].bpm)
+}
+
+/// The last tempo point of `map` (a segment's start) after song tick
+/// `from` and at or before `to`; `-inf` if there is none.
+pub fn last_point(map: &TempoMap, from: f64, to: f64) -> f64 {
+    map.segments()
+        .iter()
+        .skip(1)
+        .map(|s| s.start as f64)
+        .filter(|&s| s > from && s <= to)
+        .fold(f64::NEG_INFINITY, f64::max)
+}
+
 /// The one steady tempo over song ticks `at..at + len` of `map`, if the
 /// tempo doesn't change there.
 pub fn steady(map: &TempoMap, at: f64, len: f64) -> Option<f64> {
@@ -506,6 +534,11 @@ struct Latch {
     /// here: Repitch for want of its copy (the cells' "repitch now",
     /// phase 5c.2).
     repitch: bool,
+    /// The tempo (bits) of the key it was last decided with (0: none),
+    /// and the song tick of that run: a clip's region switches when it
+    /// changes at a tempo point of the map between (5d.2).
+    key_tempo: u64,
+    tick: f64,
 }
 
 const FREE: Latch = Latch {
@@ -517,6 +550,8 @@ const FREE: Latch = Latch {
     drift: None,
     owner: 0,
     repitch: false,
+    key_tempo: 0,
+    tick: 0.0,
 };
 
 /// What the regions on Stretch a lane heard last play (phase 5c.2, the
@@ -556,13 +591,25 @@ struct Drift {
     to_tempo: u64,
     /// The copy for the tempo now, for the host to ask for at once.
     want: Option<CopyKey>,
+    /// It plays Repitch of its recording, not audio at speed 1: only as
+    /// it switches at a tempo point ([`Drift::switch`]).
+    repitch: bool,
+    /// What it switches to is Repitch of its recording (nothing held for
+    /// the tempo at the point, or a ramp begins there), not `to_slot`.
+    to_repitch: bool,
+    /// Not a drift off the bars but a switch at a tempo point of the map
+    /// (5d.2): the crossfade from what it played to the copy for the tempo
+    /// there, begun on the point's frame.
+    switch: bool,
 }
 
-/// What a region on Keep pitch is, where a run is: for [`Copies::source`].
+/// What a region on Keep pitch, or a clip's region that switches copies
+/// at a tempo point (5d.2), is where a run is: for [`Copies::source`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Keep {
     /// The one steady tempo over it now (bits; 0 if there isn't one), and
-    /// its made-at tempo (bits).
+    /// its made-at tempo (bits). For a clip's region, the tempo now: 0
+    /// through a ramp.
     pub tempo: u64,
     pub made_at: u64,
     /// The song ticks it plays from and to as heard, and where between
@@ -572,6 +619,14 @@ pub(crate) struct Keep {
     pub phase: f64,
     pub run: RunAt,
     pub rate: u32,
+    /// Keep pitch is on.
+    pub pitch: bool,
+    /// A clip's region (5d.2): at a tempo point of the map it switches on
+    /// the point's frame to the copy for the tempo there, if it is held.
+    pub switch: bool,
+    /// The last tempo point of the map inside it up to the run (a
+    /// segment's start; `-inf` if none), for `switch`.
+    pub point: f64,
 }
 
 /// Where a run is: its first frame and song tick, the first bar line at
@@ -617,6 +672,12 @@ pub(crate) struct Drifting {
     /// None for its recording at its own tempo).
     pub join: Option<f64>,
     pub to: Option<usize>,
+    /// It plays Repitch of its recording until then, not `from`; and
+    /// from then on, not `to`.
+    pub repitch: bool,
+    pub to_repitch: bool,
+    /// A switch at a tempo point (5d.2), not a drift off the bars.
+    pub switch: bool,
 }
 
 /// A number for region `r` as it plays this time: on lane `owner` (a
@@ -805,6 +866,37 @@ impl Copies {
                 .is_some_and(|h| h.serial == serial)
     }
 
+    /// The frame of the copy in `slot` from its region's start (`at`,
+    /// `len` ticks long, starting `phase` between frames) at song tick
+    /// `t`, where the map isn't steady over the region at the copy's
+    /// tempo: a clip's region switched to the copy for the tempo after a
+    /// tempo point (5d.2) plays it where that tempo's bars put it. None
+    /// where the region's frames along the map are the copy's (a steady
+    /// tempo, or a copy over a change).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn copy_frame(
+        &self,
+        slot: usize,
+        phase: f64,
+        at: f64,
+        len: f64,
+        map: &TempoMap,
+        t: f64,
+        rate: u32,
+    ) -> Option<i64> {
+        let k = &self.held.get(slot)?.as_ref()?.copy.key;
+        if k.shape != 0 {
+            return None;
+        }
+        let tempo = f64::from_bits(k.tempo);
+        if steady(map, at, len) == Some(tempo) {
+            return None;
+        }
+        Some(crate::nearest(
+            phase + (t - at) * frames_per_tick(tempo, rate),
+        ))
+    }
+
     fn hear(&mut self, slot: u16, f: u64) {
         if let Some(h) = self.held.get_mut(slot as usize).and_then(Option::as_mut) {
             h.heard = h.heard.max(f);
@@ -836,6 +928,9 @@ impl Copies {
             f: d.f,
             join: d.join,
             to: slot(d.to_slot),
+            repitch: d.repitch,
+            to_repitch: d.to_repitch,
+            switch: d.switch,
         })
     }
 
@@ -860,7 +955,7 @@ impl Copies {
             return out;
         };
         for l in self.latches.iter().filter(ours).filter(|l| l.heard == last) {
-            match l.drift {
+            match l.drift.filter(|d| !d.switch) {
                 Some(d) => {
                     out.drift = true;
                     if let Some(j) = d.join {
@@ -941,6 +1036,8 @@ impl Copies {
             drift: None,
             owner,
             repitch: found.is_none() && key.is_some(),
+            key_tempo: key.map_or(0, |k| k.tempo),
+            tick: keep.map_or(0.0, |k| k.run.tick),
         };
         self.any_latch = true;
         found
@@ -956,8 +1053,24 @@ impl Copies {
         decide: bool,
         keep: Option<&Keep>,
     ) -> Option<usize> {
-        if decide && l.drift.is_none() {
+        if decide {
             if let Some(k) = keep {
+                // A clip's region at a tempo point of the map since it was
+                // last decided, with the copy for the tempo now held:
+                // switches to it on the point's frame (5d.2).
+                let kt = key.map_or(0, |k| k.tempo);
+                let planned = k.switch && k.point > l.tick && k.point <= k.run.tick;
+                let changed = kt != l.key_tempo;
+                (l.key_tempo, l.tick) = (kt, k.run.tick);
+                if planned && changed {
+                    if let Some(out) = self.switch(l, li, key, f, k) {
+                        return out;
+                    }
+                }
+            }
+        }
+        if decide && l.drift.is_none() {
+            if let Some(k) = keep.filter(|k| k.pitch) {
                 // On Keep pitch, the tempo moved away from the audio it
                 // plays: it plays on from there at speed 1.
                 if l.tempo != 0 && k.tempo != l.tempo && self.holds(l.slot, l.serial) {
@@ -974,6 +1087,9 @@ impl Copies {
                         to_serial: 0,
                         to_tempo: 0,
                         want: None,
+                        repitch: false,
+                        to_repitch: false,
+                        switch: false,
                     });
                 }
             }
@@ -997,7 +1113,7 @@ impl Copies {
             // Its copy went, or the tempo moved away from it: its
             // recording to its end. Only looked up on Keep pitch, it is
             // left for its own decision (it may drift).
-            if decide || keep.is_none() {
+            if decide || !keep.is_some_and(|k| k.pitch) {
                 l.slot = NONE;
                 l.tempo = 0;
                 l.repitch = key.is_some();
@@ -1008,6 +1124,88 @@ impl Copies {
             self.hear(l.slot, f);
         }
         Some(slot)
+    }
+
+    /// A clip's region at a tempo point (`l`, latch `li`, where `k` says),
+    /// decided on frame `f`: it starts a crossfade on this run's first
+    /// frame, the point's, from what it plays (a copy or its recording at
+    /// speed 1 from where the bars put it, or Repitch) to the audio for
+    /// the tempo now (the copy for `key`, or its recording back at its own
+    /// tempo) if it is held. With none held, on Play on time, from audio
+    /// on the bars it crossfades to Repitch (a ramp begins, or its copy
+    /// isn't here). A region drifting on Keep pitch rejoins there instead
+    /// of on the next bar line. None if it goes on as before (Repitch
+    /// with nothing held, a drift on Keep pitch) or a crossfade is under
+    /// way.
+    fn switch(
+        &mut self,
+        l: &mut Latch,
+        li: usize,
+        key: Option<CopyKey>,
+        f: u64,
+        k: &Keep,
+    ) -> Option<Option<usize>> {
+        let tick = k.run.tick;
+        if l.drift.is_some_and(|d| d.join.is_some_and(|j| tick >= j)) {
+            return None;
+        }
+        let held = if k.tempo != 0 && k.tempo == k.made_at {
+            Some((NONE, 0, k.made_at))
+        } else {
+            key.and_then(|kk| {
+                let i = self.find(&kk)?;
+                let h = self.held[i].as_ref()?;
+                Some((i as u16, h.serial, kk.bars_tempo()))
+            })
+        };
+        let on_bars = l.drift.is_none() && l.tempo != 0 && self.holds(l.slot, l.serial);
+        let (to, to_repitch) = match held {
+            Some(t) => (t, false),
+            None if !k.pitch && on_bars => ((NONE, 0, 0), true),
+            None => return None,
+        };
+        let mut d = match l.drift {
+            Some(d) => d,
+            None if on_bars => {
+                let ticks = tick - k.at;
+                let e = (k.phase + ticks * frames_per_tick(f64::from_bits(l.tempo), k.rate)).round()
+                    as i64;
+                Drift {
+                    slot: l.slot,
+                    serial: l.serial,
+                    e,
+                    f,
+                    join: None,
+                    to_slot: NONE,
+                    to_serial: 0,
+                    to_tempo: 0,
+                    want: None,
+                    repitch: false,
+                    to_repitch: false,
+                    switch: true,
+                }
+            }
+            // From Repitch.
+            None => Drift {
+                slot: NONE,
+                serial: 0,
+                e: 0,
+                f,
+                join: None,
+                to_slot: NONE,
+                to_serial: 0,
+                to_tempo: 0,
+                want: None,
+                repitch: true,
+                to_repitch: false,
+                switch: true,
+            },
+        };
+        d.join = Some(tick);
+        (d.to_slot, d.to_serial, d.to_tempo) = to;
+        d.to_repitch = to_repitch;
+        l.drift = Some(d);
+        Some(self.drift(l, d, li, key, f, Some(k)))
     }
 
     /// A region drifting on Keep pitch (`l`, its drift `d`), decided on
@@ -1022,7 +1220,7 @@ impl Copies {
         f: u64,
         keep: Option<&Keep>,
     ) -> Option<usize> {
-        let Some(k) = keep.filter(|_| self.holds(d.slot, d.serial)) else {
+        let Some(k) = keep.filter(|k| (k.pitch || d.switch) && self.holds(d.slot, d.serial)) else {
             // Keep pitch turned off, or its audio went: Repitch to its end.
             l.drift = None;
             l.slot = NONE;
@@ -1051,6 +1249,15 @@ impl Copies {
                 d.join = None;
             }
         }
+        if d.join.is_none() && !k.pitch {
+            // A switch whose audio went before it began: Repitch to its
+            // end, as on Play on time.
+            l.drift = None;
+            l.slot = NONE;
+            l.tempo = 0;
+            l.repitch = key.is_some();
+            return None;
+        }
         if d.join.is_none() {
             if let Some((slot, serial, tempo)) = target {
                 // On the first bar line from here, if the region still
@@ -1065,7 +1272,7 @@ impl Copies {
             if k.run.frames_to(join, k.rate) + FADE as i64 <= 0 {
                 // Over the crossfade: it holds what it rejoined.
                 (l.slot, l.serial, l.tempo, l.drift) = (d.to_slot, d.to_serial, d.to_tempo, None);
-                l.repitch = false;
+                l.repitch = d.to_repitch && key.is_some();
                 if l.slot == NONE {
                     return None;
                 }

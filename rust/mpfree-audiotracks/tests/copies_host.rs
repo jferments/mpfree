@@ -589,3 +589,51 @@ fn a_song_region_over_a_ramp_gets_the_copy_that_follows_it_and_keeps_its_pitch()
     let st = r.h.tracks.stats();
     assert!(st.copied > 0 && st.for_now == 0, "{st:?}");
 }
+
+#[test]
+fn a_listed_clip_gets_its_copies_for_each_tempo_point_in_the_next_eight_bars() {
+    // 90, 100 from bar 3, a ramp from bar 5 to 110 at bar 7, and 120 from
+    // bar 12 (past eight bars from the playhead): copies at 90, 100 and
+    // 110, none for the ramp's glide or for 120 (5d.2).
+    let mut r = Rig::new(90.0, vec![]);
+    let map = TempoMap::new(&[
+        Segment {
+            start: 0,
+            bpm: 90.0,
+        },
+        Segment {
+            start: 2 * BAR,
+            bpm: 100.0,
+        },
+        Segment {
+            start: 4 * BAR,
+            bpm: 100.0,
+        },
+        Segment {
+            start: 6 * BAR,
+            bpm: 110.0,
+        },
+        Segment {
+            start: 11 * BAR,
+            bpm: 120.0,
+        },
+    ])
+    .unwrap()
+    .ramp(2)
+    .unwrap();
+    assert!(r.t.set_tempo_map(map).is_ok());
+    r.h.clip_copies(vec![clip_of(FollowTempo::Stretch)]);
+    r.run_until(true, |r| r.copies() == 3);
+    // Room to make a fourth, if one were wanted.
+    for _ in 0..200 {
+        r.period();
+        r.s.step();
+    }
+    let mut tempos: Vec<f64> =
+        r.h.tracks
+            .copies()
+            .map(|v| f64::from_bits(v.key.tempo))
+            .collect();
+    tempos.sort_by(f64::total_cmp);
+    assert_eq!(tempos, vec![90.0, 100.0, 110.0]);
+}

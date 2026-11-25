@@ -10,7 +10,8 @@
 //!    steady tempo, or following the map where it changes over the
 //!    region, 5d.1, the map and its place going with the want to the
 //!    worker: [`Over`]) and of the clips' regions on Stretch the app lists
-//!    ([`ClipWant`], at the tempo at the playhead), most urgent first:
+//!    ([`ClipWant`], at the tempo at the playhead, and at each tempo a
+//!    tempo point in the next eight bars brings, 5d.2), most urgent first:
 //!    song regions from the playhead to two bars on and the clips the app
 //!    says play, and the copies the regions drifting on Keep pitch wait
 //!    for ([`Priority::Protect`]), then what comes in the next eight
@@ -37,8 +38,7 @@
 //!    dropped, never played.
 //!
 //! Not yet: copies of a take on its file (it plays Repitch; streaming
-//! stays off on the MPC for now), and a clip's copy across a planned tempo
-//! point (5d.2).
+//! stays off on the MPC for now).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -442,20 +442,44 @@ impl CopySide {
                     stamp: 0,
                 };
                 let at = if c.bpm > 0.0 { c.bpm } else { bpm };
-                tracks.clip_copy_keys(&play, at, &mut |_, key| {
-                    let Some(take) = tracks.take_of(key.rec) else {
-                        return;
-                    };
-                    let channels = tracks.take(take).map_or(1, |i| i.channels as u8);
-                    let w = Want {
-                        key,
-                        take,
-                        channels,
-                        priority: c.priority,
-                        over: None,
-                    };
-                    push(out, w);
-                });
+                let mut want = |out: &mut Vec<Want>, bpm: f64, priority: Priority| {
+                    tracks.clip_copy_keys(&play, bpm, &mut |_, key| {
+                        let Some(take) = tracks.take_of(key.rec) else {
+                            return;
+                        };
+                        let channels = tracks.take(take).map_or(1, |i| i.channels as u8);
+                        let w = Want {
+                            key,
+                            take,
+                            channels,
+                            priority,
+                            over: None,
+                        };
+                        push(out, w);
+                    });
+                };
+                want(out, at, c.priority);
+                // Each tempo the song's map plays steadily at from a tempo
+                // point in the next eight bars (a ramp's end tempo where it
+                // ends), so a clip playing switches to its copy there
+                // (5d.2).
+                let segs = map.segments();
+                for (i, s) in segs.iter().enumerate().skip(1) {
+                    let st = s.start as f64;
+                    if st > now + 8.0 * bar {
+                        break;
+                    }
+                    if st > now && !map.is_ramp(i) && s.bpm != at {
+                        // Within two bars as needed next, as a song
+                        // region's; never more urgent than the clip.
+                        let soon = if st <= now + 2.0 * bar {
+                            Priority::Protect
+                        } else {
+                            Priority::Prepared
+                        };
+                        want(out, s.bpm, c.priority.max(soon));
+                    }
+                }
             };
         // The clips launched and waiting for their copies (5b.4), then
         // the regions drifting on Keep pitch: they rejoin the bars once

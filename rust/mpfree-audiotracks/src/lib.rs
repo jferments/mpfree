@@ -1534,14 +1534,21 @@ impl Reader<'_> {
             .get(r.take as usize)
             .filter(|k| k.live && !k.loading && !k.recording)?;
         let ticks = (r.end - r.start) as f64;
-        let bpm = copies::steady(map, at, ticks);
+        // A song region's copy is for the one steady tempo over it, or
+        // follows the map where it changes there (5d.1); a clip's region's
+        // is for the tempo now, and it switches at a tempo point (5d.2).
+        let bpm = if song {
+            copies::steady(map, at, ticks)
+        } else {
+            copies::tempo_now(map, run.tick)
+        };
         let key = match bpm {
             Some(bpm) => copies::CopyKey::of(r, tk.rec, tk.frames, bpm, rate, ends, reach),
             None if song => copies::CopyKey::over(r, tk.rec, tk.frames, map, at, rate, reach),
             None => None,
         };
         let id = copies::instance(owner, at, since, r);
-        let keep = r.keep_pitch.then(|| copies::Keep {
+        let keep = (r.keep_pitch || !song).then(|| copies::Keep {
             tempo: bpm.map_or(0, f64::to_bits),
             made_at: r.bpm.to_bits(),
             at,
@@ -1549,6 +1556,13 @@ impl Reader<'_> {
             phase: f64::from(r.phase),
             run: *run,
             rate,
+            pitch: r.keep_pitch,
+            switch: !song,
+            point: if song {
+                f64::NEG_INFINITY
+            } else {
+                copies::last_point(map, at, run.tick)
+            },
         });
         self.copies
             .source(id, owner, key, run.f, decide, keep.as_ref())
@@ -1615,23 +1629,64 @@ impl Reader<'_> {
         // How far into the crossfade frame `j` is, 0 to 1.
         let x = |j: usize| (j as i64 - jf).clamp(0, FADE as i64) as f32 / FADE as f32;
         if b > 0 {
-            let e = d.e + (f0 as i64 - d.f as i64);
             let g = |j: usize| {
                 let w = if j >= a { 1.0 - x(j) } else { 1.0 };
                 gain(j) * w
             };
-            self.add_at(d.from, r, e, tick0, &mut dst[..2 * b], &g);
-            self.stats.drifted += b as u64;
+            if d.repitch {
+                // Switching from Repitch at a tempo point (5d.2).
+                let sp = r.speed(bpm).unwrap_or(1.0);
+                let x = r.src as f64 + r.src_pos(map, p.at, tick0, rate);
+                let missed = self.add_pitched(r.take, x, sp, &mut dst[..2 * b], &g);
+                if missed > 0 {
+                    let m = &mut self.takes[r.take as usize];
+                    m.missed += missed;
+                    m.miss_tick = tick0;
+                    self.stats.missed += missed;
+                }
+                self.stats.for_now += b as u64;
+            } else {
+                let e = d.e + (f0 as i64 - d.f as i64);
+                self.add_at(d.from, r, e, tick0, &mut dst[..2 * b], &g);
+                if !d.switch {
+                    self.stats.drifted += b as u64;
+                } else if d.from.is_some() {
+                    self.stats.copied += b as u64;
+                }
+            }
         }
         if a < n {
+            let ticks = (r.end - r.start) as f64;
+            let phase = f64::from(r.phase);
             let e = match d.to {
-                Some(_) => e0 + a as i64,
+                Some(slot) => {
+                    let ce0 = self
+                        .copies
+                        .copy_frame(slot, phase, p.at, ticks, map, tick0, rate)
+                        .unwrap_or(e0);
+                    ce0 + a as i64
+                }
                 None => r.src_frames_to(map, p.at, tick0, rate) + a as i64,
             };
             let g = |j: usize| {
                 let w = if j + a < b { x(j + a) } else { 1.0 };
                 gain(j + a) * w
             };
+            if d.to_repitch {
+                // Switching to Repitch at a tempo point (5d.2): a ramp
+                // begins, or its copy for the tempo there isn't here.
+                let sp = r.speed(bpm).unwrap_or(1.0);
+                let x = r.src as f64 + r.src_pos(map, p.at, tick0, rate) + a as f64 * sp;
+                let missed = self.add_pitched(r.take, x, sp, &mut dst[2 * a..], &g);
+                if missed > 0 {
+                    let m = &mut self.takes[r.take as usize];
+                    m.missed += missed;
+                    m.miss_tick = tick0;
+                    self.stats.missed += missed;
+                }
+                self.stats.for_now += (n - a) as u64;
+                return;
+            }
             self.add_at(d.to, r, e, tick0, &mut dst[2 * a..], &g);
             if d.to.is_some() {
                 self.stats.copied += (n - a) as u64;
@@ -1790,7 +1845,15 @@ impl Reader<'_> {
                 let li = slot - copies::DRIFT;
                 self.add_drifting(li, p, map, rate, bpm, tick0, f0, e0, dst, &gain);
             } else {
-                self.add_copied(slot, e0, dst, plain.then_some(g), &gain);
+                // Where the copy's own tempo puts it, after a switch at a
+                // tempo point (5d.2); else its frames along the map.
+                let ticks = (r.end - r.start) as f64;
+                let phase = f64::from(r.phase);
+                let ce0 = self
+                    .copies
+                    .copy_frame(slot, phase, p.at, ticks, map, tick0, rate)
+                    .unwrap_or(e0);
+                self.add_copied(slot, ce0, dst, plain.then_some(g), &gain);
             }
             return;
         }
