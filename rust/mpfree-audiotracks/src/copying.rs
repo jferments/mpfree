@@ -835,6 +835,7 @@ mod tests {
             channels: 1,
             file: String::new(),
             path: None,
+            prov: None,
             audio: (0..frames)
                 .map(|j| ((j * 31) % 97) as f32 / 97.0 - 0.5)
                 .collect(),

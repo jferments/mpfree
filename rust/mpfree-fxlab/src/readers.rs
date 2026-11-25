@@ -326,6 +326,7 @@ fn tracks_play(x: &[f64], speed: f64, rate: u32, frames: usize) -> Vec<f64> {
     let mut a = AudioTracks::new(rate, seconds);
     let audio: Vec<f32> = x.iter().map(|&s| s as f32).collect();
     let take = TakeFile {
+        prov: None,
         id: 0,
         rec: RecordingId(1),
         track: 0,

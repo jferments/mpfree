@@ -5313,6 +5313,7 @@ fn audio_clips(rate: u32) -> Case {
         prog.play(u64::from(k) * 7 * u64::from(rate), &mut l, &mut r);
         let audio = l.iter().zip(&r).flat_map(|(x, y)| [*x, *y]).collect();
         let f = TakeFile {
+            prov: None,
             id: k,
             rec: RecordingId(1 + u128::from(k)),
             track: 0,

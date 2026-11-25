@@ -40,6 +40,7 @@ fn tone_take() -> TakeFile {
 
 fn take(frames: usize, audio: Vec<f32>) -> TakeFile {
     TakeFile {
+        prov: None,
         id: 0,
         rec: REC,
         track: 0,

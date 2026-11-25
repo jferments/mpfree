@@ -5885,6 +5885,7 @@ mod tests {
                 }],
             }],
             takes: vec![TakeFile {
+                prov: None,
                 id: 0,
                 rec: RecordingId(0x77),
                 track: 0,

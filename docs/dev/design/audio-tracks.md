@@ -405,6 +405,10 @@ Phase 4 of the rethink ([plan](https://claude.ai/artifact/HA92ecH36LM6UDwiLCwJHa
 
 Phase 5a (built 25 Nov, with no screen yet) gives every region, of the song or of a clip, a Follow tempo setting (Off, Repitch, Stretch) and the tempo its audio was made at. Following the tempo, the frame of its recording playing at a tick is worked out from the ticks at its own tempo, not the frames along the song, and Repitch reads it at the song's speed through the streaming cursor's band-limited read; at its own tempo it plays as Off, bit for bit. Off, the default, plays exactly as before. Saved with the `audio-tempo` gate. The design: [tempo-follow.md](tempo-follow.md).
 
+## Rendering (phase 6)
+
+Phase 6.0.1 (built 25 Nov, with no screen) gives every render one description with a fingerprint, and each recording a render makes its provenance on its take line (`made=`, `for=`, `ver=`, `at=`, `reads=`), saved with the `audio-provenance` gate and kept by the host's worker through a save. A take with none is primary audio, recorded or brought in. The design: [renders.md](renders.md).
+
 ## Joining the rest of MPFree
 
 - **The arrangement.** Audio tracks keep their own regions on song ticks, next to the arrangement's MIDI placements (PR #160), so the two are independent. The Song view can draw each audio track as one more lane, with its take lanes under it for comping. `SetActive(false)` (song mode off) silences the tracks' song regions; their clips play in either mode.

@@ -18923,6 +18923,7 @@ mod tests {
             };
             let frames = 2 * RATE as usize;
             let take = mpfree_audiotracks::save::TakeFile {
+                prov: None,
                 id: 0,
                 rec: mpfree_audiotracks::RecordingId::NONE,
                 track: 0,
@@ -19118,6 +19119,7 @@ mod tests {
             .map(|i| ((i % 97) as f32 / 97.0 - 0.5) * 0.8)
             .collect();
         let take = mpfree_audiotracks::save::TakeFile {
+            prov: None,
             id: 0,
             rec: RecordingId(42),
             track: s,
@@ -19318,6 +19320,7 @@ mod tests {
             .find(|&s| tracks.place(s) == Some(0))
             .expect("an engine track for Vocal");
         let take = mpfree_audiotracks::save::TakeFile {
+            prov: None,
             id: 0,
             rec: RecordingId(42),
             track: s,
@@ -19416,6 +19419,7 @@ mod tests {
             .find(|&s| tracks.place(s) == Some(0))
             .expect("an engine track for Vocal");
         let take = mpfree_audiotracks::save::TakeFile {
+            prov: None,
             id: 0,
             rec: RecordingId(42),
             track: s,
@@ -19514,6 +19518,7 @@ mod tests {
         let mut tracks = audiotracks::TrackHost::new(RATE, 10);
         for (id, rec, level) in [(0, 7, 0.25), (1, 8, 0.5)] {
             let take = mpfree_audiotracks::save::TakeFile {
+                prov: None,
                 id,
                 rec: mpfree_audiotracks::RecordingId(rec),
                 track: 0,
@@ -19664,6 +19669,7 @@ mod tests {
         // Audio that changes every frame, so a frame out shows.
         let audio: Vec<f32> = (0..bar_frames).map(|i| (i % 997) as f32 / 2000.0).collect();
         let take = mpfree_audiotracks::save::TakeFile {
+            prov: None,
             id: 0,
             rec: mpfree_audiotracks::RecordingId(7),
             track: 0,
@@ -19838,6 +19844,7 @@ mod tests {
             let frames = 6 * bar_frames;
             let end = (6.0 * 4.0 * 60.0 / bpm * RATE as f64).round() as usize;
             let take = mpfree_audiotracks::save::TakeFile {
+                prov: None,
                 id,
                 rec: mpfree_audiotracks::RecordingId(rec),
                 track: s,
@@ -20080,6 +20087,7 @@ mod tests {
             (1, 8, 613, 4 * bar_frames),
         ] {
             let take = mpfree_audiotracks::save::TakeFile {
+                prov: None,
                 id,
                 rec: mpfree_audiotracks::RecordingId(rec),
                 track: s,
@@ -20252,6 +20260,7 @@ mod tests {
         // song from bar 1.
         for (id, rec, frames) in [(0, 7, bar_frames), (1, 8, 4 * bar_frames)] {
             let take = mpfree_audiotracks::save::TakeFile {
+                prov: None,
                 id,
                 rec: mpfree_audiotracks::RecordingId(rec),
                 track: s as _,
@@ -20368,6 +20377,7 @@ mod tests {
             .expect("an engine track for Vocal");
         // Two bars the track recorded on the song from bar 1.
         let take = mpfree_audiotracks::save::TakeFile {
+            prov: None,
             id: 0,
             rec: mpfree_audiotracks::RecordingId(8),
             track: s as _,
@@ -20473,6 +20483,7 @@ mod tests {
             last_draw: Instant::now(),
         };
         let take = mpfree_audiotracks::save::TakeFile {
+            prov: None,
             id: 0,
             rec: mpfree_audiotracks::RecordingId(7),
             track: 0,

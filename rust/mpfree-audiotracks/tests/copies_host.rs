@@ -41,6 +41,7 @@ fn tone(j: usize) -> f32 {
 fn tone_take() -> TakeFile {
     let frames = (8.0 * 60.0 * f64::from(RATE) / 120.0) as usize;
     TakeFile {
+        prov: None,
         id: 0,
         rec: REC,
         track: 0,

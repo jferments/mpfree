@@ -68,6 +68,7 @@ use crate::files::{
     self, DriveProbe, DriveSeen, FileEvent, FileView, Files, Growing, LayerWrite, Name, Problem,
     Said, WriterConfig,
 };
+use crate::render::Provenance;
 use crate::save::{Saved, TakeFile};
 use crate::streaming::{
     self, Board, FromStream, Head, Read, Stream, StreamConfig, Syncs, Timings, ToStream,
@@ -285,6 +286,12 @@ enum ToWorker {
         path: Option<PathBuf>,
         frames: usize,
         channels: usize,
+    },
+    /// Where a render made recording `rec` from (phase 6.0.1), for a save
+    /// to write again; with no recording, only to be dropped.
+    Prov {
+        rec: RecordingId,
+        prov: Provenance,
     },
     /// The tracks were emptied: what is asked from now on is for the
     /// tracks of generation `gen`.
@@ -1492,6 +1499,8 @@ impl AudioHost {
             let (id, frames, channels) = (k.id, k.frames, k.channels);
             let name = std::mem::take(&mut k.file);
             let path = k.path.take();
+            // Kept with its file's name on the worker (dropped there too).
+            let prov = k.prov.take();
             let as_file = self.streaming
                 && path.is_some()
                 && k.rec.is_given()
@@ -1509,6 +1518,7 @@ impl AudioHost {
                     frames,
                     channels,
                 });
+                self.keep_prov(k.rec, prov);
                 self.opening.push(k);
                 continue;
             }
@@ -1517,6 +1527,7 @@ impl AudioHost {
                 // written to one and played from it, as a sound brought
                 // in is.
                 let audio = std::mem::take(&mut k.audio);
+                k.prov = prov;
                 self.write_take(k, audio);
                 continue;
             }
@@ -1534,6 +1545,8 @@ impl AudioHost {
                             frames,
                             channels,
                         });
+                        let rec = t.rec;
+                        self.keep_prov(rec, prov);
                     }
                 }
                 Err(k) => {
@@ -1548,6 +1561,7 @@ impl AudioHost {
                         frames: 0,
                         channels,
                     });
+                    self.keep_prov(RecordingId::NONE, prov);
                 }
             }
         }
@@ -1612,6 +1626,7 @@ impl AudioHost {
             .map_or(0, |g| g + 1);
         let frames = audio.len().checked_div(channels).unwrap_or(0);
         let mut file = TakeFile {
+            prov: None,
             id,
             // A sound brought in is a new recording: the tracks give its id.
             rec: crate::RecordingId::NONE,
@@ -1778,6 +1793,15 @@ impl AudioHost {
         self.fitting = Some(Fitting::Stretching { take });
     }
 
+    /// Where a render made recording `rec` from goes to the worker, which
+    /// keeps it for a save (dropped there when `rec` is none). Does not
+    /// allocate: `prov` is moved.
+    fn keep_prov(&self, rec: RecordingId, prov: Option<Provenance>) {
+        if let Some(prov) = prov {
+            self.send(ToWorker::Prov { rec, prov });
+        }
+    }
+
     /// Whether `take` is still there, the same recording, now on its file
     /// (it moved while it was read from memory).
     fn moved_to_file(&self, take: u16, rec: RecordingId) -> bool {
@@ -1842,6 +1866,30 @@ impl AudioHost {
     /// waiting), to be dropped on the worker rather than here.
     pub fn drop_saved(&self, s: Saved) {
         self.send(ToWorker::DropSaved(s));
+    }
+
+    /// The tracks' generation: one more each time they are emptied
+    /// ([`AudioHost::clear`], New project or a project opening). It is
+    /// the revision of [`crate::render::Dep::Project`] (phase 6.0.2): a
+    /// render begun before a project opened never holds after.
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    /// The revision of `dep` now, for those the audio tracks hold: a
+    /// recording ([`AudioTracks::rec_rev`]), a track by its engine number
+    /// (`slot` maps the project's lasting number to it:
+    /// [`AudioTracks::track_rev`]) and the project ([`Self::generation`]).
+    /// None for one gone, and for a clip, a loop or the routes (the
+    /// app's). Allocates nothing.
+    pub fn rev(&self, dep: crate::render::Dep, slot: impl Fn(u32) -> Option<usize>) -> Option<u64> {
+        use crate::render::Dep;
+        match dep {
+            Dep::Recording(rec) => self.tracks.rec_rev(rec),
+            Dep::Track(id) => self.tracks.track_rev(slot(id)?),
+            Dep::Project => Some(u64::from(self.generation)),
+            Dep::Clip(_) | Dep::Loop(_) | Dep::Routes => None,
+        }
     }
 
     /// Every track as new and every take forgotten
@@ -2267,7 +2315,7 @@ impl AudioHost {
         let i = self.to_write.iter().position(|k| k.rec == rec);
         match (i.filter(|_| gen == self.generation), out) {
             (Some(i), Ok((name, path))) => {
-                let k = self.to_write.swap_remove(i);
+                let mut k = self.to_write.swap_remove(i);
                 self.send(ToWorker::Known {
                     rec,
                     take: k.id,
@@ -2276,14 +2324,23 @@ impl AudioHost {
                     frames: k.frames,
                     channels: k.channels,
                 });
+                let prov = k.prov.take();
+                self.keep_prov(rec, prov);
                 self.opening.push(k);
             }
             (Some(i), Err((why, audio))) => {
                 let mut k = self.to_write.swap_remove(i);
                 self.tracks.reserve(k.id, false);
-                let track = k.track;
+                let (track, id) = (k.track, k.id);
                 k.audio = audio;
-                match self.tracks.load_take(k) {
+                let prov = k.prov.take();
+                let kept = self.tracks.load_take(k);
+                let rec = match kept {
+                    Ok(()) => self.tracks.take(id).map_or(RecordingId::NONE, |t| t.rec),
+                    Err(_) => RecordingId::NONE,
+                };
+                self.keep_prov(rec, prov);
+                match kept {
                     Ok(()) => self.event(FileEvent::Unwritten { track, why }),
                     Err(k) => {
                         self.send(ToWorker::Drop(k.audio));
@@ -3445,6 +3502,12 @@ impl Worker {
             } => {
                 if rec.is_given() {
                     files.known(rec, take, name, path, (channels, frames));
+                }
+                return None;
+            }
+            ToWorker::Prov { rec, prov } => {
+                if rec.is_given() {
+                    files.set_prov(rec, prov);
                 }
                 return None;
             }

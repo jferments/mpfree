@@ -40,6 +40,7 @@ use mpfree_stream::writer::{Gate, RealClock, Recorder, Status, TakeNo, TakeView}
 use mpfree_status::{Report, Subject};
 
 use crate::host::TakeWave;
+use crate::render::Provenance;
 use crate::save::TakeFile;
 use crate::{RecordingId, TakeInfo, PEAK_BLOCK};
 
@@ -473,6 +474,10 @@ pub(crate) struct Files {
     /// again: the SD card's opened): a save takes files over from them
     /// too.
     was: Vec<PathBuf>,
+    /// Where a render made each of these recordings from (phase 6.0.1),
+    /// for a save to write on its take line again; let go of when the
+    /// tracks are emptied.
+    provs: Vec<(RecordingId, Provenance)>,
 }
 
 impl Files {
@@ -490,7 +495,14 @@ impl Files {
             armed: Arc::new(AtomicU64::new(0)),
             layer_files: Vec::new(),
             was: Vec::new(),
+            provs: Vec::new(),
         }
+    }
+
+    /// Recording `rec` was made by a render, as `prov` says.
+    pub fn set_prov(&mut self, rec: RecordingId, prov: Provenance) {
+        self.provs.retain(|(r, _)| *r != rec);
+        self.provs.push((rec, prov));
     }
 
     /// A loop layer's file was written whole in the work folder.
@@ -815,6 +827,7 @@ impl Files {
     /// stay where they are). Files still only armed are left for their
     /// [`Files::disarm`].
     pub fn clear(&mut self) {
+        self.provs.clear();
         let Files {
             writing,
             recs,
@@ -975,6 +988,11 @@ impl Files {
             k.file.clear();
             k.path = None;
             let f = self.recs.iter_mut().find(|f| f.rec == k.rec);
+            k.prov = self
+                .provs
+                .iter()
+                .find(|(r, _)| *r == k.rec)
+                .map(|(_, p)| p.clone());
             let whole = f
                 .as_ref()
                 .and_then(|f| f.path.as_ref().filter(|_| f.frames == k.frames));
@@ -1794,6 +1812,7 @@ mod tests {
         f.recs.push(rec(1, Some(path)));
         f.recs.push(rec(2, Some(dir.join("gone.wav"))));
         let take = |n: u128, track: usize| TakeFile {
+            prov: None,
             id: 0,
             rec: RecordingId(n),
             track,

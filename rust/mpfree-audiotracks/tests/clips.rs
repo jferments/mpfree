@@ -46,6 +46,7 @@ fn take(k: u16, frames: usize, f: impl Fn(u64) -> (f32, f32)) -> TakeFile {
         audio.push(r);
     }
     TakeFile {
+        prov: None,
         id: k,
         rec: rec(k),
         track: 0,
