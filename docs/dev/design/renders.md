@@ -2,7 +2,7 @@
 
 Phase 6.0 of the audio tracks rethink: the foundation every tool of phase 6 builds on before it renders anything (Slip, Reverse and Flatten in 6.1, Overdub a take clip in 6.2, Bounce in 6.3, Freeze in 6.4, Render in place in 6.5). The plan is the rethink's phase 6 doc (mpfree-claude `notes/audio-tracks/08-phase-6-plan-the-missing-tools.md`, "6.0 The foundation"); its build steps are note 21 there. Nothing here changes what a musician sees: the first tool to use it is 6.1's.
 
-**Status:** 6.0.1 and 6.0.2 built, as one pull request (the description, its fingerprint, provenance and the kinds of audio, saved with the `audio-provenance` gate; the revisions of what a render reads, and the check of whether they still hold). 6.0.3 built (one way to finish a render, as a job on the scheduler: a recording's frames, with no mixer, so far). 6.0.4 (the routing check) is not built yet.
+**Status:** 6.0.1 and 6.0.2 built, as one pull request (the description, its fingerprint, provenance and the kinds of audio, saved with the `audio-provenance` gate; the revisions of what a render reads, and the check of whether they still hold). 6.0.3 built (one way to finish a render, as a job on the scheduler: a recording's frames, with no mixer, so far). 6.0.4 built (the routing check, in the mixer). Phase 6.0 is complete; 6.1's tools are the first to use it.
 
 ## One render description (6.0.1, as built)
 
@@ -92,14 +92,27 @@ A description's `reads` are its snapshot: each thing it read with its revision t
 
 The audio thread's side allocates nothing: `tests/no_alloc.rs` `a_render_through_the_host_hardly_allocates` counts only the worker channel's blocks now and then.
 
+## The routing check (6.0.4, as built)
+
+A render can always be made as a recording; it replaces its source only when the mixer says the mix stays the same (the plan's "Standing in for the original", Jay's review). `Mixer::stand_in(selection, capture)` (`mpfree-fx` `mixer.rs`, beside `capture_for`) answers on the routes as they are, from the mixer's own graph, allocating nothing; a route changed while a render runs is the snapshot's to catch (`Dep::Routes`, the app's from 6.3).
+
+| `StandCapture` | Stands in when | It gives |
+| --- | --- | --- |
+| `BeforeFader` (Render in place, Freeze, a one-track Bounce) | One track or pad channel: always, since sidechains are fed from the same point | `copies`: the strip whose fader, pan, mute, sends (before and after the fader) and output the new channel copies; `keyed`: each insert keyed from it, as (strip, slot), to point at the new channel in the same step (up to `MAX_KEYED`, 8) |
+| `AfterFader` (a Bounce of several tracks, or one after its fader) | None has a send up or feeds a sidechain, and all go to one place | `to`: that place, for a flat channel |
+| `Bus(b)` (a bus render) | The selection is exactly what plays into submix `b`, and none of it, nor `b`, has a send up or feeds a sidechain | `to`: where `b` went; it stands in for `b` |
+| `Master` (a Bounce of the mix) | Never | |
+
+Every answer gives `latency`, the frames between a block's track inputs and the capture point (the slowest of a flat channel's sources; each lines up by its own `capture_latency`). Whatever the capture, it refuses when an input plays into the selection (`Live`: a render can't play it) or a pad channel playing into it has a send up (`PadSends`: its instrument resting would silence the send); a pad channel with no send is in the render. Which pads an instrument plays through other routes is the app's to know. Each refusal (`StandRefusal`) names the strips it is about and has a line for the screen (`text()`); the app names them ("Bass hears Drums on its sidechain: muting Drums would change it"), on boards drawn first.
+
 ## Tests
 
 - `mpfree-audiotracks/tests/render.rs`: `a_render_descriptions_fingerprint_is_fixed_and_every_part_changes_it` (the pinned value; the reads' order and how it runs leave it; each of 26 changes gives a new one), `a_description_is_checked_before_anything_is_rendered` (each refusal, each purpose's kind), `provenance_goes_on_a_take_line_and_comes_back` (the words, through a part and back to the same text, the gate, every read's word, a freeze, each wrong word refused with its reason, a newer format kept and not matched), `a_take_opened_with_provenance_keeps_it_through_a_save` (through two hosts, and let go of when a project opens).
 - `tests/render.rs` `what_a_render_read_holds_until_it_changes_and_says_what_changed` (a recording has no revision while it records; another track's edit leaves the reads holding; a gain on track 1 breaks only track 1's, UNDO holds again, REDO breaks it; a split; the project's generation after a clear; the host's answers; the words), and `tests/no_alloc.rs` `revisions_and_what_changed_never_allocate` (every track's revision, a recording's and the check, each period while recording and after).
 - The app's `project.rs` `audio_following_the_tempo_needs_audio_tempo_and_phase_4_refuses_it`: a take with provenance makes the project need `audio-provenance`, and a build without it refuses the project.
 - 6.0.3, `tests/render.rs`, on a host with a tone take playing on track 0 and its renders on a scheduler the test steps: `a_render_of_a_recording_commits_one_step_that_plays_the_same` (the file sample for sample its source, no `.part`, the song sounds the same, saved with its provenance, one UNDO takes it back), `a_render_whose_reads_change_under_it_commits_nothing_and_keeps_its_file`, `cancel_or_a_project_opening_commits_nothing_and_leaves_no_file`, `a_render_with_nowhere_to_write_fails_and_commits_nothing`, `a_render_is_refused_before_it_starts_when_it_cant_be_made_here` (each refusal, and Busy), `a_render_file_is_whole_or_not_there_whatever_the_stick_does` (`mpfree-stream`'s model stick: the power cut after every operation with each way names land, every operation failing, a full stick), `the_next_start_removes_what_was_never_whole_and_keeps_renders`; and `tests/no_alloc.rs` `a_render_through_the_host_hardly_allocates`.
+- 6.0.4, `mpfree-fx` `tests/mixer.rs` `stand_in_answers_the_table_of_cases` (sends before and after the fader, a sidechain fed from the selection, two tracks to different submixes, a submix with and without a send on an input or its own, a pad channel's send, an input playing into the track or a submix, latency through an effect that reports it, the mix and strips not in it) and `tests/no_alloc.rs` (the check asked every way each block of the mixer's busy run).
 
 ## Not built yet
 
 - **Renders past a whole recording:** part of one, several, a clip, a loop, through the mixer (6.1 to 6.3), and a source playing from its file.
-- **6.0.4, the routing check:** `Mixer::stand_in`, beside `capture_for`, says whether a render can stand in for its source with the mix unchanged (sends, sidechains, buses, latency).

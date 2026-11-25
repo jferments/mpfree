@@ -1758,3 +1758,156 @@ fn a_send_offset_plays_on_top_of_the_send_and_never_writes_it() {
     assert!(m.send_add(StripId::Track(0), 0) < 2.0);
     assert!(!m.set_send_add(StripId::Master, 0, 0.5));
 }
+
+/// The routing check (the audio tracks rethink, phase 6.0.4): whether a
+/// render can stand in for its selection with the mix the same, on the
+/// plan's table of cases.
+#[test]
+fn stand_in_answers_the_table_of_cases() {
+    use StandCapture as At;
+    use StandRefusal as No;
+    let (t0, t1, t2) = (StripId::Track(0), StripId::Track(1), StripId::Track(2));
+    let (b0, b1) = (StripId::Bus(0), StripId::Bus(1));
+    let mut m = mixer(small());
+    let run = |m: &mut Mixer| {
+        let (mut l, mut r) = (vec![0.0; 64], vec![0.0; 64]);
+        m.process(&Ctx::new(RATE, 0), &mut l, &mut r);
+    };
+    run(&mut m);
+    let lat0 = m.stand_in(&[t1], At::BeforeFader).unwrap().latency;
+
+    // One track before its fader: always, copying its channel.
+    let one = m.stand_in(&[t1], At::BeforeFader).unwrap();
+    assert_eq!(one.copies, Some(t1));
+    assert_eq!(one.to, Some(StripId::Master));
+    assert_eq!(one.keyed().count(), 0);
+    // With sends before and after its fader, still: the new channel
+    // copies them.
+    m.set_now(t1, mx::send(0), -6.0);
+    m.set_now(t1, mx::send(1), -12.0);
+    m.set_now(t1, mx::send_pre(1), 1.0);
+    assert!(m.stand_in(&[t1], At::BeforeFader).is_ok());
+    // After its fader, a send up refuses (the first one up named).
+    assert_eq!(m.stand_in(&[t1], At::AfterFader), Err(No::Sends(t1, 0)));
+    m.set_now(t1, mx::send(0), SILENT_DB);
+    assert_eq!(m.stand_in(&[t1], At::AfterFader), Err(No::Sends(t1, 1)));
+    m.set_now(t1, mx::send(1), SILENT_DB);
+    let flat = m.stand_in(&[t1], At::AfterFader).unwrap();
+    assert_eq!((flat.copies, flat.to), (None, Some(StripId::Master)));
+
+    // A sidechain fed from the track: pointed at the new channel before
+    // the fader, refused after it.
+    {
+        use mpfree_fx::ids::compressor::*;
+        let c = m.chain_mut(t0).unwrap();
+        c.push(Box::new(Compressor::new()));
+        c.set_param(0, SIDECHAIN, 1.0);
+    }
+    assert!(m.set_key(t0, 0, Some(t1)));
+    let keyed = m.stand_in(&[t1], At::BeforeFader).unwrap();
+    assert_eq!(keyed.keyed().collect::<Vec<_>>(), vec![(t0, 0)]);
+    assert_eq!(
+        m.stand_in(&[t1], At::AfterFader),
+        Err(No::Keys {
+            from: t1,
+            keyed: t0
+        })
+    );
+    assert_eq!(
+        m.stand_in(&[t1, t2], At::AfterFader),
+        Err(No::Keys {
+            from: t1,
+            keyed: t0
+        })
+    );
+    assert!(m.set_key(t0, 0, None));
+
+    // Several tracks: summed after their faders, only into one place.
+    assert_eq!(m.stand_in(&[t1, t2], At::BeforeFader), Err(No::OneOnly));
+    assert!(m.stand_in(&[t1, t2], At::AfterFader).is_ok());
+    m.set_now(t1, mx::OUTPUT, output::bus(0));
+    m.set_now(t2, mx::OUTPUT, output::bus(1));
+    assert_eq!(
+        m.stand_in(&[t1, t2], At::AfterFader),
+        Err(No::Apart(t1, t2))
+    );
+    m.set_now(t2, mx::OUTPUT, output::bus(0));
+    let two = m.stand_in(&[t1, t2], At::AfterFader).unwrap();
+    assert_eq!(two.to, Some(b0));
+
+    // A submix's inputs, exactly: it stands in for the submix, taking its
+    // output, where the submix went.
+    m.set_now(b0, mx::OUTPUT, output::bus(1));
+    let bus = m.stand_in(&[t1, t2], At::Bus(b0)).unwrap();
+    assert_eq!((bus.copies, bus.to), (None, Some(b1)));
+    assert_eq!(m.stand_in(&[t1], At::Bus(b0)), Err(No::NotItsInputs(t2)));
+    assert_eq!(
+        m.stand_in(&[t0, t1, t2], At::Bus(b0)),
+        Err(No::NotItsInputs(t0))
+    );
+    assert_eq!(m.stand_in(&[t1, t2], At::Bus(t0)), Err(No::NotATrack(t0)));
+    // An input of it with a send up refuses, and the submix's own send.
+    m.set_now(t2, mx::send(3), -20.0);
+    assert_eq!(m.stand_in(&[t1, t2], At::Bus(b0)), Err(No::Sends(t2, 3)));
+    m.set_now(t2, mx::send(3), SILENT_DB);
+    m.set_now(b0, mx::send(2), -20.0);
+    assert_eq!(m.stand_in(&[t1, t2], At::Bus(b0)), Err(No::Sends(b0, 2)));
+    m.set_now(b0, mx::send(2), SILENT_DB);
+    assert!(m.stand_in(&[t1, t2], At::Bus(b0)).is_ok());
+    m.set_now(t1, mx::OUTPUT, output::MASTER);
+    m.set_now(t2, mx::OUTPUT, output::MASTER);
+
+    // A pad channel playing into the track: its sound is in the render;
+    // with a send up, its instrument resting would silence the send.
+    let pad = StripId::Pad(2);
+    m.set_now(pad, mx::OUTPUT, output::TRACK);
+    m.set_now(pad, mx::OUTPUT_TRACK, 1.0);
+    assert!(m.stand_in(&[t1], At::BeforeFader).is_ok());
+    m.set_now(pad, mx::send(0), -10.0);
+    assert_eq!(m.stand_in(&[t1], At::BeforeFader), Err(No::PadSends(pad)));
+    assert!(m.stand_in(&[t2], At::BeforeFader).is_ok(), "another track");
+    m.set_now(pad, mx::OUTPUT, output::MASTER);
+
+    // An input playing into the track is live.
+    let input = StripId::Input(0);
+    m.set_now(input, mx::OUTPUT, output::TRACK);
+    m.set_now(input, mx::OUTPUT_TRACK, 1.0);
+    assert_eq!(m.stand_in(&[t1], At::BeforeFader), Err(No::Live(input)));
+    assert_eq!(m.stand_in(&[t1], At::AfterFader), Err(No::Live(input)));
+    m.set_now(input, mx::OUTPUT, output::bus(3));
+    assert_eq!(
+        m.stand_in(&[input], At::Bus(StripId::Bus(3))),
+        Err(No::Live(input))
+    );
+    m.set_now(input, mx::OUTPUT, output::MASTER);
+
+    // Latency through an effect that reports it.
+    m.chain_mut(t1).unwrap().push(Lag::boxed(37));
+    run(&mut m);
+    let lagged = m.stand_in(&[t1], At::BeforeFader).unwrap();
+    assert_eq!(lagged.latency, lat0 + 37);
+    assert_eq!(Some(lagged.latency), {
+        assert!(m.set_capture(0, Some((t1, CapturePoint::BeforeFader))));
+        run(&mut m);
+        m.capture_latency(0)
+    });
+
+    // The mix itself, nothing, or strips not in the mix.
+    assert_eq!(m.stand_in(&[t1], At::Master), Err(No::Mix));
+    assert_eq!(m.stand_in(&[], At::BeforeFader), Err(No::NotInMix));
+    assert_eq!(
+        m.stand_in(&[StripId::Track(9)], At::BeforeFader),
+        Err(No::NotInMix)
+    );
+    assert_eq!(m.stand_in(&[b0], At::AfterFader), Err(No::NotATrack(b0)));
+    assert_eq!(
+        m.stand_in(&[t1, t1], At::AfterFader),
+        Err(No::NotATrack(t1))
+    );
+    assert!(No::Keys {
+        from: t1,
+        keyed: t0
+    }
+    .text()
+    .contains("sidechain"));
+}

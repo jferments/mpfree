@@ -522,6 +522,118 @@ impl CaptureRefusal {
     }
 }
 
+/// What a render takes from the mix, for the routing check
+/// ([`Mixer::stand_in`], the audio tracks rethink's phase 6.0.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StandCapture {
+    /// One strip after its inserts, before its fader (Render in place,
+    /// Freeze, a one-track Bounce): the new channel copies its fader, pan,
+    /// mute, sends and output. Sidechains are fed from the same point.
+    BeforeFader,
+    /// After the faders, summed into one flat channel (a Bounce of
+    /// several tracks, or of one after its fader).
+    AfterFader,
+    /// Submix `StripId`'s output, its shared inserts included (a bus
+    /// render): the selection is exactly what plays into it.
+    Bus(StripId),
+    /// The master: a recording of the mix, which never stands in.
+    Master,
+}
+
+/// The most inserts keyed from a selection [`StandIn`] holds.
+pub const MAX_KEYED: usize = 8;
+
+/// How a render stands in for its selection with the mix the same
+/// ([`Mixer::stand_in`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StandIn {
+    /// The strip whose channel the new one copies (fader, pan, mute,
+    /// sends before and after the fader, output), for a capture before
+    /// the fader; None for a flat channel.
+    pub copies: Option<StripId>,
+    /// Where the new channel plays: the copied strip's output, or the one
+    /// place a flat channel's sources all went (None: nowhere).
+    pub to: Option<StripId>,
+    /// The inserts keyed from the selection, as (strip, slot): pointed at
+    /// the new channel in the same step, they hear what they heard.
+    pub keyed: [Option<(StripId, u8)>; MAX_KEYED],
+    /// Frames between a block's track inputs and the capture point, to
+    /// take off the render so it lines up with the song: the slowest of
+    /// a flat channel's sources (each lines up by its own
+    /// [`Mixer::capture_latency`]).
+    pub latency: u32,
+}
+
+impl StandIn {
+    /// The inserts to point at the new channel.
+    pub fn keyed(&self) -> impl Iterator<Item = (StripId, u8)> + '_ {
+        self.keyed.iter().flatten().copied()
+    }
+}
+
+/// Why a render can't stand in for its selection: it is made, beside the
+/// originals, which keep playing ([`Mixer::stand_in`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StandRefusal {
+    /// Nothing is selected, or a strip isn't in the mix.
+    NotInMix,
+    /// A recording of the mix never replaces it.
+    Mix,
+    /// Only tracks and pad channels (and a submix's inputs) render this
+    /// way; this strip is another kind, or selected twice.
+    NotATrack(StripId),
+    /// A capture before the fader keeps one channel's fader and sends:
+    /// several strips are summed after their faders.
+    OneOnly,
+    /// This input plays into the selection live: a render can't play it.
+    Live(StripId),
+    /// This pad channel plays into the selection and has a send up: its
+    /// instrument resting would silence the send.
+    PadSends(StripId),
+    /// This strip sends to return `usize`, which a capture after the
+    /// fader (or a submix's output) doesn't have.
+    Sends(StripId, usize),
+    /// Strip `keyed` hears strip `from` on its sidechain, which a summed
+    /// render can't feed.
+    Keys { from: StripId, keyed: StripId },
+    /// These two go to different places: one flat channel can't.
+    Apart(StripId, StripId),
+    /// More inserts are keyed from the selection than can be pointed at
+    /// once ([`MAX_KEYED`]).
+    TooManyKeys,
+    /// This strip plays into the submix but isn't selected, or is
+    /// selected and doesn't play into it: a bus render takes exactly what
+    /// plays into the submix.
+    NotItsInputs(StripId),
+}
+
+impl StandRefusal {
+    /// The line a Bounce or Render screen shows, without names (the app
+    /// names the strips: "Bass hears Drums on its sidechain: muting Drums
+    /// would change it").
+    pub fn text(self) -> &'static str {
+        match self {
+            StandRefusal::NotInMix => "that isn't in the mix",
+            StandRefusal::Mix => "a recording of the mix never replaces it",
+            StandRefusal::NotATrack(_) => "only tracks and pad channels render this way",
+            StandRefusal::OneOnly => "only one track keeps its own fader and sends",
+            StandRefusal::Live(_) => "an input plays into it live, which a render can't play",
+            StandRefusal::PadSends(_) => {
+                "a pad channel plays into it with a send up, which would go quiet"
+            }
+            StandRefusal::Sends(..) => "it sends to a return, which the render doesn't have",
+            StandRefusal::Keys { .. } => {
+                "another strip hears it on a sidechain, so muting it would change that"
+            }
+            StandRefusal::Apart(..) => "they go to different places",
+            StandRefusal::TooManyKeys => "too many sidechains hear it",
+            StandRefusal::NotItsInputs(_) => {
+                "the selection isn't exactly what plays into the submix"
+            }
+        }
+    }
+}
+
 /// Where a strip's freeze is ([`Mixer::freeze_state`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FreezeState {
@@ -2172,6 +2284,174 @@ impl Mixer {
             Some(d) => Err(No::Through(topo.id(d))),
             // Never reached: the strip is reached by a send or the output.
             None => Ok(from),
+        }
+    }
+
+    /// Whether a render of `sel` taken at `capture` can stand in for it
+    /// with the mix the same (the audio tracks rethink's phase 6.0.4, the
+    /// plan's "Standing in for the original"), and how: the channel to
+    /// copy, where it plays, the sidechains to point at it and the latency
+    /// to take off; or why not, and the render is made beside the
+    /// originals. Exact when every path out of the selection leaves at or
+    /// after the capture point and the new channel reproduces what comes
+    /// after it:
+    ///
+    /// - **Before the fader** (one track or pad channel): always, its
+    ///   sidechain feeds pointed at the new channel (they are fed from the
+    ///   same point), which copies the fader, pan, mute, sends and output.
+    /// - **After the faders** (one or several, summed): only when none
+    ///   has a send up or feeds a sidechain, and all go to one place.
+    /// - **A submix's output:** the selection is exactly what plays into
+    ///   it, none of it, nor the submix, has a send up or feeds a
+    ///   sidechain; it stands in for the submix.
+    /// - **Never** when an input plays into the selection (it is live), or
+    ///   a pad channel playing into it has a send up (its instrument
+    ///   resting would silence the send). Which pads an instrument plays
+    ///   through other ways is the app's to know.
+    ///
+    /// Asked of the routes as they are; a route changed while it renders
+    /// is caught by the render's snapshot (`Dep::Routes`). Cheap, and it
+    /// allocates nothing.
+    pub fn stand_in(
+        &self,
+        sel: &[StripId],
+        capture: StandCapture,
+    ) -> Result<StandIn, StandRefusal> {
+        use StandRefusal as No;
+        let topo = self.plan.topo;
+        let mut chosen = Bits::default();
+        let mut first = None;
+        for &s in sel {
+            let k = topo.order(s).ok_or(No::NotInMix)?;
+            let kind = topo.role(k).0;
+            let ok = match capture {
+                StandCapture::Bus(_) => kind < Role::Return,
+                _ => matches!(kind, Role::Track | Role::Pad),
+            };
+            if !ok || chosen.get(k) {
+                return Err(No::NotATrack(s));
+            }
+            chosen.set(k, true);
+            first.get_or_insert(k);
+        }
+        let first = first.ok_or(No::NotInMix)?;
+        let to = |k: usize| topo.resolve(k, self.sw.out[k], self.sw.out_track[k]);
+        let sends = |k: usize| {
+            topo.role(k).0.has_sends() && (0..RETURNS).any(|r| self.strips[k].send_level(r) > 0.0)
+        };
+        let first_send = |k: usize| {
+            (0..RETURNS)
+                .find(|&r| topo.role(k).0.has_sends() && self.strips[k].send_level(r) > 0.0)
+                .unwrap_or(0)
+        };
+        // What plays into the chosen strips from outside them: an input is
+        // live; a pad channel's sound is in the render, but not its sends.
+        for j in 0..topo.len() {
+            if chosen.get(j) || !to(j).is_some_and(|d| chosen.get(d)) {
+                continue;
+            }
+            match topo.role(j).0 {
+                Role::Input => return Err(No::Live(topo.id(j))),
+                Role::Pad if sends(j) => return Err(No::PadSends(topo.id(j))),
+                _ => {}
+            }
+        }
+        // The inserts keyed from the chosen strips (or the submix).
+        let mut keyed = [None; MAX_KEYED];
+        let mut n = 0;
+        let mut keyed_from = |from: &Bits| -> Result<Option<(usize, usize)>, StandRefusal> {
+            let mut found = None;
+            for (k, st) in self.strips.iter().enumerate() {
+                for slot in 0..st.chain.len() {
+                    let Some(j) = st.chain.key(slot).map(usize::from) else {
+                        continue;
+                    };
+                    if j >= topo.len() || !from.get(j) {
+                        continue;
+                    }
+                    found.get_or_insert((j, k));
+                    if n == MAX_KEYED {
+                        return Err(No::TooManyKeys);
+                    }
+                    keyed[n] = Some((topo.id(k), slot as u8));
+                    n += 1;
+                }
+            }
+            Ok(found)
+        };
+        let flat_keys = |found: Option<(usize, usize)>| match found {
+            Some((j, k)) => Err(No::Keys {
+                from: topo.id(j),
+                keyed: topo.id(k),
+            }),
+            None => Ok(()),
+        };
+        match capture {
+            StandCapture::Master => Err(No::Mix),
+            StandCapture::BeforeFader => {
+                if sel.len() > 1 {
+                    return Err(No::OneOnly);
+                }
+                keyed_from(&chosen)?;
+                Ok(StandIn {
+                    copies: Some(topo.id(first)),
+                    to: to(first).map(|d| topo.id(d)),
+                    keyed,
+                    latency: self.plan.out[first],
+                })
+            }
+            StandCapture::AfterFader => {
+                let mut latency = 0;
+                for k in 0..topo.len() {
+                    if !chosen.get(k) {
+                        continue;
+                    }
+                    if sends(k) {
+                        return Err(No::Sends(topo.id(k), first_send(k)));
+                    }
+                    if to(k) != to(first) {
+                        return Err(No::Apart(topo.id(first), topo.id(k)));
+                    }
+                    latency = latency.max(self.plan.out[k]);
+                }
+                flat_keys(keyed_from(&chosen)?)?;
+                Ok(StandIn {
+                    copies: None,
+                    to: to(first).map(|d| topo.id(d)),
+                    keyed: [None; MAX_KEYED],
+                    latency,
+                })
+            }
+            StandCapture::Bus(bus) => {
+                let b = topo.order(bus).ok_or(No::NotInMix)?;
+                if topo.role(b).0 != Role::Bus {
+                    return Err(No::NotATrack(bus));
+                }
+                for j in 0..topo.len() {
+                    let into = to(j) == Some(b);
+                    if into != chosen.get(j) {
+                        return Err(No::NotItsInputs(topo.id(j)));
+                    }
+                    if into && topo.role(j).0 == Role::Input {
+                        return Err(No::Live(topo.id(j)));
+                    }
+                    if into && sends(j) {
+                        return Err(No::Sends(topo.id(j), first_send(j)));
+                    }
+                }
+                if sends(b) {
+                    return Err(No::Sends(bus, first_send(b)));
+                }
+                let mut from = chosen;
+                from.set(b, true);
+                flat_keys(keyed_from(&from)?)?;
+                Ok(StandIn {
+                    copies: None,
+                    to: to(b).map(|d| topo.id(d)),
+                    keyed: [None; MAX_KEYED],
+                    latency: self.plan.out[b],
+                })
+            }
         }
     }
 
