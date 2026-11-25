@@ -464,7 +464,7 @@ An audio track's lane in the **Song view** (tap **Song ›** above the grid) hol
 - A loop plays on one track, so its block stays on its own lane: drag it along the lane, not onto another.
 - A free cell's block is silent, since the song's bars don't place a free loop.
 
-{{shot: arrange-song-loops | The Song view with loops on audio tracks: Vocal and Guitar play their loops' blocks under the drums, hats and bass.}}
+{{shot: arrange-song-loop-blocks | A loop's blocks on Vocal's lane after its takes: Vox loop played twice from bar 9, then again from bar 13 starting a bar into its loop ("from bar 2").}}
 
 ### A loop's name
 

@@ -539,7 +539,6 @@ spaceship arrange-song-block 10 # arrange-song with Hook picked (Arrange phase 6
 spaceship arrange-song-box 12 # new screen (Arrange 6.5): arrange-song's faint runs (the ruler's numbers, the faint Duplicate, Make unique and Delete, the morph bar's and Takes' faint labels); the box adds none
 spaceship arrange-song-chord-picker 13 # new screen (composing step 6, board C): arrange-song-chords' 12 runs and the picker's faint Use Ab7 (nothing changed yet)
 spaceship arrange-song-chords 12 # new screen (composing step 6, board C): arrange-song's 10 runs and the faint Duplicate and Make unique with nothing picked, as arrange-report; none of the Chords lane's
-spaceship arrange-song-loops 12 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-over 12 # the Song view's runs, as arrange-song; none of the preview's own
 spaceship arrange-song-panel 12 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-panel-mix 12 # new screen (instrument redesign, step 9): the faint labels arrange-song-panel has

@@ -470,33 +470,24 @@ pub const RECORD_ROWS: [&str; 11] = [
     "Makes",
 ];
 /// The Record tab's Makes row (phase 4, board 2): what REC makes, a loop
-/// in the armed cell, takes on the song or notes. Shown only with Dev's
-/// "Loops on audio tracks", under Armed.
+/// in the armed cell, takes on the song or notes. Shown under Armed.
 pub const MAKES_ROW: usize = 10;
 /// What a step on Makes says: it follows what is armed.
 pub const MAKES_WHY: &str =
     "Makes follows what is armed: an empty audio cell makes a loop, song mode takes";
 
 /// The Record tab's rows as shown, top to bottom, by their place in
-/// [`RECORD_ROWS`]: Makes under Armed while loops go in audio cells.
-pub fn record_order(st: &TimeState) -> &'static [usize] {
-    if st.loops_on {
-        &[0, MAKES_ROW, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-    } else {
-        &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-    }
+/// [`RECORD_ROWS`]: Makes under Armed.
+pub fn record_order(_st: &TimeState) -> &'static [usize] {
+    &[0, MAKES_ROW, 1, 2, 3, 4, 5, 6, 7, 8, 9]
 }
 
 /// A step on the Record tab's shown row, as a step on its place in
-/// [`RECORD_ROWS`]; None for any other event, or when the order is
-/// [`RECORD_ROWS`]' own.
+/// [`RECORD_ROWS`]; None for any other event.
 fn record_event(ev: &UiEvent, st: &TimeState) -> Option<UiEvent> {
     let (RECORD, EventKind::Step { index, delta }) = (ev.widget.as_str(), &ev.kind) else {
         return None;
     };
-    if !st.loops_on {
-        return None;
-    }
     let index = *record_order(st).get(*index)?;
     Some(UiEvent {
         widget: RECORD.to_string(),
@@ -767,8 +758,6 @@ pub struct ClipInfo {
     pub length: Tick,
     pub speed: Speed,
     pub notes: usize,
-    /// A Loop track's cell: the looper's loop it launches (`Clip::looped`).
-    pub looped: Option<u8>,
     /// Its speed, swing, quantise and follow action, for the clip
     /// settings card.
     pub settings: ClipSettings,
@@ -820,9 +809,9 @@ pub struct LoopFacts {
     /// It records a layer now.
     pub overdubbing: bool,
     /// Another loop's layers copy into it (a loop cell copied onto
-    /// another Loop track, loop-tracks.md part 6).
+    /// another audio track).
     pub copying: bool,
-    /// Its small wave for the cells ([`crate::widgets::GridCell::wave`]).
+    /// Its small wave, for the Song view's loop blocks (phase 4e.3).
     pub wave: [u8; crate::widgets::CELL_WAVE],
     /// A closed layer of it isn't on the stick yet (phase 4c writes each
     /// layer soon after it closes): its cells show an amber dot and
@@ -892,8 +881,6 @@ pub struct TrackInfo {
     pub pressure: bool,
     /// Its record quantise grid (`Track::record_quantise`), or none.
     pub record_quantise: Option<u32>,
-    /// A Loop track, and what its new loops record (`Track::kind`).
-    pub loops: Option<mpfree_seq::LoopInput>,
     /// An audio track (`Track::is_audio`, the audio tracks rethink's
     /// phase 1): its `sound` is its input, the app fills it in.
     pub audio: bool,
@@ -1158,7 +1145,7 @@ impl TakeRow {
 pub struct TimeState {
     pub transport: TransportInfo,
     pub tracks: Vec<TrackInfo>,
-    /// The looper's loops, for the Loop tracks' cells. The app sets them.
+    /// The looper's loops, for their cells. The app sets them.
     pub loops: LoopsInfo,
     pub launches: Vec<Launch>,
     /// Launches and stops waiting for their launch line (the next bar line
@@ -1201,13 +1188,9 @@ pub struct TimeState {
     /// (`mpfree_perform::Perform`). The app sets them.
     pub scene_playing: Option<usize>,
     pub scene_cued: Option<usize>,
-    /// The Loop track cell armed: the next loop recorded lands there
+    /// The audio cell armed: the next loop recorded lands there
     /// (`TimeAction::LoopCell`).
     pub loop_cell: Option<(usize, usize)>,
-    /// Dev's "Loops on audio tracks" (phase 4, until 4e): an audio
-    /// track's empty cell takes a loop, and the screens show loops in
-    /// audio cells (layout spec 4c, 4f). The time engine sets it.
-    pub loops_on: bool,
     /// Each row's scene name, as far as the project names them (empty: a
     /// plain row, shown as its number).
     pub scenes: Vec<String>,
@@ -1266,10 +1249,6 @@ pub struct TimeState {
     /// Fit to tempo under way on an audio clip's card: its cell, and how
     /// far it has got, 0 to 1. The app sets it.
     pub fitting: Option<(usize, usize, f32)>,
-    /// The audio tracks' history: steps their Undo can take back and Redo
-    /// bring back. UNDO on Arrange follows it while it moved last (layout
-    /// spec 4c). The app sets it.
-    pub audio_history: (usize, usize),
     /// The audio track armed last by its own arm, while no note track has
     /// been armed since: the Clip tab shows its clip ([`TimeState::focus`]).
     /// The app sets it.
@@ -1577,7 +1556,6 @@ impl TimeState {
                 silent: project.silent(i),
                 pressure: t.record_touch,
                 record_quantise: t.record_quantise,
-                loops: t.loops(),
                 audio: t.is_audio(),
                 transpose: t.transpose,
                 follows: t.follows,
@@ -1595,7 +1573,6 @@ impl TimeState {
                             length: c.length,
                             speed: c.speed,
                             notes: c.notes.len(),
-                            looped: c.looped,
                             settings: c.settings(),
                             variation: c.variation(),
                             audio: c.audio.as_ref().map(|a| AudioCellInfo {
@@ -1631,7 +1608,6 @@ impl TimeState {
             scene_playing: None,
             scene_cued: None,
             loop_cell: None,
-            loops_on: false,
             scenes: project.scenes.iter().map(|s| s.name.clone()).collect(),
             morph: MorphInfo::default(),
             scene_focus: 0,
@@ -1653,7 +1629,6 @@ impl TimeState {
             audio_late: Vec::new(),
             not_ready: Vec::new(),
             fitting: None,
-            audio_history: (0, 0),
             audio_focus: None,
             saved: Vec::new(),
             reloads: Vec::new(),
@@ -1903,29 +1878,20 @@ pub enum TimeAction {
     /// "+ Track": a new empty track at the end (up to 128), armed, as a
     /// take that UNDO takes away again (Jay, 14 Nov: up to 128 tracks).
     AddTrack,
-    /// SHIFT + "+ Track": a new empty Loop track at the end ("Loops C"),
-    /// as a take that UNDO takes away again (loop-tracks.md part 4).
-    AddLoopTrack,
     /// Add an empty audio track at the end of the track list (the audio
     /// tracks rethink, phase 1a). The app refuses it first when every
     /// engine track plays one.
     AddAudioTrack,
-    /// Arm an empty cell of a Loop track, or none: the next loop
-    /// recorded lands there (loop-tracks.md part 4). The app arms the loop
-    /// for REC with it.
+    /// Arm an empty cell of an audio track, or none: the next loop
+    /// recorded lands there (phase 4b). The app arms the loop for REC
+    /// with it.
     LoopCell(Option<(usize, usize)>),
-    /// A Loop track's input to the next one (Pads, Line in, Resample):
-    /// what a loop recorded into its cells records.
-    LoopInput(usize),
-    /// A loop cell copied onto an empty cell of another Loop track
-    /// (loop-tracks.md part 6): the cell there takes loop `into`, an empty
-    /// loop the looper copies the audio into. Not a take: the looper's
-    /// UNDO takes the copy back, and its cell goes with it. The app sends
-    /// it for SHIFT + a drop onto another Loop track. With Dev's "Loops on
-    /// audio tracks" a loop cell on an audio track copies onto an empty
-    /// cell of another audio track the same way, as a new loop: `id` is
-    /// its lasting id, which the app gave loop `into` (audio tracks phase
-    /// 4b); 0 for a Loop track's copy.
+    /// A loop cell copied onto an empty cell of another audio track
+    /// (audio tracks phase 4b): the cell there takes loop `into`, an empty
+    /// loop the looper copies the audio into, as a new loop: `id` is its
+    /// lasting id, which the app gave loop `into`. Not a take: the
+    /// looper's UNDO takes the copy back, and its cell goes with it. The
+    /// app sends it for SHIFT + a drop onto another audio track.
     LoopCopy {
         from: (usize, usize),
         to: (usize, usize),
@@ -2389,8 +2355,7 @@ pub enum AudioAction {
         track: usize,
         on: bool,
     },
-    /// With Dev's "Loops on audio tracks" on (phase 4, board 4): open the
-    /// track's input list. The app works out what the mixer offers it
+    /// Open the track's input list (phase 4, board 4). The app works out what the mixer offers it
     /// and refuses ([`crate::inputs::InputChoices`]) and the screen shows
     /// them.
     Inputs(usize),
@@ -2603,20 +2568,12 @@ pub fn cell_tap(st: &TimeState, track: usize, slot: usize) -> Option<TimeAction>
     if track >= st.tracks.len() || slot >= ROWS {
         None
     } else if st.tracks[track].audio && st.clip(track, slot).is_none() {
-        // With Dev's "Loops on audio tracks" (phase 4, board 2), an empty
-        // cell of the armed audio track arms (again: lets go of) a loop
-        // there. Otherwise nothing records into an audio cell: [`why_not`]
-        // says how audio gets there.
+        // An empty cell of the armed audio track arms (again: lets go of)
+        // a loop there (phase 4, board 2). Otherwise nothing records into
+        // an audio cell: [`why_not`] says how audio gets there.
         let armed = st.audio_lane_at(track).is_some_and(|l| l.armed);
         let cell = (track, slot);
-        (st.loops_on && armed)
-            .then(|| TimeAction::LoopCell((st.loop_cell != Some(cell)).then_some(cell)))
-    } else if st.clip(track, slot).is_none() && st.tracks[track].loops.is_some() {
-        // An empty Loop cell arms (again: lets go of) a loop there.
-        let cell = (track, slot);
-        Some(TimeAction::LoopCell(
-            (st.loop_cell != Some(cell)).then_some(cell),
-        ))
+        armed.then(|| TimeAction::LoopCell((st.loop_cell != Some(cell)).then_some(cell)))
     } else if st.clip(track, slot).is_none() {
         Some(TimeAction::NewClip { track, slot })
     } else if st.cue(track).is_some_and(|c| {
@@ -2637,7 +2594,8 @@ pub fn cell_tap(st: &TimeState, track: usize, slot: usize) -> Option<TimeAction>
 /// tap, whatever the cell holds), a row's scene button, Stop all, Back to
 /// song, Perform's Capture scene (lit or faint), or a track's name (its
 /// arm). None for anything else on the grid,
-/// where SHIFT keeps its job (a drag copies, "+ Track" adds a Loop track).
+/// where SHIFT keeps its job (a drag copies, "+ Track" adds an audio
+/// track).
 pub fn learn_target(ev: &UiEvent, st: &TimeState) -> Option<ParamAddr> {
     if ev.widget != CLIPS {
         return None;
@@ -3228,22 +3186,17 @@ fn action_of(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             track: *track,
             on: !st.audio.iter().any(|l| l.track == *track && l.armed),
         })),
-        // The input chip, with Dev's "Loops on audio tracks" on: the
-        // track's input list (phase 4, board 4).
+        // The input chip: the track's input list (phase 4, board 4).
         (
             SONG,
             EventKind::Cell {
                 row,
                 col: INPUT_CHIP,
             },
-        ) if st.loops_on => Some(TimeAction::Audio(AudioAction::Inputs(*row))),
-        (
-            SONG,
-            EventKind::Cell {
-                row,
-                col: PANEL | INPUT_CHIP,
-            },
-        ) => Some(TimeAction::Audio(AudioAction::Panel(*row))),
+        ) => Some(TimeAction::Audio(AudioAction::Inputs(*row))),
+        (SONG, EventKind::Cell { row, col: PANEL }) => {
+            Some(TimeAction::Audio(AudioAction::Panel(*row)))
+        }
         (SONG, EventKind::Cell { row, col }) => {
             Some(TimeAction::Audio(AudioAction::Pick(Some(RegionId {
                 track: *row,
@@ -4231,23 +4184,17 @@ pub fn clip_rows(st: &TimeState) -> Vec<OptionRow> {
 }
 
 /// The clip card's Melody row's value (E1): "pads" (it follows the pads)
-/// or "notes" (it uses notes); "—" on a loop's cell. Short, to fit the
-/// row's value at 250 px.
+/// or "notes" (it uses notes). Short, to fit the row's value at 250 px.
 pub fn melody_value(c: &ClipInfo) -> String {
-    match (c.looped, c.holds_notes) {
-        (Some(_), _) => "—",
-        (None, true) => "notes",
-        (None, false) => "pads",
-    }
-    .to_string()
+    if c.holds_notes { "notes" } else { "pads" }.to_string()
 }
 
 /// The clip card's Mutate row's value (S6): "original" until the clip is
 /// mutated, then "variant" (the hint line and the Takes list number it);
-/// "—" on a clip with no notes or a loop's cell.
+/// "—" on a clip with no notes.
 pub fn mutate_value(c: &ClipInfo) -> String {
     match c.variation {
-        _ if c.looped.is_some() || (c.notes == 0 && c.variation.is_none()) => "—".to_string(),
+        _ if c.notes == 0 && c.variation.is_none() => "—".to_string(),
         Some(_) => "variant".to_string(),
         None => "original".to_string(),
     }
@@ -4256,11 +4203,9 @@ pub fn mutate_value(c: &ClipInfo) -> String {
 /// The clip card's Continue row's value (phase 1 step 4): the bars it
 /// adds when it opens ("+4 bars", the note editor's Bars as Continue
 /// opens), or why it can't: "no tune" on a clip of pad hits, "no notes"
-/// on one with none, "—" on a loop's cell.
+/// on one with none.
 pub fn continue_card_value(c: &ClipInfo) -> String {
-    if c.looped.is_some() {
-        "—".to_string()
-    } else if c.holds == mpfree_seq::Holds::Hits {
+    if c.holds == mpfree_seq::Holds::Hits {
         "no tune".to_string()
     } else if c.notes == 0 {
         "no notes".to_string()
@@ -4274,19 +4219,17 @@ pub fn continue_card_value(c: &ClipInfo) -> String {
 /// row says it.
 pub fn phrase_card_value(c: &ClipInfo) -> String {
     match continue_card_value(c) {
-        why if c.looped.is_some() || c.holds == mpfree_seq::Holds::Hits || c.notes == 0 => why,
+        why if c.holds == mpfree_seq::Holds::Hits || c.notes == 0 => why,
         _ => "Make ›".to_string(),
     }
 }
 
 /// The clip card's Style row's value (composing step 6): "Make ›", which
-/// opens the Make a style sheet, "no notes" on a clip with none, "—" on a
-/// loop's cell. A clip of pad hits makes a style too: its feel and accents
-/// are in when its hits are played, whatever the pads play.
+/// opens the Make a style sheet, or "no notes" on a clip with none. A clip
+/// of pad hits makes a style too: its feel and accents are in when its
+/// hits are played, whatever the pads play.
 pub fn style_card_value(c: &ClipInfo) -> String {
-    if c.looped.is_some() {
-        "—".to_string()
-    } else if c.notes == 0 {
+    if c.notes == 0 {
         "no notes".to_string()
     } else {
         "Make ›".to_string()
@@ -4312,10 +4255,9 @@ pub fn card_buttons(st: &TimeState) -> Vec<OptionButton> {
     if let Some(b) = fit_button(st, track, slot) {
         return vec![b];
     }
-    let looped = st.clip(track, slot).is_some_and(|c| c.looped.is_some());
     let mut reload = OptionButton::new("Reload", st.saved.contains(&(track, slot)));
     reload.waiting = st.reload_waiting((track, slot));
-    vec![OptionButton::new("Save state", !looped), reload]
+    vec![OptionButton::new("Save state", true), reload]
 }
 
 /// The card's rows for a clip `length` ticks long (its own ticks) with
@@ -4455,9 +4397,6 @@ pub fn card_action(
         .focus()
         .ok_or("No clip to set: arm a track with a clip, or make one")?;
     let c = st.clip(track, slot).ok_or("No clip to set")?;
-    if c.looped.is_some() {
-        return Err("A loop cell plays its loop as recorded: only Follow and After apply".into());
-    }
     let up = delta > 0;
     if index == 0 {
         let max = (MAX_CLIP_TICKS / CARD_STEP) as usize;
@@ -4814,9 +4753,7 @@ fn settings_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction,
     // Continue: the note editor opens on the clip, Continue open (step
     // 4), or why it can't.
     if index == CLIP_CONTINUE {
-        return if c.looped.is_some() {
-            Err("A loop's cell has no notes to carry on".into())
-        } else if c.holds == mpfree_seq::Holds::Hits {
+        return if c.holds == mpfree_seq::Holds::Hits {
             Err(format!(
                 "Continue: {}",
                 mpfree_compose::Refused::PadHits.words()
@@ -4830,9 +4767,7 @@ fn settings_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction,
     // Style: the Make a style sheet opens on the clip (composing step 6),
     // or why it can't.
     if index == CLIP_STYLE {
-        return if c.looped.is_some() {
-            Err("A loop's cell has no notes to make a style of".into())
-        } else if c.notes == 0 {
+        return if c.notes == 0 {
             Err("Make a style: play or draw some notes first".into())
         } else {
             Ok(TimeAction::MakeStyle { track, slot })
@@ -4841,20 +4776,13 @@ fn settings_step(st: &TimeState, index: usize, delta: i32) -> Result<TimeAction,
     // Phrase: the Make a phrase sheet opens on the clip's notes (step 3
     // of the phrases), or why it can't.
     if index == CLIP_PHRASE {
-        return if c.looped.is_some() {
-            Err("A loop's cell has no notes to make a phrase of".into())
-        } else if c.holds == mpfree_seq::Holds::Hits {
+        return if c.holds == mpfree_seq::Holds::Hits {
             Err("Make a phrase: a clip of pad hits has no notes of its own (a pad's note is its kit's)".into())
         } else if c.notes == 0 {
             Err("Make a phrase: play or draw some notes first".into())
         } else {
             Ok(TimeAction::MakePhrase { track, slot })
         };
-    }
-    if c.looped.is_some() && !(5..8).contains(&index) {
-        return Err(
-            "A loop cell plays its loop as recorded: only Follow, After and Launch apply".into(),
-        );
     }
     let d = delta.signum();
     // Within 0..n from `now`, or None at the end it is pushed past.
@@ -5144,11 +5072,6 @@ fn bank_step(st: &TimeState, delta: i32, by: i32) -> Result<TimeAction, String> 
         .focus()
         .ok_or("No clip to set: arm a track with a clip, or make one")?;
     let c = st.clip(track, slot).ok_or("No clip to set")?;
-    if c.looped.is_some() {
-        return Err(
-            "A loop cell plays its loop as recorded: only Follow, After and Launch apply".into(),
-        );
-    }
     let mut s = c.settings;
     let p = s
         .program
@@ -5532,13 +5455,13 @@ pub fn bar_of(st: &TimeState) -> TransportBar {
 }
 
 /// Where a loop sits on the Clips grid, as Play's strip and the Looper
-/// tab name it: its Loop track and its row (the first, if it is in more
+/// tab name it: its audio track and its row (the first, if it is in more
 /// than one).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LoopPlace {
     pub track: usize,
     pub slot: usize,
-    /// "Loops B".
+    /// "Vocal".
     pub track_name: String,
     /// The row's scene name, or "row 2".
     pub row: String,
@@ -5553,7 +5476,7 @@ pub struct LoopPlace {
 }
 
 impl LoopPlace {
-    /// "Loops B · Loop 2 · Verse".
+    /// "Vocal · Loop 2 · Verse".
     pub fn full(&self, n: usize) -> String {
         format!("{} · Loop {} · {}", self.track_name, n + 1, self.row)
     }
@@ -5567,20 +5490,17 @@ pub fn row_name(st: &TimeState, slot: usize) -> String {
     }
 }
 
-/// The armed Loop cell as the REC chip names it: "Loops C · Drop".
+/// The armed loop cell as the REC chip names it: "Vocal · Drop".
 pub fn loop_cell_name(st: &TimeState) -> Option<String> {
     let (t, s) = st.loop_cell?;
     Some(format!("{} · {}", st.tracks.get(t)?.name, row_name(st, s)))
 }
 
 impl TimeState {
-    /// The looper's slot holding the loop a cell plays: a Loop track's
-    /// cell names it (`ClipInfo::looped`), a loop cell on an audio track
-    /// names the loop's id, which the slots hold ([`LoopsInfo::ids`]).
+    /// The looper's slot holding the loop a cell plays: a loop cell on an
+    /// audio track names the loop's id, which the slots hold
+    /// ([`LoopsInfo::ids`]).
     pub fn loop_slot(&self, clip: &ClipInfo) -> Option<usize> {
-        if let Some(n) = clip.looped {
-            return Some(usize::from(n));
-        }
         let id = clip.loop_id?.0;
         (id != 0).then(|| self.loops.ids.iter().position(|&i| i == id))?
     }
@@ -5607,8 +5527,8 @@ pub fn loop_places(st: &TimeState) -> [Option<LoopPlace>; mpfree_seq::LOOPS] {
     let mut out: [Option<LoopPlace>; mpfree_seq::LOOPS] = Default::default();
     for (track, t) in st.tracks.iter().enumerate() {
         for (slot, c) in t.slots.iter().enumerate() {
-            // A Loop track's cell, or a loop cell on an audio track (phase
-            // 4), by the slot holding its loop.
+            // A loop cell on an audio track (phase 4), by the slot holding
+            // its loop.
             let Some(n) = c.as_ref().and_then(|c| st.loop_slot(c)) else {
                 continue;
             };
@@ -5678,19 +5598,14 @@ pub fn cell_of(st: &TimeState, track: usize, slot: usize) -> GridCell {
 fn clip_cell(st: &TimeState, track: usize, slot: usize) -> GridCell {
     let Some(clip) = st.clip(track, slot) else {
         if st.loop_cell == Some((track, slot)) {
-            // The armed Loop cell: the next loop recorded lands here.
-            // Short: the column is 86 px.
-            let audio = st.tracks.get(track).is_some_and(|t| t.audio);
+            // The armed empty audio cell (phase 4, board 2): the next loop
+            // recorded lands here. Short: the column is 86 px.
             let (name, detail, foot) = if st.loops.recording {
                 ("REC", "REC ends", "the pass")
             } else if st.loops.waiting {
                 ("Ready", "bar line", "or PLAY")
-            } else if audio {
-                // An armed empty audio cell (phase 4, board 2): REC
-                // records a loop there.
-                ("REC here", "a loop", "")
             } else {
-                ("Armed", "REC here", "")
+                ("REC here", "a loop", "")
             };
             return GridCell {
                 state: CellState::Armed,
@@ -5711,13 +5626,10 @@ fn clip_cell(st: &TimeState, track: usize, slot: usize) -> GridCell {
         .loop_slot(clip)
         .and_then(|n| st.loops.loops.get(n))
         .copied();
-    // A Loop track's cell shows its wave in the detail's place, and the
-    // detail at the foot.
-    let notes = match (facts, clip.notes) {
+    let notes = match clip.notes {
         _ if looped => String::new(),
-        (Some(_), _) => String::new(),
-        (None, 1) => "1 note".to_string(),
-        (None, n) => format!("{n} notes"),
+        1 => "1 note".to_string(),
+        n => format!("{n} notes"),
     };
     if let Some(a) = &clip.audio {
         return audio_cell(st, track, slot, clip, a);
@@ -5728,18 +5640,13 @@ fn clip_cell(st: &TimeState, track: usize, slot: usize) -> GridCell {
         detail: length_label(len, t.meter),
         foot: notes,
         progress: 0.0,
-        wave: facts.filter(|_| !looped).map(|f| f.wave),
         looped,
         writing: looped && facts.is_some_and(|f| f.writing),
         ..GridCell::default()
     };
     if facts.is_some_and(|f| f.copying) {
         cell.foot = "copying in".to_string();
-        cell.alert = if looped {
-            CellAlert::Warn
-        } else {
-            CellAlert::None
-        };
+        cell.alert = CellAlert::Warn;
     } else if cell.writing {
         // A layer not yet on the stick (layout spec 4f): in amber, in
         // the length's place while it is stopped.
@@ -5927,13 +5834,10 @@ pub fn audio_cell_hint(st: &TimeState, track: usize, slot: usize) -> Option<Stri
         return None;
     }
     let Some(clip) = st.clip(track, slot) else {
-        if st.loops_on {
-            let name = &st.tracks[track].name;
-            return Some(format!(
-                "An empty cell of {name}: arm {name} (tap its name), then tap the cell to record a loop there; or put audio in with To a cell on the Song view."
-            ));
-        }
-        return Some(EMPTY_AUDIO_CELL.to_string());
+        let name = &st.tracks[track].name;
+        return Some(format!(
+            "An empty cell of {name}: arm {name} (tap its name), then tap the cell to record a loop there; or put audio in with To a cell on the Song view."
+        ));
     };
     let a = clip.audio.as_ref()?;
     let name = &clip.name;
@@ -5970,10 +5874,6 @@ pub fn audio_cell_hint(st: &TimeState, track: usize, slot: usize) -> Option<Stri
     }
     None
 }
-
-/// The hint for a tap on an empty audio cell (layout spec 4f).
-pub const EMPTY_AUDIO_CELL: &str =
-    "An empty audio cell: put audio in with To a cell on the Song view, or Put in a cell on the Sample page.";
 
 /// How long `left` ticks are, as Perform's countdowns say it: whole
 /// beats, rounded up, under a bar ("1 beat", "3 beats"), whole bars past
@@ -6469,7 +6369,6 @@ pub fn grid_tracks(st: &TimeState) -> Vec<GridTrack> {
             mute: tr.silent,
             solo: tr.solo,
             waiting: st.mute_waiting(i),
-            loops: tr.loops.is_some(),
             audio: tr.audio,
             song: st.song_mark(i),
             cells: (0..tr.slots.len()).map(|s| cell_of(st, i, s)).collect(),
@@ -6486,7 +6385,7 @@ pub fn record_rows(st: &TimeState) -> Vec<OptionRow> {
         ..OptionRow::default()
     };
     // An armed empty audio cell names its place (phase 4, board 2).
-    let armed = match loop_cell_name(st).filter(|_| st.loops_on && st.loop_cell_audio()) {
+    let armed = match loop_cell_name(st).filter(|_| st.loop_cell_audio()) {
         Some(place) => place,
         None => st
             .armed
@@ -6548,8 +6447,7 @@ pub fn record_rows(st: &TimeState) -> Vec<OptionRow> {
 
 /// What REC makes now, for the Record tab's Makes row (phase 4, board 2):
 /// a loop in the armed empty audio cell; takes on the song, song mode on,
-/// for armed audio tracks; else the armed track's notes, or a loop on a
-/// Loop track.
+/// for armed audio tracks; else the armed track's notes.
 pub fn makes(st: &TimeState) -> &'static str {
     if st.loop_cell_audio() {
         return "a loop";
@@ -6558,7 +6456,6 @@ pub fn makes(st: &TimeState) -> &'static str {
         return "takes";
     }
     match st.armed.and_then(|a| st.tracks.get(a)) {
-        Some(tr) if tr.loops.is_some() => "a loop",
         Some(tr) if !tr.audio => "notes",
         _ => "–",
     }
@@ -6955,14 +6852,14 @@ pub fn show_offers(e: &EditInfo, st: &TimeState) -> Vec<ShowOffer> {
     let edited = (e.editor.track, e.editor.slot);
     let mut v = Vec::new();
     for (t, tr) in st.tracks.iter().enumerate() {
-        if tr.loops.is_some() || tr.audio {
+        if tr.audio {
             continue;
         }
         for (s, c) in tr.slots.iter().enumerate() {
             let Some(c) = c else {
                 continue;
             };
-            if (t, s) == edited || c.looped.is_some() || c.notes == 0 || c.holds != e.clip.holds {
+            if (t, s) == edited || c.notes == 0 || c.holds != e.clip.holds {
                 continue;
             }
             v.push(ShowOffer {
@@ -7445,7 +7342,7 @@ impl TimePage {
     /// dragged clip, row, block or section held at an edge scrolls.
     /// True when `ev` was one; call [`TimePage::update`] after.
     /// The "+ Track" chooser (layout spec 4c): a tap on "+ Track" opens it
-    /// (or closes it), unless SHIFT is held (a Loop track at once: the
+    /// (or closes it), unless SHIFT is held (an audio track at once: the
     /// app's); a touch off it closes it. True when the event was the
     /// page's own, nothing for the app. A row picked closes it and is the
     /// app's ([`action`]); the new track comes into view once it is
@@ -8338,36 +8235,22 @@ impl TimePage {
         let rows = self.visible_rows(ui).max(1);
         self.first_row = self.first_row.min(ROWS.saturating_sub(rows));
         self.rows_seen = rows;
-        // With Loop tracks, the title is the loops' gauge: how many of the
-        // looper's loops hold one, and the share of its memory in use (the
-        // row numbers say which rows show). Past 8 tracks the pager takes
-        // the legend's place, so the gauge is not there.
-        let title = if st.tracks.iter().any(|t| t.loops.is_some()) {
-            let l = &st.loops;
+        // Scene banks (5.6): the bank chip says which bank shows. Loops in
+        // audio cells (audio tracks phase 4, board 2): the loops' gauge
+        // after the rows in view.
+        let shown = format!(
+            "Rows {}–{}",
+            self.first_row + 1,
+            (self.first_row + rows).min(ROWS)
+        );
+        let title = if st.loop_cells() > 0 {
             format!(
-                "Loops {} of {} · memory {} %",
-                l.in_use,
-                mpfree_seq::LOOPS,
-                l.memory_pct
+                "{shown} · Loops {} of {}",
+                st.loops.in_use,
+                mpfree_seq::LOOPS
             )
         } else {
-            // Scene banks (5.6): the bank chip says which bank shows.
-            let shown = format!(
-                "Rows {}–{}",
-                self.first_row + 1,
-                (self.first_row + rows).min(ROWS)
-            );
-            if st.loops_on && st.loop_cells() > 0 {
-                // Loops in audio cells (audio tracks phase 4, board 2): the
-                // loops' gauge after the rows in view.
-                format!(
-                    "{shown} · Loops {} of {}",
-                    st.loops.in_use,
-                    mpfree_seq::LOOPS
-                )
-            } else {
-                shown
-            }
+            shown
         };
         let legend = "ring: one pass   ·   amber: waiting   ·   red: recording".to_string();
         let banks = banks_used(st);
@@ -10106,17 +9989,17 @@ mod tests {
         );
     }
 
-    /// Loop tracks (part 3): a loop cell draws its loop's wave in the
-    /// detail's place with its length at the foot, its pass on the wave
-    /// (no ring), "overdub" while it takes a layer; the header has a wave
-    /// mark; the title counts the loops; each loop's place names its
-    /// track and row (or scene).
+    /// Loops on audio tracks: a loop cell shows its length and the ring,
+    /// never a wave; "copying in" while a copy's layers come in, and
+    /// "overdub" while it takes a layer; the header marks an audio track;
+    /// the title counts the loops after the rows; each loop's place, found
+    /// by its id, names its track and row (or scene).
     #[test]
     fn loop_cells_show_their_wave_and_loops_are_named_by_place() {
         let mut st = crate::sample::loops_playing().unwrap().state();
+        st.loops.ids = std::array::from_fn(|n| n as u128 + 1);
         st.loops.loops[1].wave = [200; crate::widgets::CELL_WAVE];
         st.loops.in_use = 4;
-        st.loops.memory_pct = 38;
         let stopped = cell_of(&st, 3, 0);
         assert_eq!(
             (
@@ -10126,37 +10009,41 @@ mod tests {
             ),
             (CellState::Stopped, "2 bars", "")
         );
-        assert_eq!(stopped.wave, Some([0; crate::widgets::CELL_WAVE]));
-        // A copy's layers copying in (part 6): its foot says so.
+        assert!(stopped.looped && stopped.wave.is_none(), "{stopped:?}");
+        // A copy's layers copying in: its foot says so, in amber.
         st.loops.loops[0].copying = true;
-        assert_eq!(cell_of(&st, 3, 0).foot, "copying in");
+        let copying = cell_of(&st, 3, 0);
+        assert_eq!(
+            (copying.foot.as_str(), copying.alert),
+            ("copying in", CellAlert::Warn)
+        );
         st.loops.loops[0].copying = false;
         let playing = cell_of(&st, 4, 1);
         assert_eq!(playing.state, CellState::Playing);
-        assert_eq!(playing.wave, Some([200; crate::widgets::CELL_WAVE]));
+        assert_eq!(playing.wave, None, "the ring, never a wave");
         st.loops.loops[1].overdubbing = true;
         let over = cell_of(&st, 4, 1);
         assert_eq!(
             (over.state, over.detail.as_str()),
             (CellState::Recording, "overdub")
         );
-        assert_eq!(cell_of(&st, 0, 0).wave, None, "a note clip has no wave");
+        assert!(!cell_of(&st, 0, 0).looped, "a note clip");
         let tracks = grid_tracks(&st);
         assert_eq!(
-            tracks.iter().map(|t| t.loops).collect::<Vec<_>>(),
-            [false, false, false, true, true, true]
+            tracks.iter().map(|t| t.audio).collect::<Vec<_>>(),
+            [false, false, false, true, true]
         );
         // The places: the first row a loop is in, by its scene's name.
         st.scenes = vec![String::new(), "Verse".into()];
         let places = loop_places(&st);
         let full = |n: usize| places[n].as_ref().map(|p| p.full(n));
-        assert_eq!(full(0).as_deref(), Some("Loops A · Loop 1 · row 1"));
-        assert_eq!(full(1).as_deref(), Some("Loops B · Loop 2 · Verse"));
-        assert_eq!(full(3).as_deref(), Some("Loops A · Loop 4 · row 4"));
+        assert_eq!(full(0).as_deref(), Some("Vocal · Loop 1 · row 1"));
+        assert_eq!(full(1).as_deref(), Some("Guitar · Loop 2 · Verse"));
+        assert_eq!(full(3).as_deref(), Some("Vocal · Loop 4 · row 4"));
         assert_eq!(places[4], None);
         let three = places[2].as_ref().unwrap();
         assert_eq!((three.track, three.slot), (4, 2));
-        // The gauge, in the legend.
+        // The gauge, after the rows in view.
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
         ui.add("header", Header::new(&["Play", "Clips"]));
         ui.add("hint", Label::new("", Tone::Dim, Align::Center));
@@ -10164,24 +10051,45 @@ mod tests {
         ui.show(CLIPS_PAGE).unwrap();
         page.update(&mut ui, &st);
         let title = &ui.get::<ClipGrid>(CLIPS).unwrap().title;
-        assert_eq!(title, "Loops 4 of 8 · memory 38 %");
+        assert!(title.ends_with(" · Loops 4 of 8"), "{title}");
         // Show in Clips: a cell off the rows shown brings its row.
         page.show_cell(4, 14);
         assert_eq!(page.first_track, 0);
         assert!(page.first_row > 0 && page.first_row <= 14);
     }
 
-    /// A tap on an empty Loop cell arms it and a second lets go; the
-    /// armed cell says what REC does there as the first pass goes, and
-    /// the REC chip names it (loop-tracks.md part 4).
+    /// A tap on an empty cell of the armed audio track arms a loop there
+    /// and a second lets go; the armed cell says what REC does there as
+    /// the first pass goes, and the REC chip names it (phase 4, board 2).
     #[test]
     fn an_empty_loop_cell_arms_and_says_what_rec_does() {
+        use crate::song::AudioLane;
         let mut st = crate::sample::loops_playing().unwrap().state();
+        st.audio = vec![AudioLane {
+            track: 0,
+            row: 3,
+            name: st.tracks[3].name.clone(),
+            color: track_color(3),
+            armed: true,
+            input: Input::Left,
+            mix: None,
+            level: 0.0,
+            volume: 1.0,
+            pan: 0.0,
+            monitor: Monitor::Auto,
+            mute: false,
+            solo: false,
+            blocks: Vec::new(),
+            takes: Vec::new(),
+            recording: None,
+            clips: Vec::new(),
+        }];
         let tap = |st: &TimeState, track: usize, slot: usize| {
             action(&ev(CLIPS, EventKind::Select(track * ROWS + slot)), st)
         };
-        assert!(st.clip(3, 5).is_none() && st.tracks[3].loops.is_some());
+        assert!(st.clip(3, 5).is_none() && st.tracks[3].audio);
         assert_eq!(tap(&st, 3, 5), Some(TimeAction::LoopCell(Some((3, 5)))));
+        assert_eq!(tap(&st, 4, 5), None, "Guitar isn't armed");
         assert!(
             matches!(tap(&st, 0, 5), Some(TimeAction::NewClip { .. })),
             "a note track's empty cell makes a clip"
@@ -10194,16 +10102,16 @@ mod tests {
             assert_eq!(c.state, CellState::Armed);
             format!("{} / {} / {}", c.name, c.detail, c.foot)
         };
-        assert_eq!(said(&st), "Armed / REC here / ");
+        assert_eq!(said(&st), "REC here / a loop / ");
         st.loops.waiting = true;
         assert_eq!(said(&st), "Ready / bar line / or PLAY");
         st.loops.recording = true;
         assert_eq!(said(&st), "REC / REC ends / the pass");
         st.scenes = vec![String::new(); 6];
         st.scenes[5] = "Drop".into();
-        assert_eq!(loop_cell_name(&st).as_deref(), Some("Loops A · Drop"));
+        assert_eq!(loop_cell_name(&st).as_deref(), Some("Vocal · Drop"));
         st.scenes[5].clear();
-        assert_eq!(loop_cell_name(&st).as_deref(), Some("Loops A · row 6"));
+        assert_eq!(loop_cell_name(&st).as_deref(), Some("Vocal · row 6"));
     }
 
     #[test]
@@ -11289,9 +11197,9 @@ mod tests {
                 on: false
             }))
         );
+        // Armed, its empty cell arms a loop there (phase 4, board 2).
         let cell = ev(CLIPS, EventKind::Select(ROWS + 2));
-        assert_eq!(action(&cell, &st), None);
-        assert_eq!(why_not(&cell, &st).as_deref(), Some(EMPTY_AUDIO_CELL));
+        assert_eq!(action(&cell, &st), Some(TimeAction::LoopCell(Some((1, 2)))));
         // The chooser's rows on the grid.
         let row = |k| action(&ev(CLIPS, EventKind::Toggle(ROWS + ADD_KIND + k)), &st);
         assert_eq!(row(0), Some(TimeAction::AddTrack));
@@ -11303,18 +11211,17 @@ mod tests {
         );
     }
 
-    /// Phase 4, board 2 (layout spec 4f, Loops in audio cells), with Dev's
-    /// "Loops on audio tracks" on: a loop cell on an audio track shows its
-    /// length and the ring, never a wave; queued, when it starts; a layer
-    /// still being written, the dot and "writing". A tap on an empty cell
+    /// Phase 4, board 2 (layout spec 4f, Loops in audio cells): a loop
+    /// cell on an audio track shows its length and the ring, never a wave;
+    /// queued, when it starts; a layer still being written, the dot and
+    /// "writing". A tap on an empty cell
     /// of the armed audio track arms it ("REC here", "a loop"), Record
     /// says where and what (Armed, then Makes), and the title counts the
-    /// loops. With the switch off none of it shows.
+    /// loops.
     #[test]
     fn with_loops_on_a_loop_cell_on_an_audio_track_reads_as_a_loop() {
         use crate::song::AudioLane;
         let mut st = state();
-        st.loops_on = true;
         st.tracks[1].audio = true;
         st.audio = vec![AudioLane {
             track: 4,
@@ -11412,17 +11319,6 @@ mod tests {
         let other = ev(CLIPS, EventKind::Select(ROWS + 3));
         assert_eq!(action(&other, &st), None);
         assert!(why_not(&other, &st).is_some_and(|w| w.contains("arm Bass")));
-        // The switch off: nothing of it.
-        st.loops_on = false;
-        st.audio[0].armed = true;
-        assert_eq!(action(&other, &st), None);
-        assert_eq!(why_not(&other, &st).as_deref(), Some(EMPTY_AUDIO_CELL));
-        assert_eq!(record_rows(&st)[1].name, "Mode");
-        assert_eq!(record_rows(&st).len(), 10);
-        assert_eq!(
-            action(&step(1), &st),
-            Some(TimeAction::Transport(Command::ToggleOverdub))
-        );
     }
 
     /// Layout spec 4f: an audio clip's cell shows its name, its wave and
@@ -11455,10 +11351,7 @@ mod tests {
         assert_eq!(audio_cell_hint(&st, 2, 0), None);
         // An empty audio cell is dashed, and says how to fill it.
         assert_eq!(cell_of(&st, 2, 2).state, CellState::Empty);
-        assert_eq!(
-            audio_cell_hint(&st, 2, 2).as_deref(),
-            Some(EMPTY_AUDIO_CELL)
-        );
+        assert!(audio_cell_hint(&st, 2, 2).is_some_and(|h| h.contains("record a loop there")));
         assert_eq!(audio_cell_hint(&st, 1, 2), None);
         // At 92 BPM the loop leaves a gap each pass.
         st.transport.bpm = 92.0;
@@ -11716,7 +11609,7 @@ mod tests {
         assert!(!page.adding);
         assert!(
             !page.chooser(&plus, &st, true),
-            "SHIFT: the app's Loop track"
+            "SHIFT: the app's audio track"
         );
         assert!(!page.adding);
         assert!(page.chooser(&plus, &st, false));
@@ -11780,20 +11673,12 @@ mod tests {
             song(EventKind::Cell { row: 2, col: PANEL }, &st),
             audio(AudioAction::Panel(2))
         );
-        // The input chip opens the panel too; with Dev's "Loops on audio
-        // tracks", the track's input list (phase 4, board 4).
+        // The input chip opens the track's input list (phase 4, board 4).
         let chip = EventKind::Cell {
             row: 2,
             col: INPUT_CHIP,
         };
-        assert_eq!(song(chip.clone(), &st), audio(AudioAction::Panel(2)));
-        let mut on = st.clone();
-        on.loops_on = true;
-        assert_eq!(song(chip, &on), audio(AudioAction::Inputs(2)));
-        assert_eq!(
-            song(EventKind::Cell { row: 2, col: PANEL }, &on),
-            audio(AudioAction::Panel(2))
-        );
+        assert_eq!(song(chip, &st), audio(AudioAction::Inputs(2)));
         assert_eq!(
             song(EventKind::Toggle(2), &st),
             audio(AudioAction::Arm {
@@ -12222,8 +12107,15 @@ mod tests {
     #[test]
     fn record_settings_step_within_their_range() {
         let mut st = state();
-        let step = |st: &TimeState, index: usize, delta: i32| {
+        // By the row's place in RECORD_ROWS, as `record_rows` has them;
+        // shown in `record_order` (Makes second).
+        let step = |st: &TimeState, row: usize, delta: i32| {
+            let index = record_order(st).iter().position(|&r| r == row).unwrap();
             action(&ev(RECORD, EventKind::Step { index, delta }), st)
+        };
+        let value = |st: &TimeState, row: usize| {
+            let index = record_order(st).iter().position(|&r| r == row).unwrap();
+            record_rows(st)[index].value.clone()
         };
         // Armed: Stab (2) -> none -> Drums (0), and back.
         assert_eq!(step(&st, 0, 1), Some(TimeAction::Arm(None)));
@@ -12270,7 +12162,7 @@ mod tests {
             },
             ..st.clone()
         };
-        assert_eq!(record_rows(&following)[3].value, "1–2, off while following");
+        assert_eq!(value(&following, 3), "1–2, off while following");
         assert_eq!(
             step(&following, 3, 1),
             Some(TimeAction::Transport(Command::SetLoop(Some((0, 4 * BAR)))))
@@ -12282,7 +12174,7 @@ mod tests {
             },
             ..st.clone()
         };
-        assert_eq!(record_rows(&none_held)[3].value, "off while following");
+        assert_eq!(value(&none_held, 3), "off while following");
         assert_eq!(step(&none_held, 3, -1), None);
         assert_eq!(
             step(&st, 4, 1),
@@ -12303,7 +12195,7 @@ mod tests {
         // armed it shows a dash and does nothing.
         st.armed = Some(1);
         st.tracks[1].pressure = true;
-        assert_eq!(record_rows(&st)[5].value, "Recorded");
+        assert_eq!(value(&st, 5), "Recorded");
         assert_eq!(
             step(&st, 5, -1),
             Some(TimeAction::RecordPressure {
@@ -12312,24 +12204,25 @@ mod tests {
             })
         );
         st.tracks[1].pressure = false;
-        assert_eq!(record_rows(&st)[5].value, "Off");
+        assert_eq!(value(&st, 5), "Off");
         assert_eq!(
             step(&st, 5, 1),
             Some(TimeAction::RecordPressure { track: 1, on: true })
         );
         st.armed = None;
-        assert_eq!(record_rows(&st)[5].value, "–");
+        assert_eq!(value(&st, 5), "–");
         assert_eq!(step(&st, 5, 1), None);
         // Record quantise steps off, 1/4 ... 1/32 for the armed track, and
         // says why at its ends or with none armed.
         let why = |st: &TimeState, delta| {
-            why_not(&ev(RECORD, EventKind::Step { index: 6, delta }), st).unwrap_or_default()
+            let index = record_order(st).iter().position(|&r| r == 6).unwrap();
+            why_not(&ev(RECORD, EventKind::Step { index, delta }), st).unwrap_or_default()
         };
-        assert_eq!(record_rows(&st)[6].value, "–");
+        assert_eq!(value(&st, 6), "–");
         assert_eq!(step(&st, 6, 1), None);
         assert!(why(&st, 1).starts_with("Arm a track first"));
         st.armed = Some(1);
-        assert_eq!(record_rows(&st)[6].value, "Off");
+        assert_eq!(value(&st, 6), "Off");
         assert_eq!(step(&st, 6, -1), None);
         assert!(why(&st, -1).contains("off already"));
         assert_eq!(
@@ -12340,7 +12233,7 @@ mod tests {
             })
         );
         st.tracks[1].record_quantise = Some(PPQ / 4);
-        assert_eq!(record_rows(&st)[6].value, "1/16");
+        assert_eq!(value(&st, 6), "1/16");
         assert_eq!(
             step(&st, 6, 1),
             Some(TimeAction::RecordQuantise {
@@ -12362,10 +12255,11 @@ mod tests {
         // Launch: the project's line for tapped clips, stops and scenes,
         // from at once to 8 bars, whatever is armed.
         let why = |st: &TimeState, delta| {
-            why_not(&ev(RECORD, EventKind::Step { index: 7, delta }), st).unwrap_or_default()
+            let index = record_order(st).iter().position(|&r| r == 7).unwrap();
+            why_not(&ev(RECORD, EventKind::Step { index, delta }), st).unwrap_or_default()
         };
         st.armed = None;
-        assert_eq!(record_rows(&st)[7].value, "1 bar");
+        assert_eq!(value(&st, 7), "1 bar");
         assert_eq!(
             step(&st, 7, 1),
             Some(TimeAction::LaunchGrid(LaunchGrid::Bars(2)))
@@ -12375,16 +12269,16 @@ mod tests {
             Some(TimeAction::LaunchGrid(LaunchGrid::Ticks(PPQ * 2)))
         );
         st.launch = LaunchGrid::Now;
-        assert_eq!(record_rows(&st)[7].value, "at once");
+        assert_eq!(value(&st, 7), "at once");
         assert_eq!(step(&st, 7, -1), None);
         assert!(why(&st, -1).contains("at once already"));
         st.launch = LaunchGrid::Bars(8);
-        assert_eq!(record_rows(&st)[7].value, "8 bars");
+        assert_eq!(value(&st, 7), "8 bars");
         assert_eq!(step(&st, 7, 1), None);
         assert!(why(&st, 1).contains("longest, 8 bars"));
         // One set in the file (3 bars) shows as it is and steps from 1 bar.
         st.launch = LaunchGrid::Bars(3);
-        assert_eq!(record_rows(&st)[7].value, "3 bars");
+        assert_eq!(value(&st, 7), "3 bars");
         assert_eq!(
             step(&st, 7, 1),
             Some(TimeAction::LaunchGrid(LaunchGrid::Bars(2)))
@@ -12392,19 +12286,20 @@ mod tests {
         // Transpose and Follows (sequencer S4, live transpose): the armed
         // track's, a semitone (or a note of the key) a step, within two
         // octaves; a dash and why not on a kit's track or with none armed.
-        let why = |st: &TimeState, index, delta| {
+        let why = |st: &TimeState, row: usize, delta| {
+            let index = record_order(st).iter().position(|&r| r == row).unwrap();
             why_not(&ev(RECORD, EventKind::Step { index, delta }), st).unwrap_or_default()
         };
         assert_eq!(RECORD_ROWS[TRANSPOSE_ROW], "Transpose");
-        assert_eq!(record_rows(&st)[TRANSPOSE_ROW].value, "–");
+        assert_eq!(value(&st, TRANSPOSE_ROW), "–");
         assert!(why(&st, TRANSPOSE_ROW, 1).starts_with("Arm a track first"));
         st.armed = Some(1);
         st.tracks[1].melodic = false;
-        assert_eq!(record_rows(&st)[FOLLOWS_ROW].value, "–");
+        assert_eq!(value(&st, FOLLOWS_ROW), "–");
         assert_eq!(step(&st, TRANSPOSE_ROW, 1), None);
         assert!(why(&st, TRANSPOSE_ROW, 1).contains("plays a kit"));
         st.tracks[1].melodic = true;
-        assert_eq!(record_rows(&st)[TRANSPOSE_ROW].value, "as written");
+        assert_eq!(value(&st, TRANSPOSE_ROW), "as written");
         assert_eq!(
             step(&st, TRANSPOSE_ROW, 1),
             Some(TimeAction::Transpose {
@@ -12416,7 +12311,7 @@ mod tests {
             by: -3,
             in_key: true,
         };
-        assert_eq!(record_rows(&st)[TRANSPOSE_ROW].value, "-3 in key");
+        assert_eq!(value(&st, TRANSPOSE_ROW), "-3 in key");
         assert_eq!(
             step(&st, TRANSPOSE_ROW, -1),
             Some(TimeAction::Transpose {
@@ -12428,16 +12323,16 @@ mod tests {
             })
         );
         st.tracks[1].transpose = Transpose::semitones(MAX_TRANSPOSE);
-        assert_eq!(record_rows(&st)[TRANSPOSE_ROW].value, "+24 st");
+        assert_eq!(value(&st, TRANSPOSE_ROW), "+24 st");
         assert_eq!(step(&st, TRANSPOSE_ROW, 1), None);
         assert!(why(&st, TRANSPOSE_ROW, 1).contains("highest, 24 semitones up"));
-        assert_eq!(record_rows(&st)[FOLLOWS_ROW].value, "Off");
+        assert_eq!(value(&st, FOLLOWS_ROW), "Off");
         assert_eq!(
             step(&st, FOLLOWS_ROW, -1),
             Some(TimeAction::FollowsTranspose { track: 1, on: true })
         );
         st.tracks[1].follows = true;
-        assert_eq!(record_rows(&st)[FOLLOWS_ROW].value, "On");
+        assert_eq!(value(&st, FOLLOWS_ROW), "On");
     }
 
     /// The clip settings card: the focused clip's settings, each row
@@ -12730,14 +12625,6 @@ mod tests {
         );
         assert_eq!(step(&st, 9, -1), set(&st, 9, |s| s.program = None));
         cs(&mut st).program = None;
-        // A loop cell: only Follow, After and Launch.
-        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
-        ends(step(&st, 1, 1), "loop cell");
-        ends(step(&st, 8, 1), "loop cell");
-        ends(step(&st, 9, 1), "loop cell");
-        ends(step(&st, 10, 1), "loop cell");
-        assert!(step(&st, 6, 1).0.is_some());
-        assert!(step(&st, 7, -1).0.is_some());
         // A settings take in the Takes list.
         let row = TakeRow {
             number: 4,
@@ -12794,9 +12681,6 @@ mod tests {
             step(&st, 1),
             Err(format!("{:?}", Err::<(), _>("Direction moves the clip's 1/16 steps: it needs a clip of 2 whole steps or more, so this one plays forward")))
         );
-        // A loop cell plays its loop as recorded.
-        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
-        assert!(step(&st, 1).unwrap_err().contains("loop cell"));
     }
 
     /// The card's Mutate row (S6): › a variation (SHIFT + › a bolder one),
@@ -12846,12 +12730,6 @@ mod tests {
         assert!(card_action(&st, CLIP_MUTATE, 1, false)
             .unwrap_err()
             .contains("none yet"));
-        // A loop cell plays its loop as recorded.
-        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
-        assert_eq!(shown(&st), "—");
-        assert!(card_action(&st, CLIP_MUTATE, 1, false)
-            .unwrap_err()
-            .contains("loop cell"));
     }
 
     /// The clip card's Melody row (step sequencer refactor E1): "pads" or
@@ -12917,8 +12795,6 @@ mod tests {
         assert!(card_action(&st, CLIP_MELODY, 1, false)
             .unwrap_err()
             .contains("uses notes"));
-        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
-        assert_eq!(shown(&st), "—");
     }
 
     /// The card's Continue row (composing tools, phase 1 step 4): "+4
@@ -12953,9 +12829,6 @@ mod tests {
         c.notes = 0;
         assert_eq!(shown(&st).value, "no notes");
         assert!(why(&st).contains("some notes"), "{}", why(&st));
-        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
-        assert_eq!(shown(&st).value, "—");
-        assert!(why(&st).contains("loop's cell"), "{}", why(&st));
     }
 
     /// The card's Phrase row (step 3 of the phrases): "Make ›" on a clip
@@ -12987,15 +12860,11 @@ mod tests {
         c.notes = 0;
         assert_eq!(shown(&st).value, "no notes");
         assert!(why(&st).contains("some notes"), "{}", why(&st));
-        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
-        assert_eq!(shown(&st).value, "—");
-        assert!(why(&st).contains("loop's cell"), "{}", why(&st));
     }
 
     /// The card's Style row (composing step 6, board D): "Make ›" on a
     /// clip with notes, pad hits too, either arrow asking for the Make a
-    /// style sheet (the time engine's); on an empty clip or a loop's cell
-    /// it says why.
+    /// style sheet (the time engine's); on an empty clip it says why.
     #[test]
     fn the_clip_cards_style_row_opens_the_make_a_style_sheet() {
         let mut st = state();
@@ -13013,9 +12882,6 @@ mod tests {
         st.tracks[1].slots[1].as_mut().unwrap().notes = 0;
         assert_eq!(shown(&st).value, "no notes");
         assert!(why(&st).contains("some notes"), "{}", why(&st));
-        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
-        assert_eq!(shown(&st).value, "—");
-        assert!(why(&st).contains("loop's cell"), "{}", why(&st));
     }
 
     /// The sheet open, the page shows it in the card's column, and its
@@ -13108,9 +12974,6 @@ mod tests {
         // A clip a sixteenth long can't halve.
         st.tracks[1].slots[1].as_mut().unwrap().length = CARD_STEP;
         assert!(act(&st, 0, -1).unwrap_err().contains("can't halve"));
-        // A loop cell: neither.
-        st.tracks[1].slots[1].as_mut().unwrap().looped = Some(0);
-        assert!(act(&st, 1, 1).unwrap_err().contains("loop cell"));
     }
 
     /// COPY held: the hint says what a tap copies or pastes, and a paste

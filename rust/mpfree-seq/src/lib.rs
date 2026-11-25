@@ -123,8 +123,7 @@ pub const MAX_NOTES: usize = 8192;
 pub const MAX_LOCKS: usize = 8192;
 /// Pressure values in one clip, every note's together ([`Clip::touch`]).
 pub const MAX_TOUCH_POINTS: usize = 65536;
-/// The looper's loops, which a Loop track's cells name ([`Clip::looped`]):
-/// `mpfree_looper::MAX_LOOPS`.
+/// The looper's loops: `mpfree_looper::MAX_LOOPS`.
 pub const LOOPS: usize = 8;
 
 /// One note in a clip, in the clip's own ticks. Its `Hash` is by hand
@@ -991,10 +990,6 @@ pub struct Clip {
     /// After some bars, its track plays another clip or stops
     /// ([`scenes`]).
     pub follow: Option<Follow>,
-    /// A Loop track's cell: the looper's loop it launches (0 to
-    /// [`LOOPS`] - 1). Such a clip has no notes, locks, pressure or moves,
-    /// and is as long as its loop ([`loops`]).
-    pub looped: Option<u8>,
     /// Its own launch quantise; None: the project's ([`Project::launch`]).
     pub launch: Option<LaunchGrid>,
     /// Legato: launched while another clip plays on its track, it takes
@@ -1036,8 +1031,7 @@ pub struct Clip {
     /// A loop cell on an audio track (phase 4, step 4b): the looper's loop
     /// it plays, by its lasting id ([`LoopClip`]). Such a clip holds
     /// nothing else (no notes, no regions), plays at normal speed, and
-    /// lives on the loop's one track ([`Project::loop_track`]). Loop
-    /// tracks' cells use [`Clip::looped`] instead until Loop tracks go.
+    /// lives on the loop's one track ([`Project::loop_track`]).
     pub loop_clip: Option<LoopClip>,
     /// The instrument its instrument locks were made for, with the names
     /// of the controls they lock (step sequencer refactor F1,
@@ -1122,15 +1116,13 @@ pub enum ModelError {
     /// leaves out its root ([`scale_ok`]), or is on a clip of pad hits,
     /// which takes none ([`Clip::takes_scale`]).
     BadScale,
-    /// A loop cell names no loop or holds notes, or a clip is on a track
-    /// of the other kind (a loop cell on a note track, a note clip on a
-    /// Loop track). On an audio track (phase 4): a loop cell naming no
-    /// loop, holding notes, or a loop named on two tracks.
+    /// A loop cell (on an audio track, phase 4) naming no loop, holding
+    /// notes, or a loop named on two tracks.
     BadLoop,
     /// A song's tempo point is before the start, out of range, too near
     /// another (a 1/16 at least) or one too many.
     BadTempo,
-    /// A note or Loop clip, or its song block, on an audio track, or an
+    /// A note clip, or its song block, on an audio track, or an
     /// audio clip or its block on another kind of track: an audio track's
     /// cells hold audio clips only ([`Clip::audio`], or a loop cell's
     /// [`Clip::loop_clip`]), and its lane holds
@@ -1206,7 +1198,7 @@ impl Clip {
         self.notes.is_empty()
             && self.locks.is_empty()
             && self.moves.is_empty()
-            && self.looped.is_none()
+            && self.loop_clip.is_none()
     }
 
     /// Its speed, swing, quantise, follow action, launch quantise and
@@ -1296,7 +1288,6 @@ impl Clip {
             moves: Moves::new(),
             follow: None,
             touch: Vec::new(),
-            looped: None,
             launch: None,
             legato: false,
             once: false,
@@ -1345,15 +1336,6 @@ impl Clip {
     /// ([`Clip::audio`]) or a loop cell ([`Clip::loop_clip`]).
     pub fn is_audio_clip(&self) -> bool {
         self.audio.is_some() || self.loop_clip.is_some()
-    }
-
-    /// A Loop track's cell for loop `n` (0 based), `ticks` long: named
-    /// after its loop ("Loop 2"), with no notes.
-    pub fn new_loop(n: u8, ticks: Tick) -> Clip {
-        Clip {
-            looped: Some(n),
-            ..Clip::new(&format!("Loop {}", u32::from(n) + 1), loops::length(ticks))
-        }
     }
 
     /// Add one note's pressure run (values in time order, 0 to 127) and
@@ -1512,16 +1494,6 @@ impl Clip {
         if let Some(f) = &self.follow {
             f.check()?;
         }
-        if self.looped.is_some_and(|n| {
-            usize::from(n) >= LOOPS
-                || !self.notes.is_empty()
-                || !self.locks.is_empty()
-                || !self.touch.is_empty()
-                || !self.moves.is_empty()
-                || self.original.is_some()
-        }) {
-            return Err(ModelError::BadLoop);
-        }
         if let Some(o) = &self.original {
             o.check(&self.touch)?;
         }
@@ -1533,7 +1505,6 @@ impl Clip {
                 && self.touch.is_empty()
                 && self.moves.is_empty()
                 && self.original.is_none()
-                && self.looped.is_none()
                 && self.speed == Speed::NORMAL
                 && self.swing.is_none()
                 && self.quantise.is_none()
@@ -1605,7 +1576,7 @@ impl TrackId {
 }
 
 /// A clip's lasting number in its project (the Arrange refactor's D1):
-/// one id space for every kind of clip, note clips and Loop track cells
+/// one id space for every kind of clip, note clips and loop cells
 /// alike. A clip keeps its id when it moves (a drag to another cell, a
 /// row dragged) and when UNDO or REDO brings it back; a copy is a clip of
 /// its own and gets a new one. A project gives each new clip the next
@@ -1871,8 +1842,6 @@ impl Transpose {
 pub enum TrackKind {
     #[default]
     Notes,
-    /// A Loop track and what its new loops record.
-    Loops(LoopInput),
     /// An audio track (the audio tracks rethink, phase 1): it records the
     /// line input or the mix and plays what it recorded on its own mixer
     /// channel. Its recordings, regions and settings (input, monitor) are
@@ -1881,52 +1850,6 @@ pub enum TrackKind {
     /// and nothing else, and its lane blocks of audio clips beside its
     /// regions (step 2d, [`ModelError::AudioTrack`]).
     Audio,
-}
-
-/// What a Loop track's new loops record (recording from the grid, Loop
-/// tracks part 4): the pads and the synth as heard (the looper's source
-/// today), the line input, or the other loops as heard.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum LoopInput {
-    #[default]
-    Pads,
-    Line,
-    Resample,
-}
-
-impl LoopInput {
-    pub const ALL: [LoopInput; 3] = [LoopInput::Pads, LoopInput::Line, LoopInput::Resample];
-
-    /// As the screens say it in full.
-    pub fn name(self) -> &'static str {
-        match self {
-            LoopInput::Pads => "Pads + synth",
-            LoopInput::Line => "Line in",
-            LoopInput::Resample => "Resample",
-        }
-    }
-
-    /// As the Clips grid says it, under the track's name.
-    pub fn short(self) -> &'static str {
-        match self {
-            LoopInput::Pads => "Pads",
-            LoopInput::Line => "Line in",
-            LoopInput::Resample => "Resample",
-        }
-    }
-
-    /// As a saved project writes it.
-    pub fn word(self) -> &'static str {
-        match self {
-            LoopInput::Pads => "pads",
-            LoopInput::Line => "line",
-            LoopInput::Resample => "resample",
-        }
-    }
-
-    pub fn from_word(w: &str) -> Option<LoopInput> {
-        LoopInput::ALL.into_iter().find(|i| i.word() == w)
-    }
 }
 
 impl Track {
@@ -1951,15 +1874,6 @@ impl Track {
             pad_solos: 0,
             slots: Default::default(),
             plays: inst::Plays::default(),
-        }
-    }
-
-    /// An empty Loop track recording the pads and the synth. Its `dest`
-    /// is unused: nothing plays notes into it.
-    pub fn new_loops(name: &str, dest: DestId) -> Track {
-        Track {
-            kind: TrackKind::Loops(LoopInput::Pads),
-            ..Track::new(name, dest)
         }
     }
 
@@ -2024,24 +1938,12 @@ impl Track {
         self.pad_mutes | solo
     }
 
-    /// A Loop track's input; None for a note track or an audio track.
-    pub fn loops(&self) -> Option<LoopInput> {
-        match self.kind {
-            TrackKind::Notes | TrackKind::Audio => None,
-            TrackKind::Loops(i) => Some(i),
-        }
-    }
-
-    pub fn is_loops(&self) -> bool {
-        self.loops().is_some()
-    }
-
     pub fn is_audio(&self) -> bool {
         self.kind == TrackKind::Audio
     }
 
-    /// A note track: the pads play it and its clips hold notes. Neither a
-    /// Loop track nor an audio track is.
+    /// A note track: the pads play it and its clips hold notes. An audio
+    /// track isn't.
     pub fn plays_notes(&self) -> bool {
         self.kind == TrackKind::Notes
     }
@@ -2254,9 +2156,6 @@ impl Project {
                     return Err(ModelError::AudioTrack);
                 }
                 c.check()?;
-                if c.looped.is_some() != t.is_loops() {
-                    return Err(ModelError::BadLoop);
-                }
             }
         }
         if self.scenes.len() > SCENES {
@@ -2434,10 +2333,10 @@ mod track_id_tests {
     fn clips_get_lasting_ids_that_are_never_given_twice() {
         let mut p = Project::new();
         p.tracks.push(Track::new("Drums", 0));
-        p.tracks.push(Track::new_loops("Loops", 1));
+        p.tracks.push(Track::new_audio("Audio 1", 1));
         p.tracks[0].slots[3] = Some(Clip::new("b", 3840));
         p.tracks[0].slots[1] = Some(Clip::new("a", 3840));
-        p.tracks[1].slots[0] = Some(Clip::new_loop(0, 3840));
+        p.tracks[1].slots[0] = Some(Clip::new_audio_loop(LoopId(1), "Loop 1", 3840));
         assert_eq!(p.give_clip_ids(), 3);
         let ids: Vec<(usize, usize, u32)> =
             p.cell_clips().map(|(t, r, c)| (t, r, c.id.0)).collect();

@@ -468,9 +468,8 @@ impl Arrangement {
     }
 
     /// Every block and song clip in range, and each block's clip on a lane
-    /// of its kind: a loop's on a Loop track, a clip's off one, an audio
-    /// clip's on an audio track and a note clip's off one (a block whose
-    /// clip is gone plays nothing and is fine). The cells' clips
+    /// of its kind: an audio clip's on an audio track and a note clip's off
+    /// one (a block whose clip is gone plays nothing and is fine). The cells' clips
     /// are the project's to check.
     pub fn check(&self, tracks: &[Track]) -> Result<(), ModelError> {
         if self.placements.len() > MAX_PLACEMENTS
@@ -492,9 +491,6 @@ impl Arrangement {
             let clip = self.clip_of(tracks, p);
             if clip.is_some_and(|c| c.is_audio_clip() != tracks[p.track].is_audio()) {
                 return Err(ModelError::AudioTrack);
-            }
-            if clip.is_some_and(|c| c.looped.is_some() != tracks[p.track].is_loops()) {
-                return Err(ModelError::BadLoop);
             }
             if let Some(prev) = i.checked_sub(1).map(|j| &self.placements[j]) {
                 let order = (prev.track, prev.start) < (p.track, p.start);
@@ -879,10 +875,9 @@ impl Arrangement {
     /// on another track's lane too, and plays through that track (the
     /// Arrange refactor's D1). Refused (`BadPlacement`), changing nothing,
     /// when it would overlap a placement there or start before 0; and
-    /// (`BadLoop`) when it goes to another track and either is a Loop
-    /// track: a loop's block stays on its Loop track's lane, as its cell
-    /// stays in its column (loop-tracks.md), and so does a loop cell's
-    /// block on its audio track's (phase 4e.3); and (`AudioTrack`) when it
+    /// (`BadLoop`) when a loop cell's block goes to another track: it stays
+    /// on its audio track's lane, as its cell stays in its column (phase
+    /// 4e.3); and (`AudioTrack`) when it
     /// goes between an audio track and another kind: an audio clip's block
     /// stays on audio tracks' lanes. Its index now.
     pub fn move_placement(
@@ -896,10 +891,6 @@ impl Arrangement {
         let p = self.placements.get(i).ok_or(ModelError::BadPlacement)?;
         if track >= tracks.len() || start < 0 {
             return Err(ModelError::BadPlacement);
-        }
-        let loops = |t: usize| tracks.get(t).is_some_and(Track::is_loops);
-        if track != p.track && (loops(track) || loops(p.track)) {
-            return Err(ModelError::BadLoop);
         }
         // A loop cell's block stays on its track's lane: a loop plays on
         // one track (phase 4e.3, [`crate::Project::loop_places`]).
@@ -1082,8 +1073,8 @@ impl Arrangement {
     /// changing nothing, for an empty set or an index past the blocks (an
     /// index given twice counts once), or when one would leave the lanes,
     /// start before 0 or land on a block outside the set
-    /// (`BadPlacement`), go to another lane from or onto a Loop track's,
-    /// or a loop cell's block to another lane (`BadLoop`), or from a note
+    /// (`BadPlacement`), a loop cell's block go to another lane
+    /// (`BadLoop`), or from a note
     /// track's lane onto an audio track's or back (`AudioTrack`). The
     /// moved blocks' (or the copies') indexes now, in order.
     pub fn move_placements(
@@ -1100,7 +1091,6 @@ impl Arrangement {
         if set.is_empty() || set.last() >= Some(&self.placements.len()) {
             return Err(ModelError::BadPlacement);
         }
-        let loops = |t: usize| tracks.get(t).is_some_and(Track::is_loops);
         let mut moved = Vec::with_capacity(set.len());
         for &i in &set {
             let p = &self.placements[i];
@@ -1110,7 +1100,7 @@ impl Arrangement {
             if track >= tracks.len() || p.start + by < 0 {
                 return Err(ModelError::BadPlacement);
             }
-            if track != p.track && (loops(track) || loops(p.track) || self.names_loop(tracks, p)) {
+            if track != p.track && self.names_loop(tracks, p) {
                 return Err(ModelError::BadLoop);
             }
             // As one block moves: between audio tracks' lanes, or between
@@ -2023,8 +2013,8 @@ pub enum Differs {
     /// the last result (A:B, 1ST, PRE, NEI), and its row starts it again
     /// from partway in, where they count again.
     Conditions,
-    /// Song → scenes: a Loop track's cell from partway in: its loop
-    /// starts again from its top.
+    /// Song → scenes: a loop cell from partway in: its loop starts again
+    /// from its top.
     LoopCell,
     /// Song → scenes: the section starts between two of the clip's own
     /// ticks (at its speed): the copy turns round to the nearest.
@@ -2210,9 +2200,9 @@ fn section_copy(block: &Placement, clip: &Clip, a: Tick) -> (Clip, Vec<Differs>)
         if into.fract() != 0.0 {
             why.push(Differs::BetweenTicks);
         }
-        // A Loop track's cell, or a loop cell on an audio track turned
-        // round (phase 4e.3): its loop starts again from its top.
-        if clip.looped.is_some() || (clip.loop_clip.is_some() && by != 0) {
+        // A loop cell on an audio track turned round (phase 4e.3): its
+        // loop starts again from its top.
+        if clip.loop_clip.is_some() && by != 0 {
             why.push(Differs::LoopCell);
         }
         let direction = match clip.direction {
@@ -3317,7 +3307,7 @@ mod tests {
     fn several_blocks_move_copy_duplicate_and_go_together_all_or_none() {
         let mut p = project();
         p.tracks.push(Track::new("keys", 0));
-        p.tracks.push(Track::new_loops("loops", 0));
+        p.tracks.push(Track::new("pads", 0));
         p.tracks.push(Track::new_audio("vox", 0));
         let blocks = |s: &Arrangement| -> Vec<(usize, Tick, Tick)> {
             s.placements
@@ -3367,18 +3357,15 @@ mod tests {
         );
         s = start.clone();
         // All or none: one landing on a block outside the set, one before
-        // bar 1, off the lanes, across a Loop lane, onto an audio track.
+        // bar 1, off the lanes, onto an audio track.
         for (lanes, by, err) in [
             (0, 4 * BAR, ModelError::BadPlacement),
             (0, -BAR, ModelError::BadPlacement),
             (-1, 0, ModelError::BadPlacement),
-            (3, 0, ModelError::BadLoop),
             (4, 0, ModelError::AudioTrack),
         ] {
-            // The bass's block alone across the Loop lane, the drums' onto
-            // the audio lane.
+            // The drums' block alone onto the audio lane.
             let lone = match lanes {
-                3 => &[1][..],
                 4 => &[0][..],
                 _ => &first_two[..],
             };
@@ -3949,14 +3936,6 @@ mod tests {
         let mut c = four();
         c.notes[2].join = Join::Tie;
         assert_eq!(diffs(song(c, 0)), on_drums(Differs::HeldNote), "a tie");
-        let mut p = song(four(), 0);
-        let mut loops = Track::new_loops("loops", 2);
-        // The loop cell in the clip's place, with its id.
-        let mut cell = Clip::new_loop(0, 4 * BAR);
-        cell.id = p.clip(0, 2).unwrap().id;
-        loops.slots[2] = Some(cell);
-        p.tracks[0] = loops;
-        assert_eq!(diffs(p), on_drums(Differs::LoopCell));
         // At 3/4 speed, a section 2 bars and a tick in is 5,760.75 of the
         // clip's ticks in: between two of them (and off the bar line).
         let mut c = four();
@@ -4225,50 +4204,6 @@ mod tests {
             s.move_placement(&p.tracks, 0, 0, 2 * BAR + 100, true),
             Err(ModelError::BadPlacement)
         );
-    }
-
-    /// A loop's block stays on its Loop track's lane and a clip's block
-    /// off a Loop track's (loop-tracks.md part 5); a loop's block anywhere
-    /// else doesn't check, nor a clip's on a Loop track.
-    #[test]
-    fn a_loops_block_stays_on_its_loop_tracks_lane() {
-        let mut p = project();
-        let mut a = Track::new_loops("Loops A", 2);
-        a.slots[0] = Some(Clip::new_loop(0, BAR));
-        p.tracks.push(a);
-        p.tracks.push(Track::new_loops("Loops B", 3));
-        p.give_clip_ids();
-        let mut s = Arrangement::default();
-        s.place(Placement::of(&p.tracks, 0, 0, 0, BAR)).unwrap();
-        s.place(Placement::of(&p.tracks, 2, 0, 0, BAR)).unwrap();
-        let before = s.clone();
-        for (i, to) in [(1, 0), (1, 3), (0, 2)] {
-            for copy in [false, true] {
-                assert_eq!(
-                    s.move_placement(&p.tracks, i, to, 4 * BAR, copy),
-                    Err(ModelError::BadLoop)
-                );
-                assert_eq!(s, before);
-            }
-        }
-        // Along its own lane it moves as any block does.
-        assert_eq!(s.move_placement(&p.tracks, 1, 2, 2 * BAR, false), Ok(1));
-        assert_eq!(s.check(&p.tracks), Ok(()));
-        // The loop's block on a note track doesn't check, nor a clip's on
-        // a Loop track, its clip in a cell or the song's own.
-        let mut bad = s.clone();
-        bad.placements[1].track = 0;
-        bad.placements[1].start = 4 * BAR;
-        bad.placements.sort_by_key(|p| (p.track, p.start));
-        assert_eq!(bad.check(&p.tracks), Err(ModelError::BadLoop));
-        let mut bad = s.clone();
-        bad.placements[1].clip = ClipId(1);
-        assert_eq!(bad.check(&p.tracks), Err(ModelError::BadLoop));
-        let mut own = Clip::new("a", BAR);
-        own.id = ClipId(40);
-        bad.clips.keep(own).unwrap();
-        bad.placements[1].clip = ClipId(40);
-        assert_eq!(bad.check(&p.tracks), Err(ModelError::BadLoop));
     }
 
     #[test]

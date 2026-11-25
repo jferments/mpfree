@@ -139,7 +139,7 @@ impl Clip {
     /// its first Mutate beside it; None for a loop's cell, or a clip whose
     /// original has no note that is on.
     pub fn mutated(&self, seed: u64, amount: Amount, pitches: Pitches) -> Option<Clip> {
-        if self.looped.is_some() {
+        if self.loop_clip.is_some() {
             return None;
         }
         let base = match &self.original {
@@ -640,7 +640,11 @@ mod tests {
             None
         );
         assert_eq!(
-            Clip::new_loop(0, 3840).mutated(1, Amount::Little, Pitches::Own),
+            Clip::new_audio_loop(crate::LoopId(1), "Loop 1", 3840).mutated(
+                1,
+                Amount::Little,
+                Pitches::Own
+            ),
             None
         );
     }
@@ -655,7 +659,7 @@ mod tests {
         let mut v = hats().mutated(3, Amount::Little, Pitches::Pads).unwrap();
         v.original.as_mut().unwrap().length = 240;
         assert!(v.check().is_err());
-        let mut l = Clip::new_loop(0, 3840);
+        let mut l = Clip::new_audio_loop(crate::LoopId(1), "Loop 1", 3840);
         l.original = hats()
             .mutated(3, Amount::Little, Pitches::Pads)
             .unwrap()

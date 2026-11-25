@@ -775,9 +775,6 @@ pub(super) fn unfit(
                 .enumerate()
                 .filter_map(|(t, tr)| {
                     let c = tr.slots.get(*row)?.as_ref()?;
-                    if c.looped.is_some() {
-                        return None;
-                    }
                     let n = marks(c, role_of(c, kind(t, *row)), &old, &new).len();
                     (n > 0).then_some((t, n))
                 })

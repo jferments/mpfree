@@ -155,7 +155,7 @@ pub fn phrase_of_as(
 /// notes to it (a pad's pitch is the kit's), nor has a loop's cell.
 pub fn clip_played(c: &Clip) -> (Vec<Played>, Tick) {
     let len = c.speed.to_song(c.length as f64).round() as Tick;
-    if c.holds != Holds::Notes || c.looped.is_some() {
+    if c.holds != Holds::Notes || c.loop_clip.is_some() {
         return (Vec::new(), len);
     }
     let pb = Playback {

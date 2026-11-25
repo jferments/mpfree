@@ -25,7 +25,7 @@ const QLINK_ROWS: [usize; 4] = [
 
 impl Player {
     /// The song's instruments as a zone names them: what each track
-    /// plays (not audio or Loop tracks), then the synths no track has.
+    /// plays (not audio tracks), then the synths no track has.
     pub(super) fn patch_insts(&self) -> Vec<Inst> {
         let mut out: Vec<Inst> = self
             .time
@@ -33,7 +33,7 @@ impl Player {
             .iter()
             .enumerate()
             .take(usize::from(mpfree_midi::setup::ROUTE_TRACKS as u16))
-            .filter(|(_, t)| !t.audio && t.loops.is_none())
+            .filter(|(_, t)| !t.audio)
             .map(|(i, t)| Inst {
                 words: crate::patch_in::Plays::Track(i as u8).text(),
                 name: t.name.clone(),

@@ -19,8 +19,8 @@
 //! [`CLEAR_HOLD_S`] it clears the loop. A tap on a name picks the loop
 //! without starting anything; the speaker mutes it and S solos it.
 //!
-//! With Dev's "Loops on audio tracks" on (audio tracks phase 4e, board 7
-//! of the phase 4 screens, approved as drawn 23 Nov 2026) the row has
+//! With loops on audio tracks (audio tracks phase 4e, board 7 of the
+//! phase 4 screens, approved as drawn 23 Nov 2026) the row has
 //! [`LoopRow::group`]: the Loop group ([`crate::loop_group`]) at its right,
 //! Level, Filter and Delay and the switch (All loops, or the armed
 //! track's), in place of Capture and the Pads switch, which move into the
@@ -174,10 +174,9 @@ pub struct LoopRow {
     pub pads: bool,
     /// The Arm pill: the loop as a REC target.
     pub arm: Option<ArmPill>,
-    /// With Dev's "Loops on audio tracks" on (phase 4e, board 7): the Loop
-    /// group at the row's right, Capture and the Pads switch as chips in
-    /// the heading, the cards small and named by place. None: the row as
-    /// before.
+    /// The Loop group (phase 4e, board 7): at the row's right, Capture
+    /// and the Pads switch as chips in the heading, the cards small and
+    /// named by place. None: the row without it (as it was before 4e).
     pub group: Option<GroupPanel>,
     press: Option<RingPress>,
     drag: Option<KnobDrag>,
@@ -1373,7 +1372,7 @@ mod tests {
         assert_eq!(w.changed_parts(r), Some(vec![LoopRow::head_rect(r)]));
     }
 
-    /// The row with Dev's switch on: three of Vocal's loops (in rows 1 to
+    /// The row with its Loop group: three of Vocal's loops (in rows 1 to
     /// 3) and five free slots, the Loop group with Vocal armed.
     fn grouped() -> (LoopRow, Rect) {
         let (mut w, r) = row();
