@@ -75,6 +75,7 @@ console arrange-clips-audio-made-at 1 # new screen (audio tracks 5c.1): the fain
 console arrange-clips-audio-once 2 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has, and a once clip's faint Fit to tempo; 5c.1: the card's faint Until ready ("—" off Stretch), a row that does nothing there, as a once clip's faint Fit to tempo
 console arrange-clips-audio-stretch 1 # new screen (audio tracks 5c.1): the faint labels arrange-clips-audio has, and in Spaceship its faint card text
 console arrange-instruments 1 # before the theme refactor (phase 0 baseline)
+console arrange-song-region-tempo 1 # new screen (audio tracks 5c.3): the Tempo card's faint From its length (it would make nothing there), as a faint button elsewhere; in Spaceship also the Song view's faint labels, as arrange-song
 console arrange-song-tempo 1 # before the theme refactor (phase 0 baseline)
 console browser 3 # before the theme refactor (phase 0 baseline)
 console browser-kits 1 # before the theme refactor (phase 0 baseline)
@@ -246,6 +247,7 @@ default arrange-clips-audio-made-at 1 # new screen (audio tracks 5c.1): the fain
 default arrange-clips-audio-once 2 # new screen (audio tracks phase 2): the faint labels arrange-clips-audio has, and a once clip's faint Fit to tempo; 5c.1: the card's faint Until ready ("—" off Stretch), a row that does nothing there, as a once clip's faint Fit to tempo
 default arrange-clips-audio-stretch 1 # new screen (audio tracks 5c.1): the faint labels arrange-clips-audio has, and in Spaceship its faint card text
 default arrange-instruments 1 # before the theme refactor (phase 0 baseline)
+default arrange-song-region-tempo 1 # new screen (audio tracks 5c.3): the Tempo card's faint From its length (it would make nothing there), as a faint button elsewhere; in Spaceship also the Song view's faint labels, as arrange-song
 default browser 3 # before the theme refactor (phase 0 baseline)
 default browser-kits 1 # before the theme refactor (phase 0 baseline)
 default browser-samples 7 # before the theme refactor (phase 0 baseline)
@@ -554,6 +556,7 @@ spaceship arrange-song-panel-mix 12 # new screen (instrument redesign, step 9): 
 spaceship arrange-song-passes 10 # new screen (Arrange 4b.4): arrange-song's 10 faint runs; the pass label adds none
 spaceship arrange-song-picks 11 # new screen (Arrange 6.5): arrange-song's faint runs, Make unique faint; the picks' outlines add none
 spaceship arrange-song-picks-drag 11 # new screen (Arrange 6.5): the same runs as arrange-song-picks; the dragged cards add none
+spaceship arrange-song-region-tempo 11 # new screen (audio tracks 5c.3): the Tempo card's faint From its length (it would make nothing there), as a faint button elsewhere; in Spaceship also the Song view's faint labels, as arrange-song
 spaceship arrange-song-section 10 # arrange-song with the Verse picked (Arrange 3.3): its faint text, the same 10 runs as arrange-song
 spaceship arrange-song-takes 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-tempo 10 # before the theme refactor (phase 0 baseline)

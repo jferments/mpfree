@@ -1164,6 +1164,14 @@ impl AudioHost {
         st
     }
 
+    /// Where song region `r`'s tempo copy along `map` stands (5c.3: its
+    /// Tempo card's line): [`CopyState::None`] when it needs none.
+    pub fn song_copy_state(&self, r: &crate::Region, map: &TempoMap) -> CopyState {
+        self.tracks
+            .song_copy_key(r, map)
+            .map_or(CopyState::None, |k| self.copies.state(&self.tracks, &k))
+    }
+
     /// Makes copies on `s` from now on, within its budget, not on the
     /// process's scheduler (`Sched::shared`): for a test that steps its
     /// own.

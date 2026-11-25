@@ -2377,7 +2377,15 @@ impl TrackHost {
                     .place(t)
                     .and_then(|i| st.tracks.get(i))
                     .is_some_and(|i| i.solo),
-                blocks: audio_blocks(t, tr.regions(t), &takes, map, self.rate),
+                blocks: {
+                    let mut blocks = audio_blocks(t, tr.regions(t), &takes, map, self.rate);
+                    // Where each one's tempo copy stands (5c.3: its Tempo
+                    // card's line).
+                    for (b, r) in blocks.iter_mut().zip(tr.regions(t)) {
+                        b.copy = self.host.song_copy_state(r, map);
+                    }
+                    blocks
+                },
                 takes: take_lanes(t, tr.regions(t), &takes, map, self.rate),
                 recording: tr
                     .recording(t)

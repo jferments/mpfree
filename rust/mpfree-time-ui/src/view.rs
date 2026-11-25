@@ -56,10 +56,11 @@ use crate::list::{
 };
 use crate::report::{ReportCard, REPORT_DONE, REPORT_UNDO};
 use crate::song::{
-    AudioLane, LaneOver, SongBlocks, SongLanes, ADD_AUDIO, AUDIO_BUTTONS, BARS_BACK, BARS_ON,
-    DUPLICATE, INPUTS, INPUT_CHIP, MONITORS, NONE, PANEL, PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR,
-    PANEL_MUTE, PANEL_SOLO, PANEL_TAKES, REC, REGION_SLOTS, RULER_ROW, SECTION_TAP, SLIDE_ROW,
-    START_ROW, TEMPO_ROW,
+    card_row, AudioBlock, AudioLane, LaneOver, RegionCard, SongBlocks, SongLanes, ADD_AUDIO,
+    AUDIO_TABS, BARS_BACK, BARS_ON, DUPLICATE, INPUTS, INPUT_CHIP, MONITORS, NONE, PANEL,
+    PANEL_CLOSE, PANEL_INPUT, PANEL_MONITOR, PANEL_MUTE, PANEL_SOLO, PANEL_TAKES, REC,
+    REGION_CLOSE, REGION_FROM, REGION_ROWS, REGION_SLOTS, RULER_ROW, SECTION_TAP, SLIDE_ROW,
+    START_ROW, TEMPO_CARD, TEMPO_ROW,
 };
 use crate::style_sheet::{StyleSheetView, STYLE_SHEET};
 use crate::widgets::{
@@ -247,6 +248,233 @@ pub fn made_at_hint(st: &TimeState) -> Option<String> {
     Some(format!(
         "wheel or - / +: the tempo it was made at, 0.1 BPM a step (SHIFT 1)   ·   {from}   ·   UNDO goes back"
     ))
+}
+
+/// The hint line under the Song view while a song region's Tempo card is
+/// open (phase 5c.3, board 4).
+pub const REGION_CARD_HINT: &str = "Tempo: wheel picks a row, - / + change it   ·   each change one region edit, UNDO goes back   ·   Tempo again or a tap off it: closed";
+
+/// The picked song region, its lane and its block, while it is there.
+fn picked_region(st: &TimeState) -> Option<(RegionId, &AudioLane, &AudioBlock)> {
+    let r = st.region?;
+    let lane = st.audio.iter().find(|l| l.track == r.track)?;
+    Some((r, lane, lane.blocks.get(r.index)?))
+}
+
+/// A song region's Tempo row's word (phase 5c.3).
+pub fn region_tempo_word(f: FollowTempo) -> &'static str {
+    match f {
+        FollowTempo::Off => "Off",
+        FollowTempo::Repitch => "Repitch",
+        FollowTempo::Stretch => "Stretch",
+    }
+}
+
+/// A song region's Tempo card (phase 5c.3, board 4) for region `r`, with
+/// row `row` picked: its name, take and bars, its Tempo, Until ready ("—"
+/// off Stretch) and Made at ("not known" in amber), the line and From its
+/// length. None when the region is gone.
+pub fn region_card(st: &TimeState, r: RegionId, row: usize) -> Option<RegionCard> {
+    let lane = st.audio.iter().find(|l| l.track == r.track)?;
+    let b = lane.blocks.get(r.index)?;
+    let meter = st.transport.meter;
+    let bar = meter.bar_ticks().max(1);
+    let first = b.start.div_euclid(bar) + 1;
+    let last = (b.end - 1).max(b.start).div_euclid(bar) + 1;
+    let mut title = lane.name.to_uppercase();
+    if b.number > 0 {
+        title += &format!(" · TAKE {}", b.number);
+    }
+    title += &if first == last {
+        format!(" · BAR {first}")
+    } else {
+        format!(" · BARS {first}–{last}")
+    };
+    let values = [
+        (region_tempo_word(b.follow).to_string(), NoteTone::Plain),
+        if b.follow == FollowTempo::Stretch {
+            (until_word(b.keep_pitch).to_string(), NoteTone::Plain)
+        } else {
+            ("—".to_string(), NoteTone::Dim)
+        },
+        if b.bpm > 0.0 {
+            (format!("{:.1} BPM", b.bpm), NoteTone::Plain)
+        } else {
+            ("not known".to_string(), NoteTone::Warn)
+        },
+    ];
+    let (line, tone, progress) = region_line(b);
+    Some(RegionCard {
+        region: (r.track, r.index),
+        title,
+        values,
+        row: row.min(REGION_ROWS.len() - 1),
+        line,
+        tone,
+        progress,
+        from_ok: region_from_length(&lane.name, b, meter).is_ok(),
+    })
+}
+
+/// The line on a song region's Tempo card (phase 5c.3): what its Tempo
+/// does with it at the song's tempo at its start, its ink, and while its
+/// copy is made how far.
+fn region_line(b: &AudioBlock) -> (String, NoteTone, Option<f32>) {
+    let now = b.at_bpm;
+    let at = tempo_short(now);
+    if b.bpm <= 0.0 {
+        return (
+            "Its tempo isn't known: it plays Off".into(),
+            NoteTone::Warn,
+            None,
+        );
+    }
+    if (b.bpm - now).abs() < 0.05 {
+        return ("Made at the song's tempo here".into(), NoteTone::Dim, None);
+    }
+    if b.follow != FollowTempo::Off && now / b.bpm > mpfree_audiotracks::MAX_SPEED {
+        return (
+            format!("At {at} past 4 times its speed: silent"),
+            NoteTone::Bad,
+            None,
+        );
+    }
+    match b.follow {
+        FollowTempo::Off => (format!("Off: off the bars at {at}"), NoteTone::Warn, None),
+        FollowTempo::Repitch => (
+            format!("Repitch: {}", semitones_words(&[b.bpm], now, false)),
+            NoteTone::Good,
+            None,
+        ),
+        FollowTempo::Stretch => match b.copy {
+            CopyState::Making(p) => (
+                format!("Making its copy: {} %", (p * 100.0).floor() as u32),
+                NoteTone::Accent,
+                Some(p),
+            ),
+            CopyState::Waiting => ("Making its copy: 0 %".into(), NoteTone::Accent, Some(0.0)),
+            CopyState::Unmade => ("Its copy couldn't be made".into(), NoteTone::Warn, None),
+            CopyState::Ready | CopyState::None => (
+                format!("Stretch: the same pitch at {at}"),
+                NoteTone::Good,
+                None,
+            ),
+        },
+    }
+}
+
+/// From its length on a song region's Tempo card (phase 5c.3): the tempo
+/// that makes its sound last its length in whole bars (whole beats under
+/// a bar), to 0.1 BPM, within the tempos MPFree plays, or why there is
+/// none. Its sound is what it plays: at the tempo it was made at when
+/// that is known, else as it plays along the song.
+pub fn region_from_length(name: &str, b: &AudioBlock, meter: Meter) -> Result<f64, String> {
+    let (bar, beat) = (meter.bar_ticks().max(1), meter.beat_ticks().max(1));
+    let len = b.end - b.start;
+    let unit = if len >= bar { bar } else { beat };
+    let whole = ((len as f64 / unit as f64).round() as i64).max(1) * unit;
+    let quarters = |t: Tick| t as f64 / f64::from(PPQ);
+    let secs = if b.bpm > 0.0 {
+        quarters(len) * 60.0 / b.bpm
+    } else {
+        b.secs
+    };
+    if len <= 0 || secs <= 0.0 {
+        return Err(format!("{name}'s region has no sound to go by"));
+    }
+    let bpm = (quarters(whole) * 60.0 / secs * 10.0).round() / 10.0;
+    let words = bars_beats(whole, meter);
+    if !mpfree_transport::time::valid_bpm(bpm) {
+        return Err(format!(
+            "{words} long would mean {} BPM, past the tempos MPFree plays",
+            tempo_short(bpm)
+        ));
+    }
+    if b.bpm > 0.0 && (b.bpm - bpm).abs() < 0.05 {
+        return Err(format!(
+            "{name}'s region was made at {} BPM already: its {words} fit its sound",
+            tempo_short(b.bpm)
+        ));
+    }
+    Ok(bpm)
+}
+
+/// What a step of row `row` of the picked song region's Tempo card asks
+/// for (phase 5c.3, board 4), or why it asks for nothing: Tempo steps
+/// Off, Repitch, Stretch (Repitch and Stretch only once it has a tempo it
+/// was made at); Until ready on time or keep pitch, on Stretch; Made at
+/// 0.1 BPM a step (SHIFT 1). Each is one region edit UNDO takes back.
+pub fn region_step(
+    st: &TimeState,
+    row: usize,
+    delta: i32,
+    shift: bool,
+) -> Result<TimeAction, String> {
+    use FollowTempo::{Off, Repitch, Stretch};
+    let (region, lane, b) = picked_region(st).ok_or("Pick a region first")?;
+    let name = &lane.name;
+    let d = delta.signum();
+    let follow = |follow, keep_pitch| {
+        Ok(TimeAction::Audio(AudioAction::Follow {
+            region,
+            follow,
+            keep_pitch,
+        }))
+    };
+    match row {
+        0 => {
+            const ORDER: [FollowTempo; 3] = [Off, Repitch, Stretch];
+            let at = ORDER.iter().position(|&f| f == b.follow).unwrap_or(0);
+            let next = (at as i32 + d).clamp(0, ORDER.len() as i32 - 1) as usize;
+            if next == at {
+                return Err(if d < 0 {
+                    format!("{name}'s region is Off, as recorded: its first")
+                } else {
+                    format!("{name}'s region is on Stretch: its last")
+                });
+            }
+            let to = ORDER[next];
+            if to != Off && b.bpm <= 0.0 {
+                return Err(format!(
+                    "{name}'s region has no tempo it was made at, so it can't follow the song's: set Made at first, or From its length"
+                ));
+            }
+            follow(to, to == Stretch && b.keep_pitch)
+        }
+        1 => {
+            if b.follow != Stretch {
+                return Err(
+                    "Until ready is what Stretch does while its copy is made: set Tempo to Stretch first"
+                        .into(),
+                );
+            }
+            let to = d > 0;
+            if to == b.keep_pitch {
+                return Err(format!(
+                    "{name}'s region's Until ready is {} already: {}",
+                    until_word(to),
+                    if to { "its last" } else { "its first" }
+                ));
+            }
+            follow(Stretch, to)
+        }
+        2 => {
+            let from = if b.bpm > 0.0 { b.bpm } else { b.at_bpm };
+            let step = if shift { 1.0 } else { 0.1 };
+            let next = (((from / step).round() + f64::from(d)) * step * 10.0).round() / 10.0;
+            if next < MIN_BPM {
+                return Err(format!("MPFree plays from {} BPM", tempo_short(MIN_BPM)));
+            }
+            if next > MAX_BPM {
+                return Err(format!("MPFree plays up to {} BPM", tempo_short(MAX_BPM)));
+            }
+            Ok(TimeAction::Audio(AudioAction::Tempo {
+                region,
+                centi_bpm: (next * 100.0).round() as u32,
+            }))
+        }
+        _ => Err(String::new()),
+    }
 }
 
 /// The note inspector (piano roll plan 1C.1): while notes are picked in
@@ -3198,7 +3426,7 @@ fn action_of(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 TempoEdit::Delete(index)
             }))
         }
-        (SONG, EventKind::Tab(k)) if *k < AUDIO_BUTTONS.len() && st.region.is_some() => {
+        (SONG, EventKind::Tab(k)) if *k < AUDIO_TABS && st.region.is_some() => {
             let r = st.region?;
             Some(TimeAction::Audio(match k {
                 0 => AudioAction::Split(r),
@@ -3207,6 +3435,15 @@ fn action_of(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                 3 => AudioAction::Gain(r),
                 4 => AudioAction::Takes(r.track),
                 _ => AudioAction::ToCell(r),
+            }))
+        }
+        // From its length on a song region's Tempo card (phase 5c.3).
+        (SONG, EventKind::Tab(REGION_FROM)) => {
+            let (region, lane, b) = picked_region(st)?;
+            let bpm = region_from_length(&lane.name, b, st.transport.meter).ok()?;
+            Some(TimeAction::Audio(AudioAction::Tempo {
+                region,
+                centi_bpm: (bpm * 100.0).round() as u32,
             }))
         }
         (SONG, EventKind::Tab(k)) if (SECTION_TAP..BARS_BACK).contains(k) => {
@@ -3320,6 +3557,10 @@ fn action_of(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                     fine: false,
                 }
             }))
+        }
+        // A song region's Tempo card's arrows (phase 5c.3).
+        (SONG, EventKind::Step { index, delta }) if card_row(*index).is_some() => {
+            region_step(st, card_row(*index)?, *delta, false).ok()
         }
         (SONG, EventKind::Step { index, delta }) => {
             let track = st.audio_panel?;
@@ -3591,6 +3832,17 @@ fn why_not_of(ev: &UiEvent, st: &TimeState) -> Option<String> {
         }
         // The foot picked: what the wheel does now (board 2).
         (CLIP_CARD, EventKind::Select(AUDIO_MADE_AT)) => made_at_hint(st),
+        // A song region's Tempo card (phase 5c.3): a setting at its end,
+        // or From its length with nothing to make.
+        (SONG, EventKind::Step { index, delta }) if card_row(*index).is_some() => {
+            region_step(st, card_row(*index)?, *delta, false)
+                .err()
+                .filter(|w| !w.is_empty())
+        }
+        (SONG, EventKind::Tab(REGION_FROM)) => {
+            let (_, lane, b) = picked_region(st)?;
+            region_from_length(&lane.name, b, st.transport.meter).err()
+        }
         (MORPH, EventKind::Tab(3)) | (CLIP_CARD, EventKind::Toggle(1)) => Some(match st.focus() {
             None => "Arm a track with a clip: Reload clip reloads its clip".to_string(),
             Some(_) => {
@@ -7858,6 +8110,11 @@ pub struct TimePage {
     /// The Song view's Chords lane chip the chord picker is open on
     /// (composing step 6, board C): an index into its chips.
     pub song_chord: Option<usize>,
+    /// The song region whose Tempo card is open (phase 5c.3, board 4):
+    /// it closes when another is picked, none is, or the Song view goes.
+    pub region_card: Option<RegionId>,
+    /// The Tempo card's row the wheel and - / + turn ([`REGION_ROWS`]).
+    pub region_row: usize,
 }
 
 impl TimePage {
@@ -7924,6 +8181,18 @@ impl TimePage {
             (Some(r), Some(g)) => g.visible_rows(r),
             _ => 0,
         }
+    }
+
+    /// Whether the picked song region's Tempo card is open (phase 5c.3):
+    /// the wheel and - / + are its, and the hint line.
+    pub fn region_card_open(&self, st: &TimeState) -> bool {
+        st.song_view && self.region_card.is_some() && self.region_card == st.region
+    }
+
+    /// The wheel on the open Tempo card: the row before or after.
+    pub fn pick_region_row(&mut self, d: i32) {
+        let last = REGION_ROWS.len() as i32 - 1;
+        self.region_row = (self.region_row as i32 + d.signum()).clamp(0, last) as usize;
     }
 
     /// A touch the page handles itself: the grid's pager (‹ and ›, or a
@@ -7995,6 +8264,29 @@ impl TimePage {
 
     pub fn page_tracks(&mut self, ev: &UiEvent, st: &TimeState) -> bool {
         let step = match (ev.widget.as_str(), &ev.kind) {
+            // The picked region's Tempo button (phase 5c.3, board 4): its
+            // card opens over the lanes, its Tempo row picked, the track
+            // panel closing; again, it closes.
+            (SONG, EventKind::Tab(TEMPO_CARD)) => {
+                if self.region_card_open(st) {
+                    self.region_card = None;
+                } else if st.region.is_some() {
+                    self.region_card = st.region;
+                    self.region_row = 0;
+                    if st.audio_panel.is_some() {
+                        self.asks.push(TimeAction::Audio(AudioAction::ClosePanel));
+                    }
+                }
+                return true;
+            }
+            (SONG, EventKind::Tab(REGION_CLOSE)) => {
+                self.region_card = None;
+                return true;
+            }
+            (SONG, EventKind::Tab(k)) if card_row(*k).is_some() => {
+                self.region_row = card_row(*k).unwrap_or(0);
+                return true;
+            }
             (SONG, EventKind::Tab(k)) if *k == BARS_BACK || *k == BARS_ON => {
                 // A dragged block or section held at the left or right
                 // edge: a bar a step, more zoomed out (6.4).
@@ -9018,6 +9310,14 @@ impl TimePage {
         let mut lanes = song_lanes_with(st, self.first_bar, self.bars_shown(), blocks);
         lanes.show_button = self.set_open;
         lanes.adding = self.adding;
+        // The picked region's Tempo card (phase 5c.3): closed once another
+        // region is picked, or none.
+        if !self.region_card_open(st) {
+            self.region_card = None;
+        }
+        lanes.tempo_card = self
+            .region_card
+            .and_then(|r| region_card(st, r, self.region_row));
         // The Chords lane's picker, open on a chip.
         if let (Some(k), Some(p)) = (self.song_chord, self.chord_pick) {
             let bar_t = st.transport.meter.bar_ticks().max(1);
@@ -12530,6 +12830,179 @@ mod tests {
         assert_eq!(page.first_track, GRID_COLS);
     }
 
+    /// Board 4 (phase 5c.3): a song region's Tempo card says its take,
+    /// bars and settings and what they do at the song's tempo there; each
+    /// arrow is one region edit; From its length rounds to whole bars;
+    /// the Tempo button opens and closes it, and it closes with the pick.
+    #[test]
+    fn a_song_regions_tempo_card_shows_its_settings_and_asks_one_region_edit_a_step() {
+        use crate::song::{AudioBlock, AudioLane, REGION_ROW};
+        use FollowTempo::{Off, Repitch, Stretch};
+        let mut st = state();
+        st.song_view = true;
+        let block = AudioBlock {
+            start: 4 * BAR,
+            end: 8 * BAR,
+            take: 1,
+            gain: 1.0,
+            follow: Stretch,
+            bpm: 120.0,
+            number: 2,
+            secs: 10.4,
+            at_bpm: 92.0,
+            ..AudioBlock::default()
+        };
+        st.audio = vec![AudioLane {
+            track: 2,
+            row: usize::MAX,
+            name: "Vocal".into(),
+            color: audio_color(2),
+            armed: false,
+            input: Input::Left,
+            mix: None,
+            level: 0.0,
+            volume: 1.0,
+            pan: 0.0,
+            monitor: Monitor::Auto,
+            mute: false,
+            solo: false,
+            blocks: vec![block],
+            takes: Vec::new(),
+            recording: None,
+            clips: Vec::new(),
+        }];
+        let r = RegionId { track: 2, index: 0 };
+        st.region = Some(r);
+        let set = |st: &mut TimeState, f: &dyn Fn(&mut AudioBlock)| f(&mut st.audio[0].blocks[0]);
+        let card = region_card(&st, r, 0).unwrap();
+        assert_eq!(card.title, "VOCAL · TAKE 2 · BARS 5–8");
+        let words = |c: &RegionCard| c.values.clone().map(|v| v.0);
+        assert_eq!(words(&card), ["Stretch", "on time", "120.0 BPM"]);
+        assert_eq!(
+            (card.line.as_str(), card.tone),
+            ("Stretch: the same pitch at 92", NoteTone::Good)
+        );
+        // Four whole bars at 120: From its length has nothing to make.
+        assert!(!card.from_ok);
+        assert_eq!(
+            why_not(&ev(SONG, EventKind::Tab(REGION_FROM)), &st).unwrap(),
+            "Vocal's region was made at 120 BPM already: its 4 bars fit its sound"
+        );
+        // Each arrow, one region edit.
+        let audio = |a: AudioAction| Ok(TimeAction::Audio(a));
+        let follow = |follow, keep_pitch| {
+            audio(AudioAction::Follow {
+                region: r,
+                follow,
+                keep_pitch,
+            })
+        };
+        assert_eq!(region_step(&st, 0, -1, false), follow(Repitch, false));
+        assert_eq!(
+            region_step(&st, 0, 1, false),
+            Err("Vocal's region is on Stretch: its last".into())
+        );
+        assert_eq!(region_step(&st, 1, 1, false), follow(Stretch, true));
+        assert!(region_step(&st, 1, -1, false).is_err());
+        let tempo = |c| {
+            audio(AudioAction::Tempo {
+                region: r,
+                centi_bpm: c,
+            })
+        };
+        assert_eq!(region_step(&st, 2, 1, false), tempo(12_010));
+        assert_eq!(region_step(&st, 2, -1, true), tempo(11_900));
+        // The arrows' touches ask the same.
+        let step = |k, delta| {
+            action(
+                &ev(
+                    SONG,
+                    EventKind::Step {
+                        index: REGION_ROW + k,
+                        delta,
+                    },
+                ),
+                &st,
+            )
+        };
+        assert_eq!(step(0, -1), follow(Repitch, false).ok());
+        assert_eq!(step(0, 1), None);
+        // Its copy being made, then Off and Repitch.
+        set(&mut st, &|b| b.copy = CopyState::Making(0.4));
+        let card = region_card(&st, r, 0).unwrap();
+        assert_eq!(
+            (card.line.as_str(), card.tone, card.progress),
+            ("Making its copy: 40 %", NoteTone::Accent, Some(0.4))
+        );
+        set(&mut st, &|b| b.follow = Off);
+        let card = region_card(&st, r, 0).unwrap();
+        assert_eq!(card.values[1], ("—".to_string(), NoteTone::Dim));
+        assert_eq!(card.line, "Off: off the bars at 92");
+        set(&mut st, &|b| b.follow = Repitch);
+        assert_eq!(
+            region_card(&st, r, 0).unwrap().line,
+            "Repitch: 4.6 semitones down"
+        );
+        // No tempo known: it plays Off, can't follow until it has one,
+        // and From its length makes one from its 10.4 s as 4 bars.
+        set(&mut st, &|b| {
+            b.bpm = 0.0;
+            b.follow = Off;
+        });
+        let card = region_card(&st, r, 2).unwrap();
+        assert_eq!(card.values[2], ("not known".to_string(), NoteTone::Warn));
+        assert_eq!(card.line, "Its tempo isn't known: it plays Off");
+        assert!(card.from_ok);
+        assert!(region_step(&st, 0, 1, false)
+            .unwrap_err()
+            .contains("set Made at first"));
+        assert_eq!(region_step(&st, 2, 1, false), tempo(9_210));
+        assert_eq!(
+            action(&ev(SONG, EventKind::Tab(REGION_FROM)), &st),
+            tempo(9_230).ok()
+        );
+        // Not whole bars: 4.1 bars at 120 is 4 bars at 117.1.
+        set(&mut st, &|b| {
+            b.bpm = 120.0;
+            b.end = 8 * BAR + BAR / 10;
+        });
+        assert_eq!(
+            region_from_length("Vocal", &st.audio[0].blocks[0], st.transport.meter),
+            Ok(117.1)
+        );
+        // The Tempo button opens it (the panel closing), the wheel picks
+        // its row, Tempo again or a tap off it closes it, and so does
+        // another pick.
+        let mut page = TimePage::default();
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 1280, 800);
+        ui.add(SONG, SongLanes::new());
+        st.audio_panel = Some(2);
+        let tab = |k| ev(SONG, EventKind::Tab(k));
+        assert!(page.page_tracks(&tab(TEMPO_CARD), &st));
+        assert!(page.region_card_open(&st));
+        assert_eq!(
+            page.take_asks(),
+            [TimeAction::Audio(AudioAction::ClosePanel)]
+        );
+        page.update(&mut ui, &st);
+        let shown = |ui: &Ui| ui.get::<SongLanes>(SONG).unwrap().tempo_card.clone();
+        assert_eq!(shown(&ui).map(|c| c.row), Some(0));
+        assert!(page.page_tracks(&tab(REGION_ROW + 2), &st));
+        page.pick_region_row(-1);
+        page.update(&mut ui, &st);
+        assert_eq!(shown(&ui).map(|c| c.row), Some(1));
+        assert!(page.page_tracks(&tab(TEMPO_CARD), &st));
+        assert!(!page.region_card_open(&st));
+        assert!(page.page_tracks(&tab(TEMPO_CARD), &st));
+        assert!(page.page_tracks(&tab(REGION_CLOSE), &st));
+        assert!(!page.region_card_open(&st));
+        assert!(page.page_tracks(&tab(TEMPO_CARD), &st));
+        st.region = None;
+        page.update(&mut ui, &st);
+        assert_eq!(shown(&ui), None);
+        assert_eq!(page.region_card, None);
+    }
+
     #[test]
     fn the_audio_lanes_ask_for_audio_actions() {
         use crate::song::{AudioBlock, AudioLane};
@@ -12561,6 +13034,7 @@ mod tests {
                 fade_out: 0,
                 into: 0,
                 left: 0,
+                ..AudioBlock::default()
             }],
             takes: Vec::new(),
             recording: None,

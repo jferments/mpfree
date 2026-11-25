@@ -167,7 +167,7 @@ If the sound you picked goes away (its channel is taken out of the mix), the tra
 
 ## Editing regions
 
-Tap a region to pick it. The buttons along the bottom become **Split**, **Erase**, **Fades**, **Gain**, **Takes** and **To a cell** for that region; tap empty space to go back to the song's own buttons. (**To a cell** makes the region an audio clip: see [Audio clips](#audio-clips).)
+Tap a region to pick it. The buttons along the bottom become **Split**, **Erase**, **Fades**, **Gain**, **Tempo**, **Takes** and **To a cell** for that region; tap empty space to go back to the song's own buttons. (**To a cell** makes the region an audio clip: see [Audio clips](#audio-clips). **Tempo** is below: [A region's tempo](#a-regions-tempo).)
 
 - **Split** cuts the region at the playhead, so put the playhead inside it first. Nothing you hear changes: a fade the cut goes through carries on across it, each part showing its share of the slope.
 - **Erase** takes the region out.
@@ -175,6 +175,24 @@ Tap a region to pick it. The buttons along the bottom become **Split**, **Erase*
 - **Gain** and **Fades** are on the Q-Links. While a region is picked, the four knobs turn the track's **Level** (Q1) and **Pan** (Q2), which are its mixer strip's, and the region's **Gain** (Q3) and **Fades** (Q4, the fade in and the fade out together). Hold **SHIFT** for fine steps. A fade shows as a slope on the region. On a part cut from a longer region (by **Split**, a punch in, or moving the song's bars), the fades you set are its own, at its own ends.
 - **UNDO** takes back the last region change, and **SHIFT + UNDO** redoes what UNDO took back, as long as region changes are what you did last. After anything else (To a cell, a clip changed) UNDO takes that back first.
 - **Moving a section, + Bar and Delete bars** on the Song view move the regions with the song (see [Audio in the song](arranging.md#audio-in-the-song)). **UNDO** takes such an edit back with the song, after any region changes made since, and **SHIFT + UNDO** puts it back.
+
+### A region's tempo
+
+A region on the song plays as it was recorded: if you change the song's tempo, a region longer than a beat or two drifts off the bars. Like an audio clip (see [The Clip tab for an audio clip](#the-clip-tab-for-an-audio-clip)), a region can follow the tempo instead, each region with its own setting.
+
+Pick the region and tap **Tempo**. A small card opens over the lanes with the region's name, take and bars, and three rows:
+
+| Row | What it does |
+|---|---|
+| **Tempo** | **Off**: as recorded. **Repitch**: on its bars, faster and higher (or slower and lower), like tape. **Stretch**: on its bars at its own pitch, from a copy of its audio made for the song's tempo there. Repitch and Stretch need the tempo it was made at (the third row). |
+| **Until ready** | Only with **Stretch** (otherwise "—"): **on time** plays it Repitch while its copy is made; **keep pitch** never plays it off pitch: through a tempo change it plays on in its own pitch, off the bars, and rejoins them once its copy is ready. |
+| **Made at** | The tempo its audio was made at: its take's, or "not known" (amber), for instance a take recorded while the tempo changed. |
+
+Under the rows a line says what it does at the song's tempo there ("Stretch: the same pitch at 92", "Repitch: 4.6 semitones down", "Off: off the bars at 92", or "Making its copy: 40 %" while its copy is made). The wheel picks a row, and **-** and **+** change it (**SHIFT**: **Made at** a whole BPM); you can also tap a row's **‹** and **›**. **From its length** sets **Made at** from the region's length in whole bars: a region 4.1 bars long at 120 BPM was made at 117.1, so it fills exactly 4 bars. Each change is one step **UNDO** takes back. Tap **Tempo** again, or anywhere off the card, to close it.
+
+{{shot: arrange-song-region-tempo | The vocal's take 2 at 92 BPM: made at 120, on Stretch, its card open. The guitar's recording on Repitch carries its tag.}}
+
+A region on **Repitch** or **Stretch** carries a small tag after its name. **Split**, **Takes** and **To a cell** keep a region's setting: a part comped from another take keeps the setting of what it plays over, at its own take's tempo.
 
 ## Comping with take lanes
 

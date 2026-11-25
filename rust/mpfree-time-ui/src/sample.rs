@@ -1238,6 +1238,35 @@ pub fn song_audio_state() -> Result<TimeState, String> {
     Ok(state)
 }
 
+/// A song region's Tempo card (phase 5c.3, board 4), from
+/// [`song_audio_state`] at 92 BPM: the Vocal's newer take, made at 120,
+/// on Stretch with its copy in (its tag after its name), its card to be
+/// opened on Tempo; the Guitar's recording on Repitch, tagged too.
+pub fn song_region_tempo_state() -> Result<TimeState, String> {
+    use mpfree_audiotracks::FollowTempo::{Repitch, Stretch};
+    let mut state = song_audio_state()?;
+    state.transport.bpm = 92.0;
+    let r = state
+        .region
+        .ok_or("region tempo sample: no region picked")?;
+    for b in state.audio.iter_mut().flat_map(|l| l.blocks.iter_mut()) {
+        b.at_bpm = 92.0;
+    }
+    let b = state.audio[0]
+        .blocks
+        .get_mut(r.index)
+        .ok_or("region tempo sample: the region is gone")?;
+    (b.follow, b.bpm, b.copy) = (
+        Stretch,
+        120.0,
+        mpfree_audiotracks::copying::CopyState::Ready,
+    );
+    if let Some(g) = state.audio[1].blocks.first_mut() {
+        (g.follow, g.bpm) = (Repitch, 120.0);
+    }
+    Ok(state)
+}
+
 /// The Song view with blocks of audio clips (phase 2, step 2d, layout
 /// spec 4c, board E), from [`song_audio_state`]: on Guitar's lane after
 /// its recording, Riff (its first two bars as a clip, played twice from

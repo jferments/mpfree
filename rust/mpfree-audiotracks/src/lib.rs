@@ -2934,13 +2934,23 @@ impl AudioTracks {
                 if to <= from {
                     return self.refuse();
                 }
-                let r = Region::of(
+                let mut r = Region::of(
                     from,
                     to,
                     take,
                     src_at(map, a, from as f64, rate),
                     tk.made_at(),
                 );
+                // It keeps the Tempo setting of what it plays over (phase
+                // 5c.3: Takes keep a region's setting), at its own take's
+                // tempo.
+                if let Some(was) = self
+                    .tracks
+                    .get(tk.track as usize)
+                    .and_then(|t| t.regions().iter().find(|g| g.start < to && g.end > from))
+                {
+                    (r.follow, r.keep_pitch) = (was.follow, was.keep_pitch);
+                }
                 self.put_edit(
                     tk.track as usize,
                     (from, to),

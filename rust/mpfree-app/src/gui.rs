@@ -9993,6 +9993,10 @@ impl Player {
                     time_view::LINKED_LIST_HINT.to_string()
                 }
                 View::Arrange if self.time.list_view => time_view::LIST_HINT.to_string(),
+                // A song region's Tempo card (phase 5c.3).
+                View::Arrange if self.time.song_view && self.time_page.region_card_open(&self.time) => {
+                    time_view::REGION_CARD_HINT.to_string()
+                }
                 View::Arrange if self.time.song_view => time_view::song_hint(&self.time).to_string(),
                 View::Arrange if self.time_page.clip_card => time_view::clip_card_hint(&self.time),
                 // Add a part is faint while Rec song is on: this says why.
@@ -13918,6 +13922,27 @@ impl Player {
                             row,
                             delta,
                         })))
+                }
+                RowKey::Editing(_) | RowKey::Arrow { .. } => {}
+            }
+            return;
+        }
+        // A song region's Tempo card (phase 5c.3, board 4): the wheel
+        // picks a row, - / + (or the wheel once pushed) change it, SHIFT
+        // a whole BPM on Made at; each change one region edit.
+        if self.view == View::Arrange && self.time_page.region_card_open(&self.time) {
+            match k {
+                RowKey::Pick(d) => {
+                    self.time_page.pick_region_row(d);
+                    self.time_page.update(&mut self.ui, &self.time);
+                }
+                RowKey::Step(d) => {
+                    let row = self.time_page.region_row;
+                    match time_view::region_step(&self.time, row, d, self.status.shift) {
+                        Ok(a) => self.outbox.push(FromUi::Time(a)),
+                        Err(why) if !why.is_empty() => self.tell(&why),
+                        Err(_) => {}
+                    }
                 }
                 RowKey::Editing(_) | RowKey::Arrow { .. } => {}
             }
@@ -19957,6 +19982,22 @@ impl Player {
             }
             (time_view::CLIP_CARD, EventKind::Step { index, delta }) if self.status.shift => {
                 match time_view::card_action(&self.time, index, delta, true) {
+                    Ok(a) => Some(FromUi::Time(a)),
+                    Err(why) => {
+                        if !why.is_empty() {
+                            self.tell(&why);
+                        }
+                        None
+                    }
+                }
+            }
+            // SHIFT + a song region's Tempo card arrows (phase 5c.3): Made
+            // at a whole BPM.
+            (time_view::SONG, EventKind::Step { index, delta })
+                if self.status.shift && mpfree_time_ui::song::card_row(index).is_some() =>
+            {
+                let row = mpfree_time_ui::song::card_row(index)?;
+                match time_view::region_step(&self.time, row, delta, true) {
                     Ok(a) => Some(FromUi::Time(a)),
                     Err(why) => {
                         if !why.is_empty() {
@@ -26923,6 +26964,21 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("arrange-song-audio", p));
         }
         Err(e) => eprintln!("arrange-song-audio sample: {e}"),
+    }
+    // A song region's Tempo card (phase 5c.3, board 4): the vocal's
+    // region at 92 BPM, made at 120, on Stretch, its card open on Tempo;
+    // the guitar's on Repitch, tagged.
+    match mpfree_time_ui::sample::song_region_tempo_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.time_page.region_card = p.time.region;
+            p.time_page.update(&mut p.ui, &p.time);
+            p.refresh_hint();
+            out.push(("arrange-song-region-tempo", p));
+        }
+        Err(e) => eprintln!("arrange-song-region-tempo sample: {e}"),
     }
     // Blocks of audio clips on the guitar's lane (layout spec 4c, step
     // 2d, board E): Riff played twice, picked, and Outro, a once clip.
@@ -38055,6 +38111,7 @@ mod tests {
                 fade_out: 0,
                 into: 0,
                 left: 0,
+                ..AudioBlock::default()
             }],
             takes: Vec::new(),
             recording: None,
@@ -38157,6 +38214,74 @@ mod tests {
         for lane in &p.time.audio {
             assert_eq!(lane.level, levels[lane.track]);
         }
+    }
+
+    /// Phase 5c.3 (board 4): the region's Tempo button opens its card,
+    /// the hint line says what the wheel does there, the wheel picks a
+    /// row and - / + change it (SHIFT a whole BPM on Made at), each one
+    /// region edit, and a tap off it closes it.
+    #[test]
+    fn a_song_regions_tempo_card_takes_the_wheel_and_asks_one_region_edit_a_step() {
+        use crate::app::RowKey;
+        use mpfree_audiotracks::FollowTempo;
+        use mpfree_time_ui::song::{SongLanes, REGION_CLOSE, REGION_ROW, TEMPO_CARD};
+        let mut p = sample_player(Fonts::embedded());
+        let st = mpfree_time_ui::sample::song_region_tempo_state().unwrap();
+        let r = st.region.unwrap();
+        p.apply(ToUi::Time(Box::new(st)));
+        p.apply(ToUi::Show(View::Arrange));
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        let song = |p: &mut Player, kind| {
+            p.on_event(mpfree_ui::UiEvent {
+                widget: time_view::SONG.to_string(),
+                kind,
+            })
+        };
+        let row = |p: &Player| {
+            p.ui.get::<SongLanes>(time_view::SONG)
+                .and_then(|l| l.tempo_card.as_ref().map(|c| c.row))
+        };
+        let audio = |a| FromUi::Time(TimeAction::Audio(a));
+        assert_eq!(song(&mut p, mpfree_ui::EventKind::Tab(TEMPO_CARD)), None);
+        assert!(p.time_page.region_card_open(&p.time));
+        assert_eq!(row(&p), Some(0));
+        assert_eq!(hint(&p), time_view::REGION_CARD_HINT);
+        p.take_actions();
+        p.apply(ToUi::Rows(RowKey::Step(-1)));
+        assert_eq!(
+            p.take_actions(),
+            [audio(AudioAction::Follow {
+                region: r,
+                follow: FollowTempo::Repitch,
+                keep_pitch: false
+            })]
+        );
+        p.apply(ToUi::Rows(RowKey::Pick(1)));
+        p.apply(ToUi::Rows(RowKey::Pick(1)));
+        p.apply(ToUi::Rows(RowKey::Pick(1)));
+        assert_eq!(row(&p), Some(2), "Made at, the last");
+        p.status.shift = true;
+        p.apply(ToUi::Rows(RowKey::Step(1)));
+        let tempo = |c| {
+            audio(AudioAction::Tempo {
+                region: r,
+                centi_bpm: c,
+            })
+        };
+        assert_eq!(p.take_actions(), [tempo(12_100)]);
+        // SHIFT + the card's ‹ the same way.
+        let less = mpfree_ui::EventKind::Step {
+            index: REGION_ROW + 2,
+            delta: -1,
+        };
+        assert_eq!(song(&mut p, less.clone()), Some(tempo(11_900)));
+        p.status.shift = false;
+        assert_eq!(song(&mut p, less), Some(tempo(11_990)));
+        // A tap off it closes it, and the hint line is the Song view's.
+        assert_eq!(song(&mut p, mpfree_ui::EventKind::Tab(REGION_CLOSE)), None);
+        assert!(!p.time_page.region_card_open(&p.time));
+        assert_eq!(row(&p), None);
+        assert_eq!(hint(&p), time_view::song_hint(&p.time));
     }
 
     #[test]
