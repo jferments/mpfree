@@ -1200,6 +1200,9 @@ impl TimeHost {
 
     /// The loop playing (or launched) on Loop track `t`, for OVERDUB with
     /// a cell of it armed.
+    /// Loop tracks only, so the app no longer asks (phase 4e.5); goes
+    /// with them in 4e.5b.
+    #[cfg(test)]
     pub fn loop_on(&self, t: usize) -> Option<usize> {
         let mask = mpfree_seq::loops::on_track(self.project(), t);
         let plan = self.loop_plan();

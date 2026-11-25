@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-status/src/kinds.rs rust/mpfree-app/src/status_screen.rs rust/mpfree-ui/src/status_page.rs
+covers: rust/mpfree-status/src/kinds.rs rust/mpfree-app/src/status_screen.rs rust/mpfree-ui/src/status_page.rs rust/mpfree-stream/src/status.rs
 checked: 2026-11-22 e7409223
 -->
 
@@ -96,6 +96,10 @@ Each problem below starts with its colour. A **Note** is listed on the System st
 
 **Red.** The stick's space for your music is gone or can only be read, so nothing new can be saved or recorded. **Try:** turn the MPC off, check the stick is in firmly, and turn it on again. If it happens again, the stick may be failing.
 
+### MPFree can't write to the SD card
+
+**Red.** The SD card that audio track takes record onto stopped taking them (it came out, or the system closed it), so takes since then are only in memory. **Try:** save the project now: it goes to the stick with every take. Then put the card back in.
+
 ### A recording isn't being saved
 
 **Red.** The stick isn't taking a take: it may be full, out or failing. The take is kept in memory and MPFree keeps trying, but if the power goes now, everything since it was last saved is lost. **Try:** keep the MPC on, and check the stick is in and has room. The take is saved as soon as the stick works again.
@@ -139,6 +143,10 @@ Each problem below starts with its colour. A **Note** is listed on the System st
 ### The stick is nearly full
 
 **Yellow.** Less than 1 GB, or less than 10 minutes of recording, is left on the stick. **Try:** remove takes, samples or projects you don't need, or copy them to a computer.
+
+### The SD card is nearly full
+
+**Yellow.** Less than 1 GB, or less than 10 minutes of recording, is left on the SD card that takes record onto. **Try:** remove takes you don't need from the card's **MPFree** folder, or put in a card with more room.
 
 ### A take didn't read back as it was recorded
 

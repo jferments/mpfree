@@ -2622,7 +2622,9 @@ struct Worker {
     /// How to look at the drive and where its looks go, and the end of
     /// the thread looking at it (dropped, it stops).
     drive: Option<(DriveProbe, Arc<DriveSeen>)>,
-    drive_stop: Option<Sender<()>>,
+    /// Where the drive's thread is told the takes' folder moved (dropped,
+    /// it stops).
+    drive_stop: Option<Sender<(PathBuf, bool)>>,
     /// Loop layers' files being written (phase 4c.3).
     layers: Vec<LayerWrite>,
 }
@@ -2677,22 +2679,31 @@ impl Worker {
     }
 
     /// Look at the drive the takes record to, once there is a folder and
-    /// a way to look: a thread of its own (any earlier one stops).
+    /// a way to look: a thread of its own, told when the folder moves (to
+    /// the SD card and back), so one watch says each drive's problems.
     fn look_at_drive(&mut self, done: &Sender<FromWorker>) {
         let (Some((probe, seen)), Some(dir)) = (self.drive.as_ref(), self.files.work_dir()) else {
             return;
         };
-        let (stop, stopped) = channel();
+        // A folder on a drive of its own is on the SD card.
+        let card = self.cards.iter().any(|c| dir.starts_with(c.root()));
+        if let Some(moved) = &self.drive_stop {
+            if moved.send((dir.to_path_buf(), card)).is_ok() {
+                return;
+            }
+        }
+        let (moved, heard) = channel();
         let done = done.clone();
         let started = crate::files::watch_drive(
             dir.to_path_buf(),
+            card,
             *probe,
             self.files.armed(),
             Arc::clone(seen),
-            stopped,
+            heard,
             move |p| done.send(FromWorker::Problem(p)).is_ok(),
         );
-        self.drive_stop = started.is_ok().then_some(stop);
+        self.drive_stop = started.is_ok().then_some(moved);
     }
 
     /// The writer's sync times onto the board, when there are new ones.

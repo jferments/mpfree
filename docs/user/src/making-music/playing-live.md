@@ -25,7 +25,7 @@ The rows are a simple step sequencer, as on a Digitakt: one row for each pad of 
 
 The heading over the rows:
 
-- **‹ Track 1 ›**: the track the pads play. Tap its right half for the next track and its left half for the one before; that track gets armed and the pads play its kit. Loop tracks are skipped, since they have no pads.
+- **‹ Track 1 ›**: the track the pads play. Tap its right half for the next track and its left half for the one before; that track gets armed and the pads play its kit. Audio tracks are skipped, since they have no pads.
 - **A** to **H**: the kit's banks. Tap one, or press **PAD BANK**, and the pads and the rows go to that bank.
 - **‹ 1–16 of 32 ›**: the steps shown, for a pattern longer than a bar. **Follow** turns the page as the pattern plays; turning a page yourself turns it off.
 
@@ -97,7 +97,7 @@ The last kind in the column, **Transpose**, moves a playing line instead of a so
 - When the armed track plays the synth (Synth, the last row of the list of kits), **16 LEVEL** opens Transpose at once. On a kit it's the last kind in the column.
 - When the synth's pads play **In key** (or chords), Transpose steps through the key instead of semitones, so the line stays in key: pad 16 is an octave up in a seven-note scale and pad 2 an octave down. The heading says the key ("Bass · -3 in C Minor").
 - The heading names the armed track and the tracks that follow it, and where they are ("Bass, with Keys · +5 st"). The pad it's on is lit, on the screen and on the MPC's pads. Pick pad does nothing here.
-- Only tracks that play notes move: a track that plays the synth, or a track's own instrument. A drum kit's notes are its pads, so a kit track, the Drums engine and Loop tracks stay as they are, and the heading says so.
+- Only tracks that play notes move: a track that plays the synth, or a track's own instrument. A drum kit's notes are its pads, so a kit track, the Drums engine and audio tracks stay as they are, and the heading says so.
 - The second Q-Link (Tune's place) turns Transpose too, two octaves either way, and so does the Record panel's **Transpose** row (see [Recording a clip](clips.md#recording-a-clip)). The Record panel's **Follows** row sets which tracks move with the armed one, so a bass and its chords can change key together.
 - What you record while transposed goes in as written and plays back transposed, so it sounds as you heard it.
 
@@ -125,7 +125,7 @@ What Perform changes today:
 - **Clips and rows don't drag**: a clip or a row's number launches when you lift your finger on it, and a finger that slides off first does nothing, so a slip can't move a clip. Several fingers each launch their own clip, in Make too.
 - **The Clips grid shows 5 big rows**, and a clip waiting to start counts down: an amber bar along its foot fills as its line comes near. A clip about to stop, or to give its track back to the song, counts down the same way.
 - **Capture scene** sits on the grid's title line, left of Back to song (or of **+ Track**). Found a combination you like while jamming? Tap it, and the clips playing now go as copies into the first empty row under the scene playing, as a new scene you can launch later. It is the scene card's **Capture** (see [Setting up a scene](arranging.md#setting-up-a-scene)) without opening the card, and **UNDO** takes it back. It is faint while nothing plays. With more than 8 tracks, Back to song or a set's **Show** button can leave it no room: then hold a row's number and use the card's Capture. **SHIFT** + a tap on it learns it for a controller's button (see [Launching clips and scenes from your controller](midi-and-cv.md#launching-clips-and-scenes-from-your-controller)).
-- **An empty slot needs a hold** to make a clip: half a second, with the red fill crossing it. A tap makes nothing, and the hint line says to hold, so a stray finger can't stop what a track plays. In Make one tap still makes a clip. An empty slot on a Loop track still arms with one tap.
+- **An empty slot needs a hold** to make a clip: half a second, with the red fill crossing it. A tap makes nothing, and the hint line says to hold, so a stray finger can't stop what a track plays. In Make one tap still makes a clip. An empty slot of the armed audio track still arms for a loop with one tap.
 - **NEXT** on the transport bar says what comes next and how soon, while the music plays: a scene you launched ("NEXT Drop in 2 beats"), the clips waiting ("Drop bass in 1 bar", "Bass stops in 3 beats"), the song list's next step ("Verse in 2 bars", "Stop all in 1 bar"), the next scene a follow action plays ("Verse in 3 bars", or "Drop or stay" when it is down to chance), or in song mode the next section ("Chorus in 4 bars"). When mutes are waiting too, WAITING comes first.
 
 {{shot: clips-perform | In Perform: five big rows, the chords waiting for bar 6 with their countdown bar, the glitch stopping there, NEXT on the transport bar, and Capture scene and Back to song on the grid's title line.}}

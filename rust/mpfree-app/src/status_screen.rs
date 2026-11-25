@@ -96,6 +96,9 @@ pub struct Readings {
     /// watcher's, every 3 s), while it answers; None before the first look
     /// or once it stopped answering (Stick missing says so).
     pub stick: Option<Room>,
+    /// That drive is the SD card, not the stick: the takes record on the
+    /// card's MPFree folder (the SD card plan's S2b, phase B2b).
+    pub card: bool,
     /// The MPC's temperature and processor clock at the last read (every
     /// 2 s, heat.rs).
     pub heat: Option<Heat>,
@@ -236,6 +239,15 @@ fn short(p: &ProblemView, names: &Watch) -> String {
 }
 
 /// Bytes in plain words: "1.2 GB", "640 MB".
+/// The drive the takes record to, as a line names it.
+fn drive_name(r: &Readings) -> &'static str {
+    if r.card {
+        "SD card"
+    } else {
+        "stick"
+    }
+}
+
 fn bytes(b: u64) -> String {
     let gb = b as f64 / 1e9;
     if gb >= 1.0 {
@@ -261,7 +273,7 @@ fn all_good_line(system: System, r: &Readings, board: &Board) -> String {
             _ => "Working".to_string(),
         },
         System::Storage => match r.stick {
-            Some(s) => format!("{} free on the stick", bytes(s.free)),
+            Some(s) => format!("{} free on the {}", bytes(s.free), drive_name(r)),
             None => "Working".to_string(),
         },
         System::Mpc => match r.heat.map(|h| (h.temp_c, h.slowed)) {
@@ -334,15 +346,21 @@ pub fn view(
             meter_tone(look.ram),
         ));
     }
-    // The stick: how full, yellow while it is nearly full.
+    // The drive the takes record to: how full, yellow while it is nearly
+    // full.
     if let Some(s) = r.stick.filter(|s| s.total > 0) {
         let used = 1.0 - s.free.min(s.total) as f64 / s.total as f64;
+        let nearly = if r.card {
+            &kinds::CARD_NEARLY_FULL
+        } else {
+            &kinds::STICK_NEARLY_FULL
+        };
         let full = board
             .problems(System::Storage, Window::Now)
             .iter()
-            .any(|p| p.kind == &kinds::STICK_NEARLY_FULL);
+            .any(|p| p.kind == nearly);
         meters.push((
-            "Stick".to_string(),
+            if r.card { "Card" } else { "Stick" }.to_string(),
             format!("{} free", bytes(s.free)),
             used as f32,
             if full { Tone::Warn } else { Tone::Good },
@@ -462,10 +480,17 @@ fn numbers(system: System, r: &Readings) -> Vec<(String, String)> {
         }
         System::Storage => {
             if let Some(s) = r.stick {
-                out.push(("Free on the stick".to_string(), bytes(s.free)));
-                out.push(("The stick's size".to_string(), bytes(s.total)));
+                let (name, label) = if r.card {
+                    ("SD card", "The SD card")
+                } else {
+                    ("USB stick", "The stick")
+                };
+                out.push(("Takes recorded on".to_string(), name.to_string()));
+                let on = drive_name(r);
+                out.push((format!("Free on the {on}"), bytes(s.free)));
+                out.push((format!("{label}'s size"), bytes(s.total)));
                 if !s.writable {
-                    out.push(("The stick".to_string(), "read only".to_string()));
+                    out.push((label.to_string(), "read only".to_string()));
                 }
             }
         }
@@ -581,6 +606,7 @@ mod tests {
             ram_pct: Some(41.0),
             free: Some(1_100_000_000),
             stick: None,
+            card: false,
             heat: None,
             engines: None,
             tracks: None,
@@ -675,6 +701,7 @@ mod tests {
         assert_eq!(
             v.numbers,
             [
+                ("Takes recorded on".to_string(), "USB stick".to_string()),
                 ("Free on the stick".to_string(), "12.4 GB".to_string()),
                 ("The stick's size".to_string(), "15.5 GB".to_string()),
             ]
@@ -682,6 +709,29 @@ mod tests {
         // Nearly full: the meter turns yellow with the problem.
         let mut b = board_with(&[Report::began(&kinds::STICK_NEARLY_FULL)], t);
         let later = t + Duration::from_secs(2);
+        b.tick(later);
+        let v = view(&b, &Watch::default(), &r, &mut place, later);
+        assert_eq!(v.meters[1].3, Tone::Warn);
+        // Takes recording on the SD card (S2b): the card's meter, words and
+        // problem, never the stick's.
+        let r = Readings { card: true, ..r };
+        let v = view(&b, &Watch::default(), &r, &mut place, later);
+        assert_eq!(v.meters[1].0, "Card");
+        assert_eq!(
+            v.meters[1].3,
+            Tone::Good,
+            "the stick's problem isn't the card's"
+        );
+        let v = view(&Board::new(), &Watch::default(), &r, &mut place, later);
+        assert_eq!(v.systems[2].line, "12.4 GB free on the SD card");
+        assert_eq!(
+            v.numbers[..2],
+            [
+                ("Takes recorded on".to_string(), "SD card".to_string()),
+                ("Free on the SD card".to_string(), "12.4 GB".to_string()),
+            ]
+        );
+        let mut b = board_with(&[Report::began(&kinds::CARD_NEARLY_FULL)], t);
         b.tick(later);
         let v = view(&b, &Watch::default(), &r, &mut place, later);
         assert_eq!(v.meters[1].3, Tone::Warn);

@@ -2750,7 +2750,6 @@ fn action_of(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
             // it is the page's own (TimePage::chooser).
             r if r == ROWS + ADD_KIND => TimeAction::AddTrack,
             r if r == ROWS + ADD_KIND + 1 => TimeAction::AddAudioTrack,
-            r if r == ROWS + ADD_KIND + 2 => TimeAction::AddLoopTrack,
             r if r == ROWS + BACK_TO_SONG => TimeAction::BackToSong,
             r if r == ROWS + crate::widgets::LIST_VIEW => TimeAction::ListView(true),
             // Capture scene, faint (nothing to keep) unless something
@@ -3156,7 +3155,6 @@ fn action_of(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
         // is the page's own (TimePage::chooser).
         (SONG, EventKind::Tab(crate::song::ADD_NOTE)) => Some(TimeAction::AddTrack),
         (SONG, EventKind::Tab(ADD_AUDIO)) => Some(TimeAction::AddAudioTrack),
-        (SONG, EventKind::Tab(crate::song::ADD_LOOP)) => Some(TimeAction::AddLoopTrack),
         (SONG, EventKind::Tab(crate::song::ADD_CLOSE)) => None,
         (SONG, EventKind::Tab(crate::song::LIST)) => Some(TimeAction::ListView(true)),
         (SONG, EventKind::Tab(crate::song::CLIPS)) => Some(TimeAction::SongView(false)),
@@ -7464,12 +7462,12 @@ impl TimePage {
         let (button, kind, off) = match (ev.widget.as_str(), &ev.kind) {
             (CLIPS, EventKind::Toggle(k)) => (
                 *k == ROWS + ADD_TRACK,
-                (ROWS + ADD_KIND..ROWS + ADD_KIND + 3).contains(k),
+                (ROWS + ADD_KIND..ROWS + ADD_KIND + crate::song::ADD_KINDS.len()).contains(k),
                 *k == ROWS + ADD_DISMISS,
             ),
             (SONG, EventKind::Tab(k)) => (
                 *k == crate::song::ADD_TRACK,
-                [crate::song::ADD_NOTE, ADD_AUDIO, crate::song::ADD_LOOP].contains(k),
+                [crate::song::ADD_NOTE, ADD_AUDIO].contains(k),
                 *k == crate::song::ADD_CLOSE,
             ),
             // Link's chooser (4b.5): Link opens and closes it, a touch off
@@ -11298,7 +11296,7 @@ mod tests {
         let row = |k| action(&ev(CLIPS, EventKind::Toggle(ROWS + ADD_KIND + k)), &st);
         assert_eq!(row(0), Some(TimeAction::AddTrack));
         assert_eq!(row(1), Some(TimeAction::AddAudioTrack));
-        assert_eq!(row(2), Some(TimeAction::AddLoopTrack));
+        assert_eq!(row(2), None, "no Loop track (4e.5)");
         assert_eq!(
             action(&ev(CLIPS, EventKind::Toggle(ROWS + ADD_DISMISS)), &st),
             None
@@ -11819,7 +11817,8 @@ mod tests {
         );
         assert_eq!(
             song(EventKind::Tab(crate::song::ADD_LOOP), &st),
-            Some(TimeAction::AddLoopTrack)
+            None,
+            "no Loop track (4e.5)"
         );
         assert_eq!(song(EventKind::Tab(crate::song::ADD_CLOSE), &st), None);
         // Nothing picked: the Song view's own row.

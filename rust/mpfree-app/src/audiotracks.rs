@@ -1506,6 +1506,51 @@ impl TrackHost {
         self.set_inside(t, Some((f, &name)))
     }
 
+    /// A new audio track made for a loop (4e.4's last resort) records what
+    /// that loop recorded (phase 4e.5), so the loop's overdubs, which
+    /// record its track's input, carry on from the same sound: the pads'
+    /// instrument after its fader (`pads`, as the input list names it),
+    /// the line input (both sides), a mix after its fader, or another
+    /// track's input as it was. Nothing when `p` has no engine track here
+    /// or the pads' instrument isn't known.
+    pub fn records_as(
+        &mut self,
+        p: usize,
+        source: crate::looping::LoopSource,
+        pads: Option<InputSource>,
+    ) -> Result<String, String> {
+        use crate::looping::{LoopSource, TrackFrom};
+        use mpfree_fx::CapturePoint;
+        let s = (0..MAX_TRACKS)
+            .find(|&s| self.place[s] == Some(p))
+            .ok_or("that track has no engine track")?;
+        let inside = |strip, point| Inside {
+            strip,
+            after_effects: point != CapturePoint::BeforeInserts,
+            after_fader: point == CapturePoint::AfterFader,
+        };
+        match source {
+            LoopSource::Pads => {
+                let pads = pads.ok_or("the pads' instrument isn't known yet")?;
+                let name = format!("{PADS_NAME}{}", pads.name);
+                let at = inside(pads.strip, CapturePoint::AfterFader);
+                self.set_inside(s, Some((at, &name)))
+            }
+            LoopSource::Line => self.set_line(s, Input::Stereo),
+            LoopSource::Mix(strip) => {
+                let name = crate::mixing::name(strip);
+                self.set_inside(s, Some((inside(strip, CapturePoint::AfterFader), &name)))
+            }
+            LoopSource::Track(t) => match t.from {
+                TrackFrom::Line(i) => self.set_line(s, i),
+                TrackFrom::Mix(strip, point) => {
+                    let name = crate::mixing::name(strip);
+                    self.set_inside(s, Some((inside(strip, point), &name)))
+                }
+            },
+        }
+    }
+
     /// What a loop recorded into project track `p`'s cell records (audio
     /// tracks phase 4b, behind Dev's switch): the track's own input, as a
     /// take on it would (inside the mix at its point, or its line pick),

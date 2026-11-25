@@ -67,7 +67,7 @@ About 12.5 minutes in all, plus heavy-load once more on each of the four sound-c
 | Workflow | What a musician does | Stands in for | About |
 |---|---|---|---|
 | `beat-from-scratch` | Steps on the pads with STEP SEQ, a step erased, a held step turned; a recorded take; mutes that wait for the bar in Perform | `rec-arm`, `step-pads`, `step-hold`, `step-speed`, `track-mute`, `mute-queue`, `live-erase` | 26 s |
-| `loops` | A loop recorded from Play and overdubbed; Speed, Reverse, mute and a second loop on the Looper tab; Capture; loops launched, stopped and played as a scene from Arrange | `looper`, `rec-arm`, `loop-tracks`, `looper-deck`, `loop-cell` | 38 s |
+| `loops` | A loop recorded from Play and overdubbed; Speed, Reverse, mute and a second loop on the Looper tab; Capture; loops launched, stopped and played as a scene from Arrange | `looper`, `rec-arm`, `loops-on-tracks`, `looper-deck`, `loop-cell` | 38 s |
 | `every-synth` | Each of the twelve engines on Track 1 in turn: eight notes held, then a run; the arp latched on Poly | `load`, `note-repeat`, and each engine's cost at eight voices | 2 min |
 | `effects` | A beat playing while a compressor, a drive, a delay and a reverb go on the drums, turned, run for 10 s and taken off | `fx-add`, `fx-busy`, `comp-moves` | 27 s |
 | `sample-page` | A loop's end moved while it sounds, ping-pong, Slice, Warp (stretch and repitch), Grain with its LFO and presets, Keep last 4 bars, UNDO, then Edit pad from the Pads tab's row and from PROG EDIT | `sample-live-loop`, `sample-warp`, `grain-movement`, `grain-cloud-view`, `grain-presets`, `sample-edit-pad` | 33 s |

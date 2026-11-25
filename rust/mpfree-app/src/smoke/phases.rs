@@ -453,7 +453,7 @@ mod looper {
     /// tap on an empty ring (and its ring again to close it); a layer
     /// dragged onto it moves there and UNDO takes the move back; one
     /// dragged onto an empty loop becomes a loop of its own; a loop's
-    /// speaker keeps it silent through STOP and PLAY; Clear empties the
+    /// speaker (its track's) keeps it silent through STOP and PLAY; Clear empties the
     /// picked loop, and so does a ring held a second; x deletes layers, and
     /// x on the last one clears the loop too.
     #[test]
@@ -532,12 +532,13 @@ mod looper {
             assert_eq!(layers_of(&s, 2), 1, "loop 3 has it");
             assert_eq!(s.looper.looper.selected(), 2);
 
-            // Loop 1's speaker: silent, and it stays so through STOP and
-            // PLAY; tapped again it plays.
+            // Loop 1's speaker, its track's (phase 4e.5): silent, and it
+            // stays so through STOP and PLAY; tapped again it plays.
+            let track = s.looper.slot_track(0).expect("Loop 1 is on a track");
             let t = at(&mut s, "ldeck", "loop-mute", 0);
             s.press_target(&t).run_for(0.1);
-            let muted = |s: &Session| s.looper.looper.loop_status(0).unwrap().muted;
-            assert!(muted(&s), "loop 1 is silent");
+            let muted = |s: &Session| s.time.project().tracks[track].mute;
+            assert!(muted(&s), "loop 1's track is silent");
             s.button("STOP").run_for(0.3);
             s.button("PLAY").run_for(0.3);
             assert!(muted(&s), "and stays out after STOP and PLAY");
@@ -609,7 +610,7 @@ mod looper {
     /// records from the next bar line, a hit ends the first pass on the
     /// bar line, a hit overdubs, a hit plays on (nothing was played into
     /// the overdub, so it leaves no layer). Pad 5, two rows under it,
-    /// mutes it and lets it play. Pad 14 is Loop 2's key, and a hit picks
+    /// mutes its track (the new audio track it landed on) and lets it play. Pad 14 is Loop 2's key, and a hit picks
     /// it. Held a second, a key clears its loop. The deck's Pads switch
     /// gives the pads back, and on the Sample tab they play the kit.
     #[test]
@@ -647,11 +648,15 @@ mod looper {
             s.run_for(0.2);
             assert_eq!(loop1(&s).phase, Phase::Playing);
             assert_eq!(loop1(&s).layers, 1, "an overdub of silence leaves none");
-            // Pad 5 mutes Loop 1 and lets it play again.
+            // Pad 5 mutes Loop 1's track (it landed on a new audio track,
+            // phase 4e.5: a loop's mute is its track's) and lets it play.
+            let track = s.looper.slot_track(0).expect("Loop 1 is on a track");
+            let muted = |s: &Session| s.time.project().tracks[track].mute;
             s.pad(4, 100, 0.05);
-            assert!(loop1(&s).muted, "pad 5 muted Loop 1");
+            assert!(muted(&s), "pad 5 muted Loop 1's track");
+            assert!(!loop1(&s).muted, "not the loop's own mute");
             s.pad(4, 100, 0.05);
-            assert!(!loop1(&s).muted);
+            assert!(!muted(&s));
             // Pad 14 is Loop 2's key: it picks Loop 2 and arms it; a hit
             // again lets it go.
             s.pad(13, 100, 0.05);
@@ -1070,7 +1075,7 @@ mod looper {
     /// A footswitch (the looper redesign, step 5): controls learned on the
     /// looper play it from any page. On Play, with the pads playing the
     /// kit, Loop 1's key records from the bar line and ends the pass,
-    /// a fader on its mute mutes it from the middle up, Next loop picks
+    /// a fader on its mute mutes its track from the middle up, Next loop picks
     /// Loop 2, the picked loop's key arms Loop 2 and lets it go, Undo
     /// and Clear are the Looper tab's on the picked loop, and Loop 1's
     /// key held a second clears it.
@@ -1097,14 +1102,18 @@ mod looper {
                 .said()
                 .iter()
                 .any(|l| l.contains("Loop 1's key, from a learned control")));
-            // A fader on Loop 1's mute: muted from the middle up, and
-            // playing again under it.
+            // A fader on Loop 1's mute: its track (the audio track it
+            // landed on, phase 4e.5) muted from the middle up, and playing
+            // again under it.
+            s.run_for(0.2);
+            let track = s.looper.slot_track(0).expect("Loop 1 is on a track");
+            let muted = |s: &Session| s.time.project().tracks[track].mute;
             s.footswitch(fs::mute(0), 0.8);
-            assert!(status(&s, 0).muted);
+            assert!(muted(&s) && !status(&s, 0).muted);
             s.footswitch(fs::mute(0), 0.9);
-            assert!(status(&s, 0).muted, "still up: nothing more");
+            assert!(muted(&s), "still up: nothing more");
             s.footswitch(fs::mute(0), 0.1);
-            assert!(!status(&s, 0).muted);
+            assert!(!muted(&s));
             // Next loop: Loop 2 picked; its key (the picked loop's) arms
             // it, and again lets it go.
             s.footswitch(fs::NEXT_LOOP, 1.0)
@@ -1283,7 +1292,7 @@ mod looper {
     }
 
     /// The forgiving looper (the Looper as an instrument, step 3a):
-    /// Overdubs: Once records one pass and plays on; a loop's S solos it
+    /// Overdubs: Once records one pass and plays on; a loop's S solos its track
     /// and the other loops go quiet in their places, as SHIFT + its mute
     /// pad does with the pads as loop keys; a loop cleared (its ring held,
     /// ERASE + its ring, its key held) comes back with UNDO, as it was
@@ -1313,14 +1322,23 @@ mod looper {
             s.press_target(&t);
             until_phase(&mut s, Phase::Playing, 2.5);
 
-            // Loop 2's S: Loop 1 goes quiet in its place; S again lets go.
+            // Loop 2's S, its track's (it landed on a new audio track of
+            // its own, phase 4e.5): Loop 1 goes quiet in its place; S again
+            // lets go.
+            s.run_for(0.2);
+            let (one, two) = (
+                s.looper.slot_track(0).unwrap(),
+                s.looper.slot_track(1).unwrap(),
+            );
+            assert_ne!(one, two, "a track a loop");
+            let soloed = |s: &Session, t: usize| s.time.project().tracks[t].solo;
             let t = at(&mut s, "ldeck", "loop-solo", 1);
             s.press_target(&t).run_for(0.1);
-            assert!(l(&s, 1).solo && l(&s, 0).solo_out, "loop 2 soloed");
+            assert!(soloed(&s, two) && !soloed(&s, one), "loop 2's track soloed");
             assert_eq!(l(&s, 0).phase, Phase::Playing, "loop 1 keeps its place");
             let t = at(&mut s, "ldeck", "loop-solo", 1);
             s.press_target(&t).run_for(0.1);
-            assert!(!l(&s, 1).solo && !l(&s, 0).solo_out);
+            assert!(!soloed(&s, two));
 
             // Loop 1's ring held a second: its press started an overdub,
             // the hold clears it. UNDO brings it back as it was.
@@ -1343,20 +1361,26 @@ mod looper {
             assert_eq!(s.looper.looper.selected(), 1);
             s.button("UNDO").run_for(0.3);
             assert_eq!(l(&s, 1).phase, Phase::Playing, "and UNDO brought it back");
+            // Back in a cell (the grid looks every few periods).
+            s.run_for(0.3);
+            let two = s.looper.slot_track(1).expect("loop 2 back on a track");
 
             // The pads as loop keys: SHIFT + pad 6 (Loop 2's mute) solos
-            // Loop 2, and again lets go.
+            // Loop 2's track, and again lets go.
             s.button_with("SHIFT", "SAMPLER");
             assert!(s.app.pads_are_loop_keys());
             s.button_edge("SHIFT", true);
             s.pad(5, 100, 0.05);
             s.button_edge("SHIFT", false);
-            assert!(l(&s, 1).solo, "SHIFT + its mute pad soloed loop 2");
-            assert!(!l(&s, 1).muted);
+            assert!(
+                soloed(&s, two),
+                "SHIFT + its mute pad soloed loop 2's track"
+            );
+            assert!(!s.time.project().tracks[two].mute);
             s.button_edge("SHIFT", true);
             s.pad(5, 100, 0.05);
             s.button_edge("SHIFT", false);
-            assert!(!l(&s, 1).solo);
+            assert!(!soloed(&s, two));
             // Pad 13 held: Loop 1 cleared; UNDO brings it back.
             s.pad(12, 100, 1.3);
             s.run_periods(4);
@@ -1946,7 +1970,8 @@ mod looper {
             s.press("leditor", "sync", "Free").run_for(0.1);
             assert_eq!(status(&s).clock, Clock::Free);
             assert!(!at(&mut s, "leditor", "sync", 1).enabled, "Free is lit");
-            assert_eq!(deck(&s).channels[1].foot, "Pads · free");
+            // An empty slot says how a loop fills it (phase 4e.5, board 5).
+            assert_eq!(deck(&s).channels[1].foot, crate::looper_page::FREE_FOOT);
             assert_eq!(smart_editor(&s).sub, "empty · records the pads, free");
             s.press("leditor", "bars", "Until tap").run_for(0.1);
             assert_eq!(status(&s).bars, None);
@@ -1976,7 +2001,12 @@ mod looper {
                 "the song stays stopped"
             );
             assert_eq!(free_runs(&s), Some(true));
-            assert_eq!(deck(&s).channels[0].length, "free");
+            // In its free cell on a new audio track: its card says free.
+            assert!(
+                deck(&s).channels[0].sub.ends_with("free"),
+                "{:?}",
+                deck(&s).channels[0]
+            );
             let tempo = deck(&s)
                 .head
                 .free_tempo
@@ -2013,7 +2043,7 @@ mod looper {
             );
             // Its ring plays them, at once with the song stopped (not an
             // overdub).
-            s.press("ldeck", "ring", "Loop 1 ring: play the free loops")
+            s.press("ldeck", "ring", "Audio 1 · row 1 ring: play the free loops")
                 .run_for(0.2);
             assert_eq!(free_runs(&s), Some(true));
             assert_eq!(status(&s).phase, Phase::Playing);
@@ -2166,8 +2196,12 @@ mod looper {
             s.button("STOP").run_for(0.2);
             assert_eq!(free_runs(&s), Some(false));
             assert_eq!(stop_words(&s), "PLAY: song and free loops");
-            s.press(LOOP_ROW, "ring", "Loop 1 ring: play the free loops")
-                .run_for(0.2);
+            s.press(
+                LOOP_ROW,
+                "ring",
+                "Audio 1 · row 1 ring: play the free loops",
+            )
+            .run_for(0.2);
             assert_eq!(free_runs(&s), Some(true));
             assert_eq!(status(&s).phase, Phase::Playing, "not an overdub");
             // The loop keys: Loop 1's key plays the stopped free loops.
@@ -2185,16 +2219,20 @@ mod looper {
                 s.said()
             );
             assert_eq!(status(&s).phase, Phase::Playing, "not an overdub");
-            // Muted while stopped: its key lets it play first (still
-            // stopped), and the next plays the free loops.
+            // Its mute pad is its track's (it sits in a free cell on a new
+            // audio track, phase 4e.5): muted while stopped, the free loops
+            // stay stopped, and its key still plays them, silent until the
+            // mute pad lets the track play again.
             s.button("STOP").run_for(0.2);
+            let track = s.looper.slot_track(0).expect("Loop 1 is on a track");
+            let muted = |s: &Session| s.time.project().tracks[track].mute;
             s.pad(4, 100, 0.05);
-            assert!(status(&s).muted, "pad 5 muted Loop 1");
-            s.pad(12, 100, 0.05).run_for(0.1);
-            assert!(!status(&s).muted);
-            assert_eq!(free_runs(&s), Some(false), "unmuted, still stopped");
+            assert!(muted(&s) && !status(&s).muted, "pad 5 muted Loop 1's track");
+            assert_eq!(free_runs(&s), Some(false), "still stopped");
             s.pad(12, 100, 0.05).run_for(0.1);
             assert_eq!(free_runs(&s), Some(true));
+            s.pad(4, 100, 0.05);
+            assert!(!muted(&s));
         });
     }
 
@@ -2241,12 +2279,17 @@ mod looper {
             let bpm = s.time.info().bpm;
             let c = s.looper.looper.free_clock().expect("its clock");
             assert!(c.running && (c.bpm - bpm).abs() < 1e-9, "the song's: {c:?}");
-            assert_eq!(deck(&s).channels[0].length, "free");
+            // In its free cell on a new audio track: its card says free.
+            assert!(
+                deck(&s).channels[0].sub.ends_with("free"),
+                "{:?}",
+                deck(&s).channels[0]
+            );
             assert_eq!(
                 deck(&s).head.free_tempo.as_deref(),
                 Some(format!("Free {} BPM", crate::looper_page::free_bpm_words(bpm)).as_str())
             );
-            assert_eq!(deck(&s).channels[1].foot, "Pads · free", "as last set");
+            assert_eq!(deck(&s).channels[1].foot, crate::looper_page::FREE_FOOT);
             // (Sync's word on the hint line goes after 4 s.)
             s.run_for(4.0);
             assert_eq!(stop_words(&s), "STOP: the song");
@@ -2287,8 +2330,14 @@ mod looper {
             );
             s.press("leditor", "sync", "Song").run_for(0.1);
             assert_eq!(s.looper.looper.loop_status(1).unwrap().clock, Clock::Song);
+            // It records the input of the track it goes to (phase 4e.5):
+            // the pads, which Loop 1's new track took from Loop 1.
             assert_eq!(smart_editor(&s).sub, "empty · records the pads");
-            assert_eq!(deck(&s).channels[2].foot, "Pads", "Song from Loop 2 on");
+            assert_eq!(
+                deck(&s).channels[2].foot,
+                crate::looper_page::FREE_FOOT,
+                "Song from Loop 2 on"
+            );
         });
     }
 
@@ -2621,6 +2670,9 @@ mod looper {
                     .expect("the Q-Links");
                 (q.title.clone(), q.cards.clone())
             };
+            // The line saying where the loop landed (on a new audio track,
+            // 4e.5) gives the hint line back after its time.
+            s.run_for(f64::from(crate::gui::TELL_SECONDS));
             let (title, cards) = column(&s);
             assert_eq!(title, "Loop point");
             assert_eq!(
@@ -2999,10 +3051,15 @@ mod looper {
                     assert_eq!(st.ticks, 2 * bar, "{r}");
                     assert!(r.contains("2 bars at 15"), "{r}");
                     assert!(r.contains("(a close call: it could be 1 bar at 7"), "{r}");
+                    // On the screen: the header's chip offers the other
+                    // reading (the hint line says where the loop landed,
+                    // phase 4e.5).
+                    s.run_for(0.3);
+                    let chip = smart_editor(&s).chip.clone();
                     assert!(
-                        s.hint().contains("close call"),
-                        "on the screen: {}",
-                        s.hint()
+                        format!("{chip:?}").contains("Read as 1 bar"),
+                        "{chip:?} {:?}",
+                        s.said()
                     );
                 }
             });
@@ -4079,11 +4136,11 @@ mod device_log {
     /// the home view REC readies the notes and PLAY records them, played
     /// back on PLAY, UNDO takes the take, and the loop row's Arm arms the
     /// loop for REC.
-    /// The loop-tracks check (`app_checks.py`): a loop recorded from Play's
-    /// loop row lands on Loops A, row 2's number stops it on its bar line,
-    /// and its cell brings it back on one.
+    /// The loops-on-tracks check (`app_checks.py`): a loop recorded from
+    /// Play's loop row lands on a new audio track, row 2's scene stops it
+    /// on its bar line, and its cell brings it back on one.
     #[test]
-    fn loop_tracks_write_their_lines() {
+    fn loops_on_tracks_write_their_lines() {
         use mpfree_looper::Phase;
         on_big_stack(|| {
             let mut s = Session::new();
@@ -4097,23 +4154,39 @@ mod device_log {
             s.button("REC");
             s.run_for(2.5);
             assert_eq!(s.looper.phase(), Phase::Playing);
-            wrote(&s, n, "time: Loop 1 on Loops A, row 1, playing", "");
+            wrote(
+                &s,
+                n,
+                "time: Loop 1 on Audio 1 (a new audio track), row 1, playing",
+                "",
+            );
             s.press("header", "tab", "Arrange").settle();
             s.press("clips", "pager", "Tracks after").settle();
             s.press("clips", "scene", "Scene 2");
+            wrote(&s, n, "time: scene 2", "");
+            assert_eq!(
+                s.time.state().launch(8).map(|l| l.slot),
+                Some(0),
+                "it waits for its bar line"
+            );
             s.run_for(2.5);
-            let off = wrote(&s, n, "looper: loop 1 off from bar ", "");
-            s.press("clips", "slot", "Loops A slot 1");
+            assert_eq!(s.time.state().launch(8), None, "stopped on its bar line");
+            s.press("clips", "slot", "Audio 1 slot 1");
+            wrote(&s, n, "time: clips: Launch { track: 8, slot: 0 }", "");
+            assert_eq!(s.time.state().launch(8), None, "it waits for its bar line");
             s.run_for(2.5);
-            let on = wrote(&s, n, "looper: loop 1 on from bar ", "");
-            let bar = |l: &str| l.rsplit(' ').next().and_then(|b| b.parse::<u32>().ok());
-            assert!(bar(&on) > bar(&off), "{off} / {on}");
+            assert_eq!(
+                s.time.state().launch(8).map(|l| l.slot),
+                Some(0),
+                "back on its bar line"
+            );
             s.button("STOP");
         });
     }
 
-    /// `loop-cell`'s lines: SHIFT + "+ Track" adds a Loop track, a tap on
-    /// its row 2 cell arms it, and REC, PLAY and REC record a loop there.
+    /// `loop-cell`'s lines: SHIFT + "+ Track" adds an audio track, a tap
+    /// on its row 2 cell arms it, and REC, PLAY and REC record a loop
+    /// there.
     #[test]
     fn loop_cell_writes_its_lines() {
         use mpfree_looper::Phase;
@@ -4125,10 +4198,15 @@ mod device_log {
             s.button_edge("SHIFT", true);
             s.press("clips", "add-track", "+ Track").settle();
             s.button_edge("SHIFT", false);
-            wrote(&s, n, "time: Loops A added, a Loop track", "");
-            s.press("clips", "pager", "Tracks after").settle();
-            s.press("clips", "slot", "Loops A slot 2").settle();
-            wrote(&s, n, "time: loop cell: Loops A row 2 armed", "");
+            wrote(&s, n, "time: Audio 1 added, an audio track", "");
+            s.route(FromUi::Time(TimeAction::Audio(
+                mpfree_time_ui::view::AudioAction::Inputs(0),
+            )));
+            s.run_periods(4);
+            s.press("input-list", "input", "Pads · Kit 1").settle();
+            wrote(&s, n, "Audio 1 records Pads · ", "");
+            s.press("clips", "slot", "Audio 1 slot 2").settle();
+            wrote(&s, n, "time: loop cell: Audio 1 row 2 armed", "");
             s.button("REC").button("PLAY");
             s.run_for(0.5);
             s.pad(0, 100, 0.05);
@@ -4136,14 +4214,14 @@ mod device_log {
             s.button("REC");
             s.run_for(2.5);
             assert_eq!(s.looper.phase(), Phase::Playing);
-            wrote(&s, n, "time: Loop 1 on Loops A, row 2, playing", "");
+            wrote(&s, n, "time: Loop 1 on Audio 1, row 2, playing", "");
             s.button("STOP");
         });
     }
 
-    /// `loop-copy`'s lines: SHIFT + Loops A's cell dropped on Loops B's
-    /// row 3 copies the loop there, its layers all go in, and its cell's
-    /// launch brings the copy in on a bar line.
+    /// `loop-copy`'s lines: SHIFT + Audio 1's loop cell dropped on Audio
+    /// 2's row 3 copies the loop there, its layers all go in, and its
+    /// cell's launch brings the copy in.
     #[test]
     fn loop_copy_writes_its_lines() {
         use mpfree_looper::Phase;
@@ -4169,12 +4247,17 @@ mod device_log {
                 copy: true,
             }));
             s.run_for(1.0);
-            wrote(&s, n, "clips: Loop 1 copies into Loop 2 on Loops B / 3", "");
+            wrote(&s, n, "clips: Loop 1 copies into Loop 2 on Audio 2 / 3", "");
             wrote(&s, n, "looper: loop 2 is a copy of loop 1, 1 layer", "");
             s.press("clips", "pager", "Tracks after").settle();
-            s.press("clips", "slot", "Loops B slot 3");
+            s.press("clips", "slot", "Audio 2 slot 3");
+            wrote(&s, n, "time: clips: Launch { track: 9, slot: 2 }", "");
             s.run_for(2.5);
-            wrote(&s, n, "looper: loop 2 on from bar ", "");
+            assert_eq!(
+                s.time.state().launch(9).map(|l| l.slot),
+                Some(2),
+                "the copy plays"
+            );
             s.button("STOP");
         });
     }

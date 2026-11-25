@@ -244,6 +244,15 @@ impl Watch {
         self.found = names;
     }
 
+    /// More takes found, by a later recovery (the SD card's, once it
+    /// opens): the number of the first, which that recovery's reports'
+    /// subjects count from ([`mpfree_status::Subject::found_take`]).
+    pub fn add_found_takes(&mut self, names: Vec<String>) -> u32 {
+        let first = self.found.len() as u32;
+        self.found.extend(names);
+        first
+    }
+
     /// What a problem is about, in words, where the watcher named it: a
     /// port's own name, an audio track's name, or a take found at start
     /// by its file's name. A subject's tag says which it is, whatever the

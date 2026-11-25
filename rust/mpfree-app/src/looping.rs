@@ -282,16 +282,16 @@ pub(crate) fn source_words(s: LoopSource, pads: Option<Instrument>) -> String {
                 format!("the track's input, {}", crate::audiotracks::input_words(i))
             }
             TrackFrom::Mix(m, p) => format!(
-                "the track's input, {} {} its effects",
+                "the track's input, {} {}",
                 if m == mpfree_fx::StripId::Master {
                     "the master".to_string()
                 } else {
                     crate::mixing::name(m)
                 },
-                if p == mpfree_fx::CapturePoint::BeforeInserts {
-                    "before"
-                } else {
-                    "after"
+                match p {
+                    mpfree_fx::CapturePoint::BeforeInserts => "before its effects",
+                    mpfree_fx::CapturePoint::AfterFader => "after its fader",
+                    _ => "after its effects",
                 }
             ),
         },
@@ -3737,7 +3737,13 @@ impl LoopHost {
             return None;
         }
         Some(std::array::from_fn(|n| match self.looper.loop_status(n) {
-            Some(s) if matches!(s.phase, Phase::Playing | Phase::Overdubbing) && s.ticks > 0 => {
+            // A loop still asking how to read its Length (Read as or
+            // Discard) is no pass yet: it lands once answered.
+            Some(s)
+                if matches!(s.phase, Phase::Playing | Phase::Overdubbing)
+                    && s.ticks > 0
+                    && s.asks.is_none() =>
+            {
                 LoopNow {
                     pass: true,
                     ticks: s.ticks,
@@ -3935,6 +3941,12 @@ impl LoopHost {
     /// were first told.
     pub fn pads_play(&self) -> Option<(Instrument, Option<mpfree_fx::StripId>)> {
         Some((self.pads_now?, self.pads_strip))
+    }
+
+    /// The Records from picked last ([`LoopHost::set_source`]), whether a
+    /// take holds another one until its end or not.
+    pub fn chosen(&self) -> LoopSource {
+        self.chosen
     }
 
     /// Records from picked (the Looper tab, Prefs): this take keeps its
