@@ -320,6 +320,33 @@ impl Composing {
                     attempt: attempt(self),
                 }
             }
+            (Scope::Aimed { aim, bars }, Some((before, seed, new_from, _))) => {
+                // Every new bar when none are picked; with bars locked,
+                // every new bar but those, so a lock holds through an
+                // aimed try as through Try again.
+                let first = u16::try_from(new_from.max(0) / bar).unwrap_or(u16::MAX);
+                let total = u16::try_from(before.plan.len()).unwrap_or(u16::MAX);
+                let bars: Vec<u16> = if bars.is_empty() && locked.is_empty() {
+                    Vec::new()
+                } else if bars.is_empty() {
+                    (first..total).filter(|b| !locked.contains(b)).collect()
+                } else {
+                    bars.iter()
+                        .copied()
+                        .filter(|b| !locked.contains(b))
+                        .collect()
+                };
+                if bars.is_empty() && !locked.is_empty() {
+                    return Err("continue: every new bar is locked: unlock one to aim a try".into());
+                }
+                ask.settings.seed = seed;
+                Making::Aimed {
+                    before,
+                    aim: *aim,
+                    bars,
+                    attempt: attempt(self),
+                }
+            }
             (_, None) => {
                 return Err("continue: there's no try to work on yet: Try again makes one".into())
             }
@@ -675,6 +702,10 @@ fn again_of(how: &Making) -> Option<Again> {
         Making::Bars { bars, .. } if bars.len() == 1 => Some(Again::Bar(bars[0])),
         Making::Bars { bars, .. } => Some(Again::Bars(n(bars.len()))),
         Making::Notes { notes, .. } => Some(Again::Notes(n(notes.len()))),
+        Making::Aimed { aim, bars, .. } => Some(Again::Aimed {
+            aim: *aim,
+            bars: n(bars.len()),
+        }),
     }
 }
 

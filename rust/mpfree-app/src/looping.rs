@@ -39,8 +39,8 @@ use mpfree_looper::save::Saved;
 use mpfree_looper::{
     Bounce, Candidate, Clock, Command, Edit, FreeClock, History, LayerCommand, LayerInfo, LoopFile,
     Looper, Memory, NoteStart, Phase, Print, Reading, Shift, SmartEnd, SmartNote, SmartOutcome,
-    Snap, SnapDone, SnapPlan, Starts, Stats, Status, Step, Sure, Take, HEARD_SECONDS, LOOP_MAX_BPM,
-    LOOP_MIN_BPM, MAX_LAYERS, MAX_LOOPS,
+    Snap, SnapDone, SnapPlan, SongPlan, Starts, Stats, Status, Step, Sure, Take, HEARD_SECONDS,
+    LOOP_MAX_BPM, LOOP_MIN_BPM, MAX_LAYERS, MAX_LOOPS,
 };
 use mpfree_seq::loops::{LoopNow, LoopPlan};
 use mpfree_transport::time::{Tick, PPQ};
@@ -530,6 +530,8 @@ pub enum LoopAction {
     Side(Side, bool),
     /// The loop point view's A/B ([`LoopHost::set_ab`]).
     Ab(bool),
+    /// A free loop's header's Make song ([`LoopHost::make_song`]).
+    MakeSong,
     /// The hint line's Snap anyway (true) or Not now
     /// ([`LoopHost::snap_anyway`], [`LoopHost::snap_not_now`]).
     Answer(bool),
@@ -584,6 +586,74 @@ pub struct SmartView {
     pub ab: bool,
     /// The loop point view's audio, while the view is open.
     pub point: Option<LoopPoint>,
+}
+
+/// Make song's button on a free loop's header ([`LoopHost::make_song`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SongButton {
+    /// A tap makes a song of the free loops.
+    #[default]
+    Ready,
+    /// The song plays or counts in: faint, and a tap says why
+    /// ([`MAKE_SONG_STOP_FIRST`]).
+    Faint,
+    /// Make song waits for the free loops' bar line: lit.
+    Waits,
+}
+
+/// Make song's faint button, tapped while the song plays: why, on the
+/// hint line.
+pub const MAKE_SONG_STOP_FIRST: &str =
+    "Stop the song first: Make song moves its tempo and bar lines";
+
+/// Make song with loops on audio tracks (Dev's switch): its UNDO isn't
+/// on their one history yet, so it isn't offered.
+pub const MAKE_SONG_ON_TRACKS: &str =
+    "with loops on audio tracks, UNDO couldn't take it back yet (it isn't on their history)";
+
+/// The song as Make song found it: its tempo and place, and whether Make
+/// song starts it (the free loops played).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SongBefore {
+    bpm: f64,
+    position: Tick,
+    starts: bool,
+}
+
+/// Make song as it goes ([`LoopHost::make_song`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum SongStep {
+    #[default]
+    Idle,
+    /// Pressed (or REDO): worked out in the next period, with the time
+    /// engine ([`LoopHost::tend_song`]).
+    Want,
+    /// Given to the looper: it waits for its frame.
+    Waits(SongPlan, SongBefore),
+    /// Made: what UNDO takes back while every loop is at the version it
+    /// was then (nothing else has changed).
+    Made(SongPlan, SongBefore, [u64; MAX_LOOPS]),
+    /// UNDO asked for: taken back in the next period, with the time
+    /// engine.
+    Unmake(SongPlan, SongBefore),
+    /// Taken back: REDO makes it again while every loop is at the version
+    /// it was then.
+    Unmade([u64; MAX_LOOPS]),
+}
+
+/// Loops by bit (bit `n`: loop `n`), as the log names them: "Loop 1",
+/// "Loop 1 and Loop 3", "Loops 1, 2 and 4".
+fn loops_words(m: u32) -> String {
+    let n: Vec<String> = (0..MAX_LOOPS)
+        .filter(|&k| m & (1 << k) != 0)
+        .map(|k| (k + 1).to_string())
+        .collect();
+    match n.as_slice() {
+        [] => "no loop".to_string(),
+        [a] => format!("Loop {a}"),
+        [a, b] => format!("Loop {a} and Loop {b}"),
+        [rest @ .., last] => format!("Loops {} and {last}", rest.join(", ")),
+    }
 }
 
 /// A side of smart loop end's choice: the loop as you closed it (your
@@ -1426,6 +1496,9 @@ pub struct LooperView {
     pub free: Option<FreeClock>,
     pub free_now: f64,
     pub free_cued: bool,
+    /// Make song's button on a free loop's header
+    /// ([`LoopHost::make_song`]).
+    pub song: SongButton,
     /// Loops on audio tracks: each slot's loop's lasting id (0: none
     /// yet), so the grid's loop cells find their loops
     /// ([`LoopHost::loop_ids`]).
@@ -1502,6 +1575,7 @@ impl Default for LooperView {
             free: None,
             free_now: 0.0,
             free_cued: false,
+            song: SongButton::Ready,
         }
     }
 }
@@ -1621,6 +1695,11 @@ pub struct LoopHost {
     /// Tempos from a free first pass the song couldn't start at
     /// ([`LoopHost::tempo_refused`]): counted, logged and said.
     pub tempos_refused: u64,
+    /// Make song ([`LoopHost::make_song`]), as it goes, and the times it
+    /// was refused, didn't land or couldn't be taken back: counted,
+    /// logged and said.
+    song: SongStep,
+    pub songs_refused: u64,
     /// Length: Pattern ([`PATTERN_BARS`]): an empty loop's first pass
     /// takes the length of the pattern playing.
     pub match_pattern: bool,
@@ -2212,6 +2291,8 @@ impl LoopHost {
             snaps_refused: 0,
             readings_overruled: 0,
             tempos_refused: 0,
+            song: SongStep::Idle,
+            songs_refused: 0,
             match_pattern: false,
             starts: Starts::Bar,
             clock: Clock::Song,
@@ -2682,6 +2763,27 @@ impl LoopHost {
         // downbeat with the tempo, as the step did.
         let h = self.looper.history();
         let tempo = |s: Option<&Step>| matches!(s, Some(Step::Snap(_) | Step::Bars(_)));
+        match c {
+            // Make song, while nothing has changed since: its own UNDO
+            // and REDO, with the song's tempo.
+            Command::Undo => {
+                if let SongStep::Made(p, b, v) = self.song {
+                    if v == self.versions() {
+                        self.song = SongStep::Unmake(p, b);
+                        return "looper: UNDO: Make song, the loops free again".to_string();
+                    }
+                }
+            }
+            Command::Redo => {
+                if let SongStep::Unmade(v) = self.song {
+                    if v == self.versions() {
+                        self.song = SongStep::Want;
+                        return "looper: REDO: Make song".to_string();
+                    }
+                }
+            }
+            _ => {}
+        }
         match c {
             Command::Undo if tempo(h.done().last()) => return self.snap(Snap::Undo),
             Command::Redo if tempo(h.redo().first()) => return self.snap(Snap::Redo),
@@ -4389,6 +4491,11 @@ impl LoopHost {
             } else {
                 String::new()
             }
+            + &if self.songs_refused > 0 {
+                format!("; Make song refused {} times", self.songs_refused)
+            } else {
+                String::new()
+            }
             + &{
                 // Layers as recordings (phase 4c.3): layers only in memory
                 // so far, and files that couldn't be written.
@@ -4494,6 +4601,7 @@ impl LoopHost {
             free: self.looper.free_clock(),
             free_now: self.looper.free_now().unwrap_or(0.0),
             free_cued: self.looper.free_cued(),
+            song: self.song_button(),
             ids: self.on_tracks.ids(),
             unsaved: std::array::from_fn(|n| self.unsaved_layers(n) > 0),
         }
@@ -5376,6 +5484,217 @@ impl LoopHost {
                 None
             }
             Err(why) => Some(self.snap_refused(n, s, why)),
+        }
+    }
+
+    /// Make song (a free loop's header): every free loop with sound
+    /// becomes a song loop where it is, and the song takes their tempo,
+    /// its bar lines on theirs ([`Looper::song_plan`]); worked out in the
+    /// next period, with the time engine ([`LoopHost::tend_song`]). The
+    /// line for the log.
+    pub fn make_song(&mut self) -> String {
+        if matches!(self.song, SongStep::Waits(..)) {
+            return "looper: Make song waits for the free loops' bar line".to_string();
+        }
+        self.song = SongStep::Want;
+        "looper: Make song".to_string()
+    }
+
+    /// Make song's button, as the screen shows it.
+    fn song_button(&self) -> SongButton {
+        if matches!(self.song, SongStep::Want | SongStep::Waits(..)) {
+            SongButton::Waits
+        } else if self.looper.song_stopped() {
+            SongButton::Ready
+        } else {
+            SongButton::Faint
+        }
+    }
+
+    /// Every loop's version: Make song's UNDO holds while none has moved
+    /// on.
+    fn versions(&self) -> [u64; MAX_LOOPS] {
+        std::array::from_fn(|n| self.looper.loop_status(n).map_or(0, |s| s.version))
+    }
+
+    /// Make song's turn, before the period: Make song pressed is worked
+    /// out, and the song started on the free loops' next bar line at their
+    /// tempo (`time.start_at`, from the start of the bar it is stopped
+    /// in, as Tempo from the first loop starts it), or, with the free
+    /// loops stopped, given that tempo and place at once; the looper gets
+    /// the plan, to change the loops' clock on the same frame
+    /// ([`Looper::make_song`]). Or UNDO's: the loops free again on a copy
+    /// of the song's clock ([`Looper::make_free`]), then the song back at
+    /// its tempo and place, stopped if Make song started it. Refused while
+    /// an export runs (`exporting`), another device's clock leads, the
+    /// song has tempo points, or loops are on audio tracks (`on_tracks`,
+    /// [`MAKE_SONG_ON_TRACKS`]). The line for the log (and the screen,
+    /// when true), and the tempo the app takes from the next period on.
+    pub fn tend_song(
+        &mut self,
+        time: &mut TimeHost,
+        exporting: bool,
+        on_tracks: bool,
+    ) -> (Option<(String, bool)>, Option<f64>) {
+        if self.opening() {
+            // Another project's loops: nothing to take back.
+            self.song = SongStep::Idle;
+            return (None, None);
+        }
+        match self.song {
+            SongStep::Want => {
+                self.song = SongStep::Idle;
+                match self.start_song(time, exporting, on_tracks) {
+                    Ok((line, bpm)) => (Some((line, false)), Some(bpm)),
+                    Err(why) => {
+                        self.songs_refused += 1;
+                        (Some((format!("looper: Make song: {why}"), true)), None)
+                    }
+                }
+            }
+            SongStep::Unmake(p, b) => {
+                self.song = SongStep::Idle;
+                match self.unmake_song(time, p, b) {
+                    Ok(line) => (Some((line, false)), Some(b.bpm)),
+                    Err(why) => {
+                        self.songs_refused += 1;
+                        let line = format!("looper: UNDO can't take Make song back: {why}");
+                        (Some((line, true)), None)
+                    }
+                }
+            }
+            _ => (None, None),
+        }
+    }
+
+    fn start_song(
+        &mut self,
+        time: &mut TimeHost,
+        exporting: bool,
+        on_tracks: bool,
+    ) -> Result<(String, f64), String> {
+        if on_tracks {
+            return Err(MAKE_SONG_ON_TRACKS.to_string());
+        }
+        if exporting {
+            return Err("an export is running".to_string());
+        }
+        if time.followed_bpm().is_some() || time.clock_waits() {
+            return Err("the song follows another device's clock".to_string());
+        }
+        if time.tempo_map().segments().len() > 1 {
+            return Err("the song has tempo points".to_string());
+        }
+        let p = self.looper.song_plan(time.next_frame())?;
+        let info = time.info();
+        let before = SongBefore {
+            bpm: info.bpm,
+            position: info.position,
+            starts: p.at.is_some(),
+        };
+        let when = match p.at {
+            Some(at) => {
+                time.start_at(at, Some(p.bpm), None, 0)?;
+                "on their next bar line, where the song starts"
+            }
+            None => {
+                use mpfree_transport::Command as T;
+                let at = time.next_frame();
+                let moved = info.position == p.tick || time.command_at(at, T::Locate(p.tick));
+                if !(moved && time.command_at(at, T::SetTempo(p.bpm))) {
+                    return Err("the song's queue is full".to_string());
+                }
+                "now: PLAY starts them with the song, from their tops"
+            }
+        };
+        // Worked out just now on the same clock: it goes in (if not, the
+        // looper says why, take_song).
+        self.looper.make_song(p);
+        self.song = SongStep::Waits(p, before);
+        let turns = if p.count() == 1 {
+            "becomes a song loop"
+        } else {
+            "become song loops"
+        };
+        Ok((
+            format!(
+                "looper: Make song: {} {turns} {when}, at {:.2} BPM",
+                loops_words(p.loops),
+                p.bpm
+            ),
+            p.bpm,
+        ))
+    }
+
+    fn unmake_song(
+        &mut self,
+        time: &mut TimeHost,
+        p: SongPlan,
+        b: SongBefore,
+    ) -> Result<String, String> {
+        use mpfree_transport::Command as T;
+        self.looper.make_free(p)?;
+        let at = time.next_frame();
+        let info = time.info();
+        let rolls = info.state.rolling();
+        let mut sent = true;
+        let stops = rolls && b.starts;
+        if stops {
+            sent &= time.command_at(at, T::Stop);
+        }
+        if rolls && !stops {
+            // PLAY started it: it plays on, at its tempo.
+            sent &= time.command_at(at, T::TempoNow(b.bpm));
+        } else {
+            if info.position != b.position {
+                sent &= time.command_at(at, T::Locate(b.position));
+            }
+            sent &= time.command_at(at, T::SetTempo(b.bpm));
+        }
+        self.song = SongStep::Unmade(self.versions());
+        Ok(format!(
+            "looper: Make song taken back: {} free again, the song at {:.2} BPM{}{}",
+            loops_words(p.loops) + if p.count() == 1 { " is" } else { " are" },
+            b.bpm,
+            if stops { ", stopped" } else { "" },
+            if sent {
+                ""
+            } else {
+                " (the song's queue was full)"
+            }
+        ))
+    }
+
+    /// What became of Make song in the period ([`Looper::take_song`]):
+    /// made (UNDO takes it back), or why not. The line for the log and
+    /// the screen.
+    pub fn take_song(&mut self) -> Option<(String, bool)> {
+        let d = self.looper.take_song()?;
+        let SongStep::Waits(p, b) = self.song else {
+            return d
+                .refused
+                .map(|why| (format!("looper: Make song didn't happen: {why}"), true));
+        };
+        match d.refused {
+            None => {
+                self.song = SongStep::Made(p, b, self.versions());
+                let n = p.count();
+                Some((
+                    format!(
+                        "looper: Made a song from {n} free loop{}: {:.2} BPM, {}/{}; UNDO takes it back",
+                        if n == 1 { "" } else { "s" },
+                        p.bpm,
+                        p.meter.beats,
+                        p.meter.unit
+                    ),
+                    true,
+                ))
+            }
+            Some(why) => {
+                self.song = SongStep::Idle;
+                self.songs_refused += 1;
+                Some((format!("looper: Make song didn't happen: {why}"), true))
+            }
         }
     }
 
