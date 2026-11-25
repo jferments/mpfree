@@ -53,6 +53,9 @@ struct Session {
     /// Live erase's sounds from absolute frames, in frame order (set
     /// from the period that frame falls in).
     erasing: Vec<(u64, u128)>,
+    /// The host's say whether notes pressed play as heard
+    /// (`Recorder::set_heard`), from the period that frame falls in.
+    heard: Vec<(u64, bool)>,
     frames: u64,
 }
 
@@ -96,6 +99,7 @@ fn run(s: &Session, mut next: impl FnMut() -> u32) -> Run {
     let mut takes = Takes::default();
     let mut live = s.live.iter().peekable();
     let mut erasing = s.erasing.iter().peekable();
+    let mut heard = s.heard.iter().peekable();
     while t.frame() < s.frames {
         let n = next().min((s.frames - t.frame()) as u32);
         let start = t.frame();
@@ -105,6 +109,13 @@ fn run(s: &Session, mut next: impl FnMut() -> u32) -> Run {
             }
             player.set_erasing(notes);
             erasing.next();
+        }
+        while let Some(&&(f, on)) = heard.peek() {
+            if f >= start + u64::from(n) {
+                break;
+            }
+            rec.set_heard(on);
+            heard.next();
         }
         t.process(n, &mut block);
         player.process(&view, &block, &mut log);
@@ -177,6 +188,7 @@ fn session(clip: Clip, origin: i64) -> Session {
         commands: vec![(0, Command::Record)],
         live: vec![],
         erasing: vec![],
+        heard: vec![],
         frames: 0,
     }
 }
@@ -215,6 +227,7 @@ fn four_beats() -> Session {
             ramp: 0,
             join: mpfree_seq::Join::Attack,
             group: 0,
+            heard: false,
         })
         .collect();
     let mut s = session(c, 0);
@@ -260,6 +273,37 @@ fn notes_land_on_the_ticks_they_were_played_on() {
         r.project.tracks[0].slots[3].as_ref().unwrap().notes.len(),
         3
     );
+}
+
+/// What a live tool played (`Recorder::set_heard`, Records mpfree or
+/// Both) is kept to play as heard; a note keeps what it was pressed with,
+/// though the say changes while it is held.
+#[test]
+fn notes_pressed_while_the_host_says_heard_play_as_heard() {
+    let mut s = session(Clip::new("take", 3840), 0);
+    s.live = vec![
+        (0, on(1)),
+        (2000, off(1)),
+        (5800, on(2)),
+        (30_000, off(2)),
+        (22_500, on(3)),
+        (26_000, off(3)),
+    ];
+    s.live.sort_by_key(|l| l.0);
+    s.heard = vec![(5000, true), (20_000, false)];
+    s.frames = 40_000;
+    let r = run(&s, || 128);
+    let marks: Vec<(u8, bool)> = r
+        .taken
+        .iter()
+        .map(|k| (k.note.note, k.note.heard))
+        .collect();
+    assert_eq!(marks.len(), 3);
+    for want in [(1, false), (2, true), (3, false)] {
+        assert!(marks.contains(&want), "{marks:?}");
+    }
+    let clip = r.project.tracks[0].slots[3].as_ref().unwrap();
+    assert!(clip.notes.iter().any(|n| n.note == 2 && n.heard));
 }
 
 #[test]
@@ -571,6 +615,7 @@ fn a_loop_jump_ends_the_replace_pass_and_a_new_take_replaces_again() {
             ramp: 0,
             join: mpfree_seq::Join::Attack,
             group: 0,
+            heard: false,
         })
         .collect();
     let mut s = session(c, 0);
@@ -629,6 +674,7 @@ fn a_take_undoes_and_redoes_as_a_whole() {
             ramp: 0,
             join: mpfree_seq::Join::Attack,
             group: 0,
+            heard: false,
         })
         .collect();
     let original = c.notes.clone();
@@ -693,6 +739,7 @@ fn a_late_note_joins_its_own_take() {
             ramp: 0,
             join: mpfree_seq::Join::Attack,
             group: 0,
+            heard: false,
         },
         Note {
             tick: 1920,
@@ -707,6 +754,7 @@ fn a_late_note_joins_its_own_take() {
             ramp: 0,
             join: mpfree_seq::Join::Attack,
             group: 0,
+            heard: false,
         },
     ];
     let mut s = session(c, 0);

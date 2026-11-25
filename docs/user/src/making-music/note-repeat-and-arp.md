@@ -137,7 +137,7 @@ Under the list, five buttons work on the pattern:
 
 A **phrase** is a short piece of music, a bar or two long, that plays from the note you hold: a bass line, a riff, a run of chords or an arp line, with its own rhythm, long and short notes and accents. Hold one pad on a synth track and the whole phrase plays from that pad's note, round and round. Hold another pad and it carries on from there, without losing its place. It is the quickest way from one finger to a part that sounds written. Hold a chord of three notes or more and the phrase plays over the chord itself: a riff written over C minor takes F major's notes when you hold F major (its root, third and fifth, and the notes between them from F major's scale). A chord played a little unevenly counts as one change: the phrase follows it about 30 ms after its last note.
 
-{{shot: arp-phrase | The Phrase tab: the kinds of phrase on the left, the basses in the middle with Night drive picked, and on the right the Plays row (While I hold), its notes over two bars with a line where it is playing, the moves Hold, Evolve, Return and Capture, what it follows, and the four Q-Link settings.}}
+{{shot: arp-phrase | The Phrase tab: the kinds of phrase on the left, the basses in the middle with Night drive picked, and on the right the Plays row (While I hold), its notes over two bars with a line where it is playing, the moves Hold, Evolve, Return and Capture, what it follows, the four Q-Link settings, and the Records row at the foot.}}
 
 MPFree comes with 64 phrases of its own, 16 of each kind: **Bass**, **Riff**, **Chords** and **Arp lines**. **Yours** is for phrases of your own: the ones you make with **New idea**, **More like this** and **Make a phrase** (below), and patterns you keep with **Keep as a phrase** on the Pattern tab, go there.
 
@@ -186,11 +186,22 @@ The panel beside it sets how it answers:
 - **Key** is the key MPFree heard your phrase in. **Starts** says when the answer comes.
 - **Answer now** ends your call at once: the answer starts on the next beat, not the next bar.
 - **Capture both as a clip** keeps your call and its answer as one clip, as **SHIFT** + **REC** does.
-- **Q-Links 1 to 3** (and the sliders under the buttons): **Variation** from steady to restless, **Activity** from sparser through like mine to busier, **Range** narrow, medium or wide. They shape the next answer. Q-Link 4 does nothing here.
+- **Records** picks what REC keeps (see [What REC keeps](#what-rec-keeps) below). Here it starts on **Both**.
+- **Q-Links 1 to 3**: **Variation** from steady to restless, **Activity** from sparser through like mine to busier, **Range** narrow, medium or wide. They shape the next answer; the cards on the right show where each one is. Q-Link 4 does nothing here.
 
 {{shot: arp-phrase-answer | The Phrase tab with When I stop: a call of five notes in bar 1 and MPFree's answer in bar 2, playing, with the turn light on Answer.}}
 
 Tap **While I hold** to go back to the list: a held note plays the phrase again.
+
+#### What REC keeps
+
+The **Records** row at the foot of both halves picks what REC (and CAPTURE) keeps on this track while the Phrase tab is open:
+
+- **You** keeps the pads as you played them. With While I hold, that is the note or chord you held, and playing it back plays the phrase over it again, as the arp does.
+- **mpfree** keeps what MPFree played, as you heard it. With While I hold, that is the phrase; with When I stop, the answers without your call. This is where While I hold starts.
+- **Both** keeps your call and MPFree's answers, as you heard them. This is where When I stop starts.
+
+A note kept as you heard it plays back as it is, past the arp, even when the track's clips play through the arp. So a take plays back the phrase or the answer you heard, not a new one. Each half keeps its own pick until MPFree closes. On every other tab REC keeps what it always does.
 
 **Follows**, under the moves, sets how the phrase finds its notes:
 

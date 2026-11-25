@@ -117,6 +117,8 @@ struct Rig {
     frame: u64,
     out: Vec<f32>,
     told: Vec<Told>,
+    /// Free cells' loops, (track, id), told after each plan.
+    free: Vec<(usize, u128)>,
 }
 
 impl Rig {
@@ -130,6 +132,7 @@ impl Rig {
             frame: 0,
             out: Vec::new(),
             told: Vec::new(),
+            free: Vec::new(),
         };
         for tk in takes {
             assert!(r.a.load_take(tk).is_ok());
@@ -188,6 +191,9 @@ impl Rig {
                 superseded: 0,
             }];
             self.loops.plan(&self.b, &answer);
+            for &(t, id) in &self.free {
+                self.loops.free(t, id);
+            }
             for r in self.loops.runs(0) {
                 let t = Told {
                     id: r.id,
@@ -516,4 +522,35 @@ fn listen_is_mixed_into_the_track_named_as_it_is_until_the_next_plan() {
     assert!(mix(&lp, 2).iter().all(|&v| v == 0.25), "forgotten");
     lp.listen(Some(10_000));
     assert!((0..20).all(|t| mix(&lp, t).iter().all(|&v| v == 0.25)));
+}
+
+/// Free cells (phase 4e.4): after the plan, each free cell's loop on a
+/// track is mixed into it as its source gives it, on every frame at full
+/// gain, two on one track both (one fading out as the next comes in), and
+/// none of a free loop's runs (its cell launched, or a block of it): the
+/// song's ticks don't place it. The next plan forgets them.
+#[test]
+fn a_free_cells_loop_is_mixed_as_it_is_and_its_runs_are_not() {
+    let launch = fr(BT);
+    let mut r = Rig::new(128, vec![]);
+    r.free = vec![(0, 2), (0, 3)];
+    // Before the launch: loops 2 and 3, as they are.
+    // From the launch: a run of loop 2 (its cell launched) adds nothing.
+    r.run(launch + BAR, &[ev(launch, lp(2, BT))]);
+    let both = level(2) + level(3);
+    for g in [START, launch - 1, launch, launch + 1, launch + BAR - 1] {
+        assert_eq!((r.l(g), r.r(g)), (both, -both), "frame {g}");
+    }
+    assert_eq!(r.told.len(), 1, "the run is planned all the same");
+    // Loop 2 no longer free (Make song): its run plays, over its fade.
+    r.free = vec![(0, 3)];
+    let from = r.frame;
+    r.run(from + BAR, &[ev(launch, lp(2, BT))]);
+    assert_eq!(r.l(from + BAR - 1), level(2) + level(3));
+    // Forgotten by the next plan: nothing.
+    r.free.clear();
+    r.stop_at(r.frame);
+    let from = r.frame;
+    r.run(from + 256, &[]);
+    assert!((from..from + 256).all(|g| r.l(g) == 0.0));
 }

@@ -22,11 +22,19 @@ pub const KEEP: usize = usize::MAX - 20;
 pub const GO_BACK: usize = usize::MAX - 21;
 /// `Tab(BACK)`: ‹ Back at the top of the sidebar (what MENU does).
 pub const BACK: usize = mpfree_ui::widgets::OPTION_BACK;
+/// `Tab(NEW_THEME)`: the Themes gallery's New theme tile.
+pub const NEW_THEME: usize = usize::MAX - 22;
+/// `Tab(CUSTOMISE)`: Customise › on the theme in use's card.
+pub const CUSTOMISE: usize = usize::MAX - 23;
 
 const GAP: i32 = 12;
 const SIDE_W: i32 = 220;
 const TAB_H: i32 = 62;
 const TAB_STEP: i32 = 66;
+/// One of Appearance's views under it in the sidebar.
+const SUB_H: i32 = 44;
+const SUB_STEP: i32 = 48;
+const SUB_INDENT: i32 = 48;
 const CARD_PAD_X: i32 = 20;
 const CARD_PAD_TOP: i32 = 16;
 const CARD_PAD_BOTTOM: i32 = 18;
@@ -57,6 +65,18 @@ const STATUS_H: i32 = 64;
 const SPLIT_H: i32 = 52;
 const PICTURE_MIN: i32 = 110;
 const IN_USE_H: i32 = 164;
+/// A knob of a line of several (Customise), and how much it may grow.
+const DIAL_D: i32 = 56;
+const DIAL_GROW: i32 = 16;
+/// A colour to tap, and the word under it.
+const SWATCH_H: i32 = 38;
+const SWATCH_LABEL_H: i32 = 20;
+const SWATCH_W: i32 = 56;
+/// A button with a drawing of what it does over its name.
+const LOOK_H: i32 = 84;
+const LOOK_GROW: i32 = 24;
+/// Between rows that share a line.
+const LINE_GAP: i32 = 16;
 const GALLERY_COLS: usize = 4;
 const GALLERY_ROWS: usize = 3;
 
@@ -86,6 +106,15 @@ impl Hue {
     }
 }
 
+/// What a [`Control::Looks`] button draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Look {
+    /// A box with these corners.
+    Corners(mpfree_ui::Corners),
+    /// The page behind the panels, drawn this way.
+    Backdrop(mpfree_ui::Backdrop),
+}
+
 /// How a setting is drawn and changed.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Control {
@@ -108,6 +137,25 @@ pub enum Control {
     Slider { pos: f32 },
     /// A knob through a range, 0 to 1 (a fine value).
     Knob { pos: f32 },
+    /// A small knob over its value and name, several to a line
+    /// (Customise), 0 to 1. With `dot`, a ring of every hue round a dot of
+    /// that colour, for a colour's hue.
+    Dial { pos: f32, dot: Option<Color> },
+    /// Colours to tap, each with its word under it (or its number inside
+    /// it), the one being set ringed.
+    Swatches {
+        colours: Vec<(String, Color)>,
+        at: Option<usize>,
+        numbered: bool,
+    },
+    /// Two to five buttons, each a small drawing of what it does over its
+    /// name; `at` is the one chosen.
+    Looks {
+        options: Vec<(String, Look)>,
+        at: usize,
+    },
+    /// ‹ the words ›: steps through a list.
+    Stepper(String),
     /// On or off.
     Switch(bool),
     /// Opens or starts something; the button's words.
@@ -146,6 +194,11 @@ pub struct RowView {
     pub bare: bool,
     /// Drawn faded: the setting has nothing to change as things are.
     pub faded: bool,
+    /// Shares a line with the rows next to it that share one too, taking
+    /// this many parts of its width; 0: a line of its own.
+    pub share: u8,
+    /// A button drawn in the picked colour: the card's main action.
+    pub strong: bool,
 }
 
 /// A bar split into parts at the foot of a card (what the two memories
@@ -165,7 +218,7 @@ pub struct CardView {
     /// Dim words at the right of the title.
     pub note: String,
     pub hue: Hue,
-    /// 0: the left column, 1: the right.
+    /// 0: the left column, 1: the right, 2: across both, over them.
     pub column: u8,
     /// Takes the room the column has spare.
     pub fill: bool,
@@ -196,13 +249,36 @@ pub struct Gallery {
     pub trial: Option<(String, String)>,
     /// What the theme in use is, and its file's problems, a line each.
     pub about: Vec<String>,
+    /// The New theme tile after the themes.
+    pub new_theme: bool,
+    /// Customise › on the in-use card (not while it asks to keep).
+    pub customise: bool,
+}
+
+/// One entry of the sidebar: a tab, or one of Appearance's views under it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SideTab {
+    pub name: String,
+    /// The line under a tab's name (none under a view).
+    pub line: String,
+    /// One of Appearance's views, drawn under it, indented.
+    pub sub: bool,
+    /// The tab a tap opens (the app's number for it).
+    pub tab: usize,
+    /// Drawn lit: the tab open, or the tab whose view is open.
+    pub lit: bool,
+    /// A tab's drawing: 0 Playing, 1 Sound, 2 Appearance, 3 Projects, 4
+    /// System.
+    pub icon: usize,
 }
 
 /// Everything the app says about Prefs.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PrefsView {
-    /// The tabs: each name and the line under it.
-    pub tabs: Vec<(String, String)>,
+    /// The sidebar's tabs, with Appearance's views under it while one of
+    /// them is open.
+    pub tabs: Vec<SideTab>,
+    /// The tab open (the app's number for it).
     pub tab: usize,
     pub cards: Vec<CardView>,
     pub rows: Vec<RowView>,
@@ -212,6 +288,9 @@ pub struct PrefsView {
     pub editing: bool,
     /// The Themes tab draws a gallery in place of cards.
     pub gallery: Option<Gallery>,
+    /// The hint line's words, where the tab has its own (Customise says
+    /// how well the theme reads).
+    pub hint: Option<String>,
 }
 
 /// Where everything sits, worked out from the view and the widget's
@@ -231,10 +310,13 @@ struct Geo {
     split: Vec<Option<Rect>>,
     /// Thin lines between a card's rows of buttons and switches.
     dividers: Vec<Rect>,
-    /// The gallery's tiles (on screen), its in-use card and its buttons.
+    /// The gallery's tiles (on screen), its New theme tile, its in-use
+    /// card and its buttons.
     tiles: Vec<(usize, Rect)>,
+    new_theme: Option<Rect>,
     in_use: Rect,
     keep: Option<(Rect, Rect)>,
+    customise: Option<Rect>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -281,14 +363,20 @@ impl PrefsPage {
         let side = Rect::new(r.x, r.y, SIDE_W, r.h);
         let content = Rect::new(side.right() + GAP, r.y, r.right() - side.right() - GAP, r.h);
         let back = Rect::new(side.x + 10, side.y + 10, 100, 46);
-        let tabs = (0..self.view.tabs.len())
-            .map(|i| {
-                Rect::new(
-                    side.x + 8,
-                    side.y + 68 + i as i32 * TAB_STEP,
-                    side.w - 16,
-                    TAB_H,
-                )
+        // The tabs down the sidebar, Appearance's views under it, indented.
+        let mut y = side.y + 68;
+        let tabs = self
+            .view
+            .tabs
+            .iter()
+            .map(|t| {
+                let r = if t.sub {
+                    Rect::new(side.x + 8, y, side.w - 16, SUB_H)
+                } else {
+                    Rect::new(side.x + 8, y, side.w - 16, TAB_H)
+                };
+                y += if t.sub { SUB_STEP } else { TAB_STEP };
+                r
             })
             .collect();
         let mut g = Geo {
@@ -317,42 +405,42 @@ impl PrefsPage {
         let tw = (area.w - GAP * (cols - 1)) / cols;
         // As many rows as the themes on this page fill (up to three), so a
         // short list draws bigger tiles rather than an empty row.
-        let shown = gal.tiles.len().saturating_sub(first).min(per);
+        // The New theme tile is the cell after the last theme.
+        let cells = gal.tiles.len() + usize::from(gal.new_theme);
+        let shown = cells.saturating_sub(first).min(per);
         let rows = shown.div_ceil(GALLERY_COLS).clamp(1, GALLERY_ROWS) as i32;
         let th = (area.h - GAP * (rows - 1)) / rows;
+        let cell = |k: usize| {
+            let i = (k - first) as i32;
+            Rect::new(
+                area.x + (i % cols) * (tw + GAP),
+                area.y + (i / cols) * (th + GAP),
+                tw,
+                th,
+            )
+        };
         g.tiles = (first..gal.tiles.len().min(first + per))
-            .map(|k| {
-                let i = (k - first) as i32;
-                (
-                    k,
-                    Rect::new(
-                        area.x + (i % cols) * (tw + GAP),
-                        area.y + (i / cols) * (th + GAP),
-                        tw,
-                        th,
-                    ),
-                )
-            })
+            .map(|k| (k, cell(k)))
             .collect();
+        let last = gal.tiles.len();
+        if gal.new_theme && (first..first + per).contains(&last) {
+            g.new_theme = Some(cell(last));
+        }
+        let inner = g.in_use.inset(18);
+        let w = 180;
         if gal.trial.is_some() {
-            let inner = g.in_use.inset(18);
-            let w = 180;
             let keep = Rect::new(inner.right() - w, inner.y + 6, w, 52);
             let back = Rect::new(inner.right() - w, keep.bottom() + 12, w, 52);
             g.keep = Some((keep, back));
+        } else if gal.customise {
+            g.customise = Some(Rect::new(inner.right() - w, inner.y + 6, w, 52));
         }
     }
 
     /// The natural height of row `i` (without spare room).
     fn row_h(&self, i: usize) -> i32 {
         let row = &self.view.rows[i];
-        let head = if row.bare {
-            0
-        } else if row.desc.is_empty() {
-            NAME_H
-        } else {
-            NAME_H + DESC_H
-        };
+        let head = head_h(row);
         let picture = if row.picture.is_some() {
             PICTURE_MIN + 10
         } else {
@@ -368,7 +456,17 @@ impl PrefsPage {
             Some(Control::Steps { .. }) => 6 + SLIDE_H + LABELS_H,
             Some(Control::Slider { .. }) => 6 + SLIDE_H,
             Some(Control::Knob { .. }) => return KNOB_D + 16,
-            Some(Control::Switch(_)) | Some(Control::Button(_)) => {
+            Some(Control::Dial { .. }) => return DIAL_D + 8 + NAME_H + DESC_H,
+            Some(Control::Swatches {
+                colours, numbered, ..
+            }) => {
+                if inline_swatches(row, colours.len()) {
+                    return head.max(SWATCH_H + 4);
+                }
+                6 + SWATCH_H + if *numbered { 0 } else { SWATCH_LABEL_H }
+            }
+            Some(Control::Looks { .. }) => 8 + LOOK_H,
+            Some(Control::Switch(_)) | Some(Control::Button(_)) | Some(Control::Stepper(_)) => {
                 return head.max(BUTTON_H);
             }
             Some(Control::Status { .. }) => return STATUS_H,
@@ -376,9 +474,29 @@ impl PrefsPage {
         head + picture + control
     }
 
+    /// Card `card`'s rows in lines: rows that share a line together, the
+    /// rest a line each.
+    fn lines(&self, card: &CardView) -> Vec<Vec<usize>> {
+        let mut out: Vec<Vec<usize>> = Vec::new();
+        for &i in &card.rows {
+            let shares = self.view.rows[i].share > 0;
+            match out.last_mut() {
+                Some(line) if shares && self.view.rows[line[0]].share > 0 => line.push(i),
+                _ => out.push(vec![i]),
+            }
+        }
+        out
+    }
+
+    /// A line's natural height: its tallest row's.
+    fn line_h(&self, line: &[usize]) -> i32 {
+        line.iter().map(|&i| self.row_h(i)).max().unwrap_or(0)
+    }
+
     fn card_h(&self, card: &CardView) -> i32 {
-        let rows: i32 = card.rows.iter().map(|&i| self.row_h(i)).sum();
-        let gaps = ROW_GAP * card.rows.len().saturating_sub(1) as i32;
+        let lines = self.lines(card);
+        let rows: i32 = lines.iter().map(|l| self.line_h(l)).sum();
+        let gaps = ROW_GAP * lines.len().saturating_sub(1) as i32;
         // System info's list takes the room spare (and shows the rows that
         // fit), so a long list never pushes the cards past the foot.
         let info = if card.info { ROW_GAP + INFO_H } else { 0 };
@@ -387,15 +505,25 @@ impl PrefsPage {
         } else {
             0
         };
-        CARD_PAD_TOP + HEAD_H + HEAD_GAP + rows + gaps + info + split + CARD_PAD_BOTTOM
+        CARD_PAD_TOP + card_head(card) + rows + gaps + info + split + CARD_PAD_BOTTOM
     }
 
     fn cards_geo(&self, g: &mut Geo) {
-        let c = g.content;
-        let col_w = (c.w - GAP) / 2;
+        let mut c = g.content;
         g.cards = vec![Rect::default(); self.view.cards.len()];
         g.info = vec![None; self.view.cards.len()];
         g.split = vec![None; self.view.cards.len()];
+        // Cards across both columns go over them, at their own height.
+        for k in 0..self.view.cards.len() {
+            if self.view.cards[k].column == 2 {
+                let h = self.card_h(&self.view.cards[k]);
+                let rect = Rect::new(c.x, c.y, c.w, h);
+                g.cards[k] = rect;
+                self.card_rows_geo(g, k, rect, 0);
+                c = Rect::new(c.x, c.y + h + GAP, c.w, c.h - h - GAP);
+            }
+        }
+        let col_w = (c.w - GAP) / 2;
         for col in 0..2u8 {
             let ids: Vec<usize> = (0..self.view.cards.len())
                 .filter(|&k| self.view.cards[k].column == col)
@@ -447,73 +575,90 @@ impl PrefsPage {
     /// it needs: a picture takes them, else they go between the rows.
     fn card_rows_geo(&self, g: &mut Geo, k: usize, rect: Rect, spare: i32) {
         let card = &self.view.cards[k];
+        let head = card_head(card);
         let inner = Rect::new(
             rect.x + CARD_PAD_X,
-            rect.y + CARD_PAD_TOP + HEAD_H + HEAD_GAP,
+            rect.y + CARD_PAD_TOP + head,
             rect.w - 2 * CARD_PAD_X,
-            rect.h - CARD_PAD_TOP - HEAD_H - HEAD_GAP - CARD_PAD_BOTTOM,
+            rect.h - CARD_PAD_TOP - head - CARD_PAD_BOTTOM,
         );
+        let lines = self.lines(card);
         let pictured = card
             .rows
             .iter()
             .any(|&i| self.view.rows[i].picture.is_some());
         // A picture or System info's list takes the spare room. Else the
         // controls grow first, up to a point (tiles, a choice's buttons, a
-        // knob), and the rest spreads evenly around the rows.
+        // knob), and the rest spreads evenly around the lines.
         let room = |i: usize| match &self.view.rows[i].control {
             Some(Control::Tiles { .. }) => TILE_GROW,
             Some(Control::Choice { .. }) => SEG_GROW,
             Some(Control::Knob { .. }) => KNOB_GROW,
+            Some(Control::Dial { .. }) => DIAL_GROW,
+            Some(Control::Looks { .. }) => LOOK_GROW,
             _ => 0,
         };
-        let mut grows = vec![0; card.rows.len()];
+        let line_room = |l: &[usize]| l.iter().map(|&i| room(i)).max().unwrap_or(0);
+        let mut grows = vec![0; lines.len()];
         let mut spare = spare;
         if !pictured && !card.info {
-            let want: i32 = card.rows.iter().map(|&i| room(i)).sum();
+            let want: i32 = lines.iter().map(|l| line_room(l)).sum();
             if want > 0 {
                 let give = spare.min(want);
-                for (n, &i) in card.rows.iter().enumerate() {
-                    grows[n] = give * room(i) / want;
+                for (n, l) in lines.iter().enumerate() {
+                    grows[n] = give * line_room(l) / want;
                 }
                 spare -= grows.iter().sum::<i32>();
             }
         }
-        // The rest around each row: half above it, half below.
-        let around = if pictured || card.info || card.rows.is_empty() {
+        // The rest around each line: half above it, half below.
+        let around = if pictured || card.info || lines.is_empty() {
             0
         } else {
-            spare / card.rows.len() as i32
+            spare / lines.len() as i32
         };
-        let compact = |i: usize| {
-            matches!(
-                self.view.rows[i].control,
-                Some(Control::Button(_)) | Some(Control::Switch(_))
-            )
+        let compact = |l: &[usize]| {
+            l.len() == 1
+                && matches!(
+                    self.view.rows[l[0]].control,
+                    Some(Control::Button(_)) | Some(Control::Switch(_))
+                )
         };
         let mut y = inner.y + around / 2;
-        for (n, &i) in card.rows.iter().enumerate() {
-            let mut h = self.row_h(i);
-            let grow = if self.view.rows[i].picture.is_some() {
-                spare
-            } else {
-                grows[n]
-            };
-            h += grow;
-            let area = Rect::new(inner.x, y, inner.w, h);
-            g.rows[i] = self.row_geo(i, area, grow);
+        for (n, line) in lines.iter().enumerate() {
+            let pictured_line = line.iter().any(|&i| self.view.rows[i].picture.is_some());
+            let grow = if pictured_line { spare } else { grows[n] };
+            let h = self.line_h(line) + grow;
+            // Rows sharing a line take its width by their shares.
+            let shares: i32 = line
+                .iter()
+                .map(|&i| i32::from(self.view.rows[i].share.max(1)))
+                .sum();
+            let free = inner.w - LINE_GAP * (line.len() as i32 - 1);
+            let mut x = inner.x;
+            for (m, &i) in line.iter().enumerate() {
+                let w = if m + 1 == line.len() {
+                    inner.right() - x
+                } else {
+                    free * i32::from(self.view.rows[i].share.max(1)) / shares
+                };
+                let area = Rect::new(x, y, w, h);
+                g.rows[i] = self.row_geo(i, area, grow);
+                x += w + LINE_GAP;
+            }
             y += h + ROW_GAP + around;
-            if let Some(&next) = card.rows.get(n + 1) {
-                if compact(i) && compact(next) {
+            if let Some(next) = lines.get(n + 1) {
+                if compact(line) && compact(next) {
                     let mid = y - (ROW_GAP + around) / 2;
                     g.dividers.push(Rect::new(inner.x, mid, inner.w, 1));
                 }
             }
             if n == 0 && card.info {
-                // System info's list after the first row, taking the room
+                // System info's list after the first line, taking the room
                 // spare.
-                let rest = card.rows.len() as i32 - 1;
+                let rest = lines.len() as i32 - 1;
                 let after: i32 =
-                    card.rows[1..].iter().map(|&j| self.row_h(j)).sum::<i32>() + ROW_GAP * rest;
+                    lines[1..].iter().map(|l| self.line_h(l)).sum::<i32>() + ROW_GAP * rest;
                 let h = (inner.bottom() - y - after).max(INFO_H);
                 g.info[k] = Some(Rect::new(inner.x, y, inner.w, h));
                 y += h + ROW_GAP;
@@ -531,13 +676,7 @@ impl PrefsPage {
 
     fn row_geo(&self, i: usize, area: Rect, grow: i32) -> RowGeo {
         let row = &self.view.rows[i];
-        let head_h = if row.bare {
-            0
-        } else if row.desc.is_empty() {
-            NAME_H
-        } else {
-            NAME_H + DESC_H
-        };
+        let head_h = head_h(row);
         let mut geo = RowGeo {
             area,
             head: Rect::new(area.x, area.y, area.w, head_h),
@@ -591,6 +730,56 @@ impl PrefsPage {
                     h,
                 );
             }
+            Some(Control::Dial { .. }) => {
+                // The knob over its value and name, in the middle.
+                let d = DIAL_D + grow;
+                let block = d + 8 + NAME_H + DESC_H;
+                let top = area.y + (area.h - block) / 2;
+                geo.control = Rect::new(area.x + (area.w - d) / 2, top, d, d);
+                geo.head = Rect::new(area.x, top + d + 8, area.w, NAME_H + DESC_H);
+            }
+            Some(Control::Swatches { colours, .. }) => {
+                let n = colours.len().max(1) as i32;
+                if inline_swatches(row, colours.len()) {
+                    // A few, at the right of the name.
+                    let w = n * SWATCH_W + (n - 1) * 8;
+                    let c = Rect::new(
+                        area.right() - w,
+                        area.y + (area.h - SWATCH_H) / 2,
+                        w,
+                        SWATCH_H,
+                    );
+                    geo.control = c;
+                    geo.parts = split_row(c, colours.len(), 8);
+                    geo.head.w = area.w - w - 16;
+                } else {
+                    let c = Rect::new(area.x, y + 6, area.w, SWATCH_H);
+                    geo.control = c;
+                    geo.parts = split_row(c, colours.len(), 6);
+                }
+            }
+            Some(Control::Looks { options, .. }) => {
+                let c = Rect::new(area.x, y + 8, area.w, area.bottom() - y - 8);
+                geo.control = c;
+                geo.parts = split_row(c, options.len(), 8);
+            }
+            Some(Control::Stepper(_)) => {
+                let w = if row.bare {
+                    area.w
+                } else {
+                    (area.w - 120).max(BUTTON_W)
+                };
+                let c = Rect::new(
+                    area.right() - w,
+                    area.y + (area.h - BUTTON_H) / 2,
+                    w,
+                    BUTTON_H,
+                );
+                geo.control = c;
+                // Its two halves: back a step, on a step.
+                geo.parts = split_row(c, 2, 0);
+                geo.head.w = area.w - w - 16;
+            }
             Some(Control::Switch(_)) => {
                 geo.control = Rect::new(
                     area.right() - SWITCH_W - 4,
@@ -601,13 +790,19 @@ impl PrefsPage {
                 geo.head.w = area.w - SWITCH_W - 16;
             }
             Some(Control::Button(_)) => {
+                // A bare button fills its share of a line.
+                let w = if row.bare {
+                    area.w
+                } else {
+                    BUTTON_W.min(area.w)
+                };
                 geo.control = Rect::new(
-                    area.right() - BUTTON_W,
+                    area.right() - w,
                     area.y + (area.h - BUTTON_H) / 2,
-                    BUTTON_W,
+                    w,
                     BUTTON_H,
                 );
-                geo.head.w = area.w - BUTTON_W - 16;
+                geo.head.w = area.w - w - 16;
             }
             Some(Control::Status { .. }) => {
                 geo.head = area;
@@ -628,9 +823,16 @@ impl PrefsPage {
             return Some(EventKind::Tab(BACK));
         }
         if let Some(i) = g.tabs.iter().position(|t| t.contains(x, y)) {
-            return (i != self.view.tab).then_some(EventKind::Tab(i));
+            let tab = self.view.tabs[i].tab;
+            return (tab != self.view.tab).then_some(EventKind::Tab(tab));
         }
         if let Some(gal) = &self.view.gallery {
+            if g.new_theme.is_some_and(|r| r.contains(x, y)) {
+                return Some(EventKind::Tab(NEW_THEME));
+            }
+            if g.customise.is_some_and(|r| r.contains(x, y)) {
+                return Some(EventKind::Tab(CUSTOMISE));
+            }
             if let Some((keep, back)) = g.keep {
                 if keep.contains(x, y) {
                     return Some(EventKind::Tab(KEEP));
@@ -649,9 +851,22 @@ impl PrefsPage {
         for (i, row) in self.view.rows.iter().enumerate() {
             let geo = &g.rows[i];
             match &row.control {
-                Some(Control::Choice { at, .. }) | Some(Control::Tiles { at, .. }) => {
+                Some(Control::Choice { at, .. })
+                | Some(Control::Tiles { at, .. })
+                | Some(Control::Looks { at, .. }) => {
                     if let Some(k) = geo.parts.iter().position(|p| p.contains(x, y)) {
                         return (k != *at).then_some(EventKind::Cell { row: i, col: k });
+                    }
+                }
+                Some(Control::Swatches { .. }) => {
+                    if let Some(k) = geo.parts.iter().position(|p| p.contains(x, y)) {
+                        return Some(EventKind::Cell { row: i, col: k });
+                    }
+                }
+                Some(Control::Stepper(_)) => {
+                    if let Some(k) = geo.parts.iter().position(|p| p.contains(x, y)) {
+                        let delta = if k == 0 { -1 } else { 1 };
+                        return Some(EventKind::Step { index: i, delta });
                     }
                 }
                 Some(Control::Steps { .. }) if geo.control.contains(x, y) => {
@@ -706,16 +921,33 @@ impl PrefsPage {
             t.text_dim,
             "PREFS",
         );
-        for (i, (name, sub)) in self.view.tabs.iter().enumerate() {
+        for (i, tab) in self.view.tabs.iter().enumerate() {
             let r = g.tabs[i];
-            let on = i == self.view.tab;
+            if tab.sub {
+                // One of Appearance's views: its name, indented, lit
+                // while open.
+                let open = tab.tab == self.view.tab;
+                if open {
+                    cx.canvas.fill_round_rect(r, t.round(10), t.raised);
+                }
+                let words = Rect::new(r.x + SUB_INDENT, r.y, r.w - SUB_INDENT - 8, r.h);
+                let (font, ink) = if open {
+                    (FontId::Bold, t.text)
+                } else {
+                    (FontId::Sans, t.text_dim)
+                };
+                cx.text(font, t.size_body, words, Align::Left, ink, &tab.name);
+                continue;
+            }
+            let on = tab.lit;
             if on {
                 cx.canvas.fill_round_rect(r, t.round(10), t.raised);
                 let bar = Rect::new(r.x, r.y + 10, 4, r.h - 20);
                 cx.canvas.fill_round_rect(bar, 2, t.accent);
             }
+            let (name, sub) = (&tab.name, &tab.line);
             let icon = Rect::new(r.x + 14, r.y + (r.h - 24) / 2, 24, 24);
-            paint_tab_icon(cx, i, icon, if on { t.accent } else { t.text_dim });
+            paint_tab_icon(cx, tab.icon, icon, if on { t.accent } else { t.text_dim });
             let words = Rect::new(
                 icon.right() + 14,
                 r.y + 8,
@@ -750,6 +982,12 @@ impl PrefsPage {
                 HEAD_H,
             );
             let hue = t.readable(card.hue.color(&t), t.panel());
+            if card.title.is_empty() {
+                for &i in &card.rows {
+                    self.paint_row(cx, g, i, card.hue);
+                }
+                continue;
+            }
             cx.text(
                 FontId::Bold,
                 t.size_small,
@@ -802,7 +1040,31 @@ impl PrefsPage {
             cx.canvas.stroke_round_rect(o, t.round(12), width, t.accent);
         }
         let ink = |c: Color| if row.faded { t.faded(c, t.panel()) } else { c };
-        if !row.bare && !matches!(row.control, Some(Control::Status { .. })) {
+        if let Some(Control::Dial { .. }) = row.control {
+            // The value over the name, under the knob.
+            let (value, name) = geo.head.take_top(NAME_H);
+            cx.text(
+                FontId::Bold,
+                t.size_body,
+                value,
+                Align::Center,
+                ink(t.text),
+                &row.value,
+            );
+            let name_ink = if row.faded {
+                faded_small(&t, t.text_dim)
+            } else {
+                t.text_dim
+            };
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                name,
+                Align::Center,
+                name_ink,
+                &row.name,
+            );
+        } else if !row.bare && !matches!(row.control, Some(Control::Status { .. })) {
             let knob = matches!(row.control, Some(Control::Knob { .. }));
             let (name, desc) = geo.head.take_top(NAME_H);
             let (value_line, desc) = if knob {
@@ -1024,11 +1286,117 @@ impl PrefsPage {
             }
             Control::Button(label) => {
                 let c = geo.control;
-                cx.canvas.fill_round_rect(c, t.round(10), t.raised);
+                let (bg, words) = if row.strong && !row.faded {
+                    (t.picked(), t.on_picked())
+                } else {
+                    (t.raised, ink(t.text))
+                };
+                cx.canvas.fill_round_rect(c, t.round(10), bg);
                 cx.text(
                     FontId::Bold,
                     t.size_body,
                     c.inset_xy(8, 0),
+                    Align::Center,
+                    words,
+                    label,
+                );
+            }
+            Control::Dial { pos, dot } => {
+                let c = geo.control;
+                let (x, y) = (c.x as f32 + c.w as f32 / 2.0, c.y as f32 + c.h as f32 / 2.0);
+                match dot {
+                    Some(colour) => paint_hue_ring(cx, c, *pos, *colour),
+                    None => mpfree_synth_ui::widgets::knob(
+                        cx,
+                        x,
+                        y,
+                        c.w as f32,
+                        *pos,
+                        false,
+                        t.raised,
+                        if row.faded {
+                            t.faded(fill, t.panel())
+                        } else {
+                            fill
+                        },
+                    ),
+                }
+            }
+            Control::Swatches {
+                colours,
+                at,
+                numbered,
+            } => {
+                let inline = inline_swatches(row, colours.len());
+                for (k, (word, colour)) in colours.iter().enumerate() {
+                    let p = geo.parts[k];
+                    cx.canvas
+                        .fill_round_rect(p, t.round(8), ink(colour.with_alpha(255)));
+                    cx.canvas.stroke_round_rect(p, t.round(8), 1, t.outline);
+                    if *at == Some(k) {
+                        let ring = p.inset(-4);
+                        cx.canvas.stroke_round_rect(ring, t.round(10), 3, t.accent);
+                    }
+                    if *numbered {
+                        let nr = Rect::new(p.x + 6, p.bottom() - 20, p.w - 8, 18);
+                        cx.text(
+                            FontId::Bold,
+                            t.size_small - 1.0,
+                            nr,
+                            Align::Left,
+                            t.ink_on(*colour),
+                            word,
+                        );
+                    } else if !inline {
+                        let lr = Rect::new(p.x - 4, p.bottom() + 2, p.w + 8, SWATCH_LABEL_H);
+                        cx.text(
+                            FontId::Sans,
+                            t.size_small - 1.0,
+                            lr,
+                            Align::Center,
+                            ink(t.text_dim),
+                            word,
+                        );
+                    }
+                }
+            }
+            Control::Looks { options, at } => {
+                for (k, (label, look)) in options.iter().enumerate() {
+                    let p = geo.parts[k];
+                    let chosen = k == *at;
+                    let bg = if chosen { fill } else { t.raised };
+                    cx.canvas.fill_round_rect(p, t.round(10), bg);
+                    let words = if chosen { t.ink_on(fill) } else { ink(t.text) };
+                    let (pic, name) = p.inset(8).take_top(p.h - 16 - 26);
+                    paint_look(cx, pic, *look, words);
+                    let font = if chosen { FontId::Bold } else { FontId::Sans };
+                    cx.text(font, t.size_body, name, Align::Center, words, label);
+                }
+            }
+            Control::Stepper(label) => {
+                let c = geo.control;
+                cx.canvas.fill_round_rect(c, t.round(10), t.raised);
+                let arrows = c.inset_xy(18, 0);
+                cx.text(
+                    FontId::Bold,
+                    t.size_title,
+                    arrows,
+                    Align::Left,
+                    ink(t.text_dim),
+                    "‹",
+                );
+                cx.text(
+                    FontId::Bold,
+                    t.size_title,
+                    arrows,
+                    Align::Right,
+                    ink(t.text_dim),
+                    "›",
+                );
+                cx.text(
+                    FontId::Bold,
+                    t.size_body,
+                    c.inset_xy(40, 0),
                     Align::Center,
                     ink(t.text),
                     label,
@@ -1175,12 +1543,50 @@ impl PrefsPage {
                 }
             }
         }
+        if let Some(r) = g.new_theme {
+            // A copy of the theme in use, opened in Customise.
+            let mut s = mpfree_ui::Shape::new(r);
+            let (x0, y0) = (r.x as f32 + 1.5, r.y as f32 + 1.5);
+            let (x1, y1) = (r.right() as f32 - 1.5, r.bottom() as f32 - 1.5);
+            s.dashed(
+                &[(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)],
+                2.0,
+                8.0,
+            );
+            cx.canvas.blend_shape(&s, t.outline.mix(t.text_dim, 0.5));
+            let mid = r.y + r.h / 2;
+            let plus = Rect::new(r.x, mid - 60, r.w, 40);
+            cx.text(FontId::Sans, 36.0, plus, Align::Center, t.text_dim, "+");
+            let name = Rect::new(r.x, mid - 14, r.w, 26);
+            cx.text(
+                FontId::Bold,
+                t.size_body,
+                name,
+                Align::Center,
+                t.text,
+                "New theme",
+            );
+            for (n, line) in ["A copy of the theme in use,", "opened in Customise"]
+                .iter()
+                .enumerate()
+            {
+                let lr = Rect::new(r.x + 8, mid + 18 + n as i32 * 19, r.w - 16, 19);
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    lr,
+                    Align::Center,
+                    t.text_dim,
+                    line,
+                );
+            }
+        }
         // The theme in use: its name, what it is, how well it reads, and
         // "Keep this theme?" while it asks.
         let r = g.in_use;
         cx.panel(r);
         let inner = r.inset_xy(22, 18);
-        let words_w = if g.keep.is_some() {
+        let words_w = if g.keep.is_some() || g.customise.is_some() {
             inner.w - 200
         } else {
             inner.w
@@ -1266,6 +1672,17 @@ impl PrefsPage {
             );
             x += w + 22;
         }
+        if let Some(c) = g.customise {
+            cx.canvas.fill_round_rect(c, t.round(10), t.picked());
+            cx.text(
+                FontId::Bold,
+                t.size_body,
+                c,
+                Align::Center,
+                t.on_picked(),
+                "Customise ›",
+            );
+        }
         if let Some((keep, back)) = g.keep {
             cx.canvas.fill_round_rect(keep, t.round(10), t.picked());
             cx.text(
@@ -1302,9 +1719,10 @@ impl Widget for PrefsPage {
     fn targets(&self, r: Rect) -> Vec<Target> {
         let g = self.geo(r);
         let mut out = vec![Target::tap("back", 0, "Back", g.back)];
-        for (i, (name, _)) in self.view.tabs.iter().enumerate() {
+        for (i, tab) in self.view.tabs.iter().enumerate() {
             out.push(
-                Target::tap("tab", i, name.clone(), g.tabs[i]).disabled_if(i == self.view.tab),
+                Target::tap("tab", tab.tab, tab.name.clone(), g.tabs[i])
+                    .disabled_if(tab.tab == self.view.tab),
             );
         }
         if let Some(gal) = &self.view.gallery {
@@ -1313,6 +1731,12 @@ impl Widget for PrefsPage {
                     Target::tap("theme", k, gal.tiles[k].label.clone(), rect)
                         .disabled_if(k == gal.at),
                 );
+            }
+            if let Some(r) = g.new_theme {
+                out.push(Target::tap("new", 0, "New theme", r));
+            }
+            if let Some(r) = g.customise {
+                out.push(Target::tap("customise", 0, "Customise", r));
             }
             if let Some((keep, back)) = g.keep {
                 out.push(Target::tap("keep", 0, "Keep", keep));
@@ -1354,6 +1778,31 @@ impl Widget for PrefsPage {
                         Target::drag("knob", i, row.name.clone(), geo.control).towards(0, -40),
                     );
                 }
+                Some(Control::Dial { .. }) => {
+                    out.push(
+                        Target::drag("dial", i, row.name.clone(), geo.control).towards(0, -40),
+                    );
+                }
+                Some(Control::Swatches { colours, .. }) => {
+                    for (k, (word, _)) in colours.iter().enumerate() {
+                        let name = format!("{} {word}", row.name);
+                        out.push(Target::tap("swatch", i * 100 + k, name, geo.parts[k]));
+                    }
+                }
+                Some(Control::Looks { options, at }) => {
+                    for (k, (label, _)) in options.iter().enumerate() {
+                        out.push(
+                            Target::tap("look", i * 100 + k, label.clone(), geo.parts[k])
+                                .disabled_if(k == *at),
+                        );
+                    }
+                }
+                Some(Control::Stepper(_)) => {
+                    for (k, word) in ["back", "on"].iter().enumerate() {
+                        let name = format!("{} {word}", row.name);
+                        out.push(Target::tap("stepper", i * 100 + k, name, geo.parts[k]));
+                    }
+                }
                 Some(Control::Switch(_)) => {
                     out.push(Target::tap("switch", i, row.name.clone(), geo.control));
                 }
@@ -1394,6 +1843,10 @@ impl Widget for PrefsPage {
                     | Control::Steps { .. }
                     | Control::Slider { .. }
                     | Control::Knob { .. }
+                    | Control::Dial { .. }
+                    | Control::Swatches { .. }
+                    | Control::Looks { .. }
+                    | Control::Stepper(_)
                     | Control::Switch(_)
             )
         );
@@ -1414,7 +1867,8 @@ impl Widget for PrefsPage {
                 // A knob turns with the finger's move up or down.
                 if self.view.gallery.is_none() {
                     for (i, row) in self.view.rows.iter().enumerate() {
-                        if let Some(Control::Knob { pos }) = row.control {
+                        if let Some(Control::Knob { pos } | Control::Dial { pos, .. }) = row.control
+                        {
                             if g.rows[i].control.contains(x, y) {
                                 self.drag = Some((finger, i, y, pos));
                                 return None;
@@ -1476,6 +1930,44 @@ impl Widget for PrefsPage {
 }
 
 // ------------------------------------------------------------ helpers
+
+/// The height of a row's name and its line over its control.
+/// Small faded text: `Theme::faded`, with room over its 3:1 for the
+/// soft edges of small glyphs, which read lighter than their ink (a dial's
+/// faded name measured 2.98:1 in Slate and 2.99:1 in AbleTown when faded
+/// to exactly 3:1).
+fn faded_small(t: &Theme, ink: Color) -> Color {
+    let panel = t.panel();
+    let mut c = t.faded(ink, panel);
+    while c.a < ink.a && contrast(mpfree_ui::roles::over(c, panel), panel) < 3.3 {
+        c = c.with_alpha(c.a.saturating_add(8).min(ink.a));
+    }
+    c
+}
+
+fn head_h(row: &RowView) -> i32 {
+    if row.bare {
+        0
+    } else if row.desc.is_empty() {
+        NAME_H
+    } else {
+        NAME_H + DESC_H
+    }
+}
+
+/// A card's title and the gap under it (none for a card without one).
+fn card_head(card: &CardView) -> i32 {
+    if card.title.is_empty() {
+        0
+    } else {
+        HEAD_H + HEAD_GAP
+    }
+}
+
+/// A named row of a few colours draws them at the right of its name.
+fn inline_swatches(row: &RowView, n: usize) -> bool {
+    !row.bare && n <= 3
+}
 
 /// `r` cut into `n` equal parts side by side, `gap` apart.
 fn split_row(r: Rect, n: usize, gap: i32) -> Vec<Rect> {
@@ -1682,6 +2174,131 @@ fn paint_theme_preview(cx: &mut PaintCx, r: Rect, look: &Theme) {
     }
 }
 
+/// A knob for a colour's hue: a ring of every hue round a dot of the
+/// colour, with a handle on the ring at `pos` (0 at the top, clockwise).
+fn paint_hue_ring(cx: &mut PaintCx, r: Rect, pos: f32, colour: Color) {
+    let t = cx.theme.clone();
+    let (x, y) = (r.x as f32 + r.w as f32 / 2.0, r.y as f32 + r.h as f32 / 2.0);
+    let rad = r.w as f32 / 2.0 - 4.0;
+    let width = (r.w as f32 / 9.0).clamp(4.0, 6.0);
+    let steps = 36;
+    let top = -std::f32::consts::FRAC_PI_2;
+    for n in 0..steps {
+        let a0 = top + n as f32 / steps as f32 * std::f32::consts::TAU;
+        let a1 = top + (n + 1) as f32 / steps as f32 * std::f32::consts::TAU;
+        let mut s = mpfree_ui::Shape::new(r.inset(-2));
+        s.arc(x, y, rad, a0, a1 + 0.02, width);
+        let hue = crate::theme_edit::from_hsl(
+            crate::theme_edit::Hsl {
+                h: n as f32 * 360.0 / steps as f32,
+                s: 0.85,
+                l: 0.6,
+            },
+            255,
+        );
+        cx.canvas.blend_shape(&s, hue);
+    }
+    let mut dot = mpfree_ui::Shape::new(r);
+    dot.disc(x, y, rad - width - 5.0);
+    cx.canvas.blend_shape(&dot, colour.with_alpha(255));
+    let a = top + pos.clamp(0.0, 1.0) * std::f32::consts::TAU;
+    let mut handle = mpfree_ui::Shape::new(r.inset(-6));
+    handle.disc(x + rad * a.cos(), y + rad * a.sin(), width / 2.0 + 3.0);
+    cx.canvas
+        .blend_shape(&handle, t.role(mpfree_ui::Role::Handle));
+}
+
+/// The drawing on a [`Control::Looks`] button, in `ink`: a box with its
+/// corners, or a little page with its backdrop.
+fn paint_look(cx: &mut PaintCx, r: Rect, look: Look, ink: Color) {
+    let t = cx.theme.clone();
+    match look {
+        Look::Corners(corners) => {
+            let b = Rect::new(r.x + 6, r.y + (r.h - 30).max(0) / 2, r.w - 12, 30.min(r.h));
+            let (x0, y0) = (b.x as f32 + 1.0, b.y as f32 + 1.0);
+            let (x1, y1) = (b.right() as f32 - 1.0, b.bottom() as f32 - 1.0);
+            let c = 9.0f32.min((y1 - y0) / 2.0);
+            let mut s = mpfree_ui::Shape::new(b.inset(-2));
+            match corners {
+                mpfree_ui::Corners::Square => {
+                    s.polyline(&[(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)], 2.0)
+                }
+                mpfree_ui::Corners::Chamfer => s.polyline(
+                    &[
+                        (x0 + c, y0),
+                        (x1 - c, y0),
+                        (x1, y0 + c),
+                        (x1, y1 - c),
+                        (x1 - c, y1),
+                        (x0 + c, y1),
+                        (x0, y1 - c),
+                        (x0, y0 + c),
+                        (x0 + c, y0),
+                    ],
+                    2.0,
+                ),
+                mpfree_ui::Corners::Round => {
+                    use std::f32::consts::{FRAC_PI_2, PI};
+                    s.segment((x0 + c, y0), (x1 - c, y0), 2.0);
+                    s.segment((x1, y0 + c), (x1, y1 - c), 2.0);
+                    s.segment((x1 - c, y1), (x0 + c, y1), 2.0);
+                    s.segment((x0, y1 - c), (x0, y0 + c), 2.0);
+                    s.arc(x1 - c, y0 + c, c, -FRAC_PI_2, 0.0, 2.0);
+                    s.arc(x1 - c, y1 - c, c, 0.0, FRAC_PI_2, 2.0);
+                    s.arc(x0 + c, y1 - c, c, FRAC_PI_2, PI, 2.0);
+                    s.arc(x0 + c, y0 + c, c, PI, PI + FRAC_PI_2, 2.0);
+                }
+            }
+            cx.canvas.blend_shape(&s, ink);
+        }
+        Look::Backdrop(backdrop) => {
+            use mpfree_ui::Backdrop;
+            let page = r.inset_xy(4, 2);
+            let (top, foot) = (t.bg, t.backdrop_to);
+            let line = t.backdrop_line.mix(t.text_dim, 0.35);
+            let fade = !matches!(backdrop, Backdrop::Solid);
+            let bands = 6;
+            for n in 0..bands {
+                let y = page.y + page.h * n / bands;
+                let h = page.y + page.h * (n + 1) / bands - y;
+                let c = if fade {
+                    top.mix(foot, n as f32 / (bands - 1) as f32)
+                } else {
+                    top
+                };
+                cx.canvas
+                    .fill_rect(Rect::new(page.x, y, page.w, h), c.with_alpha(255));
+            }
+            let step = 8;
+            match backdrop {
+                Backdrop::Grid => {
+                    for x in (page.x + step..page.right()).step_by(step as usize) {
+                        cx.canvas.fill_rect(Rect::new(x, page.y, 1, page.h), line);
+                    }
+                    for y in (page.y + step..page.bottom()).step_by(step as usize) {
+                        cx.canvas.fill_rect(Rect::new(page.x, y, page.w, 1), line);
+                    }
+                }
+                Backdrop::Dots => {
+                    for x in (page.x + step / 2..page.right()).step_by(step as usize) {
+                        for y in (page.y + step / 2..page.bottom()).step_by(step as usize) {
+                            cx.canvas.fill_rect(Rect::new(x, y, 2, 2), line);
+                        }
+                    }
+                }
+                Backdrop::Scanlines => {
+                    for y in (page.y + 2..page.bottom()).step_by(4) {
+                        cx.canvas.fill_rect(Rect::new(page.x, y, page.w, 1), line);
+                    }
+                }
+                _ => {}
+            }
+            cx.canvas
+                .stroke_round_rect(page, t.round(6), 1, ink.with_alpha(140));
+        }
+    }
+}
+
 /// Each tab's little drawing, in the sidebar (Playing, Sound, Appearance,
 /// Projects, System).
 fn paint_tab_icon(cx: &mut PaintCx, tab: usize, r: Rect, c: Color) {
@@ -1771,7 +2388,15 @@ mod tests {
         PrefsView {
             tabs: ["Playing", "Sound", "Appearance", "Projects", "System"]
                 .iter()
-                .map(|n| (n.to_string(), "line".to_string()))
+                .enumerate()
+                .map(|(i, n)| SideTab {
+                    name: n.to_string(),
+                    line: "line".to_string(),
+                    tab: i,
+                    lit: i == 0,
+                    icon: i,
+                    ..SideTab::default()
+                })
                 .collect(),
             tab: 0,
             rows: vec![
@@ -1851,7 +2476,7 @@ mod tests {
         let mut app = crate::app::App::new(44_100, false);
         let mut fx = app.open_tab(crate::app::View::Prefs);
         let info = crate::sysinfo::sample();
-        for tab in 0..5 {
+        for tab in 0..crate::app::PrefsTab::ALL.len() {
             fx.extend(app.pick_prefs_tab(tab));
             let Some(Effect::Menu(m)) = fx.iter().rev().find(|e| matches!(e, Effect::Menu(_)))
             else {
@@ -1967,6 +2592,170 @@ mod tests {
         assert_eq!(p.touch(1, Touch::Down, 600, 700, R), None);
     }
 
+    /// Customise's controls: a banner across both columns, dials, swatches,
+    /// looks and ‹ value ›, each touch answering with its event.
+    #[test]
+    fn customise_controls_answer_with_their_events() {
+        let row = |name: &str, control: Control| RowView {
+            name: name.into(),
+            control: Some(control),
+            ..RowView::default()
+        };
+        let dial = |name: &str| RowView {
+            share: 1,
+            ..row(
+                name,
+                Control::Dial {
+                    pos: 0.5,
+                    dot: None,
+                },
+            )
+        };
+        let colours = |n: usize| -> Vec<(String, Color)> {
+            (0..n)
+                .map(|k| (format!("C{k}"), Color::rgb(0x305AC8 + 0x140000 * k as u32)))
+                .collect()
+        };
+        let view = PrefsView {
+            tabs: sample().tabs,
+            tab: 2,
+            rows: vec![
+                RowView {
+                    share: 6,
+                    desc: "A copy of Default".into(),
+                    ..row("My theme", Control::Button("Rename".into()))
+                },
+                RowView {
+                    bare: true,
+                    share: 2,
+                    faded: true,
+                    ..row("", Control::Button("Undo changes".into()))
+                },
+                RowView {
+                    bare: true,
+                    share: 2,
+                    strong: true,
+                    ..row("", Control::Button("Save theme".into()))
+                },
+                dial("Accent"),
+                dial("Second accent"),
+                dial("Lightness"),
+                dial("Warmth"),
+                row(
+                    "Every colour",
+                    Control::Swatches {
+                        colours: colours(9),
+                        at: Some(4),
+                        numbered: false,
+                    },
+                ),
+                RowView {
+                    bare: true,
+                    ..row(
+                        "Corners",
+                        Control::Looks {
+                            options: [
+                                mpfree_ui::Corners::Round,
+                                mpfree_ui::Corners::Chamfer,
+                                mpfree_ui::Corners::Square,
+                            ]
+                            .iter()
+                            .map(|&c| (format!("{c:?}"), Look::Corners(c)))
+                            .collect(),
+                            at: 0,
+                        },
+                    )
+                },
+                row("Set", Control::Stepper("Rainbow".into())),
+            ],
+            cards: vec![
+                CardView {
+                    column: 2,
+                    rows: vec![0, 1, 2],
+                    ..CardView::default()
+                },
+                CardView {
+                    title: "Colours".into(),
+                    column: 0,
+                    rows: vec![3, 4, 5, 6, 7],
+                    ..CardView::default()
+                },
+                CardView {
+                    title: "Shape".into(),
+                    column: 1,
+                    rows: vec![8, 9],
+                    ..CardView::default()
+                },
+            ],
+            ..PrefsView::default()
+        };
+        let mut p = PrefsPage {
+            view,
+            ..PrefsPage::default()
+        };
+        let g = p.geo(R);
+        // The banner spans both columns, its three on one line.
+        let (name, undo, save) = (g.rows[0].area, g.rows[1].area, g.rows[2].area);
+        assert!(
+            name.y == undo.y && undo.y == save.y,
+            "{name:?} {undo:?} {save:?}"
+        );
+        assert!(name.x < R.x + 260 && save.right() > R.right() - 30);
+        assert!(name.w > 2 * undo.w, "the name has room for its line");
+        // The four dials share a line.
+        let ys: Vec<i32> = (3..7).map(|i| g.rows[i].area.y).collect();
+        assert!(ys.iter().all(|&y| y == ys[0]), "{ys:?}");
+        let mut counts = std::collections::BTreeMap::new();
+        for t in p.targets(R) {
+            *counts.entry(t.id).or_insert(0) += 1;
+            let (x, y) = t.centre();
+            let ev = p.touch(1, Touch::Down, x, y, R);
+            p.touch(1, Touch::Up, x, y, R);
+            match t.id {
+                "back" | "tab" | "row" => {}
+                "dial" => assert!(ev.is_none(), "a dial waits for the finger's move"),
+                _ if !t.enabled => assert!(ev.is_none(), "{t:?} is already so"),
+                "button" => assert_eq!(
+                    ev,
+                    Some(EventKind::Step {
+                        index: t.index,
+                        delta: 1
+                    })
+                ),
+                "swatch" | "look" => assert_eq!(
+                    ev,
+                    Some(EventKind::Cell {
+                        row: t.index / 100,
+                        col: t.index % 100
+                    })
+                ),
+                "stepper" => assert_eq!(
+                    ev,
+                    Some(EventKind::Step {
+                        index: t.index / 100,
+                        delta: if t.index % 100 == 0 { -1 } else { 1 },
+                    })
+                ),
+                other => panic!("no check for {other}"),
+            }
+        }
+        let n = |id| counts.get(id).copied().unwrap_or(0);
+        assert_eq!(
+            (n("button"), n("dial"), n("swatch"), n("look"), n("stepper")),
+            (3, 4, 9, 3, 2)
+        );
+        // A dial turns with the finger's move up, as a knob does.
+        let r = g.rows[3].control;
+        let c = (r.x + r.w / 2, r.y + r.h / 2);
+        p.touch(1, Touch::Down, c.0, c.1, R);
+        let ev = p.touch(1, Touch::Move, c.0, c.1 - 30, R);
+        assert!(
+            matches!(ev, Some(EventKind::Values { index: 3, .. })),
+            "{ev:?}"
+        );
+        p.touch(1, Touch::Up, c.0, c.1 - 30, R);
+    }
+
     /// Hold and turn: a finger on a setting puts it under the wheel, which
     /// steps it; a row that only opens something, or the gallery, doesn't.
     #[test]
@@ -2035,6 +2824,8 @@ mod tests {
                     at: 0,
                     trial: Some(("Keep Slate?".into(), "Back to Default in 9 s".into())),
                     about: Vec::new(),
+                    new_theme: true,
+                    customise: false,
                 }),
                 ..PrefsView::default()
             },
@@ -2049,6 +2840,7 @@ mod tests {
                 ("theme", 0) => assert_eq!(ev, None, "the theme in use"),
                 ("theme", k) => assert_eq!(ev, Some(EventKind::Cell { row: 0, col: k })),
                 ("keep", 0) => assert_eq!(ev, Some(EventKind::Tab(KEEP))),
+                ("new", _) => assert_eq!(ev, Some(EventKind::Tab(NEW_THEME))),
                 ("keep", 1) => assert_eq!(ev, Some(EventKind::Tab(GO_BACK))),
                 ("tab", 2) => assert_eq!(ev, None),
                 ("tab", i) => assert_eq!(ev, Some(EventKind::Tab(i))),

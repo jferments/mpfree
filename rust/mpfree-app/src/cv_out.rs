@@ -693,6 +693,7 @@ mod tests {
             dest: Default::default(),
             event,
             notes: false,
+            heard: false,
         }
     }
 

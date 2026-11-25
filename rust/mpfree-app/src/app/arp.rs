@@ -527,6 +527,7 @@ impl App {
     pub fn arp_poll(&mut self) -> Option<Effect> {
         self.answer_poll();
         self.improvise_poll();
+        self.records_poll();
         let e = self.arps.engine_at(self.track);
         let step = e.step();
         let push = ((e.modifier() * 100.0).round() as u8, e.live());

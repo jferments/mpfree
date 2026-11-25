@@ -71,6 +71,24 @@ struct Rig {
     tunings: Box<crate::TuningsHanded>,
 }
 
+/// Runs a test that builds a rig on a 16 MiB thread, as `slow_gear_moves`
+/// and the thru test do. A debug build copies the rig (some hundreds of KB)
+/// through each frame that builds it: on main 023024eb with three pull
+/// requests on top, one test overflowed a test thread's 2 MiB and 20 more
+/// came within 64 KB of it. The device builds the rig once, optimised, on
+/// the main thread. A panic in the test fails the test as it is.
+fn on_rig_stack(test: impl FnOnce() + Send + 'static) {
+    // Named after the test, so a panic names it.
+    let name = std::thread::current().name().unwrap_or("rig").to_string();
+    std::thread::Builder::new()
+        .name(name)
+        .stack_size(16 << 20)
+        .spawn(test)
+        .expect("spawn the rig")
+        .join()
+        .unwrap_or_else(|e| std::panic::resume_unwind(e))
+}
+
 fn tone(frames: usize, f: f32) -> Vec<i16> {
     (0..frames)
         .flat_map(|i| {
@@ -481,13 +499,13 @@ fn steady_play_never_allocates(synth_on: bool, sound_cores: cores::SoundCores) {
 /// nothing on the sound path.
 #[test]
 fn a_track_with_its_own_instrument_plays_it_and_never_allocates() {
-    own_instrument(cores::SoundCores::Shared);
+    on_rig_stack(move || own_instrument(cores::SoundCores::Shared));
 }
 
 /// The same on two cores: the Poly plays on the tracks' lane on core 2.
 #[test]
 fn a_tracks_own_instrument_plays_on_another_core_and_never_allocates() {
-    own_instrument(cores::SoundCores::Two);
+    on_rig_stack(move || own_instrument(cores::SoundCores::Two));
 }
 
 fn own_instrument(sound_cores: cores::SoundCores) {
@@ -573,22 +591,22 @@ fn late_reverb(m: &mut mpfree_fx::Mixer) {
 
 #[test]
 fn the_sound_path_never_allocates_with_the_sampler() {
-    steady_play_never_allocates(false, cores::SoundCores::Shared);
+    on_rig_stack(move || steady_play_never_allocates(false, cores::SoundCores::Shared));
 }
 
 #[test]
 fn the_sound_path_never_allocates_with_the_synth() {
-    steady_play_never_allocates(true, cores::SoundCores::Shared);
+    on_rig_stack(move || steady_play_never_allocates(true, cores::SoundCores::Shared));
 }
 
 #[test]
 fn the_sound_path_never_allocates_on_two_cores() {
-    steady_play_never_allocates(false, cores::SoundCores::Two);
+    on_rig_stack(move || steady_play_never_allocates(false, cores::SoundCores::Two));
 }
 
 #[test]
 fn the_sound_path_never_allocates_on_three_cores_with_the_synth() {
-    steady_play_never_allocates(true, cores::SoundCores::Three);
+    on_rig_stack(move || steady_play_never_allocates(true, cores::SoundCores::Three));
 }
 
 /// MIDI Out's port in these tests: every byte written.
@@ -611,14 +629,14 @@ impl std::io::Write for MidiSink {
 /// sound path still never allocates or frees.
 #[test]
 fn a_track_on_midi_out_plays_there_and_never_allocates() {
-    track_on_midi_out_never_allocates(false, 0);
+    on_rig_stack(move || track_on_midi_out_never_allocates(false, 0));
 }
 
 /// The same with the track and the clock on a USB device's output: its
 /// own writer, and the jacks get nothing.
 #[test]
 fn a_track_on_a_usb_device_plays_there_and_never_allocates() {
-    track_on_midi_out_never_allocates(true, 0);
+    on_rig_stack(move || track_on_midi_out_never_allocates(true, 0));
 }
 
 /// The same on gear slower than the sound's lead (sequencer S5): the
@@ -627,7 +645,7 @@ fn a_track_on_a_usb_device_plays_there_and_never_allocates() {
 /// ends once.
 #[test]
 fn a_track_on_slow_gear_plays_ahead_and_never_allocates() {
-    track_on_midi_out_never_allocates(false, 400);
+    on_rig_stack(move || track_on_midi_out_never_allocates(false, 400));
 }
 
 /// `delay_tenths`: the gear's delay on the port's page, in tenths of a ms.
@@ -763,6 +781,10 @@ fn track_on_midi_out_never_allocates(usb: bool, delay_tenths: u16) {
 /// of the clip with far fewer points than the values it was sent.
 #[test]
 fn the_keys_wheel_on_a_midi_out_track_records_and_never_allocates() {
+    on_rig_stack(the_keys_wheel_on_a_midi_out_track_records_and_never_allocates_on);
+}
+
+fn the_keys_wheel_on_a_midi_out_track_records_and_never_allocates_on() {
     use mpfree_midi::expr_out::In;
     use mpfree_midi::setup::{TrackOut, DIN_NAME};
     use mpfree_play::mpfree_param::{midi, Owner, ParamAddr};
@@ -881,6 +903,7 @@ fn slow_gear_moves_on(delay_tenths: u16, lane: bool, lfo: bool) -> Vec<(u64, u64
             ramp: 0,
             join: Join::Attack,
             group: 0,
+            heard: false,
         })
         .collect();
     clip.locks = vec![Lock::new(
@@ -1079,6 +1102,10 @@ fn a_control_an_lfo_moves_stays_a_period_at_a_time() {
 /// still shows, and the armed track records the pad as heard.
 #[test]
 fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
+    on_rig_stack(live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad_on);
+}
+
+fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad_on() {
     use mpfree_midi::setup::{TrackOut, DIN_NAME};
     use mpfree_play::{Event, Out};
     let mut rig = Rig::new(false);
@@ -1120,6 +1147,7 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
         dest: 0,
         event,
         notes: false,
+        heard: false,
     };
     let on = Event::NoteOn {
         note: 2,
@@ -1155,6 +1183,10 @@ fn live_notes_on_a_midi_out_track_go_out_and_record_as_their_pad() {
 /// An arp's notes by number keep what each became the same way.
 #[test]
 fn a_tracks_transpose_moves_its_notes_and_a_sounding_note_ends_where_it_went() {
+    on_rig_stack(a_tracks_transpose_moves_its_notes_and_a_sounding_note_ends_where_it_went_on);
+}
+
+fn a_tracks_transpose_moves_its_notes_and_a_sounding_note_ends_where_it_went_on() {
     use mpfree_arp::scale::{Held, Shift};
     use mpfree_midi::setup::{TrackOut, DIN_NAME};
     use mpfree_play::{Event, Out};
@@ -1201,6 +1233,7 @@ fn a_tracks_transpose_moves_its_notes_and_a_sounding_note_ends_where_it_went() {
         dest: track,
         event,
         notes: false,
+        heard: false,
     };
     let on = Event::NoteOn {
         note: 0,
@@ -1274,6 +1307,10 @@ fn a_tracks_transpose_moves_its_notes_and_a_sounding_note_ends_where_it_went() {
 /// there. None of it allocates.
 #[test]
 fn routed_keys_play_their_track_where_its_clips_play() {
+    on_rig_stack(routed_keys_play_their_track_where_its_clips_play_on);
+}
+
+fn routed_keys_play_their_track_where_its_clips_play_on() {
     use crate::midi_in::Key;
     use mpfree_midi::setup::{TrackOut, DIN_NAME};
     let mut rig = Rig::new(false);
@@ -1356,6 +1393,10 @@ fn routed_keys_play_their_track_where_its_clips_play() {
 /// it; nothing on the sound path allocates.
 #[test]
 fn routed_keys_play_a_kits_keygroups_by_pitch() {
+    on_rig_stack(routed_keys_play_a_kits_keygroups_by_pitch_on);
+}
+
+fn routed_keys_play_a_kits_keygroups_by_pitch_on() {
     use crate::midi_in::Key;
     use mpfree_sampler::model::Keys;
     let mut rig = Rig::new(false);
@@ -1498,6 +1539,10 @@ fn thru_passes_a_keyboards_channel_out_on() {
 /// another track's clip still plays the kit.
 #[test]
 fn live_pads_on_a_track_with_its_own_instrument_play_it() {
+    on_rig_stack(live_pads_on_a_track_with_its_own_instrument_play_it_on);
+}
+
+fn live_pads_on_a_track_with_its_own_instrument_play_it_on() {
     use mpfree_play::{Event, Out};
     let mut rig = Rig::new(false);
     let job = crate::instrument_job(&rig.synth, 0, "mpfree.poly", None);
@@ -1541,6 +1586,7 @@ fn live_pads_on_a_track_with_its_own_instrument_play_it() {
         dest: track,
         event,
         notes: false,
+        heard: false,
     };
     let on = Event::NoteOn {
         note: 2,
@@ -1579,6 +1625,10 @@ fn live_pads_on_a_track_with_its_own_instrument_play_it() {
 /// was. Nothing on the way allocates.
 #[test]
 fn a_lock_on_this_tracks_strip_moves_the_strip_its_instrument_sounds_on() {
+    on_rig_stack(a_lock_on_this_tracks_strip_moves_the_strip_its_instrument_sounds_on_on);
+}
+
+fn a_lock_on_this_tracks_strip_moves_the_strip_its_instrument_sounds_on_on() {
     use mpfree_fx::ids::mixer as mx;
     use mpfree_fx::StripId;
     use mpfree_play::mpfree_param::{OnTrack, RelAddr};
@@ -1660,6 +1710,10 @@ fn a_lock_on_this_tracks_strip_moves_the_strip_its_instrument_sounds_on() {
 /// the clock pulses, and the sound path never allocates or frees.
 #[test]
 fn cv_follows_a_track_and_never_allocates() {
+    on_rig_stack(cv_follows_a_track_and_never_allocates_on);
+}
+
+fn cv_follows_a_track_and_never_allocates_on() {
     use mpfree_midi::cv::{CvAssign, Priority, Scale};
     use mpfree_midi::cv_wire::{counts, decode, CV_STATUS, FULL_SCALE};
     use mpfree_midi::setup::MAX_VOLTS;
@@ -1866,6 +1920,10 @@ fn each_track_plays_its_own_kit() {
 /// ends both, and none of it allocates or frees.
 #[test]
 fn a_kits_instrument_and_midi_out_pads_play_the_synth_and_the_gear() {
+    on_rig_stack(a_kits_instrument_and_midi_out_pads_play_the_synth_and_the_gear_on);
+}
+
+fn a_kits_instrument_and_midi_out_pads_play_the_synth_and_the_gear_on() {
     use crate::synth::Engine;
     use mpfree_midi::setup::DIN_NAME;
     use mpfree_node::NodeEvent;
@@ -1970,6 +2028,10 @@ fn a_kits_instrument_and_midi_out_pads_play_the_synth_and_the_gear() {
 /// of it allocates or frees.
 #[test]
 fn routed_keys_play_a_kits_midi_out_and_instrument_pads_by_their_kind() {
+    on_rig_stack(routed_keys_play_a_kits_midi_out_and_instrument_pads_by_their_kind_on);
+}
+
+fn routed_keys_play_a_kits_midi_out_and_instrument_pads_by_their_kind_on() {
     use crate::midi_in::Key;
     use crate::synth::Engine;
     use mpfree_midi::profile::kit_pad_of_note;
@@ -2077,14 +2139,14 @@ fn routed_keys_play_a_kits_midi_out_and_instrument_pads_by_their_kind() {
 /// it sounds in, the copy following the Synth tab, never allocate.
 #[test]
 fn a_synth_voice_pads_own_synth_plays_into_its_pad_channel() {
-    pad_synth_plays(cores::SoundCores::Shared);
+    on_rig_stack(move || pad_synth_plays(cores::SoundCores::Shared));
 }
 
 /// The same on two cores: the copy plays on the pads' lane on core 2, into
 /// the same strip, with no allocation.
 #[test]
 fn a_synth_voice_pads_own_synth_plays_on_another_core() {
-    pad_synth_plays(cores::SoundCores::Two);
+    on_rig_stack(move || pad_synth_plays(cores::SoundCores::Two));
 }
 
 fn pad_synth_plays(sound_cores: cores::SoundCores) {

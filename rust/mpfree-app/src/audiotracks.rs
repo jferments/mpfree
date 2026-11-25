@@ -1222,6 +1222,18 @@ impl TrackHost {
         self.loops.listen(s);
     }
 
+    /// After [`TrackHost::plan_loops`]: the free cells' loops this period
+    /// (phase 4e.4), each (project track, lasting id; 0 for none), heard
+    /// through their tracks at full gain on every frame: the looper
+    /// launches and fades them on the free clock (`LoopPlayer::free`).
+    pub fn loop_free(&mut self, cells: &[(usize, u128)]) {
+        for &(p, id) in cells.iter().filter(|c| c.1 != 0) {
+            if let Some(s) = (0..MAX_TRACKS).find(|&s| self.place(s) == Some(p)) {
+                self.loops.free(s, id);
+            }
+        }
+    }
+
     /// A new lasting id for a loop (phase 4b: `mpfree_seq::LoopId`), from
     /// the audio tracks' id maker: never 0, never given twice.
     pub fn fresh_loop_id(&mut self) -> u128 {

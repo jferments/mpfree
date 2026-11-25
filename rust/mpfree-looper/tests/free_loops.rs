@@ -1925,3 +1925,104 @@ fn make_song_at_a_tempo_off_the_frame_grid_moves_the_loops_less_than_a_frame() {
         assert!(d < 1.0, "{d} frames apart");
     }
 }
+
+/// Audio tracks phase 4e.4 (free cells): a free loop whose cell is on an
+/// audio track plays on the free clock as ever, but into its own buffer
+/// for its track, out of the looper's mix; its own Mute, Solo and Sync are
+/// refused (the track's); launched off with `Some(Tick::MIN)` it stops on
+/// the free clock's next bar line, and launched on again it comes back on
+/// the next one in step; a song loop is refused; off the track it is in
+/// the mix again.
+#[test]
+fn a_free_loop_whose_cell_is_on_a_track_plays_for_its_track_and_launches_on_the_free_clock() {
+    let mut r = Rig::new(128);
+    record_with_the_song(&mut r, Clock::Free, 2);
+    let stop = START + 4 * BAR;
+    r.at(stop, T::Stop);
+    r.run(stop + BAR, &noise);
+    assert!(!r.silent(stop, stop + BAR), "it plays on through STOP");
+    assert!(!r.l.free_on_track(1, true), "a song loop is refused");
+    assert!(!r.l.free_tracked(1));
+    assert!(r.l.free_on_track(0, true));
+    assert!(r.l.free_tracked(0) && !r.l.on_track(0));
+    // A period at a time: the mix and the loop's own buffer.
+    let period = |r: &mut Rig| {
+        let f = r.frame + 128;
+        r.run(f, &quiet);
+        let mix = r.out[r.out.len() - 256..]
+            .iter()
+            .fold(0.0f32, |m, v| m.max(v.abs()));
+        let own: Vec<f32> = r.l.outs().loop_out(0)[..256].to_vec();
+        assert!(r.l.outs().on_track(0));
+        (mix, own)
+    };
+    period(&mut r);
+    let mut heard = 0.0f32;
+    for _ in 0..40 {
+        let (mix, own) = period(&mut r);
+        assert_eq!(mix, 0.0, "out of the looper's mix");
+        heard = own.iter().fold(heard, |m, v| m.max(v.abs()));
+    }
+    assert!(heard > 0.1, "its own buffer has it: {heard}");
+    // Its own Mute, Solo and Sync: refused.
+    let refused = r.l.stats().refused;
+    r.select(0);
+    r.cmd(L::Mute(true));
+    r.cmd(L::Solo(true));
+    r.cmd(L::SetClock(Clock::Song));
+    period(&mut r);
+    assert_eq!(r.l.stats().refused, refused + 3);
+    let s = r.status(0);
+    assert!(!s.muted && !s.solo && s.clock == Clock::Free);
+    // Off on the free clock's next bar line: it plays to it, then fades.
+    let c = r.l.free_clock().expect("a free clock");
+    assert!(r.l.launch(0, false, Some(i64::MIN)));
+    let (_, line) = c.next_bar(r.frame + 128).expect("a line to come");
+    let mut own = Vec::new();
+    let from = r.frame;
+    while r.frame < line + 2 * BAR {
+        own.extend(period(&mut r).1);
+    }
+    let at = |f: u64| 2 * (f - from) as usize;
+    let peak = |x: &[f32]| x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!(
+        peak(&own[at(line - BAR / 2)..at(line)]) > 0.1,
+        "on to the line"
+    );
+    assert_eq!(
+        peak(&own[at(line + FADE as u64 + 128)..]),
+        0.0,
+        "off after it"
+    );
+    assert!(!r.status(0).on);
+    // On again: on the next line, in step with the free clock.
+    let c = r.l.free_clock().expect("a free clock");
+    assert!(r.l.launch(0, true, Some(i64::MIN)));
+    let (_, back) = c.next_bar(r.frame + 128).expect("a line to come");
+    let from = r.frame;
+    let mut own = Vec::new();
+    while r.frame < back + BAR {
+        own.extend(period(&mut r).1);
+    }
+    let at = |f: u64| 2 * (f - from) as usize;
+    assert_eq!(peak(&own[..at(back)]), 0.0, "silent to the line");
+    assert!(peak(&own[at(back + FADE as u64)..]) > 0.1, "on from it");
+    assert!(r.status(0).on);
+    // Off the track: in the looper's mix again.
+    r.l.leave_track(0);
+    assert!(!r.l.free_tracked(0));
+    let mut mix = 0.0f32;
+    for _ in 0..8 {
+        mix = mix.max(period_mix(&mut r));
+    }
+    assert!(mix > 0.1, "in the mix again: {mix}");
+}
+
+/// A period of the free loops' rig: the loudest sample of the mix.
+fn period_mix(r: &mut Rig) -> f32 {
+    let f = r.frame + 128;
+    r.run(f, &quiet);
+    r.out[r.out.len() - 256..]
+        .iter()
+        .fold(0.0f32, |m, v| m.max(v.abs()))
+}
