@@ -50,7 +50,7 @@ A page of the [Perform set](pads.md#clip-windows-and-scenes-on-the-pads) can be 
 
 ### More tracks
 
-A new project has 8 tracks, and a project can have up to 128, as on Akai's MPC. **+ Track**, on the grid's title line, adds one: it is named "Track 9" and so on, armed, ready to record. **UNDO** takes it away again.
+A new project has 8 tracks, and a project can have up to 128, as on Akai's MPC. **+ Track**, on the grid's title line, asks which kind: **Note track** adds one named "Track 9" and so on, armed, ready to record; **Audio track** adds "Audio 1" and so on, for loops and takes (see [Recording audio tracks](audio-tracks.md)). **SHIFT + + Track** adds an audio track at once. **UNDO** takes a new track away again.
 
 The grid shows 8 tracks at a time. With more than 8, the title line shows which ones, such as "9–16 of 24": tap **‹** or **›**, or swipe along the track names, to see the 8 before or after. When you arm a track that's out of view, from the Record panel's **Armed** row for example, the grid moves to it.
 
@@ -58,11 +58,11 @@ The grid shows 8 tracks at a time. With more than 8, the title line shows which 
 
 Every track can have a kit of its own (see [A kit for each track](pads.md#a-kit-for-each-track)) and its own MIDI out to your gear (see [Playing a synth from a track](midi-and-cv.md#playing-a-synth-from-a-track)). Any track can also have an instrument of its own, up to 16 tracks at once (see [A synth for each track](synths.md#a-synth-for-each-track)).
 
-### Loop tracks
+### Loops on audio tracks
 
-The loops you record on the Play page or the Looper tab show on **Loop tracks**, columns named **Loops A**, **Loops B** and on, added at the end of the grid as they are needed, with a little wave and **Pads** under the name (they record the pads and the synth). Each cell names its loop ("Loop 1"), shows its wave and length, and launches like a clip: one loop plays per Loop track, and loops on different Loop tracks play together. The pads don't play a Loop track. **SHIFT + + Track** adds an empty one, and a tap on an empty Loop cell arms it, so REC records a loop there. See [Loops in the Clips grid](looping.md#loops-in-the-clips-grid).
+The loops you record on the Play page or the Looper tab live in the cells of **audio tracks**, next to their audio clips: a loop's cell shows **⟳** and the loop's name, its length, and its ring in the track's colour. It launches like a clip, and a loop and a take clip on the same track take turns, one clip a track. Tap an empty cell of the armed audio track and it arms for a loop, so REC records a loop there; a loop recorded with no cell finds one by itself. See [Loops on audio tracks](looping.md#loops-on-audio-tracks).
 
-A clip's border tells you what it's doing: a ring going round as it plays one pass, amber while it waits to start, red while recording. A loop's cell has no ring: its wave lights up to where the loop is.
+A clip's border tells you what it's doing: a ring going round as it plays one pass, amber while it waits to start, red while recording. A loop's cell shows its loop's own ring instead, at its right.
 
 ## The Q-Links on Arrange
 
@@ -136,7 +136,7 @@ The Record panel has two tabs at its top: **Record**, the record settings, and *
 - **Direction:** the order the clip plays its steps of a sixteenth in. **Forward** plays it as written. **Reverse** plays the last step first. **Ping pong** plays forward to the end, then back to the start, and on, the end steps once each turn, so it turns wherever it reached when the clip starts its next pass. **Random** plays every step once a pass in an order of its own, a new order each pass; each pass plays the same every time you play the song, so an export sounds as you heard it. Each step's notes and locks go with it, and a note played a little early or late keeps that place around its step. The clip's knob moves still play forward. The playhead on the step pads and on Play's rows lights the step you hear, so it runs backwards, turns or jumps with the clip. A clip that isn't two whole steps or more plays forward and the row shows **—**: a tap puts it back to **Forward**.
 - **Mutate:** a new variation of the clip's notes, and back. **›** mutates it; **‹** restores the original. See [Mutate and Restore](#mutate-and-restore) below.
 - **Melody:** **pads** or **notes**: whether the clip's tune follows what its pads play now, or keeps its own notes. On a synth track, **›** converts a clip that follows the pads. See [Melody: Convert to notes](#melody-convert-to-notes) below.
-- **Continue:** carries the clip on for a few more bars. Either arrow opens the note editor on the clip with **Continue** open, and you hear the first try straight away; see [Continue](editing-notes.md#continue). The row says how many bars it adds (**+4 bars**), or why it can't: **no tune** on a clip of pad hits, **no notes** on an empty clip, **—** on a Loop track's cell.
+- **Continue:** carries the clip on for a few more bars. Either arrow opens the note editor on the clip with **Continue** open, and you hear the first try straight away; see [Continue](editing-notes.md#continue). The row says how many bars it adds (**+4 bars**), or why it can't: **no tune** on a clip of pad hits, **no notes** on an empty clip, **—** on a loop's cell.
 - **Phrase:** makes a phrase of your own from the clip's notes, for the arp. Either arrow opens the **Make a phrase** sheet in the card's place; see [Make a phrase](note-repeat-and-arp.md#make-a-phrase). The row reads **Make ›**, or why it can't, as Continue's does.
 - **Style:** makes a style of your own from how the clip is played, for every **Style** row. Either arrow opens the **Make a style** sheet in the card's place; see [Make a style](#make-a-style) below. The row reads **Make ›** on a clip with notes (drum clips too), **no notes** on an empty clip and **—** on a Loop track's cell.
 
@@ -146,7 +146,7 @@ When you record into a clip that plays in another direction, each note goes on t
 
 Tap a row's arrows, or turn the data wheel to pick a row and press **–** or **+**, as on the Record tab. Hold **SHIFT** as you tap **Length**'s arrows to **double** the clip (its notes play again in the new half) or **halve** it, and **Speed**'s to play it twice as fast or half as fast. Each change plays at once. A row you change is one take ("Settings 4 · Bass / 2"), however far you turn it, so **UNDO** puts it back in one go.
 
-A Loop track's cell plays its loop as you recorded it, so only **Follow**, **After** and **Launch** apply to it.
+A loop's cell plays its loop as you recorded it, so only **Follow**, **After** and **Launch** apply to it.
 
 A MIDI file you export from the song keeps each clip's program change at its start.
 
@@ -154,7 +154,7 @@ A MIDI file you export from the song keeps each clip's program change at its sta
 
 Under the rows, **Save state** keeps the clip as it is now: its notes, locks, knob moves, length and settings. Change the clip as much as you like, then tap **Reload** (or **Reload clip** on the morph bar under the grid) to bring the saved state back. While the clip plays, the reload waits for the clip's Launch line, so the saved pattern starts on the beat, and the button is outlined in amber until then; tap it again to take the reload back. With the music stopped it happens at once. A reload is a take ("Reload 3 · saved state"), so **UNDO** brings back what you had before it.
 
-A clip keeps one saved state, and a new Save state replaces it. Saved states last while the project is open; they are not saved with it. Deleting, moving or copying a clip, or moving a row, forgets the saved states of the slots it touches. A Loop track's cell has no Save state: the Looper's **UNDO** takes layers back.
+A clip keeps one saved state, and a new Save state replaces it. Saved states last while the project is open; they are not saved with it. Deleting, moving or copying a clip, or moving a row, forgets the saved states of the slots it touches. A loop's cell has no Save state: the Looper's **UNDO** takes layers back.
 
 ### Mutate and Restore
 
@@ -171,7 +171,7 @@ Hold **SHIFT** as you tap **›** for a bolder variation, about half the notes. 
 
 The row says **original** until you mutate, then **variant**. The clip keeps its original beside it, so tap **›** again for another variation of the original (not of the variation), as many times as you like. Tap **‹** (or press **–**) to **restore** the original: its notes, locks, length and knob moves come back as they were before the first Mutate, whatever you changed since. The clip's settings (speed, direction and the rest) stay as they are now.
 
-Each Mutate and Restore is a take ("Mutate 4 · variant 2", "Restore 5 · the original"), so **UNDO** steps back through them. The original is saved with the project, so Restore still works after you open it again. Mutate waits until a recording is done, and a clip with no notes, or a Loop track's cell, has nothing to mutate.
+Each Mutate and Restore is a take ("Mutate 4 · variant 2", "Restore 5 · the original"), so **UNDO** steps back through them. The original is saved with the project, so Restore still works after you open it again. Mutate waits until a recording is done, and a clip with no notes, or a loop's cell, has nothing to mutate.
 
 ### Make a style
 

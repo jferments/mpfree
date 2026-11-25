@@ -465,6 +465,10 @@ impl LooperPage {
             } else {
                 p.clip.clone()
             };
+            // A free loop in a free cell (4e.4) says so, as its length did.
+            if ch.free {
+                ch.sub.push_str(" \u{b7} free");
+            }
             if p.mute {
                 ch.sub.push_str(" \u{b7} muted");
             }
@@ -473,8 +477,11 @@ impl LooperPage {
             ch.track_mute = p.mute;
             ch.track_solo = p.solo;
         } else if ch.state == RingState::Empty && self.place(n).is_none() {
-            ch.name = "Free".to_string();
-            ch.foot = FREE_FOOT.to_string();
+            ch.label = std::mem::replace(&mut ch.name, "Free".to_string());
+            // A cleared loop keeps "Cleared · UNDO" under it.
+            if !ch.foot.starts_with("Cleared") {
+                ch.foot = FREE_FOOT.to_string();
+            }
         }
     }
 

@@ -181,9 +181,10 @@ pub struct Session {
     pub time: time::TimeHost,
     pub panels: modpanels::Panels,
     pub looper: looping::LoopHost,
-    /// The one history across the engines (Dev's "Loops on audio
-    /// tracks"; these sessions run with it off, so it stays empty).
+    /// The one history across the engines (phase 4d.1), as main.rs.
     one_undo: crate::one_undo::OneUndo,
+    /// The Play page's Loop group (4e.1), as main.rs keeps it.
+    loop_group: crate::loop_group::LoopGroup,
     /// The tempo a free first loop set, for the app at the next period
     /// (main.rs's `loop_tempo`).
     loop_tempo: Option<f64>,
@@ -416,7 +417,9 @@ impl Session {
         let mut kits = gui::sample_kits();
         let n = kits.len();
         kits.push(synth.kit_view());
-        let time = time::TimeHost::new(RATE, app.settings.bpm).expect("the time engine starts");
+        let mut time = time::TimeHost::new(RATE, app.settings.bpm).expect("the time engine starts");
+        // Loops play on audio tracks (phase 4e.5), as main.rs starts.
+        time.set_loops_on(app.settings.loops_on);
         let mix = mixing::MixHost::new(RATE, level_db, MAX_DB);
         let panels = modpanels::Panels::new();
         let music = midi_in::MusicIn::new();
@@ -431,6 +434,7 @@ impl Session {
             // around it, with one more layer to move.
             looper: looping::LoopHost::new(RATE, 22),
             one_undo: crate::one_undo::OneUndo::default(),
+            loop_group: crate::loop_group::LoopGroup::new(RATE),
             tracks: audiotracks::TrackHost::new(RATE, 2),
             recorded_audio: None,
             music,
@@ -534,6 +538,9 @@ impl Session {
         // finder answers in the period that asks, as its thread would in
         // the time a period plays.
         s.looper.finder.inline = true;
+        // Loops record by layers and play on their tracks, as main.rs sets
+        // the looper (phase 4e.5: for everyone).
+        s.looper.set_recordings(s.app.settings.loops_on);
         // The app has the list from the first period, as main.rs's (its
         // `list_changed` starts true), kits and all.
         let fx = s.app.set_instrument_list(&s.instrument_list);
@@ -2223,6 +2230,28 @@ impl Session {
         self.out.loop_start(said);
         let (said, song_tempo) = self.looper.tend_song(&mut self.time, self.export.running());
         self.out.loop_start(said);
+        // Loops on audio tracks (phase 4b, for everyone since 4e.5), as
+        // main.rs: the track player plans each track's loops, and each
+        // loop a cell names is told its runs before the looper runs.
+        let loops_on = self.app.settings.loops_on;
+        if loops_on {
+            self.tracks
+                .sync(self.time.project(), self.time.silenced(), false);
+            self.tracks.loops_moving(&self.looper.moving_ids());
+            let time = &self.time;
+            self.tracks.plan_loops(time.block(), &|p| time.audio(p));
+            let tracks = &mut self.tracks;
+            self.looper.give_loop_id(|| tracks.fresh_loop_id());
+            self.looper.give_layer_recs(|| tracks.fresh_recording_id());
+            if let Some(line) = self.looper.write_layers(&mut self.tracks, PERIOD) {
+                self.out.note(&line);
+            }
+            self.looper
+                .tell_tracks(self.time.project(), self.tracks.loop_player());
+            for line in self.looper.follow_free(&self.time.free_plan()) {
+                self.out.note(&line);
+            }
+        }
         if let Some(line) = self.looper.run(self.time.block(), &mut ll, &mut lr) {
             self.out.note(&line);
         }
@@ -2256,10 +2285,58 @@ impl Session {
         for line in self.looper.changes(|| self.time.position_text()) {
             self.out.note(&line);
         }
+        // A loop recorded lands in a cell, as main.rs: on an audio track
+        // (4e.4), the hint saying where; its cells follow it.
         if let Some(now) = self.looper.grid_now() {
-            for line in self.time.loops_are(&now) {
-                self.out.note(&format!("time: {line}"));
+            let before = self.time.project().tracks.len();
+            let lines = if loops_on {
+                let room = self.tracks.free_slot().is_some();
+                self.time.loops_are_on(&now, &self.looper.loop_ids(), room)
+            } else {
+                self.time.loops_are(&now)
+            };
+            if loops_on && !lines.is_empty() {
+                self.looper.look_again();
+                self.tracks
+                    .sync(self.time.project(), self.time.silenced(), true);
+                let pads = crate::pads_source(self.time.project(), &self.looper, &self.mix);
+                for p in before..self.time.project().tracks.len() {
+                    let source = self.looper.takes_from().0;
+                    match self.tracks.records_as(p, source, pads.clone()) {
+                        Ok(line) if !line.is_empty() => self.out.note(&format!("audio: {line}")),
+                        Ok(_) => {}
+                        Err(why) => self.out.note(&format!("audio: track {}: {why}", p + 1)),
+                    }
+                }
             }
+            for line in lines {
+                self.out.note(&format!("time: {line}"));
+                if loops_on {
+                    self.out.show(ToUi::Tell(line));
+                }
+            }
+        }
+        // The one UNDO follows the engines' steps (4d.1) and asks them to
+        // forget what it can't reach (4d.3), as main.rs.
+        if loops_on {
+            if let Some(next) = self.one_undo.follow(&self.time, &self.tracks, &self.looper) {
+                self.out.show(ToUi::OneUndo(next));
+            }
+            let fx = self.one_undo.tend(
+                &mut self.out,
+                &mut self.time,
+                &mut self.tracks,
+                &mut self.looper,
+            );
+            self.fx.extend(fx);
+            let fx = crate::follow_loop_target(
+                &self.time,
+                &self.tracks,
+                &self.looper,
+                &self.mix,
+                &mut self.app,
+            );
+            self.fx.extend(fx);
         }
         if let Some(end) = self.looper.copy_ended() {
             let fx = crate::desk::copy_ended(&mut self.time, end);
@@ -2308,14 +2385,57 @@ impl Session {
         let silenced = self.time.silenced();
         self.tracks.sync(self.time.project(), silenced, false);
         self.tracks.feed_inside(&mut self.mix);
-        let time = &self.time;
-        self.tracks.period(
-            time.block(),
-            time.tempo_map(),
-            time.song_on(),
-            (&line, &line),
-            Some(&|p| time.audio(p)),
-        );
+        if loops_on {
+            // Listen and the free cells through their tracks (4e.2, 4e.4),
+            // the Loop group on each loop (4e.1), each loop on a track into
+            // its track (4b), as main.rs.
+            self.tracks.loop_listen(self.looper.listen_track());
+            self.tracks.loop_free(&self.looper.free_cells());
+            let (set, armed) = (self.loop_group.set(), self.time.audio_armed());
+            let looper = &self.looper;
+            self.loop_group.run(
+                PERIOD,
+                |n| looper.slot_out(n),
+                |n| crate::loop_group::reaches(&set, armed, looper.slot_track(n)),
+            );
+            let (time, group) = (&self.time, &self.loop_group);
+            self.tracks.period_with_loops(
+                time.block(),
+                time.tempo_map(),
+                time.song_on(),
+                // The line as the session plays it (main.rs: the looper's
+                // copy of the capture).
+                (&line, &line),
+                &|p| time.audio(p),
+                &|id| {
+                    looper
+                        .slot_of(id)
+                        .and_then(|n| group.out(n))
+                        .or_else(|| looper.track_loop(id))
+                },
+            );
+            let tracks = &self.tracks;
+            let plays: [Option<(usize, bool)>; mpfree_audiotracks::MAX_TRACKS] =
+                std::array::from_fn(|s| {
+                    let p = tracks.place(s)?;
+                    let on = !tracks.loop_player().runs(s).is_empty();
+                    Some((
+                        self.mix.track_channel(p),
+                        on && crate::loop_group::reaches(&set, armed, Some(p)),
+                    ))
+                });
+            self.loop_group.sends(&mut self.mix.mixer, |s| plays[s]);
+        } else {
+            self.loop_group.sends(&mut self.mix.mixer, |_| None);
+            let time = &self.time;
+            self.tracks.period(
+                time.block(),
+                time.tempo_map(),
+                time.song_on(),
+                (&line, &line),
+                Some(&|p| time.audio(p)),
+            );
+        }
         self.tracks.play_into(&mut self.mix);
         let mut played = 0;
         // A kit no track plays on a kit strip of its own (sampler step
@@ -2546,6 +2666,8 @@ impl Session {
         self.app.tempo_by_hand = false;
         if let Some(mut t) = o.time.take() {
             (t.metronome, t.click_gain) = (self.time.metronome, self.time.click_gain);
+            // Loops play on audio tracks in it too, as main.rs tells it.
+            t.set_loops_on(self.app.settings.loops_on);
             std::mem::swap(&mut self.time, &mut *t);
             o.time = Some(t);
             self.out.show(ToUi::Time(Box::new(self.time.state())));
@@ -2701,6 +2823,7 @@ impl Session {
                 self.pad_edge(pad, v, down);
             }
             FromUi::Pad { .. } => {}
+            FromUi::LoopGroup(set) => self.loop_group.set_to(set),
             // A scale row's note: no sound is rendered here.
             FromUi::Audition { .. } => {}
             // The Pads tab's strip, as main.rs turns the page.

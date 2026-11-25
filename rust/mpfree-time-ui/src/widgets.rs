@@ -807,7 +807,7 @@ pub const ROWS_ON: usize = 8;
 /// arrangement on the launch line.
 pub const BACK_TO_SONG: usize = 9;
 /// `Toggle(slots + ADD_KIND + k)`: the "+ Track" chooser's row `k`
-/// (`song::ADD_KINDS`: Note track, Audio track, Loop track).
+/// (`song::ADD_KINDS`: Note track, Audio track).
 pub const ADD_KIND: usize = 10;
 /// `Toggle(slots + ADD_DISMISS)`: a touch off the open chooser, which
 /// only closes it.
@@ -1404,7 +1404,7 @@ impl ClipGrid {
 
     /// The "+ Track" chooser's rows while it is open: under "+ Track",
     /// its right edge with the button's.
-    pub fn chooser_rects(&self, r: Rect) -> Option<[Rect; 3]> {
+    pub fn chooser_rects(&self, r: Rect) -> Option<[Rect; crate::song::KINDS]> {
         if !self.adding {
             return None;
         }
