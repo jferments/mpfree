@@ -15816,6 +15816,11 @@ fn player_session(
                 out.note(&line);
             }
             looper.tell_tracks(time.project(), tracks.loop_player());
+            // Free cells (4e.4): each free loop a cell names goes on or off
+            // on the free clock as its cells say.
+            for line in looper.follow_free(&time.free_plan()) {
+                out.note(&line);
+            }
         }
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
         // A loop that heard the line input with the song stopped starts it.
@@ -15854,6 +15859,9 @@ fn player_session(
         if loops_on {
             // Listen playing a loop on a track, through that track (4e.2).
             tracks.loop_listen(looper.listen_track());
+            // A free cell's loop, through its track as the looper plays it
+            // on the free clock (4e.4).
+            tracks.loop_free(&looper.free_cells());
             // The Loop group (4e.1) on each loop's sound before its track:
             // every loop, or the armed audio track's (by its own arm).
             let (set, armed) = (loop_group.set(), time.audio_armed());
@@ -16294,19 +16302,27 @@ fn player_session(
             out.note(&line);
         }
         // A loop recorded lands on a Loop track (or, with loops on audio
-        // tracks, in an audio track's cell armed for it, by its lasting
-        // id); its cells follow it.
+        // tracks, in an audio track's cell, by its lasting id: one armed
+        // for it, else the armed audio track's, another's or a new audio
+        // track's, 4e.4); its cells follow it.
         if let Some(now) = looper.grid_now() {
             let lines = if loops_on {
-                time.loops_are_on(&now, &looper.loop_ids())
+                let room = tracks.free_slot().is_some();
+                time.loops_are_on(&now, &looper.loop_ids(), room)
             } else {
                 time.loops_are(&now)
             };
             if loops_on && !lines.is_empty() {
                 looper.look_again();
+                // A new audio track for a loop takes its engine track now.
+                tracks.sync(time.project(), time.silenced(), true);
             }
             for line in lines {
                 out.note(&format!("time: {line}"));
+                // With loops on audio tracks the hint says where (4e.4).
+                if loops_on {
+                    out.show(gui::ToUi::Tell(line));
+                }
             }
         }
         // A loop's copy onto another Loop track ended.
@@ -20912,16 +20928,19 @@ mod tests {
             tracks.plan_loops(time.block(), &|p| time.audio(p));
             looper.give_loop_id(|| tracks.fresh_loop_id());
             looper.tell_tracks(time.project(), tracks.loop_player());
+            let _ = looper.follow_free(&time.free_plan());
             looper.take_pads(&z, &z);
             let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
             looper.run(time.block(), &mut l, &mut r);
             if let Some(now) = looper.grid_now() {
-                if !time.loops_are_on(&now, &looper.loop_ids()).is_empty() {
+                if !time.loops_are_on(&now, &looper.loop_ids(), true).is_empty() {
                     looper.look_again();
+                    tracks.sync(time.project(), time.silenced(), true);
                 }
             }
             tracks.sync(time.project(), time.silenced(), false);
             tracks.loop_listen(looper.listen_track());
+            tracks.loop_free(&looper.free_cells());
             let t: &time::TimeHost = time;
             let lp: &looping::LoopHost = looper;
             tracks.period_with_loops(

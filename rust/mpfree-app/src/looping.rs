@@ -3727,28 +3727,66 @@ impl LoopHost {
     /// ([`crate::time::TimeHost::loops_are`]): which have a first pass, how
     /// long and from where. None while an open's loops are going out or
     /// coming in, so a project's cells aren't emptied by the old loops
-    /// fading out. A free loop ([`Clock::Free`]) is told as none: it stays
-    /// off the grid and the song (in no cell, so the plan leaves it on and
-    /// the looper alone says when it plays), as its bars aren't the
-    /// song's.
+    /// fading out. A free loop ([`Clock::Free`]) is told with `free`: with
+    /// loops on Loop tracks it stays off the grid and the song (in no cell,
+    /// so the plan leaves it on and the looper alone says when it plays),
+    /// as its bars aren't the song's; on audio tracks it lands in a free
+    /// cell (phase 4e.4), which the looper still launches on its clock.
     pub fn grid_now(&self) -> Option<[LoopNow; MAX_LOOPS]> {
         if self.opening() {
             return None;
         }
         Some(std::array::from_fn(|n| match self.looper.loop_status(n) {
-            Some(s)
-                if matches!(s.phase, Phase::Playing | Phase::Overdubbing)
-                    && s.ticks > 0
-                    && s.clock == Clock::Song =>
-            {
+            Some(s) if matches!(s.phase, Phase::Playing | Phase::Overdubbing) && s.ticks > 0 => {
                 LoopNow {
                     pass: true,
                     ticks: s.ticks,
                     origin: s.origin,
+                    free: s.clock == Clock::Free,
                 }
             }
             _ => LoopNow::default(),
         }))
+    }
+
+    /// The free cells (audio tracks phase 4e.4), before the period: each
+    /// free loop a cell names goes on or off as `plan` has it (the time
+    /// engine's `free_plan`): on, on the free clock's next bar line (at
+    /// once with no free clock running); off, at once. An empty loop
+    /// waits; a full queue tries again next period. Lines for the log;
+    /// allocates only then.
+    pub fn follow_free(&mut self, plan: &[Option<bool>; MAX_LOOPS]) -> Vec<String> {
+        let mut lines = Vec::new();
+        let running = self.looper.free_clock().is_some_and(|c| c.running);
+        for (n, want) in plan.iter().enumerate() {
+            let Some(on) = *want else {
+                continue;
+            };
+            let Some(s) = self.looper.loop_status(n) else {
+                continue;
+            };
+            let there = match s.cue {
+                None => s.on == on,
+                Some(cue) => cue.0 == on,
+            };
+            if there || s.phase == Phase::Empty || s.clock != Clock::Free || self.looper.room() == 0
+            {
+                continue;
+            }
+            let at = (on && running).then_some(mpfree_transport::Tick::MIN);
+            if self.looper.launch(n, on, at) {
+                lines.push(format!(
+                    "looper: free loop {} {}",
+                    n + 1,
+                    match (on, at) {
+                        (true, Some(_)) => "on, on the free clock's next bar line",
+                        (true, None) => "on",
+                        (false, _) => "off",
+                    }
+                ));
+            }
+        }
+        lines
     }
 
     /// The Loop tracks' launches ([`crate::time::TimeHost::loop_plan`]),
@@ -3769,8 +3807,9 @@ impl LoopHost {
                 (Some(_), None) => false,
             };
             // A loop on an audio track goes where its track says, not
-            // where the Loop tracks' plan does.
-            let on_track = self.looper.on_track(n);
+            // where the Loop tracks' plan does, and a free cell's loop
+            // where its cell does (`follow_free`).
+            let on_track = self.looper.on_track(n) || self.looper.free_tracked(n);
             if there || on_track || s.phase == Phase::Empty || self.looper.room() == 0 {
                 continue;
             }
@@ -4177,10 +4216,13 @@ impl LoopHost {
         self.on_tracks.ids()
     }
 
-    /// Loops on audio tracks: the loops heard on the Loop strip now, by
-    /// their lasting ids (0 where none): playing or overdubbing, launched,
-    /// not muted, on no track. One that goes on a track carries on there
-    /// unfaded (`TrackHost::loops_moving`).
+    /// Loops on audio tracks: the loops heard now that no track places,
+    /// by their lasting ids (0 where none): playing or overdubbing,
+    /// launched, not muted, and not on a track (`Looper::play`): on the
+    /// Loop strip, or through a free cell (4e.4), which plays itself. One
+    /// that a track's runs take over carries on there unfaded
+    /// (`TrackHost::loops_moving`): a first pass landing in a cell, or a
+    /// free cell's loop that Make song made a song loop.
     pub fn moving_ids(&self) -> [u128; MAX_LOOPS] {
         let ids = self.on_tracks.ids();
         std::array::from_fn(|n| {
@@ -4213,6 +4255,12 @@ impl LoopHost {
     pub fn slot_out(&self, n: usize) -> Option<&[f32]> {
         let id = self.on_tracks.id(n)?;
         self.on_tracks.out(&self.looper, id.0)
+    }
+
+    /// The free cells' loops on their tracks (phase 4e.4): (project
+    /// track, lasting id), (0, 0) where none (`TrackHost::loop_free`).
+    pub fn free_cells(&self) -> [(usize, u128); MAX_LOOPS] {
+        self.on_tracks.free_cells(&self.looper)
     }
 
     /// The project track slot `n`'s loop is on, as last looked.
@@ -9644,7 +9692,9 @@ mod tests {
             "it plays on"
         );
         assert_eq!(t.state(), mpfree_transport::State::Stopped);
-        assert!(!h.grid_now().unwrap()[0].pass, "in no cell");
+        // Told as free: in no cell on Loop tracks, a free cell on audio
+        // tracks (loops_on_tracks).
+        assert!(h.grid_now().unwrap()[0].free, "told as free");
         h.save();
         let saved = saved_from(&mut h, &mut t, &mut b);
         let clock = saved.free_clock.expect("its clock is saved");
@@ -9680,7 +9730,7 @@ mod tests {
         assert!(out.iter().all(|&v| v == 0.0), "stopped at its top");
         assert_eq!(s.position, 0.0);
         assert!(h.looper.free_clock().is_some_and(|c| !c.running));
-        assert!(!h.grid_now().unwrap()[0].pass, "in no cell");
+        assert!(h.grid_now().unwrap()[0].free, "told as free");
         // PLAY: the song, and the free loop with it from its top.
         t.command(t.frame(), T::Play);
         let out = run_host(&mut h, &mut t, &mut b, 200);

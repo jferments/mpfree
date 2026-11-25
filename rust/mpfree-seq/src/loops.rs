@@ -36,6 +36,10 @@ pub struct LoopNow {
     pub ticks: Tick,
     /// The song tick it started on.
     pub origin: Tick,
+    /// It keeps time with the looper's free clock (Sync: Free): its cell
+    /// on an audio track is a free cell (the audio tracks rethink's phase
+    /// 4e.4), and with loops on Loop tracks it is in no cell.
+    pub free: bool,
 }
 
 /// What the grid wants of the loops: which play, and the bar line each
@@ -283,6 +287,91 @@ pub fn place(
     Some((t, row))
 }
 
+/// A new audio track's name: "Audio 1", "Audio 2" ... the first number
+/// no track has taken ("+ Track"'s Audio track, and a loop landing on a
+/// new audio track: [`place_audio`]).
+pub fn audio_name(p: &Project) -> String {
+    let taken = |name: &str| p.tracks.iter().any(|t| t.name == name);
+    (1..)
+        .map(|k| format!("Audio {k}"))
+        .find(|name| !taken(name))
+        .unwrap_or_default()
+}
+
+/// Where a loop lands on an audio track ([`place_audio`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Landed {
+    pub track: usize,
+    pub slot: usize,
+    /// On an audio track made for it.
+    pub new_track: bool,
+}
+
+/// Where a loop recorded with no cell lands with loops on audio tracks
+/// (the audio tracks rethink's phase 4e.4: from the Looper tab or with
+/// Capture, no cell armed for it), `id` its lasting id: in row `row` of
+/// `armed` (the audio track armed by its own arm) if that cell is empty,
+/// whatever the track plays; else in row `row` of the first other audio
+/// track with nothing playing or cued (`busy`) whose cell there is empty;
+/// else in the first empty cell of such a track; else on a new audio track
+/// at the end, in row `row`, while `room` (an engine track is free) and
+/// the project has fewer than [`MAX_TRACKS`] tracks. Its cell, a loop clip
+/// named `name` of `ticks`, is put there; None, and nothing changed, when
+/// there is nowhere or `row` is past the grid.
+#[allow(clippy::too_many_arguments)]
+pub fn place_audio(
+    p: &mut Project,
+    id: LoopId,
+    name: &str,
+    ticks: Tick,
+    row: usize,
+    armed: Option<usize>,
+    busy: impl Fn(usize) -> bool,
+    room: bool,
+) -> Option<Landed> {
+    if row >= crate::ROWS || id.0 == 0 {
+        return None;
+    }
+    let audio = |t: usize| p.tracks.get(t).is_some_and(Track::is_audio);
+    let free = |t: usize, s: usize| audio(t) && p.tracks[t].slots[s].is_none();
+    let other = |t: usize| audio(t) && Some(t) != armed && !busy(t);
+    let at = armed
+        .filter(|&t| free(t, row))
+        .map(|t| (t, row))
+        .or_else(|| {
+            (0..p.tracks.len())
+                .find(|&t| other(t) && free(t, row))
+                .map(|t| (t, row))
+        })
+        .or_else(|| {
+            (0..p.tracks.len())
+                .filter(|&t| other(t))
+                .find_map(|t| p.tracks[t].slots.first_free().map(|s| (t, s)))
+        });
+    let (track, slot, new_track) = match at {
+        Some((t, s)) => (t, s, false),
+        None if room && p.tracks.len() < MAX_TRACKS => {
+            let mut track = Track::new_audio(&audio_name(p), 0);
+            p.give_track_id(&mut track);
+            p.tracks.push(track);
+            (p.tracks.len() - 1, row, true)
+        }
+        None => return None,
+    };
+    let clip = Clip::new_audio_loop(id, name, ticks);
+    if p.put_new_clip(track, slot, clip).is_err() {
+        if new_track {
+            p.tracks.pop();
+        }
+        return None;
+    }
+    Some(Landed {
+        track,
+        slot,
+        new_track,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,6 +464,109 @@ mod tests {
         assert_eq!(p.arrangement.placements, blocks, "the blocks stay");
         assert_eq!(set_audio_length(&mut p, id, 2 * BAR), 0, "once");
         p.check().unwrap();
+    }
+
+    /// Phase 4e.4: a loop with no cell lands in the armed audio track's
+    /// cell in the row playing, whatever it plays; else in that row of
+    /// the first other audio track playing nothing; else in such a
+    /// track's first empty cell; else on a new audio track, while an
+    /// engine track is free. Never on a note track, a Loop track or a
+    /// busy one.
+    #[test]
+    fn a_loop_with_no_cell_lands_on_the_armed_audio_track_then_a_free_one_then_a_new_one() {
+        let mut p = project();
+        for name in ["Vocal", "Guitar"] {
+            let mut t = Track::new_audio(name, 2);
+            p.give_track_id(&mut t);
+            p.tracks.push(t);
+        }
+        let mut l = Track::new_loops("Loops A", 3);
+        p.give_track_id(&mut l);
+        p.tracks.push(l);
+        let (vocal, guitar) = (2, 3);
+        let idle = |_: usize| false;
+        let at = |l: Option<Landed>| l.map(|l| (l.track, l.slot, l.new_track));
+        // Armed: its cell in the row playing, even while it plays.
+        let got = place_audio(
+            &mut p,
+            LoopId(1),
+            "Loop 1",
+            BAR,
+            2,
+            Some(guitar),
+            |t| t == guitar,
+            false,
+        );
+        assert_eq!(at(got), Some((guitar, 2, false)));
+        let c = p.clip(guitar, 2).unwrap();
+        assert_eq!(
+            (c.loop_id(), c.name.as_str(), c.length),
+            (Some(LoopId(1)), "Loop 1", BAR)
+        );
+        // Its cell taken: the first other audio track, in that row.
+        let got = place_audio(
+            &mut p,
+            LoopId(2),
+            "Loop 2",
+            BAR,
+            2,
+            Some(guitar),
+            idle,
+            false,
+        );
+        assert_eq!(at(got), Some((vocal, 2, false)));
+        // Vocal busy: Guitar is armed, so not "another"; none left in
+        // row 2, so Vocal's first empty cell is skipped too (busy).
+        let got = place_audio(
+            &mut p,
+            LoopId(3),
+            "Loop 3",
+            BAR,
+            2,
+            Some(guitar),
+            |t| t == vocal,
+            false,
+        );
+        assert_eq!(got, None, "no room for a new track");
+        // Not busy: Vocal's first empty cell, row 1.
+        let got = place_audio(
+            &mut p,
+            LoopId(3),
+            "Loop 3",
+            BAR,
+            2,
+            Some(guitar),
+            idle,
+            false,
+        );
+        assert_eq!(at(got), Some((vocal, 0, false)));
+        // Every audio track busy: a new one, in the row playing.
+        let tracks = p.tracks.len();
+        let got = place_audio(&mut p, LoopId(4), "Loop 4", BAR, 2, None, |_| true, true);
+        assert_eq!(at(got), Some((tracks, 2, true)));
+        assert!(p.tracks[tracks].is_audio());
+        assert_eq!(p.tracks[tracks].name, "Audio 1");
+        assert_ne!(p.tracks[tracks].id, p.tracks[vocal].id);
+        // No id, or past the grid: nowhere, nothing changed.
+        let before = p.clone();
+        assert_eq!(
+            place_audio(&mut p, LoopId(0), "x", BAR, 0, None, idle, true),
+            None
+        );
+        assert_eq!(
+            place_audio(&mut p, LoopId(5), "x", BAR, crate::ROWS, None, idle, true),
+            None
+        );
+        assert_eq!(p, before);
+        p.check().unwrap();
+        assert!(loops_named_on_audio_only(&p));
+    }
+
+    /// Every loop cell of `p` is on an audio track.
+    fn loops_named_on_audio_only(p: &Project) -> bool {
+        p.tracks
+            .iter()
+            .all(|t| t.is_audio() || t.slots.clips().all(|c| c.loop_id().is_none()))
     }
 
     #[test]

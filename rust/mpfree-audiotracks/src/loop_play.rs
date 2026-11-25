@@ -145,6 +145,10 @@ pub struct LoopPlayer {
     moving: [u128; MOVING],
     /// The track Listen is heard through this period ([`LoopPlayer::listen`]).
     listen: Option<usize>,
+    /// The free cells' loops this period, (track, id), the first
+    /// `n_free` ([`LoopPlayer::free`]).
+    free: [(usize, u128); MOVING],
+    n_free: usize,
 }
 
 impl Default for LoopPlayer {
@@ -165,6 +169,8 @@ impl LoopPlayer {
             dropped: 0,
             moving: [0; MOVING],
             listen: None,
+            free: [(0, 0); MOVING],
+            n_free: 0,
         }
     }
 
@@ -174,6 +180,21 @@ impl LoopPlayer {
     /// plan forgets it.
     pub fn listen(&mut self, t: Option<usize>) {
         self.listen = t.filter(|&t| t < MAX_TRACKS);
+    }
+
+    /// After [`LoopPlayer::plan`]: loop `id` is a free cell's on track `t`
+    /// this period (the audio tracks rethink's phase 4e.4): it keeps time
+    /// with the looper's free clock, which launches and fades it, so the
+    /// track's mix adds what `src` gives for it on every frame at full
+    /// gain, rolling or not, as for Listen, and none of its runs (a launch
+    /// or a block of its cell): the song's ticks don't place it. A track
+    /// may have several (one fading out as the next fades in); at most
+    /// [`MOVING`] in all, the rest dropped. The next plan forgets them.
+    pub fn free(&mut self, t: usize, id: u128) {
+        if t < MAX_TRACKS && id != 0 && self.n_free < MOVING {
+            self.free[self.n_free] = (t, id);
+            self.n_free += 1;
+        }
     }
 
     /// Before [`LoopPlayer::plan`]: the loops heard off any track now, by
@@ -194,6 +215,7 @@ impl LoopPlayer {
         let n = (block.frames as usize).min(PERIOD);
         self.frames = n;
         self.listen = None;
+        self.n_free = 0;
         // Only the period's frames of each voice: the rest is never read
         // (the whole buffer would be 256 KiB to clear each period).
         for g in self.gains.chunks_exact_mut(PERIOD) {
@@ -272,7 +294,20 @@ impl LoopPlayer {
                 }
             }
         }
+        // A free cell's loop: as it is, on every frame (4e.4).
+        let free = &self.free[..self.n_free];
+        for &(_, id) in free.iter().filter(|f| f.0 == t) {
+            if let Some(s) = src(id) {
+                let b = (2 * self.frames).min(s.len()).min(dst.len());
+                for (d, v) in dst[..b].iter_mut().zip(&s[..b]) {
+                    *d += v;
+                }
+            }
+        }
         for r in &lane.runs[..lane.n] {
+            if free.iter().any(|f| f.1 == r.id) {
+                continue;
+            }
             let Some(s) = src(r.id) else {
                 continue;
             };
