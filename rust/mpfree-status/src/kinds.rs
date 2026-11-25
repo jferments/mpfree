@@ -656,8 +656,8 @@ pub static PLUGIN_STOPPED: Kind = Kind {
 
 // ---------------------------------------------------------------- The MPC
 
-/// The MPC hotter than its line (the app's `heat::RUNNING_HOT_C`), which is
-/// measured on the MPC, never guessed; until it is, this stays off.
+/// The MPC hotter than its line (the app's `heat::RUNNING_HOT_C`, 73 °C),
+/// which was measured on the MPC, never guessed.
 pub static MPC_HOT: Kind = Kind {
     id: "mpc/running-hot",
     system: System::Mpc,
