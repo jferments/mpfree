@@ -27,7 +27,7 @@
 //! trim it.
 
 use crate::looper_deck::{LoopDeck, DECK};
-use crate::looping::{Edge, LoopWave, MoveAct, MoveStep, Side, POINT_BARS};
+use crate::looping::{Edge, LoopWave, MoveAct, MoveStep, Side, SongButton, POINT_BARS};
 use mpfree_looper::{LayerCommand, Snap};
 use mpfree_ui::draw::speaker_on;
 use mpfree_ui::{
@@ -69,6 +69,10 @@ pub enum Ctl {
     /// they play, Play while they are stopped (again while it waits for
     /// the song's bar line: call it off).
     FreeGo,
+    /// A free loop's header, left of Stop free or Play free: Make song,
+    /// the free loops into song loops (faint while the song plays: a tap
+    /// says why).
+    MakeSong,
     Send,
     Clear,
     /// A loop that plays.
@@ -787,6 +791,8 @@ pub struct EditorParts {
     pub head: Rect,
     /// Listen, left of Send.
     pub listen: Rect,
+    /// Make song, left of Listen's place, on a free loop's header.
+    pub song: Rect,
     pub send: Rect,
     pub clear: Rect,
     pub ruler: Rect,
@@ -868,6 +874,7 @@ struct EditorLook {
     colour: Color,
     listen: (bool, bool),
     free: Option<(bool, bool)>,
+    song: Option<SongButton>,
     has_sound: bool,
     wave: Option<usize>,
     bars: usize,
@@ -906,6 +913,8 @@ pub struct LoopEditor {
     /// place. Whether they play (Stop), and whether a Play waits for the
     /// song's bar line (Play lit).
     pub free: Option<(bool, bool)>,
+    /// A free loop with sound: Make song, left of them.
+    pub song: Option<SongButton>,
     /// Send and Clear work: the loop has sound.
     pub has_sound: bool,
     pub wave: Option<Arc<LoopWave>>,
@@ -983,6 +992,7 @@ impl Default for LoopEditor {
             colour: LOOP_COLOURS[0],
             listen: (false, false),
             free: None,
+            song: None,
             has_sound: false,
             wave: None,
             position: None,
@@ -1041,6 +1051,7 @@ impl LoopEditor {
         let clear = Rect::new(head.right() - 88, head.y + 1, 88, 34);
         let send = Rect::new(clear.x - 8 - 80, head.y + 1, 80, 34);
         let listen = Rect::new(send.x - 8 - 112, head.y + 1, 112, 34);
+        let song = Rect::new(listen.x - 8 - 132, head.y + 1, 132, 34);
         let strip = Rect::new(
             r.x + 12,
             r.bottom() - 10 - (18 + CTRL_H),
@@ -1067,6 +1078,7 @@ impl LoopEditor {
         EditorParts {
             head,
             listen,
+            song,
             send,
             clear,
             ruler,
@@ -1720,6 +1732,7 @@ impl LoopEditor {
             colour: self.colour,
             listen: self.listen,
             free: self.free,
+            song: self.song,
             has_sound: self.has_sound,
             wave: self.wave.as_ref().map(|w| Arc::as_ptr(w) as usize),
             bars: self.bars,
@@ -2143,7 +2156,13 @@ impl LoopEditor {
             &self.title,
         );
         let sub_x = h.x + 32 + nw + 16;
-        let sub_w = (p.listen.x - 12 - sub_x).max(0);
+        // The header's buttons start at Listen's place, or Make song's.
+        let right = if self.song.is_some() {
+            p.song.x
+        } else {
+            p.listen.x
+        };
+        let sub_w = (right - 12 - sub_x).max(0);
         cx.text(
             FontId::Sans,
             14.0,
@@ -2157,7 +2176,7 @@ impl LoopEditor {
         let at = self
             .chip
             .as_ref()
-            .and_then(|c| self.paint_chip(cx, c, sub_x + sw + 10, p.listen.x - 12, h));
+            .and_then(|c| self.paint_chip(cx, c, sub_x + sw + 10, right - 12, h));
         *self.chip_at.borrow_mut() = at;
         // Listen: the loop alone while the music is stopped. A free loop
         // has the free loops' Stop or Play there instead.
@@ -2167,6 +2186,12 @@ impl LoopEditor {
                 let (works, on) = self.listen;
                 listen_button(cx, p.listen, works || on, on);
             }
+        }
+        // Make song: faint while the song plays, lit while it waits for
+        // the free loops' bar line.
+        if let Some(b) = self.song {
+            let lit = b == SongButton::Waits;
+            button(cx, p.song, "Make song", b != SongButton::Faint, lit, 14.0);
         }
         button(cx, p.send, "Send", self.has_sound, self.send_open, 14.0);
         let ink = if self.has_sound {
@@ -3100,11 +3125,14 @@ impl Widget for LoopEditor {
             )
             .disabled_if(!self.listen.0 && !self.listen.1),
         };
-        let mut out = vec![
-            listen,
+        let mut out = vec![listen];
+        if self.song.is_some() {
+            out.push(Target::tap("make-song", 0, "Make song", p.song));
+        }
+        out.extend([
             Target::tap("send", 0, "Send", p.send).disabled_if(!self.has_sound),
             Target::tap("clear", 0, "Clear", p.clear).disabled_if(!self.has_sound),
-        ];
+        ]);
         if let (Some(c), Some((words, act))) = (&self.chip, *self.chip_at.borrow()) {
             out.push(Target::tap("chip", 0, c.words.clone(), words));
             out.push(Target::tap("chip-act", 0, c.action.0.clone(), act));
@@ -3127,7 +3155,9 @@ impl Widget for LoopEditor {
                 Ctl::Bars(i) => Target::tap("bars", i as usize, label, b),
                 Ctl::Starts(i) => Target::tap("starts", i as usize, label, b),
                 Ctl::Then(i) => Target::tap("then", i as usize, label, b),
-                Ctl::Input | Ctl::Listen | Ctl::FreeGo | Ctl::Send | Ctl::Clear => continue,
+                Ctl::Input | Ctl::Listen | Ctl::FreeGo | Ctl::MakeSong | Ctl::Send | Ctl::Clear => {
+                    continue
+                }
             };
             let chosen = match (&self.strip, c) {
                 (Strip::Records { source, .. }, Ctl::Source(i)) => *source == i,
@@ -3346,6 +3376,10 @@ impl Widget for LoopEditor {
         match phase {
             Touch::Down => {
                 // The header.
+                if p.song.contains(x, y) && self.song.is_some() {
+                    self.acts.push(LoopAct::Strip(Ctl::MakeSong));
+                    return Some(EventKind::Tab(0));
+                }
                 if p.listen.contains(x, y) && self.free.is_some() {
                     self.acts.push(LoopAct::Strip(Ctl::FreeGo));
                     return Some(EventKind::Tab(0));

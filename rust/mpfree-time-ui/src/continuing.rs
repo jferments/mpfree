@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use mpfree_compose::{Continued, InstrumentKind, Lanes, Settings, State};
+use mpfree_compose::{Aim, Continued, InstrumentKind, Lanes, Settings, State};
 use mpfree_seq::Clip;
 use mpfree_transport::time::Tick;
 
@@ -81,6 +81,10 @@ pub enum Scope {
     /// (where each starts, in the clip's ticks), each in its place, every
     /// other note as it is.
     Notes(Vec<Tick>),
+    /// An aimed try (S5, Try again's ▾): the picked new bars of the shown
+    /// result (every new bar when none are picked) again with one thing
+    /// changed, the rest kept. Locked bars stay.
+    Aimed { aim: Aim, bars: Vec<u16> },
 }
 
 impl Scope {
@@ -92,6 +96,10 @@ impl Scope {
             Scope::Bars(b) if b.len() == 1 => Some(Again::Bar(b[0])),
             Scope::Bars(b) => Some(Again::Bars(n(b.len()))),
             Scope::Notes(v) => Some(Again::Notes(n(v.len()))),
+            Scope::Aimed { aim, bars } => Some(Again::Aimed {
+                aim: *aim,
+                bars: n(bars.len()),
+            }),
         }
     }
 }
@@ -105,27 +113,45 @@ pub enum Again {
     Bars(u16),
     /// How many notes.
     Notes(u16),
+    /// An aimed try: what it was aimed at, and how many bars it made
+    /// again (0: every new bar).
+    Aimed { aim: Aim, bars: u16 },
 }
 
 impl Again {
-    /// "bar 6 again", "2 bars again", "3 notes again".
+    /// "bar 6 again", "2 bars again", "3 notes again", "every new bar
+    /// again, calmer".
     pub fn words(self) -> String {
         match self {
             Again::Bar(b) => format!("bar {} again", b + 1),
             Again::Bars(n) => format!("{n} bars again"),
             Again::Notes(1) => "1 note again".to_string(),
             Again::Notes(n) => format!("{n} notes again"),
+            Again::Aimed { aim, bars: 0 } => format!("every new bar again, {}", aim.try_words()),
+            Again::Aimed { aim, bars: 1 } => format!("1 bar again, {}", aim.try_words()),
+            Again::Aimed { aim, bars } => format!("{bars} bars again, {}", aim.try_words()),
         }
     }
 
     /// The tries list's short form, where "+4 bars" stands for a whole
-    /// try: "bar 6", "2 bars", "3 notes".
+    /// try (an aimed try of every new bar too): "bar 6", "2 bars", "3
+    /// notes".
     pub fn short(self) -> String {
         match self {
             Again::Bar(b) => format!("bar {}", b + 1),
             Again::Bars(n) => format!("{n} bars"),
             Again::Notes(1) => "1 note".to_string(),
             Again::Notes(n) => format!("{n} notes"),
+            Again::Aimed { bars: 1, .. } => "1 bar".to_string(),
+            Again::Aimed { bars, .. } => format!("{bars} bars"),
+        }
+    }
+
+    /// What an aimed try was aimed at: None for the others.
+    pub fn aim(self) -> Option<Aim> {
+        match self {
+            Again::Aimed { aim, .. } => Some(aim),
+            _ => None,
         }
     }
 }

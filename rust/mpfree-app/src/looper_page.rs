@@ -1496,6 +1496,8 @@ impl LooperPage {
         // A free loop with sound: the free loops' Stop or Play in Listen's
         // place.
         let free_go = (free && has_sound).then_some((v.free_runs(), v.free_cued));
+        // And Make song, left of them.
+        let song = free_go.map(|_| v.song);
         let names: Vec<String> = (0..s.layers)
             .map(|k| self.names[n].get(k).cloned().unwrap_or_default())
             .collect();
@@ -1823,6 +1825,7 @@ impl LooperPage {
                 || e.colour != colour
                 || e.listen != listen
                 || e.free != free_go
+                || e.song != song
                 || e.has_sound != has_sound
                 || e.layers != layers
                 || e.empty != empty_look
@@ -1839,6 +1842,7 @@ impl LooperPage {
                 e.colour = colour;
                 e.listen = listen;
                 e.free = free_go;
+                e.song = song;
                 e.has_sound = has_sound;
                 e.layers = layers;
                 e.empty = empty_look;

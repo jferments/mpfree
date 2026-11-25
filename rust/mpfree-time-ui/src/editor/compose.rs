@@ -17,21 +17,34 @@
 //!
 //! The design is docs/dev/design/compose.md.
 
-use mpfree_compose::{Ending, Keeps, RangeSetting, Settings, STYLES};
+use mpfree_compose::{Aim, Character, Ending, Keeps, RangeSetting, Settings, STYLES};
 use mpfree_transport::time::Tick;
 use mpfree_ui::widgets::OptionRow;
 
 use crate::continuing::Scope;
 
 /// The drawer's rows while Continue is open, top to bottom: the style,
-/// the bars it adds, how the last bar closes, then what stays exactly as
-/// yours (the design's Keeps: Shape is the tune's shape, each step going
-/// the way yours did), each "yours" or "free".
-pub const CONTINUE_ROWS: [&str; 7] = [
-    "Style", "Bars", "Ending", "Rhythm", "Shape", "Chords", "Accents",
+/// the Character (S5: what the new bars are for, in a word), the bars it
+/// adds, how the last bar closes, then what stays exactly as yours (the
+/// design's Keeps: Shape is the tune's shape, each step going the way
+/// yours did), each "yours" or "free".
+pub const CONTINUE_ROWS: [&str; 8] = [
+    "Style",
+    "Character",
+    "Bars",
+    "Ending",
+    "Rhythm",
+    "Shape",
+    "Chords",
+    "Accents",
 ];
+/// [`CONTINUE_ROWS`]' places of Style, Character, Bars and Ending.
+pub const STYLE_ROW: usize = 0;
+pub const CHARACTER_ROW: usize = 1;
+pub const BARS_ROW: usize = 2;
+pub const ENDING_ROW: usize = 3;
 /// The first of the Keeps in [`CONTINUE_ROWS`].
-pub const KEEP_ROW: usize = 3;
+pub const KEEP_ROW: usize = 4;
 /// The bars Continue adds, as the Bars row steps them.
 pub const BARS: [u8; 5] = [1, 2, 4, 8, 16];
 /// The endings, as the Ending row steps them.
@@ -52,6 +65,8 @@ pub struct ContinueSet {
     /// One of [`BARS`].
     pub bars: u8,
     pub ending: Ending,
+    /// What the new bars are for (S5): As the style until stepped.
+    pub character: Character,
     pub keeps: Keeps,
     /// The Q-Links' settings ([`opening_q`]'s order), as the tool last
     /// left them.
@@ -70,6 +85,7 @@ impl Default for ContinueSet {
                 .unwrap_or(0),
             bars: s.bars,
             ending: s.ending,
+            character: s.character,
             keeps: s.keeps,
             q: opening_q(),
             row: 0,
@@ -215,11 +231,25 @@ impl Picks {
     /// The tool bar's Try again, saying what it works on.
     pub fn try_label(&self) -> String {
         match self.scope() {
-            Scope::All => "Try again".to_string(),
+            Scope::All | Scope::Aimed { .. } => "Try again".to_string(),
             Scope::Bars(b) if b.len() == 1 => format!("Try bar {} again", b[0] + 1),
             Scope::Bars(b) => format!("Try {} bars again", b.len()),
             Scope::Notes(n) if n.len() == 1 => "Try 1 note again".to_string(),
             Scope::Notes(n) => format!("Try {} notes again", n.len()),
+        }
+    }
+
+    /// What an aimed try (S5, Try again's ▾) works on: the picked bars
+    /// that aren't locked, else every new bar. None while notes are
+    /// picked: an aim changes bars, so the ▾ is faint then.
+    pub fn aimed(&self, aim: Aim) -> Option<Scope> {
+        match self.scope() {
+            Scope::All | Scope::Aimed { .. } => Some(Scope::Aimed {
+                aim,
+                bars: Vec::new(),
+            }),
+            Scope::Bars(bars) => Some(Scope::Aimed { aim, bars }),
+            Scope::Notes(_) => None,
         }
     }
 
@@ -259,6 +289,7 @@ impl ContinueSet {
             keeps: self.keeps,
             bars: self.bars,
             ending: self.ending,
+            character: self.character,
             ..Settings::default()
         }
     }
@@ -276,23 +307,30 @@ impl ContinueSet {
     }
 
     /// Row `row` stepped `delta`: true when a setting changed. Style,
-    /// Bars and Ending stop at their ends; a Keep is "yours" with a step
-    /// up and "free" with a step down.
+    /// Character, Bars and Ending stop at their ends; a Keep is "yours"
+    /// with a step up and "free" with a step down.
     pub fn step(&mut self, row: usize, delta: i32) -> bool {
         let by = |i: usize, n: usize| (i as i64 + i64::from(delta)).clamp(0, n as i64 - 1) as usize;
         match row {
-            0 => {
+            STYLE_ROW => {
                 let was = self.style;
                 self.style = by(self.style, STYLES.len());
                 self.style != was
             }
-            1 => {
+            CHARACTER_ROW => {
+                let all = Character::ALL;
+                let at = all.iter().position(|&c| c == self.character).unwrap_or(0);
+                let was = self.character;
+                self.character = all[by(at, all.len())];
+                self.character != was
+            }
+            BARS_ROW => {
                 let at = BARS.iter().position(|&b| b == self.bars).unwrap_or(2);
                 let was = self.bars;
                 self.bars = BARS[by(at, BARS.len())];
                 self.bars != was
             }
-            2 => {
+            ENDING_ROW => {
                 let at = ENDINGS.iter().position(|&e| e == self.ending).unwrap_or(0);
                 let was = self.ending;
                 self.ending = ENDINGS[by(at, ENDINGS.len())];
@@ -316,22 +354,28 @@ impl ContinueSet {
         let on = |b: bool| if b { "yours" } else { "free" }.to_string();
         let k = self.keeps;
         match row {
-            0 => STYLES[self.style.min(STYLES.len() - 1)].name.to_string(),
-            1 => format!(
+            STYLE_ROW => STYLES[self.style.min(STYLES.len() - 1)].name.to_string(),
+            // "As the style" is wider than a row's value: the row says
+            // "As style", the line under the roll says it in full.
+            CHARACTER_ROW => match self.character {
+                Character::AsStyle => "As style".to_string(),
+                c => c.words().to_string(),
+            },
+            BARS_ROW => format!(
                 "+{} bar{}",
                 self.bars,
                 if self.bars == 1 { "" } else { "s" }
             ),
-            2 => match self.ending {
+            ENDING_ROW => match self.ending {
                 Ending::Home => "Home",
                 Ending::Open => "Open",
                 Ending::LoopsBack => "Loop",
             }
             .to_string(),
-            3 => on(k.rhythm),
-            4 => on(k.tune_shape),
-            5 => on(k.chords),
-            6 => on(k.accents),
+            4 => on(k.rhythm),
+            5 => on(k.tune_shape),
+            6 => on(k.chords),
+            7 => on(k.accents),
             _ => String::new(),
         }
     }
@@ -349,13 +393,19 @@ impl ContinueSet {
             .collect()
     }
 
-    /// Row `row` as the log says it once stepped: "style Groove", "2
-    /// more bars", "leaves it open", "rhythm kept as yours".
+    /// Row `row` as the log says it once stepped: "style Groove",
+    /// "yearning: reaches up, leans on the high notes, lands a little
+    /// late", "2 more bars", "leaves it open", "rhythm kept as yours".
     pub fn said(&self, row: usize) -> String {
         match row {
-            0 => format!("style {}", self.value(0)),
-            1 => bars_words(self.bars),
-            2 => self.ending.words().to_lowercase(),
+            STYLE_ROW => format!("style {}", self.value(STYLE_ROW)),
+            CHARACTER_ROW => format!(
+                "{}: {}",
+                self.character.words().to_lowercase(),
+                self.character.says()
+            ),
+            BARS_ROW => bars_words(self.bars),
+            ENDING_ROW => self.ending.words().to_lowercase(),
             r => {
                 let name = CONTINUE_ROWS.get(r).copied().unwrap_or("").to_lowercase();
                 match self.value(r).as_str() {
@@ -421,16 +471,24 @@ mod tests {
         assert_eq!(set.value(0), STYLES[1].name);
         assert!(set.step(0, 9));
         assert!(!set.step(0, 1), "the last style stays");
-        assert_eq!(set.value(1), "+4 bars");
-        assert!(set.step(1, -1));
+        assert_eq!(set.value(CHARACTER_ROW), "As style");
+        assert!(set.step(CHARACTER_ROW, 2));
+        assert_eq!(set.value(CHARACTER_ROW), "Yearning");
+        assert!(set.said(CHARACTER_ROW).starts_with("yearning: "));
+        assert!(set.step(CHARACTER_ROW, 9));
+        assert!(!set.step(CHARACTER_ROW, 1), "the last character stays");
+        assert!(set.step(CHARACTER_ROW, -9));
+        assert_eq!(set.character, Character::AsStyle);
+        assert_eq!(set.value(BARS_ROW), "+4 bars");
+        assert!(set.step(BARS_ROW, -1));
         assert_eq!(set.bars, 2);
-        assert_eq!(set.said(1), "2 more bars");
-        assert!(set.step(1, -5));
-        assert_eq!(set.value(1), "+1 bar");
-        assert!(!set.step(1, -1));
-        assert!(set.step(2, 1));
-        assert_eq!(set.value(2), "Open");
-        assert_eq!(set.said(2), "leaves it open");
+        assert_eq!(set.said(BARS_ROW), "2 more bars");
+        assert!(set.step(BARS_ROW, -5));
+        assert_eq!(set.value(BARS_ROW), "+1 bar");
+        assert!(!set.step(BARS_ROW, -1));
+        assert!(set.step(ENDING_ROW, 1));
+        assert_eq!(set.value(ENDING_ROW), "Open");
+        assert_eq!(set.said(ENDING_ROW), "leaves it open");
         assert_eq!(
             set.said(0),
             format!("style {}", STYLES.last().unwrap().name)
@@ -526,9 +584,10 @@ mod tests {
 /// The tool in the note editor: what each touch asks of the time engine.
 #[cfg(test)]
 mod editor_tests {
-    use super::{Compose, Picks, CONTINUE_ROWS};
+    use super::{Compose, Picks, BARS_ROW, CHARACTER_ROW, CONTINUE_ROWS, KEEP_ROW};
     use crate::continuing::Scope;
     use crate::editor::{edit_rows, EditAction, Editor, ToolAct, CONTINUE_ROW};
+    use mpfree_compose::{Aim, Character};
     use mpfree_seq::{Clip, Holds, Note};
 
     fn riff() -> Clip {
@@ -573,16 +632,20 @@ mod editor_tests {
             ("Style", "Minimal")
         );
         // A row picked, then stepped: a new ask, said.
-        assert!(ed.act(EditAction::PickRow(1), &c).compose.is_none());
-        assert_eq!(ed.row_picked(), 1);
-        let d = ed.act(row(1, -1), &c);
+        assert!(ed.act(EditAction::PickRow(BARS_ROW), &c).compose.is_none());
+        assert_eq!(ed.row_picked(), BARS_ROW);
+        let d = ed.act(row(BARS_ROW, -1), &c);
         assert_eq!(asked(&d).bars, 2);
         assert_eq!(d.line, "continue: 2 more bars");
         // At its end, nothing to ask.
-        ed.act(row(1, -1), &c);
-        assert!(ed.act(row(1, -1), &c).compose.is_none());
-        let d = ed.act(row(3, 1), &c);
+        ed.act(row(BARS_ROW, -1), &c);
+        assert!(ed.act(row(BARS_ROW, -1), &c).compose.is_none());
+        let d = ed.act(row(KEEP_ROW, 1), &c);
         assert!(asked(&d).keeps.rhythm);
+        // Character (S5) asks with it.
+        let d = ed.act(row(CHARACTER_ROW, 2), &c);
+        assert_eq!(asked(&d).character, Character::Yearning);
+        ed.act(row(CHARACTER_ROW, -2), &c);
         // The Q-Links: Similarity up two detents.
         let knob = EditAction::Knob {
             k: 0,
@@ -650,7 +713,10 @@ mod editor_tests {
             scope_of(&ed.act(try_again.clone(), &c)),
             (Scope::All, vec![2])
         );
-        assert_eq!(scope_of(&ed.act(row(1, -1), &c)), (Scope::All, vec![2]));
+        assert_eq!(
+            scope_of(&ed.act(row(BARS_ROW, -1), &c)),
+            (Scope::All, vec![2])
+        );
         ed.act(EditAction::ContinueNote(4000), &c);
         assert_eq!(
             scope_of(&ed.act(try_again.clone(), &c)),
@@ -671,6 +737,55 @@ mod editor_tests {
             (Scope::All, vec![])
         );
         assert_eq!(ed.continue_picks, Picks::default());
+    }
+
+    /// S5: Try again's ▾ aims a try at every new bar, or at the picked
+    /// bars; on picked notes it says to pick bars; locked bars go with it.
+    #[test]
+    fn an_aimed_try_works_on_the_picked_bars_or_every_new_bar() {
+        let c = riff();
+        let mut ed = Editor::new(0, 0, &c);
+        ed.act(row(CONTINUE_ROW, 1), &c);
+        let aim = |k: usize| EditAction::Tool(ToolAct::Aim(k));
+        assert_eq!(
+            scope_of(&ed.act(aim(1), &c)),
+            (
+                Scope::Aimed {
+                    aim: Aim::Calmer,
+                    bars: vec![]
+                },
+                vec![]
+            )
+        );
+        ed.act(EditAction::ContinueBar(5), &c);
+        assert_eq!(
+            scope_of(&ed.act(aim(0), &c)),
+            (
+                Scope::Aimed {
+                    aim: Aim::Busier,
+                    bars: vec![5]
+                },
+                vec![]
+            )
+        );
+        ed.act(EditAction::ContinueNote(4000), &c);
+        let d = ed.act(aim(2), &c);
+        assert!(d.compose.is_none());
+        assert!(d.line.contains("pick bars"), "{}", d.line);
+        // Past the menu's end, nothing.
+        assert!(ed.act(aim(Aim::ALL.len()), &c).compose.is_none());
+        // A bar locked goes with the aimed try.
+        ed.act(EditAction::ContinueBar(4), &c);
+        ed.act(EditAction::ContinueLock, &c);
+        let (scope, locked) = scope_of(&ed.act(aim(4), &c));
+        assert_eq!(locked, vec![4]);
+        assert_eq!(
+            scope,
+            Scope::Aimed {
+                aim: Aim::Brighter,
+                bars: vec![]
+            }
+        );
     }
 
     /// A clip of pads has no tune, and an empty clip nothing to carry on:

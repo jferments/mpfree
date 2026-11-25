@@ -2277,6 +2277,8 @@ pub enum FromUi {
     /// The loop point view's Move start / Move end
     /// ([`crate::looping::LoopAction::Move`]).
     LoopMove(crate::looping::MoveAct),
+    /// A free loop's header's Make song.
+    LoopMakeSong,
     /// The hint line's Snap anyway (true) or Not now.
     LoopAnswer(bool),
     /// The loop point view opened (true) or closed: its audio is wanted.
@@ -8943,6 +8945,14 @@ impl Player {
                         C::FreePlay
                     },
                 )),
+                // Make song: faint while the song plays, and a tap says
+                // why.
+                LoopAct::Strip(Ctl::MakeSong)
+                    if self.looper.song == crate::looping::SongButton::Faint =>
+                {
+                    self.tell(crate::looping::MAKE_SONG_STOP_FIRST);
+                }
+                LoopAct::Strip(Ctl::MakeSong) => out.push(FromUi::LoopMakeSong),
                 LoopAct::LayerListen(k) => {
                     if let Some(l) = self.looper_page.layer_info(k) {
                         out.push(FromUi::LoopListen(Some(Some(l.id))));
@@ -22662,7 +22672,8 @@ fn free_loops_view(v: &mut LooperView, free: &[usize], bpm: f64, running: bool) 
 /// The free loops' screens (the free loop mode's design, mockups 1 to 5):
 /// an empty loop set to Free while a free loop plays and the song is
 /// stopped; a free loop picked while the song plays (Stop in Listen's
-/// place); the free loops stopped (Play there, the rings at rest with ▶);
+/// place, Make song faint), and with the song stopped (Make song can go);
+/// the free loops stopped (Play there, the rings at rest with ▶);
 /// a free loop recorded in your own time; and Play's loop row with the
 /// song stopped and a free loop playing on.
 fn sample_free_loops(fonts: &impl Fn() -> Fonts, out: &mut Vec<(&'static str, Player)>) {
@@ -22685,15 +22696,30 @@ fn sample_free_loops(fonts: &impl Fn() -> Fonts, out: &mut Vec<(&'static str, Pl
         Err(e) => eprintln!("looper-free-empty sample: {e}"),
     }
     // 2: the jam with Loops 1 and 3 free, Loop 1 picked, the song playing
-    // (the free clock copied from it, 92 BPM): Stop in Listen's place.
+    // (the free clock copied from it, 92 BPM): Stop in Listen's place, and
+    // Make song faint (the song plays).
     match sample_looper_jam(fonts()) {
         Ok(mut p) => {
             let mut v = p.looper.clone();
             free_loops_view(&mut v, &[0, 2], 92.0, true);
+            v.song = crate::looping::SongButton::Faint;
             p.apply(ToUi::Looper(Box::new(v)));
             out.push(("looper-free-picked", p));
         }
         Err(e) => eprintln!("looper-free-picked sample: {e}"),
+    }
+    // 2b: the same after STOP, the free loops playing on with the song
+    // stopped at 120: Make song can go (Make song's mockup 4).
+    match sample_looper_jam(fonts()) {
+        Ok(mut p) => {
+            let mut v = p.looper.clone();
+            free_loops_view(&mut v, &[0, 2], 92.0, true);
+            v.song = crate::looping::SongButton::Ready;
+            p.apply(ToUi::Transport(stopped));
+            p.apply(ToUi::Looper(Box::new(v)));
+            out.push(("looper-free-make-song", p));
+        }
+        Err(e) => eprintln!("looper-free-make-song sample: {e}"),
     }
     // 3: after STOP, STOP: the song and the free loops stopped, the free
     // loops' rings at rest where they start again, Play in Listen's place.
@@ -22701,6 +22727,7 @@ fn sample_free_loops(fonts: &impl Fn() -> Fonts, out: &mut Vec<(&'static str, Pl
         Ok(mut p) => {
             let mut v = p.looper.clone();
             free_loops_view(&mut v, &[0, 2], 92.0, false);
+            v.song = crate::looping::SongButton::Ready;
             for n in [0, 2] {
                 v.loops[n].position = 0.0;
             }
@@ -25765,18 +25792,32 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // Continue open on a two-bar riff (composing tools, phase 1 step 2):
     // its second try plays, the new bars faint after yours with their jobs
     // and chords, the drawer Continue's settings and the tries. Step 3's
-    // screen: bar 4 locked and bar 6 picked and tried again.
+    // screen: bar 4 locked and bar 6 picked and tried again. S5: the
+    // Character row on Yearning (board A), and Try again's ▾ open on the
+    // first, its aimed tries over the roll's foot (board B).
     let continues = [
         (
             "sequencer-notes-continue",
             mpfree_time_ui::sample::notes_continue_state(),
+            false,
         ),
         (
             "sequencer-notes-continue-picks",
             mpfree_time_ui::sample::notes_continue_picks_state(),
+            false,
+        ),
+        (
+            "sequencer-notes-continue-character",
+            mpfree_time_ui::sample::notes_continue_character_state(),
+            false,
+        ),
+        (
+            "sequencer-notes-continue-aim",
+            mpfree_time_ui::sample::notes_continue_state(),
+            true,
         ),
     ];
-    for (name, made) in continues {
+    for (name, made, aim) in continues {
         let state = match made {
             Ok(state) => state,
             Err(e) => {
@@ -25797,6 +25838,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             let lo = g.notes.iter().map(|n| n.note).min().unwrap_or(48);
             let hi = g.notes.iter().map(|n| n.note).max().unwrap_or(59);
             g.view = g.view.fit(roll, g.length, 128, (0, g.length), (lo, hi));
+            g.aim_menu = aim;
         }
         p.refresh_qlinks();
         p.refresh_hint();

@@ -38,13 +38,13 @@ use crate::adding::{AddAction, ChordsAction};
 use crate::chord_strip::{
     PICK_AS_HEARD, PICK_CLOSE, PICK_DISMISS, PICK_JOIN, PICK_KIND, PICK_ROOT, PICK_SPLIT, PICK_USE,
 };
-use crate::continuing::{ContinueAction, Continuing};
+use crate::continuing::{Again, ContinueAction, Continuing};
 use crate::editor::zoom::RollView;
 use crate::editor::{
     box_of, chord_name, drop_of, edit_rows, knob_name, length_name, lit_scale, pads, position_name,
     sound_name, step_name, ChordMark, ChordShape, EditAction, Editor, Fold, GhostLayer, Hearing,
     LaneShow, Lens, LockMark, LockSetting, NoteBox, NoteGrid, NoteTool, ShowOffer, Tool, ToolAct,
-    ToolBar, ToolKind, ADD, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, CLIP_END, CONTINUE_BAR,
+    ToolBar, ToolKind, ADD, AIM_MENU, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, CLIP_END, CONTINUE_BAR,
     CONTINUE_NOTE, EDIT_BUTTON, ERASE_SWEEP, FIELDS, GHOST_MOST, GHOST_TAP, HELD_FINE, HELD_FIRST,
     HELD_RESET, HELD_TURN, LOCK_LANES, MENU, PADS_WRITE, PEN, PRESSURE_END, PRESSURE_LANE,
     ROOT_MENU, SCALE_MENU, SHOW_MENU, SHOW_NONE, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
@@ -229,7 +229,7 @@ pub fn note_cards(e: &EditInfo) -> Option<(String, [QLinkCard; 4])> {
         });
         let notes = if n == 1 { "note" } else { "notes" };
         if t.kind == ToolKind::Continue {
-            let more = e.editor.continuing.value(1);
+            let more = e.editor.continuing.value(crate::editor::compose::BARS_ROW);
             return Some((format!("Continue · {more}"), cards));
         }
         return Some((format!("{} · {n} {notes}", t.kind.name()), cards));
@@ -2742,6 +2742,14 @@ fn action_of(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                         slot: o.slot,
                     }
                 }
+                // Try again's ▾ menu (S5): an aimed try.
+                EventKind::Tab(k) if k >= AIM_MENU => {
+                    let i = k - AIM_MENU;
+                    if i >= mpfree_compose::Aim::ALL.len() {
+                        return None;
+                    }
+                    EditAction::Tool(ToolAct::Aim(i))
+                }
                 // The open tool's bar (plan 2B.3).
                 EventKind::Tab(k) if k >= TOOL_BUTTONS => {
                     EditAction::Tool(match k - TOOL_BUTTONS {
@@ -4191,7 +4199,7 @@ pub fn continue_card_value(c: &ClipInfo) -> String {
     } else if c.notes == 0 {
         "no notes".to_string()
     } else {
-        crate::editor::compose::ContinueSet::default().value(1)
+        crate::editor::compose::ContinueSet::default().value(crate::editor::compose::BARS_ROW)
     }
 }
 
@@ -6555,10 +6563,16 @@ pub fn try_list(st: &TimeState) -> (Vec<TakeItem>, Option<usize>, Option<String>
         .enumerate()
         .rev()
         .map(|(k, t)| TakeItem {
-            title: format!("Try {} · {}", k + 1, t.style),
+            // An aimed try is named for its aim (S5): "Try 3 · calmer".
+            title: match t.again.and_then(|a| a.aim()) {
+                Some(aim) => format!("Try {} · {}", k + 1, aim.try_words()),
+                None => format!("Try {} · {}", k + 1, t.style),
+            },
             detail: match t.again {
+                Some(Again::Aimed { bars: 0, .. }) | None => {
+                    format!("+{} bar{}", t.bars, if t.bars == 1 { "" } else { "s" })
+                }
                 Some(a) => a.short(),
-                None => format!("+{} bar{}", t.bars, if t.bars == 1 { "" } else { "s" }),
             },
             color: None,
             undone: false,
@@ -6966,9 +6980,22 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
                 .collect()
         });
     }
+    let set = &ed.continuing;
+    let character = set.character;
+    let continuing = |t: &crate::editor::NoteTool| t.kind == ToolKind::Continue;
     g.tool_bar = ed.open_tool.map(|t| ToolBar {
         name: t.kind.name(),
+        // Continue's Character, when one is picked (S5).
+        more: (continuing(&t) && character != mpfree_compose::Character::AsStyle)
+            .then(|| character.words()),
         hint: match (t.kind, preview) {
+            // Its row picked: what the Character does (S5 board A).
+            (ToolKind::Continue, _)
+                if set.row == crate::editor::compose::CHARACTER_ROW
+                    && character != mpfree_compose::Character::AsStyle =>
+            {
+                capital(character.says())
+            }
             (ToolKind::Continue, _) => continue_hint(st.continuing.as_deref(), e.bar.max(1)),
             (_, Some(_)) => "Turn the Q-Links: the roll shows the result".into(),
             (_, None) => {
@@ -6983,8 +7010,21 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
             ToolKind::Continue => Some((ed.continue_picks.try_label(), false)),
             _ => t.option().map(|(w, lit)| (w.to_string(), lit)),
         },
+        // Its ▾ (S5): faint while notes are picked.
+        aim: continuing(&t).then(|| {
+            ed.continue_picks
+                .aimed(mpfree_compose::Aim::Busier)
+                .is_some()
+        }),
     });
     g
+}
+
+/// `s` with its first letter a capital.
+fn capital(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
 }
 
 // ---------------------------------------------------------------- the page
@@ -7005,6 +7045,19 @@ pub fn continue_hint(c: Option<&Continuing>, bar: Tick) -> String {
     let which = c
         .position
         .map_or_else(String::new, |(i, n)| format!("Try {i} of {n}"));
+    // The try heard was aimed (S5): what it changed.
+    let aimed = c
+        .position
+        .and_then(|(i, _)| Some((i, c.tries.get(i.checked_sub(1)?)?.again?.aim()?)));
+    if let (Some((i, aim)), State::Ready | State::Auditioning, true, None) =
+        (aimed, c.state, c.heard, c.line)
+    {
+        return format!(
+            "Try {i}, {}: {} · Done keeps it",
+            aim.try_words(),
+            aim.says()
+        );
+    }
     match (c.state, c.heard, c.line) {
         (State::Preparing, _, _) if c.made.is_none() => "Making the new bars".into(),
         (State::Preparing, _, _) => format!("{which} plays on while the next is made"),

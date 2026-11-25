@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """WORKSTATION: the SD card round (step S2a of docs/dev/hardware/sd-card-and-internal-drive.md) in two commands.
 Each runs every step by itself, logs each with results.py, and stops only where your hands are needed (moving
-the stick, switching the MPC on); it waits for the MPC by itself instead of asking for Enter. The SD card stays
+the stick, switching the MPC on); it waits for the MPC by itself instead of asking for Enter, and with no time
+limit: whenever you get to it, it carries on (the owner, 24 Nov 20:06Z: "I'm not sitting here for over an hour
+staring at the screen while this runs"). The SD card stays
 in the MPC's slot the whole time: it is checked, repaired if it needs it, and tested there, over SSH.
 
   MPFREE_ACCEPT_ROUND=YES python3 tools/mpc-one/sd-card-round.py prepare [--from STEP]
@@ -29,8 +31,10 @@ prepare (about 30 minutes). Your hands only at the start, for two answers:
 --from STEP starts at that step, after a stop that says so; the steps before it must have finished at this
 commit. Every prepare that writes the stick asks which disk again.
 
-run (about 1 h 15, or 30 minutes with --sd-only; your hands only to move the stick and switch the MPC on):
-  1. Waits for MPFree on port 2222 (you: switch the MPC off, put the stick in, switch it on).
+run (about 1 h 15 of tests, or 30 minutes with --sd-only; your hands only to move the stick and switch the MPC
+on, at the start and whenever you're back after the tests):
+  1. Waits for MPFree on port 2222, as long as it takes (you: switch the MPC off, put the stick in, switch it
+               on).
   2. sd-card   STATE-CHANGING, THE CARD'S MPFree FOLDER AND PARTITION 4: host_disktest_mpc.py --sd-card
                --repair-card. If the card is marked "not safely removed" (Akai's system leaves that mark) or
                doesn't check clean, the write window repairs it first, in the MPC (STATE-CHANGING, the card's
@@ -42,14 +46,16 @@ run (about 1 h 15, or 30 minutes with --sd-only; your hands only to move the sti
                folder), heat (the processor busy, no file written).
   4. power-off THE MPC, RAM ONLY: asks the stick's system for a clean shut down (the pad player's power
                request: one word in /run/mpfree-app/power-request) and waits for it to go off.
-  5. Waits for Akai's system on port 22 (you: take the stick out, the card stays in, switch the MPC on),
-               then boot-map again, READ-ONLY, and compares every boot-critical hash with prepare's.
+  5. Waits for Akai's system on port 22, as long as it takes (you, whenever you're back: take the stick out,
+               the card stays in, switch the MPC on), then boot-map again, READ-ONLY, and compares every
+               boot-critical hash with prepare's. Ctrl-C while it waits packs the zip without that boot map.
   6. Packs everything into one zip: upload it.
 A step that fails is said and the rest still run, except that run stops before the SD card test if MPFree
 doesn't answer, and the boot map is always taken.
 
 It never writes the MPC's eMMC (the stick's system can't see it), the U-Boot environment or anything of Akai's
-system. MPC_IP, MPC_KEY, MPFREE_WORK_DIR and MPFREE_RESULTS_DIR change its defaults.
+system. MPC_IP, MPC_KEY, MPFREE_WORK_DIR and MPFREE_RESULTS_DIR change its defaults; MPFREE_ROUND_BOOT_WAIT (seconds)
+gives up waiting for the MPC after that long.
 """
 import argparse
 import glob
@@ -91,7 +97,9 @@ AKAI_PORT = int(os.environ.get("MPC_PORT", "22"))
 # Tests make the waits short.
 POLL = float(os.environ.get("MPFREE_ROUND_POLL", "5"))
 SETTLE = float(os.environ.get("MPFREE_ROUND_SETTLE", "30"))
-BOOT_WAIT = float(os.environ.get("MPFREE_ROUND_BOOT_WAIT", "900"))
+# No limit unless set: a wait for something the owner does by hand lasts until he does it.
+BOOT_WAIT = float(os.environ["MPFREE_ROUND_BOOT_WAIT"]) if os.environ.get("MPFREE_ROUND_BOOT_WAIT") else None
+REMIND = float(os.environ.get("MPFREE_ROUND_REMIND", "600"))
 OFF_WAIT = float(os.environ.get("MPFREE_ROUND_OFF_WAIT", "180"))
 WINDOW_QUIET = float(os.environ.get("MPFREE_ROUND_WINDOW_QUIET", "150"))
 # Tests: every step's command goes through this program, which stands in for it.
@@ -197,19 +205,29 @@ def answers(port):
         return False
 
 
-def wait_for(log, port, what, up=True, limit=None):
+def took(seconds):
+    return f"{seconds:.0f} s" if seconds < 120 else f"{seconds / 60:.0f} min"
+
+
+def wait_for(log, port, what, up=True, limit=None, hint=""):
+    """Until the MPC's port answers (or stops answering, up=False). With no limit (limit None and no
+    MPFREE_ROUND_BOOT_WAIT) it waits as long as it takes, saying so every REMIND seconds (with `hint`)."""
     limit = BOOT_WAIT if limit is None else limit
-    minutes = max(1, int(limit // 60))
-    log.say(f"  waiting for {what} ({IP} port {port}, up to {minutes} minute{'s' if minutes > 1 else ''})...")
+    if limit is None:
+        log.say(f"  waiting for {what} ({IP} port {port}), as long as it takes...")
+    else:
+        minutes = max(1, int(limit // 60))
+        log.say(f"  waiting for {what} ({IP} port {port}, up to {minutes} minute{'s' if minutes > 1 else ''})...")
+    every = 60 if limit is not None else REMIND
     start = last = time.monotonic()
-    while time.monotonic() - start < limit:
+    while limit is None or time.monotonic() - start < limit:
         if answers(port) == up:
-            log.say(f"  {'it answers' if up else 'it has stopped answering'} (after {time.monotonic() - start:.0f} s)")
+            log.say(f"  {'it answers' if up else 'it has stopped answering'} (after {took(time.monotonic() - start)})")
             return True
         time.sleep(POLL)
-        if time.monotonic() - last >= 60:
+        if time.monotonic() - last >= every:
             last = time.monotonic()
-            log.say(f"  still waiting ({last - start:.0f} s)")
+            log.say(f"  still waiting ({took(last - start)}){hint}")
     log.say(f"  no change within {int(limit)} s")
     return False
 
@@ -363,7 +381,8 @@ def boot_map_report(name):
 
 def take_boot_map(log, name):
     """Waits for Akai's system and takes the boot map: (hashes, card in, problem or None)."""
-    if not wait_for(log, AKAI_PORT, "Akai's system with developer mode on"):
+    if not wait_for(log, AKAI_PORT, "Akai's system with developer mode on",
+                    hint="; is developer mode on (SHIFT + MENU, then Developer)?"):
         return {}, False, ("Akai's system didn't answer on port 22: is developer mode on (SHIFT + MENU, then "
                            "Developer)?")
     time.sleep(SETTLE)
@@ -546,8 +565,8 @@ def run(args, log):
     outcome = {}
 
     log.say("\n== 1. MPFree from the stick ==")
-    log.say("  Switch the MPC off. Put the MPFree stick in its USB port (the SD card stays in its slot), wait 10 s "
-            "and switch it on. MPFree comes up in about 20 s.")
+    log.say("  YOUR TURN: switch the MPC off. Put the MPFree stick in its USB port (the SD card stays in its slot), "
+            "wait 10 s and switch it on. MPFree comes up in about 20 s, and the tests then run by themselves.")
     if not wait_for(log, TEST_PORT, "MPFree's system on the stick"):
         outcome["mpfree"] = "did not answer"
         log.say("  MPFree didn't answer: nothing was run on the MPC.")
@@ -580,9 +599,14 @@ def run(args, log):
             log.say("  it didn't switch off by itself: hold its power button until it goes off")
 
     log.say("\n== 5. boot-map (read-only, Akai's system) ==")
-    log.say("  Take the stick out of the MPC (the SD card stays in), wait 10 s, and switch it on into Akai's system "
-            "(developer mode stays on).")
-    after, _, problem = take_boot_map(log, "boot-map-after")
+    log.say("  YOUR TURN, whenever you're back (no hurry: it waits as long as it takes): take the stick out of the "
+            "MPC (the SD card stays in), wait 10 s, and press the power button to start Akai's system (developer "
+            "mode stays on). Then the boot map is taken and the zip packed by themselves.")
+    try:
+        after, _, problem = take_boot_map(log, "boot-map-after")
+    except KeyboardInterrupt:
+        after, problem = {}, "not taken: stopped with Ctrl-C before the boot map was taken"
+        log.say(f"\n  {problem}")
     if problem:
         outcome["boot map"] = problem
     else:
