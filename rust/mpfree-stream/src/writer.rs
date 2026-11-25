@@ -431,9 +431,17 @@ impl Writer {
         self.reserve_bytes().div_ceil(UNIT * 4)
     }
 
-    /// One pass: every take's filled units go out, then the most overdue
-    /// round runs if playback can spare the stick for it. Gives the
-    /// seconds until it wants the next pass.
+    /// One pass: every take's filled units go out, then every round due
+    /// by the time they are out runs, the most overdue first, each if
+    /// playback can spare the stick for it. Gives the seconds until it
+    /// wants the next pass.
+    ///
+    /// A write can wait for the stick as long as a sync does: on the MPC
+    /// the kernel holds at most 1 MiB of written data before a writer
+    /// waits. So on a stick slower than its takes the writes take most of
+    /// a pass, and one round a pass let the takes' commits fall far behind
+    /// what was written: 10 checkpoints in 42 s for 8 takes, some take
+    /// with nearly all of it unsaved at the stop (D4, 24 and 25 Nov).
     pub fn tick(&mut self) -> f64 {
         let now = self.clock.now();
         for e in &mut self.takes {
@@ -448,29 +456,41 @@ impl Writer {
             e.take.write_ready(&mut *self.fs);
         }
         self.share_fill();
-        let Some(i) = self.next_round() else {
-            return 1.0;
-        };
-        let due = self.takes[i].due;
-        if due > now {
-            return due - now;
-        }
-        if self.gate.cushion() <= self.worst_commit() && self.takes[i].take.fill() < MOVE_UP {
-            let waited = now - due;
-            if waited < self.cfg.max_wait_s {
-                if !self.takes[i].waiting {
-                    self.takes[i].waiting = true;
-                    self.stats.waited += 1;
+        let now = self.clock.now();
+        let mut due_now: Vec<usize> = (0..self.takes.len())
+            .filter(|&i| self.takes[i].take.state() != TakeState::Saved && self.takes[i].due <= now)
+            .collect();
+        due_now.sort_by(|&a, &b| self.takes[a].due.total_cmp(&self.takes[b].due));
+        // The soonest a waiting round wants looking at again.
+        let mut poll = f64::INFINITY;
+        for i in due_now {
+            let due = self.takes[i].due;
+            if self.gate.cushion() <= self.worst_commit() && self.takes[i].take.fill() < MOVE_UP {
+                let waited = self.clock.now() - due;
+                if waited < self.cfg.max_wait_s {
+                    if !self.takes[i].waiting {
+                        self.takes[i].waiting = true;
+                        self.stats.waited += 1;
+                    }
+                    poll = poll.min(WAIT_POLL.min(self.cfg.max_wait_s - waited));
+                    continue;
                 }
-                return WAIT_POLL.min(self.cfg.max_wait_s - waited);
+                self.stats.forced += 1;
             }
-            self.stats.forced += 1;
+            self.round(i, due);
+            self.share_fill();
         }
-        self.round(i, due);
-        self.share_fill();
-        match self.next_round() {
-            Some(j) => (self.takes[j].due - self.clock.now()).max(0.0),
-            None => 1.0,
+        // The next round not already waiting.
+        let now = self.clock.now();
+        let next = self
+            .takes
+            .iter()
+            .filter(|e| e.take.state() != TakeState::Saved && !e.waiting)
+            .map(|e| (e.due - now).max(0.0))
+            .fold(f64::INFINITY, f64::min);
+        match next.min(poll) {
+            w if w.is_finite() => w,
+            _ => 1.0,
         }
     }
 
@@ -486,16 +506,6 @@ impl Writer {
         self.gate.set_capture_fill(fill);
         self.gate
             .set_recording(open().any(|e| e.take.captured() > 0));
-    }
-
-    /// The take whose round is due first.
-    fn next_round(&self) -> Option<usize> {
-        self.takes
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.take.state() != TakeState::Saved)
-            .min_by(|a, b| a.1.due.total_cmp(&b.1.due))
-            .map(|(i, _)| i)
     }
 
     fn round(&mut self, i: usize, due: f64) {

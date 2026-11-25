@@ -573,6 +573,10 @@ pub struct ModelStick {
     pub errors: u64,
     /// Each sync moves this clock on by this many seconds: a slow stick.
     pub sync_cost: Option<(Arc<FakeClock>, f64)>,
+    /// Each write moves this clock on by this many seconds a MiB: a stick
+    /// slower than its writers, behind a small writeback limit (1 MiB on
+    /// the MPC), where every write waits for the stick.
+    pub write_cost: Option<(Arc<FakeClock>, f64)>,
 }
 
 /// A clock the tests move by hand.
@@ -860,6 +864,9 @@ impl Fs for ModelStick {
     }
 
     fn write_at(&mut self, path: &Path, at: u64, bytes: &[u8]) -> io::Result<()> {
+        if let Some((clock, per_mib)) = &self.write_cost {
+            clock.advance(bytes.len() as f64 / 1_048_576.0 * per_mib);
+        }
         let fail = self.op()?;
         let i = self.inode(path)?;
         let grows = (at + bytes.len() as u64).saturating_sub(self.inodes[i].cache.len() as u64);

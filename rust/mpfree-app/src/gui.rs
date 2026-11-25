@@ -12521,9 +12521,16 @@ impl Player {
                     if self.time.loops_on && self.refresh_loop_places() {
                         self.refresh_looper();
                     }
-                    // Loop cells on audio tracks too (phase 4).
+                    // Loop cells on audio tracks too (phase 4), and the
+                    // Song view's loop blocks, which draw their loops'
+                    // waves (4e.3).
+                    let blocks = || {
+                        let a = &self.time.audio;
+                        a.iter().any(|l| l.clips.iter().any(|c| c.looped.is_some()))
+                    };
                     if self.time.tracks.iter().any(|t| t.loops.is_some())
                         || (self.time.loops_on && self.time.loop_cells() > 0)
+                        || blocks()
                     {
                         self.time_page.update(&mut self.ui, &self.time);
                     }
@@ -26416,6 +26423,26 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("arrange-song-audio-blocks", p));
         }
         Err(e) => eprintln!("arrange-song-audio-blocks sample: {e}"),
+    }
+    // Loop blocks on the vocal's lane (the rethink's phase 4e.3, board
+    // 8): Vox loop played twice from bar 9, then from bar 13 a bar into
+    // its loop, picked.
+    match mpfree_time_ui::sample::song_loop_blocks_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            // The looper holds the loop, with its lasting id and its small
+            // wave, as the loops' facts come from it.
+            let mut v = crate::looping::LooperView::default();
+            v.loops[0].phase = mpfree_looper::Phase::Playing;
+            v.loops[0].layers = 2;
+            v.ids[0] = state.loops.ids[0];
+            v.cell_waves[0] = state.loops.loops[0].wave;
+            p.apply(ToUi::Looper(Box::new(v)));
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-loop-blocks", p));
+        }
+        Err(e) => eprintln!("arrange-song-loop-blocks sample: {e}"),
     }
     // The same project on the Clips grid (layout spec 4f): the vocal and
     // the guitar are columns after the note tracks, a wave mark and their

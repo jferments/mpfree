@@ -6040,11 +6040,20 @@ impl TimeControl {
             } => {
                 let name = named(song, index);
                 let was = song.placements.get(index).map(|p| p.track);
+                // A loop cell's block on an audio track (phase 4e.3).
+                let looped = song
+                    .placements
+                    .get(index)
+                    .and_then(|p| song.clip_of(tracks, p))
+                    .is_some_and(|c| c.loop_clip.is_some());
                 let j = song
                     .move_placement(tracks, index, track, start, copy)
                     .map_err(|e| match e {
                         // A loop's block stays on its Loop track's lane
-                        // (loop-tracks.md part 5).
+                        // (loop-tracks.md part 5), or its audio track's.
+                        ModelError::BadLoop | ModelError::AudioTrack if looped => format!(
+                            "song: {name} stays on its own lane: a loop plays on one track, so its block can't go to another"
+                        ),
                         ModelError::BadLoop => format!(
                             "song: {name} stays on its own lane: a loop's block can't go to another track, nor a clip's onto a Loop track"
                         ),
@@ -6177,6 +6186,15 @@ impl TimeControl {
                         at(start)
                     )
                 })?;
+                // Never back over a recording on an audio track's lane
+                // (phase 4e.3: a loop block's or a take clip's).
+                if let Some(over) = region_under(spans, tracks, &song.placements[index]) {
+                    return Err(format!(
+                        "song: {name} can't start at {}: it would go over the region at {}, and a block and a region never overlap on a lane",
+                        at(start),
+                        at(over)
+                    ));
+                }
                 Ok((
                     format!(
                         "song: {name} starts at {} now, what it plays where it was (UNDO takes it back)",
@@ -6502,15 +6520,30 @@ impl TimeControl {
                     .move_placements(tracks, &set, lanes, by, copy)
                     .map_err(|e| match e {
                         ModelError::BadLoop => format!(
-                            "song: the {what} stay where they are: a loop's block can't go to another lane, nor a clip's onto a Loop track's"
+                            "song: the {what} stay where they are: a loop's block can't go to another lane (a loop plays on one track), nor a clip's onto a Loop track's"
                         ),
                         ModelError::AudioTrack => format!(
-                            "song: the {what} stay where they are: one would land on an audio track, which plays its recordings, not clips"
+                            "song: the {what} stay where they are: one would cross between a note track's lane and an audio track's, and a block keeps to its kind of lane"
                         ),
                         _ => format!(
                             "song: the {what} don't fit there: one would run into another block, or leave the song"
                         ),
                     })?;
+                // None over a recording on an audio track's lane (4e.3).
+                if let Some(over) = moved
+                    .iter()
+                    .find_map(|&i| region_under(spans, tracks, song.placements.get(i)?))
+                {
+                    let stay = if n == 1 {
+                        "stays where it is"
+                    } else {
+                        "stay where they are"
+                    };
+                    return Err(format!(
+                        "song: the {what} {stay}: one would go over the region at {}, and a block and a region never overlap on a lane",
+                        at(over)
+                    ));
+                }
                 // They stay picked where they are now (the copies, for a
                 // copy), for the wheel or another drag.
                 self.set_picks(moved);
@@ -6561,6 +6594,16 @@ impl TimeControl {
                         "song: no room after the {what} for their copies: a block is in the way"
                     )
                 })?;
+                // None over a recording on an audio track's lane (4e.3).
+                if let Some(over) = copies
+                    .iter()
+                    .find_map(|&i| region_under(spans, tracks, song.placements.get(i)?))
+                {
+                    return Err(format!(
+                        "song: no room after the {what} for their copies: one would go over the region at {}, and a block and a region never overlap on a lane",
+                        at(over)
+                    ));
+                }
                 // The copies are picked: Duplicate again repeats them on.
                 self.set_picks(copies);
                 Ok((
@@ -9276,8 +9319,13 @@ impl TimeControl {
                 continue;
             }
             let k = n as u8;
+            // A loop whose id the project names already is that cell's
+            // or block's loop (an opened project's, or one brought back):
+            // it lands nowhere new, and its cells follow its length.
+            let named =
+                loops_on && ids[n] != 0 && self.project.loop_track(LoopId(ids[n])).is_some();
             match (was.pass, is.pass) {
-                (false, true) if !loops::in_cell(&self.project, k) => {
+                (false, true) if !loops::in_cell(&self.project, k) && !named => {
                     let row = self.perform.playing().map_or(0, |p| p.row.min(ROWS - 1));
                     let (launches, cues) = (&self.launches, &self.cues);
                     let busy = |t: usize| {

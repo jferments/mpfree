@@ -8241,8 +8241,9 @@ mod tests {
     /// lands there as a loop cell naming its lasting id, launched from the
     /// loop's own start; the cell follows the loop's length, empties when
     /// it is cleared and comes back with a redo of its first pass. With no
-    /// id yet, or one named already, the loop lands as before and the arm
-    /// stays. With the switch off an audio track's cell doesn't arm.
+    /// id yet the loop lands as before and the arm stays; with one named
+    /// already it lands nowhere new. With the switch off an audio track's
+    /// cell doesn't arm.
     #[test]
     fn with_loops_on_an_armed_audio_cell_takes_the_next_loop_recorded() {
         use mpfree_seq::loops::LoopNow;
@@ -8313,13 +8314,15 @@ mod tests {
             ["Loop 2 on Audio 1, row 2, playing"]
         );
         assert_eq!(h.project().loop_track(LoopId(0xbeef)), Some(audio));
-        // A loop whose id a cell names already doesn't land there again.
+        // A loop whose id a cell names already is that cell's loop (an
+        // opened project's, phase 4e.3): it lands nowhere new, and the arm
+        // stays.
         h.act(TimeAction::LoopCell(Some((audio, 2)))).unwrap();
         ids[2] = 0xbeef;
         now[2] = pass(3840, 0);
-        let said = h.loops_are_on(&now, &ids);
-        // (Loops A plays loop 1, so a new Loop track.)
-        assert_eq!(said, ["Loop 3 on Loops B, row 1, playing"]);
+        let tracks = h.project().tracks.len();
+        assert!(h.loops_are_on(&now, &ids).is_empty());
+        assert_eq!(h.project().tracks.len(), tracks, "no new Loop track");
         assert_eq!(h.loop_cell(), Some((audio, 2)), "the arm stays");
         assert_eq!(h.control.project.check(), Ok(()));
     }
@@ -16421,6 +16424,84 @@ mod tests {
             );
             h.act(stretch(2 * bar)).unwrap();
             assert_eq!(song(&h).placements[1].length, 2 * bar);
+        }
+
+        /// Phase 4e.3 (board 8): a loop cell's block on its audio track's
+        /// lane keeps the lane rules of a take clip's. It never goes over a
+        /// region, moved, made longer, trimmed back, moved with others or
+        /// duplicated (refused, saying why, changing nothing); it stays on
+        /// its own track's lane, a loop playing on one track; and a trim of
+        /// its start changes where it starts in its loop, what it plays
+        /// staying where it was.
+        #[test]
+        fn a_loop_block_keeps_to_its_lane_never_covers_a_region_and_its_start_sets_its_offset() {
+            use mpfree_seq::LoopId;
+            let mut h = host();
+            let bar = 3840;
+            let p = &mut h.control.project;
+            p.tracks[VOCAL].slots[1] = Some(Clip::new_audio_loop(LoopId(0xa), "Vox loop", 3 * bar));
+            p.give_clip_ids();
+            // From bar 6 for six bars: two passes.
+            let block = mpfree_seq::Placement::of(&p.tracks, VOCAL, 1, 5 * bar, 6 * bar);
+            p.arrangement.place(block).unwrap();
+            h.control.compile().unwrap();
+            let id = |t: usize| h.control.project.tracks[t].id;
+            h.set_audio_spans(vec![
+                (id(VOCAL), vec![(2 * bar, 3 * bar), (12 * bar, 13 * bar)]),
+                (id(GUITAR), Vec::new()),
+            ]);
+            let song = |h: &TimeHost| h.control.project.arrangement.clone();
+            let before = song(&h);
+            let mv = |track, start| TimeAction::MovePlacement {
+                index: 0,
+                track,
+                start,
+                copy: false,
+            };
+            let lane = "song: Vox loop stays on its own lane: a loop plays on one track, so its block can't go to another";
+            assert_eq!(h.act(mv(GUITAR, 5 * bar)).unwrap_err(), lane);
+            assert_eq!(h.act(mv(DRUMS, 5 * bar)).unwrap_err(), lane);
+            assert_eq!(
+                h.act(mv(VOCAL, 2 * bar)).unwrap_err(),
+                "song: Vox loop can't go over the region at bar 3: a block and a region never overlap on a lane"
+            );
+            assert_eq!(
+                h.act(TimeAction::StretchPlacement { index: 0, length: 8 * bar })
+                    .unwrap_err(),
+                "song: Vox loop can't run over the region at bar 13: a block and a region never overlap on a lane"
+            );
+            assert_eq!(
+                h.act(TimeAction::TrimPlacement { index: 0, start: 2 * bar })
+                    .unwrap_err(),
+                "song: Vox loop can't start at bar 3: it would go over the region at bar 3, and a block and a region never overlap on a lane"
+            );
+            let several = TimeAction::MovePlacements {
+                set: vec![0],
+                lanes: 0,
+                by: 2 * bar,
+                copy: false,
+            };
+            assert_eq!(
+                h.act(several).unwrap_err(),
+                "song: the block stays where it is: one would go over the region at bar 13, and a block and a region never overlap on a lane"
+            );
+            let err = h.act(TimeAction::DuplicatePlacements(vec![0])).unwrap_err();
+            assert!(err.contains("over the region at bar 13"), "{err}");
+            assert_eq!(song(&h), before, "nothing changed");
+            // Trimmed by a bar: it starts on bar 7, a bar into its loop,
+            // its passes where they were.
+            h.act(TimeAction::TrimPlacement {
+                index: 0,
+                start: 6 * bar,
+            })
+            .unwrap();
+            let p = &h.control.project;
+            let b = &p.arrangement.placements[0];
+            assert_eq!((b.start, b.length, b.offset), (6 * bar, 5 * bar, bar));
+            assert_eq!(b.origin(p.block_clip(b).unwrap()), 5 * bar);
+            // Moved two bars on, clear of the regions, it goes.
+            h.act(mv(VOCAL, 4 * bar)).unwrap();
+            assert_eq!(song(&h).placements[0].start, 4 * bar);
         }
 
         /// An audio clip's card (layout spec 4j): a length cut keeps the
