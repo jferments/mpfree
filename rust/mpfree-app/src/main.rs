@@ -4504,6 +4504,7 @@ fn play_routed(
         dest: Default::default(),
         event,
         notes: false,
+        heard: false,
     };
     // A key's pressure reached the CV outputs above, as the hardest key's.
     if !matches!(event, Event::Pressure { .. }) {
@@ -4660,6 +4661,7 @@ fn play_routed_pad_at(
                 dest: Default::default(),
                 event,
                 notes: false,
+                heard: false,
             };
             midi.pad_to(&o, port, *channel, *note);
         }
@@ -8189,6 +8191,7 @@ impl SeqPads<'_> {
                     dest: Default::default(),
                     event,
                     notes: false,
+                    heard: false,
                 };
                 self.midi.pad_to(&o, port, *channel, *note);
             }
@@ -17834,6 +17837,7 @@ mod tests {
             dest: 0,
             event,
             notes: false,
+            heard: false,
         };
         let ev = on_the_synth(&[0, 1], |seq| {
             assert!(seq.hit_at(1, 3, 100, 0));
@@ -17873,6 +17877,7 @@ mod tests {
             dest: 0,
             event,
             notes: false,
+            heard: false,
         };
         let on = Event::NoteOn {
             note: 3,
@@ -17925,6 +17930,7 @@ mod tests {
             dest: 0,
             event,
             notes,
+            heard: false,
         }
     }
 

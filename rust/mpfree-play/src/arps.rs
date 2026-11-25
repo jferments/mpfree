@@ -14,7 +14,14 @@
 //! - **What to record** ([`TrackArps::records_pads`]): with the switch on,
 //!   the recorder (and CAPTURE) takes the track's pad notes before the arp;
 //!   off, it takes the arp's output. The host feeds the recorder; this
-//!   module only says which side.
+//!   module only says which side. A live tool's Records row
+//!   ([`TrackArps::set_keeps`], the composing tools' contract 8) says it
+//!   instead: You keeps the pads as pressed, mpfree and Both what the arp
+//!   played, marked to play as heard.
+//! - **Notes that play as heard** ([`Out::heard`], `Note::heard`): what a
+//!   live tool played, recorded from the arp's output, skips the arp (and
+//!   its MIDI effects) on playback even with the switch on, as every note
+//!   does with it off, so it is never played over again.
 //!
 //! Each period: `player.process(view, block, &mut arps.through(&mut sink))`,
 //! [`TrackArps::pad`] for live pad notes (any time before the next step),
@@ -160,9 +167,48 @@ struct Pressed {
 /// The seed [`TrackArps::reseed`] gives every arp.
 pub const RESEED: u32 = 0x2545_f491;
 
+/// What REC keeps of a track's playing ([`TrackArps::set_keeps`]): as its
+/// "Clips through the arp" switch says, or as a live tool's Records row
+/// says (the composing tools' contract 8: You, mpfree, Both).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Keeps {
+    /// As the switch says: the pads as pressed with it on, the arp's
+    /// output with it off.
+    #[default]
+    Switch,
+    /// Records: You. The pads as pressed, which play through the arp
+    /// again with the switch on.
+    Yours,
+    /// Records: mpfree. What the arp played, less the notes you play
+    /// through it as pressed (Answer's call), each marked to play as heard.
+    Its,
+    /// Records: Both. Everything the arp played, each marked to play as
+    /// heard.
+    Both,
+}
+
+impl Keeps {
+    /// Whether the recorder takes the pads as pressed (true) or what the
+    /// arp played, on a track whose switch is `through`.
+    pub fn pads(self, through: bool) -> bool {
+        match self {
+            Keeps::Switch => through,
+            Keeps::Yours => true,
+            Keeps::Its | Keeps::Both => false,
+        }
+    }
+
+    /// Whether what it keeps plays as heard (`Note::heard`).
+    pub fn as_heard(self) -> bool {
+        matches!(self, Keeps::Its | Keeps::Both)
+    }
+}
+
 pub struct TrackArps {
     arps: Vec<ArpHost>,
     through: [bool; MAX_TRACKS],
+    /// What REC keeps of each track ([`TrackArps::set_keeps`]).
+    keeps: [Keeps; MAX_TRACKS],
     dest: [DestId; MAX_TRACKS],
     /// Tracks whose arp was given a note (or a panic) this period. An arp
     /// with none and an idle engine skips its period, which keeps 15 idle
@@ -207,6 +253,7 @@ impl TrackArps {
                 .map(|_| ArpHost::new(Engine::new(sample_rate, bpm)))
                 .collect(),
             through: [false; MAX_TRACKS],
+            keeps: [Keeps::Switch; MAX_TRACKS],
             dest: core::array::from_fn(|t| t as DestId),
             fed: [false; MAX_TRACKS],
             used: 0,
@@ -408,10 +455,24 @@ impl TrackArps {
     }
 
     /// Whether the recorder and CAPTURE take `track`'s pad notes as played
-    /// (true: the switch is on, the clip will play through the arp) or the
-    /// arp's output (false).
+    /// (true: the switch is on, the clip will play through the arp, or a
+    /// live tool's Records is You) or the arp's output (false).
     pub fn records_pads(&self, track: usize) -> bool {
-        self.through(track)
+        self.keeps(track).pads(self.through(track))
+    }
+
+    /// What REC keeps of `track` (a live tool's Records row on the armed
+    /// track; [`Keeps::Switch`], the default, elsewhere). It changes
+    /// nothing that sounds; the host reads it for the recorder.
+    pub fn set_keeps(&mut self, track: usize, keeps: Keeps) {
+        if let Some(k) = self.keeps.get_mut(track) {
+            *k = keeps;
+        }
+    }
+
+    /// What REC keeps of `track` ([`Keeps::Switch`] past the last).
+    pub fn keeps(&self, track: usize) -> Keeps {
+        self.keeps.get(track).copied().unwrap_or_default()
     }
 
     /// Where `track`'s arp plays: the track's destination (the track
@@ -521,6 +582,7 @@ impl TrackArps {
                         dest,
                         event,
                         notes,
+                        heard: false,
                     },
                     ARPS,
                 );
@@ -600,6 +662,7 @@ impl TrackArps {
                     dest,
                     event: event_of(e.kind),
                     notes: self.notes_out[t],
+                    heard: false,
                 },
                 ARPS,
             );
@@ -617,7 +680,7 @@ impl TrackArps {
     fn hit_as_notes(&mut self, t: usize, o: Out) -> bool {
         let (arp, pads) = (&mut self.arps[t], &self.pads[t]);
         match o.event {
-            Event::NoteOn { note, velocity } if self.through[t] => {
+            Event::NoteOn { note, velocity } if self.through[t] && !o.heard => {
                 let Some(p) = self.pressed[t].get_mut(usize::from(note)) else {
                     return false;
                 };
@@ -680,9 +743,9 @@ fn event_of(k: Kind) -> Event {
 
 /// The player's [`Sink`] for one period: a through track's notes go into
 /// its arp (its pressure too, which also goes on), everything else (other
-/// tracks' notes, and every parameter lock and unlock, which an arp has no
-/// use for) waits for [`TrackArps::finish`]. A note-off goes where its
-/// note-on went.
+/// tracks' notes, a note that plays as heard, and every parameter lock and
+/// unlock, which an arp has no use for) waits for [`TrackArps::finish`]. A
+/// note-off goes where its note-on went.
 pub struct Through<'a> {
     arps: &'a mut TrackArps,
 }
@@ -710,7 +773,8 @@ impl Sink for Through<'_> {
             // hits' in the arp, so the same number of each never meet.
             let src = if o.notes { CLIP_NOTES } else { CLIPS };
             let into_arp = match o.event {
-                Event::NoteOn { .. } => a.through[t],
+                // A note that plays as heard was played by the arp already.
+                Event::NoteOn { .. } => a.through[t] && !o.heard,
                 // Where its note went, whatever the switch says now.
                 Event::NoteOff { note } => a.arps[t].owes(src, note),
                 Event::Pressure { .. } if a.through[t] => {

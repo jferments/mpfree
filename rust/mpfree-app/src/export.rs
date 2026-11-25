@@ -1524,6 +1524,7 @@ mod tests {
                         dest: 0,
                         event,
                         notes: false,
+                        heard: false,
                     };
                     self.host.tap.send(&o, NoteIs::Note);
                 }

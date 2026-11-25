@@ -392,10 +392,56 @@ impl PlaysWhen {
     }
 }
 
+/// What REC keeps while a live tool plays: the Phrase tab's Records row,
+/// on both halves of its Plays row (the composing tools' contract 8, the
+/// S5 boards).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Records {
+    /// What you played, as pressed.
+    You,
+    /// What mpfree played, as you heard it (While I hold's start).
+    #[default]
+    Mpfree,
+    /// Both, as you heard them (When I stop's start).
+    Both,
+}
+
+impl Records {
+    pub const ALL: [Records; 3] = [Records::You, Records::Mpfree, Records::Both];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Records::You => "You",
+            Records::Mpfree => "mpfree",
+            Records::Both => "Both",
+        }
+    }
+
+    /// What REC keeps, in a line under the row (When I stop's).
+    pub const fn says(self) -> &'static str {
+        match self {
+            Records::You => "REC keeps your call as you played it",
+            Records::Mpfree => "REC keeps the answers as you hear them",
+            Records::Both => "REC keeps both parts as you hear them",
+        }
+    }
+
+    /// Where each half of the Plays row starts: Improvise on mpfree,
+    /// Answer on Both.
+    pub const fn start(when: PlaysWhen) -> Records {
+        match when {
+            PlaysWhen::WhileIHold => Records::Mpfree,
+            PlaysWhen::WhenIStop => Records::Both,
+        }
+    }
+}
+
 /// A touch on the Phrase tab's Plays row or its moves (S5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImproviseAction {
     Plays(PlaysWhen),
+    /// The Records row: what REC keeps on this half of the Plays row.
+    Records(Records),
     /// The phrase stays as it plays now: Evolve off.
     Hold,
     /// A little of the phrase changes every few bars.
@@ -429,6 +475,8 @@ pub struct ImproviseNow {
     pub chord: Option<String>,
     /// When I stop can be picked: Answer is there to play.
     pub answers: bool,
+    /// What REC keeps on the half of the Plays row that shows.
+    pub records: Records,
     /// The When I stop panel, while Plays is When I stop.
     pub answer: AnswerNow,
 }
@@ -1247,15 +1295,14 @@ impl ArpPanel {
                     },
                 );
                 let shows = answer_panel::answer_show(st);
-                let rows = answer_panel::answer_sliders(st);
-                // Its sliders may be under a finger: changed in place.
+                let qlinks = answer_panel::answer_sliders(st);
                 if ui
                     .get::<AnswerPanel>(ANSWER)
-                    .is_some_and(|w| w.show != shows || w.sliders.rows != rows)
+                    .is_some_and(|w| w.show != shows || w.qlinks != qlinks)
                 {
                     if let Some(w) = ui.get_mut::<AnswerPanel>(ANSWER) {
                         w.show = shows;
-                        w.sliders.rows = rows.to_vec();
+                        w.qlinks = qlinks.to_vec();
                     }
                 }
             } else {
@@ -1313,17 +1360,11 @@ impl ArpPanel {
             (QLINKS | PLAYS, EventKind::Value(v)) => {
                 qlink.map(|i| ArpAction::Settings(with_qlink(s, st.tab(), i, *v)))
             }
+            // The Records row, on either half of the Plays row (S5).
+            (PLAYS | ANSWER, EventKind::Tab(i)) if *i >= phrase_tab::RECORDS => Records::ALL
+                .get(*i - phrase_tab::RECORDS)
+                .map(|r| ArpAction::Improvise(ImproviseAction::Records(*r))),
             // When I stop (S5, board B).
-            (ANSWER, EventKind::Select(i)) => {
-                *qlink = Some(*i);
-                None
-            }
-            (ANSWER, EventKind::Value(v)) => qlink.map(|knob| {
-                ArpAction::Answer(AnswerAction::Set {
-                    knob,
-                    value: (v.clamp(0.0, 1.0) * 1000.0).round() as u16,
-                })
-            }),
             (ANSWER, EventKind::Tab(i)) if *i == phrase_tab::WHEN => Some(ArpAction::Improvise(
                 ImproviseAction::Plays(PlaysWhen::WhileIHold),
             )),

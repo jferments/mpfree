@@ -391,7 +391,7 @@ fn maker_scene(
 /// When I stop (S5, board B): a call of five eighths in A minor in bar 1,
 /// its answer in bar 2 playing, past half way, landing home.
 fn answer_scene(fonts: Fonts) -> Result<Sample, String> {
-    use crate::view::{AnswerNow, HeardNote, PlaysWhen};
+    use crate::view::{AnswerNow, HeardNote, PlaysWhen, Records};
     let mut s = phrase_scene(
         "phrase-answer",
         "Phrase tab, When I stop: a call in bar 1 and Answer answering it in bar 2",
@@ -401,6 +401,7 @@ fn answer_scene(fonts: Fonts) -> Result<Sample, String> {
     let n = |at: i64, len: i64, pitch: u8| HeardNote { at, len, pitch };
     s.state.improvise.when = PlaysWhen::WhenIStop;
     s.state.improvise.answers = true;
+    s.state.improvise.records = Records::start(PlaysWhen::WhenIStop);
     s.state.improvise.answer = AnswerNow {
         light: Some(mpfree_arp::Light::Answer),
         call: vec![

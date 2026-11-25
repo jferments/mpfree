@@ -2638,6 +2638,7 @@ mod tests {
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
                 group: 0,
+                heard: false,
             },
             take,
         }
@@ -3713,6 +3714,7 @@ mod tests {
             ramp: 0,
             join: mpfree_seq::Join::Attack,
             group: 0,
+            heard: false,
         })
         .unwrap();
         assert_eq!(t.capture_clip(&mut p, 0, 1, c.clone()), Ok(1));
@@ -3745,6 +3747,7 @@ mod tests {
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
                 group: 0,
+                heard: false,
             })
             .unwrap();
         assert_eq!(t.undo(&mut p), Some(1));
@@ -3819,6 +3822,7 @@ mod tests {
             ramp: 0,
             join: mpfree_seq::Join::Attack,
             group: 0,
+            heard: false,
         };
         let pressed = |tick, first| Note {
             touch: Touch { first, len: 2 },

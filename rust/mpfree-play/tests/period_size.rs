@@ -44,6 +44,7 @@ fn notes(step: i64, count: i64, len: i64, pitch: impl Fn(i64) -> u8) -> Vec<Note
             ramp: 0,
             join: mpfree_seq::Join::Attack,
             group: 0,
+            heard: false,
         })
         .collect()
 }
@@ -111,6 +112,7 @@ fn session() -> PlayView {
             ramp: 0,
             join: mpfree_seq::Join::Attack,
             group: 0,
+            heard: false,
         })
         .collect();
     c.locks = vec![Lock::new(

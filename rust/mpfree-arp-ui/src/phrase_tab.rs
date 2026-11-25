@@ -24,7 +24,7 @@
 //! nothing, so the tests read those.
 
 use crate::phrases::{Origin, Shelf};
-use crate::view::{ArpState, PlaysWhen};
+use crate::view::{ArpState, PlaysWhen, Records};
 use crate::widgets::{Slider, SliderStack};
 use mpfree_arp::phrase::PLAIN_VELOCITY;
 use mpfree_arp::scale::{NOTE_NAMES, SCALES};
@@ -697,6 +697,8 @@ pub struct Plays {
     /// The line under the picture: what it plays over, and when it evolves
     /// (in the good colour).
     pub line: [String; 2],
+    /// The Records row: a place in `Records::ALL`.
+    pub records: usize,
 }
 
 impl Plays {
@@ -720,10 +722,12 @@ impl Plays {
             moves,
             can_return,
             line,
+            records,
         } = self;
         (
             (head, waiting, name, about, sketch, follow, follows, more),
             (head_good, when, answers, evolve, moves, can_return, line),
+            records,
         ) == (
             (
                 &other.head,
@@ -744,6 +748,7 @@ impl Plays {
                 &other.can_return,
                 &other.line,
             ),
+            &other.records,
         )
     }
 }
@@ -755,6 +760,9 @@ pub const WHEN: usize = 10;
 pub const MOVES: usize = 10;
 /// The moves' names, in their order.
 pub const MOVE_NAMES: [&str; 4] = ["Hold", "Evolve", "Return", "Capture"];
+/// The Records row's places, on both halves of the Plays row: `Tab(RECORDS
+/// + i)`, `i` a place in `Records::ALL`.
+pub const RECORDS: usize = 40;
 
 /// The phrase that plays: its name and what it is, when it plays (the
 /// Plays row: While I hold, When I stop), its notes with a cursor where it
@@ -780,13 +788,20 @@ struct Drawn {
     active: Option<usize>,
 }
 
-/// The sliders' two lines, the Follows switch, the moves and the room
-/// between the parts.
+/// The sliders' two lines, the Follows switch, the moves, the Records row
+/// and the room between the parts. Every row a fingertip (44 px): the
+/// picture takes what is left.
 const SLIDERS_H: i32 = 84;
 const SWITCH_W: i32 = 170;
 const SWITCH_H: i32 = 44;
 const MOVES_H: i32 = 44;
 const ROW_LABEL_W: i32 = 84;
+/// The Records row's height, on both halves.
+pub const RECORDS_H: i32 = 44;
+/// Where a Records row starts, from its panel's left: its label before.
+pub const RECORDS_X: i32 = 100;
+/// Room between the panel's parts.
+const GAP: i32 = 10;
 
 /// Where each part of the panel is.
 struct Parts {
@@ -802,6 +817,8 @@ struct Parts {
     switch: Rect,
     says: [Rect; 2],
     sliders: Rect,
+    records_label: Rect,
+    records: Rect,
 }
 
 impl PhrasePlays {
@@ -820,10 +837,11 @@ impl PhrasePlays {
     fn parts(r: Rect) -> Parts {
         let (x, w) = (r.x + 16, (r.w - 32).max(1));
         let inner = (r.w - 28).max(1);
-        let sliders = Rect::new(x, r.bottom() - 12 - SLIDERS_H, w, SLIDERS_H);
-        let switch = Rect::new(r.x + 100, sliders.y - 12 - SWITCH_H, SWITCH_W, SWITCH_H);
+        let records = records_row(r, r.bottom() - 12 - RECORDS_H);
+        let sliders = Rect::new(x, records.y - GAP - SLIDERS_H, w, SLIDERS_H);
+        let switch = Rect::new(r.x + 100, sliders.y - GAP - SWITCH_H, SWITCH_W, SWITCH_H);
         let follows = Rect::new(x, switch.y, (switch.x - 8 - x).max(1), SWITCH_H);
-        let moves = Rect::new(r.x + 14, switch.y - 12 - MOVES_H, inner, MOVES_H);
+        let moves = Rect::new(r.x + 14, switch.y - GAP - MOVES_H, inner, MOVES_H);
         let line = Rect::new(x, moves.y - 8 - 20, w, 20);
         let plays = Rect::new(x, r.y + 86, ROW_LABEL_W - 16, SWITCH_H);
         let when = Rect::new(
@@ -855,7 +873,14 @@ impl PhrasePlays {
             switch,
             says: [says(0), says(1)],
             sliders,
+            records_label: Rect::new(x, records.y, (records.x - 8 - x).max(1), RECORDS_H),
+            records,
         }
+    }
+
+    /// Place `i` of the Records row (`Records::ALL`).
+    pub fn records_place(r: Rect, i: usize) -> Rect {
+        records_place(PhrasePlays::parts(r).records, i)
     }
 
     /// More like this's button, at the right of the heading.
@@ -949,6 +974,61 @@ fn switch(cx: &mut PaintCx, r: Rect, names: &[&str], on: usize, open: &dyn Fn(us
             name,
         );
     }
+}
+
+/// A Records row starting `y` down panel `r`: from [`RECORDS_X`] to the
+/// panel's inner edge.
+pub fn records_row(r: Rect, y: i32) -> Rect {
+    Rect::new(
+        r.x + RECORDS_X,
+        y,
+        (r.right() - 14 - r.x - RECORDS_X).max(1),
+        RECORDS_H,
+    )
+}
+
+/// Place `i` of a Records row.
+pub fn records_place(row: Rect, i: usize) -> Rect {
+    let n = Records::ALL.len() as i32;
+    let w = row.w / n;
+    Rect::new(row.x + i as i32 * w, row.y, w, row.h)
+}
+
+/// A Records row: its small label at `label`, its three places in `row`,
+/// `on` lit.
+pub fn paint_records(cx: &mut PaintCx, label: Rect, row: Rect, on: usize) {
+    let t = cx.theme.clone();
+    cx.text(
+        FontId::Bold,
+        t.size_small - 1.0,
+        label,
+        Align::Left,
+        t.text_dim,
+        "RECORDS",
+    );
+    let names = Records::ALL.map(Records::label);
+    switch(cx, row, &names, on, &|i| i != on);
+}
+
+/// The Records row's targets in `row`, the one lit not tappable.
+pub fn records_targets(row: Rect, on: usize) -> Vec<Target> {
+    Records::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, k)| {
+            Target::tap("records", i, k.label(), records_place(row, i)).disabled_if(i == on)
+        })
+        .collect()
+}
+
+/// A finger down at (`x`, `y`) on a Records row: the place it picks, if
+/// it picks another.
+pub fn records_touch(row: Rect, on: &mut usize, x: i32, y: i32) -> Option<EventKind> {
+    let i = (0..Records::ALL.len()).find(|&i| records_place(row, i).contains(x, y))?;
+    (i != *on).then(|| {
+        *on = i;
+        EventKind::Tab(RECORDS + i)
+    })
 }
 
 impl Widget for PhrasePlays {
@@ -1100,6 +1180,7 @@ impl Widget for PhrasePlays {
             &s.follows[1],
         );
         self.sliders.paint_in(cx, p.sliders);
+        paint_records(cx, p.records_label, p.records, s.records);
     }
 
     fn targets(&self, r: Rect) -> Vec<Target> {
@@ -1127,6 +1208,10 @@ impl Widget for PhrasePlays {
             ));
         }
         out.extend(self.sliders.targets_in(PhrasePlays::parts(r).sliders));
+        out.extend(records_targets(
+            PhrasePlays::parts(r).records,
+            self.show.records,
+        ));
         out
     }
 
@@ -1135,6 +1220,10 @@ impl Widget for PhrasePlays {
             return Some(EventKind::Toggle(MORE_LIKE));
         }
         if phase == Touch::Down {
+            let row = PhrasePlays::parts(r).records;
+            if row.contains(x, y) {
+                return records_touch(row, &mut self.show.records, x, y);
+            }
             if let Some(i) =
                 (0..Follow::ALL.len()).find(|&i| PhrasePlays::half(r, i).contains(x, y))
             {
@@ -1353,6 +1442,10 @@ pub fn plays(st: &ArpState) -> Plays {
         .iter()
         .position(|w| *w == im.when)
         .unwrap_or(0);
+    let records = Records::ALL
+        .iter()
+        .position(|r| *r == im.records)
+        .unwrap_or(1);
     // New idea or More like this: its try, which a held pad plays.
     if let Some((name, p)) = st.maker.as_ref().and_then(|m| m.shown.as_ref()) {
         return Plays {
@@ -1370,6 +1463,7 @@ pub fn plays(st: &ArpState) -> Plays {
             when,
             answers: im.answers,
             evolve: im.evolve,
+            records,
             ..Plays::default()
         };
     }
@@ -1380,6 +1474,7 @@ pub fn plays(st: &ArpState) -> Plays {
             follow,
             follows,
             when,
+            records,
             ..Plays::default()
         };
     };
@@ -1413,6 +1508,7 @@ pub fn plays(st: &ArpState) -> Plays {
         moves: true,
         can_return: im.generation > 0,
         line: improvise_line(st),
+        records,
     }
 }
 
@@ -1433,8 +1529,8 @@ mod tests {
     use super::*;
     use crate::sample::{samples, Sample};
     use crate::view::{
-        chip, hint_for, qlink_rows, ArpAction, KINDS, KIT, MODES, PHRASES, PLAYS, STRAIGHT,
-        SWING_TRIPLETS,
+        chip, hint_for, qlink_rows, ArpAction, ImproviseAction, KINDS, KIT, MODES, PHRASES, PLAYS,
+        STRAIGHT, SWING_TRIPLETS,
     };
     use mpfree_arp::{Mode, Settings, Speed};
     use mpfree_ui::{Fonts, SoftCanvas, Touch, Ui};
@@ -1752,6 +1848,37 @@ mod tests {
             (Speed::Double, s.state.settings.rate)
         );
         s.ui.touch(2, Touch::Up, 0, 0);
+    }
+
+    /// Records (board A): at the panel's foot, mpfree lit (Improvise's
+    /// start), each place a fingertip; a tap on another picks what REC
+    /// keeps, and the lit one is not tapped again.
+    #[test]
+    fn the_records_row_picks_what_rec_keeps() {
+        let mut s = sample("phrase-browse");
+        let r = s.ui.rect_of(PLAYS).unwrap();
+        assert_eq!(plays(&s.state).records, 1, "mpfree");
+        let w = s.ui.get::<PhrasePlays>(PLAYS).unwrap();
+        let places: Vec<Rect> = (0..3).map(|i| PhrasePlays::records_place(r, i)).collect();
+        let (_, sliders) = w.slider(r, 3);
+        for p in &places {
+            assert!(p.w >= 44 && p.h >= 44 && p.bottom() <= r.bottom() && p.y > sliders.bottom());
+        }
+        let records: Vec<_> = w
+            .targets(r)
+            .into_iter()
+            .filter(|t| t.id == "records")
+            .collect();
+        assert_eq!(records.len(), 3);
+        assert!(!records[1].enabled, "mpfree is lit");
+        assert_eq!(tap(&mut s.ui, places[1]), None);
+        for (i, want) in [(2, Records::Both), (0, Records::You)] {
+            let ev = tap(&mut s.ui, places[i]).unwrap();
+            assert_eq!(
+                s.page.action(&ev, &s.state, &mut None),
+                Some(ArpAction::Improvise(ImproviseAction::Records(want)))
+            );
+        }
     }
 
     /// Swing leaves a phrase in triplets as it is, so its slider is quiet
