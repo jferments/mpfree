@@ -463,7 +463,7 @@ fn a_gesture_takes_continues_lane_over_and_put_back_undoes_it() {
     m.put(cutoff(), lin(), &points, BAR).unwrap();
     assert_eq!(m.by(cutoff()), Some(By::Hand), "a new lane is yours");
     assert!(
-        m.take_over(cutoff()).is_none(),
+        m.take_over(cutoff(), None).is_none(),
         "yours: nothing to take over"
     );
     let continues = By::Continue {
@@ -473,7 +473,7 @@ fn a_gesture_takes_continues_lane_over_and_put_back_undoes_it() {
     assert!(m.set_by(cutoff(), continues));
     assert!(!m.set_by(dj(), continues), "no lane there");
     let was = m.clone();
-    let lane = m.take_over(cutoff()).expect("Continue's");
+    let lane = m.take_over(cutoff(), None).expect("Continue's");
     assert_eq!(lane.by, continues);
     assert_eq!(m.by(cutoff()), Some(By::Hand));
     assert_eq!(
@@ -491,10 +491,109 @@ fn a_gesture_takes_continues_lane_over_and_put_back_undoes_it() {
         },
     );
     let off = m.clone();
-    let lane = m.take_over(cutoff()).unwrap();
+    let lane = m.take_over(cutoff(), None).unwrap();
     assert!(m.lane(cutoff()).unwrap().points.is_empty());
     // Gone meanwhile: put back as a new lane.
     m.remove(cutoff());
     m.put_back(lane).unwrap();
     assert_eq!(m, off);
+}
+
+/// A lane of Continue's goes with its knob (composing tools S3): on a log
+/// map each point keeps its ratio to the knob (an octave up stays an
+/// octave up), on any other its distance, held in the knob's range, and
+/// the lane is written against the knob where it is now; a lane of yours,
+/// or a knob where it was, stays as it is. A gesture that takes the lane
+/// over with the knob told keeps the moves as you heard them.
+#[test]
+fn continues_lane_follows_its_knob() {
+    let log = Map {
+        min: 20.0,
+        max: 20_000.0,
+        log: true,
+        steps: Steps::None,
+    };
+    let values = |l: &Lane| -> Vec<f32> {
+        l.points
+            .iter()
+            .filter(|p| p.kind != Kind::End)
+            .map(|p| l.map.value(p.u))
+            .collect()
+    };
+    let near = |a: &[f32], b: &[f32]| {
+        a.len() == b.len()
+            && a.iter()
+                .zip(b)
+                .all(|(x, y)| (x - y).abs() <= y.abs() * 1e-3)
+    };
+    let mut m = Moves::new();
+    let points = [
+        (0.0, log.unit(1600.0), Kind::Step),
+        (960.0, log.unit(800.0), Kind::Step),
+        (1920.0, 0.0, Kind::End),
+    ];
+    m.put(cutoff(), log, &points, BAR).unwrap();
+    m.set_by(
+        cutoff(),
+        By::Continue {
+            on: true,
+            base: 800.0,
+        },
+    );
+    // The knob down an octave: the moves go down with it, by ratio.
+    let mut lane = m.lane(cutoff()).unwrap().clone();
+    lane.follow_knob(400.0);
+    assert!(near(&values(&lane), &[800.0, 400.0]), "{:?}", values(&lane));
+    assert_eq!(
+        lane.by,
+        By::Continue {
+            on: true,
+            base: 400.0
+        }
+    );
+    // Near the top: held in the knob's range.
+    let mut top = m.lane(cutoff()).unwrap().clone();
+    top.follow_knob(16_000.0);
+    assert!(
+        near(&values(&top), &[20_000.0, 16_000.0]),
+        "{:?}",
+        values(&top)
+    );
+    // Where it was, or a lane of yours: nothing changes.
+    let mut same = m.lane(cutoff()).unwrap().clone();
+    same.follow_knob(800.0);
+    assert_eq!(&same, m.lane(cutoff()).unwrap());
+    let mut yours = same.clone();
+    yours.by = By::Hand;
+    let kept = yours.clone();
+    yours.follow_knob(400.0);
+    assert_eq!(yours, kept);
+    // A linear knob: by difference.
+    let mut flat = Moves::new();
+    flat.put(
+        cutoff(),
+        lin(),
+        &[(0.0, lin().unit(30.0), Kind::Step), (960.0, 0.0, Kind::End)],
+        BAR,
+    )
+    .unwrap();
+    flat.set_by(
+        cutoff(),
+        By::Continue {
+            on: true,
+            base: 10.0,
+        },
+    );
+    let mut l = flat.lane(cutoff()).unwrap().clone();
+    l.follow_knob(-20.0);
+    assert!(values(&l)[0].abs() < 1e-3, "30 less 30: {:?}", values(&l));
+    // Taken over with the knob down an octave: yours, as heard.
+    let was = m.clone();
+    let lane = m.take_over(cutoff(), Some(400.0)).unwrap();
+    assert_eq!(&lane, was.lane(cutoff()).unwrap(), "the lane as it was");
+    let mine = m.lane(cutoff()).unwrap();
+    assert_eq!(mine.by, By::Hand);
+    assert!(near(&values(mine), &[800.0, 400.0]), "{:?}", values(mine));
+    m.put_back(lane).unwrap();
+    assert_eq!(m, was);
 }

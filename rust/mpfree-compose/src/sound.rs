@@ -265,6 +265,8 @@ pub enum Swing {
     Travel(f32),
     /// Longer by this factor at +1, shorter by it at -1 (a release).
     Times(f32),
+    /// Up or down this many dB (a send level).
+    Decibels(f32),
 }
 
 /// A knob a sound move may turn on this preset, and how far.
@@ -288,6 +290,7 @@ impl Safe {
         let v = match self.swing {
             Swing::Octaves(o) => self.base * 2f32.powf(a * o),
             Swing::Times(f) => self.base * f.powf(a),
+            Swing::Decibels(d) => self.base + a * d,
             Swing::Travel(t) => {
                 let u = (unit(self.base, self.min, self.max, self.log) + a * t).clamp(0.0, 1.0);
                 if self.log && self.min > 0.0 {
@@ -301,12 +304,15 @@ impl Safe {
     }
 }
 
-/// The knobs a preset lets sound moves turn: its brightness and its
-/// length. Space is the track's send, not the instrument's.
+/// The knobs sound moves may turn: the preset's brightness and length
+/// ([`safe_controls`]), and Space, the track's first send, not the
+/// instrument's ([`space_control`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SafeControls {
     pub brightness: Option<Safe>,
     pub length: Option<Safe>,
+    /// Its `id` is the send's on the track's mixer strip.
+    pub space: Option<Safe>,
 }
 
 impl SafeControls {
@@ -314,18 +320,47 @@ impl SafeControls {
         match c {
             Control::Brightness => self.brightness,
             Control::Length => self.length,
-            Control::Space => None,
+            Control::Space => self.space,
         }
     }
+
+    /// No knob to turn.
+    pub fn is_empty(&self) -> bool {
+        Control::ALL.iter().all(|&c| self.get(c).is_none())
+    }
+}
+
+/// A send this low is off: there is no echo to throw a note into.
+const SEND_OFF_DB: f32 = -60.0;
+
+/// A full Space move: the send at three times its own level.
+pub const SPACE_DB: f32 = 9.542_425;
+
+/// Space on the track's first send, `id` on its mixer strip, from its own
+/// level `own_db` (`min_db` to `max_db`): up to three times its level at
+/// a full move ([`SPACE_DB`]), never past the top. None when the send is
+/// off (the track sends nothing to the echo) or already at the top.
+pub fn space_control(id: u16, own_db: f32, min_db: f32, max_db: f32) -> Option<Safe> {
+    (own_db > SEND_OFF_DB && own_db < max_db - 0.5).then_some(Safe {
+        id,
+        swing: Swing::Decibels(SPACE_DB),
+        base: own_db,
+        min: min_db,
+        max: max_db,
+        log: false,
+    })
 }
 
 /// How far a lane of Continue's takes knob `name` from `base` at most
 /// (`far` the value farthest from it), in a musician's words, as
 /// [`safe_controls`] picks the knobs by name: "up to +0.5 oct" on a
-/// Cutoff, "up to 1.6× as long" on a Release, else the share of the
-/// knob's travel (`min` to `max`, `log` for even steps in pitch or
-/// time), "up to +15 %".
+/// Cutoff, "up to 1.6× as long" on a Release, "up to +4.8 dB" on a send
+/// (Space: "Send A", "Delay send"), else the share of the knob's travel
+/// (`min` to `max`, `log` for even steps in pitch or time), "up to +15 %".
 pub fn reach_words(name: &str, base: f32, far: f32, min: f32, max: f32, log: bool) -> String {
+    if name.ends_with("send") || name.starts_with("Send") {
+        return format!("up to {:+.1} dB", far - base);
+    }
     if name == "Cutoff" && base > 0.0 && far > 0.0 {
         return format!("up to {:+.1} oct", (far / base).log2());
     }
@@ -441,6 +476,14 @@ mod tests {
         assert_eq!(
             reach_words("Tone", 0.5, 0.65, 0.0, 1.0, false),
             "up to +15 %"
+        );
+        assert_eq!(
+            reach_words("Delay send", -12.0, -7.2, -80.0, 6.0, false),
+            "up to +4.8 dB"
+        );
+        assert_eq!(
+            reach_words("Send A", -12.0, -2.5, -80.0, 6.0, false),
+            "up to +9.5 dB"
         );
     }
 

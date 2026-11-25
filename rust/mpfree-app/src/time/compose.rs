@@ -116,10 +116,10 @@ struct Made {
     /// The clip with the result in and no sound moves of its own.
     plain: Arc<Clip>,
     /// Its sound moves at Subtle and Bold (`Done::sound`), the knobs they
-    /// may turn, and the knobs that have a lane at the level.
+    /// may turn, and the lanes they have at the level.
     sound: [Vec<SoundMove>; 2],
     safe: SafeControls,
-    moved: Vec<u16>,
+    moved: Vec<mpfree_seq::mpfree_moves::Target>,
     new_from: Tick,
     bars: u8,
     /// The style it was made in.
@@ -755,7 +755,7 @@ impl Composing {
 /// for the instrument the track plays).
 fn sound_in(m: &mut Made, level: SoundLevel, project: &Project, track: usize) {
     let moves = Done::sound_at(&m.sound, level);
-    if moves.is_empty() || (m.safe.brightness.is_none() && m.safe.length.is_none()) {
+    if moves.is_empty() || m.safe.is_empty() {
         m.clip = m.plain.clone();
         m.moved.clear();
         return;

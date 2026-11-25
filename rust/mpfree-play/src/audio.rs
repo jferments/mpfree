@@ -336,7 +336,15 @@ mod tests {
         c.audio = Some(AudioClip::of(RecId(1), 0, 96_000, BAR, 120.0));
         let mut v = PlayView::compile(&p, &[]).unwrap();
         v.song = true;
-        v.song_clips = vec![view_of(&c, None, None, ROWS + 4, 0, 0)];
+        v.song_clips = vec![view_of(
+            &c,
+            None,
+            None,
+            &mpfree_seq::inst::Knobs::default(),
+            ROWS + 4,
+            0,
+            0,
+        )];
         v.tracks[0].regions = blocks
             .iter()
             .map(|&(start, end)| RegionView {
@@ -531,13 +539,29 @@ mod tests {
         other.loop_clip = Some(mpfree_seq::LoopClip {
             id: mpfree_seq::LoopId(0xfeed_0002),
         });
-        let o = view_of(&other, None, None, 0, 0, 0);
+        let o = view_of(
+            &other,
+            None,
+            None,
+            &mpfree_seq::inst::Knobs::default(),
+            0,
+            0,
+            0,
+        );
         assert_ne!(o.stamp, stamp);
         // A block on bar 2 starting half a bar into the loop: its passes
         // count from bar 2 less half a bar.
         let mut v = PlayView::compile(&p, &[]).unwrap();
         v.song = true;
-        v.song_clips = vec![view_of(&c, None, None, ROWS + 4, 0, 0)];
+        v.song_clips = vec![view_of(
+            &c,
+            None,
+            None,
+            &mpfree_seq::inst::Knobs::default(),
+            ROWS + 4,
+            0,
+            0,
+        )];
         v.tracks[0].regions = vec![RegionView {
             start: BAR,
             end: 3 * BAR,

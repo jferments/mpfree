@@ -7112,7 +7112,7 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
     g.longest = steps.max_steps() as Tick * steps.size();
     g.lock_settings = e.locks.clone();
     // Continue's lanes (composing tools S3): each a lane of its own.
-    g.sound_lanes = Arc::new(crate::editor::SoundLane::of(c));
+    g.sound_lanes = Arc::new(crate::editor::SoundLane::named(c, &e.locks));
     g.length = c.length;
     g.bar = e.bar;
     g.pads = pads(c);

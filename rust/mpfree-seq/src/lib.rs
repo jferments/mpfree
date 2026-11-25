@@ -1700,6 +1700,10 @@ pub struct Track {
     /// of comparisons. None when not told (a kit, MIDI out), and then its
     /// clips' instrument locks play.
     pub plays: inst::Plays,
+    /// Where its instrument's knobs are that Continue's lanes move
+    /// (composing tools S3): told by the app while such a lane plays,
+    /// never saved, and left out of comparisons.
+    pub knobs: inst::Knobs,
 }
 
 /// A track's clips by row number (the Arrange refactor's 1.2): row `r`'s
@@ -1951,6 +1955,7 @@ impl Track {
             pad_solos: 0,
             slots: Default::default(),
             plays: inst::Plays::default(),
+            knobs: inst::Knobs::default(),
         }
     }
 
@@ -1995,6 +2000,7 @@ impl Track {
             pad_solos,
             slots,
             plays: _,
+            knobs: _,
         } = self;
         *dest == other.dest
             && *swing == other.swing

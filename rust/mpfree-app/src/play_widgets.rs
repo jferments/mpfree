@@ -1173,6 +1173,12 @@ pub struct LockCells {
     /// faint, with this over them ("made for Poly's Cutoff, not playing on
     /// FM"); the × still takes them off.
     pub silent: Option<String>,
+    /// One of Continue's lanes (composing tools S3, board B): drawn in
+    /// the theme's green, so it never looks like your purple locks, and
+    /// read only: no ×, and a tap on it (`Toggle` on its name, `Cell` on
+    /// a step) only says where it is changed. Off, it is drawn as
+    /// `silent`, with that line over it.
+    pub continues: bool,
 }
 
 /// A Velocity or Chance lane under a sound (step sequencer refactor D3):
@@ -2060,6 +2066,13 @@ impl StepGrid {
         (lane, cols, area)
     }
 
+    /// Whether lane `pad` is one of Continue's (read only, S3).
+    fn continues(&self, pad: usize) -> bool {
+        self.lanes
+            .iter()
+            .any(|l| l.pad == pad && l.lock.as_ref().is_some_and(|k| k.continues))
+    }
+
     /// A finger on value lane row `k` (lane `pad`): the shared lane
     /// starts its stroke there.
     fn start_stroke(&mut self, f: u64, x: i32, y: i32, r: Rect, pad: usize) -> bool {
@@ -2646,7 +2659,13 @@ fn paint_lock_lane(
 ) {
     let t = cx.theme.clone();
     let y = g.row_y(k);
-    let lane_ink = t.readable(LOCKED.mix(t.role(Role::Highlight), 0.45), t.surface);
+    // Continue's lanes in green (composing tools S3, board B), yours in
+    // purple.
+    let lane_ink = if lk.continues {
+        t.readable(t.good, t.surface)
+    } else {
+        t.readable(LOCKED.mix(t.role(Role::Highlight), 0.45), t.surface)
+    };
     // Locks that don't play now (F1): the lane's name is faint too, but
     // never under 3:1 (the floor for readable text; a light theme's
     // faint purple would be), its outline as any lock lane's (fainter,
@@ -2676,10 +2695,13 @@ fn paint_lock_lane(
         cx.text(FontId::Bold, 16.0, mark, Align::Left, moved, "~");
     }
     cx.text(FontId::Sans, 10.0, bottom, Align::Left, t.text_dim, &lk.sub);
-    // The ×: the lane comes off, its locks too.
-    cx.canvas.fill_round_rect(mb, t.round(6), t.raised);
-    cx.canvas.stroke_round_rect(mb, t.round(6), 1, t.outline);
-    cx.text(FontId::Bold, 16.0, mb, Align::Center, t.text_dim, "×");
+    // The ×: the lane comes off, its locks too. Continue's has none: it
+    // is turned off or taken out in Notes.
+    if !lk.continues {
+        cx.canvas.fill_round_rect(mb, t.round(6), t.raised);
+        cx.canvas.stroke_round_rect(mb, t.round(6), 1, t.outline);
+        cx.text(FontId::Bold, 16.0, mb, Align::Center, t.text_dim, "×");
+    }
     for s in 0..steps.min(16) {
         let sr = g.cell(k, s);
         let base = if s % 4 == 0 {
@@ -3205,6 +3227,18 @@ impl Widget for StepGrid {
                 // value a finger drags (or the wheel turns) and a tap
                 // locks or unlocks.
                 let id = lane.pad - LOCK_LANE;
+                if lane.lock.as_ref().is_some_and(|lk| lk.continues) {
+                    // Continue's lane (S3): read only, its name says
+                    // where it is changed.
+                    let mb = g.mute_button(k);
+                    out.push(Target::tap(
+                        "sound-lane",
+                        id,
+                        format!("{}, Continue's lane: where to change it", lane.name),
+                        Rect::new(g.names.x, g.row_y(k), mb.right() - g.names.x, g.rh),
+                    ));
+                    continue;
+                }
                 if lane.lock.as_ref().is_some_and(|lk| lk.opens_rows) {
                     let mb = g.mute_button(k);
                     let name = Rect::new(g.names.x, g.row_y(k), mb.x - 4 - g.names.x, g.rh);
@@ -3395,7 +3429,9 @@ impl Widget for StepGrid {
             }
         }
         if let Some(EventKind::Cell { row, col }) = tap {
-            if row >= LOCK_LANE {
+            // Continue's lane is read only: its tap goes on as a step's
+            // (on the lift with the rows swiping), never a drag.
+            if row >= LOCK_LANE && !self.continues(row) {
                 // A lock's cell: a drag turns it, a tap waits for the
                 // finger to lift.
                 self.drag = Some(LockDrag {
@@ -3410,7 +3446,15 @@ impl Widget for StepGrid {
             }
         }
         if let (true, Some(EventKind::Cell { row, col })) = (self.hold_picks, tap.clone()) {
-            // A step's tap waits for the lift, so a hold can pick it.
+            // A step's tap waits for the lift, so a hold can pick it (a
+            // step of Continue's lane picks nothing).
+            if row >= LOCK_LANE {
+                return if self.swipes(r) {
+                    self.swipe_from(f, x, y, r, tap)
+                } else {
+                    tap
+                };
+            }
             self.press = Some(StepPress {
                 finger: f,
                 row,
@@ -3424,8 +3468,21 @@ impl Widget for StepGrid {
         if !self.swipes(r) || matches!(tap, Some(EventKind::Pad { .. })) {
             return tap;
         }
-        // Play's rows (or the Steps with lock lanes): the tap waits for
-        // the finger to lift, so a swipe can move the rows instead.
+        self.swipe_from(f, x, y, r, tap)
+    }
+}
+
+impl StepGrid {
+    /// Play's rows (or the Steps with lock lanes): the tap waits for the
+    /// finger to lift, so a swipe can move the rows instead.
+    fn swipe_from(
+        &mut self,
+        f: u64,
+        x: i32,
+        y: i32,
+        r: Rect,
+        tap: Option<EventKind>,
+    ) -> Option<EventKind> {
         let (_, body) = card_head(r);
         if body.contains(x, y) {
             let top = self.bank.as_ref().map_or(self.top, |b| b.top);
@@ -3609,7 +3666,8 @@ impl StepGrid {
         let lanes = self.shown(g.rows);
         for (k, lane) in lanes.iter().enumerate() {
             if let Some(lk) = lane.lock.as_ref().filter(|_| g.mute_hit(k).contains(x, y)) {
-                if g.mute_button(k).inset(-2).contains(x, y) {
+                // Continue's lane: its name only says where it changes.
+                if lk.continues || g.mute_button(k).inset(-2).contains(x, y) {
                     return Some(EventKind::Toggle(lane.pad));
                 }
                 // A gear's control: its name opens its mod rows (LFO to
@@ -4758,6 +4816,80 @@ mod tests {
         }
     }
 
+    /// Continue's lane on the Steps (composing tools S3, board B): with
+    /// the track's lanes after the sounds, read only: its name is one
+    /// target that answers anywhere on it (no ×), and a step's tap comes
+    /// on the lift with no drag.
+    #[test]
+    fn continues_lane_is_read_only_on_the_steps() {
+        let cont = |id: usize, owner: Option<usize>, continues: bool| Lane {
+            name: "Cutoff".into(),
+            lock: Some(LockCells {
+                sub: "Continue · under your locks".into(),
+                owner,
+                cells: (0..16)
+                    .map(|s| (s < 4).then(|| (0.6, "2.0 kHz".to_string())))
+                    .collect(),
+                opens_rows: false,
+                moved: false,
+                values: None,
+                silent: None,
+                continues,
+            }),
+            ..lane(LOCK_LANE + id, &[])
+        };
+        let mut g = StepGrid {
+            steps: 16,
+            length: 16,
+            pages: 1,
+            ..Default::default()
+        };
+        g.lanes = (0..4).map(|p| lane(p, &[0; 16])).collect();
+        g.lanes.push(cont(0, Some(1), false));
+        g.lanes.push(cont(1, None, true));
+        let r = Rect::new(0, 0, 1038, 330);
+        assert_eq!(
+            g.lanes_shown(r),
+            [0, 1, LOCK_LANE, 2, 3, LOCK_LANE + 1],
+            "after the sounds"
+        );
+        let ts = g.targets(r);
+        let name = ts
+            .iter()
+            .find(|t| t.id == "sound-lane" && t.index == 1)
+            .expect("its name")
+            .rect;
+        assert!(
+            !ts.iter().any(|t| t.id == "lock-lane-off" && t.index == 1),
+            "no ×"
+        );
+        assert_eq!(
+            ts.iter().filter(|t| t.id == "lock").count(),
+            16,
+            "yours only"
+        );
+        // Its name, anywhere: a tap on the lift.
+        for x in [name.x + 10, name.right() - 10] {
+            let y = name.y + name.h / 2;
+            assert_eq!(g.touch(1, Touch::Down, x, y, r), None);
+            assert_eq!(
+                g.touch(1, Touch::Up, x, y, r),
+                Some(EventKind::Toggle(LOCK_LANE + 1))
+            );
+        }
+        // A step: no drag, its tap on the lift.
+        let (x, y) = g.step_at(r, 5, 2);
+        assert_eq!(g.touch(2, Touch::Down, x, y, r), None);
+        assert_eq!(g.touch(2, Touch::Move, x, y - 3, r), None);
+        assert_eq!(
+            g.touch(2, Touch::Up, x, y - 3, r),
+            Some(EventKind::Cell {
+                row: LOCK_LANE + 1,
+                col: 2
+            })
+        );
+    }
+
     /// The Sequencer's lock lanes (the redesign's board 3): each under its
     /// sound, the track's after them all; a tap on a step's cell gives it
     /// on the lift, a drag turns it a detent each 8 px up, the wheel does
@@ -4777,6 +4909,7 @@ mod tests {
                 moved: false,
                 values: None,
                 silent: None,
+                continues: false,
             }),
             ..lane(LOCK_LANE + id, &[])
         };
@@ -5023,6 +5156,7 @@ mod tests {
                 moved: false,
                 values: None,
                 silent: None,
+                continues: false,
             }),
             ..lane(LOCK_LANE + id, &[])
         }));
