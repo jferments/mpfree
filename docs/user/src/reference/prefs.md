@@ -1,7 +1,7 @@
 <!--
 status: changing
-covers: rust/mpfree-app/src/app.rs rust/mpfree-app/src/app/prefs_tabs.rs rust/mpfree-app/src/prefs_page.rs rust/mpfree-app/src/gui.rs rust/mpfree-app/src/app/saved.rs rust/mpfree-app/src/setup.rs
-checked: 2026-11-24 7cf8e6e2
+covers: rust/mpfree-app/src/app.rs rust/mpfree-app/src/app/prefs_tabs.rs rust/mpfree-app/src/app/customise.rs rust/mpfree-app/src/theme_edit.rs rust/mpfree-app/src/prefs_page.rs rust/mpfree-app/src/gui.rs rust/mpfree-app/src/app/saved.rs rust/mpfree-app/src/setup.rs
+checked: 2026-11-24 680edcc7
 -->
 
 # Prefs
@@ -45,13 +45,47 @@ The audio, the line input, memory and MIDI out.
 
 ## Appearance
 
-The theme: MPFree's colours and the style of its panels. Each theme is a tile that shows the Play page in its colours: **Default**, **Slate** (mid blue-grey, between Default and Light), **Light**, **Console**, **Synthwave**, **Spaceship** and **AbleTown** (mid greys with an orange highlight), then any themes of your own ([Making your own theme](making-a-theme.md)). The theme in use has an outline and a check.
+The theme: MPFree's colours and the style of its panels. Appearance has two views, listed under it on the left while it is open: **Themes**, to pick a theme, and **Customise**, to change one. The layout and the font are the same in every theme.
 
-Tap another theme to try it, or turn the data wheel. The screen changes at once; the layout and the font stay the same. The **In use** card at the bottom then asks **Keep Console?** (or whichever you tried) for 15 seconds: tap **Keep**, or push the data wheel, to keep it. Do nothing, tap **Go back**, pick another tab or close Prefs, and the theme you had comes back.
+### Themes
+
+Each theme is a tile that shows the Play page in its colours: **Default**, **Slate** (mid blue-grey, between Default and Light), **Light**, **Console**, **Synthwave**, **Spaceship** and **AbleTown** (mid greys with an orange highlight), then any themes of your own ([Making your own theme](making-a-theme.md)). The theme in use has an outline and a check.
+
+Tap another theme to try it, or turn the data wheel. The screen changes at once. The **In use** card at the bottom then asks **Keep Console?** (or whichever you tried) for 15 seconds: tap **Keep**, or push the data wheel, to keep it. Do nothing, tap **Go back**, pick another tab or close Prefs, and the theme you had comes back.
 
 The In use card also says how well the theme's words, its dim words and its accent read against the page. On a theme of your own it lists any lines MPFree couldn't use, and names theme files it left out.
 
+To change a theme, tap **Customise ›** on the In use card, or push the data wheel. The dashed **New theme** tile after the themes does the same; while you are trying a theme, it keeps that one and opens a copy of it.
+
 {{shot: prefs-appearance | Prefs, Appearance: Console tried, and asking whether to keep it.}}
+
+### Customise
+
+Customise works on a copy of the theme in use, called **My theme** (or, for a theme of your own, its name and 2). Every change shows on the whole screen at once, so you see it on the page you are using. Leave Customise and the theme you had comes back; your changes wait there until you open Customise again, or save them.
+
+{{shot: prefs-customise | Prefs, Customise: the second accent turned, not saved yet.}}
+
+| Setting | What it does |
+|---|---|
+| **Rename** | Opens the letters pad to name your theme (up to 32 letters). |
+| **Undo changes** | Puts the copy back as it was when you opened Customise. |
+| **Save theme** | Saves your theme as a file in the themes folder (`files/themes/` on the MPFREE-DATA part of your stick) and makes it the theme in use. Its tile joins the others on Themes. Save again to update the same file. The file holds only what you changed, so you can copy it to another stick or open it on a computer ([Making your own theme](making-a-theme.md)). |
+| **Accent**, **Second accent** | The highlight colours, round the colour ring. The words on the accent stay readable. |
+| **Page lightness** | How light the page is; the panels, buttons and lines move with it. |
+| **Warmth** | From cool blue-greys to warm brown-greys. |
+| **Every colour** | Tap a colour (the page, panels, buttons, lines, words, dim words, and the good, warning and bad colours) to set it exactly: the four knobs above become **Hue**, **Colour** (how strong) and **Light** for it. Tap **Done**, or the colour again, to get the four knobs back. |
+| **Mode** | **Dark** or **Light** turns every grey over and keeps the words readable. **Auto** leaves the colours as they are. |
+| **Panels stand out** | How much lighter (or darker) the panels and buttons are than the page. |
+| **Corners**, **Corner size** | Round, cut or square corners, and how big they are. |
+| **Outlines** | How strong the lines round panels and buttons are. |
+| **Glow**, **Text glow**, **Tint pads** | A soft halo round outlines and round the words, and how far the kit and pad colours on the screen lean towards the accent (the pads' own lights don't change). |
+| **Backdrop**, **Pattern size** | What is drawn behind the panels: a solid page, a fade, a grid, dots or lines, and how far apart the pattern's lines are. |
+| **Backdrop colours** | The fade's second colour and the pattern's lines. Tap one to set it, as with Every colour. |
+| **Track colours** | The eight track colours; the Q-Links, graphs and EQ bands follow them. Tap one to set it, as with Every colour. **Set** picks a whole set: the theme's own, Rainbow, Pastel, Neon, Earth, Ocean, or shades of the accent. |
+
+The line at the foot says how well the words, the dim words and the accent read on a panel as you go. MPFree won't make a change that leaves the words too hard to read: the line then says **Stopped there**.
+
+{{shot: prefs-customise-colour | Prefs, Customise: the words' colour on the knobs.}}
 
 ## Projects
 
