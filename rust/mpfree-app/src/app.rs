@@ -1896,6 +1896,11 @@ pub struct App {
     sheet: Option<arp::Sheet>,
     /// The choices New idea and More like this keep between openings.
     maker_set: arp::MakerSet,
+    /// The song's styles made from clips (composing step 6), which New
+    /// idea's Style row runs on into after the built-in ones, and the
+    /// song's lines they were read from ([`App::styles_from`]).
+    made_styles: std::sync::Arc<[mpfree_compose::ClipStyle]>,
+    made_lines: Vec<String>,
     /// Counts New idea and More like this's openings: each asks the
     /// composer with the next seed, so each opening's tries are new.
     maker_seed: u64,
@@ -2168,6 +2173,8 @@ impl App {
             maker: None,
             sheet: None,
             maker_set: arp::MakerSet::default(),
+            made_styles: std::sync::Arc::from(Vec::new()),
+            made_lines: Vec::new(),
             maker_seed: 0,
             improvise: arp::Improvise::default(),
             answer: arp::Answer::default(),

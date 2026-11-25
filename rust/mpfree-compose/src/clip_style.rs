@@ -356,6 +356,60 @@ pub fn nearest(read: &Read, meter: Meter) -> &'static Style {
         .unwrap_or(&STYLES[0])
 }
 
+/// How many styles a Style row steps through: the built-in ones, then the
+/// project's made ones.
+pub fn style_count(made: &[ClipStyle]) -> usize {
+    STYLES.len() + made.len()
+}
+
+/// The Style rows' style `k`: a built-in one, else a made one (the last
+/// there is when `k` is past the end, as after an UNDO took one away).
+pub fn style_at(k: usize, made: &[ClipStyle]) -> Style {
+    match k.checked_sub(STYLES.len()) {
+        None => STYLES[k],
+        Some(m) => made
+            .get(m)
+            .or(made.last())
+            .map_or(STYLES[STYLES.len() - 1], ClipStyle::style),
+    }
+}
+
+/// Style `k`'s name, as a Style row shows it.
+pub fn style_name(k: usize, made: &[ClipStyle]) -> &str {
+    match k.checked_sub(STYLES.len()) {
+        None => STYLES[k].name,
+        Some(m) => made
+            .get(m)
+            .or(made.last())
+            .map_or(STYLES[STYLES.len() - 1].name, |c| c.name.as_str()),
+    }
+}
+
+/// The project's made styles from its lines (`Project::styles`); a line
+/// this build can't read is left out.
+pub fn clip_styles(lines: &[String]) -> Vec<ClipStyle> {
+    lines
+        .iter()
+        .filter_map(|l| ClipStyle::from_text(l))
+        .collect()
+}
+
+/// A made style's name as the composer's styles carry one
+/// (`Style::name`, which is `&'static str`): each name is kept once for
+/// the life of the program, so naming a style again, or opening its
+/// project again, costs nothing more. Names are typed, a few a project.
+fn named(name: &str) -> &'static str {
+    use std::sync::Mutex;
+    static NAMES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(n) = names.iter().find(|n| **n == name) {
+        return n;
+    }
+    let n: &'static str = Box::leak(name.to_string().into_boxed_str());
+    names.push(n);
+    n
+}
+
 /// A style made from a clip: its name, the built-in style lending the plan
 /// and the chords' habits, and what the clip's notes said.
 #[derive(Clone, Debug, PartialEq)]
@@ -379,7 +433,7 @@ impl ClipStyle {
 
     /// The style a Continue, Add a part or New idea plays: the plan's
     /// harmony, bass, melody, development and weights, with the clip's
-    /// rhythm and playing.
+    /// rhythm and playing, under the made style's name.
     pub fn style(&self) -> Style {
         let base = STYLES
             .iter()
@@ -410,6 +464,7 @@ impl ClipStyle {
                 lean_ms: r.lean_ms.clamp(-25.0, 25.0),
                 ..base.playing
             },
+            name: named(&self.name),
             ..base
         }
     }
@@ -619,6 +674,38 @@ mod tests {
         assert_eq!(back.style().rhythm, st.rhythm);
         assert_eq!(back.style().playing.accent, st.playing.accent);
         assert!(ClipStyle::from_text("plan=Polka grid=8 name=x").is_none());
+        // Under its own name, kept once however often it is made.
+        assert_eq!(st.name, "Clip 1 groove");
+        assert!(std::ptr::eq(st.name, back.style().name));
+    }
+
+    /// A Style row's list: the built-in styles, then the made ones; past
+    /// the end (an UNDO took one away), the last there is; a line that
+    /// doesn't read is left out.
+    #[test]
+    fn style_rows_run_on_into_the_made_styles() {
+        let r = read_clip(
+            &groove(56, 4.0),
+            2 * BAR,
+            Meter::default(),
+            120.0,
+            Swing::default(),
+        )
+        .unwrap();
+        let cs = ClipStyle::new("Riff", r, Meter::default());
+        let made = clip_styles(&[cs.to_text(), "plan=Polka name=bad".to_string()]);
+        assert_eq!(made.len(), 1);
+        assert_eq!(style_count(&made), STYLES.len() + 1);
+        assert_eq!(style_count(&[]), STYLES.len());
+        assert_eq!(style_name(0, &made), STYLES[0].name);
+        assert_eq!(style_name(STYLES.len(), &made), "Riff groove");
+        assert_eq!(style_at(STYLES.len(), &made).name, "Riff groove");
+        assert_eq!(style_at(STYLES.len() + 4, &made).name, "Riff groove");
+        assert_eq!(
+            style_at(STYLES.len() + 4, &[]).name,
+            STYLES[STYLES.len() - 1].name
+        );
+        assert_eq!(style_name(STYLES.len(), &[]), STYLES[STYLES.len() - 1].name);
     }
 
     #[test]

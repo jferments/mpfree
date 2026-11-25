@@ -136,6 +136,7 @@ The Record panel has two tabs at its top: **Record**, the record settings, and *
 - **Melody:** **pads** or **notes**: whether the clip's tune follows what its pads play now, or keeps its own notes. On a synth track, **›** converts a clip that follows the pads. See [Melody: Convert to notes](#melody-convert-to-notes) below.
 - **Continue:** carries the clip on for a few more bars. Either arrow opens the note editor on the clip with **Continue** open, and you hear the first try straight away; see [Continue](editing-notes.md#continue). The row says how many bars it adds (**+4 bars**), or why it can't: **no tune** on a clip of pad hits, **no notes** on an empty clip, **—** on a Loop track's cell.
 - **Phrase:** makes a phrase of your own from the clip's notes, for the arp. Either arrow opens the **Make a phrase** sheet in the card's place; see [Make a phrase](note-repeat-and-arp.md#make-a-phrase). The row reads **Make ›**, or why it can't, as Continue's does.
+- **Style:** makes a style of your own from how the clip is played, for every **Style** row. Either arrow opens the **Make a style** sheet in the card's place; see [Make a style](#make-a-style) below. The row reads **Make ›** on a clip with notes (drum clips too), **no notes** on an empty clip and **—** on a Loop track's cell.
 
 {{shot: clips-card-direction | The Clip tab's Direction row: Clip 1 plays its steps in reverse.}}
 
@@ -169,6 +170,29 @@ Hold **SHIFT** as you tap **›** for a bolder variation, about half the notes. 
 The row says **original** until you mutate, then **variant**. The clip keeps its original beside it, so tap **›** again for another variation of the original (not of the variation), as many times as you like. Tap **‹** (or press **–**) to **restore** the original: its notes, locks, length and knob moves come back as they were before the first Mutate, whatever you changed since. The clip's settings (speed, direction and the rest) stay as they are now.
 
 Each Mutate and Restore is a take ("Mutate 4 · variant 2", "Restore 5 · the original"), so **UNDO** steps back through them. The original is saved with the project, so Restore still works after you open it again. Mutate waits until a recording is done, and a clip with no notes, or a Loop track's cell, has nothing to mutate.
+
+### Make a style
+
+A groove you played can become a style of its own: Continue, Add a part and the arp's New idea then write in your feel. Pick the clip, open the **Clip** tab and step the **Style** row's arrows: the **Make a style** sheet opens in the card's place.
+
+{{shot: clips-make-style | Make a style, read from a two-bar drum groove: 16ths swung 56 %, the plan from Groove.}}
+
+At its top is the clip it was read from and a picture of its notes, each as tall as it is played. Under that, what MPFree heard in it:
+
+- **Feel:** 8ths, 16ths or triplets, and how far they swing.
+- **Busy:** about how many notes a bar (a chord counts once).
+- **Accents:** the steps you play louder, counted as a drummer counts ("on 1, the and of 2").
+- **Loudness:** your softest and loudest notes.
+- **Leans:** whether you play a little behind or ahead of the beat, in ms, or on the grid.
+
+Then two rows you can change before you keep it:
+
+- **Name:** tap it and type a name (up to 24 letters) on the keyboard. It starts as the clip's ("Clip 1 groove"). The built-in styles' names are taken.
+- **Plan:** the built-in style that lends the shape of the phrases and the habits of the chords (**Groove**, **Jazz-ish** or **Minimal**). It starts on the nearest to your clip. Your feel, busyness, accents and loudness stay your own whichever you pick.
+
+Turn the data wheel to pick a row; **–** and **+** step Plan, and on Name open the keyboard.
+
+**Keep** puts your style in every Style row, after Minimal, Groove and Jazz-ish: Continue's (in the note editor and on Steps), Add a part's and New idea's. It is kept with the song, so it is there when you open the song again, and **UNDO** takes it back. Keeping a style under a name you already have replaces that one; a song holds 16. **Back** (or **×**) closes the sheet and keeps nothing.
 
 ### Melody: Convert to notes
 

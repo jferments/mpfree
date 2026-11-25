@@ -73,7 +73,7 @@ impl Player {
             Box::new(ContinueAsk {
                 track,
                 slot,
-                settings: set.settings(set.q),
+                settings: set.settings(set.q, &self.time.styles),
                 kind: mpfree_compose::InstrumentKind::Percussive,
                 lanes,
                 scope: Scope::All,
@@ -98,13 +98,13 @@ impl Player {
         let out = match (w, e) {
             (sc::PANEL, EventKind::Step { index, delta }) if index < sc::ROWS => {
                 set.row = index;
-                let changed = set.step(sc::SET_ROWS[index], delta);
+                let changed = set.step(sc::SET_ROWS[index], delta, &self.time.styles);
                 self.steps_cont = Some(set);
                 if !changed {
                     self.refresh_steps_continue();
                     return None;
                 }
-                let said = set.said(sc::SET_ROWS[index]);
+                let said = set.said(sc::SET_ROWS[index], &self.time.styles);
                 self.tell(&format!("continue: {said}"));
                 self.steps_continue_ask()
             }
@@ -278,7 +278,7 @@ impl Player {
             .map(|r| {
                 (
                     mpfree_time_ui::editor::compose::CONTINUE_ROWS[sc::SET_ROWS[r]].to_string(),
-                    set.value(sc::SET_ROWS[r]),
+                    set.value(sc::SET_ROWS[r], &self.time.styles),
                 )
             })
             .collect();
