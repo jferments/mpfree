@@ -670,6 +670,8 @@ pub struct ClipGrid {
     /// Perform's big rows (sequencer decision 5, mockup C): five rows of
     /// [`ROW_MIN_H`] with rings and countdowns. Off (Make), the rows are
     /// compact, [`ROW_MIN_H_MAKE`], eight in view with names and lengths.
+    /// On, nothing on the grid drags: a clip or a row's number acts on the
+    /// lift only while the finger is still on it.
     pub big: bool,
     /// The scene card, open over the grid (the Arrange refactor's 5.2):
     /// it takes the grid's touches while it is.
@@ -752,7 +754,7 @@ struct Grip {
     edge: Option<(usize, Instant)>,
 }
 
-/// A finger moves this far before what it holds lifts.
+/// A finger moves this far before what it holds lifts (Make only).
 const LIFT_PX: i32 = 12;
 /// Held this close to the grid's edge, a dragged clip pages the tracks or
 /// scrolls the rows, again every [`EDGE_REPEAT`] while it stays there.
