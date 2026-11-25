@@ -358,6 +358,10 @@ struct FileRec {
     take: bool,
     /// Its file's name (`NAME_ID.wav`, or the name a project gave it).
     name: String,
+    /// The work folder its files were made in (None: a project opened
+    /// it). Recording may have moved to another folder since
+    /// ([`Files::start`]); its part file stays here.
+    dir: Option<PathBuf>,
     /// The finished file, once saved (or as a project opened it).
     path: Option<PathBuf>,
     /// Frames the writer took for it (or the opened file holds).
@@ -441,6 +445,10 @@ pub(crate) struct Files {
     /// Loop layers' files written in the work folder ([`LayerWrite`]):
     /// each name and path, until a save holds it.
     layer_files: Vec<(String, PathBuf)>,
+    /// The work folders recorded into before this one ([`Files::start`]
+    /// again: the SD card's opened): a save takes files over from them
+    /// too.
+    was: Vec<PathBuf>,
 }
 
 impl Files {
@@ -457,6 +465,7 @@ impl Files {
             problems: Vec::new(),
             armed: Arc::new(AtomicU64::new(0)),
             layer_files: Vec::new(),
+            was: Vec::new(),
         }
     }
 
@@ -519,13 +528,44 @@ impl Files {
         self.writing.is_some()
     }
 
+    /// While the writer runs: the folder it records into, and how long its
+    /// rounds that wrote to the drive took (its sync times).
+    pub fn syncs(&self) -> Option<(&Path, mpfree_stream::times::Summary)> {
+        let w = self.writing.as_ref()?;
+        Some((w.dir.as_path(), w.rec.stats().syncs))
+    }
+
     /// Record into `dir` from now on (made if missing), the writer's
     /// rounds waiting for playback's reads through `gate` (the stream
     /// coordinator's, while takes play from their files).
+    ///
+    /// Again, to move to another folder: the writer before closes, once
+    /// the audio thread has seen every take finished and the armed files
+    /// gone ([`crate::host::AudioHost::record_to`]). Should one still be
+    /// in it, it is left as a recording for the next start's recovery,
+    /// and forgotten here (its number was that writer's).
     pub fn start(&mut self, dir: PathBuf, cfg: WriterConfig, gate: Arc<Gate>) -> io::Result<()> {
         std::fs::create_dir_all(&dir)?;
         if let Some(old) = self.writing.take() {
             old.rec.close();
+            let Files {
+                recs,
+                watch,
+                problems,
+                was,
+                ..
+            } = self;
+            for f in recs.iter_mut() {
+                if f.no.take().is_some() && f.take {
+                    watch.take_gone(track_subject(f.track), &mut |r| {
+                        problems.push(Problem::of(r))
+                    });
+                }
+            }
+            recs.retain(|f| f.take);
+            if old.dir != dir && !was.contains(&old.dir) {
+                was.push(old.dir);
+            }
         }
         let rec = Recorder::start(
             Box::new(StdFs::new()),
@@ -577,6 +617,7 @@ impl Files {
             no: Some(no),
             take: false,
             name: file_name(name.as_str(), rec),
+            dir: Some(w.dir.clone()),
             path: None,
             frames: 0,
             shown: None,
@@ -695,6 +736,7 @@ impl Files {
             no: None,
             take: true,
             name,
+            dir: None,
             path,
             frames,
             shown: Some(FileView::SAVED),
@@ -789,7 +831,7 @@ impl Files {
                             Growing::Open {
                                 take: id,
                                 rec: f.rec,
-                                path: recording_path(&w.dir, stem),
+                                path: recording_path(f.dir.as_deref().unwrap_or(&w.dir), stem),
                                 channels: ch,
                                 frames: to,
                             }
@@ -867,9 +909,13 @@ impl Files {
                         // recorded: what the file holds comes from there,
                         // and the tracks fill in the rest from memory.
                         let stem = f.name.strip_suffix(".wav").unwrap_or(&f.name);
-                        let path = f.path.clone().or_else(|| {
-                            self.writing.as_ref().map(|w| recording_path(&w.dir, stem))
-                        });
+                        let path = f
+                            .path
+                            .clone()
+                            .or_else(|| f.dir.as_ref().map(|d| recording_path(d, stem)))
+                            .or_else(|| {
+                                self.writing.as_ref().map(|w| recording_path(&w.dir, stem))
+                            });
                         let read = match path {
                             Some(p) => read_frames(&p, k.channels, &mut k.audio),
                             None => Err("it has no file".into()),
@@ -904,7 +950,13 @@ impl Files {
     /// holds a file of are read from there from now on, and their copies
     /// in the work folder go (the project's are safe on the stick now).
     pub fn saved_into(&mut self, dir: &Path) {
-        let work = self.writing.as_ref().map(|w| w.dir.clone());
+        // The work folder, and any recorded into before it this run.
+        let work = self.writing.as_ref().map(|w| w.dir.as_path());
+        let was = &self.was;
+        let in_work = |p: &Path| {
+            p.parent()
+                .is_some_and(|d| Some(d) == work || was.iter().any(|w| w == d))
+        };
         for f in &mut self.recs {
             let Some(name) = f.saved_as.as_ref() else {
                 continue;
@@ -913,8 +965,8 @@ impl Files {
             if !std::fs::symlink_metadata(&there).is_ok_and(|m| m.is_file()) {
                 continue;
             }
-            if let (Some(old), Some(work)) = (&f.path, &work) {
-                if old.parent() == Some(work.as_path()) && *old != there && f.no.is_none() {
+            if let Some(old) = &f.path {
+                if in_work(old) && *old != there && f.no.is_none() {
                     let _ = std::fs::remove_file(old);
                 }
             }
@@ -929,8 +981,7 @@ impl Files {
         for (name, path) in &mut self.layer_files {
             let there = dir.join(&*name);
             let held = std::fs::symlink_metadata(&there).is_ok_and(|m| m.is_file());
-            let in_work = work.as_deref().is_some_and(|w| path.parent() == Some(w));
-            if !held || *path == there || !in_work {
+            if !held || *path == there || !in_work(path) {
                 continue;
             }
             let _ = std::fs::remove_file(&*path);
@@ -1624,6 +1675,7 @@ mod tests {
             no: None,
             take: true,
             name: format!("Vocal_{n}.wav"),
+            dir: None,
             path,
             frames: 300,
             shown: None,

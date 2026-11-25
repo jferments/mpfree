@@ -36,6 +36,30 @@
 //!   answer comes once it is all in the cache, or at once if it can't be
 //!   held, and again if it is given back for room before the cue lets it
 //!   go (the audio tracks rethink's phase 2, "Cues wait for their audio").
+//! - **Devices**: files under a folder on another drive (the SD card's
+//!   mount point, [`Stream::add_device`]) read on an I/O thread of their
+//!   own, and the recording writer there waits only for playback's reads
+//!   from that drive ([`Stream::gate_for`]): a stick that stalls holds up
+//!   nothing on the card (the SD card plan's S2b, phase B2).
+//! - **Cards**: each opening of the SD card is a numbered insertion
+//!   ([`Stream::card`]), and every take under its folder opens through
+//!   it (`Coordinator::open_located`): once the card goes, nothing more
+//!   is read for those takes and what is in the cache plays out. A cue
+//!   still waiting for their audio is short at once, and their regions'
+//!   starts are not held again while the card is out. When the card opens
+//!   again (a new insertion), each finished take that went with it opens
+//!   again from the same file, checked as any open is: its regions' starts
+//!   are held again from it, a cue already held for it is given back (its
+//!   audio went with the old source), and the host moves the take to the
+//!   new generation ([`crate::Command::Refile`]). A take still
+//!   being written when its card went stays away (the SD card plan's
+//!   phase B2c says what becomes of it). Whether the card is the same one
+//!   is told by the file alone for now: its path and layout (phase B2c
+//!   adds the card's marker and serial). (Phase B2a.)
+//! - **Timings**: every [`LOOK`] each drive's reads (how long they take:
+//!   the median, the slowest 1 in 100 and 1 in 1,000, the worst; how many
+//!   wait) go on a board the worker's recording syncs share
+//!   ([`Timings`]), for Dev and the device rounds' logs (phase B2a).
 //! - **System status**: every [`LOOK`] the coordinator's admission (Streaming
 //!   at limit, while not even the least safe read-ahead fits) and the
 //!   sources whose card went (Card removed) go through a [`Watch`] to the
@@ -44,14 +68,19 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, TryRecvError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use mpfree_stream::coord::{Coordinator, HoldId, HoldTier, IoThread, JobId, JobTier, Plan};
+use mpfree_stream::coord::{
+    Coordinator, DriveTimes, HoldId, HoldTier, IoThread, JobId, JobTier, Plan,
+};
 use mpfree_stream::format::Layout;
 use mpfree_stream::msg::MAX_SOURCES;
 use mpfree_stream::player::{Config, Player, UNIT};
+use mpfree_stream::policy::Device as Place;
 use mpfree_stream::status::Watch;
+use mpfree_stream::storage::{Card, CardHandle, Located};
+use mpfree_stream::times::Summary;
 use mpfree_stream::writer::Gate;
 
 use crate::RecordingId;
@@ -182,6 +211,20 @@ pub(crate) enum ToStream {
     LetCueGo {
         cue: u32,
     },
+    /// Files under `root` opened from now on read on `dev`, and `gate`
+    /// carries playback's cushion on that drive ([`Stream::add_device`]).
+    Device {
+        root: PathBuf,
+        dev: Box<IoThread>,
+        gate: Arc<Gate>,
+    },
+    /// The card at `root` from now on: takes under it open through this
+    /// insertion, and those that went with an earlier one open again
+    /// ([`Stream::card`]).
+    Card {
+        root: PathBuf,
+        card: Card,
+    },
 }
 
 /// The start of a region of a take on its file, to hold in the cache:
@@ -253,10 +296,101 @@ pub(crate) struct Read {
     pub bytes: Result<Vec<u8>, String>,
 }
 
+/// How long each drive's reads and the recording's syncs take, for Dev
+/// and the device rounds' logs (the SD card plan's B2a): the stream thread
+/// sets the reads every [`LOOK`], the worker the syncs as the writer runs
+/// ([`crate::host::AudioHost::timings`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Timings {
+    /// Each drive's reads, the stick first.
+    pub reads: Vec<DriveTimes>,
+    /// The recording writer's syncs, while it runs.
+    pub syncs: Option<Syncs>,
+}
+
+/// The recording writer's syncs: the rounds that wrote to its drive.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Syncs {
+    /// The folder it records into, and whether that is on the SD card.
+    pub dir: PathBuf,
+    pub on_card: bool,
+    pub times: Summary,
+}
+
+/// [`Timings`] shared between the threads that set them and the host.
+pub(crate) type Board = Arc<Mutex<Timings>>;
+
 /// The ends the worker keeps.
 pub(crate) struct Stream {
     pub tx: Sender<ToStream>,
+    /// Playback's cushion on the first drive (the stick).
     pub gate: Arc<Gate>,
+    /// Folders on a drive of their own, each with playback's cushion
+    /// there.
+    devices: Vec<(PathBuf, Arc<Gate>)>,
+    /// The card last given at each folder, and how many insertions so far.
+    cards: Vec<(PathBuf, Card)>,
+    insertions: u32,
+}
+
+impl Stream {
+    /// Files under `root` (a folder on another drive: the SD card's mount
+    /// point) read on an I/O thread of their own from now on (those opened
+    /// after this), and a recording writer there gets that drive's gate.
+    /// A root given again changes nothing. If its thread can't start, its
+    /// files read on the first drive's, as before.
+    pub fn add_device(&mut self, root: PathBuf) -> io::Result<()> {
+        if self.devices.iter().any(|(r, _)| *r == root) {
+            return Ok(());
+        }
+        // Thread names are cut at 15 characters: "mpfree-at-io-1".
+        let dev = IoThread::start(&format!("mpfree-at-io-{}", self.devices.len() + 1))?;
+        let gate = Arc::new(Gate::new());
+        self.devices.push((root.clone(), gate.clone()));
+        let _ = self.tx.send(ToStream::Device {
+            root,
+            dev: Box::new(dev),
+            gate,
+        });
+        Ok(())
+    }
+
+    /// The card opened at `card.root()` (its mount point): a drive of
+    /// its own ([`Stream::add_device`]), and a new insertion, numbered
+    /// apart from every earlier one, so takes under it read only while it
+    /// holds and those that went with the last one open again. The same
+    /// opening given again (the slot heard it again) changes nothing.
+    /// Its drive's thread failing to start is said, but the card counts
+    /// all the same.
+    pub fn card(&mut self, handle: Arc<dyn CardHandle>) -> io::Result<()> {
+        let root = handle.root().to_path_buf();
+        let at = self.cards.iter().position(|(r, _)| *r == root);
+        if at.is_some_and(|i| Arc::ptr_eq(&self.cards[i].1.handle, &handle)) {
+            return Ok(());
+        }
+        let thread = self.add_device(root.clone());
+        self.insertions += 1;
+        let card = Card {
+            handle,
+            insertion: self.insertions,
+        };
+        match at {
+            Some(i) => self.cards[i].1 = card.clone(),
+            None => self.cards.push((root.clone(), card.clone())),
+        }
+        let _ = self.tx.send(ToStream::Card { root, card });
+        thread
+    }
+
+    /// The gate of the drive `dir` is on: playback's cushion there, which
+    /// a recording writer in `dir` waits for.
+    pub fn gate_for(&self, dir: &Path) -> Arc<Gate> {
+        self.devices
+            .iter()
+            .filter(|(r, _)| dir.starts_with(r))
+            .max_by_key(|(r, _)| r.components().count())
+            .map_or_else(|| self.gate.clone(), |(_, g)| g.clone())
+    }
 }
 
 /// Start the stream layer for tracks at `rate`: the player (for the audio
@@ -267,6 +401,7 @@ pub(crate) fn start(
     cfg: StreamConfig,
     answer: impl Fn(FromStream) -> bool + Send + 'static,
     read: impl Fn(Read) -> bool + Send + 'static,
+    board: Board,
 ) -> io::Result<(Box<Player>, Stream)> {
     let plan = Plan { rate, ..cfg.plan };
     let (player, rx, tx) = Player::new(cfg.cache);
@@ -276,8 +411,17 @@ pub(crate) fn start(
     let (to, jobs) = channel::<ToStream>();
     std::thread::Builder::new()
         .name("mpfree-at-stream".into())
-        .spawn(move || run(rate, coord, &jobs, answer, read))?;
-    Ok((Box::new(player), Stream { tx: to, gate }))
+        .spawn(move || run(rate, coord, &jobs, answer, read, board))?;
+    Ok((
+        Box::new(player),
+        Stream {
+            tx: to,
+            gate,
+            devices: Vec::new(),
+            cards: Vec::new(),
+            insertions: 0,
+        },
+    ))
 }
 
 /// The stream thread: the coordinator stepped as often as it has work,
@@ -288,6 +432,7 @@ fn run(
     jobs: &Receiver<ToStream>,
     answer: impl Fn(FromStream) -> bool,
     read: impl Fn(Read) -> bool,
+    board: Board,
 ) {
     let mut s = Side {
         rate,
@@ -297,6 +442,9 @@ fn run(
         reading: Vec::new(),
         heads: Vec::new(),
         cues: Vec::new(),
+        cards: Vec::new(),
+        on_card: vec![None; MAX_SOURCES],
+        board,
         watch: Watch::new(),
         looked: Instant::now(),
     };
@@ -346,13 +494,55 @@ struct Side {
     recs: Vec<RecordingId>,
     /// Whole-file reads under way: the worker's job, the coordinator's.
     reading: Vec<(u32, JobId)>,
-    /// The holds on regions' starts.
-    heads: Vec<HoldId>,
+    /// The holds on regions' starts, and what each holds: a take's frames
+    /// `from..to`.
+    heads: Vec<(HoldId, (u16, u64, u64))>,
     /// The holds for cues waiting for their audio.
     cues: Vec<CueHold>,
+    /// The card at each folder ([`ToStream::Card`]).
+    cards: Vec<(PathBuf, Card)>,
+    /// Each source opened from a card: what it was opened as, so it can
+    /// open again once its card is back.
+    on_card: Vec<Option<OnCard>>,
+    /// Where each drive's read timings go.
+    board: Board,
     /// What System status was last told, and when.
     watch: Watch,
     looked: Instant,
+}
+
+/// A take's file opened from the card, as it was opened.
+#[derive(Clone, Debug)]
+struct OnCard {
+    era: u32,
+    take: u16,
+    rec: RecordingId,
+    gen: u32,
+    path: PathBuf,
+    channels: usize,
+    /// Its frames once finished; None while it is still being written.
+    frames: Option<usize>,
+    /// Its card went: nothing more is read for it.
+    away: bool,
+}
+
+/// The card whose folder holds `path` (the deepest, if folders nest).
+fn card_of<'a>(cards: &'a [(PathBuf, Card)], path: &Path) -> Option<&'a Card> {
+    cards
+        .iter()
+        .filter(|(r, _)| path.starts_with(r))
+        .max_by_key(|(r, _)| r.components().count())
+        .map(|(_, c)| c)
+}
+
+/// `path` on `card`, as the coordinator opens a file the storage manager
+/// found.
+fn located(path: &Path, card: &Card) -> Located {
+    Located {
+        path: path.to_path_buf(),
+        device: Place::Card,
+        card: Some(card.clone()),
+    }
 }
 
 impl Side {
@@ -363,11 +553,23 @@ impl Side {
             return true;
         }
         self.looked = Instant::now();
-        let mut lost = 0;
-        while self.c.lost().is_some() {
-            lost += 1;
+        if let Ok(mut t) = self.board.lock() {
+            t.reads = self.c.drives();
         }
-        let mut live = true;
+        let (mut lost, mut live) = (0, true);
+        while let Some(tag) = self.c.lost() {
+            lost += 1;
+            let away = self
+                .on_card
+                .get_mut(usize::from(tag.source))
+                .and_then(Option::as_mut)
+                .filter(|o| o.gen == tag.gen);
+            if let Some(o) = away {
+                o.away = true;
+                // Nothing that waits for it can come now.
+                live &= self.let_go_of(tag.source, true, answer);
+            }
+        }
         let mut tell = |r| live &= answer(FromStream::Problem(r));
         self.watch.admission(&self.c.admission(), &mut tell);
         self.watch.card_lost(lost, &mut tell);
@@ -420,7 +622,14 @@ impl Side {
                 channels,
                 frames,
             } => match self.grow(take, rec, frames as u64) {
-                Some(Ok(())) => true,
+                Some(Ok(())) => {
+                    let t = usize::from(take);
+                    if let Some(o) = self.on_card[t].as_mut().filter(|o| o.rec == rec) {
+                        o.path = path;
+                        o.frames = Some(frames);
+                    }
+                    true
+                }
                 Some(Err(why)) => answer(FromStream::Failed {
                     era,
                     take,
@@ -430,9 +639,18 @@ impl Side {
                 None => answer(self.open(era, take, rec, &path, channels, Some(frames))),
             },
             ToStream::Close { take, gen } => {
-                if self.gens.get(usize::from(take)) == Some(&gen) {
+                let t = usize::from(take);
+                if self.gens.get(t) == Some(&gen) {
                     self.c.close(take);
-                    self.gens[usize::from(take)] = 0;
+                    self.gens[t] = 0;
+                }
+                if self
+                    .on_card
+                    .get(t)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|o| o.gen == gen)
+                {
+                    self.on_card[t] = None;
                 }
                 true
             }
@@ -442,6 +660,7 @@ impl Side {
                 self.gens.fill(0);
                 self.heads.clear();
                 self.cues.clear();
+                self.on_card.fill(None);
                 true
             }
             ToStream::Heads(heads) => {
@@ -453,7 +672,24 @@ impl Side {
                 self.let_cue_go(cue);
                 true
             }
-            ToStream::Read { job, path } => match self.c.read_file(&path, JobTier::Background) {
+            ToStream::Device { root, dev, gate } => {
+                self.c.add_device(root, dev, gate);
+                true
+            }
+            ToStream::Card { root, card } => {
+                let back = card.valid();
+                match self.cards.iter_mut().find(|(r, _)| *r == root) {
+                    Some((_, c)) => *c = card,
+                    None => self.cards.push((root.clone(), card)),
+                }
+                !back || self.reopen(&root, answer)
+            }
+            ToStream::Read { job, path } => match match card_of(&self.cards, &path) {
+                Some(card) => self
+                    .c
+                    .read_located(&located(&path, card), JobTier::Background),
+                None => self.c.read_file(&path, JobTier::Background),
+            } {
                 Ok(id) => {
                     self.reading.push((job, id));
                     true
@@ -464,6 +700,93 @@ impl Side {
                 }),
             },
         }
+    }
+
+    /// Whether take `take`'s source is open and can be read: not one
+    /// whose card went.
+    fn playable(&self, take: u16) -> bool {
+        let t = usize::from(take);
+        self.gens.get(t).is_some_and(|&g| g > 0)
+            && !self.on_card[t].as_ref().is_some_and(|o| o.away)
+    }
+
+    /// The cues that need take `take`'s audio go, and the host hears each:
+    /// those still waiting for it are short, and unless `waiting_only`,
+    /// those already held are given back (as when its source is
+    /// replaced). False once the answer can't go.
+    fn let_go_of(
+        &mut self,
+        take: u16,
+        waiting_only: bool,
+        answer: &impl Fn(FromStream) -> bool,
+    ) -> bool {
+        let mut live = true;
+        let mut i = 0;
+        while i < self.cues.len() {
+            let h = &self.cues[i];
+            if !h.parts.iter().any(|p| p.0 == take) || (waiting_only && h.ready) {
+                i += 1;
+                continue;
+            }
+            let h = self.cues.remove(i);
+            for id in h.ids {
+                self.c.release_hold(id);
+            }
+            live &= answer(if h.ready {
+                FromStream::CueGivenBack { cue: h.cue }
+            } else {
+                FromStream::CueShort { cue: h.cue }
+            });
+        }
+        live
+    }
+
+    /// The card at `root` is back (a new insertion): each finished take
+    /// that went with it opens again from its file, checked as any open
+    /// is, and the host hears each answer. One that doesn't open (not on
+    /// this card) stays away for the next. False once the answer can't go.
+    fn reopen(&mut self, root: &Path, answer: &impl Fn(FromStream) -> bool) -> bool {
+        let back: Vec<OnCard> = self
+            .on_card
+            .iter()
+            .flatten()
+            .filter(|o| o.away && o.frames.is_some() && o.path.starts_with(root))
+            .cloned()
+            .collect();
+        let mut short = false;
+        for o in back {
+            // Its holds go with the old source: the cues' for good, and the
+            // regions' starts to be held again from the new one.
+            let mut starts = Vec::new();
+            let c = &mut self.c;
+            self.heads.retain(|&(id, part)| {
+                let keep = part.0 != o.take;
+                if !keep {
+                    c.release_hold(id);
+                    starts.push(part);
+                }
+                keep
+            });
+            if !self.let_go_of(o.take, false, answer)
+                || !answer(self.open(o.era, o.take, o.rec, &o.path, o.channels, o.frames))
+            {
+                return false;
+            }
+            if starts.is_empty() {
+                continue;
+            }
+            match self.playable(o.take) {
+                true => match self.c.hold_all(&starts, None, HoldTier::Head) {
+                    Ok(ids) => self.heads.extend(ids.into_iter().zip(starts)),
+                    Err(_) => short = true,
+                },
+                false => short = true,
+            }
+        }
+        !short
+            || answer(FromStream::HeadsGivenBack {
+                held: self.heads.len(),
+            })
     }
 
     /// Grow take `take`'s source, if it is recording `rec`'s file opened
@@ -483,10 +806,7 @@ impl Side {
         answer: &impl Fn(FromStream) -> bool,
     ) -> bool {
         self.let_cue_go(cue);
-        let open = |&(take, ..): &(u16, u64, u64)| {
-            self.gens.get(usize::from(take)).is_some_and(|&g| g > 0)
-        };
-        if !parts.iter().all(open) {
+        if !parts.iter().all(|&(take, ..)| self.playable(take)) {
             return answer(FromStream::CueShort { cue });
         }
         match self.c.hold_all(&parts, None, HoldTier::Cued) {
@@ -553,11 +873,11 @@ impl Side {
         // Holds given back before now were the old heads' (or a cue's,
         // whose host hears it).
         while let Some(id) = self.c.given_back() {
-            if !self.heads.contains(&id) {
+            if !self.heads.iter().any(|&(h, _)| h == id) {
                 self.cue_given_back(id, answer);
             }
         }
-        for id in self.heads.drain(..) {
+        for (id, _) in self.heads.drain(..) {
             self.c.release_hold(id);
         }
         let mut parts = Vec::with_capacity(HEADS_A_HOLD);
@@ -566,11 +886,13 @@ impl Side {
             parts.extend(
                 group
                     .iter()
-                    .filter(|h| self.gens.get(usize::from(h.take)).is_some_and(|&g| g > 0))
+                    .filter(|h| self.playable(h.take))
                     .map(|h| (h.take, h.from, h.to)),
             );
             match self.c.hold_all(&parts, None, HoldTier::Head) {
-                Ok(ids) => self.heads.extend(ids),
+                Ok(ids) => self
+                    .heads
+                    .extend(ids.into_iter().zip(parts.iter().copied())),
                 Err(_) => break,
             }
         }
@@ -583,9 +905,9 @@ impl Side {
     fn heads_given_back(&mut self, answer: &impl Fn(FromStream) -> bool) -> bool {
         let mut gone = false;
         while let Some(id) = self.c.given_back() {
-            if self.heads.contains(&id) {
+            if self.heads.iter().any(|&(h, _)| h == id) {
                 gone = true;
-                self.heads.retain(|&h| h != id);
+                self.heads.retain(|&(h, _)| h != id);
             } else if !self.cue_given_back(id, answer) {
                 return false;
             }
@@ -625,7 +947,11 @@ impl Side {
         channels: usize,
         frames: Option<usize>,
     ) -> FromStream {
-        let tag = match self.c.open(take, path) {
+        let opened = match card_of(&self.cards, path) {
+            Some(card) => self.c.open_located(take, &located(path, card), false),
+            None => self.c.open(take, path),
+        };
+        let tag = match opened {
             Ok(tag) => tag,
             Err(why) => {
                 return FromStream::Failed {
@@ -636,7 +962,7 @@ impl Side {
                 }
             }
         };
-        self.opened(era, take, rec, tag.gen, channels, frames)
+        self.opened(era, take, rec, path, tag.gen, channels, frames)
     }
 
     /// Open take `take`'s file at `path`, still being written, as its
@@ -651,8 +977,14 @@ impl Side {
         channels: usize,
         frames: u64,
     ) -> FromStream {
-        match self.c.open_growing(take, path, frames) {
-            Ok(tag) => self.opened(era, take, rec, tag.gen, channels, None),
+        let opened = match card_of(&self.cards, path) {
+            Some(card) => self
+                .c
+                .open_located_growing(take, &located(path, card), frames),
+            None => self.c.open_growing(take, path, frames),
+        };
+        match opened {
+            Ok(tag) => self.opened(era, take, rec, path, tag.gen, channels, None),
             Err(why) => FromStream::Failed {
                 era,
                 take,
@@ -662,14 +994,17 @@ impl Side {
         }
     }
 
-    /// Take `take`'s file just opened as generation `gen`: kept if it has
-    /// `channels` and `frames` (when given: a finished file) at the
-    /// tracks' rate, else closed.
+    /// Take `take`'s file at `path` just opened as generation `gen`: kept
+    /// if it has `channels` and `frames` (when given: a finished file) at
+    /// the tracks' rate, else closed. One on the card is remembered as it
+    /// was opened, to open again if its card goes and comes back.
+    #[allow(clippy::too_many_arguments)]
     fn opened(
         &mut self,
         era: u32,
         take: u16,
         rec: RecordingId,
+        path: &Path,
         gen: u32,
         channels: usize,
         frames: Option<usize>,
@@ -692,6 +1027,16 @@ impl Side {
         }
         self.gens[t] = gen;
         self.recs[t] = rec;
+        self.on_card[t] = card_of(&self.cards, path).map(|_| OnCard {
+            era,
+            take,
+            rec,
+            gen,
+            path: path.to_path_buf(),
+            channels,
+            frames,
+            away: false,
+        });
         FromStream::Open {
             era,
             take,
@@ -699,5 +1044,97 @@ impl Side {
             gen,
             growing: frames.is_none(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A folder given a drive of its own gets its own gate (and its own
+    /// I/O thread, sent once to the stream thread); everything else keeps
+    /// the first drive's.
+    #[test]
+    fn a_folder_on_another_drive_gets_its_own_gate_once() {
+        let (tx, rx) = channel();
+        let first = Arc::new(Gate::new());
+        let mut st = Stream {
+            tx,
+            gate: first.clone(),
+            devices: Vec::new(),
+            cards: Vec::new(),
+            insertions: 0,
+        };
+        let card = PathBuf::from("/run/mpfree-sd");
+        assert!(Arc::ptr_eq(
+            &st.gate_for(&card.join("MPFree/.work/audiotracks")),
+            &first
+        ));
+        st.add_device(card.clone()).expect("its thread starts");
+        st.add_device(card.clone()).expect("given again");
+        let sent: Vec<ToStream> = rx.try_iter().collect();
+        assert_eq!(sent.len(), 1, "one device, sent once");
+        let ToStream::Device { root, gate, .. } = &sent[0] else {
+            panic!("not a device");
+        };
+        assert_eq!(*root, card);
+        let there = st.gate_for(&card.join("MPFree/.work/audiotracks"));
+        assert!(Arc::ptr_eq(&there, gate));
+        assert!(!Arc::ptr_eq(&there, &first));
+        // The stick's folder, and a folder that only starts with the same
+        // letters, stay on the first drive.
+        assert!(Arc::ptr_eq(
+            &st.gate_for(Path::new("/run/mpfree-data/library/.work/audiotracks")),
+            &first
+        ));
+        assert!(Arc::ptr_eq(
+            &st.gate_for(Path::new("/run/mpfree-sd-other/x")),
+            &first
+        ));
+    }
+
+    /// Each opening of the card is a new insertion, numbered apart from
+    /// the last; the same opening heard again is not; the drive's thread
+    /// starts once.
+    #[test]
+    fn each_opening_of_the_card_is_a_new_insertion_and_one_heard_twice_is_not() {
+        use mpfree_stream::storage::Lease;
+        let (tx, rx) = channel();
+        let mut st = Stream {
+            tx,
+            gate: Arc::new(Gate::new()),
+            devices: Vec::new(),
+            cards: Vec::new(),
+            insertions: 0,
+        };
+        let root = PathBuf::from("/run/mpfree-sd");
+        let first = Lease::new(&root);
+        st.card(first.clone()).expect("its thread starts");
+        st.card(first.clone()).expect("heard again");
+        first.revoke();
+        let second = Lease::new(&root);
+        st.card(second.clone()).expect("opened again");
+        let sent: Vec<ToStream> = rx.try_iter().collect();
+        let said: Vec<String> = sent
+            .iter()
+            .map(|m| match m {
+                ToStream::Device { root, .. } => format!("device {}", root.display()),
+                ToStream::Card { root, card } => format!(
+                    "card {} #{} {}",
+                    root.display(),
+                    card.insertion,
+                    if card.valid() { "holds" } else { "gone" }
+                ),
+                _ => "other".into(),
+            })
+            .collect();
+        assert_eq!(
+            said,
+            [
+                "device /run/mpfree-sd",
+                "card /run/mpfree-sd #1 gone",
+                "card /run/mpfree-sd #2 holds",
+            ]
+        );
     }
 }

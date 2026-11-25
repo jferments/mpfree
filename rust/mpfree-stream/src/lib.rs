@@ -38,6 +38,8 @@
 //! - [`flac`]: FLAC as a compressed source: its seek index (its own seek
 //!   table only if it checks out, else built), any run of frames decoded
 //!   into the cache's units, every jump checked.
+//! - [`times`]: how long each drive's reads and syncs take (median, the
+//!   slowest 1 in 100 and 1 in 1,000, the worst), for Dev and the logs.
 //! - [`status`]: what the musician is told: the layer's states turned into
 //!   System status reports (the Storage kinds), each change once.
 
@@ -65,4 +67,5 @@ pub mod status;
 pub mod storage;
 #[cfg(feature = "testkit")]
 pub mod testkit;
+pub mod times;
 pub mod writer;

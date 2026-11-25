@@ -43,6 +43,7 @@ use std::time::{Duration, Instant};
 use crate::fsio::Fs;
 use crate::player::UNIT;
 use crate::rec::{Meta, RecFormat, RecId, Take, TakeState, TakeStats, Why};
+use crate::times::{Summary, Times};
 
 /// Seconds since some start.
 pub trait Clock: Send + Sync {
@@ -186,6 +187,9 @@ pub struct WriterStats {
     /// they had waited the longest allowed.
     pub waited: u64,
     pub forced: u64,
+    /// How long the rounds that touched the drive took (a checkpoint's
+    /// writes and syncs, or a finish): the drive's sync times.
+    pub syncs: Summary,
 }
 
 /// How often a round waiting for playback looks again.
@@ -220,6 +224,8 @@ pub struct Writer {
     takes: Vec<Entry>,
     /// The last rounds' times (those that touched the stick).
     took: VecDeque<f64>,
+    /// How long every round that touched the drive took.
+    syncs: Times,
     on_time: u32,
     stats: WriterStats,
 }
@@ -239,6 +245,7 @@ impl Writer {
             interval: cfg.interval_s,
             takes: Vec::new(),
             took: VecDeque::with_capacity(MEASURED),
+            syncs: Times::default(),
             on_time: 0,
             stats: WriterStats::default(),
         }
@@ -250,7 +257,10 @@ impl Writer {
     }
 
     pub fn stats(&self) -> WriterStats {
-        self.stats
+        WriterStats {
+            syncs: self.syncs.summary(),
+            ..self.stats
+        }
     }
 
     /// The worst commit time: the longest of the last 64 rounds that
@@ -527,6 +537,7 @@ impl Writer {
                 self.took.pop_front();
             }
             self.took.push_back(took);
+            self.syncs.add(took);
         }
         if t0 - due > self.interval || took > self.interval {
             self.stats.late += 1;

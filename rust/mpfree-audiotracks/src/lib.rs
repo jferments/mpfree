@@ -120,7 +120,7 @@ use std::fmt;
 use save::{Saved, TakeFile, TrackFile};
 
 use mpfree_stream::msg::{Place, MAX_CURSORS, MAX_SOURCES};
-use mpfree_stream::player::Player;
+use mpfree_stream::player::{Gaps, Lead, Player};
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_transport::transport::MAX_PERIOD;
 use mpfree_transport::{Block, Mark, Span, State, TransactionId};
@@ -376,6 +376,16 @@ pub enum Command {
         rec: RecordingId,
         gen: u32,
         growing: bool,
+    },
+    /// Take `take`'s file opened again, the same file, under generation
+    /// `gen` (its SD card went and came back): a take playing from its
+    /// file, or partly, plays from the new generation from now on, and
+    /// nothing else about it changes. `rec` is the take's lasting id, as
+    /// for [`Command::OnFile`]. Refused for a take not on its file at all.
+    Refile {
+        take: u16,
+        rec: RecordingId,
+        gen: u32,
     },
 }
 
@@ -712,7 +722,13 @@ struct Take {
     /// [`Stats::missed`]), and the song tick of the latest.
     missed: u64,
     miss_tick: f64,
+    /// How what it last played from its file ended, and the frame after
+    /// it: a read from there goes on from it ([`Take::add_from_file`]).
+    after: (u64, Lead),
 }
+
+/// [`Take::after`] with nothing to go on from.
+const CLEAR: (u64, Lead) = (u64::MAX, Lead::Clear);
 
 const NO_TAKE: Take = Take {
     live: false,
@@ -733,6 +749,7 @@ const NO_TAKE: Take = Take {
     store: Store::Pool,
     missed: 0,
     miss_tick: 0.0,
+    after: CLEAR,
 };
 
 impl Take {
@@ -774,7 +791,16 @@ impl Take {
     /// holds what is read), for its frames below `end` (its length, or
     /// where its pool part starts). Gives the frames that played silence
     /// for want of them: not in the cache yet, or the source not open at
-    /// `gen` with the take's channels and those frames (or no player).
+    /// `gen` with the take's channels and those frames (or no player);
+    /// and how what it played ended, for [`Take::after`].
+    ///
+    /// Sound never clicks as it goes missing or comes back (the SD card
+    /// plan's B2a): it fades out over [`mpfree_stream::player::DECLICK`]
+    /// frames before frames missing from the cache, or, when they start a
+    /// read, dies away over them from the last frame played; and it fades
+    /// in after them, also when they ended the last read
+    /// ([`Gaps::smooth`]). Frames with no gap near play as they are, bit
+    /// for bit.
     #[allow(clippy::too_many_arguments)]
     fn add_from_file(
         &self,
@@ -786,35 +812,43 @@ impl Take {
         out: &mut [f32],
         scratch: &mut [f32],
         gain: &impl Fn(usize) -> f32,
-    ) -> u64 {
+    ) -> (u64, (u64, Lead)) {
         let n = out.len() / 2;
         let ch = self.channels as usize;
         let j0 = if k < 0 { ((-k) as usize).min(n) } else { 0 };
         let from = (k + j0 as i64) as usize;
         let have = end.min(self.frames).saturating_sub(from).min(n - j0);
         if have == 0 {
-            return 0;
+            return (0, self.after);
         }
         let holds = |&(c, f): &(u16, u64)| c == u16::from(self.channels) && f >= end as u64;
         let Some(p) = player.filter(|p| {
             p.source(id) == Some((gen, true)) && p.shape(id).as_ref().is_some_and(holds)
         }) else {
-            return have as u64;
+            return (have as u64, ((from + have) as u64, Lead::Quiet));
         };
         let (mut missed, mut done) = (0, 0);
+        let mut lead = match self.after {
+            (at, lead) if at == from as u64 => lead,
+            _ => Lead::Clear,
+        };
+        let mut gaps = Gaps::default();
         while done < have {
             let count = (have - done).min(scratch.len() / ch);
             let buf = &mut scratch[..count * ch];
-            missed += p.read(id, (from + done) as u64, buf);
+            missed += p.read_gaps(id, (from + done) as u64, buf, &mut gaps);
+            gaps.smooth(buf, ch, lead);
+            lead = gaps.lead_after(buf, ch);
             add_frames(buf, ch, out, j0 + done, gain);
             done += count;
         }
-        missed
+        (missed, ((from + have) as u64, lead))
     }
 
     /// [`Take::add_into`] for a take partly on its file: its frames below
     /// `freed` from the file ([`Take::add_from_file`]), the rest from the
-    /// pool. Gives the frames that played silence for want of them.
+    /// pool. Gives the frames that played silence for want of them, and
+    /// where what it played went quiet.
     #[allow(clippy::too_many_arguments)]
     fn add_part(
         &self,
@@ -827,20 +861,22 @@ impl Take {
         out: &mut [f32],
         scratch: &mut [f32],
         gain: &impl Fn(usize) -> f32,
-    ) -> u64 {
+    ) -> (u64, (u64, Lead)) {
         let n = out.len() / 2;
         // Frames of the run before the pool's part.
         let split = (freed as i64).saturating_sub(k).clamp(0, n as i64) as usize;
         let (file, rest) = out.split_at_mut(2 * split);
-        let missed = if split > 0 {
+        let (missed, after) = if split > 0 {
             self.add_from_file(player, id, gen, freed as usize, k, file, scratch, gain)
         } else {
-            0
+            (0, self.after)
         };
         if split < n {
+            // The pool's part plays on from there, never missing.
             self.add_into(pool, id, k + split as i64, rest, &|j| gain(j + split));
+            return (missed, CLEAR);
         }
-        missed
+        (missed, after)
     }
 
     fn sample(&self, pool: &Pool, id: u16, k: usize, c: usize) -> Option<f32> {
@@ -1318,7 +1354,7 @@ impl Reader<'_> {
             outer.is_some() && e0 >= plain_from.max(edge) && e0 + len as i64 <= plain_to.min(len_f);
         let (g, k) = (r.gain * outer.unwrap_or(1.0), r.src + e0);
         let (pool, reads) = (self.pool, &mut *self.reads);
-        let missed = match tk.store {
+        let (missed, after) = match tk.store {
             Store::File { gen } => {
                 let p = self.player.as_deref_mut();
                 let end = tk.frames;
@@ -1344,11 +1380,12 @@ impl Reader<'_> {
                 } else {
                     tk.add_into(pool, r.take, k, dst, &|j| gain_at(e0 + j as i64) * heard(j));
                 }
-                0
+                (0, CLEAR)
             }
         };
+        let m = &mut self.takes[r.take as usize];
+        m.after = after;
         if missed > 0 {
-            let m = &mut self.takes[r.take as usize];
             m.missed += missed;
             m.miss_tick = tick0;
             self.stats.missed += missed;
@@ -2466,6 +2503,19 @@ impl AudioTracks {
                     growing,
                 };
             }
+            Command::Refile { take, rec, gen } => {
+                let Some(t) = self
+                    .takes
+                    .get_mut(take as usize)
+                    .filter(|t| t.live && t.rec == rec)
+                else {
+                    return self.refuse();
+                };
+                match &mut t.store {
+                    Store::Part { gen: g, .. } | Store::File { gen: g } => *g = gen,
+                    Store::Pool => self.refuse(),
+                }
+            }
             Command::Swap { old, new, ratio } => {
                 let ok = |id: u16| {
                     self.takes
@@ -3316,6 +3366,15 @@ impl AudioTracks {
     /// The player, for its counters.
     pub fn player(&self) -> Option<&Player> {
         self.player.as_deref()
+    }
+
+    /// The generation of take `id`'s file source, if any of the take
+    /// plays from its file (all of it, or what its file holds so far).
+    pub fn file_gen(&self, id: u16) -> Option<u32> {
+        match self.takes.get(id as usize).filter(|t| t.live)?.store {
+            Store::Part { gen, .. } | Store::File { gen } => Some(gen),
+            Store::Pool => None,
+        }
     }
 
     /// Whether take `id` plays from its file (it holds no pool memory).

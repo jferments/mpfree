@@ -24,6 +24,121 @@ pub fn unit_frames(channels: u16) -> u64 {
     (UNIT / usize::from(channels.max(1))) as u64
 }
 
+/// Frames a voice fades over at the edge of a gap ([`Gaps::smooth`]):
+/// 64, about 1.3 ms at 48 kHz.
+pub const DECLICK: usize = 64;
+
+/// Where a read ([`Player::read_gaps`]) found its frames missing: runs of
+/// frames, each `(first, count)` in the frames read, in order. A read
+/// covers a unit or two, so there are seldom more than two; past
+/// [`Gaps::MAX`], the last run grows to take in the rest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Gaps {
+    runs: [(usize, usize); Gaps::MAX],
+    n: usize,
+}
+
+impl Gaps {
+    pub const MAX: usize = 4;
+
+    fn add(&mut self, first: usize, count: usize) {
+        if count == 0 {
+            return;
+        }
+        if let Some(last) = self.runs[..self.n].last_mut() {
+            if last.0 + last.1 == first || self.n == Gaps::MAX {
+                last.1 = first + count - last.0;
+                return;
+            }
+        }
+        self.runs[self.n] = (first, count);
+        self.n += 1;
+    }
+
+    /// The runs of frames missed, in order.
+    pub fn runs(&self) -> &[(usize, usize)] {
+        &self.runs[..self.n]
+    }
+
+    /// Whether the last of `frames` frames read was missed.
+    pub fn ends_missed(&self, frames: usize) -> bool {
+        self.runs().last().is_some_and(|&(a, c)| a + c >= frames)
+    }
+
+    /// Fade `out` (interleaved, `channels`; the frames read) so sound
+    /// going missing and coming back never clicks: out over [`DECLICK`]
+    /// frames before each gap and in after it. `lead` is what played
+    /// just before these frames: if it had gone quiet, they fade in; if
+    /// it was sounding and they start missing, the sound dies away from
+    /// its last frame over the gap's first frames instead of stopping
+    /// dead. Missed frames are silence already. Frames that play whole,
+    /// with no gap near, are left as they are, bit for bit; so is all of
+    /// a read with no gap and a clear lead.
+    pub fn smooth(&self, out: &mut [f32], channels: usize, lead: Lead) {
+        let ch = channels.clamp(1, 2);
+        let frames = out.len() / ch;
+        let ramp = |k: usize| (k + 1) as f32 / (DECLICK + 1) as f32;
+        let mut start = 0;
+        let mut quiet = lead == Lead::Quiet;
+        if let (Lead::Sound(v), Some(&(0, c))) = (lead, self.runs().first()) {
+            for j in 0..c.min(DECLICK).min(frames) {
+                let g = 1.0 - ramp(j);
+                for (o, x) in out[j * ch..(j + 1) * ch].iter_mut().zip(v) {
+                    *o = x * g;
+                }
+            }
+        }
+        let runs = self.runs().iter().copied().chain([(frames, 0)]);
+        for (a, c) in runs {
+            let a = a.min(frames);
+            // Frames start..a play: in after a gap, out before the next.
+            for j in start..a {
+                let mut g = 1.0f32;
+                if quiet && j - start < DECLICK {
+                    g *= ramp(j - start);
+                }
+                if a < frames && a - j <= DECLICK {
+                    g *= ramp(a - j - 1);
+                }
+                if g < 1.0 {
+                    for v in &mut out[j * ch..(j + 1) * ch] {
+                        *v *= g;
+                    }
+                }
+            }
+            start = (a + c).min(frames);
+            quiet = true;
+        }
+    }
+
+    /// What `out` (the frames read, smoothed) leaves for the read after
+    /// it: quiet if its last frame was missed, else its last frame.
+    pub fn lead_after(&self, out: &[f32], channels: usize) -> Lead {
+        let ch = channels.clamp(1, 2);
+        let frames = out.len() / ch;
+        if frames == 0 {
+            return Lead::Clear;
+        }
+        if self.ends_missed(frames) {
+            return Lead::Quiet;
+        }
+        let last = &out[(frames - 1) * ch..frames * ch];
+        Lead::Sound([last[0], last[ch - 1]])
+    }
+}
+
+/// What a voice played just before a read, for [`Gaps::smooth`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Lead {
+    /// Nothing to fade from: the voice starts here, or played elsewhere.
+    Clear,
+    /// Its frames had gone missing: what comes back fades in.
+    Quiet,
+    /// It was sounding, its last frame these samples (left and right; a
+    /// mono voice has the same in both): a gap now dies away from them.
+    Sound([f32; 2]),
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
     /// Cache slots (each [`UNIT`] samples).
@@ -598,9 +713,23 @@ impl Player {
         missed
     }
 
+    /// [`Player::read`], also saying where in `out` the frames missed lie
+    /// ([`Gaps`]), so a voice can fade out before a gap and back in after
+    /// it ([`Gaps::smooth`]) instead of clicking.
+    pub fn read_gaps(&mut self, source: u16, from: u64, out: &mut [f32], gaps: &mut Gaps) -> u64 {
+        *gaps = Gaps::default();
+        let missed = self.fill(source, from, out, Some(gaps));
+        self.stats.missed += missed;
+        missed
+    }
+
     /// [`Player::read`] without counting what's missed (for frames looked
     /// at but not played, like an interpolator's neighbours).
     pub fn peek(&self, source: u16, from: u64, out: &mut [f32]) -> u64 {
+        self.fill(source, from, out, None)
+    }
+
+    fn fill(&self, source: u16, from: u64, out: &mut [f32], mut gaps: Option<&mut Gaps>) -> u64 {
         let Some(src) = self.sources.get(usize::from(source)).copied() else {
             out.fill(0.0);
             return 0;
@@ -641,6 +770,9 @@ impl Player {
                 _ => {
                     dst.fill(0.0);
                     missed += (have / ch) as u64;
+                    if let Some(g) = gaps.as_deref_mut() {
+                        g.add(o / ch, have / ch);
+                    }
                 }
             }
             f += n;
@@ -702,5 +834,95 @@ impl Player {
         }
         self.noted.clear();
         self.round = self.round.wrapping_add(1);
+    }
+}
+
+#[cfg(test)]
+mod gaps_tests {
+    use super::{Gaps, Lead, DECLICK};
+
+    fn gaps(runs: &[(usize, usize)]) -> Gaps {
+        let mut g = Gaps::default();
+        for &(a, c) in runs {
+            g.add(a, c);
+        }
+        g
+    }
+
+    /// Stereo frames of 1.0 with `runs` missed (silence), as a read gives.
+    fn read(frames: usize, runs: &[(usize, usize)]) -> Vec<f32> {
+        let mut out = vec![1.0f32; 2 * frames];
+        for &(a, c) in runs {
+            out[2 * a..2 * (a + c)].fill(0.0);
+        }
+        out
+    }
+
+    #[test]
+    fn neighbouring_runs_join_and_past_the_most_the_last_grows() {
+        assert_eq!(gaps(&[(0, 10), (10, 5)]).runs(), [(0, 15)]);
+        let g = gaps(&[(0, 1), (2, 1), (4, 1), (6, 1), (8, 1)]);
+        assert_eq!(g.runs(), [(0, 1), (2, 1), (4, 1), (6, 3)]);
+        assert!(g.ends_missed(9));
+        assert!(!g.ends_missed(10));
+        assert!(gaps(&[]).runs().is_empty());
+    }
+
+    #[test]
+    fn sound_fades_out_before_a_gap_and_in_after_it() {
+        let runs = [(300, 100)];
+        let mut out = read(600, &runs);
+        gaps(&runs).smooth(&mut out, 2, Lead::Clear);
+        let at = |j: usize| out[2 * j];
+        // Whole until the fade, then down to nearly nothing at the gap.
+        assert_eq!(at(300 - DECLICK - 1), 1.0);
+        assert!(at(299) > 0.0 && at(299) < 0.05);
+        assert!((1..DECLICK).all(|k| at(300 - DECLICK + k) < at(300 - DECLICK + k - 1)));
+        assert_eq!(at(300), 0.0);
+        // Back from nearly nothing, and whole again after the fade.
+        assert!(at(400) > 0.0 && at(400) < 0.05);
+        assert!((401..400 + DECLICK).all(|j| at(j) > at(j - 1)));
+        assert_eq!(at(400 + DECLICK), 1.0);
+        // Both channels alike.
+        assert!(out.chunks_exact(2).all(|f| f[0] == f[1]));
+        assert_eq!(gaps(&runs).lead_after(&out, 2), Lead::Sound([1.0, 1.0]));
+    }
+
+    #[test]
+    fn a_read_after_quiet_fades_in_and_one_starting_missing_dies_away() {
+        // The read before ended missing: this one fades in from its first
+        // frame.
+        let mut out = read(300, &[]);
+        gaps(&[]).smooth(&mut out, 2, Lead::Quiet);
+        assert!(out[0] < 0.05);
+        assert_eq!(out[2 * DECLICK], 1.0);
+        // The read before ended sounding, and this one starts missing: the
+        // sound dies away from its last frame instead of stopping dead.
+        let runs = [(0, 200)];
+        let mut out = read(300, &runs);
+        let g = gaps(&runs);
+        g.smooth(&mut out, 2, Lead::Sound([0.8, -0.4]));
+        assert!((out[0] - 0.8).abs() < 0.05 && (out[1] + 0.4).abs() < 0.05);
+        assert!((1..DECLICK).all(|j| out[2 * j] < out[2 * (j - 1)]));
+        assert!(out[2 * DECLICK..2 * 200].iter().all(|&v| v == 0.0));
+        // And what comes back in the same read fades in.
+        assert!(out[2 * 200] < 0.05);
+        // A read that ends missing leaves quiet behind it.
+        let runs = [(250, 50)];
+        let mut out = read(300, &runs);
+        gaps(&runs).smooth(&mut out, 2, Lead::Clear);
+        assert_eq!(gaps(&runs).lead_after(&out, 2), Lead::Quiet);
+        // Mono: its one channel on both sides.
+        let mono = vec![0.5f32; 10];
+        assert_eq!(gaps(&[]).lead_after(&mono, 1), Lead::Sound([0.5, 0.5]));
+    }
+
+    #[test]
+    fn with_no_gap_and_a_clear_or_sounding_lead_nothing_changes() {
+        for lead in [Lead::Clear, Lead::Sound([1.0, 1.0])] {
+            let mut out = read(300, &[]);
+            gaps(&[]).smooth(&mut out, 2, lead);
+            assert!(out.iter().all(|&v| v == 1.0));
+        }
     }
 }

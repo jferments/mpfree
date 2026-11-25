@@ -836,6 +836,9 @@ enum TypeTo {
     ThemeName,
     /// The style Make a style keeps (composing step 6): its sheet's Name.
     StyleName,
+    /// A mixer strip's level, from a tap on the number under its fader
+    /// ([`mpfree_mixer_ui::MixAction::TypeLevel`]).
+    MixLevel(mpfree_fx::StripId),
 }
 
 impl TypeTo {
@@ -1928,6 +1931,14 @@ pub enum FromUi {
     /// folder (the library's work folder for them) from now on: sent once
     /// at start, after what a cut-off run left there is recovered.
     AudioFiles(std::path::PathBuf),
+    /// The SD card opened, its files under the lease's root (its mount
+    /// point): a drive of its own, so the audio tracks read them on an I/O
+    /// thread of their own and a recorder there never waits for the
+    /// stick's reads; and one opening, so takes there are read only until
+    /// the lease is revoked (the card closed). Sent each time the slot
+    /// says the card is open: the same lease while it stays open, a new
+    /// one once it has closed and opened again.
+    AudioDrive(std::sync::Arc<mpfree_stream::storage::Lease>),
     /// A project save finished into this folder (the project's
     /// `samples/`): the audio tracks keep their takes' files from there.
     AudioSavedInto(std::path::PathBuf),
@@ -2736,6 +2747,9 @@ pub struct Player {
     /// when the place asks and put away once the browser has been hidden
     /// for a while (sd_card.rs).
     pub(crate) sd_card: crate::sd_card::Slot,
+    /// The card's current opening, given to the audio tracks
+    /// ([`FromUi::AudioDrive`]) and revoked when the slot hears it closed.
+    card_lease: Option<std::sync::Arc<mpfree_stream::storage::Lease>>,
     /// What each track plays ([`ToUi::TrackSounds`]), written under its
     /// name on Arrange.
     track_sounds: TrackSounds,
@@ -3593,6 +3607,7 @@ impl Player {
             plugin_page: crate::plugin_page::PluginPage::new(),
             plugins_hinted: "",
             sd_card: crate::sd_card::Slot::on_the_mpc(std::path::Path::new(crate::REPORT_DIR)),
+            card_lease: None,
             track_sounds: [None; crate::instruments::HOLDERS],
             track_sends: [None; crate::instruments::TRACKS],
             track_kits: crate::sampler::TrackKits::default(),
@@ -9876,6 +9891,8 @@ impl Player {
                 View::Arrange if self.time_page.clip_card => time_view::clip_card_hint(&self.time),
                 // Add a part is faint while Rec song is on: this says why.
                 View::Arrange if self.time.song_rec => time_view::REC_SONG_CLIPS_HINT.to_string(),
+                // Perform: nothing on the grid drags (the touch review).
+                View::Arrange if self.time.perform => time_view::PERFORM_CLIPS_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 // A first pass waits on its Length: Read as and Discard
                 // float at this line's end.
@@ -11825,6 +11842,11 @@ impl Player {
                 self.add_cc_lane(v.round() as u16);
                 None
             }
+            TypeTo::MixLevel(strip) => Some(FromUi::Mixer(mpfree_mixer_ui::MixAction::Set {
+                strip,
+                id: mpfree_fx::ids::mixer::VOLUME,
+                value: v as f32,
+            })),
             TypeTo::SampleName
             | TypeTo::PortName
             | TypeTo::SceneName(_)
@@ -11986,6 +12008,24 @@ impl Player {
             ));
         }
         Ok(png)
+    }
+
+    /// The number pad for a mixer strip's level (a tap on the number under
+    /// its fader): silent (-80 dB, "off") to +6 dB, to 0.1 dB.
+    fn type_level(&mut self, strip: mpfree_fx::StripId, db: f32, name: &str) {
+        let (min, max) = (mpfree_fx::SILENT_DB, mpfree_mixer_ui::qlinks::MAX_DB);
+        self.open_numpad(
+            mpfree_ui::numpad::NumberAsk {
+                key: "level".to_string(),
+                title: format!("{name} level"),
+                unit: "dB".to_string(),
+                value: f64::from((db.clamp(min, max) * 10.0).round() / 10.0),
+                min: f64::from(min),
+                max: f64::from(max),
+                decimals: 1,
+            },
+            TypeTo::MixLevel(strip),
+        );
     }
 
     /// The number pad for the tempo (a long press on Play's BPM).
@@ -14677,18 +14717,27 @@ impl Player {
                     self.say(line);
                     continue;
                 }
-                Heard::Open(card) => (
-                    Some(card.mount.clone()),
-                    CardState::Open {
-                        about: card.describe(),
-                        dirty: card.dirty,
-                    },
-                ),
+                Heard::Open(card) => {
+                    // The card is a drive of its own for the audio tracks,
+                    // and this opening the one their takes there read on.
+                    let lease = self.card_lease(&card.mount);
+                    self.outbox.push(FromUi::AudioDrive(lease));
+                    (
+                        Some(card.mount.clone()),
+                        CardState::Open {
+                            about: card.describe(),
+                            dirty: card.dirty,
+                        },
+                    )
+                }
                 Heard::NotOpened(why) => {
+                    self.card_gone();
                     self.say(format!("sd card: not opened: {why}"));
                     (None, CardState::NotOpened(why))
                 }
                 Heard::Closed(line) => {
+                    // Nothing more is read on this opening, at once.
+                    self.card_gone();
                     self.say(line);
                     (None, CardState::Closed)
                 }
@@ -14700,6 +14749,33 @@ impl Player {
                     mpfree_browser_ui::show(&mut self.ui, b);
                 }
             }
+        }
+    }
+
+    /// The card's opening at `mount`: the one already held while it still
+    /// holds there (the slot said again it is open), else a new one.
+    fn card_lease(
+        &mut self,
+        mount: &std::path::Path,
+    ) -> std::sync::Arc<mpfree_stream::storage::Lease> {
+        use mpfree_stream::storage::{CardHandle, Lease};
+        if let Some(l) = self
+            .card_lease
+            .as_ref()
+            .filter(|l| l.valid() && l.root() == mount)
+        {
+            return l.clone();
+        }
+        self.card_gone();
+        let l = Lease::new(mount);
+        self.card_lease = Some(l.clone());
+        l
+    }
+
+    /// The card's opening is over: revoked, so nothing more is read on it.
+    fn card_gone(&mut self) {
+        if let Some(l) = self.card_lease.take() {
+            l.revoke();
         }
     }
 
@@ -17277,6 +17353,7 @@ impl Player {
                 | FromUi::OpenLoops(_)
                 | FromUi::OpenAudio(_)
                 | FromUi::AudioFiles(_)
+                | FromUi::AudioDrive(_)
                 | FromUi::AudioSavedInto(_)
                 | FromUi::Kit(_)
                 | FromUi::LevelDb(_)
@@ -19444,9 +19521,17 @@ impl Player {
                 Some(FromUi::QLink { knob: index, delta })
             }
             (mpfree_mixer_ui::MIXER, _) => {
-                let mut acts = mpfree_mixer_ui::take_actions(&mut self.ui)
-                    .into_iter()
-                    .map(FromUi::Mixer);
+                // The level under a fader asks for a number: the screen's.
+                let mut acts = Vec::new();
+                for a in mpfree_mixer_ui::take_actions(&mut self.ui) {
+                    match a {
+                        mpfree_mixer_ui::MixAction::TypeLevel { strip, db, name } => {
+                            self.type_level(strip, db, &name);
+                        }
+                        a => acts.push(FromUi::Mixer(a)),
+                    }
+                }
+                let mut acts = acts.into_iter();
                 let first = acts.next();
                 self.outbox.extend(acts);
                 let looked = first
@@ -41642,6 +41727,103 @@ mod tests {
         p.apply(ToUi::Show(View::Browser));
         until(&mut p, &|p| matches!(state(p), CardState::Open { .. }));
         assert!(p.browser.as_ref().unwrap().library().card().is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S2b phase B2a: the card opened is a drive of its own for the audio
+    /// tracks, given with its opening (a lease): the same lease while the
+    /// slot keeps saying it is open, revoked at once when it closes (taken
+    /// out), so nothing more is read on that opening.
+    #[test]
+    fn the_card_opened_is_a_drive_of_its_own_until_it_closes() {
+        use crate::sd_card::{Paths, Slot, Timing};
+        use mpfree_stream::storage::CardHandle;
+        use std::time::Duration;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("mpfree-card-drive-{}-{nanos}", std::process::id()));
+        let card = dir.join("card");
+        let mpfree = card.join("MPFree");
+        std::fs::create_dir_all(&mpfree).unwrap();
+        std::fs::create_dir_all(dir.join("run")).unwrap();
+        std::fs::write(dir.join("setup-sd-card.sh"), "# service\n").unwrap();
+        std::fs::write(dir.join("setup-sd-card-write.sh"), "# write window\n").unwrap();
+        std::fs::write(
+            dir.join("mounts"),
+            format!("card {} exfat rw 0 0\n", card.display()),
+        )
+        .unwrap();
+        let open = format!(
+            "state=open\nmessage=The SD card is open; its MPFree folder can be written.\nask=00dd\ncard=mmcblk1\nfs=exfat\nsectors=124735488\nmount={}\nwrite={}\n",
+            card.display(),
+            mpfree.display()
+        );
+        std::fs::write(dir.join("run/sd-card-write-status"), &open).unwrap();
+        let mut p = browser_samples(Fonts::embedded()).unwrap();
+        let paths = |w: &str| Paths {
+            service: dir.join(format!("setup-sd-card{w}.sh")),
+            status: dir.join(format!("run/sd-card{w}-status")),
+            request: dir.join(format!("run/sd-card{w}.request")),
+            close: dir.join(format!("run/sd-card{w}.close")),
+            alive: dir.join(format!("run/sd-card{w}.alive")),
+            mounts: dir.join("mounts"),
+        };
+        let timing = Timing {
+            poll: Duration::from_millis(5),
+            answer: Duration::from_millis(500),
+            close: Duration::from_millis(50),
+            beat: Duration::from_millis(10),
+        };
+        // Never put away while this test runs.
+        p.sd_card =
+            Slot::new(paths(""), timing, Duration::from_secs(600)).with_writing(paths("-write"));
+        p.apply(ToUi::Show(View::Play));
+        let leases = |p: &Player| -> Vec<std::sync::Arc<mpfree_stream::storage::Lease>> {
+            p.outbox
+                .iter()
+                .filter_map(|a| match a {
+                    FromUi::AudioDrive(l) => Some(l.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let until = |p: &mut Player, done: &dyn Fn(&Player) -> bool| {
+            let end = Instant::now() + Duration::from_secs(5);
+            while !done(p) {
+                assert!(Instant::now() < end, "not yet: {:?}", p.said_all);
+                p.tick(0.01);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
+        p.sd_card.open();
+        until(&mut p, &|p| leases(p).len() == 1);
+        let lease = leases(&p)[0].clone();
+        assert_eq!(lease.root(), card);
+        assert!(lease.valid());
+        // Said open again while it stays open: the same opening, never
+        // taken for a new insertion.
+        p.sd_card.open();
+        until(&mut p, &|p| leases(p).len() == 2);
+        assert!(std::sync::Arc::ptr_eq(&lease, &leases(&p)[1]));
+        assert!(lease.valid());
+        // Taken out: the window says so, and the opening is over.
+        std::fs::write(
+            dir.join("run/sd-card-write-status"),
+            "state=closed\nmessage=The card was taken out.\nask=00dd\n",
+        )
+        .unwrap();
+        until(&mut p, &|p| {
+            p.said_all
+                .iter()
+                .any(|l| l == "sd card: closed: The card was taken out.")
+        });
+        assert!(
+            !lease.valid(),
+            "its opening is over: nothing more is read on it"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

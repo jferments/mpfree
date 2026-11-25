@@ -782,6 +782,32 @@ impl Session {
         self.press_target(&row.target).run_for(0.2)
     }
 
+    /// Types `number` ("-6.5") on the number pad showing and presses
+    /// Enter, as taps on its keys would.
+    pub fn type_number(&mut self, number: &str) -> &mut Session {
+        use mpfree_ui::numpad::{NumPad, KEY_ENTER, KEY_MINUS, KEY_POINT};
+        let r = self
+            .screen
+            .ui
+            .rect_of(crate::gui::NUMPAD)
+            .unwrap_or_else(|| panic!("no number pad on {}", self.page()));
+        let keys: Vec<usize> = number
+            .chars()
+            .map(|c| match c {
+                '-' => KEY_MINUS,
+                '.' => KEY_POINT,
+                d => d.to_digit(10).expect("a digit, a point or a minus") as usize,
+            })
+            .chain([KEY_ENTER])
+            .collect();
+        for k in keys {
+            let (x, y) = NumPad::key_at(r, k);
+            let at = mpfree_ui::Rect::new(x - 1, y - 1, 3, 3);
+            self.press_target(&mpfree_ui::Target::tap("key", k, "", at));
+        }
+        self
+    }
+
     pub fn press_target(&mut self, t: &mpfree_ui::Target) -> &mut Session {
         let acts = super::press(&mut self.screen, t);
         for a in acts {
@@ -2857,6 +2883,7 @@ impl Session {
             FromUi::OpenLoops(l) => self.looper.open(*l),
             FromUi::OpenAudio(a) => self.tracks.open(*a),
             FromUi::AudioFiles(dir) => self.tracks.record_to(dir),
+            FromUi::AudioDrive(lease) => self.tracks.own_drive(lease),
             FromUi::AudioSavedInto(dir) => self.tracks.saved_into(dir),
             FromUi::ExportAsk => {
                 // Nothing plays outside here, and every track plays the

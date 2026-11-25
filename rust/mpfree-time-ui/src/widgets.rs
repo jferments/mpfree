@@ -670,6 +670,8 @@ pub struct ClipGrid {
     /// Perform's big rows (sequencer decision 5, mockup C): five rows of
     /// [`ROW_MIN_H`] with rings and countdowns. Off (Make), the rows are
     /// compact, [`ROW_MIN_H_MAKE`], eight in view with names and lengths.
+    /// On, nothing on the grid drags: a clip or a row's number acts on the
+    /// lift only while the finger is still on it.
     pub big: bool,
     /// The scene card, open over the grid (the Arrange refactor's 5.2):
     /// it takes the grid's touches while it is.
@@ -709,17 +711,25 @@ pub struct ClipGrid {
     pub veil: Option<usize>,
     /// What was drawn last, so a change redraws only the cells that changed.
     drawn: RefCell<Option<Drawn>>,
-    /// A finger down on a track's name: where (x) and which track. Let go
+    /// Each finger is its own (the touch usability review, 25 Nov 2026:
+    /// with one of each for every finger, a second finger took the first
+    /// one's place, so two clips held at once launched the wrong one, or
+    /// a wobble moved it). These hold the fingers down, by finger.
+    ///
+    /// Fingers down on a track's name: where (x) and which track. Let go
     /// near where it went down it arms the track; swiped along the names
     /// it pages.
-    press: Option<(i32, usize)>,
-    /// A finger on a clip or a row's number, and where it has dragged it.
-    grip: Option<Grip>,
-    /// A finger on an empty cell: (track, slot) and where it went down.
+    press: Vec<(u64, (i32, usize))>,
+    /// Fingers on a clip or a row's number, and where each has dragged it.
+    grip: Vec<(u64, Grip)>,
+    /// Fingers on an empty cell: (track, slot) and where it went down.
     /// It makes a clip on the lift; one that moves off as a drag or a
     /// scroll does nothing (the Arrange refactor's 5.4).
-    empty: Option<(usize, usize, (i32, i32))>,
+    empty: Vec<(u64, EmptyCell)>,
 }
+
+/// A finger on an empty cell: (track, slot) and where it went down.
+type EmptyCell = (usize, usize, (i32, i32));
 
 /// What a finger holds on the grid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -744,7 +754,7 @@ struct Grip {
     edge: Option<(usize, Instant)>,
 }
 
-/// A finger moves this far before what it holds lifts.
+/// A finger moves this far before what it holds lifts (Make only).
 const LIFT_PX: i32 = 12;
 /// Held this close to the grid's edge, a dragged clip pages the tracks or
 /// scrolls the rows, again every [`EDGE_REPEAT`] while it stays there.
@@ -1046,21 +1056,31 @@ impl ClipGrid {
     /// The row whose number a finger holds still (not dragged), for the
     /// app's hold that opens its scene card.
     pub fn held_row(&self) -> Option<usize> {
-        match self.grip {
-            Some(Grip {
+        self.grip.iter().find_map(|(_, g)| match *g {
+            Grip {
                 held: Held::Row(row),
                 lifted: false,
                 ..
-            }) => Some(row),
+            } => Some(row),
             _ => None,
-        }
+        })
     }
 
     /// The hold on a row's number opened its scene card: the finger's lift
     /// launches nothing and drops nothing.
     pub fn let_go_of_row(&mut self) {
-        if self.held_row().is_some() {
-            self.grip = None;
+        let still = |g: &Grip| matches!(g.held, Held::Row(_)) && !g.lifted;
+        if let Some(i) = self.grip.iter().position(|(_, g)| still(g)) {
+            self.grip.remove(i);
+        }
+    }
+
+    /// Whether (x, y) is still on what a finger holds: its clip's cell or
+    /// its row's number.
+    fn still_on(&self, r: Rect, held: Held, x: i32, y: i32) -> bool {
+        match held {
+            Held::Clip(t, s) => self.cell_rect(r, t, s).is_some_and(|c| c.contains(x, y)),
+            Held::Row(row) => self.scene_rect(r, row).is_some_and(|b| b.contains(x, y)),
         }
     }
 
@@ -1090,9 +1110,9 @@ impl ClipGrid {
             can_capture: false,
             veil: None,
             drawn: RefCell::new(None),
-            press: None,
-            grip: None,
-            empty: None,
+            press: Vec::new(),
+            grip: Vec::new(),
+            empty: Vec::new(),
         }
     }
 
@@ -1162,11 +1182,14 @@ impl ClipGrid {
 
     /// Whether a drag is under way (something lifted).
     pub fn dragging(&self) -> bool {
-        self.grip.is_some_and(|g| g.lifted)
+        self.grip.iter().any(|(_, g)| g.lifted)
     }
 
     fn dragged_now(&self) -> Option<(Held, (i32, i32))> {
-        self.grip.filter(|g| g.lifted).map(|g| (g.held, g.at))
+        self.grip
+            .iter()
+            .find(|(_, g)| g.lifted)
+            .map(|(_, g)| (g.held, g.at))
     }
 
     /// A track's colour as its column draws it (faded while muted).
@@ -2126,8 +2149,8 @@ impl Widget for ClipGrid {
         if let Some(w) = self.pad_window_rect(r) {
             cx.canvas.stroke_round_rect(w, t.round(8), 2, t.accent);
         }
-        if let Some(gr) = self.grip.filter(|g| g.lifted) {
-            self.paint_drag(cx, r, &gr);
+        for (_, gr) in self.grip.iter().filter(|(_, g)| g.lifted) {
+            self.paint_drag(cx, r, gr);
         }
         if let Some(rows) = self.chooser_rects(r) {
             crate::song::paint_chooser(cx, &rows);
@@ -2273,12 +2296,12 @@ impl Widget for ClipGrid {
         out
     }
 
-    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+    fn touch(&mut self, f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         // The scene card open: its touches, and one off it closes it.
         if let Some(card) = self.scene_card.as_mut() {
-            self.grip = None;
-            self.empty = None;
-            self.press = None;
+            self.grip.clear();
+            self.empty.clear();
+            self.press.clear();
             return card.touch(phase, x, y, r);
         }
         // The chord picker open: its parts, and a touch off it closes it
@@ -2311,34 +2334,40 @@ impl Widget for ClipGrid {
         }
         // A finger on an empty cell: a tap on the lift; moved off as a
         // drag or a scroll, nothing.
-        if let Some((track, slot, from)) = self.empty {
+        if let Some(i) = self.empty.iter().position(|(g, _)| *g == f) {
+            let (_, (track, slot, from)) = self.empty[i];
             match phase {
                 Touch::Move => {
                     let (dx, dy) = (x - from.0, y - from.1);
                     if dx * dx + dy * dy >= LIFT_PX * LIFT_PX {
-                        self.empty = None;
+                        self.empty.remove(i);
                     }
                     return None;
                 }
                 Touch::Up => {
-                    self.empty = None;
+                    self.empty.remove(i);
                     return Some(EventKind::Select(track * self.slots + slot));
                 }
                 Touch::Cancel => {
-                    self.empty = None;
+                    self.empty.remove(i);
                     return None;
                 }
-                Touch::Down => self.empty = None,
+                Touch::Down => {
+                    self.empty.remove(i);
+                }
             }
         }
         // A finger on a clip or a row's number: a tap on the lift, or
-        // dragged, a drop where it lifts.
-        if let Some(mut g) = self.grip {
+        // dragged, a drop where it lifts. Perform launches and never
+        // moves anything: nothing lifts there, and a finger slid off what
+        // it held lets go of it.
+        if let Some(i) = self.grip.iter().position(|(g, _)| *g == f) {
+            let mut g = self.grip[i].1;
             match phase {
                 Touch::Move => {
                     g.at = (x, y);
                     let (dx, dy) = (x - g.from.0, y - g.from.1);
-                    g.lifted |= dx * dx + dy * dy >= LIFT_PX * LIFT_PX;
+                    g.lifted |= !self.big && dx * dx + dy * dy >= LIFT_PX * LIFT_PX;
                     let mut page = None;
                     let edge = g.lifted.then(|| self.edge_at(r, g.held, x, y)).flatten();
                     g.edge = match (edge, g.edge) {
@@ -2351,13 +2380,16 @@ impl Widget for ClipGrid {
                         }
                         (None, _) => None,
                     };
-                    self.grip = Some(g);
+                    self.grip[i].1 = g;
                     return page;
                 }
                 Touch::Up => {
-                    self.grip = None;
+                    self.grip.remove(i);
                     g.at = (x, y);
                     if !g.lifted {
+                        if self.big && !self.still_on(r, g.held, x, y) {
+                            return None;
+                        }
                         return Some(match g.held {
                             Held::Clip(t, s) => EventKind::Select(t * self.slots + s),
                             Held::Row(row) => EventKind::Toggle(row),
@@ -2382,23 +2414,26 @@ impl Widget for ClipGrid {
                     return None;
                 }
                 Touch::Cancel => {
-                    self.grip = None;
+                    self.grip.remove(i);
                     return None;
                 }
-                Touch::Down => self.grip = None,
+                Touch::Down => {
+                    self.grip.remove(i);
+                }
             }
         }
         // A finger on a track's name: let go where it went down it arms
         // the track; swiped along the names it pages.
         match phase {
-            Touch::Down => self.press = None,
+            Touch::Down => self.press.retain(|(g, _)| *g != f),
             Touch::Move => return None,
             Touch::Cancel => {
-                self.press = None;
+                self.press.retain(|(g, _)| *g != f);
                 return None;
             }
             Touch::Up => {
-                let (x0, track) = self.press.take()?;
+                let i = self.press.iter().position(|(g, _)| *g == f)?;
+                let (_, (x0, track)) = self.press.remove(i);
                 let dx = x - x0;
                 return Some(if dx.abs() < SWIPE_PX {
                     EventKind::Tab(track)
@@ -2480,13 +2515,16 @@ impl Widget for ClipGrid {
         for slot in self.first_row..self.slots {
             if self.scene_rect(r, slot).is_some_and(|b| b.contains(x, y)) {
                 // Launched on the lift, unless it is dragged.
-                self.grip = Some(Grip {
-                    held: Held::Row(slot),
-                    from: (x, y),
-                    at: (x, y),
-                    lifted: false,
-                    edge: None,
-                });
+                self.grip.push((
+                    f,
+                    Grip {
+                        held: Held::Row(slot),
+                        from: (x, y),
+                        at: (x, y),
+                        lifted: false,
+                        edge: None,
+                    },
+                ));
                 return None;
             }
         }
@@ -2496,7 +2534,7 @@ impl Widget for ClipGrid {
                 return Some(EventKind::Tab(SOUND_TAP + track));
             }
             if self.head_rect(r, track).is_some_and(|h| h.contains(x, y)) {
-                self.press = Some((x, track));
+                self.press.push((f, (x, track)));
                 return None;
             }
             for slot in self.first_row..self.slots {
@@ -2510,17 +2548,20 @@ impl Widget for ClipGrid {
                         .is_some_and(|c| !matches!(c.state, CellState::Empty | CellState::Armed));
                     if !filled {
                         // On the lift, unless it moves off (5.4).
-                        self.empty = Some((track, slot, (x, y)));
+                        self.empty.push((f, (track, slot, (x, y))));
                         return None;
                     }
                     // A clip launches on the lift, unless it is dragged.
-                    self.grip = Some(Grip {
-                        held: Held::Clip(track, slot),
-                        from: (x, y),
-                        at: (x, y),
-                        lifted: false,
-                        edge: None,
-                    });
+                    self.grip.push((
+                        f,
+                        Grip {
+                            held: Held::Clip(track, slot),
+                            from: (x, y),
+                            at: (x, y),
+                            lifted: false,
+                            edge: None,
+                        },
+                    ));
                     return None;
                 }
             }
@@ -4149,6 +4190,121 @@ mod tests {
         }
         m.pos = 0.7;
         assert_eq!(m.save_row(), 1);
+    }
+
+    /// Each finger is its own (the touch usability review, 25 Nov 2026).
+    /// Before, a second finger took the first one's grip: lifting the
+    /// first launched the second's clip, the first never played, and a
+    /// 3 px wobble of the first finger moved the second's clip onto the
+    /// first's cell. Now two clips held at once each launch on their own
+    /// lift, a wobble is still a tap, and a drag with one finger moves
+    /// only its own clip.
+    #[test]
+    fn two_fingers_on_two_clips_launch_both_and_move_neither() {
+        let r = Rect::new(12, 128, 814, 610);
+        let mid = |c: Rect| (c.x + c.w / 2, c.y + c.h / 2);
+        let mut g = grid(10);
+        let a = mid(g.cell_rect(r, 2, 0).unwrap());
+        let b = mid(g.cell_rect(r, 4, 0).unwrap());
+        assert_eq!(g.touch(1, Touch::Down, a.0, a.1, r), None);
+        assert_eq!(g.touch(2, Touch::Down, b.0, b.1, r), None);
+        assert_eq!(g.touch(1, Touch::Move, a.0 + 3, a.1 + 3, r), None);
+        assert!(!g.dragging(), "a wobble lifts nothing");
+        assert_eq!(
+            g.touch(1, Touch::Up, a.0 + 3, a.1 + 3, r),
+            Some(EventKind::Select(2 * 16)),
+            "the first finger launches its own clip"
+        );
+        assert_eq!(
+            g.touch(2, Touch::Up, b.0, b.1, r),
+            Some(EventKind::Select(4 * 16)),
+            "and the second its own"
+        );
+        // Lifted in the other order, the same.
+        g.touch(1, Touch::Down, a.0, a.1, r);
+        g.touch(2, Touch::Down, b.0, b.1, r);
+        assert_eq!(
+            g.touch(2, Touch::Up, b.0, b.1, r),
+            Some(EventKind::Select(4 * 16))
+        );
+        assert_eq!(
+            g.touch(1, Touch::Up, a.0, a.1, r),
+            Some(EventKind::Select(2 * 16))
+        );
+        // One finger drags its clip to an empty cell while the other
+        // rests on another clip: only the dragged one moves, and the
+        // resting finger's lift still launches its clip.
+        let there = mid(g.cell_rect(r, 6, 3).unwrap());
+        g.touch(1, Touch::Down, a.0, a.1, r);
+        g.touch(2, Touch::Down, b.0, b.1, r);
+        g.touch(1, Touch::Move, a.0 + 30, a.1 + 40, r);
+        g.touch(1, Touch::Move, there.0, there.1, r);
+        assert!(g.dragging());
+        assert_eq!(
+            g.touch(1, Touch::Up, there.0, there.1, r),
+            Some(EventKind::Drop {
+                from: 2 * 16,
+                to: 6 * 16 + 3
+            })
+        );
+        assert!(!g.dragging());
+        assert_eq!(
+            g.touch(2, Touch::Up, b.0, b.1, r),
+            Some(EventKind::Select(4 * 16))
+        );
+        // A finger the grid never saw go down does nothing.
+        assert_eq!(g.touch(5, Touch::Up, b.0, b.1, r), None);
+    }
+
+    /// Perform launches and never moves (the touch usability review, 25
+    /// Nov 2026): a finger on a clip or a row's number doesn't lift
+    /// however far it moves, its lift launches only while it is still
+    /// on what it held, and slid off it does nothing.
+    #[test]
+    fn in_perform_nothing_drags_and_a_finger_slid_off_launches_nothing() {
+        let r = Rect::new(12, 128, 814, 610);
+        let mid = |c: Rect| (c.x + c.w / 2, c.y + c.h / 2);
+        let mut g = grid(10);
+        g.big = true;
+        let beat = mid(g.cell_rect(r, 2, 0).unwrap());
+        let there = mid(g.cell_rect(r, 4, 3).unwrap());
+        g.touch(1, Touch::Down, beat.0, beat.1, r);
+        g.touch(1, Touch::Move, beat.0 + 30, beat.1 + 40, r);
+        g.touch(1, Touch::Move, there.0, there.1, r);
+        assert!(!g.dragging(), "nothing lifts in Perform");
+        assert_eq!(g.touch(1, Touch::Up, there.0, there.1, r), None);
+        // Moved within its cell, it is a tap.
+        g.touch(1, Touch::Down, beat.0, beat.1, r);
+        g.touch(1, Touch::Move, beat.0 + 20, beat.1 + 10, r);
+        assert_eq!(
+            g.touch(1, Touch::Up, beat.0 + 20, beat.1 + 10, r),
+            Some(EventKind::Select(2 * 16))
+        );
+        // A row's number: launched on the lift on it, never dragged.
+        let four = mid(g.scene_rect(r, 3).unwrap());
+        let one = mid(g.scene_rect(r, 0).unwrap());
+        g.touch(1, Touch::Down, four.0, four.1, r);
+        assert_eq!(g.held_row(), Some(3));
+        g.touch(1, Touch::Move, one.0, one.1, r);
+        assert!(!g.dragging());
+        assert_eq!(g.touch(1, Touch::Up, one.0, one.1, r), None);
+        g.touch(1, Touch::Down, four.0, four.1, r);
+        assert_eq!(
+            g.touch(1, Touch::Up, four.0, four.1, r),
+            Some(EventKind::Toggle(3))
+        );
+        // Two clips at once launch both, as in Make.
+        let b = mid(g.cell_rect(r, 4, 0).unwrap());
+        g.touch(1, Touch::Down, beat.0, beat.1, r);
+        g.touch(2, Touch::Down, b.0, b.1, r);
+        assert_eq!(
+            g.touch(1, Touch::Up, beat.0, beat.1, r),
+            Some(EventKind::Select(2 * 16))
+        );
+        assert_eq!(
+            g.touch(2, Touch::Up, b.0, b.1, r),
+            Some(EventKind::Select(4 * 16))
+        );
     }
 
     /// Jay, 14 Nov: drag and drop on the Clips grid. A clip lifts once
