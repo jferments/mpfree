@@ -101,6 +101,7 @@ impl StretchJob {
                 group: self.take.group,
                 pass: self.take.pass,
                 bpm: self.now_bpm,
+                varied: false,
                 anchor: self.take.anchor,
                 frames,
                 channels: ch,

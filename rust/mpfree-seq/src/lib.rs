@@ -73,7 +73,7 @@ pub use arrange::{row_harmony, scene_length};
 pub use arrange::{
     Arrangement, FromScene, Marker, MorphRows, Placement, SongClips, SongSection, TempoPoint,
 };
-pub use audio::{AudioClip, ClipRegion, LoopClip, LoopId, RecId, MAX_CLIP_REGIONS};
+pub use audio::{AudioClip, ClipRegion, FollowTempo, LoopClip, LoopId, RecId, MAX_CLIP_REGIONS};
 pub use mutate::{Amount, Original, Pitches};
 pub use scenes::{
     Follow, FollowAction, ListStep, Scene, SceneSettings, SongList, TrackProgram, MAX_SCENE_NAME,

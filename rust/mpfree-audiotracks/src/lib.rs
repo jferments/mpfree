@@ -34,10 +34,21 @@
 //!   both parts, each counting the frames cut off it ([`Region::into`],
 //!   [`Region::left`]), so a fade the cut goes through plays on as it did.
 //! - **Time.** A region sits on song ticks, so it stays on its bar when the
-//!   tempo before it changes. Its audio plays at the rate it was recorded
-//!   at, from the region's start, as a DAW plays audio that is not warped:
-//!   at another tempo it does not stretch (time-stretch is a later step,
-//!   with `mpfree-stretch`).
+//!   tempo before it changes. By default ([`FollowTempo::Off`]) its audio plays
+//!   at the rate it was recorded at, from the region's start, as a DAW
+//!   plays audio that is not warped: at another tempo it does not stretch.
+//! - **Following the tempo** (the audio tracks rethink's phase 5,
+//!   docs/dev/design/tempo-follow.md). A region on [`FollowTempo::Repitch`]
+//!   with a made-at tempo ([`Region::bpm`]) plays the frame of its
+//!   recording each song tick means at that tempo ([`Region::src_pos`],
+//!   the plan's `x(t)`), so it fills its bars at any tempo and its pitch
+//!   moves with the tempo, like tape. Every place that asks which frame
+//!   plays (the read, a cut, a join, the clips, the stream's cues) asks
+//!   that one mapping. It reads between frames with the streaming
+//!   cursor's band-limited read ([`mpfree_stream::cursor::read_gathered`])
+//!   from frames gathered from the pool or the take's file; at the
+//!   made-at tempo it plays as Off, bit for bit. [`FollowTempo::Stretch`]
+//!   plays as Repitch until its copies come (phase 5b).
 //! - **Latency.** Input that arrives `latency` frames after a moment
 //!   belongs to that moment ([`Command::SetLatency`]): takes are placed
 //!   that much earlier, and a recording keeps writing that long after its
@@ -121,7 +132,7 @@ use save::{Saved, TakeFile, TrackFile};
 
 use mpfree_stream::msg::{Place, MAX_CURSORS, MAX_SOURCES};
 use mpfree_stream::player::{Gaps, Lead, Player};
-use mpfree_transport::time::{TempoMap, Tick};
+use mpfree_transport::time::{valid_bpm, TempoMap, Tick, PPQ};
 use mpfree_transport::transport::MAX_PERIOD;
 use mpfree_transport::{Block, Mark, Span, State, TransactionId};
 
@@ -144,6 +155,14 @@ pub const HISTORY: usize = 64;
 const QUEUE: usize = 64;
 /// The most frames the tracks run in one go.
 const RUN: usize = 128;
+/// The fastest a region following the tempo plays its recording
+/// (recording frames an output frame), as the streaming cursor's fastest:
+/// past it a run plays nothing, counted ([`Stats::too_fast`]).
+pub const MAX_SPEED: f64 = 4.0;
+/// Recording frames a run gathers for a read following the tempo, at
+/// most: what [`RUN`] frames pass at [`MAX_SPEED`] and the read's widest
+/// reach either side ([`mpfree_stream::cursor::reach_of`]).
+const GATHER: usize = RUN * MAX_SPEED as usize + 2 * 17 + 4;
 /// Samples in one block of the peak table: the waveform overview keeps the
 /// lowest and highest sample of every block of the pool. A chunk is whole
 /// blocks, so a block never holds two takes.
@@ -280,6 +299,23 @@ pub enum Command {
         at: Tick,
         fade_in: u32,
         fade_out: u32,
+    },
+    /// How the region of `track` playing at `at` follows the song's tempo
+    /// (phase 5, [`FollowTempo`]), and on Stretch whether it keeps its pitch
+    /// while its copy isn't ready. Its start keeps the frame it plays.
+    SetFollow {
+        track: usize,
+        at: Tick,
+        follow: FollowTempo,
+        keep_pitch: bool,
+    },
+    /// The tempo the audio of the region of `track` playing at `at` was
+    /// made at, set by hand ([`Region::bpm`]): a tempo MPFree plays, or 0
+    /// for none known.
+    SetTempo {
+        track: usize,
+        at: Tick,
+        bpm: f64,
     },
     Undo,
     Redo,
@@ -497,9 +533,49 @@ fn mix(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
+/// How a region, or an audio clip's regions, follow the song's tempo (the
+/// audio tracks rethink's phase 5). Saved as a `follow=` word when not
+/// [`FollowTempo::Off`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FollowTempo {
+    /// At its own speed from its start, as recorded: what every region
+    /// did before phase 5.
+    #[default]
+    Off,
+    /// Read at the speed that keeps it on its beats, its pitch moving with
+    /// the tempo, like tape ([`Region::src_pos`]).
+    Repitch,
+    /// The same pitch, from a copy made ahead. Until the copies come
+    /// (phase 5b) it plays as Repitch, as Play on time does while its copy
+    /// isn't ready.
+    Stretch,
+}
+
+impl FollowTempo {
+    /// Its word in a save (`follow=`), none for Off.
+    pub fn word(self) -> &'static str {
+        match self {
+            FollowTempo::Off => "off",
+            FollowTempo::Repitch => "repitch",
+            FollowTempo::Stretch => "stretch",
+        }
+    }
+
+    /// The setting a `follow=` word names.
+    pub fn from_word(w: &str) -> Option<FollowTempo> {
+        match w {
+            "off" => Some(FollowTempo::Off),
+            "repitch" => Some(FollowTempo::Repitch),
+            "stretch" => Some(FollowTempo::Stretch),
+            _ => None,
+        }
+    }
+}
+
 /// A stretch of song ticks playing a stretch of a take: tick `start`
 /// plays the take's frame `src`, and the frames after it follow at the
-/// recorded rate up to tick `end`.
+/// recorded rate up to tick `end` (or, following the tempo, at the rate
+/// that keeps them on their beats: [`Region::follow`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Region {
     pub start: Tick,
@@ -525,6 +601,16 @@ pub struct Region {
     /// exactly its share of them.
     pub into: u32,
     pub left: u32,
+    /// How it follows the song's tempo (phase 5): Off by default.
+    pub follow: FollowTempo,
+    /// On Stretch, what it does while its copy isn't ready: keep its
+    /// pitch (true) or play on time on Repitch (false, the default).
+    pub keep_pitch: bool,
+    /// The tempo its audio was made at (BPM): its take's when it was made,
+    /// or set by hand. 0 when none is known (a take recorded across a
+    /// tempo change, a sound brought in with no tempo), which plays it
+    /// Off whatever `follow` says.
+    pub bpm: f64,
 }
 
 impl Region {
@@ -539,17 +625,81 @@ impl Region {
         fade_out: 0,
         into: 0,
         left: 0,
+        follow: FollowTempo::Off,
+        keep_pitch: false,
+        bpm: 0.0,
     };
+
+    /// A region of `take` on song ticks `start..end`, its tick `start`
+    /// playing frame `src` (and `phase` of the next), at full gain with
+    /// no fades, Off, made at `bpm`.
+    pub fn of(start: Tick, end: Tick, take: u16, (src, phase): (i64, f32), bpm: f64) -> Region {
+        Region {
+            start,
+            end,
+            take,
+            src,
+            phase,
+            bpm,
+            ..Region::EMPTY
+        }
+    }
 
     pub fn contains(&self, t: Tick) -> bool {
         (self.start..self.end).contains(&t)
     }
 
     /// Frames of it from song tick `at`, where it starts as it plays, to
-    /// song tick `t` along `map`: from its start, the frame of its
-    /// recording `t` plays is `src` plus this; to its end, its length.
+    /// song tick `t` along `map`: the frames it plays for; to its end, its
+    /// length. Off, the frame of its recording `t` plays is `src` plus
+    /// this ([`Region::src_frames_to`] says which frame for any setting).
     pub fn frames_to(&self, map: &TempoMap, at: f64, t: f64, rate: u32) -> i64 {
         (f64::from(self.phase) + frames_from(map, at, t, rate)).round() as i64
+    }
+
+    /// Its recording's frames a song tick when it follows the tempo
+    /// (Repitch, or Stretch until its copies come) and has a made-at
+    /// tempo; None when it plays Off.
+    pub fn per_tick(&self, rate: u32) -> Option<f64> {
+        (self.follow != FollowTempo::Off && valid_bpm(self.bpm))
+            .then(|| 60.0 * f64::from(rate) / (self.bpm * f64::from(PPQ)))
+    }
+
+    /// The plan's `x(t)`: where in its recording song tick `t` plays, as
+    /// frames past `src` with the fraction, it starting at song tick `at`.
+    /// Off, the frames along the song's tempo map from `at` (it plays at
+    /// its own speed); following the tempo, the ticks from `at` at its
+    /// made-at tempo, whatever the song's tempo, so it stays on its beats.
+    /// Summed in f64 from the ticks, never rounded or added up a period at
+    /// a time.
+    pub fn src_pos(&self, map: &TempoMap, at: f64, t: f64, rate: u32) -> f64 {
+        f64::from(self.phase)
+            + match self.per_tick(rate) {
+                Some(k) => (t - at) * k,
+                None => frames_from(map, at, t, rate),
+            }
+    }
+
+    /// [`Region::src_pos`] rounded: the frame past `src` that plays at
+    /// song tick `t`. Off it is [`Region::frames_to`], to the frame.
+    pub fn src_frames_to(&self, map: &TempoMap, at: f64, t: f64, rate: u32) -> i64 {
+        self.src_pos(map, at, t, rate).round() as i64
+    }
+
+    /// The frames of its recording it covers, `len_f` frames long as it
+    /// plays ([`Region::frames_to`] to its end): where audio that runs on
+    /// from it starts. Off they are the same.
+    pub fn src_len(&self, len_f: i64, rate: u32) -> i64 {
+        match self.per_tick(rate) {
+            Some(k) => (f64::from(self.phase) + (self.end - self.start) as f64 * k).round() as i64,
+            None => len_f,
+        }
+    }
+
+    /// Recording frames an output frame at song tempo `bpm`, following
+    /// the tempo; None when it plays Off.
+    pub fn speed(&self, bpm: f64) -> Option<f64> {
+        (self.follow != FollowTempo::Off && valid_bpm(self.bpm)).then(|| bpm / self.bpm)
     }
 }
 
@@ -576,6 +726,10 @@ pub struct TakeInfo {
     pub pass: u16,
     /// The tempo it was recorded at (0: not known).
     pub bpm: f64,
+    /// The tempo changed while it recorded (a tempo point, a ramp, the
+    /// tempo turned): it has no one tempo, so a region of it can't follow
+    /// the tempo (phase 5).
+    pub varied: bool,
     /// The song tick (with its fraction) its frame 0 belongs to.
     pub anchor: f64,
     pub frames: usize,
@@ -626,6 +780,9 @@ pub struct Stats {
     /// Clip voices handed to the declick because a track needed a fifth
     /// ([`VOICES`]).
     pub declicked: u32,
+    /// Frames of regions following the tempo that played nothing because
+    /// the song asked them faster than [`MAX_SPEED`] (phase 5).
+    pub too_fast: u64,
 }
 
 /// What the host does about the recording files while
@@ -685,11 +842,14 @@ enum Store {
 /// where it plays (or starts), and the frame it stops at (its crossfade's
 /// end). Told to the player each period, and what a take's move to its
 /// file waits for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Cue {
     take: u16,
     frame: u64,
     end: u64,
+    /// Recording frames it moves an output frame (1 but following the
+    /// tempo), for the player's read ahead.
+    speed: f64,
 }
 
 #[derive(Clone, Copy)]
@@ -701,6 +861,8 @@ struct Take {
     group: u16,
     pass: u16,
     bpm: f64,
+    /// The tempo changed while it recorded ([`TakeInfo::varied`]).
+    varied: bool,
     anchor: f64,
     /// Frames written.
     frames: usize,
@@ -737,6 +899,7 @@ const NO_TAKE: Take = Take {
     channels: 1,
     group: 0,
     bpm: 0.0,
+    varied: false,
     pass: 0,
     anchor: 0.0,
     frames: 0,
@@ -753,9 +916,24 @@ const NO_TAKE: Take = Take {
 };
 
 impl Take {
+    /// The tempo a region of it was made at: its own, or 0 (none) when not
+    /// known or when the tempo changed while it recorded.
+    fn made_at(&self) -> f64 {
+        if self.varied {
+            0.0
+        } else {
+            self.bpm
+        }
+    }
+
     /// Adds `gain`-weighted frames `k..k + n` of take `id` into the
     /// interleaved stereo `out` (n frames); frames the take does not have
     /// add nothing. `gain(j)` is the gain of frame `j` of the run.
+    /// Always inlined: left to itself the compiler stopped inlining it
+    /// into [`Reader::add`] once that grew the read following the tempo,
+    /// and a region played as recorded cost 3.5 % more a block (the
+    /// bench's audio tracks rows).
+    #[inline(always)]
     fn add_into(
         &self,
         pool: &Pool,
@@ -1156,7 +1334,7 @@ fn join(a: &Region, b: &Region, map: &TempoMap, rate: u32) -> Join {
     // placed again each run).
     let frames = |r: &Region| r.frames_to(map, r.start as f64, r.end as f64, rate);
     let len_a = frames(a);
-    if b.src != a.src + len_a {
+    if !runs_on(a, len_a, b, rate) {
         return Join::Fade;
     }
     ends_meet(a, len_a, b, frames(b))
@@ -1164,12 +1342,22 @@ fn join(a: &Region, b: &Region, map: &TempoMap, rate: u32) -> Join {
 
 /// How `b` meets `a` where it starts as `a` ends, `len_a` and `len_b`
 /// frames long as they play: [`join`] past the ticks (clips place their
-/// regions themselves).
-fn join_run(a: &Region, len_a: i64, b: &Region, len_b: i64) -> Join {
-    if b.take != a.take || b.src != a.src + len_a {
+/// regions themselves). The audio runs on when `b` starts on the frame
+/// of the same recording `a` would play next, on the same mapping (both
+/// Off, or both following the tempo from the same made-at tempo).
+fn join_run(a: &Region, len_a: i64, b: &Region, len_b: i64, rate: u32) -> Join {
+    if !runs_on(a, len_a, b, rate) {
         return Join::Fade;
     }
     ends_meet(a, len_a, b, len_b)
+}
+
+/// `b` starts on the frame of the same recording `a`, `len_a` frames
+/// long as it plays, would play next, on the same mapping.
+fn runs_on(a: &Region, len_a: i64, b: &Region, rate: u32) -> bool {
+    b.take == a.take
+        && b.per_tick(rate) == a.per_tick(rate)
+        && b.src == a.src + a.src_len(len_a, rate)
 }
 
 /// The audio runs on from `a` into `b`: straight on if their gains meet,
@@ -1199,8 +1387,11 @@ fn cut(r: &Region, at: Tick, map: &TempoMap, rate: u32) -> (Region, Region) {
     before.end = at;
     before.left = add(r.left, len - k);
     after.start = at;
-    after.src = r.src + k;
-    after.phase = (f64::from(r.phase) + frames_from(map, start, at_f, rate) - k as f64) as f32;
+    // Where its recording is at the cut, on its own mapping (Off: frame
+    // `k`, where the part before ends).
+    let x = r.src_pos(map, start, at_f, rate);
+    after.src = r.src + x.round() as i64;
+    after.phase = (x - x.round()) as f32;
     after.into = add(r.into, k);
     (before, after)
 }
@@ -1275,6 +1466,11 @@ struct Reader<'a> {
     fade: &'a [f32; FADE + 1],
     player: &'a mut Option<Box<Player>>,
     reads: &'a mut [f32],
+    /// A read following the tempo: the recording frames it gathers
+    /// (stereo, [`GATHER`] frames) and what it reads from them (stereo,
+    /// [`RUN`] frames).
+    gathered: &'a mut [f32],
+    pitched: &'a mut [f32],
     stats: &'a mut Stats,
 }
 
@@ -1283,7 +1479,17 @@ impl Reader<'_> {
     /// tick `tick0`, frame `f0`: its gain, its own fades, the crossfades
     /// its joins ask for and the [`FADE`] frames past its end, through its
     /// shape; frames from memory or its file, those that miss counted.
-    fn add(&mut self, p: &Placed, map: &TempoMap, rate: u32, tick0: f64, f0: u64, dst: &mut [f32]) {
+    #[allow(clippy::too_many_arguments)]
+    fn add(
+        &mut self,
+        p: &Placed,
+        map: &TempoMap,
+        rate: u32,
+        bpm: f64,
+        tick0: f64,
+        f0: u64,
+        dst: &mut [f32],
+    ) {
         let (r, len_f, before, after) = (p.r, p.len_f, p.before, p.after);
         let len = dst.len() / 2;
         let outer = p.shape.steady(f0, len);
@@ -1352,7 +1558,36 @@ impl Reader<'_> {
         // The whole run past the fades and crossfades: one gain.
         let plain =
             outer.is_some() && e0 >= plain_from.max(edge) && e0 + len as i64 <= plain_to.min(len_f);
-        let (g, k) = (r.gain * outer.unwrap_or(1.0), r.src + e0);
+        let g = r.gain * outer.unwrap_or(1.0);
+        // Following the tempo at another speed than its own: read between
+        // its frames ([`Reader::add_pitched`]). At its own speed it plays
+        // its frames as Off does, from the frame its mapping says.
+        let speed = r.speed(bpm);
+        if let Some(sp) = speed.filter(|&s| s != 1.0) {
+            let x = r.src as f64 + r.src_pos(map, p.at, tick0, rate);
+            let gain = |j: usize| {
+                if plain {
+                    g
+                } else {
+                    gain_at(e0 + j as i64) * heard(j)
+                }
+            };
+            let missed = self.add_pitched(r.take, x, sp, dst, &gain);
+            let m = &mut self.takes[r.take as usize];
+            // Read between its frames, it ends on no frame a plain read
+            // could go on from.
+            m.after = CLEAR;
+            if missed > 0 {
+                m.missed += missed;
+                m.miss_tick = tick0;
+                self.stats.missed += missed;
+            }
+            return;
+        }
+        let k = match speed {
+            Some(_) => r.src + r.src_frames_to(map, p.at, tick0, rate),
+            None => r.src + e0,
+        };
         let (pool, reads) = (self.pool, &mut *self.reads);
         let (missed, after) = match tk.store {
             Store::File { gen } => {
@@ -1389,6 +1624,120 @@ impl Reader<'_> {
             m.missed += missed;
             m.miss_tick = tick0;
             self.stats.missed += missed;
+        }
+    }
+}
+
+impl Reader<'_> {
+    /// Adds what take `id` plays from recording frame `x` (with its
+    /// fraction), `speed` recording frames an output frame, into `dst` (a
+    /// run's frames, stereo), `gain(j)` weighing frame `j`: the frames the
+    /// run passes, gathered from the pool or the take's file with the
+    /// read's neighbours either side, read between with the streaming
+    /// cursor's band-limited read
+    /// ([`mpfree_stream::cursor::read_gathered`], `Read::Sinc8`), which
+    /// the pitched-reads standard measures. Faster than [`MAX_SPEED`] it
+    /// plays nothing, counted ([`Stats::too_fast`]). Gives the frames
+    /// passed that played silence for want of them (the neighbours aren't
+    /// counted). Never inlined, so [`Reader::add`] stays small for the
+    /// read of a region played as recorded.
+    #[inline(never)]
+    fn add_pitched(
+        &mut self,
+        id: u16,
+        x: f64,
+        speed: f64,
+        dst: &mut [f32],
+        gain: &impl Fn(usize) -> f32,
+    ) -> u64 {
+        let len = dst.len() / 2;
+        if len == 0 {
+            return 0;
+        }
+        if !(speed > 0.0 && speed <= MAX_SPEED) {
+            self.stats.too_fast += len as u64;
+            return 0;
+        }
+        let Some(tk) = self
+            .takes
+            .get(id as usize)
+            .filter(|k| k.live && !k.loading)
+            .copied()
+        else {
+            return 0;
+        };
+        let base = x.floor();
+        let frac = x - base;
+        let (lead, tail) = mpfree_stream::cursor::reach_of(READ, speed);
+        let passed = (frac + (len - 1) as f64 * speed).floor() as usize + 1;
+        let n = lead + passed + tail;
+        let first = base as i64 - lead as i64;
+        let g = &mut self.gathered[..2 * n];
+        g.fill(0.0);
+        let mut missed = 0;
+        for (from, to, counted) in [
+            (0, lead, false),
+            (lead, lead + passed, true),
+            (lead + passed, n, false),
+        ] {
+            let p = self.player.as_deref_mut();
+            let m = fetch(
+                &tk,
+                id,
+                self.pool,
+                p,
+                first + from as i64,
+                &mut g[2 * from..2 * to],
+                self.reads,
+            );
+            if counted {
+                missed += m;
+            }
+        }
+        let out = &mut self.pitched[..2 * len];
+        mpfree_stream::cursor::read_gathered(READ, g, 2, lead, frac, speed, out);
+        for (j, (d, o)) in dst.chunks_exact_mut(2).zip(out.chunks_exact(2)).enumerate() {
+            let w = gain(j);
+            d[0] += w * o[0];
+            d[1] += w * o[1];
+        }
+        missed
+    }
+}
+
+/// The read a region following the tempo reads between its frames with:
+/// band-limited, 8 zero crossings a side, which meets every row of the
+/// pitched-reads standard at every speed, so a region never changes read
+/// (and needs no fade between two) as the tempo moves.
+const READ: mpfree_stream::cursor::Read = mpfree_stream::cursor::Read::Sinc8;
+
+/// Take `id`'s frames `k..` into `out` (stereo, interleaved, zeroed by
+/// the caller), from wherever they are, as a region reads them: a frame
+/// it doesn't have is silence. Gives the frames missing from the stream
+/// cache.
+#[allow(clippy::too_many_arguments)]
+fn fetch(
+    tk: &Take,
+    id: u16,
+    pool: &Pool,
+    player: Option<&mut Player>,
+    k: i64,
+    out: &mut [f32],
+    scratch: &mut [f32],
+) -> u64 {
+    let one = |_: usize| 1.0;
+    match tk.store {
+        Store::File { gen } => {
+            tk.add_from_file(player, id, gen, tk.frames, k, out, scratch, &one)
+                .0
+        }
+        Store::Part { gen, freed, .. } if freed > 0 => {
+            tk.add_part(pool, player, id, gen, freed, k, out, scratch, &one)
+                .0
+        }
+        Store::Pool | Store::Part { .. } => {
+            tk.add_into(pool, id, k, out, &one);
+            0
         }
     }
 }
@@ -1470,6 +1819,10 @@ pub struct AudioTracks {
     /// through it.
     player: Option<Box<Player>>,
     reads: Box<[f32]>,
+    /// A read following the tempo: the frames it gathers and what it
+    /// reads from them ([`Reader::add_pitched`]).
+    gathered: Box<[f32]>,
+    pitched: Box<[f32]>,
     /// Room for one clip voice's run, before it joins its track.
     vbuf: Box<[f32]>,
     /// A take was let go while a voice played it ([`Take::let_go`]).
@@ -1491,6 +1844,8 @@ impl AudioTracks {
     /// Audio tracks at `rate` with memory for `seconds` of stereo audio
     /// (twice that of mono takes), all allocated here.
     pub fn new(rate: u32, seconds: u32) -> AudioTracks {
+        // The reads' tables, made here, never on the audio thread.
+        mpfree_stream::cursor::prepare_reads();
         let samples = rate as usize * seconds as usize * 2;
         let hist = (0..HISTORY).map(|_| Snap::new()).collect();
         AudioTracks {
@@ -1528,6 +1883,8 @@ impl AudioTracks {
             player: None,
             keep: false,
             reads: vec![0.0; 2 * RUN].into_boxed_slice(),
+            gathered: vec![0.0; 2 * GATHER].into_boxed_slice(),
+            pitched: vec![0.0; 2 * RUN].into_boxed_slice(),
             vbuf: vec![0.0; 2 * RUN].into_boxed_slice(),
             let_go: false,
             cues: [[None; 2]; MAX_TRACKS],
@@ -1660,6 +2017,7 @@ impl AudioTracks {
             group: t.group,
             pass: t.pass,
             bpm: t.bpm,
+            varied: t.varied,
             anchor: t.anchor,
             frames: t.frames,
             channels: t.channels as usize,
@@ -2306,19 +2664,13 @@ impl AudioTracks {
                 if to <= from {
                     return self.refuse();
                 }
-                let (src, phase) = src_at(map, a, from as f64, rate);
-                let r = Region {
-                    start: from,
-                    end: to,
+                let r = Region::of(
+                    from,
+                    to,
                     take,
-                    src,
-                    phase,
-                    gain: 1.0,
-                    fade_in: 0,
-                    fade_out: 0,
-                    into: 0,
-                    left: 0,
-                };
+                    src_at(map, a, from as f64, rate),
+                    tk.made_at(),
+                );
                 self.put_edit(
                     tk.track as usize,
                     (from, to),
@@ -2391,6 +2743,40 @@ impl AudioTracks {
                     track,
                     |t, _, _| {
                         t.regions[i].gain = gain.clamp(0.0, 4.0);
+                        true
+                    },
+                    map,
+                );
+            }
+            Command::SetFollow {
+                track,
+                at,
+                follow,
+                keep_pitch,
+            } if ok_track(track) => {
+                let Some(i) = self.tracks[track].at(at) else {
+                    return self.refuse();
+                };
+                self.edit(
+                    track,
+                    |t, _, _| {
+                        let r = &mut t.regions[i];
+                        (r.follow, r.keep_pitch) = (follow, keep_pitch);
+                        true
+                    },
+                    map,
+                );
+            }
+            Command::SetTempo { track, at, bpm }
+                if ok_track(track) && (bpm == 0.0 || valid_bpm(bpm)) =>
+            {
+                let Some(i) = self.tracks[track].at(at) else {
+                    return self.refuse();
+                };
+                self.edit(
+                    track,
+                    |t, _, _| {
+                        t.regions[i].bpm = bpm;
                         true
                     },
                     map,
@@ -2615,6 +3001,7 @@ impl AudioTracks {
             f.group = k.group;
             f.pass = k.pass;
             f.bpm = k.bpm;
+            f.varied = k.varied;
             f.anchor = k.anchor;
             f.frames = k.frames;
             f.channels = k.channels;
@@ -2709,6 +3096,7 @@ impl AudioTracks {
             } else {
                 0.0
             },
+            varied: f.varied,
             anchor: f.anchor,
             loading: true,
             ..NO_TAKE
@@ -2841,19 +3229,13 @@ impl AudioTracks {
                     if end <= start {
                         continue;
                     }
-                    let (src, phase) = src_at(m, a, start as f64, rate);
-                    let r = Region {
+                    let r = Region::of(
                         start,
                         end,
                         take,
-                        src,
-                        phase,
-                        gain: 1.0,
-                        fade_in: 0,
-                        fade_out: 0,
-                        into: 0,
-                        left: 0,
-                    };
+                        src_at(m, a, start as f64, rate),
+                        tk.made_at(),
+                    );
                     if !t.put(m, rate, r) {
                         return false;
                     }
@@ -3030,20 +3412,9 @@ impl AudioTracks {
         let start = rec.t_in.round() as Tick;
         let end_t = t_out.round() as Tick;
         if end_t > start {
-            let anchor = self.takes[id].anchor;
-            let (src, phase) = src_at(map, anchor, start as f64, rate);
-            let r = Region {
-                start,
-                end: end_t,
-                take: rec.take,
-                src,
-                phase,
-                gain: 1.0,
-                fade_in: 0,
-                fade_out: 0,
-                into: 0,
-                left: 0,
-            };
+            let tk = &self.takes[id];
+            let at = src_at(map, tk.anchor, start as f64, rate);
+            let r = Region::of(start, end_t, rec.take, at, tk.made_at());
             self.put_edit(t, (start, end_t), |tr, m, rate| tr.put(m, rate, r), map);
         }
     }
@@ -3451,6 +3822,7 @@ impl AudioTracks {
             } else {
                 0.0
             },
+            varied: f.varied,
             anchor: f.anchor,
             frames: f.frames,
             store: Store::File { gen },
@@ -3523,25 +3895,31 @@ impl AudioTracks {
                 else {
                     continue;
                 };
-                // Frames from the region's start to the tick: 0 for one
-                // still to come, if it comes soon enough.
+                // Its recording's frames from its start to the tick: 0
+                // for one still to come, if it comes soon enough.
                 let e0 = if at > tick {
                     if frames_from(map, tick, at, rate) > ahead {
                         break;
                     }
                     0
                 } else {
-                    r.frames_to(map, at, tick, rate)
+                    r.src_frames_to(map, at, tick, rate)
                 };
                 let to = at + (r.end - r.start) as f64;
-                let len_f = r.frames_to(map, at, to, rate).max(more);
-                let end = (r.src + len_f + FADE as i64).clamp(0, tk.frames as i64) as u64;
+                // Following the tempo, a recording frame passes in less
+                // or more than an output frame: the read ahead and the
+                // fade past its end count its own frames.
+                let speed = r.speed(bpm).unwrap_or(1.0);
+                let len_f = r.src_frames_to(map, at, to, rate).max(more);
+                let fade = (FADE as f64 * speed).ceil() as i64;
+                let end = (r.src + len_f + fade).clamp(0, tk.frames as i64) as u64;
                 let frame = (r.src + e0).max(0) as u64;
                 if frame < end {
                     self.cues[t][slot] = Some(Cue {
                         take: r.take,
                         frame,
                         end,
+                        speed,
                     });
                 }
             }
@@ -3567,7 +3945,7 @@ impl AudioTracks {
                 if p.source(c.take) == Some((gen, true)) {
                     let place = Place {
                         frame: c.frame,
-                        speed: 1.0,
+                        speed: c.speed,
                         looping: None,
                         end: Some(c.end),
                     };
@@ -3744,6 +4122,11 @@ impl AudioTracks {
             }
             if let Some(rec) = self.tracks[t].rec {
                 let id = rec.take as usize;
+                if span.bpm != self.takes[id].bpm {
+                    // A tempo point, a ramp's step or the tempo turned:
+                    // the take has no one tempo now.
+                    self.takes[id].varied = true;
+                }
                 let sel = self.input_of(id);
                 if !self.write(id, input, sel) {
                     // The memory is full: the take ends where its audio
@@ -3850,6 +4233,8 @@ impl AudioTracks {
             fade,
             player,
             reads,
+            gathered,
+            pitched,
             stats,
             ..
         } = self;
@@ -3864,6 +4249,8 @@ impl AudioTracks {
             fade,
             player,
             reads,
+            gathered,
+            pitched,
             stats,
         };
         let dst = &mut buf[2 * off..2 * (off + len)];
@@ -3899,7 +4286,7 @@ impl AudioTracks {
                 after,
                 shape,
             };
-            reader.add(&placed, map, rate, tick0, f0, dst);
+            reader.add(&placed, map, rate, span.bpm, tick0, f0, dst);
         }
     }
 
@@ -3925,6 +4312,8 @@ impl AudioTracks {
             fade,
             player,
             reads,
+            gathered,
+            pitched,
             stats,
             vbuf,
             ..
@@ -3943,6 +4332,8 @@ impl AudioTracks {
                 fade,
                 player,
                 reads,
+                gathered,
+                pitched,
                 stats,
             };
             let vb = &mut vbuf[..2 * len];
@@ -4249,11 +4640,13 @@ impl AudioTracks {
     }
 
     /// The take each of `c`'s regions plays ([`NO_TAKE_ID`] for one not
-    /// here).
-    fn takes_for(&self, c: &ClipPlay) -> [u16; MAX_CLIP_REGIONS] {
-        let mut out = [NO_TAKE_ID; MAX_CLIP_REGIONS];
+    /// here), with the tempo it was made at (0: none).
+    fn takes_for(&self, c: &ClipPlay) -> [(u16, f64); MAX_CLIP_REGIONS] {
+        let mut out = [(NO_TAKE_ID, 0.0); MAX_CLIP_REGIONS];
         for (o, r) in out.iter_mut().zip(c.regions) {
-            *o = self.take_of(r.rec).unwrap_or(NO_TAKE_ID);
+            *o = self.take_of(r.rec).map_or((NO_TAKE_ID, 0.0), |id| {
+                (id, self.takes[id as usize].made_at())
+            });
         }
         out
     }

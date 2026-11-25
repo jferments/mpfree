@@ -20,6 +20,15 @@
 //! `phase=` after `src=` where it starts between frames of its take
 //! ([`crate::Region::phase`]).
 //!
+//! Following the tempo (phase 5): a region line has `follow=repitch` or
+//! `follow=stretch` when it isn't Off, `keep=pitch` for Keep pitch, and
+//! `bpm=` when its made-at tempo isn't its take's; a take line has
+//! `tempo=varies` when the tempo changed while it recorded. Each is
+//! written only when it isn't the default, so a part with none of them is
+//! as before. A build from before phase 5 would skip them and play the
+//! regions Off, so the project names the needs word `audio-tempo` while
+//! any is there ([`Saved::needs_tempo`]) and such a build refuses it.
+//!
 //! A track line's `id` is the lasting id of its track in the project's
 //! track list (the audio tracks rethink, phase 1: an audio track is a
 //! track like any other); its `track` number only ties the takes to it in
@@ -53,9 +62,9 @@
 //! puts each take back (its audio copies in over a few periods) and
 //! [`crate::AudioTracks::load_track`] each track.
 
-use mpfree_transport::time::Tick;
+use mpfree_transport::time::{valid_bpm, Tick};
 
-use crate::{Input, Monitor, RecordingId, Region, MAX_REGIONS, MAX_TAKES, MAX_TRACKS};
+use crate::{FollowTempo, Input, Monitor, RecordingId, Region, MAX_REGIONS, MAX_TAKES, MAX_TRACKS};
 
 /// The first line of the text.
 pub const FORMAT: &str = "mpfree-audiotracks 2";
@@ -102,6 +111,9 @@ pub struct TakeFile {
     pub pass: u16,
     /// The tempo it was recorded at (0: not known).
     pub bpm: f64,
+    /// The tempo changed while it recorded: `tempo=varies` in the text
+    /// (phase 5).
+    pub varied: bool,
     pub anchor: f64,
     pub frames: usize,
     pub channels: usize,
@@ -131,6 +143,26 @@ pub struct Saved {
 pub const NAME_ROOM: usize = 96;
 
 impl Saved {
+    /// The tempo a region of take `id` is made at by default: the take's,
+    /// or 0 when it has none or the tempo changed while it recorded (as
+    /// the engine's `Take::made_at`).
+    pub fn made_at(&self, id: u16) -> f64 {
+        self.takes
+            .iter()
+            .find(|k| k.id == id)
+            .map_or(0.0, |k| if k.varied { 0.0 } else { k.bpm })
+    }
+
+    /// Whether a region follows the tempo or has a tempo of its own, or a
+    /// take says the tempo changed while it recorded: then the project
+    /// needs `audio-tempo` (phase 5), which a build from before refuses.
+    pub fn needs_tempo(&self) -> bool {
+        self.takes.iter().any(|k| k.varied)
+            || self.tracks.iter().flat_map(|t| &t.regions).any(|r| {
+                r.follow != FollowTempo::Off || r.keep_pitch || r.bpm != self.made_at(r.take)
+            })
+    }
+
     /// The takes, recorded at [`Saved::rate`], as at `rate`, so the song
     /// plays at its own speed and pitch: each take's audio converted
     /// through the windowed-sinc resampler ([`mpfree_stretch::convert_rate`],
@@ -195,6 +227,7 @@ impl Saved {
                     group: 0,
                     pass: 0,
                     bpm: 0.0,
+                    varied: false,
                     anchor: 0.0,
                     frames: 0,
                     channels: 1,
@@ -252,18 +285,60 @@ pub fn to_text(saved: &Saved) -> String {
                 format!(" phase={}", r.phase)
             };
             s.push_str(&format!(
-                "region start={} end={} take={} src={}{phase} gain={} fade_in={} fade_out={} into={} left={}\n",
-                r.start, r.end, r.take, r.src, r.gain, r.fade_in, r.fade_out, r.into, r.left
+                "region start={} end={} take={} src={}{phase} gain={} fade_in={} fade_out={} into={} left={}{}\n",
+                r.start,
+                r.end,
+                r.take,
+                r.src,
+                r.gain,
+                r.fade_in,
+                r.fade_out,
+                r.into,
+                r.left,
+                tempo_words(r, saved.made_at(r.take)),
             ));
         }
     }
     for k in &saved.takes {
         s.push_str(&format!(
-            "take={} rec={} track={} group={} pass={} bpm={} anchor={} frames={} channels={} file={}\n",
-            k.id, k.rec, k.track, k.group, k.pass, k.bpm, k.anchor, k.frames, k.channels, k.file
+            "take={} rec={} track={} group={} pass={} bpm={}{} anchor={} frames={} channels={} file={}\n",
+            k.id,
+            k.rec,
+            k.track,
+            k.group,
+            k.pass,
+            k.bpm,
+            if k.varied { " tempo=varies" } else { "" },
+            k.anchor,
+            k.frames,
+            k.channels,
+            k.file
         ));
     }
     s
+}
+
+/// Whether the part `text` needs `audio-tempo` ([`Saved::needs_tempo`]):
+/// for the project's needs line, from the part as written. A part that
+/// doesn't read needs nothing more.
+pub fn needs_tempo(text: &str) -> bool {
+    from_text(text).is_ok_and(|s| s.needs_tempo())
+}
+
+/// A region's tempo words ([`to_text`]): `follow=` and `keep=` when not
+/// the default, and `bpm=` when it isn't `take_bpm`, its take's.
+fn tempo_words(r: &Region, take_bpm: f64) -> String {
+    let mut w = String::new();
+    if r.follow != FollowTempo::Off {
+        w.push_str(&format!(" follow={}", r.follow.word()));
+    }
+    if r.keep_pitch {
+        w.push_str(" keep=pitch");
+    }
+    if r.bpm != take_bpm {
+        w.push_str(&format!(" bpm={}", r.bpm));
+    }
+    w
 }
 
 /// The `key=value` words of a line, and the `file=` rest if any.
@@ -368,6 +443,21 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                 fade_out: num(&kv, "fade_out", n).unwrap_or(0),
                 into: num(&kv, "into", n).unwrap_or(0),
                 left: num(&kv, "left", n).unwrap_or(0),
+                follow: match get(&kv, "follow") {
+                    None => FollowTempo::Off,
+                    Some(w) => FollowTempo::from_word(w)
+                        .ok_or_else(|| format!("line {n}: follow={w} is not a setting"))?,
+                },
+                keep_pitch: get(&kv, "keep") == Some("pitch"),
+                // Its take's unless it says (filled in once the takes are
+                // read): below 0 for now.
+                bpm: match get(&kv, "bpm") {
+                    None => -1.0,
+                    Some(_) => num::<f64>(&kv, "bpm", n)
+                        .ok()
+                        .filter(|b| *b == 0.0 || valid_bpm(*b))
+                        .ok_or_else(|| format!("line {n}: a bad bpm"))?,
+                },
             };
             if r.end <= r.start || t.regions.last().is_some_and(|p| p.end > r.start) {
                 return Err(format!("line {n}: a region empty or out of order"));
@@ -409,6 +499,7 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                     .ok()
                     .filter(|b: &f64| b.is_finite() && *b > 0.0)
                     .unwrap_or(0.0),
+                varied: get(&kv, "tempo") == Some("varies"),
                 anchor,
                 frames,
                 channels,
@@ -430,6 +521,20 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                     t.index, r.take
                 ));
             }
+        }
+    }
+    // A region with no tempo of its own is made at its take's.
+    let made: Vec<(u16, f64)> = saved
+        .takes
+        .iter()
+        .map(|k| (k.id, saved.made_at(k.id)))
+        .collect();
+    for r in saved.tracks.iter_mut().flat_map(|t| &mut t.regions) {
+        if r.bpm < 0.0 {
+            r.bpm = made
+                .iter()
+                .find(|(id, _)| *id == r.take)
+                .map_or(0.0, |m| m.1);
         }
     }
     Ok(saved)
@@ -597,6 +702,9 @@ mod tests {
             fade_out: 0,
             into: 3,
             left: 0,
+            // Its take's, as the engine makes it: no `bpm=` in the text.
+            bpm: 97.5,
+            ..Region::EMPTY
         };
         let take = |id, track, file: &str| TakeFile {
             id,
@@ -605,6 +713,7 @@ mod tests {
             group: 2,
             pass: id,
             bpm: 97.5,
+            varied: false,
             anchor: -12.345_678_9,
             frames: 44_100,
             channels: 1 + id as usize % 2,
@@ -750,6 +859,48 @@ mod tests {
             RecordingId::parse(one).map(|r| r.to_string()),
             Some(one.into())
         );
+    }
+
+    /// Phase 5: a region's Follow tempo, Keep pitch and a tempo of its
+    /// own come back as they were, and a take recorded across a tempo
+    /// change; each word only when not the default, so a part with none
+    /// is as before and needs nothing new. Bad words are refused.
+    #[test]
+    fn follow_tempo_and_a_regions_own_tempo_come_back() {
+        let plain = saved();
+        let t = to_text(&plain);
+        assert!(!t.contains("follow=") && !t.contains("tempo=varies"), "{t}");
+        assert!(!plain.needs_tempo() && !needs_tempo(&t));
+        let mut s = saved();
+        let r = &mut s.tracks[0].regions;
+        r[0].follow = FollowTempo::Repitch;
+        (r[1].follow, r[1].keep_pitch, r[1].bpm) = (FollowTempo::Stretch, true, 120.0);
+        s.takes[2].varied = true;
+        let t = to_text(&s);
+        assert!(t.contains(" follow=repitch"), "{t}");
+        assert!(t.contains(" follow=stretch keep=pitch bpm=120"), "{t}");
+        assert!(t.contains(" tempo=varies"), "{t}");
+        assert_eq!(from_text(&t), Ok(s.clone()));
+        assert!(s.needs_tempo() && needs_tempo(&t));
+        // Each alone needs `audio-tempo`.
+        let mut one = saved();
+        one.tracks[0].regions[1].bpm = 100.0;
+        assert!(one.needs_tempo());
+        let mut one = saved();
+        one.takes[0].varied = true;
+        assert!(one.needs_tempo());
+        // A region of a take recorded across a tempo change has no tempo
+        // of its own by default (0), and none is written.
+        let mut v = saved();
+        v.takes[1].varied = true;
+        v.tracks[0].regions[1].bpm = 0.0;
+        let t = to_text(&v);
+        assert!(!t.contains("bpm=0"), "{t}");
+        assert_eq!(from_text(&t), Ok(v));
+        // Refused: a setting that isn't one, a tempo MPFree doesn't play.
+        let t = to_text(&s);
+        assert!(from_text(&t.replace("follow=repitch", "follow=warp")).is_err());
+        assert!(from_text(&t.replace("bpm=120", "bpm=2")).is_err());
     }
 
     #[test]

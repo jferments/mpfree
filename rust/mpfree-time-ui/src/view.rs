@@ -70,7 +70,7 @@ use crate::widgets::{
 };
 use mpfree_arp_ui::make_sheet::{MakeSheet, SheetView, MAKE_SHEET};
 use mpfree_audiotracks::host::TakeWave;
-use mpfree_audiotracks::{Input, Monitor};
+use mpfree_audiotracks::{FollowTempo, Input, Monitor};
 use mpfree_play::mpfree_param::clips::{self, Clips};
 use mpfree_play::mpfree_param::{Owner, ParamAddr};
 use mpfree_play::{anchored, ClipDrop, Cue, Launch, Replaced, SongChange, Take, Takes};
@@ -593,6 +593,15 @@ pub enum AudioSet {
     /// Its own gain, 0 (off) to 4 (+12 dB).
     Gain(f32),
     Name(String),
+    /// Follow tempo for every region (audio tracks phase 5), and on
+    /// Stretch whether it keeps its pitch while its copy isn't ready.
+    Follow(mpfree_seq::FollowTempo, bool),
+    /// Region `region`'s own made-at tempo (phase 5): a tempo MPFree
+    /// plays, or 0 for its recording's.
+    Tempo {
+        region: usize,
+        bpm: f64,
+    },
 }
 /// The clip card's Continue row (composing tools, phase 1 step 4): either
 /// arrow opens the note editor on the clip with Continue open.
@@ -2382,6 +2391,21 @@ pub enum AudioAction {
     /// its track's first empty cell, the song unchanged (the app builds
     /// the clip from the region and puts it in).
     ToCell(RegionId),
+    /// How the region follows the song's tempo (audio tracks phase 5,
+    /// `mpfree_audiotracks::Command::SetFollow`), and on Stretch whether
+    /// it keeps its pitch while its copy isn't ready: a step of the
+    /// region edits' own, as Gain is.
+    Follow {
+        region: RegionId,
+        follow: FollowTempo,
+        keep_pitch: bool,
+    },
+    /// The tempo the region's audio was made at, set by hand (phase 5), in
+    /// hundredths of a BPM; 0 gives it its take's again.
+    Tempo {
+        region: RegionId,
+        centi_bpm: u32,
+    },
     /// UNDO on Arrange while the region edits changed last (the app sends
     /// it, layout spec 4c): take back the last.
     Undo,

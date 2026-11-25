@@ -35,7 +35,7 @@ use mpfree_perform::Perform;
 use mpfree_play::{pass_into, Cue, Launch, PlayView};
 use mpfree_seq::{LaunchGrid, Project, RecId};
 use mpfree_time_ui::view::{cue_tick, AudioWaitCounts, MuteWait, TransportInfo};
-use mpfree_transport::time::{frames_between, Tick};
+use mpfree_transport::time::{frames_between, valid_bpm, Tick, PPQ};
 
 /// Lines a cue may move to before it is cancelled.
 pub const MOVES: u8 = 2;
@@ -95,6 +95,9 @@ pub(super) struct Ctx<'a> {
     /// The frame the music has reached, as far as the control half has
     /// heard.
     pub heard: u64,
+    /// The tempo each recording was made at, 0 for none: where a region
+    /// following the tempo at its recording's is in it (phase 5).
+    pub tempos: &'a [(RecId, f64)],
 }
 
 /// The waits, and what the control half saw at its last compile to tell
@@ -496,8 +499,20 @@ fn needs_of(cx: &Ctx, w: &Wait, c: &Cue, out: &mut Vec<AudioNeed>) {
         } else {
             r.start
         };
-        let into_region = frames_between(r.start, start, bpm, rate) as i64;
-        let len = (frames_between(r.start, r.end, bpm, rate).ceil() as i64).max(1);
+        // Following the tempo (phase 5): its recording's frames at its own
+        // tempo, a second of the song as many more or fewer of them.
+        let (into_region, len, second) = match per_tick(cx, r) {
+            Some((k, made)) => (
+                ((start - r.start) as f64 * k) as i64,
+                (((r.end - r.start) as f64 * k).ceil() as i64).max(1),
+                (second as f64 * bpm / made).ceil() as i64,
+            ),
+            None => (
+                frames_between(r.start, start, bpm, rate) as i64,
+                (frames_between(r.start, r.end, bpm, rate).ceil() as i64).max(1),
+                second,
+            ),
+        };
         out.push(AudioNeed {
             cue: w.key,
             rec: r.rec,
@@ -505,4 +520,22 @@ fn needs_of(cx: &Ctx, w: &Wait, c: &Cue, out: &mut Vec<AudioNeed>) {
             to: r.src + len.min(into_region + second).max(into_region + 1),
         });
     }
+}
+
+/// Frames of `r`'s recording a tick, and the tempo it was made at, when it
+/// follows the tempo at a tempo known (its own, else its recording's), as
+/// the track player reads it (`mpfree_audiotracks::Region::per_tick`).
+fn per_tick(cx: &Ctx, r: &mpfree_seq::ClipRegion) -> Option<(f64, f64)> {
+    if r.follow == mpfree_seq::FollowTempo::Off {
+        return None;
+    }
+    let made = if r.bpm != 0.0 {
+        r.bpm
+    } else {
+        cx.tempos
+            .iter()
+            .find(|(rec, _)| *rec == r.rec)
+            .map_or(0.0, |&(_, bpm)| bpm)
+    };
+    valid_bpm(made).then(|| (60.0 * f64::from(cx.rate) / (made * f64::from(PPQ)), made))
 }

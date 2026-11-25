@@ -15498,6 +15498,9 @@ fn player_session(
         if let Some(spans) = tracks.spans_if_changed(time.project()) {
             time.set_audio_spans(spans);
         }
+        if let Some(tempos) = tracks.tempos_if_changed() {
+            time.set_rec_tempos(tempos);
+        }
         cut_blocks_under_takes(out, &mut time, &mut tracks);
         // Fit to tempo on an audio clip's card: once its copies are in,
         // the clip plays them as one UNDO step, held while the time engine
@@ -18798,6 +18801,7 @@ mod tests {
                 file: String::new(),
                 path: None,
                 audio: vec![0.25; frames],
+                varied: false,
             };
             assert!(r.tracks.host.tracks.load_take(take).is_ok());
             while r.tracks.host.tracks.loading() > 0 {
@@ -18992,6 +18996,7 @@ mod tests {
             file: String::new(),
             path: None,
             audio,
+            varied: false,
         };
         assert!(tracks.host.tracks.load_take(take).is_ok());
         let (mut out, mut at) = (Vec::new(), None);
@@ -19189,6 +19194,7 @@ mod tests {
             file: String::new(),
             path: None,
             audio: vec![0.5; made],
+            varied: false,
         };
         assert!(tracks.host.tracks.load_take(take).is_ok());
         let mut rest = Vec::new();
@@ -19312,6 +19318,7 @@ mod tests {
                 file: String::new(),
                 path: None,
                 audio: vec![level; bar_frames],
+                varied: false,
             };
             assert!(tracks.host.tracks.load_take(take).is_ok());
         }
@@ -19461,6 +19468,7 @@ mod tests {
             file: String::new(),
             path: None,
             audio,
+            varied: false,
         };
         assert!(tracks.host.tracks.load_take(take).is_ok());
         fn run(
@@ -19603,6 +19611,9 @@ mod tests {
                 if let Some(spans) = tracks.spans_if_changed(time.project()) {
                     time.set_audio_spans(spans);
                 }
+                if let Some(tempos) = tracks.tempos_if_changed() {
+                    time.set_rec_tempos(tempos);
+                }
                 cut_blocks_under_takes(out, time, tracks);
             }
         }
@@ -19639,6 +19650,7 @@ mod tests {
                         }
                     })
                     .collect(),
+                varied: false,
             };
             assert!(tracks.host.tracks.load_take(take).is_ok());
         }
@@ -19843,6 +19855,9 @@ mod tests {
                 if let Some(spans) = tracks.spans_if_changed(time.project()) {
                     time.set_audio_spans(spans);
                 }
+                if let Some(tempos) = tracks.tempos_if_changed() {
+                    time.set_rec_tempos(tempos);
+                }
                 cut_blocks_under_takes(out, time, tracks);
             }
         }
@@ -19871,6 +19886,7 @@ mod tests {
                 audio: (0..frames)
                     .map(|i| (i % k) as f32 / (2.0 * k as f32))
                     .collect(),
+                varied: false,
             };
             assert!(tracks.host.tracks.load_take(take).is_ok());
         }
@@ -20040,6 +20056,7 @@ mod tests {
                 file: String::new(),
                 path: None,
                 audio: vec![0.25; frames],
+                varied: false,
             };
             assert!(tracks.host.tracks.load_take(take).is_ok());
         }
@@ -20155,6 +20172,7 @@ mod tests {
             file: String::new(),
             path: None,
             audio: vec![0.25; 2 * bar_frames],
+            varied: false,
         };
         assert!(tracks.host.tracks.load_take(take).is_ok());
         for _ in 0..100 {
@@ -20259,6 +20277,7 @@ mod tests {
             file: String::new(),
             path: None,
             audio: vec![0.25; bar_frames],
+            varied: false,
         };
         assert!(tracks.host.tracks.load_take(take).is_ok());
         let run = |time: &mut time::TimeHost,

@@ -1198,6 +1198,12 @@ impl TimeHost {
         self.with(|c| c.set_audio_spans(spans));
     }
 
+    /// The tempo each recording was made at, 0 for none (audio tracks
+    /// phase 5; see `TimeControl::set_rec_tempos`).
+    pub fn set_rec_tempos(&mut self, tempos: Vec<(mpfree_seq::RecId, f64)>) {
+        self.with(|c| c.set_rec_tempos(tempos));
+    }
+
     /// Audio track `track` armed or disarmed by its own arm: the Clip tab
     /// follows it (see `TimeControl::focus_audio`).
     pub fn focus_audio(&mut self, track: usize, on: bool) {
@@ -15827,6 +15833,38 @@ mod tests {
             assert_eq!(playing(&h, VOCAL).map(|p| p.0), Some(1));
         }
 
+        /// Audio tracks phase 5: a clip following the tempo needs its
+        /// recordings' frames at their own tempos, its recording's (as the
+        /// audio tracks tell the time engine) or its own: a second of the
+        /// song is twice as many frames of audio made at 60 BPM, half as
+        /// many of audio made at 240.
+        #[test]
+        fn a_clip_following_the_tempo_needs_its_frames_at_its_own_tempo() {
+            let (mut h, _pads) = host(true);
+            let a = h.control.project.tracks[VOCAL].slots[0]
+                .as_mut()
+                .unwrap()
+                .audio
+                .as_mut()
+                .unwrap();
+            a.set_follow(mpfree_seq::FollowTempo::Repitch, false);
+            a.regions[1].bpm = 240.0;
+            h.set_rec_tempos(vec![(RecId(1), 60.0), (RecId(9), 90.0)]);
+            launch(&mut h, VOCAL, 0);
+            let got: Vec<_> = h
+                .audio_needs()
+                .iter()
+                .map(|n| (n.rec, n.from, n.to))
+                .collect();
+            assert_eq!(
+                got,
+                vec![
+                    (RecId(1), 0, 2 * SECOND),
+                    (RecId(9), 100_000, 100_000 + SECOND / 2)
+                ]
+            );
+        }
+
         #[test]
         fn a_loop_jump_aims_a_waiting_cue_at_the_next_line_without_a_move() {
             let (mut h, mut pads) = host(true);
@@ -16392,6 +16430,77 @@ mod tests {
             assert_eq!(clip(&h).audio.unwrap().gain, 1.0);
             h.act(TimeAction::Undo).unwrap();
             assert_eq!((clip(&h).length, region(&h)), (3840, first));
+        }
+
+        /// Audio tracks phase 5, with no card row yet (5c): Follow tempo
+        /// set for a whole clip, and a region's own tempo, each one take
+        /// on the one history that UNDO takes back; a tempo MPFree
+        /// doesn't play, or a region the clip hasn't got, is refused.
+        #[test]
+        fn an_audio_clips_follow_tempo_and_a_regions_tempo_are_a_take_each() {
+            use mpfree_seq::FollowTempo;
+            use mpfree_time_ui::view::AudioSet;
+            let mut h = host();
+            let set = |row, set| TimeAction::AudioClip {
+                track: VOCAL,
+                slot: 0,
+                row,
+                set,
+            };
+            let clip = |h: &TimeHost| h.control.project.clip(VOCAL, 0).unwrap().clone();
+            let region = |h: &TimeHost| clip(h).audio.unwrap().regions[0];
+            let said = h
+                .act(set(7, AudioSet::Follow(FollowTempo::Repitch, false)))
+                .unwrap();
+            assert_eq!(
+                said,
+                "clip: Verse · Follow tempo Repitch (UNDO takes it back)"
+            );
+            assert_eq!(region(&h).follow, FollowTempo::Repitch);
+            assert_eq!(region(&h).bpm, 0.0, "its recording's tempo");
+            let said = h
+                .act(set(
+                    8,
+                    AudioSet::Tempo {
+                        region: 0,
+                        bpm: 97.5,
+                    },
+                ))
+                .unwrap();
+            assert_eq!(
+                said,
+                "clip: Verse · region 1's tempo 97.5 BPM (UNDO takes it back)"
+            );
+            assert_eq!(region(&h).bpm, 97.5);
+            assert!(clip(&h).audio.unwrap().follows_tempo());
+            assert_eq!(h.state().done.len(), 2, "a take each");
+            assert!(h
+                .act(set(
+                    8,
+                    AudioSet::Tempo {
+                        region: 0,
+                        bpm: 5.0
+                    }
+                ))
+                .is_err());
+            assert!(h
+                .act(set(
+                    8,
+                    AudioSet::Tempo {
+                        region: 3,
+                        bpm: 100.0
+                    }
+                ))
+                .is_err());
+            assert_eq!(region(&h).bpm, 97.5, "nothing changed");
+            h.act(TimeAction::Undo).unwrap();
+            assert_eq!(
+                (region(&h).follow, region(&h).bpm),
+                (FollowTempo::Repitch, 0.0)
+            );
+            h.act(TimeAction::Undo).unwrap();
+            assert_eq!(region(&h).follow, FollowTempo::Off);
+            assert!(!clip(&h).audio.unwrap().follows_tempo());
         }
 
         #[test]

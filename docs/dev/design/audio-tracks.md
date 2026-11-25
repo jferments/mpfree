@@ -49,7 +49,7 @@ Every region fades in over `FADE` (64) frames from its start and plays on `FADE`
 
 ## Time
 
-A region sits on song ticks, so it stays on its bar when the tempo before it changes. Its audio plays sample for sample from the region's start, the way a DAW plays audio that is not warped. At a tempo other than the one it was recorded at, it doesn't stretch by itself, so a region longer than a bar drifts against the bars until the take is fitted (below).
+A region sits on song ticks, so it stays on its bar when the tempo before it changes. By default (Follow tempo Off) its audio plays sample for sample from the region's start, the way a DAW plays audio that is not warped. At a tempo other than the one it was recorded at, it doesn't stretch by itself, so a region longer than a bar drifts against the bars until the take is fitted (below), or until it follows the tempo (phase 5: Repitch reads it faster or slower to stay on its beats; [tempo-follow.md](tempo-follow.md)).
 
 **Fitting a take to a new tempo** ([`stretch.rs`](../../../rust/mpfree-audiotracks/src/stretch.rs)) keeps its pitch:
 
@@ -394,6 +394,10 @@ Phase 4 of the rethink ([plan](https://claude.ai/artifact/HA92ecH36LM6UDwiLCwJHa
 
 - **4a, each loop on its own output** (built): the looper keeps each loop's sound apart ([looper design, "Each loop on its own output"](looper.md#each-loop-on-its-own-output)), and the app adds them up where the Loop strip takes the mix, so nothing sounds different. The sum is the old mix bit for bit.
 - **4b to 4e** (built of 4b: `LoopId`, loop cells on audio tracks as `Clip::loop_clip`, saved as `loopclip`, and one track a loop in `Project::check`; the arranger's `AudioPlays::Loop`; the track player's loops, `mpfree-audiotracks` `loop_play.rs`, with one crossfade at the track; and the looper playing a loop where the track says, `Looper::play`; the app's wiring behind Dev's "Loops on audio tracks"; and the mixer's answer for a recording's input, `Mixer::capture_for`, with the master without the recording track as a second sum; and a loop recorded into an armed audio cell, which records the track's own input and lands in the cell by its id; and the phase 4 screens, boards 2 to 6, behind the switch, among them one input list for a track's loops and takes ([loops-on-audio-tracks.md](loops-on-audio-tracks.md#the-screens-built-behind-devs-switch)); and transaction ids on every take, tying the audio tracks' song steps; built of 4c: all of it; built of 4d: the one history, 4d.1, Make song on it, 4d.2, the engines forgetting what it can no longer reach, 4d.3, and a loop's layer leaving memory once in its file and UNDO bringing it back from there, 4d.4, behind the switch; built of 4e: the Play page's Loop group, 4e.1, Listen through a loop's track, 4e.2, loop blocks in the song, 4e.3, and a loop recorded with no cell landing on an audio track, a free loop in a free cell playing on the free clock, 4e.4, behind the switch): the project model and the track player behind Dev's switch (4b), layers as recordings (4c), one UNDO history of project transactions (4d), switched on (4e). Their contracts, written before the code: [loops-on-audio-tracks.md](loops-on-audio-tracks.md) (the identities, the track player, the transactions).
+
+## Following the tempo (phase 5)
+
+Phase 5a (built 25 Nov, with no screen yet) gives every region, of the song or of a clip, a Follow tempo setting (Off, Repitch, Stretch) and the tempo its audio was made at. Following the tempo, the frame of its recording playing at a tick is worked out from the ticks at its own tempo, not the frames along the song, and Repitch reads it at the song's speed through the streaming cursor's band-limited read; at its own tempo it plays as Off, bit for bit. Off, the default, plays exactly as before. Saved with the `audio-tempo` gate. The design: [tempo-follow.md](tempo-follow.md).
 
 ## Joining the rest of MPFree
 
