@@ -2195,11 +2195,7 @@ impl Session {
             .unwrap_or_else(|| self.tracks.host.tracks.has_regions());
         let said = self.looper.tend_snap(&mut self.time, audio);
         self.out.loop_start(said);
-        let (said, song_tempo) = self.looper.tend_song(
-            &mut self.time,
-            self.export.running(),
-            self.app.settings.loops_on,
-        );
+        let (said, song_tempo) = self.looper.tend_song(&mut self.time, self.export.running());
         self.out.loop_start(said);
         if let Some(line) = self.looper.run(self.time.block(), &mut ll, &mut lr) {
             self.out.note(&line);

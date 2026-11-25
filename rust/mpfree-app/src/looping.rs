@@ -639,11 +639,6 @@ pub enum SongButton {
 pub const MAKE_SONG_STOP_FIRST: &str =
     "Stop the song first: Make song moves its tempo and bar lines";
 
-/// Make song with loops on audio tracks (Dev's switch): its UNDO isn't
-/// on their one history yet, so it isn't offered.
-pub const MAKE_SONG_ON_TRACKS: &str =
-    "with loops on audio tracks, UNDO couldn't take it back yet (it isn't on their history)";
-
 /// The song as Make song found it: its tempo and place, and whether Make
 /// song starts it (the free loops played).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1818,6 +1813,10 @@ pub struct LoopHost {
     /// logged and said.
     song: SongStep,
     pub songs_refused: u64,
+    /// Make song's transaction on the one history (phase 4d.2): given
+    /// when it is made, kept while it is taken back and made again, none
+    /// for a new press.
+    song_txn: mpfree_transport::TransactionId,
     /// Length: Pattern ([`PATTERN_BARS`]): an empty loop's first pass
     /// takes the length of the pattern playing.
     pub match_pattern: bool,
@@ -2413,6 +2412,7 @@ impl LoopHost {
             tempos_refused: 0,
             song: SongStep::Idle,
             songs_refused: 0,
+            song_txn: mpfree_transport::TransactionId::default(),
             match_pattern: false,
             starts: Starts::Bar,
             clock: Clock::Song,
@@ -5931,7 +5931,75 @@ impl LoopHost {
             return "looper: Make song waits for the free loops' bar line".to_string();
         }
         self.song = SongStep::Want;
+        self.song_txn = mpfree_transport::TransactionId::default();
         "looper: Make song".to_string()
+    }
+
+    /// Make song on the one history (Dev's loops on audio tracks, phase
+    /// 4d.2): its transaction on the done side while made, on the redo
+    /// side once taken back; neither while it is being worked out or once
+    /// it can't be taken back or made again. Into `done` and `redo`,
+    /// cleared first.
+    pub fn song_steps(
+        &self,
+        done: &mut Vec<mpfree_transport::TransactionId>,
+        redo: &mut Vec<mpfree_transport::TransactionId>,
+    ) {
+        done.clear();
+        redo.clear();
+        if !self.song_txn.is_some() {
+            return;
+        }
+        match self.song {
+            SongStep::Made(..) | SongStep::Unmake(..) => done.push(self.song_txn),
+            SongStep::Unmade(_) => redo.push(self.song_txn),
+            _ => {}
+        }
+    }
+
+    /// Make song's step as UNDO names it: "Make song · Loops 1 and 2".
+    pub fn song_words(&self) -> String {
+        match self.song {
+            SongStep::Made(p, ..) | SongStep::Unmake(p, _) => {
+                format!("Make song · {}", loops_words(p.loops))
+            }
+            _ => "Make song".to_string(),
+        }
+    }
+
+    /// The one UNDO (`redo` false) or REDO on Make song's step (phase
+    /// 4d.2): taken back, or made again, in the next period with the time
+    /// engine ([`LoopHost::tend_song`]), which says if the looper refuses
+    /// it. The one history takes steps back newest first, so the loops'
+    /// versions aren't asked, as the Looper tab's own UNDO asks them. The
+    /// line for the log.
+    pub fn song_undo(&mut self, redo: bool) -> String {
+        match (self.song, redo) {
+            (SongStep::Made(p, b, _), false) => {
+                self.song = SongStep::Unmake(p, b);
+                "looper: UNDO: Make song, the loops free again".to_string()
+            }
+            (SongStep::Unmade(_), true) => {
+                self.song = SongStep::Want;
+                "looper: REDO: Make song".to_string()
+            }
+            _ => "looper: Make song has nothing to take back or make again".to_string(),
+        }
+    }
+
+    /// The one history can no longer reach Make song's step (phase 4d.3's
+    /// forgetting, for 4d.2): taken back with nothing to redo (`redo`), or
+    /// made at or before `through`. Whether it went.
+    pub fn forget_song(&mut self, redo: bool, through: mpfree_transport::TransactionId) -> bool {
+        let gone = match self.song {
+            SongStep::Unmade(_) => redo,
+            SongStep::Made(..) => through.is_some() && self.song_txn <= through,
+            _ => false,
+        };
+        if gone {
+            self.song = SongStep::Idle;
+        }
+        gone
     }
 
     /// Make song's button, as the screen shows it.
@@ -5960,15 +6028,16 @@ impl LoopHost {
     /// ([`Looper::make_song`]). Or UNDO's: the loops free again on a copy
     /// of the song's clock ([`Looper::make_free`]), then the song back at
     /// its tempo and place, stopped if Make song started it. Refused while
-    /// an export runs (`exporting`), another device's clock leads, the
-    /// song has tempo points, or loops are on audio tracks (`on_tracks`,
-    /// [`MAKE_SONG_ON_TRACKS`]). The line for the log (and the screen,
-    /// when true), and the tempo the app takes from the next period on.
+    /// an export runs (`exporting`), another device's clock leads or the
+    /// song has tempo points. With loops on audio tracks (phase 4d.2) the
+    /// time engine follows the loops' clocks: a free cell whose loop
+    /// became a song loop plays on as a song cell, and back. The line for
+    /// the log (and the screen, when true), and the tempo the app takes
+    /// from the next period on.
     pub fn tend_song(
         &mut self,
         time: &mut TimeHost,
         exporting: bool,
-        on_tracks: bool,
     ) -> (Option<(String, bool)>, Option<f64>) {
         if self.opening() {
             // Another project's loops: nothing to take back.
@@ -5978,7 +6047,7 @@ impl LoopHost {
         match self.song {
             SongStep::Want => {
                 self.song = SongStep::Idle;
-                match self.start_song(time, exporting, on_tracks) {
+                match self.start_song(time, exporting) {
                     Ok((line, bpm)) => (Some((line, false)), Some(bpm)),
                     Err(why) => {
                         self.songs_refused += 1;
@@ -6005,11 +6074,7 @@ impl LoopHost {
         &mut self,
         time: &mut TimeHost,
         exporting: bool,
-        on_tracks: bool,
     ) -> Result<(String, f64), String> {
-        if on_tracks {
-            return Err(MAKE_SONG_ON_TRACKS.to_string());
-        }
         if exporting {
             return Err("an export is running".to_string());
         }
@@ -6112,6 +6177,11 @@ impl LoopHost {
         match d.refused {
             None => {
                 self.song = SongStep::Made(p, b, self.versions());
+                // A new step on the one history, or the same one made
+                // again by REDO.
+                if !self.song_txn.is_some() {
+                    self.song_txn = mpfree_transport::TransactionId::next();
+                }
                 let n = p.count();
                 Some((
                     format!(

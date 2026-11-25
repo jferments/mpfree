@@ -390,7 +390,7 @@ The log and the screen say what it did ("Made a song from 2 free loops: 92.00 BP
 
 **UNDO** on the Looper tab takes it back as long as no loop has changed since: the loops are free again on the same clock and play on, the song goes back to its tempo and place, and it stops if Make song started it. **SHIFT + UNDO** (REDO) makes the song again. Once a loop changes (an overdub, an edit, a new loop), UNDO goes back to the loops' own steps.
 
-Make song waits while a free loop records, overdubs or is busy (a snap, a merge, a copy), plays at another speed with a print, or waits for a launch; while the song follows another device's clock, has tempo points, or an export runs; and while **Loops on audio tracks** is on in Dev (its one UNDO can't take Make song back yet). The hint line says which.
+Make song waits while a free loop records, overdubs or is busy (a snap, a merge, a copy), plays at another speed with a print, or waits for a launch; while the song follows another device's clock, has tempo points, or an export runs. The hint line says which.
 
 {{shot: looper-free-make-song | The free loops playing on with the song stopped at 120 BPM: Make song on Loop 1's header, left of Stop free.}}
 

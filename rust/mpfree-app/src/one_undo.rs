@@ -71,16 +71,21 @@ pub enum Part {
     Audio,
     /// Loop `n`'s history (its slot, 0 to 7).
     Loop(usize),
+    /// Make song (phase 4d.2): the free loops made song loops, the song
+    /// taking their tempo, one step across the loops and the song
+    /// (`LoopHost::song_steps`).
+    Song,
 }
 
 /// The parts followed, in the order [`OneUndo`] gathers them.
-const PARTS: usize = 2 + MAX_LOOPS;
+const PARTS: usize = 3 + MAX_LOOPS;
 
 fn part_at(i: usize) -> Part {
     match i {
         0 => Part::Time,
         1 => Part::Audio,
-        n => Part::Loop(n - 2),
+        n if n < 2 + MAX_LOOPS => Part::Loop(n - 2),
+        _ => Part::Song,
     }
 }
 
@@ -354,6 +359,10 @@ impl OneUndo {
             s.done.clear();
             s.done.extend(steps.iter().map(|x| x.txn));
         }
+        {
+            let s = &mut now[2 + MAX_LOOPS];
+            looper.song_steps(&mut s.done, &mut s.redo);
+        }
         if now == self.last {
             self.now = now;
             return None;
@@ -374,6 +383,7 @@ impl OneUndo {
                 let step = loops[n].iter().find(|x| x.txn == txn).and_then(|x| x.step);
                 loop_words(n, step, looper, time)
             }
+            Part::Song => looper.song_words(),
         });
         self.now = std::mem::replace(&mut self.last, now);
         let v = self.ledger.view();
@@ -559,6 +569,10 @@ impl OneUndo {
                         Err(why) => out.note(&format!("one undo: audio tracks: {why}")),
                     },
                     _ => {
+                        // Make song's step, the loop host's own (4d.2).
+                        if looper.forget_song(redo, f.through) {
+                            out.note(&format!("one undo: Make song forgets {what}"));
+                        }
                         let c = if redo {
                             mpfree_looper::Command::ForgetRedo
                         } else {
@@ -685,6 +699,12 @@ pub fn press(
                 return bring_back(one, out, tracks, looper, step, redo, away);
             }
             out.note(&looper.undo_loop(n, redo));
+            vec![app::Effect::Tell(said)]
+        }
+        // Taken back (or made again) with the time engine in the next
+        // period (`LoopHost::tend_song`), which says if it can't be.
+        Part::Song => {
+            out.note(&looper.song_undo(redo));
             vec![app::Effect::Tell(said)]
         }
     }
