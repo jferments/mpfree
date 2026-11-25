@@ -535,6 +535,9 @@ pub struct TrackHost {
     /// The period of the last waveform asked for while recording.
     grown_at: u64,
     periods: u64,
+    /// A take was made whole on the stick since last asked
+    /// ([`TrackHost::take_joined`]).
+    joined: bool,
     /// What the lanes showed at the last check, and whether that changed.
     seen: u64,
     changed: bool,
@@ -657,6 +660,7 @@ impl TrackHost {
             reading: None,
             grown_at: 0,
             periods: 0,
+            joined: false,
             seen: 0,
             spans_seen: 0,
             tempos_seen: 0,
@@ -766,6 +770,26 @@ impl TrackHost {
         self.host.saved_into(samples);
     }
 
+    /// Whether a take that carried on on the stick was made whole there
+    /// since last asked (its first part back from the SD card, B2c): the
+    /// project's copy of it has silence for that part until the next save,
+    /// so the work is unsaved.
+    pub fn take_joined(&mut self) -> bool {
+        std::mem::take(&mut self.joined)
+    }
+
+    /// The same SD card is in again, as `mark` says (its marker and volume
+    /// serial): the takes that carried on on the stick when it went get
+    /// their first parts back from it, looked for in `places` too
+    /// (`AudioHost::join_card`). Allocates the message: between periods.
+    pub fn join_card(
+        &self,
+        mark: mpfree_stream::storage::CardMark,
+        places: Vec<std::path::PathBuf>,
+    ) {
+        self.host.join_card(mark, places);
+    }
+
     /// The next line for the log about a take's file (it couldn't be made,
     /// it is at risk, a save took a take from memory, it couldn't be
     /// opened to play from), naming the track as the musician named it;
@@ -774,6 +798,7 @@ impl TrackHost {
     /// only when there is one.
     pub fn take_file_line(&mut self) -> Option<String> {
         if let Some(e) = self.host.take_event() {
+            self.joined |= matches!(e, mpfree_audiotracks::files::FileEvent::Joined { .. });
             return Some(e.line(&self.who(e.track())));
         }
         if self.host.streams() && self.periods.is_multiple_of(DROPOUTS_EVERY) {

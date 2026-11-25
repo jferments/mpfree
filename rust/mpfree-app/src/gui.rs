@@ -1943,6 +1943,10 @@ pub enum FromUi {
     /// says the card is open: the same lease while it stays open, a new
     /// one once it has closed and opened again.
     AudioDrive(std::sync::Arc<mpfree_stream::storage::Lease>),
+    /// The SD card this mark names is in again (S2b's B2c): the audio
+    /// tracks' takes that carried on on the stick when it went get their
+    /// first parts back from it, looked for in these folders too.
+    AudioJoin(mpfree_stream::storage::CardMark, Vec<std::path::PathBuf>),
     /// A project save finished into this folder (the project's
     /// `samples/`): the audio tracks keep their takes' files from there.
     AudioSavedInto(std::path::PathBuf),
@@ -14457,6 +14461,7 @@ impl Player {
                 Do::Tell(line) => self.tell(line),
                 Do::Ask => self.sd_card.open(),
                 Do::RecordTo(dir) => self.outbox.push(FromUi::AudioFiles(dir)),
+                Do::Join { mark, places } => self.outbox.push(FromUi::AudioJoin(mark, places)),
                 // The opening the takes record on says which card it is
                 // (the audio tracks hold the same lease).
                 Do::Mark(mark) => {
@@ -14917,7 +14922,12 @@ impl Player {
                     // and this opening the one their takes there read on.
                     let lease = self.card_lease(&card.mount);
                     self.outbox.push(FromUi::AudioDrive(lease));
+                    let folder = card
+                        .write
+                        .clone()
+                        .unwrap_or_else(|| card.mount.join(crate::card_takes::FOLDER));
                     let dos = self.card_takes.opened(
+                        &folder,
                         card.write.as_deref(),
                         card.read_only.as_deref(),
                         card.serial,
@@ -17583,6 +17593,7 @@ impl Player {
                 | FromUi::OpenAudio(_)
                 | FromUi::AudioFiles(_)
                 | FromUi::AudioDrive(_)
+                | FromUi::AudioJoin(..)
                 | FromUi::AudioSavedInto(_)
                 | FromUi::Kit(_)
                 | FromUi::LevelDb(_)

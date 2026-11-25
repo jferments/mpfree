@@ -56,7 +56,7 @@ use std::time::Duration;
 
 use mpfree_stream::player::Player;
 use mpfree_stream::status::Watch;
-use mpfree_stream::storage::CardHandle;
+use mpfree_stream::storage::{CardHandle, CardMark};
 use mpfree_stream::writer::Gate;
 
 use mpfree_transport::time::TempoMap;
@@ -254,6 +254,13 @@ enum ToWorker {
     /// on in `dir`, and takes record there from now on
     /// ([`crate::files::Files::carry_on`]).
     CarryOn(PathBuf),
+    /// The card opening `mark` names is in: takes that carried on when it
+    /// went get their first part back from it, looked for in `places`
+    /// too ([`crate::files::Files::join_card`]).
+    Join {
+        mark: CardMark,
+        places: Vec<PathBuf>,
+    },
     /// The tracks' requests about the files ([`crate::Io`]), with what the
     /// worker needs to act on them.
     Arm {
@@ -840,6 +847,18 @@ impl AudioHost {
             gen: self.generation,
         });
         self.to_write.push(file);
+    }
+
+    /// The SD card opening `mark` names is in again (the same card as its
+    /// marker and volume serial say): each take that carried on on the
+    /// stick when it went gets its first part back from it, into its file
+    /// on the stick, nothing written to the card (the SD card plan's B2c).
+    /// The part is looked for where the take's hole record says and in
+    /// each of `places`; each take that comes back whole says so
+    /// ([`FileEvent::Joined`]) and plays from its whole file. Sends a
+    /// message (it carries `places`).
+    pub fn join_card(&self, mark: CardMark, places: Vec<PathBuf>) {
+        self.send(ToWorker::Join { mark, places });
     }
 
     /// Record every take to a file of its own in `dir` (made if missing;
@@ -2336,6 +2355,19 @@ impl AudioHost {
                     self.event(FileEvent::CarriedOn { track, hole_s });
                 }
             }
+            Said::Joined { rec, frames } => {
+                if let Some(t) = self.tracks.take_of(rec).and_then(|id| self.tracks.take(id)) {
+                    let joined_s = frames as f32 / self.tracks.rate() as f32;
+                    let track = t.track;
+                    self.event(FileEvent::Joined { track, joined_s });
+                }
+            }
+            Said::Unjoined { rec, why } => {
+                if let Some(t) = self.tracks.take_of(rec).and_then(|id| self.tracks.take(id)) {
+                    let track = t.track;
+                    self.event(FileEvent::Unjoined { track, why });
+                }
+            }
             Said::Ready(rec) => {
                 for a in self.files.armed.iter_mut().flatten() {
                     if a.0 == rec {
@@ -3402,6 +3434,22 @@ impl Worker {
                 }
                 Err(e) => FromWorker::FilesFailed(e.to_string()),
             },
+            ToWorker::Join { mark, places } => {
+                let card = self
+                    .cards
+                    .iter()
+                    .find(|c| c.valid() && c.mark() == Some(mark))
+                    .cloned();
+                if let Some(card) = card {
+                    // Behind playback on the stick, where the takes are.
+                    let gate = match (&self.stream, files.hole_dir().or(files.work_dir())) {
+                        (Some(st), Some(d)) => st.gate_for(d),
+                        _ => Arc::new(Gate::new()),
+                    };
+                    files.join_card(mark, places, card, gate);
+                }
+                return None;
+            }
             ToWorker::Files { dir, cfg } => {
                 let gate = self
                     .stream

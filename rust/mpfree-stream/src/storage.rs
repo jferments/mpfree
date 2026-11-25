@@ -50,6 +50,10 @@ pub trait CardHandle: Send + Sync {
     /// last counted them: the card is held while any are (the SD card
     /// plan's B2c), so it isn't put away under a take playing from it.
     fn set_users(&self, _n: usize) {}
+    /// A job reading the card (a take's part brought back from it) holds
+    /// it while it runs (`true` as it starts, `false` once it ends), as
+    /// a take playing from it does.
+    fn hold(&self, _on: bool) {}
 }
 
 /// Which card: the random id in its `MPFree` folder's marker file
@@ -149,6 +153,7 @@ pub struct Lease {
     valid: AtomicBool,
     mark: OnceLock<CardMark>,
     users: AtomicUsize,
+    held: AtomicUsize,
 }
 
 impl Lease {
@@ -159,14 +164,15 @@ impl Lease {
             valid: AtomicBool::new(true),
             mark: OnceLock::new(),
             users: AtomicUsize::new(0),
+            held: AtomicUsize::new(0),
         })
     }
 
     /// How many files on this opening are open to play from, as the reader
-    /// last said ([`CardHandle::set_users`]): while any are, the card is in
-    /// use.
+    /// last said ([`CardHandle::set_users`]), and jobs reading it
+    /// ([`CardHandle::hold`]): while any are, the card is in use.
     pub fn users(&self) -> usize {
-        self.users.load(Ordering::Acquire)
+        self.users.load(Ordering::Acquire) + self.held.load(Ordering::Acquire)
     }
 
     /// Which card this opening is, once its marker is read or made: said
@@ -194,6 +200,15 @@ impl CardHandle for Lease {
     }
     fn set_users(&self, n: usize) {
         self.users.store(n, Ordering::Release);
+    }
+    fn hold(&self, on: bool) {
+        if on {
+            self.held.fetch_add(1, Ordering::AcqRel);
+        } else {
+            let _ = self
+                .held
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+        }
     }
 }
 

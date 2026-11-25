@@ -1003,7 +1003,9 @@ fn takes_on_the_card_open_again_when_the_card_comes_back() {
 /// same take, recording on: once the app asks for the stick's folder, the
 /// take's file there holds zeros for what was committed on the card and
 /// everything after, the card's part is left where it was, the take plays
-/// from its file on the stick from then on, and the log says so.
+/// from its file on the stick from then on, and the log says so. When the
+/// same card is back, the take gets its first part from it and is whole on
+/// the stick, the card left as it was, and the next save names it anew.
 #[test]
 fn a_take_on_the_card_carries_on_on_the_stick_when_the_card_goes() {
     use mpfree_stream::rec::Hole;
@@ -1121,6 +1123,67 @@ fn a_take_on_the_card_carries_on_on_the_stick_when_the_card_goes() {
         )),
         "{ev:?}"
     );
+
+    // The same card is back (read-only, as a pulled card comes back): the
+    // take gets its first part from it, into its file on the stick, and
+    // is whole there; nothing on the card changes.
+    let card_before = std::fs::read(&hole.from).unwrap();
+    // Another card in its place (its volume serial differs) is not it.
+    let other = Lease::new(&card);
+    let not_it = CardMark {
+        serial: mark.serial ^ 1,
+        ..mark
+    };
+    assert!(other.set_mark(not_it));
+    r.h.own_device(other.clone());
+    r.h.join_card(not_it, vec![card.clone()]);
+    for _ in 0..200 {
+        r.period();
+        std::thread::sleep(Duration::from_micros(300));
+    }
+    let ev = r.events();
+    assert!(
+        !ev.iter()
+            .any(|e| matches!(e, FileEvent::Joined { .. } | FileEvent::Unjoined { .. })),
+        "{ev:?}"
+    );
+    assert!(holes[0].is_file() && other.users() == 0);
+    other.revoke();
+    let back = Lease::new(&card);
+    assert!(back.set_mark(mark));
+    r.h.own_device(back.clone());
+    r.h.join_card(mark, vec![card.clone()]);
+    let mut ev = Vec::new();
+    r.run_until(|r| {
+        ev.extend(r.events());
+        ev.iter()
+            .any(|e| matches!(e, FileEvent::Joined { .. } | FileEvent::Unjoined { .. }))
+    });
+    assert!(
+        ev.iter().any(|e| matches!(
+            e,
+            FileEvent::Joined { track: 0, joined_s }
+                if (*joined_s - hole.frames as f32 / RATE as f32).abs() < 1e-3
+        )),
+        "{ev:?}"
+    );
+    let (audio, _, _) = from_wav(&std::fs::read(path).unwrap()).unwrap();
+    assert!(
+        audio == want.takes[0].audio,
+        "the take is whole on the stick"
+    );
+    assert!(!holes[0].exists(), "its hole record goes");
+    assert_eq!(std::fs::read(&hole.from).unwrap(), card_before);
+    assert!(ckpt.is_file(), "the card's files are left as they were");
+    // It plays from its whole file, and the card is let go.
+    r.run_until(|r| r.h.tracks.file_gen(k).is_some_and(|g| g != now) && back.users() == 0);
+    // The project's copy has the zeros, so the next save copies the whole
+    // take in under a name of its own.
+    let again = r.save();
+    let whole = &again.takes[0];
+    assert_eq!(whole.path.as_deref(), Some(path.as_path()));
+    assert!(whole.file.ends_with("_whole.wav"), "{}", whole.file);
+    assert_ne!(whole.file, saved.takes[0].file);
     let _ = std::fs::remove_dir_all(&card);
     let _ = std::fs::remove_dir_all(&stick);
 }

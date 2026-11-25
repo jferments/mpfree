@@ -25,15 +25,17 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mpfree_stream::fsio::{Fs, StdFs};
 use mpfree_stream::player::UNIT;
-use mpfree_stream::rec::{recording_path, Meta, RecFormat, RecId};
+use mpfree_stream::rec::{hole_path, join, recording_path, Hole, Joined, Meta, RecFormat, RecId};
 pub use mpfree_stream::rec::{TakeState, Why};
 use mpfree_stream::recover::{check_whole, checked, recover, Found};
 use mpfree_stream::status::{Drive, Watch};
+use mpfree_stream::storage::{CardHandle, CardMark};
 pub use mpfree_stream::writer::WriterConfig;
 use mpfree_stream::writer::{Gate, RealClock, Recorder, Status, TakeNo, TakeView};
 
@@ -216,6 +218,14 @@ pub enum FileEvent {
     /// moved to (the stick's): its first `hole_s` seconds stay on the
     /// drive that went, and play as silence until they are brought back.
     CarriedOn { track: usize, hole_s: f32 },
+    /// The same SD card came back, and the first `joined_s` seconds of a
+    /// take of `track` that carried on came back from it into its file on
+    /// the stick: the take is whole there (the project is to be saved
+    /// again to keep it whole).
+    Joined { track: usize, joined_s: f32 },
+    /// They couldn't be brought back (`why`): its start still plays as
+    /// silence.
+    Unjoined { track: usize, why: String },
 }
 
 impl FileEvent {
@@ -231,6 +241,8 @@ impl FileEvent {
             | FileEvent::FromBoth { track, .. }
             | FileEvent::Unread { track, .. }
             | FileEvent::CarriedOn { track, .. }
+            | FileEvent::Joined { track, .. }
+            | FileEvent::Unjoined { track, .. }
             | FileEvent::TrackLeftOut { track } => *track,
             FileEvent::NoStream { .. } | FileEvent::HeadsShort { .. } => 0,
         }
@@ -269,6 +281,14 @@ impl FileEvent {
             FileEvent::CarriedOn { .. } => format!(
                 "audio tracks: {who}'s take carries on on the USB stick, as the SD card went \
                  before any of it was saved there"
+            ),
+            FileEvent::Joined { joined_s, .. } => format!(
+                "audio tracks: the SD card is back: the first {joined_s:.1} s of {who}'s take came \
+                 back from it, and the take is whole on the USB stick (save to keep it whole)"
+            ),
+            FileEvent::Unjoined { why, .. } => format!(
+                "audio tracks: the start of {who}'s take couldn't come back from the SD card \
+                 ({why}), so it still plays as silence"
             ),
             FileEvent::State { state, .. } => match state {
                 TakeState::AtRisk(w) => format!(
@@ -355,6 +375,11 @@ pub(crate) enum Said {
     /// A take carried on in another folder ([`Files::carry_on`]), its
     /// first `hole` frames left on the drive that went.
     CarriedOn { rec: RecordingId, hole: u64 },
+    /// Its first `frames` frames came back from the card into its file
+    /// ([`Files::join_card`]).
+    Joined { rec: RecordingId, frames: u64 },
+    /// They couldn't, for `why`.
+    Unjoined { rec: RecordingId, why: String },
 }
 
 /// How often the worker looks at the writer's takes.
@@ -405,6 +430,14 @@ struct FileRec {
     /// file in the work folder holds zeros there, and stays for them to be
     /// brought back, whatever a save copies.
     hole: u64,
+    /// That file, once finished ([`Files::join_card`] brings the frames
+    /// back into it), whatever a save points `path` at since.
+    work_file: Option<PathBuf>,
+    /// Its frames are being brought back now, or were tried from the card
+    /// in now (`tried`), so they aren't asked for again until another
+    /// opening.
+    joining: bool,
+    tried: bool,
 }
 
 /// The writer and the folder it records into.
@@ -473,6 +506,22 @@ pub(crate) struct Files {
     /// again: the SD card's opened): a save takes files over from them
     /// too.
     was: Vec<PathBuf>,
+    /// The card takes' first parts are brought back from, while it is in
+    /// ([`Files::join_card`]), and the joins' answers.
+    join_to: Option<JoinTo>,
+    joined: (Sender<JoinAnswer>, Receiver<JoinAnswer>),
+}
+
+/// A join's answer, for its take ([`Files::join_card`]).
+type JoinAnswer = (RecordingId, io::Result<Joined>);
+
+/// The card the first parts of takes that carried on are brought back
+/// from ([`Files::join_card`]).
+struct JoinTo {
+    mark: CardMark,
+    places: Vec<PathBuf>,
+    card: Arc<dyn CardHandle>,
+    gate: Arc<Gate>,
 }
 
 impl Files {
@@ -490,6 +539,8 @@ impl Files {
             armed: Arc::new(AtomicU64::new(0)),
             layer_files: Vec::new(),
             was: Vec::new(),
+            join_to: None,
+            joined: std::sync::mpsc::channel(),
         }
     }
 
@@ -601,6 +652,180 @@ impl Files {
         Ok(())
     }
 
+    /// The SD card `card` opened again, and it is the card `mark` names:
+    /// each take that carried on when it went, its first part left there
+    /// ([`Files::carry_on`]), gets that part back from it into its file in
+    /// the work folder on the stick, once the take is finished there (the
+    /// SD card plan's B2c: the take made whole on the stick, nothing
+    /// written to the card). The part is looked for where its hole record
+    /// says, and in each of `places` (where the card's own recovery may
+    /// have put it since), and written a piece at a time behind playback
+    /// on the stick (`gate`). On a thread of its own; [`Files::poll`] hears
+    /// how each went ([`Said::Joined`]), and a take that finishes later is
+    /// joined then, while the card is in.
+    pub fn join_card(
+        &mut self,
+        mark: CardMark,
+        places: Vec<PathBuf>,
+        card: Arc<dyn CardHandle>,
+        gate: Arc<Gate>,
+    ) {
+        for f in &mut self.recs {
+            f.tried = false;
+        }
+        self.join_to = Some(JoinTo {
+            mark,
+            places,
+            card,
+            gate,
+        });
+        self.start_joins();
+    }
+
+    /// Where the takes waiting for their first part are: the work folder
+    /// on the stick they carried on in.
+    pub fn hole_dir(&self) -> Option<&Path> {
+        self.recs
+            .iter()
+            .filter(|f| f.hole > 0)
+            .find_map(|f| f.work_file.as_deref().and_then(Path::parent))
+    }
+
+    /// Start bringing back the first parts of the finished takes the card
+    /// being joined holds, not yet tried from it.
+    fn start_joins(&mut self) {
+        let Some(j) = &self.join_to else {
+            return;
+        };
+        if !j.card.valid() {
+            self.join_to = None;
+            return;
+        }
+        if j.mark.id == [0; 16] {
+            return;
+        }
+        let mut jobs = Vec::new();
+        for f in &mut self.recs {
+            if f.hole == 0 || f.joining || f.tried {
+                continue;
+            }
+            let Some(file) = &f.work_file else { continue };
+            let (Some(dir), Some(stem)) = (
+                file.parent(),
+                file.file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(|n| n.strip_suffix(".wav")),
+            ) else {
+                continue;
+            };
+            let Some(h) = std::fs::read(hole_path(dir, stem))
+                .ok()
+                .and_then(|b| Hole::decode(&b))
+            else {
+                continue;
+            };
+            if h.card != j.mark.id || h.serial != j.mark.serial {
+                continue;
+            }
+            let mut parts = vec![h.from.clone()];
+            for p in &j.places {
+                parts.push(p.join(format!("{stem}.wav.recording")));
+                parts.push(p.join(format!("{stem}.wav")));
+            }
+            f.joining = true;
+            f.tried = true;
+            jobs.push((f.rec, dir.to_path_buf(), stem.to_string(), parts));
+        }
+        if jobs.is_empty() {
+            return;
+        }
+        let tx = self.joined.0.clone();
+        let gate = j.gate.clone();
+        let card = j.card.clone();
+        let root = card.root().to_path_buf();
+        let recs: Vec<RecordingId> = jobs.iter().map(|j| j.0).collect();
+        // The card is held while the parts are read from it.
+        card.hold(true);
+        let held = card.clone();
+        let spawned = std::thread::Builder::new()
+            .name("mpfree-take-join".into())
+            .spawn(move || {
+                /// Lets go of the card however the thread ends.
+                struct Let(Arc<dyn CardHandle>);
+                impl Drop for Let {
+                    fn drop(&mut self) {
+                        self.0.hold(false);
+                    }
+                }
+                let _held = Let(held);
+                let mut fs = JoinFs::new(root);
+                for (rec, dir, stem, parts) in jobs {
+                    let mut pace = || {
+                        let t0 = Instant::now();
+                        while gate.cushion() < WRITE_CUSHION_S && t0.elapsed() < WRITE_WAIT {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                    };
+                    let r = join(&mut fs, &dir, &stem, &parts, &mut pace);
+                    if tx.send((rec, r)).is_err() {
+                        return;
+                    }
+                }
+            });
+        if spawned.is_err() {
+            card.hold(false);
+            for f in &mut self.recs {
+                if recs.contains(&f.rec) {
+                    f.joining = false;
+                }
+            }
+        }
+    }
+
+    /// The joins' answers since last looked, then any join now due.
+    fn joins(&mut self, out: &mut Vec<Said>) {
+        while let Ok((rec, r)) = self.joined.1.try_recv() {
+            let Some(f) = self.recs.iter_mut().find(|f| f.rec == rec) else {
+                continue;
+            };
+            f.joining = false;
+            let why = match r {
+                Ok(Joined::Whole(frames)) => {
+                    f.hole = 0;
+                    if let Some(file) = f.work_file.take() {
+                        // The whole take plays from its file from now on,
+                        // and the next save copies it in under a name of
+                        // its own (one a save already holds isn't written
+                        // again, and that copy has the zeros).
+                        if f.saved_as.take().is_some() {
+                            f.name = whole_name(&f.name);
+                        }
+                        f.path = Some(file.clone());
+                        if let (true, Some(id)) = (self.streams, f.id) {
+                            self.opens
+                                .push((id, f.rec, file, usize::from(f.channels), f.frames));
+                        }
+                    }
+                    if f.take {
+                        out.push(Said::Joined { rec, frames });
+                    }
+                    continue;
+                }
+                Ok(Joined::NotFinished) => {
+                    f.tried = false;
+                    continue;
+                }
+                Ok(Joined::NoPart) => "the card doesn't hold it".to_string(),
+                Ok(Joined::Mismatch) => "what the card holds doesn't match it".to_string(),
+                Err(e) => e.to_string(),
+            };
+            if f.take {
+                out.push(Said::Unjoined { rec, why });
+            }
+        }
+        self.start_joins();
+    }
+
     /// The drive takes record on went (the SD card taken out, or closed,
     /// the SD card plan's B2c): every take in flight in the folder there,
     /// recording, being finished or only armed, carries on in `to` (made
@@ -693,6 +918,9 @@ impl Files {
             pushed: 0,
             moving: false,
             hole: 0,
+            work_file: None,
+            joining: false,
+            tried: false,
         });
         None
     }
@@ -814,6 +1042,9 @@ impl Files {
             pushed: 0,
             moving: false,
             hole: 0,
+            work_file: None,
+            joining: false,
+            tried: false,
         });
     }
 
@@ -845,6 +1076,7 @@ impl Files {
     /// Look at the writer's takes (at most every [`POLL`]): what changed.
     pub fn poll(&mut self, force: bool) -> Vec<Said> {
         let mut out = Vec::new();
+        self.joins(&mut out);
         let Some(w) = &mut self.writing else {
             return out;
         };
@@ -937,6 +1169,9 @@ impl Files {
                     }
                     if v.state == TakeState::Saved {
                         f.path = w.rec.final_path(no);
+                        if f.hole > 0 {
+                            f.work_file.clone_from(&f.path);
+                        }
                         // The writer is done with it.
                         w.rec.forget(no);
                         f.no = None;
@@ -1686,6 +1921,79 @@ fn minutes(frames: u64, rate: u32) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
+/// A take's name once its first part is back ([`Files::join_card`]):
+/// `NAME_ID.wav` becomes `NAME_ID_whole.wav`.
+fn whole_name(name: &str) -> String {
+    let stem = name.strip_suffix(".wav").unwrap_or(name);
+    format!("{stem}_whole.wav")
+}
+
+/// The stick and the SD card as one file layer for a join
+/// ([`mpfree_stream::rec::join`]): files under the card's root are opened
+/// read-only and nothing there can change; the rest are the stick's.
+struct JoinFs {
+    card: PathBuf,
+    stick: StdFs,
+    from: StdFs,
+}
+
+impl JoinFs {
+    fn new(card: PathBuf) -> JoinFs {
+        JoinFs {
+            card,
+            stick: StdFs::new(),
+            from: StdFs::read_only(),
+        }
+    }
+
+    fn on(&mut self, path: &Path) -> &mut StdFs {
+        if path.starts_with(&self.card) {
+            &mut self.from
+        } else {
+            &mut self.stick
+        }
+    }
+}
+
+impl Fs for JoinFs {
+    fn create(&mut self, path: &Path, new_only: bool) -> io::Result<()> {
+        self.on(path).create(path, new_only)
+    }
+    fn write_at(&mut self, path: &Path, at: u64, bytes: &[u8]) -> io::Result<()> {
+        self.on(path).write_at(path, at, bytes)
+    }
+    fn read_at(&mut self, path: &Path, at: u64, buf: &mut [u8]) -> io::Result<usize> {
+        self.on(path).read_at(path, at, buf)
+    }
+    fn len(&mut self, path: &Path) -> io::Result<u64> {
+        self.on(path).len(path)
+    }
+    fn set_len(&mut self, path: &Path, len: u64) -> io::Result<()> {
+        self.on(path).set_len(path, len)
+    }
+    fn sync(&mut self, path: &Path) -> io::Result<()> {
+        self.on(path).sync(path)
+    }
+    fn sync_dir(&mut self, dir: &Path) -> io::Result<()> {
+        self.on(dir).sync_dir(dir)
+    }
+    fn rename(&mut self, from: &Path, to: &Path) -> io::Result<()> {
+        self.on(from).rename(from, to)
+    }
+    fn remove(&mut self, path: &Path) -> io::Result<()> {
+        self.on(path).remove(path)
+    }
+    fn list(&mut self, dir: &Path) -> io::Result<Vec<String>> {
+        self.on(dir).list(dir)
+    }
+    fn exists(&mut self, path: &Path) -> bool {
+        self.on(path).exists(path)
+    }
+    fn let_go(&mut self, path: &Path) {
+        self.on(path).let_go(path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1794,6 +2102,9 @@ mod tests {
             pushed: 0,
             moving: false,
             hole: 0,
+            work_file: None,
+            joining: false,
+            tried: false,
         };
         let mut f = Files::new(48_000);
         f.stream();
