@@ -42,6 +42,11 @@
 //!     the rate brought down to 44.1 kHz, and with --sixteen the 8x
 //!     reference against a 16x one; writes DIR/reference.txt
 //!     (docs/dev/design/dsp-quality.md).
+//! fxlab stretch [--rate HZ] [--out DIR]
+//!     The stretch corpus (the audio tracks rethink's 5c.5): each sound as
+//!     made (DIR/SOUND.wav), stretched as a region on Stretch is at 0.5,
+//!     0.8, 1.25 and 2 times its tempo (DIR/SOUND-x0.8.wav), and the
+//!     numbers (DIR/report.txt) (docs/dev/design/tempo-follow.md).
 //! ```
 
 use std::path::PathBuf;
@@ -50,7 +55,7 @@ use mpfree_fxlab::card::{self, Options};
 use mpfree_fxlab::dut::{Dut, NodeDut};
 use mpfree_fxlab::plan::{self, Context, ControlList, PlanOptions};
 use mpfree_fxlab::programme::{self, Programme, Schedule};
-use mpfree_fxlab::{capture, listening, quality, reference, synth, wav};
+use mpfree_fxlab::{capture, listening, quality, reference, stretching, synth, wav};
 
 fn usage() -> ! {
     eprintln!("usage: fxlab cards [--rate HZ] [--quick] [--presets] [--effect ID]... [--out DIR]");
@@ -63,6 +68,7 @@ fn usage() -> ! {
     eprintln!("       fxlab synth [--rate HZ] [--renders] [--engine NAME] [--out DIR]");
     eprintln!("       fxlab reference [--sixteen] [--out DIR]");
     eprintln!("       fxlab listening [--rate HZ] [--out DIR]");
+    eprintln!("       fxlab stretch [--rate HZ] [--out DIR]");
     eprintln!("       fxlab quality [--class delay|eq|reverb|drive|crush|compressor|filter|lofi|amp|modulation|limiter|gate|deesser|multiband|ducker|transient|strip|movement|pitch|voice]... [--rate HZ] [--out DIR]");
     std::process::exit(2);
 }
@@ -405,6 +411,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         "listening" => {
             let text = listening::write_set(&a.out, a.rate)?;
+            print!("{text}");
+            eprintln!("wrote {}", a.out.display());
+        }
+        "stretch" => {
+            let text = stretching::write_set(&a.out, a.rate)?;
             print!("{text}");
             eprintln!("wrote {}", a.out.display());
         }
