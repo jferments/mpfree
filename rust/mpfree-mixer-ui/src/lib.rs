@@ -59,7 +59,7 @@ pub use io::{IoInput, IoKnob, IoReply, IoSection};
 pub use qlinks::{QLinkView, QLinks};
 pub use state::{
     default_name, InputView, InsertView, MixState, MixView, SafetyView, SendView, StripView,
-    TakeView,
+    TakeView, TrackWait,
 };
 pub use view::{IoIcon, Look, MixAction, MixerView, StripMenu, FX_COLS};
 
@@ -80,7 +80,7 @@ pub const MIXER_HINT_TAKES: &str = "Drag a fader  ·  tap M or S  ·  a strip's 
 /// The hint line on Sends.
 pub const MIXER_HINT_SENDS: &str = "Drag a pan or a send  ·  tap pre: before the fader  ·  an output: where it goes  ·  a strip's name: its Q-Links  ·  Faders: the levels  ·  TRACK MIX: back";
 /// The hint line on Faders in Perform.
-pub const MIXER_HINT_PERFORM: &str = "Tap MUTE or SOLO: at once  ·  drag a fader or a pan  ·  a strip's name: its Q-Links  ·  Make: the sends and effects  ·  TRACK MIX: back";
+pub const MIXER_HINT_PERFORM: &str = "A track's MUTE or SOLO: on the launch line (SHIFT: at once)  ·  drag a fader or a pan  ·  a strip's name: its Q-Links  ·  TRACK MIX: back";
 /// The hint line on Effects.
 pub const MIXER_HINT_EFFECTS: &str = "Tap + FX: add an effect  ·  tap an effect: its knobs, again: its chain  ·  drag one along its row: move it  ·  Faders: the levels  ·  TRACK MIX: back";
 /// The hint line on EQ.
@@ -158,6 +158,13 @@ pub fn param_of(ui: &Ui, t: &mpfree_ui::Target) -> Option<(mpfree_fx::StripId, u
     ui.get::<MixerView>(MIXER)?.param_of(t, r)
 }
 
+/// The track whose mute and solo strip `s`'s M and S are
+/// ([`StripView::track`], set by the app: one mute per track), if any.
+pub fn track_of(ui: &Ui, s: mpfree_fx::StripId) -> Option<usize> {
+    let v = ui.get::<MixerView>(MIXER)?;
+    v.state().strips.iter().find(|v| v.id == s)?.track
+}
+
 /// The look showing: Faders or Effects. The widget keeps it, so the Mix
 /// tab opens on the look used last.
 pub fn look(ui: &Ui) -> Look {
@@ -209,6 +216,15 @@ pub fn hint_for(l: Look, takes: bool) -> &'static str {
 pub fn set_perform(ui: &mut Ui, on: bool) {
     if let Some(v) = ui.get_mut::<MixerView>(MIXER) {
         v.set_perform(on);
+    }
+}
+
+/// The tracks' mutes and solos waiting for the launch line
+/// ([`MixerView::set_waits`]): the app gives them from the time engine's
+/// mute queue, and a strip whose [`StripView::track`] is one shows it.
+pub fn set_waits(ui: &mut Ui, waits: Vec<TrackWait>) {
+    if let Some(v) = ui.get_mut::<MixerView>(MIXER) {
+        v.set_waits(waits);
     }
 }
 

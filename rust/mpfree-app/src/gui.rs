@@ -13928,6 +13928,9 @@ impl Player {
                     self.refresh_chips();
                     self.refresh_hint();
                 }
+                // The tracks' mutes and solos waiting for the launch line:
+                // their strips draw them hatched (one mute per track, A7b).
+                mpfree_mixer_ui::set_waits(&mut self.ui, track_waits(&self.time));
                 if notes && self.ready && self.view == View::Sequencer {
                     self.show_view(View::Sequencer);
                 }
@@ -18789,6 +18792,25 @@ impl Player {
         }
         if w == mpfree_mixer_ui::MIXER {
             let (sid, param) = mpfree_mixer_ui::param_of(&self.ui, t)?;
+            // A track's M and S are its track's mute and solo (one mute
+            // per track, the touch plan's A7b): learned as the Clips
+            // grid's, so they land as TRACK MUTE's do.
+            if let Some(tr) = mpfree_mixer_ui::track_of(&self.ui, sid) {
+                use mpfree_fx::ids::mixer as mx;
+                use mpfree_play::mpfree_param::clips;
+                let tr = u8::try_from(tr).ok()?;
+                let id = match param {
+                    mx::MUTE => Some(clips::mute(tr)),
+                    mx::SOLO => Some(clips::solo(tr)),
+                    _ => None,
+                };
+                if let Some(id) = id {
+                    return Some(LearnValue::Param(ParamAddr::new(
+                        mpfree_play::mpfree_param::Owner::Clips,
+                        id,
+                    )));
+                }
+            }
             let strip = crate::modmix::strip_of(sid)?;
             return Some(LearnValue::Param(ParamAddr::new(
                 mpfree_play::mpfree_param::Owner::Strip(strip),
@@ -25102,6 +25124,27 @@ fn sample_set() -> mpfree_library::Set {
     }
 }
 
+/// What waits in the time engine's mute queue, a track at a time, as the
+/// mixer's strips show it (one mute per track, the touch plan's A7b): the
+/// track's mute and solo once the queue lands and the grid's words for it
+/// ("mutes in 2 beats").
+fn track_waits(st: &TimeState) -> Vec<mpfree_mixer_ui::TrackWait> {
+    let Some(q) = st.mute_wait.as_ref() else {
+        return Vec::new();
+    };
+    q.want
+        .iter()
+        .filter_map(|&(track, mute, solo)| {
+            Some(mpfree_mixer_ui::TrackWait {
+                track,
+                mute,
+                solo,
+                text: st.mute_waiting(track)?,
+            })
+        })
+        .collect()
+}
+
 /// The song list sample (sequencer S4, mockup D), in Perform: seven
 /// steps, the fourth playing its third pass of four, the fifth picked.
 fn sample_list_state() -> Result<TimeState, String> {
@@ -25706,13 +25749,27 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     mpfree_mixer_ui::set_look(&mut sends.ui, mpfree_mixer_ui::Look::Sends);
     out.push(("mixer-sends", sends));
     // The mixer in Perform (touch plan A7): a strip is its pan, its fader
-    // and big MUTE and SOLO, which act on the press.
+    // and big MUTE and SOLO, which act on the press; a track's M and S are
+    // its track's (A7b), and the bass's mute waits for the next bar.
     let mut perform = sample_player(fonts());
     let mut pst = perform.time.clone();
     pst.perform = true;
     perform.apply(ToUi::Time(Box::new(pst)));
     perform.apply(ToUi::Show(View::Mixer));
-    perform.apply(ToUi::Mixer(Box::new(st_sends)));
+    let mut pmix = st_sends;
+    for (k, v) in pmix.strips.iter_mut().enumerate() {
+        v.track = matches!(v.id, mpfree_fx::StripId::Track(_)).then_some(k);
+    }
+    perform.apply(ToUi::Mixer(Box::new(pmix)));
+    mpfree_mixer_ui::set_waits(
+        &mut perform.ui,
+        vec![mpfree_mixer_ui::TrackWait {
+            track: 3,
+            mute: true,
+            solo: false,
+            text: "mutes in 3 beats".into(),
+        }],
+    );
     out.push(("mixer-perform", perform));
     // The mixer's I/O view (the I/O icon lit), while the tempo follows a
     // clock on MIDI In: the tempo chip with its green dot.
@@ -34671,6 +34728,21 @@ mod tests {
         assert_eq!(
             press(&mut p, mute.target.centre()),
             Some(on(Owner::Strip(strip), param))
+        );
+        // A track's M (one mute per track, A7b): its track's mute, as the
+        // Clips grid's.
+        let mut st = mpfree_mixer_ui::MixState::from_mixer(
+            &mut m,
+            mpfree_mixer_ui::MixView::Tracks,
+            &mpfree_mixer_ui::sample::name,
+        );
+        let k = st.strips.iter().position(|v| v.id == sid).unwrap();
+        st.strips[k].track = Some(2);
+        p.apply(ToUi::Mixer(Box::new(st)));
+        p.ui.paint(&mut c);
+        assert_eq!(
+            press(&mut p, mute.target.centre()),
+            Some(on(Owner::Clips, mpfree_play::mpfree_param::clips::mute(2)))
         );
     }
 

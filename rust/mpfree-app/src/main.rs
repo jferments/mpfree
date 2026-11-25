@@ -12591,7 +12591,15 @@ fn player_session(
         // Other gear's MMC and program changes (the Sync section's MMC in
         // and Program change in).
         fx.extend(desk::remote_in(&mut music, &time, &mut app, out));
-        for l in music.learning() {
+        for mut l in music.learning() {
+            // A control learned on a track's strip's M or S before one
+            // mute per track (A7b): the track's mute or solo, as the Clips
+            // grid's, below.
+            if let midi_in::Learning::Set(w) = &mut l {
+                if let Some(t) = desk::track_mute_target(&time, &mix, w.target) {
+                    w.target = t;
+                }
+            }
             match l {
                 midi_in::Learning::Took { .. } if panels.learning() => {
                     panels.learned();
@@ -16172,6 +16180,11 @@ fn player_session(
         if mix.opening() {
             if let Some(line) = mix.tend_open() {
                 out.note(&line);
+                // A strip mute saved on a track's strip, from before one
+                // mute per track: the track's mute now.
+                if let Some(line) = desk::fold_strip_mutes(&mut time, &mut tracks, &mut mix) {
+                    out.note(&line);
+                }
             }
         }
         // The parts New project goes back to: the engines as they started,
@@ -16460,8 +16473,10 @@ fn player_session(
         }
         parts.begin();
         if let Some(mut st) = mix.poll_state(Instant::now()) {
-            // The audio tracks' strips, named and lit as their tracks.
+            // The audio tracks' strips, named and lit as their tracks; every
+            // track's strip's M and S are its track's (one mute per track).
             tracks.dress_strips(&mut st, time.project(), time.silenced(), &mix);
+            desk::dress_track_strips(&mut st, &time, &mix);
             // Loops on audio tracks (phase 4, board 6).
             let plays = |t: usize| {
                 let a = time.audio(t);

@@ -316,7 +316,7 @@ A button, pad, key or footswitch on your controller can press MPFree's transport
 - **PLAY**, **STOP**, **PLAY START**, **REC**, **OVERDUB** and **TAP TEMPO**: each does just what the MPC's own button does on the page you're on: PLAY while playing is FILL, and tapping TAP TEMPO in time sets the tempo. A press counts when the control goes past halfway and lets go when it comes back, so leave these as **Button: while held** or **Knob or fader**.
 - **Tempo**: from 30 to 300 BPM over the control's travel. Narrow it with **Range**, such as 110 to 130 for a fader that nudges, and use **Pick up** so the tempo doesn't jump when you first touch the fader. While the tempo follows another device's clock (Sync's **Tempo from**), the learned tempo control does nothing.
 
-For the tempo the quick way works too: hold **SHIFT** and touch the tempo on the Play page. To mute a track from a controller, hold **SHIFT** and touch its **M** in the mixer, then press a key: each press mutes or unmutes it.
+For the tempo the quick way works too: hold **SHIFT** and touch the tempo on the Play page. To mute a track from a controller, hold **SHIFT** and touch its **M** in the mixer, then press a key: each press mutes or unmutes it. A track's M is the track's own mute, so the key learns that, as the Clips and scenes card would, and in Perform it lands on the launch line; a key learned on a track's M in an older project does the same.
 
 Transport controls are kept in **Rig**, so they work in every project. Nothing here sends anything to your controller.
 

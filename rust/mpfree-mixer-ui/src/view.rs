@@ -792,6 +792,9 @@ pub struct MixerView {
     /// The project is in Perform: Faders draws the Perform strip (big
     /// MUTE and SOLO, a longer fader, nothing else to hit by mistake).
     perform: bool,
+    /// The tracks' mutes and solos waiting for the launch line (the app's,
+    /// from the mute queue): a track's strip draws its M or S hatched.
+    waits: Vec<crate::TrackWait>,
     /// The effect picked on the Effects look, or the EQ on the EQ look:
     /// (strip, slot).
     pick: Option<(StripId, usize)>,
@@ -878,6 +881,7 @@ impl MixerView {
             state: MixState::default(),
             look: Look::Faders,
             perform: false,
+            waits: Vec::new(),
             pick: None,
             eq_dot: None,
             eq_curves: RefCell::new(Vec::new()),
@@ -1042,6 +1046,24 @@ impl MixerView {
             self.grabs.clear();
             self.mark(Dirty::All);
         }
+    }
+
+    /// The tracks' mutes and solos waiting for the launch line, from the
+    /// time engine's mute queue (one mute per track, the touch plan's
+    /// A7b). Redrawn only when they change.
+    pub fn set_waits(&mut self, waits: Vec<crate::TrackWait>) {
+        if waits != self.waits {
+            self.waits = waits;
+            if self.look == Look::Faders {
+                self.mark(Dirty::All);
+            }
+        }
+    }
+
+    /// What waits for strip `s`'s track, if anything.
+    fn wait_of(&self, s: &StripView) -> Option<&crate::TrackWait> {
+        let t = s.track?;
+        self.waits.iter().find(|w| w.track == t)
     }
 
     /// Shows look `l` (TRACK MIX opens on Faders), as a tap on the toggle
@@ -1416,8 +1438,29 @@ impl MixerView {
                 self.set_look(look);
                 self.push(MixAction::Look(look));
             }
-            Tap::Mute => self.set(id, mx::MUTE, if s.mute { 0.0 } else { 1.0 }),
-            Tap::Solo => self.set(id, mx::SOLO, if s.solo { 0.0 } else { 1.0 }),
+            // A track's strip (one mute per track): its mute as the queue
+            // will leave it flips, and in Perform the light waits for the
+            // app, since the change waits for the launch line.
+            Tap::Mute | Tap::Solo => {
+                let solo = what == Tap::Solo;
+                let wait = self.wait_of(&s);
+                let now = match (solo, wait) {
+                    (false, Some(w)) => w.mute,
+                    (true, Some(w)) => w.solo,
+                    (false, None) => s.mute,
+                    (true, None) => s.solo,
+                };
+                let a = MixAction::Set {
+                    strip: id,
+                    id: if solo { mx::SOLO } else { mx::MUTE },
+                    value: if now { 0.0 } else { 1.0 },
+                };
+                if self.perform && s.track.is_some() {
+                    self.actions.push(a);
+                } else {
+                    self.push(a);
+                }
+            }
             Tap::Arm => {
                 let arm = s.input.is_some_and(|i| i.arm);
                 self.set(id, mx::ARM, if arm { 0.0 } else { 1.0 });
@@ -2196,8 +2239,9 @@ impl MixerView {
             ("S", s.solo, t.picked()),
             ("Arm", arm.unwrap_or(false), t.bad),
         ];
-        for (b, (txt, on, c)) in p.buttons().iter().zip(spec) {
+        for (k, (b, (txt, on, c))) in p.buttons().iter().zip(spec).enumerate() {
             self.paint_button(cx, *b, txt, on, c, t.size_body + 2.0);
+            self.paint_wait(cx, s, *b, k, txt);
         }
     }
 
@@ -2276,9 +2320,48 @@ impl MixerView {
             return;
         }
         let spec = [("MUTE", s.mute, t.warn), ("SOLO", s.solo, t.picked())];
-        for (b, (txt, on, c)) in p.buttons().iter().zip(spec) {
+        for (k, (b, (txt, on, c))) in p.buttons().iter().zip(spec).enumerate() {
             self.paint_button(cx, *b, txt, on, c, t.size_body + 2.0);
+            self.paint_wait(cx, s, *b, k, txt);
         }
+    }
+
+    /// A track's mute (`k` 0) or solo (1) waiting for the launch line, over
+    /// its button `b`: hatched in the colour it will have, outlined, and
+    /// what waits and how soon at its foot ("mutes in 2 beats"), as the
+    /// Clips grid's track heads show it.
+    fn paint_wait(&self, cx: &mut PaintCx, s: &StripView, b: Rect, k: usize, txt: &str) {
+        let Some(w) = self.wait_of(s) else {
+            return;
+        };
+        let (now, then, c) = match k {
+            0 => (s.mute, w.mute, cx.theme.warn),
+            1 => (s.solo, w.solo, cx.theme.picked()),
+            _ => return,
+        };
+        if now == then {
+            return;
+        }
+        let t = cx.theme.clone();
+        hatch(cx, b.inset(3), c.with_alpha(110));
+        cx.canvas.stroke_round_rect(b, t.round(10), 2, c);
+        let (foot, top) = b.inset_xy(4, 4).take_bottom(16);
+        // The name again over the hatching, in the colour it waits for.
+        let size = t.size_body + 2.0;
+        let pw = cx.measure(FontId::Bold, size, txt) + 12;
+        let plate = Rect::new(top.x + (top.w - pw) / 2, top.y + top.h / 2 - 13, pw, 26);
+        cx.canvas.fill_round_rect(plate, t.round(6), t.raised);
+        cx.text(FontId::Bold, size, plate, Align::Center, c, txt);
+        cx.canvas
+            .fill_round_rect(foot, t.round(4), t.raised.with_alpha(230));
+        cx.text(
+            FontId::Sans,
+            t.size_small - 4.0,
+            foot,
+            Align::Center,
+            t.text,
+            &w.text,
+        );
     }
 
     /// A strip's button: lit in `c` while on.
@@ -4578,6 +4661,22 @@ impl Widget for MixerView {
     }
 }
 
+/// Diagonal hatching over `r` in `c`, as the Clips grid draws a change
+/// that waits for the launch line.
+fn hatch(cx: &mut PaintCx, r: Rect, c: Color) {
+    let was = cx.canvas.clip();
+    cx.canvas.set_clip(was.intersect(r));
+    for y in r.y..r.y + r.h {
+        let shift = (y - r.y) % 9;
+        let mut x = r.x - 9 + shift;
+        while x < r.x + r.w {
+            cx.canvas.fill_rect(Rect::new(x, y, 3, 1), c);
+            x += 9;
+        }
+    }
+    cx.canvas.set_clip(was);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4937,6 +5036,67 @@ mod tests {
         crate::set_perform(&mut ui, false);
         let v = ui.get::<MixerView>(crate::MIXER).unwrap();
         assert!(v.state().strips[0].mute && v.state().strips[0].solo, "kept");
+    }
+
+    /// A track's strip (one mute per track, A7b): in Perform its MUTE asks
+    /// the app and waits for the launch line, so the light stays as it is
+    /// and the wait shows hatched; a tap while it waits calls it off. A
+    /// strip with its own mute acts at once, as before; in Make a track's
+    /// lights at once.
+    #[test]
+    fn a_tracks_mute_in_perform_waits_for_the_line_and_a_second_tap_calls_it_off() {
+        let mut st = state(12);
+        st.strips[0].track = Some(0);
+        let mut ui = ui(st);
+        crate::set_perform(&mut ui, true);
+        let p = strip_parts_in(&ui, 0, true);
+        let t0 = StripId::Track(0);
+        let tap = |ui: &mut Ui, r: Rect| {
+            let (x, y) = mid(r);
+            ui.touch(9, Touch::Down, x, y);
+            ui.touch(9, Touch::Up, x, y);
+            crate::take_actions(ui)
+        };
+        let set = |id, value| MixAction::Set {
+            strip: t0,
+            id,
+            value,
+        };
+        let strip = |ui: &Ui| ui.get::<MixerView>(crate::MIXER).unwrap().state().strips[0].clone();
+        assert_eq!(tap(&mut ui, p.buttons[0]), vec![set(mx::MUTE, 1.0)]);
+        assert!(!strip(&ui).mute, "the light waits for the app");
+        crate::set_waits(
+            &mut ui,
+            vec![crate::TrackWait {
+                track: 0,
+                mute: true,
+                solo: false,
+                text: "mutes in 2 beats".into(),
+            }],
+        );
+        assert_eq!(
+            tap(&mut ui, p.buttons[0]),
+            vec![set(mx::MUTE, 0.0)],
+            "again while it waits: called off"
+        );
+        // The strip beside it has its own mute: at once.
+        let q = strip_parts_in(&ui, 1, true);
+        let t1 = StripId::Track(1);
+        assert_eq!(
+            tap(&mut ui, q.buttons[0]),
+            vec![MixAction::Set {
+                strip: t1,
+                id: mx::MUTE,
+                value: 1.0
+            }]
+        );
+        assert!(ui.get::<MixerView>(crate::MIXER).unwrap().state().strips[1].mute);
+        // In Make a track's M lights at once (the app mutes it at once).
+        crate::set_waits(&mut ui, Vec::new());
+        crate::set_perform(&mut ui, false);
+        let m = strip_parts_in(&ui, 0, false);
+        assert_eq!(tap(&mut ui, m.buttons[0]), vec![set(mx::MUTE, 1.0)]);
+        assert!(strip(&ui).mute);
     }
 
     /// Make's buttons are big and stacked; an input's Arm under them.

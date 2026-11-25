@@ -336,9 +336,28 @@ pub fn shape_eqs(m: &mut Mixer) {
     }
 }
 
-/// Faders drawn for Perform, its hint with it.
+/// Each track strip's M and S as its track's (one mute per track, the
+/// touch plan's A7b), as the app gives them.
+fn tracks_own(mut st: MixState) -> MixState {
+    for (k, v) in st.strips.iter_mut().enumerate() {
+        v.track = matches!(v.id, StripId::Track(_)).then_some(k);
+    }
+    st
+}
+
+/// Faders drawn for Perform, its hint with it, the bass's mute waiting for
+/// the next bar.
 fn perform(mut ui: Ui) -> Ui {
     crate::set_perform(&mut ui, true);
+    crate::set_waits(
+        &mut ui,
+        vec![crate::TrackWait {
+            track: 3,
+            mute: true,
+            solo: false,
+            text: "mutes in 3 beats".into(),
+        }],
+    );
     let hint = crate::hint(&ui);
     if let Some(h) = ui.get_mut::<mpfree_ui::widgets::Label>("hint") {
         h.text = hint.to_string();
@@ -376,7 +395,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         Sample { name: "mixer-submixes", about: "Submixes and returns: the drum bus with glue and drive, the music bus, the reverb and delay returns", ui: screen(fonts(), buses)? },
         Sample { name: "mixer-io", about: "The I/O view, Audio: every strip with an output and where it goes, the inputs with their Source and Monitor (MIDI, Sync and CV join the list from their own crates)", ui: screen(fonts(), io)? },
         Sample { name: "mixer-sends", about: "The Sends look: each track's pan, its four sends with their pre toggles and its output as a row, the master's pinned at the bottom (the touch plan's A7)", ui: look(screen(fonts(), tracks.clone())?, crate::Look::Sends) },
-        Sample { name: "mixer-perform", about: "Faders in Perform: each strip's name, a pan row that only drags, a longer fader, and MUTE and SOLO big and stacked (the vocal track muted)", ui: perform(screen(fonts(), tracks.clone())?) },
+        Sample { name: "mixer-perform", about: "Faders in Perform: each strip's name, a pan row that only drags, a longer fader, and MUTE and SOLO big and stacked (the vocal track muted, the bass's mute waiting for the bar, hatched)", ui: perform(screen(fonts(), tracks_own(tracks.clone()))?) },
         Sample { name: "mixer-effects", about: "The Effects look: each track's chain as a row of eight slots in order, + FX in the first free one, the master's row pinned at the bottom", ui: effects(screen(fonts(), tracks.clone())?) },
         Sample { name: "mixer-effects-pads", about: "The Effects look on the pads: each pad channel's chain", ui: effects(screen(fonts(), pads.clone())?) },
     ];

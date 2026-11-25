@@ -333,17 +333,20 @@ impl Desk<'_> {
                     out.show(gui::ToUi::Tell(line));
                 }
             }
-            // An audio track's strip's M and S are the track's mute and
-            // solo (layout spec 3a), as TRACK MUTE's and the panel's are.
+            // A track's strip's M and S are the track's mute and solo (one
+            // mute per track: layout spec 3a, the touch plan's A7b), as
+            // TRACK MUTE's and the Clips grid's are, and wait for the
+            // launch line as theirs do (Perform; SHIFT the other timing).
             gui::FromUi::Mixer(mpfree_mixer_ui::MixAction::Set {
                 strip: mpfree_fx::StripId::Track(ch),
                 id: id @ (mpfree_fx::ids::mixer::MUTE | mpfree_fx::ids::mixer::SOLO),
                 value,
-            }) if audio_track_on(time, mix, ch).is_some() =>
+            }) if strip_track(time, mix, ch).is_some() =>
             {
-                let t = audio_track_on(time, mix, ch).unwrap_or(0);
+                let t = strip_track(time, mix, ch).unwrap_or(0);
                 let solo = id == mpfree_fx::ids::mixer::SOLO;
-                match audio_strip_switch(time, tracks, mix, t, solo, value >= 0.5) {
+                let wait = app.mute_waits();
+                match track_strip_switch(time, tracks, mix, t, solo, value >= 0.5, wait) {
                     Some(Ok(line)) => out.note(&line),
                     Some(Err(e)) => out.note(&format!("mixer: {e}")),
                     None => {}
@@ -1186,33 +1189,137 @@ impl Desk<'_> {
 /// or a pad take): Sample Recall waits for it (the sequencer thread, 18
 /// Nov; REC arm rule 6), as the Wave page's Keep card does (one-page step
 /// 2c), since REC mid-take punches out and neither may take that.
-/// The audio track whose own mixer strip is channel `ch` (the audio
-/// tracks rethink, phase 1b), if one is.
-fn audio_track_on(time: &time::TimeHost, mix: &mixing::MixHost, ch: usize) -> Option<usize> {
-    mixing::channel_track(ch).filter(|&t| {
-        mix.track_channel(t) == ch && time.project().tracks.get(t).is_some_and(|tr| tr.is_audio())
-    })
+/// The sequencer track whose mute and solo mixer track `ch`'s M and S are
+/// (one mute per track, the touch plan's A7b): track 1's strip (Drums, or
+/// its old own channel) and every other track's own, while the track is
+/// there and plays into it. None for a strip with a mute of its own (the
+/// engines' shared strips, kit strips, free places).
+pub fn strip_track(time: &time::TimeHost, mix: &mixing::MixHost, ch: usize) -> Option<usize> {
+    let t = if ch == mix.track_channel(0) {
+        0
+    } else {
+        mixing::channel_track(ch)?
+    };
+    (mix.track_channel(t) == ch && t < time.project().tracks.len().min(128)).then_some(t)
 }
 
-/// Audio track `t`'s strip's M (or S, `solo`) set `on` on the mixer panel:
-/// the track's mute or solo, as TRACK MUTE's and the track panel's are
-/// (layout spec 3a), so a solo there is project-wide. The engine track
-/// follows at once and the panel reads again. What the time engine said,
-/// or None when it was so already.
-fn audio_strip_switch(
+/// A learned control's target on a track's strip's M or S (one mute per
+/// track, the touch plan's A7b): the track's mute or solo as the Clips
+/// grid learns them, so a control learned on the mixer's M before A7b
+/// mutes the track, not a strip mute that nothing shows. None for every
+/// other target.
+pub fn track_mute_target(
+    time: &time::TimeHost,
+    mix: &mixing::MixHost,
+    target: mpfree_play::mpfree_param::ParamAddr,
+) -> Option<mpfree_play::mpfree_param::ParamAddr> {
+    use mpfree_fx::ids::mixer as mx;
+    use mpfree_play::mpfree_param::{clips, Owner, ParamAddr, Strip};
+    let Owner::Strip(Strip::Track(ch)) = target.owner else {
+        return None;
+    };
+    let solo = match target.param {
+        mx::MUTE => false,
+        mx::SOLO => true,
+        _ => return None,
+    };
+    let t = u8::try_from(strip_track(time, mix, usize::from(ch))?).ok()?;
+    let id = if solo { clips::solo(t) } else { clips::mute(t) };
+    Some(ParamAddr::new(Owner::Clips, id))
+}
+
+/// Track `t`'s strip's M (or S, `solo`) set `on` on the mixer panel: the
+/// track's mute or solo, as TRACK MUTE's and the track panel's are (layout
+/// spec 3a), so a solo there is project-wide; with `wait` it joins the
+/// mute queue for the launch line ([`time::TimeHost::mute_or_solo`]).
+/// `on` is weighed against the track as the queue will leave it, so a tap
+/// while a change waits calls it off. The engine track follows at once and
+/// the panel reads again. What the time engine said, or None when it was
+/// so already.
+fn track_strip_switch(
     time: &mut time::TimeHost,
     tracks: &mut crate::audiotracks::TrackHost,
     mix: &mut mixing::MixHost,
     t: usize,
     solo: bool,
     on: bool,
+    wait: bool,
 ) -> Option<Result<String, String>> {
-    let tr = time.project().tracks.get(t)?;
-    let now = if solo { tr.solo } else { tr.mute };
-    let said = (now != on).then(|| time.mute_or_solo(t, false, solo));
+    time.project().tracks.get(t)?;
+    let (muted, soloed) = time.mute_bits();
+    let bits = if solo { soloed } else { muted };
+    let now = t < 128 && bits >> t & 1 == 1;
+    let said = (now != on).then(|| time.mute_or_solo(t, wait, solo));
     tracks.sync(time.project(), time.silenced(), true);
     mix.state_now();
     said
+}
+
+/// The strips whose M and S are their tracks' ([`strip_track`]), named as
+/// before and lit as their tracks: muted, soloed, silenced by another's
+/// solo. The audio tracks' are dressed further by their host.
+pub fn dress_track_strips(
+    st: &mut mpfree_mixer_ui::MixState,
+    time: &time::TimeHost,
+    mix: &mixing::MixHost,
+) {
+    let silenced = time.silenced();
+    for v in &mut st.strips {
+        let mpfree_fx::StripId::Track(ch) = v.id else {
+            continue;
+        };
+        let Some(t) = strip_track(time, mix, ch) else {
+            continue;
+        };
+        let Some(tr) = time.project().tracks.get(t) else {
+            continue;
+        };
+        v.track = Some(t);
+        v.mute = tr.mute;
+        v.solo = tr.solo;
+        v.audible = v.audible && silenced >> t & 1 == 0;
+    }
+}
+
+/// A project's saved strip mutes and solos on its tracks' strips, from
+/// before one mute per track (the touch plan's A7b): each becomes its
+/// track's mute or solo, at once, and the strip's own goes, so nothing
+/// stays muted where M can't reach it. A line for the log when any moved.
+pub fn fold_strip_mutes(
+    time: &mut time::TimeHost,
+    tracks: &mut crate::audiotracks::TrackHost,
+    mix: &mut mixing::MixHost,
+) -> Option<String> {
+    use mpfree_fx::ids::mixer as mx;
+    let mut moved = Vec::new();
+    for t in 0..time.project().tracks.len().min(128) {
+        let ch = mix.track_channel(t);
+        if strip_track(time, mix, ch) != Some(t) {
+            continue;
+        }
+        let strip = mpfree_fx::StripId::Track(ch);
+        for (id, solo) in [(mx::MUTE, false), (mx::SOLO, true)] {
+            // As queued, so a value set before the mixer's next block
+            // counts.
+            if mix.mixer.wanted(strip, id) < 0.5 {
+                continue;
+            }
+            mix.action(&mpfree_mixer_ui::MixAction::Set {
+                strip,
+                id,
+                value: 0.0,
+            });
+            let _ = track_strip_switch(time, tracks, mix, t, solo, true, false);
+            let name = &time.project().tracks[t].name;
+            moved.push(format!("{name} {}", if solo { "solo" } else { "mute" }));
+        }
+    }
+    (!moved.is_empty()).then(|| {
+        format!(
+            "mixer: a track's strip mute is its track's now: {}",
+            moved.join(", ")
+        )
+    })
 }
 
 /// Put in a cell (audio tracks phase 2): sound `s` goes in the cell
@@ -2825,33 +2932,157 @@ mod tests {
         assert!(app.pads_chose_synth(), "the pads keep the synth");
     }
 
-    /// The audio tracks rethink, phase 1b: an audio track's strip's M and
-    /// S are the track's mute and solo (a solo project-wide), set only
-    /// when they change; a note track's channel is left to the mixer.
+    /// One mute per track (the touch plan's A7b; the audio tracks
+    /// rethink's phase 1b for audio tracks): a track's strip's M and S are
+    /// the track's mute and solo (a solo project-wide), set only when they
+    /// change, Drums' for track 1; the engines' shared strips keep their
+    /// own. With `wait` the change waits in the mute queue, and a second
+    /// tap while it waits calls it off. A saved strip mute on a track's
+    /// strip becomes the track's.
     #[test]
-    fn an_audio_track_s_strip_m_and_s_are_the_track_s() {
+    fn a_tracks_strip_m_and_s_are_the_tracks() {
+        use mpfree_fx::ids::mixer as mx;
         let mut p = mpfree_seq::Project::new();
         p.tracks.push(mpfree_seq::Track::new("Track 1", 0));
         p.tracks.push(mpfree_seq::Track::new_audio("Vocal", 0));
+        p.tracks.push(mpfree_seq::Track::new("Keys", 0));
         let mut time = time::TimeHost::with_project(44_100, 120.0, p).unwrap();
         let mut mix = mixing::MixHost::new(44_100, 0.0, 6.0);
         let mut tracks = crate::audiotracks::TrackHost::new(44_100, 1);
         tracks.sync(time.project(), time.silenced(), true);
         let ch = mix.track_channel(1);
-        assert_eq!(audio_track_on(&time, &mix, ch), Some(1));
-        assert_eq!(audio_track_on(&time, &mix, mix.track_channel(0)), None);
-        assert_eq!(audio_track_on(&time, &mix, mixing::AUDIO), None);
-        let said = audio_strip_switch(&mut time, &mut tracks, &mut mix, 1, true, true);
+        assert_eq!(strip_track(&time, &mix, ch), Some(1));
+        assert_eq!(
+            strip_track(&time, &mix, mixing::DRUMS),
+            Some(0),
+            "Drums: track 1's"
+        );
+        assert_eq!(strip_track(&time, &mix, mix.track_channel(2)), Some(2));
+        assert_eq!(
+            strip_track(&time, &mix, mixing::SYNTH),
+            None,
+            "its own mute"
+        );
+        assert_eq!(strip_track(&time, &mix, mixing::AUDIO), None);
+        assert_eq!(
+            strip_track(&time, &mix, mix.track_channel(3)),
+            None,
+            "no track 4"
+        );
+        let switch =
+            |time: &mut time::TimeHost,
+             tracks: &mut crate::audiotracks::TrackHost,
+             mix: &mut mixing::MixHost,
+             t,
+             solo,
+             on| track_strip_switch(time, tracks, mix, t, solo, on, false);
+        let said = switch(&mut time, &mut tracks, &mut mix, 1, true, true);
         assert!(matches!(said, Some(Ok(_))), "{said:?}");
         assert!(time.project().tracks[1].solo);
-        assert_eq!(time.silenced() & 0b11, 0b01, "the note track is left out");
-        let again = audio_strip_switch(&mut time, &mut tracks, &mut mix, 1, true, true);
-        assert_eq!(again, None, "soloed already");
-        audio_strip_switch(&mut time, &mut tracks, &mut mix, 1, false, true);
-        assert!(time.project().tracks[1].mute);
-        audio_strip_switch(&mut time, &mut tracks, &mut mix, 1, true, false);
-        assert!(!time.project().tracks[1].solo);
-        assert_eq!(time.silenced() & 0b11, 0b10, "muted");
+        assert_eq!(time.silenced() & 0b111, 0b101, "the others silent");
+        assert_eq!(
+            switch(&mut time, &mut tracks, &mut mix, 1, true, true),
+            None,
+            "soloed already"
+        );
+        switch(&mut time, &mut tracks, &mut mix, 1, true, false);
+        // Drums' M: track 1's mute, not the strip's.
+        switch(&mut time, &mut tracks, &mut mix, 0, false, true);
+        assert!(time.project().tracks[0].mute);
+        assert_eq!(
+            mix.mixer
+                .param(mpfree_fx::StripId::Track(mixing::DRUMS), mx::MUTE),
+            0.0
+        );
+        assert_eq!(time.silenced() & 0b111, 0b001);
+        switch(&mut time, &mut tracks, &mut mix, 0, false, false);
+        // Waiting: the light stays until the line, a second tap calls it off.
+        struct Quiet;
+        impl time::Pads for Quiet {
+            fn hit_at(&mut self, _: u16, _: usize, _: u8, _: u32) -> bool {
+                true
+            }
+            fn release_at(&mut self, _: u16, _: usize, _: u32) {}
+            fn stop_all(&mut self) {}
+            fn pressure_at(&mut self, _: u16, _: usize, _: u8, _: u32) {}
+        }
+        assert!(time.command(mpfree_transport::Command::Play));
+        for _ in 0..8 {
+            time.advance(128);
+            time.period(128, &mut Quiet);
+        }
+        let r = track_strip_switch(&mut time, &mut tracks, &mut mix, 2, false, true, true);
+        assert!(matches!(r, Some(Ok(_))), "{r:?}");
+        assert!(!time.project().tracks[2].mute, "it waits for the line");
+        assert_eq!(time.mute_bits().0 & 0b100, 0b100, "queued");
+        let r = track_strip_switch(&mut time, &mut tracks, &mut mix, 2, false, false, true);
+        assert!(matches!(r, Some(Ok(_))), "{r:?}");
+        assert_eq!(time.mute_bits().0 & 0b100, 0, "called off");
+        assert!(time.command(mpfree_transport::Command::Stop));
+        // The panel's state: the strips lit as their tracks.
+        switch(&mut time, &mut tracks, &mut mix, 2, false, true);
+        let mut st = mpfree_mixer_ui::MixState {
+            strips: vec![
+                mpfree_mixer_ui::StripView::new(mpfree_fx::StripId::Track(mixing::DRUMS), "Drums"),
+                mpfree_mixer_ui::StripView::new(mpfree_fx::StripId::Track(mixing::SYNTH), "Synth"),
+                mpfree_mixer_ui::StripView::new(
+                    mpfree_fx::StripId::Track(mix.track_channel(2)),
+                    "Keys",
+                ),
+            ],
+            ..Default::default()
+        };
+        dress_track_strips(&mut st, &time, &mix);
+        let lit: Vec<_> = st
+            .strips
+            .iter()
+            .map(|v| (v.track, v.mute, v.audible))
+            .collect();
+        assert_eq!(
+            lit,
+            [
+                (Some(0), false, true),
+                (None, false, true),
+                (Some(2), true, false)
+            ]
+        );
+        switch(&mut time, &mut tracks, &mut mix, 2, false, false);
+        // A project saved with a strip mute on Keys' strip: Keys' mute now.
+        let keys = mpfree_fx::StripId::Track(mix.track_channel(2));
+        mix.action(&mpfree_mixer_ui::MixAction::Set {
+            strip: keys,
+            id: mx::MUTE,
+            value: 1.0,
+        });
+        let line = fold_strip_mutes(&mut time, &mut tracks, &mut mix).expect("said");
+        assert!(line.contains("Keys mute"), "{line}");
+        assert!(time.project().tracks[2].mute);
+        assert_eq!(mix.mixer.wanted(keys, mx::MUTE), 0.0);
+        assert_eq!(
+            fold_strip_mutes(&mut time, &mut tracks, &mut mix),
+            None,
+            "once"
+        );
+        // A control learned on a track's M: the track's mute, as the Clips
+        // grid's; Synth's stays its own.
+        use mpfree_play::mpfree_param::{clips, Owner, ParamAddr, Strip};
+        let on = |ch: usize, id| ParamAddr::new(Owner::Strip(Strip::Track(ch as u8)), id);
+        assert_eq!(
+            track_mute_target(&time, &mix, on(mix.track_channel(2), mx::SOLO)),
+            Some(ParamAddr::new(Owner::Clips, clips::solo(2)))
+        );
+        assert_eq!(
+            track_mute_target(&time, &mix, on(mixing::DRUMS, mx::MUTE)),
+            Some(ParamAddr::new(Owner::Clips, clips::mute(0)))
+        );
+        assert_eq!(
+            track_mute_target(&time, &mix, on(mixing::SYNTH, mx::MUTE)),
+            None
+        );
+        assert_eq!(
+            track_mute_target(&time, &mix, on(mixing::DRUMS, mx::VOLUME)),
+            None
+        );
     }
 
     /// Refactor C1: a track picked while REC's arm is pinned is selected

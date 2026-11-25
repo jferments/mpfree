@@ -3205,17 +3205,20 @@ mod mixer {
             s.press("mixer", "fader", "Drums fader").run_for(2.0);
             let v1 = p(&s, mx::VOLUME);
             assert!(v1 > v0, "the fader went up");
-            s.press("mixer", "mute", "Drums M").run_for(0.2);
-            assert_eq!(p(&s, mx::MUTE), 1.0);
+            // A strip with its own mute (the Synth strip; a track's M is
+            // its track's mute, A7b, which the mixer's UNDO leaves).
+            let sm = |s: &Session| s.mix.mixer.param(StripId::Track(1), mx::MUTE);
+            s.press("mixer", "mute", "Synth M").run_for(0.2);
+            assert_eq!(sm(&s), 1.0);
 
             s.button("UNDO").run_for(0.2);
-            assert_eq!(p(&s, mx::MUTE), 0.0, "UNDO took the mute back");
+            assert_eq!(sm(&s), 0.0, "UNDO took the mute back");
             assert_eq!(p(&s, mx::VOLUME), v1, "not the fader");
             s.button_with("SHIFT", "UNDO").run_for(0.2);
-            assert_eq!(p(&s, mx::MUTE), 1.0, "SHIFT + UNDO put it back");
+            assert_eq!(sm(&s), 1.0, "SHIFT + UNDO put it back");
             s.button("UNDO").run_for(0.2);
             s.button("UNDO").run_for(0.2);
-            assert_eq!(p(&s, mx::MUTE), 0.0);
+            assert_eq!(sm(&s), 0.0);
             assert_eq!(p(&s, mx::VOLUME), v0, "and then the fader");
             s.run_for(0.2);
             let strip = s
