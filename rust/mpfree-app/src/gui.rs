@@ -2198,6 +2198,9 @@ pub enum FromUi {
     /// Looper tab's deck and on Play's loop row (SHIFT + SAMPLER on the
     /// Looper tab does the same).
     LoopKeys,
+    /// The Loop group's knobs and switch as they are now (Play's loop row
+    /// with Dev's "Loops on audio tracks": audio tracks phase 4e.1).
+    LoopGroup(crate::loop_group::GroupSet),
     /// The Perform set off the pads: Play's "Pads: Perform B" chip, the
     /// Pads tab's Perform view's "On the pads" switch.
     PerformOff,
@@ -8027,6 +8030,47 @@ impl Player {
         self.looper_page.set_on_tracks(into) || placed
     }
 
+    /// Play's Loop group (audio tracks phase 4e.1, board 7): on the loop
+    /// row with Dev's "Loops on audio tracks" on, its switch naming the
+    /// audio track armed by its own arm (`TimeState::audio_focus`; an
+    /// audio track is never the armed note track). When the switch goes off the
+    /// group goes, and the audio is told it is at rest, so a new start of
+    /// the group is at rest everywhere.
+    fn refresh_loop_group(&mut self) {
+        use crate::loop_row::{GroupPanel, LoopRow, LOOP_ROW};
+        let st = &self.time;
+        let armed = st
+            .audio_focus
+            .filter(|&t| st.audio_lane_at(t).is_some())
+            .map(|t| self.track_name(t));
+        let on = st.loops_on;
+        let Some(row) = self.ui.get_mut::<LoopRow>(LOOP_ROW) else {
+            return;
+        };
+        match (&mut row.group, on) {
+            (Some(g), true) => {
+                if g.armed != armed {
+                    g.armed = armed;
+                }
+            }
+            (None, true) => {
+                row.group = Some(GroupPanel {
+                    armed,
+                    ..GroupPanel::default()
+                });
+            }
+            (Some(g), false) => {
+                let was = g.set;
+                row.group = None;
+                if !was.at_rest() || was.armed_only {
+                    self.outbox
+                        .push(FromUi::LoopGroup(crate::loop_group::GroupSet::default()));
+                }
+            }
+            (None, false) => {}
+        }
+    }
+
     /// An audio track's input list, as the app says the mixer offers it
     /// (phase 4, board 4): over the Clips grid under the track's column
     /// head, the grid veiled, or over the Song view under its lane's
@@ -8898,6 +8942,7 @@ impl Player {
                 LoopAct::Mute(n) => out.push(FromUi::LoopMute(Some(n))),
                 LoopAct::Solo(n) => out.push(FromUi::LoopSolo(n)),
                 LoopAct::PadKeys => out.push(FromUi::LoopKeys),
+                LoopAct::Group(set) => out.push(FromUi::LoopGroup(set)),
                 LoopAct::Capture => out.push(FromUi::LoopCapture),
                 LoopAct::CaptureSpan(end, bars) => out.push(FromUi::LoopCaptureSpan(end, bars)),
                 LoopAct::Clear(n) => {
@@ -13368,6 +13413,9 @@ impl Player {
                 if gone {
                     self.close_input_list();
                 }
+                // Play's Loop group with Dev's switch, and the armed track
+                // its switch names (4e.1).
+                self.refresh_loop_group();
                 // Play's strip and the Looper tab name a loop by its place.
                 if self.refresh_loop_places() {
                     if matches!(self.view, View::Looper | View::Play) {
@@ -37039,6 +37087,37 @@ mod tests {
         st.loop_cell = Some((vocal, empty));
         p.apply(ToUi::Time(Box::new(st)));
         assert_eq!(p.rec_chip().alert, RecAlert::None);
+    }
+
+    /// The audio tracks rethink's phase 4e.1 (board 7): the Loop group's
+    /// "Armed" half names the audio track armed by its own arm, never the
+    /// armed note track; with none it says none, and with the switch off
+    /// the group goes.
+    #[test]
+    fn with_loops_on_the_loop_groups_armed_half_names_the_armed_audio_track() {
+        use crate::loop_row::{LoopRow, LOOP_ROW};
+        let mut st = mpfree_time_ui::sample::clips_audio_state().unwrap();
+        st.loops_on = true;
+        let vocal = st.audio[0].row;
+        let note = (0..st.tracks.len())
+            .find(|&t| st.audio_lane_at(t).is_none())
+            .expect("a note track");
+        st.armed = Some(note);
+        st.audio_focus = None;
+        let mut p = quiet_player(Fonts::embedded());
+        let armed = |p: &Player| {
+            p.ui.get::<LoopRow>(LOOP_ROW)
+                .and_then(|r| r.group.as_ref())
+                .map(|g| g.armed.clone())
+        };
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(armed(&p), Some(None), "a note track armed: none");
+        st.audio_focus = Some(vocal);
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(armed(&p), Some(Some("Vocal".to_string())));
+        st.loops_on = false;
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(armed(&p), None, "no group with the switch off");
     }
 
     /// The audio tracks rethink's phase 4c.3 and board 2: a loop holding a

@@ -23,7 +23,7 @@ use mpfree_seq::mpfree_moves::{Input, Kind};
 use mpfree_seq::{Holds, LaunchGrid, TouchPoint, MAX_TRACKS};
 use mpfree_time_ui::view::TransportInfo;
 use mpfree_transport::time::{TempoMap, Tick};
-use mpfree_transport::{Block, Command, Mark, State, Transport};
+use mpfree_transport::{Block, Command, Mark, Span, State, Transport};
 
 use super::follow::{Follow, FollowCounts, Follower};
 use super::link::{
@@ -176,6 +176,16 @@ pub struct TimeAudio {
     click: Click,
     /// Click while counting in and recording.
     pub metronome: bool,
+    /// Tempo follows: Free loops (the looper refactor's R2, tempo
+    /// context): the free loops' clock as a span to copy, while it runs
+    /// ([`TimeAudio::set_lead`]). The arps and Note Repeat take their time
+    /// from it, and the mixer's context ([`TimeAudio::tempo_block`]).
+    lead: Option<Span>,
+    /// This period as the lead has it, while it leads. Boxed, made once
+    /// in [`TimeAudio::new`]: a block is some 8.5 KB, and inline it made
+    /// everything holding the time engine that much bigger on the stack.
+    lead_block: Box<Block>,
+    led: bool,
     /// [`TimeAudio::advance`] ran the transport for the coming period (and
     /// whether it could).
     advanced: Option<bool>,
@@ -322,6 +332,9 @@ impl TimeAudio {
             cues_sent: CueCounts::default(),
             click: Click::new(rate),
             metronome: false,
+            lead: None,
+            lead_block: Box::new(Block::new()),
+            led: false,
             advanced: None,
             jump_pending: false,
             hits: [HitInfo::default(); MAX_HITS],
@@ -1977,6 +1990,7 @@ impl TimeAudio {
         if !ok {
             return;
         }
+        self.lead_period();
         self.sink.clear();
         self.locks.clear();
         self.lanes.clear();
@@ -2001,7 +2015,12 @@ impl TimeAudio {
                     }
                 }
                 let sink = &mut *self.sink;
-                arps.finish_with(&self.block, |o, arp| {
+                let time = if self.led {
+                    &self.lead_block
+                } else {
+                    &self.block
+                };
+                arps.finish_with(time, |o, arp| {
                     sink.store(*o, arp);
                 });
                 (self.arps_busy, self.arps_lost) = (arps.refused(), arps.lost());
@@ -2238,6 +2257,50 @@ impl TimeAudio {
 
     pub fn block(&self) -> &Block {
         &self.block
+    }
+
+    /// The clock the arps, Note Repeat and whatever keeps time in the
+    /// mixer follow this period: the free loops' while Tempo follows: Free
+    /// loops and their clock runs ([`TimeAudio::set_lead`]), else the
+    /// song's ([`TimeAudio::block`]).
+    pub fn tempo_block(&self) -> &Block {
+        if self.led {
+            &self.lead_block
+        } else {
+            &self.block
+        }
+    }
+
+    /// Tempo follows: Free loops: the free clock as a span (any offset,
+    /// length and frame: each period copies it over its own frames), from
+    /// the next period on; None follows the song. A clock set to start on
+    /// a frame to come leads from the first period it has started by.
+    pub fn set_lead(&mut self, lead: Option<Span>) {
+        self.lead = lead;
+    }
+
+    /// The lead's tempo while it led the last period.
+    pub fn lead_bpm(&self) -> Option<f64> {
+        self.led
+            .then(|| self.lead_block.spans().first().map(|s| s.bpm))
+            .flatten()
+    }
+
+    /// This period's lead, from the transport's block for it.
+    fn lead_period(&mut self) {
+        let (start, frames) = (self.block.start_frame, self.block.frames);
+        self.led = match self.lead {
+            Some(s) if s.anchor_frame <= start && frames > 0 => {
+                self.lead_block.start_copy(start, frames);
+                self.lead_block.copy_span(Span {
+                    offset: 0,
+                    len: frames,
+                    frame: start,
+                    ..s
+                })
+            }
+            _ => false,
+        };
     }
 
     pub fn tempo_map(&self) -> &mpfree_transport::TempoMap {
