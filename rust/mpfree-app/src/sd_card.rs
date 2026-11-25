@@ -23,8 +23,19 @@
 //! instead of asking again: a request made while a window is open would
 //! open the card again once it closed.
 //!
-//! Nothing here writes to the card: it is mounted read-only on a disk the
-//! kernel holds read-only, and the files here are all in `/run`.
+//! The write window (step S2a, `setup-sd-card-write.sh`) speaks the same
+//! protocol with its own files (`sd-card-write.*`). It opens only an exFAT
+//! card that isn't marked and checks clean, mounts the whole card
+//! read-only at `/run/mpfree-sd` and only its `MPFree` folder writable,
+//! and checks the card again after the close. A [`Slot`] given it
+//! ([`Slot::with_writing`]) asks it first; a card it refuses (FAT, marked
+//! as not safely removed, not clean, locked) opens through the read-only
+//! window instead, and the [`Card`] says why. The two windows are never
+//! open at once: each refuses while the other's card is there.
+//!
+//! Nothing here writes to the card: the files here are all in `/run`.
+//! Through the write window, only the card's `MPFree` folder can be
+//! written, by whoever saves there.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
@@ -47,6 +58,16 @@ pub const CLOSE: &str = "sd-card.close";
 pub const ALIVE: &str = "sd-card.alive";
 /// Where this program's mounts are listed.
 pub const MOUNTS: &str = "/proc/self/mounts";
+/// The stick's write window (step S2a); without it the card opens
+/// read-only.
+pub const WRITE_SERVICE: &str = "/etc/mpfree-test/setup-sd-card-write.sh";
+/// What the write window reports.
+pub const WRITE_STATUS: &str = "/run/mpfree-setup/sd-card-write-status";
+/// The write window's request, close and counter, beside the read-only
+/// window's.
+pub const WRITE_REQUEST: &str = "sd-card-write.request";
+pub const WRITE_CLOSE: &str = "sd-card-write.close";
+pub const WRITE_ALIVE: &str = "sd-card-write.alive";
 
 /// Where things are; tests point them at a temporary folder.
 #[derive(Clone, Debug)]
@@ -67,6 +88,18 @@ impl Paths {
             request: report_dir.join(REQUEST),
             close: report_dir.join(CLOSE),
             alive: report_dir.join(ALIVE),
+            mounts: PathBuf::from(MOUNTS),
+        }
+    }
+
+    /// The write window's files on the stick.
+    pub fn writing_on_the_stick(report_dir: &Path) -> Paths {
+        Paths {
+            service: PathBuf::from(WRITE_SERVICE),
+            status: PathBuf::from(WRITE_STATUS),
+            request: report_dir.join(WRITE_REQUEST),
+            close: report_dir.join(WRITE_CLOSE),
+            alive: report_dir.join(WRITE_ALIVE),
             mounts: PathBuf::from(MOUNTS),
         }
     }
@@ -109,6 +142,8 @@ pub struct Status {
     pub mount: Option<PathBuf>,
     /// The card's filesystem was left marked as in use (`dirty=yes`).
     pub dirty: bool,
+    /// The write window's writable folder, the card's `MPFree` (`write=`).
+    pub write: Option<PathBuf>,
 }
 
 pub fn parse_status(text: &str) -> Option<Status> {
@@ -126,6 +161,7 @@ pub fn parse_status(text: &str) -> Option<Status> {
             "sectors" => s.sectors = v.parse().unwrap_or(0),
             "mount" if !v.is_empty() => s.mount = Some(PathBuf::from(v)),
             "dirty" => s.dirty = v == "yes",
+            "write" if !v.is_empty() => s.write = Some(PathBuf::from(v)),
             _ => {}
         }
     }
@@ -147,7 +183,7 @@ fn mounted(mounts: &Path, at: &Path) -> bool {
         .any(|l| l.split(' ').nth(1) == Some(at))
 }
 
-/// The card, open read-only.
+/// The card, open: read-only, or with its `MPFree` folder writable.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Card {
     /// `vfat` or `exfat`, as the kernel calls it.
@@ -161,6 +197,13 @@ pub struct Card {
     /// pulled out). Reading is fine; it should be checked on a computer
     /// before anything is saved to it.
     pub dirty: bool,
+    /// Its `MPFree` folder, writable, when the write window opened it: the
+    /// one place on the card anything is saved. `None`: read-only.
+    pub write: Option<PathBuf>,
+    /// Why it opened read-only on a stick with the write window: the
+    /// window's refusal (not exFAT, not safely removed, not clean, its lock
+    /// switch on), for the log.
+    pub read_only: Option<String>,
 }
 
 impl Card {
@@ -186,6 +229,9 @@ pub enum NotOpened {
     NoCard(String),
     /// The service said why it could not open the card.
     Failed(String),
+    /// The write window won't open this card for writing (it can still
+    /// open read-only).
+    Refused(String),
     /// It could not be asked, or did not answer in time.
     NoAnswer(String),
 }
@@ -198,7 +244,10 @@ impl NotOpened {
                 "This stick can't open the SD card: make it again with the latest USB creator."
                     .to_string()
             }
-            NotOpened::NoCard(m) | NotOpened::Failed(m) | NotOpened::NoAnswer(m) => m.clone(),
+            NotOpened::NoCard(m)
+            | NotOpened::Failed(m)
+            | NotOpened::Refused(m)
+            | NotOpened::NoAnswer(m) => m.clone(),
         }
     }
 }
@@ -238,7 +287,8 @@ fn put(path: &Path, text: &str) -> std::io::Result<()> {
     fs::rename(&tmp, path)
 }
 
-/// The SD card, open read-only for as long as this lives.
+/// The SD card, open for as long as this lives: read-only, or through the
+/// write window with its `MPFree` folder writable.
 pub struct SdCard {
     card: Card,
     ask: String,
@@ -249,8 +299,8 @@ pub struct SdCard {
 }
 
 impl SdCard {
-    /// Asks for the card and waits until it is open, read-only (up to
-    /// `timing.answer`). Blocks: run it off the screen thread.
+    /// Asks the window `paths` names for the card and waits until it is
+    /// open (up to `timing.answer`). Blocks: run it off the screen thread.
     pub fn open(
         paths: &Paths,
         timing: &Timing,
@@ -289,17 +339,26 @@ impl SdCard {
                 Some(s) if s.ask == ask => match s.state.as_str() {
                     "open" => match open_card(&s) {
                         Some(card) => {
-                            say(format!(
-                                "sd card: open, read-only: {} on {}, at {}{}",
-                                card.describe(),
-                                s.card,
-                                card.mount.display(),
-                                if card.dirty {
-                                    " (it wasn't safely removed last time)"
-                                } else {
-                                    ""
-                                }
-                            ));
+                            say(match &card.write {
+                                Some(w) => format!(
+                                    "sd card: open: {} on {}, at {}, read-only but for its MPFree folder, writable at {}",
+                                    card.describe(),
+                                    s.card,
+                                    card.mount.display(),
+                                    w.display()
+                                ),
+                                None => format!(
+                                    "sd card: open, read-only: {} on {}, at {}{}",
+                                    card.describe(),
+                                    s.card,
+                                    card.mount.display(),
+                                    if card.dirty {
+                                        " (it wasn't safely removed last time)"
+                                    } else {
+                                        ""
+                                    }
+                                ),
+                            });
                             return Ok(SdCard::start(paths, timing, card, ask));
                         }
                         None => {
@@ -310,6 +369,7 @@ impl SdCard {
                         }
                     },
                     "none" => return Err(NotOpened::NoCard(s.message)),
+                    "refused" => return Err(NotOpened::Refused(s.message)),
                     "failed" | "closed" => return Err(NotOpened::Failed(s.message)),
                     _ => {}
                 },
@@ -409,7 +469,7 @@ impl SdCard {
     fn ask_close(&self) -> Result<(), String> {
         put(&self.paths.close, "").map_err(|e| {
             format!(
-                "The SD card could not be asked to close ({}: {e}); it closes by itself in two minutes.",
+                "The SD card could not be asked to close ({}: {e}); it closes by itself once its counter stops.",
                 self.paths.close.display()
             )
         })
@@ -441,7 +501,7 @@ pub const PUT_AWAY: Duration = Duration::from_secs(30);
 pub enum Heard {
     /// A line for the log.
     Say(String),
-    /// The card is open, read-only.
+    /// The card is open: read-only, or with its `MPFree` folder writable.
     Open(Card),
     /// It didn't open: why, for the screen.
     NotOpened(String),
@@ -461,6 +521,8 @@ enum Opening {
 /// still running when the card is asked for again finishes first.
 pub struct Slot {
     paths: Paths,
+    /// The write window, asked first when the stick has it.
+    write: Option<Paths>,
     timing: Timing,
     put_away: Duration,
     opening: Option<std::sync::mpsc::Receiver<Opening>>,
@@ -475,6 +537,7 @@ impl Slot {
     pub fn new(paths: Paths, timing: Timing, put_away: Duration) -> Slot {
         Slot {
             paths,
+            write: None,
             timing,
             put_away,
             opening: None,
@@ -486,6 +549,13 @@ impl Slot {
         }
     }
 
+    /// The write window too: asked first, the read-only window when it
+    /// refuses the card.
+    pub fn with_writing(mut self, write: Paths) -> Slot {
+        self.write = Some(write);
+        self
+    }
+
     /// The pad player's card on the MPC.
     pub fn on_the_mpc(report_dir: &Path) -> Slot {
         Slot::new(
@@ -493,6 +563,7 @@ impl Slot {
             Timing::on_the_mpc(),
             PUT_AWAY,
         )
+        .with_writing(Paths::writing_on_the_stick(report_dir))
     }
 
     /// Asks for the card, in a thread. Already open, the next tick says so
@@ -506,7 +577,7 @@ impl Slot {
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
-        let (paths, timing) = (self.paths.clone(), self.timing.clone());
+        let (paths, write, timing) = (self.paths.clone(), self.write.clone(), self.timing.clone());
         let before = self.closing.take();
         let spawned = thread::Builder::new()
             .name("sd-card-open".into())
@@ -516,7 +587,7 @@ impl Slot {
                 if let Some(h) = before {
                     let _ = tx.send(Opening::Say(closed_line(h.join())));
                 }
-                let r = SdCard::open(&paths, &timing, &mut |m| {
+                let r = open_either(&paths, write.as_ref(), &timing, &mut |m| {
                     let _ = tx.send(Opening::Say(m));
                 });
                 let _ = tx.send(Opening::Done(Box::new(r)));
@@ -637,7 +708,45 @@ fn open_card(s: &Status) -> Option<Card> {
         sectors: s.sectors,
         mount: s.mount.clone()?,
         dirty: s.dirty,
+        write: s.write.clone(),
+        read_only: None,
     })
+}
+
+/// Whether the window `paths` names is open from before, its card still
+/// mounted here: [`SdCard::open`] takes it over.
+fn open_from_before(paths: &Paths) -> bool {
+    read_status(paths).is_some_and(|s| {
+        s.state == "open" && open_card(&s).is_some_and(|c| mounted(&paths.mounts, &c.mount))
+    })
+}
+
+/// The card through the write window when the stick has it, else (or when
+/// it refuses the card, or fails) read-only. A window still open from
+/// before is taken over, whichever it is.
+fn open_either(
+    read: &Paths,
+    write: Option<&Paths>,
+    timing: &Timing,
+    say: &mut dyn FnMut(String),
+) -> Result<SdCard, NotOpened> {
+    let Some(w) = write.filter(|w| w.service.exists()) else {
+        return SdCard::open(read, timing, say);
+    };
+    if open_from_before(read) {
+        return SdCard::open(read, timing, say);
+    }
+    match SdCard::open(w, timing, say) {
+        Err(NotOpened::Refused(why)) | Err(NotOpened::Failed(why)) => {
+            say(format!(
+                "sd card: not opened for saving: {why}; opening it read-only"
+            ));
+            let mut c = SdCard::open(read, timing, say)?;
+            c.card.read_only = Some(why);
+            Ok(c)
+        }
+        r => r,
+    }
 }
 
 #[cfg(test)]
@@ -674,6 +783,22 @@ mod tests {
         }
     }
 
+    /// The write window's files, beside the read-only window's.
+    fn write_paths(t: &Tmp) -> Paths {
+        let w = t.0.join("setup-sd-card-write.sh");
+        if !w.exists() {
+            fs::write(&w, "# write window\n").unwrap();
+        }
+        Paths {
+            service: w,
+            status: t.0.join("run/sd-card-write-status"),
+            request: t.0.join("run/sd-card-write.request"),
+            close: t.0.join("run/sd-card-write.close"),
+            alive: t.0.join("run/sd-card-write.alive"),
+            mounts: t.0.join("mounts"),
+        }
+    }
+
     fn quick() -> Timing {
         Timing {
             poll: Duration::from_millis(5),
@@ -694,14 +819,29 @@ mod tests {
         NoCard,
         Fail,
         Silent,
+        /// The write window's refusal (a FAT card).
+        Refuse,
     }
 
     /// The root service as setup-sd-card.sh answers: it takes the request
     /// and its word, reports, mounts (in the stand-in mounts list) and waits
     /// for the close. Gives back the counters it saw while open.
     fn service(t: &Tmp, answer: Answer) -> thread::JoinHandle<Vec<String>> {
-        let p = paths(t);
-        let card = t.0.join("card");
+        service_at(paths(t), t.0.join("card"), answer, false)
+    }
+
+    /// The write window as setup-sd-card-write.sh answers: the same, with
+    /// the card's MPFree folder writable, or a refusal.
+    fn write_service(t: &Tmp, answer: Answer) -> thread::JoinHandle<Vec<String>> {
+        service_at(write_paths(t), t.0.join("card"), answer, true)
+    }
+
+    fn service_at(
+        p: Paths,
+        card: PathBuf,
+        answer: Answer,
+        writing: bool,
+    ) -> thread::JoinHandle<Vec<String>> {
         thread::spawn(move || {
             let mut beats = Vec::new();
             let end = Instant::now() + Duration::from_secs(5);
@@ -742,6 +882,10 @@ mod tests {
                     status(&p, &format!("state=failed\nmessage=the card is NTFS; MPFree reads FAT and exFAT\nask={word}\n"));
                     return beats;
                 }
+                Answer::Refuse => {
+                    status(&p, &format!("state=refused\nmessage=the card is not exFAT: MPFree saves only to exFAT for now (FAT and others stay read-only)\nask={word}\n"));
+                    return beats;
+                }
                 _ => {}
             }
             let mounts = fs::read_to_string(&p.mounts).unwrap();
@@ -750,13 +894,23 @@ mod tests {
                 format!("{mounts}card {} exfat ro,nosuid 0 0\n", card.display()),
             )
             .unwrap();
-            status(
-                &p,
-                &format!(
-                    "state=open\nmessage=The SD card is open, read-only.\nask={word}\ncard=mmcblk1\nfs=exfat\nsectors=124735488\nmount={}\ndirty=no\n",
-                    card.display()
-                ),
-            );
+            if writing {
+                status(
+                    &p,
+                    &format!(
+                        "state=open\nmessage=The SD card is open: MPFree writes inside its MPFree folder only.\nask={word}\ncard=mmcblk1\nfs=exfat\nsectors=124735488\nmount={0}\nwrite={0}/MPFree\nfsck=exfatprogs version : 1.2.2\n",
+                        card.display()
+                    ),
+                );
+            } else {
+                status(
+                    &p,
+                    &format!(
+                        "state=open\nmessage=The SD card is open, read-only.\nask={word}\ncard=mmcblk1\nfs=exfat\nsectors=124735488\nmount={}\ndirty=no\n",
+                        card.display()
+                    ),
+                );
+            }
             while !p.close.exists() {
                 if Instant::now() >= end {
                     return beats;
@@ -778,12 +932,12 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
             fs::write(&p.mounts, mounts).unwrap();
             let _ = fs::remove_file(&p.alive);
-            status(
-                &p,
-                &format!(
-                    "state=closed\nmessage=Closed. Nothing was written to the card.\nask={word}\n"
-                ),
-            );
+            let last = if writing {
+                "Closed cleanly: 0 MiB written; the card checks clean."
+            } else {
+                "Closed. Nothing was written to the card."
+            };
+            status(&p, &format!("state=closed\nmessage={last}\nask={word}\n"));
             beats
         })
     }
@@ -809,6 +963,8 @@ mod tests {
             sectors: 124_735_488,
             mount: "/run/mpfree-sd".into(),
             dirty: false,
+            write: None,
+            read_only: None,
         };
         assert_eq!(big.describe(), "exFAT, 63.9 GB");
         assert_eq!(new_word().len(), 32);
@@ -1070,6 +1226,150 @@ mod tests {
         assert!(heard.iter().any(|h| *h
             == Heard::Say("sd card: closed: Closed. Nothing was written to the card.".into())));
         assert!(svc.join().unwrap().len() >= 2);
+    }
+
+    fn closed_said(h: &[Heard]) -> bool {
+        h.iter()
+            .any(|x| matches!(x, Heard::Say(l) if l.starts_with("sd card: closed")))
+    }
+
+    fn opened(h: &[Heard]) -> bool {
+        h.iter().any(|x| matches!(x, Heard::Open(_)))
+    }
+
+    #[test]
+    fn with_the_write_window_the_card_opens_with_its_mpfree_folder_writable() {
+        let t = tmp("write");
+        let (p, w) = (paths(&t), write_paths(&t));
+        let svc = write_service(&t, Answer::Open);
+        let mut slot = Slot::new(p.clone(), quick(), Duration::from_millis(150)).with_writing(w);
+        slot.open();
+        let heard = tick_until(&mut slot, true, opened);
+        let Some(Heard::Open(card)) = heard.last() else {
+            panic!("{heard:?}")
+        };
+        assert_eq!(card.mount, t.0.join("card"));
+        assert_eq!(card.write, Some(t.0.join("card/MPFree")));
+        assert_eq!(card.read_only, None);
+        assert!(
+            heard.iter().any(|h| matches!(h, Heard::Say(l)
+                if l.contains("open: exFAT, 63.9 GB on mmcblk1") && l.contains("read-only but for its MPFree folder"))),
+            "{heard:?}"
+        );
+        assert!(
+            read_status(&p).is_none(),
+            "the read-only window wasn't asked"
+        );
+        let heard = tick_until(&mut slot, false, closed_said);
+        assert!(
+            heard.contains(&Heard::Say(
+                "sd card: closed: Closed cleanly: 0 MiB written; the card checks clean.".into()
+            )),
+            "{heard:?}"
+        );
+        assert!(svc.join().unwrap().len() >= 2, "its counter moved");
+    }
+
+    #[test]
+    fn a_card_the_write_window_refuses_opens_read_only_and_says_why() {
+        let t = tmp("refused");
+        let (p, w) = (paths(&t), write_paths(&t));
+        let wsvc = write_service(&t, Answer::Refuse);
+        // The read-only window, asked only once the write window refused
+        // (the two are never open at once).
+        let rsvc = {
+            let (w, p, card) = (w.clone(), p.clone(), t.0.join("card"));
+            thread::spawn(move || {
+                let end = Instant::now() + Duration::from_secs(5);
+                while read_status(&w).is_none_or(|s| s.state != "refused") {
+                    assert!(Instant::now() < end, "the write window wasn't asked");
+                    assert!(!p.request.exists(), "the read-only window was asked first");
+                    thread::sleep(Duration::from_millis(1));
+                }
+                service_at(p, card, Answer::Open, false).join().unwrap()
+            })
+        };
+        let mut slot = Slot::new(p.clone(), quick(), Duration::from_millis(150)).with_writing(w);
+        slot.open();
+        let heard = tick_until(&mut slot, true, opened);
+        let Some(Heard::Open(card)) = heard.last() else {
+            panic!("{heard:?}")
+        };
+        let why = "the card is not exFAT: MPFree saves only to exFAT for now (FAT and others stay read-only)";
+        assert_eq!(card.write, None);
+        assert_eq!(card.read_only.as_deref(), Some(why));
+        assert!(
+            heard.contains(&Heard::Say(format!(
+                "sd card: not opened for saving: {why}; opening it read-only"
+            ))),
+            "{heard:?}"
+        );
+        tick_until(&mut slot, false, closed_said);
+        wsvc.join().unwrap();
+        assert!(rsvc.join().unwrap().len() >= 2);
+    }
+
+    #[test]
+    fn an_empty_slot_through_the_write_window_asks_nothing_more() {
+        let t = tmp("write-empty");
+        let (p, w) = (paths(&t), write_paths(&t));
+        let svc = write_service(&t, Answer::NoCard);
+        let mut slot = Slot::new(p.clone(), quick(), Duration::from_millis(150)).with_writing(w);
+        slot.open();
+        let heard = tick_until(&mut slot, true, |h| {
+            h.iter().any(|x| matches!(x, Heard::NotOpened(_)))
+        });
+        assert_eq!(
+            heard.last(),
+            Some(&Heard::NotOpened("There is no card in the SD slot.".into()))
+        );
+        assert!(!p.request.exists() && read_status(&p).is_none());
+        svc.join().unwrap();
+    }
+
+    #[test]
+    fn a_read_only_window_open_from_before_is_taken_over_and_without_the_write_window_it_reads() {
+        // Open from before: taken over, the write window not asked.
+        let t = tmp("write-takeover");
+        let (p, w) = (paths(&t), write_paths(&t));
+        let card_dir = t.0.join("card");
+        fs::write(
+            &p.mounts,
+            format!("card {} exfat ro 0 0\n", card_dir.display()),
+        )
+        .unwrap();
+        status(
+            &p,
+            &format!("state=open\nmessage=The SD card is open, read-only.\nask=0123abcd\ncard=mmcblk1\nfs=exfat\nsectors=4096\nmount={}\n", card_dir.display()),
+        );
+        let mut slot =
+            Slot::new(p.clone(), quick(), Duration::from_secs(60)).with_writing(w.clone());
+        slot.open();
+        let heard = tick_until(&mut slot, true, opened);
+        assert!(
+            matches!(heard.last(), Some(Heard::Open(c)) if c.write.is_none()),
+            "{heard:?}"
+        );
+        assert!(heard
+            .iter()
+            .any(|h| matches!(h, Heard::Say(l) if l.contains("still open"))));
+        assert!(!w.request.exists() && read_status(&w).is_none());
+        drop(slot);
+        // A stick without the write window: read-only, as before.
+        let t = tmp("write-none");
+        let (p, w) = (paths(&t), write_paths(&t));
+        fs::remove_file(&w.service).unwrap();
+        let svc = service(&t, Answer::Open);
+        let mut slot =
+            Slot::new(p.clone(), quick(), Duration::from_millis(150)).with_writing(w.clone());
+        slot.open();
+        let heard = tick_until(&mut slot, true, opened);
+        assert!(
+            matches!(heard.last(), Some(Heard::Open(c)) if c.write.is_none() && c.read_only.is_none())
+        );
+        assert!(!w.request.exists());
+        tick_until(&mut slot, false, closed_said);
+        svc.join().unwrap();
     }
 
     #[test]
