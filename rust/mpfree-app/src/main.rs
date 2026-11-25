@@ -119,6 +119,7 @@ mod gui;
 mod hand;
 mod hearing;
 mod heat;
+mod hints;
 mod imagecopy;
 mod instrument_list;
 mod instruments;

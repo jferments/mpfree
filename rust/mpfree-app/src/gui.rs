@@ -2122,6 +2122,10 @@ pub enum FromUi {
     /// mixer's, the chain editor's and the macros panel's wheel then moves
     /// it: [`crate::app::App::set_outline`]).
     Outline(bool),
+    /// A page showed (its [`crate::hints::page_key`]): Prefs' Hints,
+    /// Contextual, helps on a page until it has been visited three times
+    /// ([`crate::app::App::page_seen`]; kept).
+    PageSeen(String),
     /// Whether a finger rests on a control with a value, when that changes
     /// (Jay, 17 Nov: hold a control and turn the wheel): the app then sends
     /// the wheel and - / + to it as [`ToUi::Held`]
@@ -3065,6 +3069,15 @@ pub struct Player {
     /// has left and its colour (yellow; red for a red problem's title,
     /// System status).
     told: Option<(String, f32, Tone)>,
+    /// Prefs' Hints (`hints.rs`): the pages seen so far, as the screen
+    /// counts them; whether this visit to the page still gets its help at
+    /// Contextual (until the first touch); how long SHIFT has been held;
+    /// and the page last counted.
+    pages_seen: crate::hints::Seen,
+    fresh_page: bool,
+    shift_for: f32,
+    counted: Option<View>,
+    seen_out: Vec<String>,
     /// Which of the Play page's histories changed last, for UNDO on the
     /// All view: the loop's (true) or the takes' (false); and the counts
     /// each was last seen at.
@@ -3343,6 +3356,10 @@ impl Player {
             "hint",
             Label::new("", Tone::Dim, Align::Left).inset(18).on_bg(),
         );
+        // Play without its line (Prefs' Hints): what it would say, over
+        // the page.
+        ui.add(crate::hints::NEWS, crate::hints::News::default());
+        ui.add(crate::hints::STRIP, crate::hints::Strip::default());
         ui.add("syssw", StatList::new("MPFree and the system"));
         ui.add(
             crate::status_screen::WIDGET,
@@ -3522,6 +3539,11 @@ impl Player {
         let mut p = Player {
             save_sent: None,
             told: None,
+            pages_seen: crate::hints::Seen::default(),
+            fresh_page: false,
+            shift_for: 0.0,
+            counted: None,
+            seen_out: Vec::new(),
             undo_loop: false,
             song_grab: false,
             seen_takes: (0, 0),
@@ -7232,10 +7254,10 @@ impl Player {
         self.refresh_pads_bar();
         self.refresh_play();
         self.refresh_qlinks();
-        let timing = self.settings.timing_strip;
+        let (timing, line) = (self.settings.timing_strip, self.settings.hints.play_line());
         let _ = self
             .arp_panel
-            .set_quick_layout(&mut self.ui, &v.quick_layout_for(timing));
+            .set_quick_layout(&mut self.ui, &v.quick_layout_for(timing, line));
     }
 
     /// Play's frame shows: Play, or the Sequencer's Steps (Beats' pages,
@@ -7269,10 +7291,10 @@ impl Player {
             if w != PlayView::Beats {
                 self.play.selected = None;
             }
-            let timing = self.settings.timing_strip;
+            let (timing, line) = (self.settings.timing_strip, self.settings.hints.play_line());
             let _ = self
                 .arp_panel
-                .set_quick_layout(&mut self.ui, &w.quick_layout_for(timing));
+                .set_quick_layout(&mut self.ui, &w.quick_layout_for(timing, line));
             moved = true;
         }
         if self.play.sequencer != seq {
@@ -9678,7 +9700,7 @@ impl Player {
         self.status.shift && self.settings.fine_shift
     }
 
-    /// The hint line says this even with Hint line Off: a held button's
+    /// The hint line says this whatever Prefs' Hints: a held button's
     /// jobs, a pop-up's keys (the power card, a number or letters pad),
     /// Map controls' steps, and the Looper's questions, whose buttons
     /// (Snap anyway / Not now, Read as / Discard) float at its end.
@@ -9699,7 +9721,25 @@ impl Player {
                 && (self.looper.smart.length.is_some() || self.looper.smart.asking.is_some()))
     }
 
-    fn refresh_hint(&mut self) {
+    /// One more visit to page `v`, if it is another page than the one
+    /// last counted: at Contextual (Prefs' Hints) a page's first three
+    /// visits get its help, until the first touch. Every mode counts, so
+    /// a page you know stays quiet if you pick Contextual later.
+    fn count_visit(&mut self, v: View) {
+        if self.counted == Some(v) {
+            return;
+        }
+        self.counted = Some(v);
+        let page = crate::hints::page_key(v);
+        self.fresh_page = self.pages_seen.visits(&page) < crate::hints::FIRST_VISITS;
+        if self.pages_seen.visit(&page) {
+            self.seen_out.push(page);
+        }
+    }
+
+    /// What the hint line says, Prefs' Hints aside ([`Player::refresh_hint`]
+    /// decides what of it shows).
+    fn hint_words(&mut self) -> String {
         let stop = self.stop_words();
         self.stop_said = stop;
         let mode = self.arp.settings.mode;
@@ -10257,14 +10297,31 @@ impl Player {
         };
         // Controller mode: the Q-Links send the gear's CCs on every page,
         // so a page's own word for them would be wrong.
-        let text = match &self.controller {
+        match &self.controller {
             Some(_) => controller_qlinks_hint(&text),
             None => text,
-        };
-        // Hint line Off (Prefs › Screen and lights): only what a held
-        // button does, a pop-up's keys and what the app tells.
-        let text = if self.settings.hint_line || self.hint_needed() {
-            text
+        }
+    }
+
+    fn refresh_hint(&mut self) {
+        let words = self.hint_words();
+        // Prefs' Hints (`hints.rs`): Persistent says it all; otherwise
+        // what a held button does, a pop-up's keys and what the app tells
+        // always show, and the page's help only on a new page's visit
+        // (Contextual) or with SHIFT held a while (On demand, Contextual).
+        let hints = self.settings.hints;
+        let long_shift =
+            self.ready && self.status.shift && self.shift_for >= crate::hints::SHIFT_HELP_AFTER;
+        let text = if hints == crate::hints::Hints::Persistent {
+            words
+        } else if long_shift && hints.shows_help(false, true) {
+            // The page's help, as the line says it without SHIFT.
+            self.status.shift = false;
+            let help = self.hint_words();
+            self.status.shift = true;
+            help
+        } else if self.hint_needed() || hints.shows_help(self.fresh_page, false) {
+            words
         } else {
             String::new()
         };
@@ -10274,10 +10331,67 @@ impl Player {
             None if asking => (text, Tone::Warn),
             None => (text, Tone::Dim),
         };
+        let told = self.told.is_some();
+        self.place_unlined(&text, tone, told);
         if let Some(h) = self.ui.get_mut::<Label>("hint") {
             if h.text != text || h.tone != tone {
                 h.text = text;
                 h.tone = tone;
+            }
+        }
+    }
+
+    /// Play without its line (Prefs' Hints away from Persistent): what the
+    /// line would say shows over the page instead, and only while it says
+    /// anything. What the app tells goes over the tabs, where a touch
+    /// closes it; anything else (SHIFT's keys, a held button's, the page's
+    /// help) over the bottom row's foot, which takes the touches that land
+    /// on it. Pages with a line show neither.
+    fn place_unlined(&mut self, text: &str, tone: Tone, told: bool) {
+        use crate::hints::{News, Strip, NEWS, STRIP};
+        let mut shown = (false, false);
+        for page in [PlayView::All.page(), QUICK_PAGE] {
+            let lined = self.ui.rect_on(page, "hint").is_some();
+            let header = self.ui.rect_on(page, "header");
+            let row = self
+                .ui
+                .rect_on(page, play_page::THROWS)
+                .zip(self.ui.rect_on(page, play_page::XY))
+                .map(|(a, b)| a.union(b));
+            let (news, strip) = if lined || text.is_empty() {
+                (None, None)
+            } else if told {
+                (header.map(News::place), None)
+            } else {
+                (None, row.map(Strip::place))
+            };
+            if self.ui.page() == page {
+                shown = (news.is_some(), strip.is_some());
+            }
+            let _ = self.ui.set_float(page, NEWS, news);
+            let _ = self.ui.set_float(page, STRIP, strip);
+        }
+        // (Reached only when its words change: a reach redraws it.)
+        if shown.0
+            && self
+                .ui
+                .get::<News>(NEWS)
+                .is_some_and(|w| w.text != text || w.tone != tone)
+        {
+            if let Some(w) = self.ui.get_mut::<News>(NEWS) {
+                w.text = text.to_string();
+                w.tone = tone;
+            }
+        }
+        if shown.1
+            && self
+                .ui
+                .get::<Strip>(STRIP)
+                .is_some_and(|w| w.text != text || w.tone != tone)
+        {
+            if let Some(w) = self.ui.get_mut::<Strip>(STRIP) {
+                w.text = text.to_string();
+                w.tone = tone;
             }
         }
     }
@@ -10395,6 +10509,12 @@ impl Player {
             }
         }
         let timing = self.settings.timing_strip != s.timing_strip;
+        // Prefs' Hints moved to or from Persistent: Play's line comes or
+        // goes, and its bottom row gives or takes the room.
+        let relined = self.settings.hints.play_line() != s.hints.play_line();
+        // The pages the app has counted (at start, the kept ones): the
+        // screen's own count never goes back.
+        self.pages_seen.merge(&s.hints_seen);
         // Prefs' Audition level moved (or came from the saved settings):
         // BROWSE previews from it; its Q-Link 3 changes it for the moment.
         if s.audition_db != self.settings.audition_db {
@@ -10409,13 +10529,19 @@ impl Player {
             self.refresh_play();
         }
         self.settings = s;
-        if timing {
+        if relined {
+            let line = self.settings.hints.play_line();
+            let _ = self
+                .ui
+                .add_page(PlayView::All.page(), &PlayView::All.layout_lined(line));
+        }
+        if timing || relined {
             // Play's options turned the Beats view's timing strip on or
             // off: its page changes.
             let v = self.play.view;
             let _ = self.arp_panel.set_quick_layout(
                 &mut self.ui,
-                &v.quick_layout_for(self.settings.timing_strip),
+                &v.quick_layout_for(self.settings.timing_strip, self.settings.hints.play_line()),
             );
             self.refresh_play();
             if self.ready && self.play_frame() {
@@ -10455,7 +10581,7 @@ impl Player {
                 );
             }
         }
-        // Hint line on or off shows at once.
+        // A change of Prefs' Hints shows at once.
         self.refresh_hint();
     }
 
@@ -13154,6 +13280,11 @@ impl Player {
                     self.perform.page = s.perform_bank;
                     self.perform.on = on;
                     self.refresh_perform();
+                }
+                // SHIFT pressed or let go: its time held starts again
+                // (Prefs' Hints).
+                if s.shift != self.status.shift {
+                    self.shift_for = 0.0;
                 }
                 self.status = s;
                 if self.play.on_pads != on_pads {
@@ -17493,6 +17624,13 @@ impl Player {
     }
 
     /// Actions that did not come from a touch, for the audio thread.
+    /// The pages seen since last asked, for the app to keep (Prefs'
+    /// Hints, [`FromUi::PageSeen`]): apart from the actions, so they never
+    /// hold back a touch's own action.
+    pub fn take_seen(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.seen_out)
+    }
+
     pub fn take_actions(&mut self) -> Vec<FromUi> {
         if let Some(a) = self.sample.take_view() {
             self.outbox.push(a);
@@ -17595,6 +17733,7 @@ impl Player {
                 | FromUi::GuideButton(_)
                 | FromUi::HelpButton(_)
                 | FromUi::UndoReady(_)
+                | FromUi::PageSeen(_)
                 | FromUi::UndoHistory(_)
                 | FromUi::Overlay(_)
                 | FromUi::Recall(_)
@@ -17794,6 +17933,7 @@ impl Player {
         self.switch_page(&page);
         let tab = self.view != v;
         self.view = v;
+        self.count_visit(v);
         if followed {
             // The play page took the Sequencer's Beats, or Play's own view.
             self.refresh_pads_bar();
@@ -18156,6 +18296,13 @@ impl Player {
     /// while actions wait, this touch's first waits behind them too.
     pub fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32) -> Option<FromUi> {
         if matches!(phase, Touch::Down) {
+            // Prefs' Hints, Contextual: the page's help goes at the first
+            // touch.
+            if std::mem::take(&mut self.fresh_page)
+                && self.settings.hints == crate::hints::Hints::Contextual
+            {
+                self.refresh_hint();
+            }
             self.note_turn.end();
             // SHIFT held as a finger goes down on the note editor's
             // Repeats lane draws the ramp (piano roll plan 2A.1); ERASE
@@ -19272,6 +19419,13 @@ impl Player {
             }
             (crate::power::CARD, EventKind::Tab(i)) => {
                 self.power_tap(i);
+                None
+            }
+            // What the app told, over Play's tabs: a tap closes it and does
+            // nothing else.
+            (crate::hints::NEWS, EventKind::Tab(_)) => {
+                self.told = None;
+                self.refresh_hint();
                 None
             }
             (NUMPAD, EventKind::Tab(mpfree_ui::numpad::KEY_ENTER)) => self.numpad_enter(),
@@ -20392,6 +20546,19 @@ impl Player {
             self.outline_told = outline;
             self.outbox.push(FromUi::Outline(outline));
         }
+        // SHIFT held a while: at On demand and Contextual, the page's help
+        // (Prefs' Hints).
+        if self.status.shift {
+            let was = self.shift_for;
+            self.shift_for += dt.max(0.0);
+            let after = crate::hints::SHIFT_HELP_AFTER;
+            if was < after && self.shift_for >= after && self.settings.hints.shows_help(false, true)
+            {
+                self.refresh_hint();
+            }
+        } else {
+            self.shift_for = 0.0;
+        }
         // A told line goes back to the hint once read.
         if let Some((_, left, _)) = self.told.as_mut() {
             *left -= dt.max(0.0);
@@ -21207,6 +21374,9 @@ fn send_actions(player: &mut Player, tx: &SyncSender<FromUi>) {
     player.send_waiting(tx);
     for a in player.take_actions() {
         player.send(tx, a);
+    }
+    for page in player.take_seen() {
+        player.send(tx, FromUi::PageSeen(page));
     }
     // The Q-Links' values, for MIDI Follow's Send values back; with the
     // queue full they go again next time.
@@ -24779,6 +24949,28 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     });
     out.push(("loading-failed", failed));
     out.push(("play", sample_player(fonts())));
+    // Prefs' Hints away from Persistent: Play without its line, the
+    // bottom row 112 px (the touch design set, tab 3, v3). Quiet (On
+    // demand); SHIFT held (its keys over the bottom row's foot); a told
+    // line over the tabs; and Contextual on a first visit (Play's help
+    // over the bottom row's foot until the first touch).
+    let unlined = |hints: crate::hints::Hints| {
+        let mut p = sample_player(fonts());
+        let s = p.settings.clone();
+        p.apply(ToUi::Settings(Settings { hints, ..s }));
+        p
+    };
+    out.push(("play-hints-quiet", unlined(crate::hints::Hints::OnDemand)));
+    let mut shift = unlined(crate::hints::Hints::OnDemand);
+    shift.apply(ToUi::Status(Status {
+        shift: true,
+        ..shift.status.clone()
+    }));
+    out.push(("play-hints-shift", shift));
+    let mut told = unlined(crate::hints::Hints::OnDemand);
+    told.tell("UNDO: nothing to undo yet");
+    out.push(("play-hints-told", told));
+    out.push(("play-hints-new", unlined(crate::hints::Hints::Contextual)));
     // REC pressed, stopped, with the notes armed: ready, PLAY starts the
     // take (sequencer decision 1, mockup F's chip).
     let mut ready = sample_player(fonts());
@@ -29829,17 +30021,17 @@ mod tests {
         assert!(p.add_held.is_none());
     }
 
-    /// Hint line Off (Prefs › Screen and lights): the page's help goes,
-    /// a held button's line and what the app tells still show, and On
-    /// brings the help back at once.
+    /// Hints Off (Prefs › Screen and lights): the page's help goes, a
+    /// held button's line and what the app tells still show, and
+    /// Persistent brings the help back at once.
     #[test]
-    fn hint_line_off_keeps_only_held_buttons_and_told_lines() {
+    fn hints_off_keeps_only_held_buttons_and_told_lines() {
         let mut p = sample_player(Fonts::embedded());
         let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
         assert!(!hint(&p).is_empty(), "the page's help");
         let on = p.settings.clone();
         p.apply(ToUi::Settings(Settings {
-            hint_line: false,
+            hints: crate::hints::Hints::Off,
             ..on.clone()
         }));
         assert_eq!(hint(&p), "", "the help goes at once");
@@ -29862,15 +30054,15 @@ mod tests {
         assert_eq!(hint(&p), "Saved");
     }
 
-    /// With Hint line Off, the Looper's question still shows on the line
+    /// With Hints Off, the Looper's question still shows on the line
     /// while its buttons float at the line's end (a snap asking: Snap
     /// anyway / Not now).
     #[test]
-    fn hint_line_off_keeps_the_loopers_question_with_its_buttons() {
+    fn hints_off_keeps_the_loopers_question_with_its_buttons() {
         let mut p = sample_looper_picking(Fonts::embedded(), 0).expect("a looper");
         let on = p.settings.clone();
         p.apply(ToUi::Settings(Settings {
-            hint_line: false,
+            hints: crate::hints::Hints::Off,
             ..on
         }));
         let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
@@ -29881,6 +30073,165 @@ mod tests {
         let asked = hint(&p);
         assert!(!asked.is_empty());
         assert_eq!(asked, crate::looping::ask_words(v.selected, snap, read));
+    }
+
+    /// Hints On demand: the line is quiet; SHIFT says its own keys at
+    /// once, so a SHIFT combo reads as before, and held a second it says
+    /// the page's help, until it is let go.
+    #[test]
+    fn on_demand_says_the_pages_help_while_shift_is_held_a_while() {
+        use crate::hints::{Hints, SHIFT_HELP_AFTER};
+        let mut p = sample_player(Fonts::embedded());
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        p.show_view(View::Looper);
+        let help = hint(&p);
+        assert!(!help.is_empty(), "the Looper's help");
+        let on = p.settings.clone();
+        p.apply(ToUi::Settings(Settings {
+            hints: Hints::OnDemand,
+            ..on.clone()
+        }));
+        assert_eq!(hint(&p), "", "quiet");
+        p.apply(ToUi::Status(Status {
+            shift: true,
+            ..p.status.clone()
+        }));
+        let keys = hint(&p);
+        assert!(keys.starts_with("SHIFT +"), "SHIFT's own keys: {keys}");
+        p.tick(SHIFT_HELP_AFTER * 0.5);
+        assert_eq!(hint(&p), keys);
+        p.tick(SHIFT_HELP_AFTER * 0.6);
+        assert_eq!(hint(&p), help, "held a while: the page's help");
+        p.apply(ToUi::Status(Status {
+            shift: false,
+            ..p.status.clone()
+        }));
+        assert_eq!(hint(&p), "", "let go: quiet again");
+        p.apply(ToUi::Status(Status {
+            shift: true,
+            ..p.status.clone()
+        }));
+        p.tick(0.0);
+        assert_eq!(hint(&p), keys, "pressed again: SHIFT's keys first");
+        // Off: SHIFT held only ever says SHIFT's keys.
+        p.apply(ToUi::Settings(Settings {
+            hints: Hints::Off,
+            ..on
+        }));
+        p.tick(SHIFT_HELP_AFTER * 2.0);
+        assert_eq!(hint(&p), keys);
+    }
+
+    /// Hints Contextual: a page's first three visits say its help until
+    /// the first touch; the fourth is quiet. Every visit is counted for
+    /// the app to keep, whatever the Hints, so a known page stays quiet
+    /// when Contextual is picked later.
+    #[test]
+    fn contextual_helps_on_a_pages_first_three_visits_until_a_touch() {
+        use crate::hints::Hints;
+        let mut p = sample_player(Fonts::embedded());
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        p.take_seen();
+        p.show_view(View::Looper);
+        assert_eq!(p.take_seen(), vec!["looper".to_string()]);
+        let help = hint(&p);
+        p.show_view(View::Play);
+        let on = p.settings.clone();
+        p.apply(ToUi::Settings(Settings {
+            hints: Hints::Contextual,
+            ..on
+        }));
+        // Visits 2 and 3: the help, until a touch (on the master bar's
+        // title, which does nothing).
+        for visit in [2, 3] {
+            p.show_view(View::Looper);
+            assert_eq!(hint(&p), help, "visit {visit}");
+            p.touch(1, Touch::Down, 1, 1);
+            p.touch(1, Touch::Up, 1, 1);
+            assert_eq!(hint(&p), "", "visit {visit}, touched");
+            p.show_view(View::Play);
+        }
+        p.take_seen();
+        p.show_view(View::Looper);
+        assert_eq!(hint(&p), "", "the fourth: known");
+        assert!(p.take_seen().is_empty(), "nothing more to keep");
+        // The app's kept count is never taken back by the screen's.
+        assert_eq!(p.pages_seen.visits("looper"), crate::hints::FIRST_VISITS);
+    }
+
+    /// Play without its line (Hints away from Persistent): the bottom row
+    /// takes the line's room (throws and XY pad 112 px tall); what the app
+    /// tells shows over the tabs, where a touch closes it and reaches no
+    /// tab; SHIFT's keys show over the bottom row's foot, which takes the
+    /// touches that land on it. Persistent puts the line back.
+    #[test]
+    fn play_without_the_line_shows_the_lines_words_over_the_page() {
+        use crate::hints::{Hints, NEWS, STRIP};
+        let mut p = sample_player(Fonts::embedded());
+        assert_eq!(p.ui.page(), "Play");
+        let on = p.settings.clone();
+        p.apply(ToUi::Settings(Settings {
+            hints: Hints::OnDemand,
+            ..on.clone()
+        }));
+        assert_eq!(p.ui.rect_of("hint"), None, "no line on Play");
+        let throws = p.ui.rect_of(play_page::THROWS).unwrap();
+        let xy = p.ui.rect_of(play_page::XY).unwrap();
+        assert_eq!((throws.h, xy.h), (play_page::BOTTOM_BARE_H, 112));
+        assert_eq!(throws.bottom(), 800 - play_page::FRAME_GAP);
+        assert_eq!((p.ui.rect_of(NEWS), p.ui.rect_of(STRIP)), (None, None));
+
+        p.tell("Nothing to undo yet");
+        let news = p.ui.rect_of(NEWS).expect("over the tabs");
+        let header = p.ui.rect_of("header").unwrap();
+        assert!(header.contains(news.x + 1, news.y + 1) && news.h >= 48);
+        p.take_actions();
+        let (x, y) = (news.x + 120, news.y + news.h / 2);
+        p.touch(1, Touch::Down, x, y);
+        p.touch(1, Touch::Up, x, y);
+        assert_eq!(p.ui.rect_of(NEWS), None, "closed");
+        assert_eq!(p.view, View::Play, "no tab under it was touched");
+        assert!(p.take_actions().iter().all(|a| matches!(
+            a,
+            FromUi::UndoReady(_) | FromUi::Outline(_) | FromUi::Held(_)
+        )));
+
+        p.apply(ToUi::Status(Status {
+            shift: true,
+            ..p.status.clone()
+        }));
+        let strip =
+            p.ui.rect_of(STRIP)
+                .expect("SHIFT's keys over the bottom row");
+        assert_eq!(strip.bottom(), throws.bottom());
+        assert!(strip.h < throws.h, "the throws' tops still show");
+        p.take_actions();
+        let (x, y) = (throws.x + 20, strip.y + strip.h / 2);
+        assert_eq!(p.touch(2, Touch::Down, x, y), None);
+        assert_eq!(p.touch(2, Touch::Up, x, y), None);
+        assert!(
+            !p.take_actions()
+                .iter()
+                .any(|a| matches!(a, FromUi::PlayFx(_))),
+            "no throw under the strip"
+        );
+        p.apply(ToUi::Status(Status {
+            shift: false,
+            ..p.status.clone()
+        }));
+        assert_eq!(p.ui.rect_of(STRIP), None);
+
+        p.apply(ToUi::Settings(on));
+        assert!(p.ui.rect_of("hint").is_some(), "Persistent: the line");
+        assert_eq!(
+            p.ui.rect_of(play_page::THROWS).unwrap().h,
+            play_page::BOTTOM_H
+        );
+        p.apply(ToUi::Status(Status {
+            shift: true,
+            ..p.status.clone()
+        }));
+        assert_eq!(p.ui.rect_of(STRIP), None, "the line says it");
     }
 
     /// The held buttons' lines: hold MAIN (the pads pick a track), hold

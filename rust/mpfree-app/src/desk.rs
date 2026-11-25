@@ -413,6 +413,7 @@ impl Desk<'_> {
             gui::FromUi::Overlay(on) => app.set_overlay(on),
             gui::FromUi::Recall(on) => app.set_recall(on),
             gui::FromUi::Outline(shown) => app.set_outline(shown),
+            gui::FromUi::PageSeen(page) => app.page_seen(&page),
             gui::FromUi::Held(on) => app.set_held(on),
             gui::FromUi::Tab(k) => fx.extend(app.tab(k)),
             gui::FromUi::MenuSelect(k) => fx.extend(app.select(k)),
