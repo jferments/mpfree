@@ -50,7 +50,7 @@ use mpfree_fxlab::card::{self, Options};
 use mpfree_fxlab::dut::{Dut, NodeDut};
 use mpfree_fxlab::plan::{self, Context, ControlList, PlanOptions};
 use mpfree_fxlab::programme::{self, Programme, Schedule};
-use mpfree_fxlab::{capture, quality, reference, synth, wav};
+use mpfree_fxlab::{capture, listening, quality, reference, synth, wav};
 
 fn usage() -> ! {
     eprintln!("usage: fxlab cards [--rate HZ] [--quick] [--presets] [--effect ID]... [--out DIR]");
@@ -62,6 +62,7 @@ fn usage() -> ! {
     eprintln!("       fxlab sweep --effect ID [plan options] [--out DIR]");
     eprintln!("       fxlab synth [--rate HZ] [--renders] [--engine NAME] [--out DIR]");
     eprintln!("       fxlab reference [--sixteen] [--out DIR]");
+    eprintln!("       fxlab listening [--rate HZ] [--out DIR]");
     eprintln!("       fxlab quality [--class delay|eq|reverb|drive|crush|compressor|filter|lofi|amp|modulation|limiter|gate|deesser|multiband|ducker|transient|strip|movement|pitch|voice]... [--rate HZ] [--out DIR]");
     std::process::exit(2);
 }
@@ -400,6 +401,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            eprintln!("wrote {}", a.out.display());
+        }
+        "listening" => {
+            let text = listening::write_set(&a.out, a.rate)?;
+            print!("{text}");
             eprintln!("wrote {}", a.out.display());
         }
         "reference" => {

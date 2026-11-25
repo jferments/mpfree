@@ -1129,6 +1129,10 @@ pub struct Editor {
     /// The scales the Scale menu offers (the app's: the pads' scale and
     /// the owner's own; plan 2B.1).
     pub offers: Arc<ScaleOffers>,
+    /// The project's styles made from clips (composing step 6), which
+    /// Continue's Style row runs on into after the built-in ones; the
+    /// time engine keeps it ([`mpfree_compose::style_at`]).
+    pub styles: Arc<[mpfree_compose::ClipStyle]>,
     /// What a note drawn on the roll puts in (plan 2B.2): a note, or a
     /// chord on it; `minor` for a Triad or a Seventh with no scale.
     pub chord: ChordShape,
@@ -1358,6 +1362,7 @@ impl Editor {
             add: false,
             cursor: 0,
             offers: Arc::default(),
+            styles: Arc::from(Vec::new()),
             chord: ChordShape::Off,
             minor: false,
             open_tool: None,
@@ -2619,7 +2624,7 @@ impl Editor {
         self.continue_picks = Picks::default();
         Done {
             compose: Some(Compose::Ask(Box::new(Asking {
-                settings: self.continuing.settings(tool.q),
+                settings: self.continuing.settings(tool.q, &self.styles),
                 scope: Scope::All,
                 locked: Vec::new(),
             }))),
@@ -2638,7 +2643,7 @@ impl Editor {
         let ask_in = |ed: &Editor, line: String, scope: Scope| Done {
             line,
             compose: Some(Compose::Ask(Box::new(Asking {
-                settings: ed.continuing.settings(ed.continuing.q),
+                settings: ed.continuing.settings(ed.continuing.q, &ed.styles),
                 scope,
                 locked: ed.continue_picks.locked.clone(),
             }))),
@@ -2649,10 +2654,10 @@ impl Editor {
         Some(match *a {
             EditAction::Row { row, delta } if row < rows => {
                 self.continuing.row = row;
-                if !self.continuing.step(row, delta) {
+                if !self.continuing.step(row, delta, &self.styles) {
                     return Some(Done::default());
                 }
-                let said = self.continuing.said(row);
+                let said = self.continuing.said(row, &self.styles);
                 ask(self, format!("continue: {said}"))
             }
             EditAction::PickRow(row) if row < rows => {
@@ -2958,7 +2963,7 @@ fn find_notes(clip: &Clip, want: &[Note]) -> Vec<Option<usize>> {
 pub fn edit_rows(ed: &Editor, clip: &Clip) -> Vec<OptionRow> {
     // Continue open: its settings in place of the options.
     if ed.continuing_open() {
-        return ed.continuing.rows();
+        return ed.continuing.rows(&ed.styles);
     }
     let picks = ed.picked(clip);
     let sel: Vec<&Note> = picks.iter().map(|&i| &clip.notes[i]).collect();
@@ -3084,7 +3089,7 @@ fn continue_value(ed: &Editor, clip: &Clip) -> String {
     } else if clip.notes.iter().all(|n| !n.on) {
         "no notes".into()
     } else {
-        ed.continuing.value(compose::BARS_ROW)
+        ed.continuing.value(compose::BARS_ROW, &ed.styles)
     }
 }
 

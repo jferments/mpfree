@@ -682,6 +682,71 @@ fn frozen_audio_follows_the_beat_at_another_tempo() {
     assert_eq!(l[0], 72_000.0);
 }
 
+/// While the host gives the mixer the song's clock (Tempo follows keeps
+/// the inserts on the free loops'), frozen audio plays, and fades out
+/// while the song is stopped, on the song's clock, whatever the block's
+/// context says; a block without one keeps the context's.
+#[test]
+fn frozen_audio_keeps_the_song_clock_the_host_gives() {
+    let n = 96_000;
+    let ramp: Vec<f32> = (0..n).map(|i| i as f32 / n as f32).collect();
+    let f = Frozen {
+        left: ramp.clone(),
+        right: ramp,
+        origin: 0.0,
+        beats: 4.0,
+        bpm: 120.0,
+        rate: RATE,
+    };
+    let mut m = rig(Vec::new());
+    assert!(m.set_capture(1, Some((StripId::Track(1), CapturePoint::BeforeFader))));
+    assert!(m.freeze(StripId::Track(1), f).is_ok());
+    // The context: the free loops' clock, rolling at 93 BPM.
+    let mut lead = Song::new();
+    lead.bpm = 93.0;
+    // The song: stopped on beat 1.
+    let mut song = SongClock {
+        bpm: 120.0,
+        beats: 1.0,
+        playing: false,
+    };
+    let (mut l, mut r) = ([0.0f32; 128], [0.0f32; 128]);
+    let mut block = |m: &mut Mixer, lead: &mut Song, song: &mut Option<SongClock>| {
+        m.set_song_clock(*song);
+        m.process(&lead.ctx(), &mut l, &mut r);
+        lead.frame += 128;
+        lead.beats += 128.0 * lead.bpm / 60.0 / f64::from(RATE);
+        if let Some(s) = song.as_mut().filter(|s| s.playing) {
+            s.beats += 128.0 * s.bpm / 60.0 / f64::from(RATE);
+        }
+        m.capture(1).unwrap().0.to_vec()
+    };
+    // The song stopped: silent, though the context rolls.
+    let mut out = Vec::new();
+    for _ in 0..100 {
+        out = block(&mut m, &mut lead, &mut Some(song));
+    }
+    assert!(out.iter().all(|&v| v == 0.0), "silent while the song stops");
+    assert_eq!(m.freeze_state(StripId::Track(1)), FreezeState::On);
+    // The song rolls from beat 1: the loop plays where the song is, not
+    // where the context is.
+    song.playing = true;
+    let mut given = Some(song);
+    for _ in 0..100 {
+        block(&mut m, &mut lead, &mut given);
+    }
+    let at = given.unwrap().beats;
+    assert!((at - lead.beats).abs() > 0.5, "the clocks are apart");
+    let out = block(&mut m, &mut lead, &mut given);
+    let want = (at * f64::from(RATE) / 2.0) as f32 / n as f32;
+    assert!((out[0] - want).abs() < 1e-6, "{} against {want}", out[0]);
+    // A block without the song's clock keeps the context's.
+    let at = lead.beats;
+    let out = block(&mut m, &mut lead, &mut None);
+    let want = (at * f64::from(RATE) / 2.0).round() as f32 / n as f32;
+    assert!((out[0] - want).abs() < 1e-3, "{} against {want}", out[0]);
+}
+
 #[test]
 fn a_print_makes_a_wav_and_a_tail_folds_onto_the_loop() {
     let p = Printed {

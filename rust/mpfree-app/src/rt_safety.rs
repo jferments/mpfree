@@ -1437,6 +1437,19 @@ fn routed_keys_play_a_kits_keygroups_by_pitch() {
 /// here.
 #[test]
 fn thru_passes_a_keyboards_channel_out_as_it_came() {
+    // As slow_gear_moves: a debug build copies the rig through each frame
+    // that builds it, and this test's left under 8 KB of a test thread's
+    // 2 MiB even before Tempo follows (measured on main 49ef235a).
+    std::thread::Builder::new()
+        .name("thru".into())
+        .stack_size(16 << 20)
+        .spawn(thru_passes_a_keyboards_channel_out_on)
+        .expect("spawn the thru rig")
+        .join()
+        .expect("the thru rig ran");
+}
+
+fn thru_passes_a_keyboards_channel_out_on() {
     use mpfree_midi::setup::{ThruRoute, DIN_NAME};
     let rig = Rig::new(false);
     let mut midi = rig.midi;

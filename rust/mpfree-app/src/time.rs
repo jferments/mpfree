@@ -73,6 +73,7 @@ mod follow;
 pub mod link;
 mod offline;
 mod pad_wait;
+mod song_chords;
 pub mod strips;
 mod timing;
 
@@ -976,6 +977,15 @@ impl TimeHost {
         match &self.control {
             Half::Here(c) => c.armed(),
             Half::Apart(a) => a.light.armed,
+        }
+    }
+
+    /// The audio track armed by its own arm (see
+    /// `TimeControl::audio_armed`): the Loop group's "Armed" half.
+    pub fn audio_armed(&self) -> Option<usize> {
+        match &self.control {
+            Half::Here(c) => c.audio_armed(),
+            Half::Apart(a) => a.light.audio_armed,
         }
     }
 
@@ -2303,6 +2313,26 @@ impl TimeHost {
     /// The transport's description of the last period (for the looper).
     pub fn block(&self) -> &Block {
         self.audio.block()
+    }
+
+    /// The clock the arps, Note Repeat and the mixer's context followed
+    /// in the last period: the free loops' while Tempo follows: Free loops
+    /// and their clock runs, else the song's ([`TimeHost::set_lead`]).
+    pub fn tempo_block(&self) -> &Block {
+        self.audio.tempo_block()
+    }
+
+    /// Tempo follows: Free loops (the looper refactor's R2): the free
+    /// loops' clock as a span (`LoopHost::tempo_lead`), set before each
+    /// period; None follows the song.
+    pub fn set_lead(&mut self, lead: Option<mpfree_transport::Span>) {
+        self.audio.set_lead(lead);
+    }
+
+    /// The free loops' tempo while it led the last period
+    /// ([`TimeHost::set_lead`]): warped pads play at it.
+    pub fn lead_bpm(&self) -> Option<f64> {
+        self.audio.lead_bpm()
     }
 
     /// The transport's tempo map (for the audio tracks, which place their
@@ -6277,6 +6307,74 @@ mod tests {
             ..Settings::default()
         });
         arps
+    }
+
+    /// Tempo follows: Free loops (the looper refactor's R2, tempo
+    /// context): with the song stopped, a held pad's arp plays its
+    /// sixteenths on the free loops' clock (at their tempo, on their
+    /// grid from their anchor), not free-running at the song's, and the
+    /// mixer's context takes the same clock; with no lead the arp
+    /// free-runs at the song's tempo, as before.
+    #[test]
+    fn the_arps_keep_the_free_loops_time_while_tempo_follows_them() {
+        // The free loops at 93 BPM, their bar 1 on frame 1000.
+        let free = mpfree_looper::FreeClock {
+            anchor_frame: 1000,
+            anchor_tick: 0,
+            bpm: 93.0,
+            rate: RATE,
+            meter: mpfree_transport::Meter::new(4, 4).unwrap(),
+            running: true,
+            top: 0,
+        };
+        let run = |lead: Option<mpfree_transport::Span>| {
+            let mut h = TimeHost::new(RATE, 120.0).unwrap();
+            let mut pads = Fake::default();
+            let mut arps = arp_up(1);
+            h.set_lead(lead);
+            while pads.frame < 2 * BAR {
+                if pads.frame == 10 * u64::from(PERIOD) {
+                    let on = Event::NoteOn {
+                        note: 4,
+                        velocity: 100,
+                    };
+                    arps.pad(1, 0, on);
+                }
+                h.period_arps(PERIOD, &mut pads, &mut arps);
+                let s = h.tempo_block().spans()[0];
+                // A clock that starts on a frame to come leads from the
+                // first period it has started by.
+                if lead.is_some() && pads.frame >= 1000 {
+                    assert_eq!((s.bpm, s.state), (93.0, State::Playing), "led");
+                    assert_eq!(h.lead_bpm(), Some(93.0));
+                    let beats = s.tick_at(s.frame) / f64::from(mpfree_transport::PPQ);
+                    let want = (s.frame - 1000) as f64 * 93.0 / 60.0 / f64::from(RATE);
+                    assert!((beats - want).abs() < 1e-9, "the mixer's beats");
+                } else {
+                    assert_eq!((s.bpm, s.state), (120.0, State::Stopped));
+                    assert_eq!(h.lead_bpm(), None);
+                }
+                pads.frame += u64::from(PERIOD);
+            }
+            assert_eq!(h.dropped() + arps.dropped(), 0);
+            pads.hits.iter().map(|&(f, _, _)| f).collect::<Vec<u64>>()
+        };
+        let led = run(Some(crate::looping::lead_span(&free)));
+        let step = 60.0 * f64::from(RATE) / 93.0 / 4.0;
+        assert!(led.len() >= 20, "it plays: {led:?}");
+        for &f in &led {
+            let steps = (f - 1000) as f64 / step;
+            assert!(
+                (steps - steps.round()).abs() * step <= 1.0,
+                "{f} is on the free loops' sixteenths"
+            );
+        }
+        let song = run(None);
+        assert!(song.len() >= 20, "it plays: {song:?}");
+        for w in song.windows(2) {
+            let gap = (w[1] - w[0]) as f64;
+            assert!((gap - 5512.5).abs() <= 1.0, "free-running at 120: {gap}");
+        }
     }
 
     /// Records one bar into a new clip on track 3 (a two-bar loop) through
@@ -17157,6 +17255,147 @@ mod tests {
     /// a setting changed asks again; Done keeps it as one take, closes
     /// the tool and the editor follows the kept clip. Cancel goes back and
     /// closes it, and the editor opening again on the clip goes back too.
+    /// Make a style (composing step 6, board D): the clip card's Style
+    /// row opens the sheet read from the clip; Plan and Name change before
+    /// Keep; Keep puts the style in the song as one edit UNDO takes back,
+    /// and every Style row runs on into it; a second of the same name
+    /// replaces it; a built-in style's name is refused; Back keeps nothing.
+    #[test]
+    fn make_a_style_keeps_it_with_the_song_and_undo_takes_it_back() {
+        use mpfree_compose::{style_count, style_name, STYLES};
+        use mpfree_time_ui::editor::compose::{ContinueSet, STYLE_ROW};
+        use mpfree_time_ui::style_sheet::{StyleAction as S, NAME_ROW, PLAN_ROW};
+        let mut h = riff_host();
+        let said = h.act(TimeAction::MakeStyle { track: 0, slot: 0 }).unwrap();
+        assert_eq!(
+            said,
+            "style: read from riff: change Name and Plan, then Keep"
+        );
+        let st = h.state();
+        let sheet = st.style_sheet.as_deref().unwrap();
+        assert_eq!(sheet.made.name, "riff groove");
+        assert_eq!(sheet.from, "From riff · Track 1 · 1 bar");
+        assert_eq!(sheet.hits.len(), 8);
+        assert_eq!(sheet.row, NAME_ROW, "the wheel on Name, as drawn");
+        // Plan steps among the built-in styles and stops at its ends.
+        let plan = sheet.made.plan;
+        let at = STYLES.iter().position(|s| s.name == plan).unwrap();
+        let toward = if at == 0 { 1 } else { -1 };
+        let said = h.act(TimeAction::Style(S::Step {
+            row: PLAN_ROW,
+            delta: toward,
+        }));
+        let moved = STYLES[(at as i32 + toward) as usize].name;
+        assert_eq!(
+            said.unwrap(),
+            format!("style: phrase plan and chords from {moved}")
+        );
+        let end = h.act(TimeAction::Style(S::Step {
+            row: PLAN_ROW,
+            delta: -9,
+        }));
+        let end = h
+            .act(TimeAction::Style(S::Step {
+                row: PLAN_ROW,
+                delta: -1,
+            }))
+            .or(end);
+        assert_eq!(
+            end.unwrap_err(),
+            format!("Plan: {} is the first", STYLES[0].name)
+        );
+        assert!(h
+            .act(TimeAction::Style(S::Step {
+                row: NAME_ROW,
+                delta: 1
+            }))
+            .is_err());
+        // Name: trimmed; empty or a built-in style's name refused.
+        assert!(h.act(TimeAction::Style(S::Name("  ".into()))).is_err());
+        let built_in = STYLES[0].name.to_uppercase();
+        assert!(h.act(TimeAction::Style(S::Name(built_in))).is_err());
+        let said = h.act(TimeAction::Style(S::Name(" Night riff ".into())));
+        assert_eq!(said.unwrap(), "style: named Night riff");
+        // Keep: in the song, the sheet closed, one edit.
+        let edits = h.state().done.len();
+        let said = h.act(TimeAction::Style(S::Keep)).unwrap();
+        assert_eq!(
+            said,
+            "style: Night riff kept: in every Style row (UNDO takes it back)"
+        );
+        assert_eq!(h.state().done.len(), edits + 1);
+        let st = h.state();
+        assert!(st.style_sheet.is_none());
+        assert_eq!(h.project().styles.len(), 1);
+        assert_eq!(st.styles.len(), 1);
+        assert_eq!(st.styles[0].name, "Night riff");
+        assert_eq!(st.styles[0].plan, STYLES[0].name);
+        assert_eq!(st.done.last().map(|t| t.style), Some(true));
+        // Continue's Style row runs on into it after the built-in ones.
+        let mut set = ContinueSet::default();
+        for _ in 0..style_count(&st.styles) {
+            set.step(STYLE_ROW, 1, &st.styles);
+        }
+        assert_eq!(set.value(STYLE_ROW, &st.styles), "Night riff");
+        assert_eq!(set.settings(set.q, &st.styles).style.name, "Night riff");
+        assert_eq!(style_name(STYLES.len(), &st.styles), "Night riff");
+        // The note editor's Style row has it too.
+        h.act(TimeAction::Edit(mpfree_time_ui::editor::EditAction::Open))
+            .unwrap();
+        let st = h.state();
+        assert_eq!(st.edit.as_ref().unwrap().editor.styles.len(), 1);
+        // UNDO takes it back, REDO brings it back; the editor follows.
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.project().styles.is_empty());
+        let st = h.state();
+        assert!(st.styles.is_empty());
+        assert!(st.edit.as_ref().unwrap().editor.styles.is_empty());
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(h.state().styles.len(), 1);
+        // Again under the same name: replaced, still one.
+        h.act(TimeAction::MakeStyle { track: 0, slot: 0 }).unwrap();
+        h.act(TimeAction::Style(S::Name("Night riff".into())))
+            .unwrap();
+        let said = h.act(TimeAction::Style(S::Keep)).unwrap();
+        assert_eq!(
+            said,
+            "style: Night riff replaced: in every Style row (UNDO takes it back)"
+        );
+        assert_eq!(h.project().styles.len(), 1);
+        // Back: nothing kept.
+        h.act(TimeAction::MakeStyle { track: 0, slot: 0 }).unwrap();
+        let edits = h.state().done.len();
+        assert_eq!(
+            h.act(TimeAction::Style(S::Back)).unwrap(),
+            "style: nothing kept"
+        );
+        assert!(h.state().style_sheet.is_none());
+        assert_eq!(h.state().done.len(), edits);
+        assert!(h.act(TimeAction::Style(S::Keep)).is_err());
+    }
+
+    /// The song holds 16 styles made from clips: a 17th is refused,
+    /// nothing changes, and the sheet stays open to rename it.
+    #[test]
+    fn a_seventeenth_style_is_refused() {
+        use mpfree_time_ui::style_sheet::StyleAction as S;
+        let mut h = riff_host();
+        for k in 0..mpfree_seq::MAX_STYLES {
+            h.act(TimeAction::MakeStyle { track: 0, slot: 0 }).unwrap();
+            h.act(TimeAction::Style(S::Name(format!("Riff {k}"))))
+                .unwrap();
+            h.act(TimeAction::Style(S::Keep)).unwrap();
+        }
+        h.act(TimeAction::MakeStyle { track: 0, slot: 0 }).unwrap();
+        let why = h.act(TimeAction::Style(S::Keep)).unwrap_err();
+        assert!(why.starts_with("The song holds 16 styles"), "{why}");
+        assert_eq!(h.project().styles.len(), mpfree_seq::MAX_STYLES);
+        assert!(h.state().style_sheet.is_some());
+        // Under an existing name it replaces that one.
+        h.act(TimeAction::Style(S::Name("Riff 3".into()))).unwrap();
+        assert!(h.act(TimeAction::Style(S::Keep)).is_ok());
+    }
+
     #[test]
     fn continue_from_the_note_editor_keeps_and_goes_back() {
         use mpfree_compose::{InstrumentKind, Lanes};
@@ -17733,6 +17972,65 @@ mod tests {
         // UNDO the chords: nothing marked.
         h.act(TimeAction::Undo).unwrap();
         assert!(h.state().unfit.is_empty());
+    }
+
+    /// The Song view's Chords lane (composing step 6, board C): while the
+    /// Song view shows, each row the song's sections play is heard on a
+    /// thread of its own into the state, and heard again when its chords
+    /// change. Hearing writes nothing, and the grid hears no song.
+    #[test]
+    fn the_song_view_hears_each_scene_its_sections_play() {
+        use mpfree_context::chord::{Chord, ChordAnswer, ChordTimeline, Heard, Quality};
+        use mpfree_seq::arrange::{FromScene, Placement};
+        const B: Tick = 3840;
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        let p = &mut h.control.project;
+        let song = &mut p.arrangement;
+        song.place(Placement::of(&p.tracks, 0, 0, 0, B)).unwrap();
+        song.mark(0, "Riff").unwrap();
+        song.markers[0].scene = Some(FromScene::following(0, 2 * B));
+        let before = h.project().clone();
+        run(&mut h, &mut pads, BAR, &[]);
+        assert!(h.state().song_chords.is_empty(), "not while the grid shows");
+        h.act(TimeAction::SongView(true)).unwrap();
+        let st = h.state();
+        assert_eq!(st.scene_sections.first().map(|s| (s.0, s.2)), Some((0, 0)));
+        until(&mut h, &mut pads, |h| !h.state().song_chords.is_empty());
+        let st = h.state();
+        let (row, chords) = &st.song_chords[0];
+        assert_eq!((*row, st.song_chords.len()), (0, 1));
+        assert!(!chords.line.is_empty(), "the riff gives chords");
+        assert!(chords.line.spans().iter().all(|s| s.heard != Heard::Set));
+        assert_eq!(h.project().scenes, before.scenes, "hearing writes nothing");
+        assert_eq!(h.project().arrangement, before.arrangement);
+        // The scene's chords set (the lane's Use): heard again, set.
+        let set = ChordTimeline::whole(
+            3840,
+            ChordAnswer::Chord(Chord::new(6, Quality::Minor)),
+            Heard::Set,
+        );
+        h.act(TimeAction::Chords(ChordsAction::Set {
+            row: 0,
+            line: set,
+            shown: chords.line.clone(),
+        }))
+        .unwrap();
+        until(&mut h, &mut pads, |h| {
+            h.state()
+                .song_chords
+                .first()
+                .is_some_and(|(_, c)| c.line.span_at(0).is_some_and(|s| s.heard == Heard::Set))
+        });
+        let st = h.state();
+        assert_eq!(
+            st.song_chords[0].1.line.span_at(0).unwrap().answer,
+            ChordAnswer::Chord(Chord::new(6, Quality::Minor))
+        );
+        assert_eq!(
+            st.song_chords[0].1.heard, chords.heard,
+            "what the clips say stays"
+        );
     }
 
     /// The Chords tab hears its row without a try: the row's chords come

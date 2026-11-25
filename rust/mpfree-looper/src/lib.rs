@@ -1897,6 +1897,28 @@ struct Store {
     kept_txn: [TransactionId; MAX_LOOPS],
     /// The last layer number given ([`Store::born`]).
     born: u64,
+    /// Each slot's layer the app says is written whole to its file and
+    /// synced, by its number (0: none; audio tracks phase 4d.4:
+    /// [`Looper::set_synced`]).
+    synced: [[u64; MAX_LAYERS]; MAX_LOOPS],
+    /// Slots sent away: their blocks went back while only history holds
+    /// them, their audio in their file, and Undo or Redo that would bring
+    /// them back waits until it is brought back ([`Looper::away_for`]).
+    away: [u16; MAX_LOOPS],
+    /// The blocks each slot held when it was sent away.
+    away_blocks: [[u16; MAX_LAYERS]; MAX_LOOPS],
+    /// A slot being brought back from its file ([`Looper::begin_back`]).
+    back: Option<Back>,
+}
+
+/// A slot being brought back ([`Looper::begin_back`]): its loop, its
+/// slot, the frames in so far and its size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Back {
+    lp: usize,
+    slot: usize,
+    done: usize,
+    size: usize,
 }
 
 impl Store {
@@ -1914,7 +1936,16 @@ impl Store {
             kept_seq: 0,
             kept_txn: [TransactionId::NONE; MAX_LOOPS],
             born: 0,
+            synced: [[0; MAX_LAYERS]; MAX_LOOPS],
+            away: [0; MAX_LOOPS],
+            away_blocks: [[0; MAX_LAYERS]; MAX_LOOPS],
+            back: None,
         }
+    }
+
+    /// Slot `k` of loop `lp` is sent away ([`Store::away`]).
+    fn is_away(&self, lp: usize, k: usize) -> bool {
+        self.away[lp] & (1 << k) != 0
     }
 
     /// A new layer's number ([`LayerInfo::born`]): never given twice in
@@ -1999,6 +2030,13 @@ impl Store {
 
     #[inline(never)]
     fn grow_to(&mut self, lp: usize, slot: usize, n: usize) -> bool {
+        // A slot sent away (phase 4d.4) taking blocks for a new layer:
+        // the layer that was away is gone. One being brought back stays
+        // away until it is all in.
+        let back = self.back.is_some_and(|b| b.lp == lp && b.slot == slot);
+        if self.held[lp][slot] == 0 && !back {
+            self.away[lp] &= !(1 << slot);
+        }
         let t = self.table(lp, slot);
         while (self.held[lp][slot] as usize) < n {
             if self.n_free == 0 && !self.drop_oldest_kept(lp) {
@@ -2024,8 +2062,13 @@ impl Store {
         }
     }
 
-    /// Give back every block of a slot.
+    /// Give back every block of a slot. A slot being brought back
+    /// (phase 4d.4) is called off: its step was let go, or its loop
+    /// forgotten.
     fn release(&mut self, lp: usize, slot: usize) {
+        if self.back.is_some_and(|b| b.lp == lp && b.slot == slot) {
+            self.back = None;
+        }
         let t = self.table(lp, slot);
         for h in 0..self.held[lp][slot] as usize {
             self.free[self.n_free] = self.tables[t + h];
@@ -2044,7 +2087,9 @@ impl Store {
     fn keep(&mut self, lp: usize, l: &Loop) {
         self.drop_kept(lp);
         self.kept[lp].clone_from(l);
-        let mut mask = 0u16;
+        // A slot sent away (phase 4d.4) is the kept loop's too, so the
+        // loop recorded next can't take it.
+        let mut mask = self.away[lp];
         for k in 0..MAX_LAYERS {
             if self.held[lp][k] > 0 {
                 mask |= 1 << k;
@@ -2066,7 +2111,8 @@ impl Store {
         self.kept_mask[lp] & (1 << k) != 0
     }
 
-    /// Forget loop `lp`'s kept loop: its blocks go back.
+    /// Forget loop `lp`'s kept loop: its blocks go back, and its slots
+    /// sent away are gone for good.
     fn drop_kept(&mut self, lp: usize) {
         let mask = std::mem::take(&mut self.kept_mask[lp]);
         for k in 0..MAX_LAYERS {
@@ -2074,6 +2120,7 @@ impl Store {
                 self.release(lp, k);
             }
         }
+        self.away[lp] &= !mask;
     }
 
     /// Forget the oldest kept loop but `lp`'s. False if there is none.
@@ -4369,14 +4416,177 @@ impl Looper {
     /// Undo or Redo, or in the loop a Clear kept for Undo. False once its
     /// blocks have gone (the slot made into another layer, the cleared
     /// loop forgotten). Audio tracks phase 4c.6: the host keeps the
-    /// layer's recording named while this holds. Does not allocate.
+    /// layer's recording named while this holds. A layer sent away
+    /// (phase 4d.4) is held still: its audio is its file, which UNDO
+    /// brings back. Does not allocate.
     pub fn holds_layer(&self, n: usize, slot: usize, born: u64) -> bool {
         let (Some(l), true) = (self.loops.get(n), slot < MAX_LAYERS && born != 0) else {
             return false;
         };
-        let live = l.slots[slot].born == born && self.store.held[n][slot] > 0;
-        let kept = self.store.kept_holds(n, slot) && self.store.kept[n].slots[slot].born == born;
+        let st = &self.store;
+        let has = st.held[n][slot] > 0 || st.is_away(n, slot);
+        let live = l.slots[slot].born == born && has;
+        let kept = (st.kept_holds(n, slot) || st.is_away(n, slot))
+            && st.has_kept(n)
+            && st.kept[n].slots[slot].born == born;
         live || kept
+    }
+
+    /// The app says loop `n`'s layer numbered `born` is written whole to
+    /// its file and synced (audio tracks phase 4d.4): from now on it may
+    /// leave memory while only history holds it, when memory is needed
+    /// for a new layer, rather than a step being let go. Nothing if the
+    /// loop has no such layer.
+    pub fn set_synced(&mut self, n: usize, born: u64) {
+        let Some(l) = self.loops.get(n) else {
+            return;
+        };
+        if let Some(k) = (0..MAX_LAYERS).find(|&k| born != 0 && l.slots[k].born == born) {
+            self.store.synced[n][k] = born;
+        }
+    }
+
+    /// Whether loop `n`'s layer numbered `born` is away: its blocks gone
+    /// back, its audio in its file (phase 4d.4).
+    pub fn is_away(&self, n: usize, born: u64) -> bool {
+        let Some(l) = self.loops.get(n) else {
+            return false;
+        };
+        (0..MAX_LAYERS).any(|k| born != 0 && l.slots[k].born == born && self.store.is_away(n, k))
+    }
+
+    /// The layer the next Undo (or Redo, `redo`) of loop `n` would bring
+    /// back that is away, its own or a tied loop's, as (loop, slot, its
+    /// number): that Undo is refused until it is brought back
+    /// ([`Looper::begin_back`]). None if it needs none (phase 4d.4).
+    pub fn away_for(&self, n: usize, redo: bool) -> Option<(usize, usize, u64)> {
+        if n >= MAX_LOOPS {
+            return None;
+        }
+        let c = if redo { Command::Redo } else { Command::Undo };
+        let (lp, k) = self.needs_back(n, c)?;
+        Some((lp, k, self.loops[lp].slots[k].born))
+    }
+
+    /// How many of loop `n`'s next `want` Undos (or Redos, `redo`), from
+    /// its history as it is now, need no layer that is away (phase 4d.4):
+    /// the Looper tab's history list goes that far, then waits for the
+    /// layer to be brought back. Does not allocate.
+    pub fn steps_before_away(&self, n: usize, redo: bool, want: usize) -> usize {
+        let Some(l) = self.loops.get(n) else {
+            return 0;
+        };
+        let acts = if redo {
+            &l.undone[..l.n_undone]
+        } else {
+            &l.done[..l.n_done]
+        };
+        acts.iter()
+            .rev()
+            .take(want)
+            .take_while(|a| {
+                (0..MAX_LAYERS).all(|k| !(self.store.is_away(n, k) && l.brings_back(a, k)))
+            })
+            .count()
+    }
+
+    /// Whether loop `n`'s Undo (or Redo, `redo`) would wait now: a layer
+    /// fading out, a crossfade, a clear (phase 4d.4: a layer is brought
+    /// back for it once nothing is fading, so that a layer an Undo just
+    /// took out of the play order can make room).
+    pub fn step_waits(&self, n: usize, redo: bool) -> bool {
+        let c = if redo { Command::Redo } else { Command::Undo };
+        self.loops
+            .get(n)
+            .is_some_and(|l| l.must_wait(Queued::Loop(c)))
+    }
+
+    /// Undos and Redos in the command queue, not applied yet.
+    pub fn steps_queued(&self) -> usize {
+        self.queue[..self.queued]
+            .iter()
+            .filter(|q| matches!(q, Queued::Loop(Command::Undo | Command::Redo)))
+            .count()
+    }
+
+    /// Start bringing loop `n`'s away slot `slot` back (phase 4d.4): it
+    /// takes the blocks it held again, and [`Looper::put_back`] hands in
+    /// its frames from its file, as [`Looper::raw_of`] gave them. To make
+    /// room, other synced layers only history holds leave memory first
+    /// (Undo's oldest, then Redo's farthest, in any loop), never one the
+    /// same step brings back with it. Gives the frames to
+    /// bring (the layer's size). Refused while another is being brought
+    /// back, for a slot not away, or with no room even so.
+    pub fn begin_back(&mut self, n: usize, slot: usize) -> Result<usize, &'static str> {
+        if n >= MAX_LOOPS || slot >= MAX_LAYERS || !self.store.is_away(n, slot) {
+            return Err("that layer isn't away");
+        }
+        if self.store.back.is_some() {
+            return Err("another layer is being brought back");
+        }
+        let need = self.store.away_blocks[n][slot] as usize;
+        let skip = self.loops[n].needs_with(slot);
+        while self.store.available() < need {
+            let sent = (0..MAX_LOOPS).any(|m| {
+                let skip = if m == n { skip } else { 0 };
+                self.loops[m].send_away(&mut self.store, m, skip, true)
+            });
+            if !sent {
+                break;
+            }
+        }
+        let size = self.loops[n].views[slot].size();
+        self.store.back = Some(Back {
+            lp: n,
+            slot,
+            done: 0,
+            size,
+        });
+        if self.store.available() < need || !self.store.grow(n, slot, need) {
+            self.store.back = None;
+            self.store.shrink(n, slot, 0);
+            return Err("there is no room in the loops' memory");
+        }
+        Ok(size)
+    }
+
+    /// Whether a layer is being brought back ([`Looper::begin_back`]).
+    /// False once it is all in, or once it was called off: its step let
+    /// go, its loop forgotten or loaded over.
+    pub fn bringing_back(&self) -> bool {
+        self.store.back.is_some()
+    }
+
+    /// The next frames (interleaved stereo) of the layer being brought
+    /// back ([`Looper::begin_back`]), in order from its first. True once
+    /// it is all in: it is the loop's again, and Undo can bring it back.
+    /// Frames past its size are left out. Does not allocate.
+    pub fn put_back(&mut self, frames: &[f32]) -> bool {
+        let Some(mut b) = self.store.back else {
+            return false;
+        };
+        for x in frames.chunks_exact(2) {
+            if b.done >= b.size {
+                break;
+            }
+            self.store.set(b.lp, b.slot, b.done, [x[0], x[1]]);
+            b.done += 1;
+        }
+        if b.done < b.size {
+            self.store.back = Some(b);
+            return false;
+        }
+        self.store.back = None;
+        self.store.away[b.lp] &= !(1 << b.slot);
+        true
+    }
+
+    /// Stop bringing a layer back (its file couldn't be read): its blocks
+    /// go back again and it stays away.
+    pub fn call_back_off(&mut self) {
+        if let Some(b) = self.store.back.take() {
+            self.store.release(b.lp, b.slot);
+        }
     }
 
     /// The layers layer `k` of loop `n` (in play order) was made from by
@@ -6322,6 +6532,12 @@ impl Looper {
             }
             // Undo calls a copy in off.
             Queued::Loop(Command::Undo) if self.loops[s].adding => self.call_off_copy(s),
+            // A step whose layer is away waits until it is brought back.
+            Queued::Loop(c @ (Command::Undo | Command::Redo))
+                if self.needs_back(s, c).is_some() =>
+            {
+                self.stats.refused += 1
+            }
             Queued::Loop(c @ (Command::Undo | Command::Redo)) if self.tied(s, c).is_some() => {
                 let o = self.tied(s, c).expect("tied above");
                 self.loops[s].apply(&mut self.store, &mut self.stats, s, c);
@@ -6866,6 +7082,14 @@ impl Looper {
         .then_some(o)
     }
 
+    /// The away slot Undo (or Redo) of loop `s` now would bring back, its
+    /// own or a tied loop's: (loop, slot) ([`Looper::away_for`]).
+    fn needs_back(&self, s: usize, c: Command) -> Option<(usize, usize)> {
+        let redo = c == Command::Redo;
+        let away = |n: usize| self.loops[n].top_away(&self.store, n, redo).map(|k| (n, k));
+        away(s).or_else(|| self.tied(s, c).and_then(away))
+    }
+
     /// One input, one recording: loop `s` starts recording, so the others
     /// stop. An overdub punches out, a first pass ends on the next bar line
     /// (on its bar line if free length), an armed loop disarms.
@@ -6990,7 +7214,86 @@ impl Loop {
             if !in_use && store.held[me][k] > 0 {
                 store.release(me, k);
             }
+            // A slot sent away that no step names any more is gone for
+            // good (a loop cleared and kept for Undo still names its own).
+            let kept = store.has_kept(me) && store.kept[me].holds(k);
+            if !in_use && !kept && store.is_away(me, k) {
+                store.away[me] &= !(1 << k);
+            }
         }
+    }
+
+    /// Whether slot `k` may be sent away now (audio tracks phase 4d.4): it
+    /// holds blocks, its layer is closed and synced to its file, only
+    /// history names it (not playing, nothing writing it), and the loop
+    /// isn't one cleared and kept for Undo.
+    fn may_send_away(&self, store: &Store, me: usize, k: usize) -> bool {
+        store.held[me][k] > 0
+            && !store.is_away(me, k)
+            && !store.has_kept(me)
+            && self.slots[k].born != 0
+            && store.synced[me][k] == self.slots[k].born
+            && self.slot_closed(k)
+            && !self.order[..self.in_order].iter().any(|&o| o as usize == k)
+            && !(self.od_open && self.od_layer == k)
+            && !(self.merging && self.mg_slot == k)
+            && !(self.fitting && self.fit_slot == k)
+            && !(self.loading && k < self.ld_layers)
+            && !(self.adding && self.ad_slot == k)
+            && store.back.is_none_or(|b| b.lp != me || b.slot != k)
+    }
+
+    /// Send away one synced slot only history holds, the oldest step's
+    /// first, then (with `redo_too`) the steps Redo brings back, the
+    /// farthest first, never a slot in `skip`: its blocks go back, its
+    /// audio stays in its file (audio tracks phase 4d.4). False if none
+    /// may go.
+    fn send_away(&self, store: &mut Store, me: usize, skip: u16, redo_too: bool) -> bool {
+        let undone = if redo_too { self.n_undone } else { 0 };
+        let mut acts = self.done[..self.n_done]
+            .iter()
+            .chain(&self.undone[..undone]);
+        let k = acts.find_map(|a| {
+            (0..MAX_LAYERS).find(|&k| {
+                skip & (1 << k) == 0 && self.brings_back(a, k) && self.may_send_away(store, me, k)
+            })
+        });
+        let Some(k) = k else {
+            return false;
+        };
+        store.away_blocks[me][k] = store.held[me][k];
+        store.release(me, k);
+        store.away[me] |= 1 << k;
+        true
+    }
+
+    /// The slots the next Undo or Redo that brings back `slot` would
+    /// bring back with it (a merge's sources).
+    fn needs_with(&self, slot: usize) -> u16 {
+        let next = self.done[..self.n_done].last().into_iter();
+        let next = next.chain(self.undone[..self.n_undone].last());
+        let mut mask = 0;
+        for a in next.filter(|a| self.brings_back(a, slot)) {
+            for k in 0..MAX_LAYERS {
+                if self.brings_back(a, k) {
+                    mask |= 1 << k;
+                }
+            }
+        }
+        mask
+    }
+
+    /// The away slot the next Undo (or Redo, `redo`) would bring back, if
+    /// it would bring one back ([`Looper::away_for`]).
+    fn top_away(&self, store: &Store, me: usize, redo: bool) -> Option<usize> {
+        let free = self.phase == Phase::Playing && !self.od_open;
+        let a = if redo {
+            self.undone[..self.n_undone].last().filter(|_| free)
+        } else {
+            let stops = self.merging || self.fitting || self.print_wait;
+            self.done[..self.n_done].last().filter(|_| free && !stops)
+        }?;
+        (0..MAX_LAYERS).find(|&k| store.is_away(me, k) && self.brings_back(a, k))
     }
 
     fn must_wait(&self, q: Queued) -> bool {
@@ -9388,6 +9691,11 @@ impl Loop {
                     self.tail = false;
                 }
                 return store.grow(me, k, need).then_some(k);
+            }
+            // A synced layer only history holds leaves memory before any
+            // step is let go (audio tracks phase 4d.4).
+            if self.send_away(store, me, 0, false) {
+                continue;
             }
             let i = self.done[..self.n_done]
                 .iter()

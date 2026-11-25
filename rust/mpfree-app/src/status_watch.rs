@@ -69,7 +69,7 @@ pub struct Look<'a> {
     pub plugin_crashes: Option<u64>,
     /// The MPC's hottest zone, °C, and the line over which it is running
     /// hot (`heat::RUNNING_HOT_C`, measured on the MPC; None keeps MPC
-    /// running hot off).
+    /// running hot off, as on a machine the line wasn't measured for).
     pub temp_c: Option<f32>,
     pub hot_line: Option<f32>,
     /// A core's top clock is below where it was at the start (`heat::Heat::slowed`).
@@ -475,8 +475,15 @@ mod tests {
         assert_eq!(look(&mut w, slowed(true)), ["began mpc/processor-slowed"]);
         assert!(look(&mut w, slowed(true)).is_empty());
         assert_eq!(look(&mut w, slowed(false)), ["ended mpc/processor-slowed"]);
-        // Today's app: no line, so nothing however hot.
-        assert_eq!(crate::heat::RUNNING_HOT_C, None);
+        // The app's line, measured on the MPC: the settled 67.7 °C and the
+        // 70.8 °C at the most with every core busy never set it off.
+        let ours = crate::heat::RUNNING_HOT_C;
+        assert_eq!(ours, Some(73.0));
+        let mut w = Watch::default();
+        assert!(look(&mut w, temp(67.7, ours)).is_empty());
+        assert!(look(&mut w, temp(70.8, ours)).is_empty());
+        assert_eq!(look(&mut w, temp(73.0, ours)), ["began mpc/running-hot"]);
+        assert_eq!(look(&mut w, temp(70.0, ours)), ["ended mpc/running-hot"]);
     }
 
     #[test]

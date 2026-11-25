@@ -639,7 +639,7 @@ impl Session {
                 level_db: &mut self.level_db,
                 max_db: MAX_DB,
                 card: 0,
-                undo: &self.one_undo,
+                undo: &mut self.one_undo,
             },
             &mut self.out,
         )
@@ -2051,6 +2051,14 @@ impl Session {
         }
         self.hits.base = t;
         self.hits.only = self.export.only();
+        // Tempo follows: Free loops, as main.rs.
+        self.time.set_lead(
+            if self.app.settings.tempo_follows_free && !self.export.running() {
+                self.looper.tempo_lead()
+            } else {
+                None
+            },
+        );
         self.time
             .period_arps(PERIOD as u32, &mut self.hits, &mut self.app.arps);
         // The pads' arp (sampler step 15c), as main.rs: on the clips' arps'
@@ -2063,7 +2071,7 @@ impl Session {
         {
             let (synth, own) = (&mut *self.synth, &mut self.mix.instruments);
             let (sounds, played) = (&mut self.sounds, &mut self.arp_played);
-            let block = self.time.block().clone();
+            let block = self.time.tempo_block().clone();
             let time = &mut self.time;
             self.pads_arp.period(&block, &mut |to, n, rec| {
                 arp_note(to, n, synth, own, sounds, played);
@@ -2257,12 +2265,22 @@ impl Session {
             self.music.retarget(&landed);
             self.out.show(ToUi::ParamsMoved(Box::new(landed)));
         }
-        let ctx = mixing::ctx(
+        // The song's context and the mixer's, as main.rs.
+        let song = mixing::ctx(
             RATE,
             self.periods * PERIOD as u64,
             self.app.settings.bpm,
             self.time.block(),
         );
+        let ctx = mixing::ctx(
+            RATE,
+            self.periods * PERIOD as u64,
+            self.app.settings.bpm,
+            self.time.tempo_block(),
+        );
+        self.mix
+            .mixer
+            .set_song_clock(self.time.lead_bpm().map(|_| mixing::song_clock(&song)));
         let z = [0f32; PERIOD];
         let (mut l, mut r) = ([0f32; PERIOD], [0f32; PERIOD]);
         let silenced = self.time.silenced();
@@ -2283,7 +2301,7 @@ impl Session {
         let homes = self.track_kits.homes(|t| !self.mix.instruments.plays(t));
         self.mix.strip_kits(&self.app.named_kits(), &homes);
         if let Some(p) = self.sounds.as_mut() {
-            p.set_tempo(self.time.info().bpm);
+            p.set_tempo(self.time.lead_bpm().unwrap_or(self.time.info().bpm));
         }
         // Each instrument plays its own tuning or the song's, as main.rs
         // hands them over.
@@ -2343,7 +2361,7 @@ impl Session {
         let time = &self.time;
         match self
             .mix
-            .takes_period(&ctx, n_tracks, &|t| time.now_playing(t))
+            .takes_period(&song, n_tracks, &|t| time.now_playing(t))
         {
             Some(crate::takes::Said::Note(l)) => {
                 let l = format!("mixer: {l}");

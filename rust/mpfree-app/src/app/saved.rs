@@ -99,6 +99,14 @@ impl App {
         out.set_str("sound-cores", s.sound_cores.name());
         out.set_i64("loop-memory", i64::from(s.loop_memory.minutes()));
         out.set_bool("metronome", s.metronome);
+        out.set_str(
+            "tempo-follows",
+            if s.tempo_follows_free {
+                "free loops"
+            } else {
+                "song"
+            },
+        );
         out.set_i64("metronome-level", i64::from(s.metronome_db));
         out.set_i64("half-level", i64::from(s.half_level));
         out.set_bool("timing-strip", s.timing_strip);
@@ -211,6 +219,17 @@ impl App {
                     .map(|m| s.loop_memory = m)
                     .is_some(),
                 "metronome" => app.get_bool(k).map(|b| s.metronome = b).is_some(),
+                "tempo-follows" => match v {
+                    "song" => {
+                        s.tempo_follows_free = false;
+                        true
+                    }
+                    "free loops" => {
+                        s.tempo_follows_free = true;
+                        true
+                    }
+                    _ => false,
+                },
                 "metronome-level" => app
                     .get_i64(k)
                     .and_then(|n| super::METRONOME_DBS.iter().find(|&&d| i64::from(d) == n))
@@ -468,29 +487,29 @@ mod tests {
             "nothing changed, nothing to save"
         );
         a.open_tab(crate::app::View::Prefs);
-        let row = |a: &App, item: Item| a.items().iter().position(|&i| i == item).unwrap();
-        let r = row(&a, Item::Curve);
+        let row = |a: &mut App, item: Item| a.prefs_go_to(item).unwrap();
+        let r = row(&mut a, Item::Curve);
         a.step_item(r, 1);
-        let r = row(&a, Item::Buffer);
+        let r = row(&mut a, Item::Buffer);
         a.step_item(r, -1);
-        let r = row(&a, Item::DebugMode);
+        let r = row(&mut a, Item::DebugMode);
         a.step_item(r, 1);
         // Quick advance (live shows B1) is kept too.
-        let r = row(&a, Item::QuickAdvance);
+        let r = row(&mut a, Item::QuickAdvance);
         a.step_item(r, 1);
         // MIDI and CV out stay on across restarts (Jay, 16 Nov).
-        let r = row(&a, Item::SendsMidi);
+        let r = row(&mut a, Item::SendsMidi);
         a.step_item(r, 1);
         // The metronome, and the Looper's level and measured latency (its
         // tab's rows), are the system's too.
         a.settings.metronome = true;
-        let r = row(&a, Item::AtStart);
+        let r = row(&mut a, Item::AtStart);
         a.step_item(r, 1);
-        let r = row(&a, Item::Export);
+        let r = row(&mut a, Item::Export);
         a.step_item(r, 1);
-        let r = row(&a, Item::ExportFile);
+        let r = row(&mut a, Item::ExportFile);
         a.step_item(r, 1);
-        let r = row(&a, Item::ExportRate);
+        let r = row(&mut a, Item::ExportRate);
         a.step_item(r, 1);
         a.looper_setting(Item::LoopLevel, -1);
         a.looper_setting(Item::LoopLevel, -1);

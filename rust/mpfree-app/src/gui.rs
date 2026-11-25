@@ -64,6 +64,7 @@ use mpfree_sampler_ui::recall::RecallFrom;
 use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
 use mpfree_time_ui::editor::{EditAction, Lens, NoteGrid, Tool};
+use mpfree_time_ui::style_sheet::{self, StyleAction};
 use mpfree_time_ui::view::{
     self as time_view, AudioAction, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE,
 };
@@ -589,6 +590,12 @@ const HELD_TOLD: &str = " · the wheel turns it while you hold";
 use mpfree_ui::WHEEL_FINGER;
 /// What the wheel does on the pages with its outline ([`outlined`]).
 const WHEEL_HINT: &str = "Wheel: control to control   ·   push: press it";
+/// Prefs' hint lines (layout spec 5): on a tab's settings, with the
+/// wheel's push on one, and on the themes.
+pub const PREFS_HINT: &str = "Wheel: pick a setting   ·   push the wheel, then turn: change it   ·   - / +: change it   ·   SHIFT + wheel: next tab   ·   MENU: close";
+pub const PREFS_EDIT_HINT: &str =
+    "Wheel: change it   ·   push the wheel: set it   ·   - / +: change it   ·   SHIFT + wheel: next tab   ·   MENU: close";
+pub const PREFS_THEMES_HINT: &str = "Wheel, - / + or a tap: try a theme   ·   push the wheel: keep it   ·   SHIFT + wheel: next tab   ·   MENU: close";
 const OPTIONS_EDIT_HINT: &str = "Wheel: change it   ·   push the wheel: set it   ·   - / + or the arrows: change it   ·   Back or MENU: close";
 const GUIDE_HINT: &str = "STOP: skip this button   ·   The pads still play while the guide is open";
 const LOADING_HINT: &str = "Tap the screen for the console";
@@ -825,6 +832,8 @@ enum TypeTo {
     ClipName(usize, usize),
     /// A layout of yours and its directions' names (XY Setup's name).
     XyNames(usize),
+    /// The style Make a style keeps (composing step 6): its sheet's Name.
+    StyleName,
 }
 
 impl TypeTo {
@@ -840,6 +849,7 @@ impl TypeTo {
                 | TypeTo::PatchName(_)
                 | TypeTo::ClipName(..)
                 | TypeTo::XyNames(_)
+                | TypeTo::StyleName
         )
     }
 }
@@ -2002,6 +2012,13 @@ pub enum FromUi {
     Tab(usize),
     MenuSelect(usize),
     MenuStep(usize, i32),
+    /// Prefs: a tab of the sidebar picked.
+    PrefsTab(usize),
+    /// Prefs: choice `k` of row `i` picked (a button of a choice, a tile,
+    /// a step of a slider, a theme).
+    MenuChoose(usize, usize),
+    /// Prefs: row `i`'s slider or knob moved, 0 to 1000.
+    MenuValue(usize, i32),
     GuideButton(usize),
     /// A button under Prefs' help: Keep (0) or Go back (1) while "Keep
     /// this theme?" asks.
@@ -2184,6 +2201,9 @@ pub enum FromUi {
     /// Looper tab's deck and on Play's loop row (SHIFT + SAMPLER on the
     /// Looper tab does the same).
     LoopKeys,
+    /// The Loop group's knobs and switch as they are now (Play's loop row
+    /// with Dev's "Loops on audio tracks": audio tracks phase 4e.1).
+    LoopGroup(crate::loop_group::GroupSet),
     /// The Perform set off the pads: Play's "Pads: Perform B" chip, the
     /// Pads tab's Perform view's "On the pads" switch.
     PerformOff,
@@ -2618,6 +2638,9 @@ pub struct Player {
     settings: Settings,
     /// The themes folder's themes, for Prefs > Appearance.
     theme_files: Vec<(String, Theme)>,
+    /// Prefs' System tab keeps the rows it was given (previews and tests)
+    /// instead of reading this computer's.
+    prefs_fixed_info: bool,
     /// Theme files left out at start, their lines that used the base's
     /// value, and starts with the default theme in place of the one asked
     /// for ([`ToUi::ThemeFallbacks`]).
@@ -3261,6 +3284,10 @@ impl Player {
         options.back = Some("Back".to_string());
         ui.add("options", options);
         ui.add("help", Card::new("About this setting"));
+        ui.add(
+            crate::prefs_page::WIDGET,
+            crate::prefs_page::PrefsPage::default(),
+        );
         ui.add(NUMPAD, mpfree_ui::numpad::NumPad::default());
         ui.add(TEXTPAD, mpfree_ui::textpad::TextPad::default());
         ui.add(crate::power::CARD, crate::power::PowerCard::default());
@@ -3333,7 +3360,8 @@ impl Player {
         let debug = DebugPages::add(&mut ui).expect("debug layouts");
         ui.add_page("Console", SYSLOG_LAYOUT)
             .expect("console layout");
-        ui.add_page("Prefs", OPTIONS_LAYOUT).expect("prefs layout");
+        ui.add_page("Prefs", crate::prefs_page::LAYOUT)
+            .expect("prefs layout");
         ui.add_page("Options", OPTIONS_LAYOUT)
             .expect("options layout");
         ui.add_page("Guide", GUIDE_LAYOUT).expect("guide layout");
@@ -3518,6 +3546,7 @@ impl Player {
             status,
             settings: Settings::default(),
             theme_files: Vec::new(),
+            prefs_fixed_info: false,
             theme_fallbacks: (0, 0, 0),
             session: ("Starting".to_string(), Tone::Dim),
             console_from_lines: timed,
@@ -8007,6 +8036,47 @@ impl Player {
         self.looper_page.set_on_tracks(into) || placed
     }
 
+    /// Play's Loop group (audio tracks phase 4e.1, board 7): on the loop
+    /// row with Dev's "Loops on audio tracks" on, its switch naming the
+    /// audio track armed by its own arm (`TimeState::audio_focus`; an
+    /// audio track is never the armed note track). When the switch goes off the
+    /// group goes, and the audio is told it is at rest, so a new start of
+    /// the group is at rest everywhere.
+    fn refresh_loop_group(&mut self) {
+        use crate::loop_row::{GroupPanel, LoopRow, LOOP_ROW};
+        let st = &self.time;
+        let armed = st
+            .audio_focus
+            .filter(|&t| st.audio_lane_at(t).is_some())
+            .map(|t| self.track_name(t));
+        let on = st.loops_on;
+        let Some(row) = self.ui.get_mut::<LoopRow>(LOOP_ROW) else {
+            return;
+        };
+        match (&mut row.group, on) {
+            (Some(g), true) => {
+                if g.armed != armed {
+                    g.armed = armed;
+                }
+            }
+            (None, true) => {
+                row.group = Some(GroupPanel {
+                    armed,
+                    ..GroupPanel::default()
+                });
+            }
+            (Some(g), false) => {
+                let was = g.set;
+                row.group = None;
+                if !was.at_rest() || was.armed_only {
+                    self.outbox
+                        .push(FromUi::LoopGroup(crate::loop_group::GroupSet::default()));
+                }
+            }
+            (None, false) => {}
+        }
+    }
+
     /// An audio track's input list, as the app says the mixer offers it
     /// (phase 4, board 4): over the Clips grid under the track's column
     /// head, the grid veiled, or over the Song view under its lane's
@@ -8899,6 +8969,7 @@ impl Player {
                 LoopAct::Mute(n) => out.push(FromUi::LoopMute(Some(n))),
                 LoopAct::Solo(n) => out.push(FromUi::LoopSolo(n)),
                 LoopAct::PadKeys => out.push(FromUi::LoopKeys),
+                LoopAct::Group(set) => out.push(FromUi::LoopGroup(set)),
                 LoopAct::Capture => out.push(FromUi::LoopCapture),
                 LoopAct::CaptureSpan(end, bars) => out.push(FromUi::LoopCaptureSpan(end, bars)),
                 LoopAct::Clear(n) => {
@@ -9766,6 +9837,12 @@ impl Player {
                     .as_deref()
                     .map_or_else(String::new, time_view::report_hint),
                 View::Arrange if self.time.scene_open.is_some() => time_view::SCENE_CARD_HINT.to_string(),
+                // The Make a style sheet (composing step 6).
+                View::Arrange if self.time.style_sheet.is_some() => self
+                    .time
+                    .style_sheet
+                    .as_deref()
+                    .map_or_else(String::new, |s| s.hint().to_string()),
                 // The Make a phrase sheet (step 3 of the phrases).
                 View::Arrange if self.time_page.make.is_some() => {
                     self.sheet.as_ref().map(|v| v.hint.clone()).unwrap_or_default()
@@ -9971,8 +10048,9 @@ impl Player {
                 View::System => "Read when the page opens   ·   MENU: back to Prefs   ·   a tab: leave".to_string(),
                 View::SystemStatus => "Tap a system: its problems   ·   Wheel or - / +: the systems   ·   push: open a card   ·   \
                                        MENU or the status chip: close".to_string(),
-                View::Prefs | View::Options if self.menu_editing => OPTIONS_EDIT_HINT.to_string(),
-                View::Prefs | View::Options => OPTIONS_HINT.to_string(),
+                View::Prefs => self.prefs_hint().to_string(),
+                View::Options if self.menu_editing => OPTIONS_EDIT_HINT.to_string(),
+                View::Options => OPTIONS_HINT.to_string(),
                 View::Mixer => mpfree_mixer_ui::io_hint(&self.ui)
                     .unwrap_or_else(|| mpfree_mixer_ui::hint(&self.ui).to_string()),
                 View::Chain => mpfree_chain_ui::chain_hint(&self.ui).to_string(),
@@ -11235,6 +11313,29 @@ impl Player {
     /// Opens the text keyboard for `asks` over the page showing (the
     /// Sample tab's pad and its sound, a MIDI port, a scene's name), its
     /// names going `to`.
+    /// Make a style's Name (composing step 6): the text keyboard, on the
+    /// name the sheet shows.
+    fn open_style_name(&mut self) {
+        let Some(name) = self
+            .time
+            .style_sheet
+            .as_deref()
+            .map(|s| s.made.name.clone())
+        else {
+            return;
+        };
+        self.open_textpad(
+            vec![mpfree_ui::textpad::TextAsk {
+                key: "style".to_string(),
+                label: "Style".to_string(),
+                title: "Name the style".to_string(),
+                value: name,
+                max_len: style_sheet::MAX_STYLE_NAME,
+            }],
+            TypeTo::StyleName,
+        );
+    }
+
     fn open_textpad(&mut self, asks: Vec<mpfree_ui::textpad::TextAsk>, to: TypeTo) {
         let back = self.ui.page().to_string();
         if let Some(p) = self.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD) {
@@ -11708,7 +11809,8 @@ impl Player {
             | TypeTo::MarkerName(_)
             | TypeTo::PatchName(_)
             | TypeTo::ClipName(..)
-            | TypeTo::XyNames(_) => None,
+            | TypeTo::XyNames(_)
+            | TypeTo::StyleName => None,
         }
     }
 
@@ -11755,6 +11857,10 @@ impl Player {
             return Some(FromUi::Time(TimeAction::SongMarker(
                 mpfree_time_ui::MarkerEdit::Rename { index, name },
             )));
+        }
+        if to == Some(TypeTo::StyleName) {
+            let (_, name) = names.into_iter().next()?;
+            return Some(FromUi::Time(TimeAction::Style(StyleAction::Name(name))));
         }
         if let Some(TypeTo::ClipName(track, slot)) = to {
             let (_, name) = names.into_iter().next()?;
@@ -12742,6 +12848,7 @@ impl Player {
                 self.ready = true;
                 self.show_view(v);
             }
+            ToUi::Menu(m) if m.prefs.is_some() => self.set_prefs(m),
             ToUi::Menu(m) => {
                 if let Some(o) = self.ui.get_mut::<OptionList>("options") {
                     if o.title != m.title {
@@ -12852,7 +12959,15 @@ impl Player {
                 self.refresh_qlinks();
             }
             ToUi::Settings(s) => self.set_settings(s),
-            ToUi::ThemeFiles(t) => self.theme_files = t,
+            ToUi::ThemeFiles(t) => {
+                if let Some(p) = self
+                    .ui
+                    .get_mut::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET)
+                {
+                    p.files = t.clone();
+                }
+                self.theme_files = t;
+            }
             ToUi::ThemeFallbacks {
                 left_out,
                 lines_fell_back,
@@ -13329,6 +13444,9 @@ impl Player {
                 if gone {
                     self.close_input_list();
                 }
+                // Play's Loop group with Dev's switch, and the armed track
+                // its switch names (4e.1).
+                self.refresh_loop_group();
                 // Play's strip and the Looper tab name a loop by its place.
                 if self.refresh_loop_places() {
                     if matches!(self.view, View::Looper | View::Play) {
@@ -13584,6 +13702,33 @@ impl Player {
                 if let Some(l) = self.ui.get_mut::<OptionList>(list) {
                     l.editing = on;
                 }
+            }
+            return;
+        }
+        // Make a style's sheet (composing step 6): the wheel picks Name or
+        // Plan; - / + step Plan, and on Name open the text keyboard.
+        if let Some(sheet) = self
+            .time
+            .style_sheet
+            .as_deref()
+            .filter(|_| self.view == View::Arrange)
+        {
+            let row = sheet.row;
+            match k {
+                RowKey::Pick(d) => {
+                    let to = (row as i32 + d).clamp(0, style_sheet::PLAN_ROW as i32) as usize;
+                    self.outbox
+                        .push(FromUi::Time(TimeAction::Style(StyleAction::Pick(to))));
+                }
+                RowKey::Step(_) if row == style_sheet::NAME_ROW => self.open_style_name(),
+                RowKey::Step(delta) => {
+                    self.outbox
+                        .push(FromUi::Time(TimeAction::Style(StyleAction::Step {
+                            row,
+                            delta,
+                        })))
+                }
+                RowKey::Editing(_) | RowKey::Arrow { .. } => {}
             }
             return;
         }
@@ -17072,6 +17217,7 @@ impl Player {
                 | FromUi::LevelDb(_)
                 | FromUi::Tab(_)
                 | FromUi::MenuSelect(_)
+                | FromUi::PrefsTab(_)
                 | FromUi::GuideButton(_)
                 | FromUi::HelpButton(_)
                 | FromUi::UndoReady(_)
@@ -17347,6 +17493,131 @@ impl Player {
             if h.folder_icon.is_some() && h.folder_icon != Some(browsing) {
                 h.folder_icon = Some(browsing);
             }
+        }
+    }
+
+    /// Prefs' page (layout spec 5): the app's tabs and settings, with what
+    /// only the screen reads: System info, read as the System tab opens,
+    /// and the status board's words on System status.
+    fn set_prefs(&mut self, m: crate::app::MenuView) {
+        let Some(mut view) = m.prefs else {
+            return;
+        };
+        let (title, line, tone) = self.prefs_status();
+        for row in &mut view.rows {
+            if let Some(crate::prefs_page::Control::Status {
+                title: t,
+                line: l,
+                tone: o,
+                ..
+            }) = &mut row.control
+            {
+                *t = title.clone();
+                *l = line.clone();
+                *o = tone;
+            }
+        }
+        let wants_info = view.cards.iter().any(|c| c.info);
+        let opened = wants_info
+            && self
+                .ui
+                .get::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET)
+                .is_some_and(|p| !p.view.cards.iter().any(|c| c.info) || p.info.is_empty());
+        if opened && !self.prefs_fixed_info {
+            self.set_prefs_info(crate::sysinfo::read(std::path::Path::new("/")));
+        }
+        let editing = view.editing;
+        if let Some(p) = self
+            .ui
+            .get_mut::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET)
+        {
+            p.view = *view;
+        }
+        self.menu_editing = editing;
+        self.refresh_hint();
+    }
+
+    /// Prefs' System tab's list: the rows of System info that say what
+    /// MPFree is and runs on (the page behind All the details has every
+    /// row).
+    pub fn set_prefs_info(&mut self, info: crate::sysinfo::SystemInfo) {
+        let rows: Vec<(String, String)> = info
+            .software
+            .into_iter()
+            .filter(|(k, _)| k != "Root file system" && k != "Host name")
+            .chain(
+                info.hardware
+                    .into_iter()
+                    .filter(|(k, _)| !k.starts_with("Sound card")),
+            )
+            .collect();
+        if let Some(p) = self
+            .ui
+            .get_mut::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET)
+        {
+            p.info = rows;
+        }
+    }
+
+    /// System status's line on Prefs' System tab, from the status board as
+    /// the chip shows it.
+    fn prefs_status(&self) -> (String, String, Tone) {
+        use mpfree_status::Level;
+        let chip = self.status_board.chip();
+        let s = |n: usize| if n == 1 { "" } else { "s" };
+        match chip.level {
+            None => (
+                "All good".to_string(),
+                "Nothing needs you".to_string(),
+                Tone::Good,
+            ),
+            Some(_) if chip.ring => (
+                format!("{} problem{} ended", chip.unseen, s(chip.unseen)),
+                "Not seen yet: System status says what happened".to_string(),
+                Tone::Warn,
+            ),
+            Some(level) => (
+                format!("{} problem{} now", chip.now, s(chip.now)),
+                "System status says what to try".to_string(),
+                if level == Level::Fail {
+                    Tone::Bad
+                } else {
+                    Tone::Warn
+                },
+            ),
+        }
+    }
+
+    /// Prefs' hint line: the themes', or a tab's with the wheel's push on
+    /// a setting or not.
+    fn prefs_hint(&self) -> &'static str {
+        let themes = self
+            .ui
+            .get::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET)
+            .is_some_and(|p| p.view.gallery.is_some());
+        if themes {
+            PREFS_THEMES_HINT
+        } else if self.menu_editing {
+            PREFS_EDIT_HINT
+        } else {
+            PREFS_HINT
+        }
+    }
+
+    /// What a touch on Prefs asks of the app.
+    fn prefs_event(kind: EventKind) -> Option<FromUi> {
+        use crate::prefs_page::{BACK, GO_BACK, KEEP};
+        match kind {
+            EventKind::Tab(BACK) => Some(FromUi::OptionsButton),
+            EventKind::Tab(KEEP) => Some(FromUi::HelpButton(0)),
+            EventKind::Tab(GO_BACK) => Some(FromUi::HelpButton(1)),
+            EventKind::Tab(i) => Some(FromUi::PrefsTab(i)),
+            EventKind::Cell { row, col } => Some(FromUi::MenuChoose(row, col)),
+            EventKind::Step { index, delta } => Some(FromUi::MenuStep(index, delta)),
+            EventKind::Values { index, set } => {
+                set.first().map(|&(_, v)| FromUi::MenuValue(index, v))
+            }
+            _ => None,
         }
     }
 
@@ -19213,6 +19484,7 @@ impl Player {
             }
             ("options", EventKind::Select(i)) => Some(FromUi::MenuSelect(i)),
             ("options", EventKind::Step { index, delta }) => Some(FromUi::MenuStep(index, delta)),
+            (crate::prefs_page::WIDGET, kind) => Self::prefs_event(kind),
             ("guide", EventKind::Tab(i)) => Some(FromUi::GuideButton(i)),
             ("help", EventKind::Tab(i)) => Some(FromUi::HelpButton(i)),
             ("header", EventKind::Select(i)) if Some(i) == self.arp_chip => Some(FromUi::ArpChip),
@@ -19411,10 +19683,12 @@ impl Player {
                 None
             }
             // Add a part, the row's chords under its row, the chord picker
-            // and the Chords tab (composing tools S2.6, layout spec 4r):
+            // and the Chords tab (composing tools S2.6, layout spec 4r),
+            // and the Song view's Chords lane (composing step 6, board C):
             // the page's own; what they ask of the time engine goes at
             // once, and why not is said in place.
             (time_view::CLIPS, EventKind::Toggle(_))
+            | (time_view::SONG, EventKind::Tab(_))
             | (time_view::ADD_PANEL | time_view::CHORDS_CARD, _)
                 if self.time_page.owns(&ev) =>
             {
@@ -19461,6 +19735,13 @@ impl Player {
                 );
                 None
             }
+            // Make a style's Name (composing step 6): the text keyboard.
+            (style_sheet::STYLE_SHEET, EventKind::Toggle(style_sheet::STYLE_NAME)) => {
+                self.open_style_name();
+                None
+            }
+            // The sheet's other touches are the time engine's.
+            (style_sheet::STYLE_SHEET, _) => time_view::action(&ev, &self.time).map(FromUi::Time),
             // The scene card's Rename: the text keyboard, its name typed
             // over the scene's.
             (
@@ -24795,29 +25076,37 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
         out.push((name, p));
     }
-    // Prefs' touch screen section.
+    // Prefs' Playing tab with the wheel on Touch lab (Touch screen card).
     let mut touch = sample_player(fonts());
     let mut t = crate::app::App::new(44_100, false);
-    t.map.menu = Some(MENU);
-    t.button(mpfree_controller::mpc_one::button::SHIFT, true, 0.0);
-    let mut fx = t.button(MENU, true, 0.0);
-    t.button(MENU, false, 0.0);
-    t.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
-    fx.extend(t.step_item(usize::MAX, 1));
-    for e in fx {
-        match e {
-            crate::app::Effect::Menu(m) => touch.apply(ToUi::Menu(m)),
-            crate::app::Effect::Show(v) => touch.apply(ToUi::Show(v)),
-            _ => {}
-        }
+    let mut fx = t.open_tab(View::Prefs);
+    if let Some(i) = t.prefs_go_to(crate::app::Item::TouchLab) {
+        fx.extend(t.select(i));
     }
+    apply_effects(&mut touch, fx);
     out.push(("prefs-touch", touch));
-    // Prefs' backup and Akai kits section (Jay, 17 Nov 18:12Z), on a stick
-    // whose first start made a backup and left Akai's kits out, with them
-    // asked for at the next start.
+    // Prefs' Sound and Projects tabs, as a new stick has them.
+    for (name, item) in [
+        ("prefs-sound", crate::app::Item::Buffer),
+        ("prefs-projects", crate::app::Item::Export),
+    ] {
+        let mut p = sample_player(fonts());
+        let mut t = crate::app::App::new(44_100, false);
+        let mut fx = t.open_tab(View::Prefs);
+        if let Some(i) = t.prefs_go_to(item) {
+            fx.extend(t.select(i));
+        }
+        apply_effects(&mut p, fx);
+        out.push((name, p));
+    }
+    // Prefs' System tab (Jay, 17 Nov 18:12Z: Backup and Akai kits), on a
+    // stick whose first start made a backup and left Akai's kits out, with
+    // them asked for at the next start; System info's rows fixed (the
+    // host's own would differ).
     let mut setup = sample_player(fonts());
+    setup.prefs_fixed_info = true;
+    setup.set_prefs_info(crate::sysinfo::sample());
     let mut t = crate::app::App::new(44_100, false);
-    t.map.menu = Some(MENU);
     let choice = |left_out, done, next_start| crate::setup::Choice {
         left_out,
         done,
@@ -24828,23 +25117,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         akai: choice(false, false, true),
         backup_made: Some("17 Nov 2026".into()),
     }));
-    t.button(mpfree_controller::mpc_one::button::SHIFT, true, 0.0);
-    let mut fx = t.button(MENU, true, 0.0);
-    t.button(MENU, false, 0.0);
-    t.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
-    if let Some(i) = t.row_of(crate::app::Item::SetupSection) {
-        fx.extend(t.step_item(i, 1));
-    }
-    if let Some(i) = t.row_of(crate::app::Item::SetupAkaiKits) {
+    let mut fx = t.open_tab(View::Prefs);
+    if let Some(i) = t.prefs_go_to(crate::app::Item::SetupAkaiKits) {
         fx.extend(t.select(i));
     }
-    for e in fx {
-        match e {
-            crate::app::Effect::Menu(m) => setup.apply(ToUi::Menu(m)),
-            crate::app::Effect::Show(v) => setup.apply(ToUi::Show(v)),
-            _ => {}
-        }
-    }
+    apply_effects(&mut setup, fx);
     out.push(("prefs-setup", setup));
     // The number pad, typing Play's tempo (a long press on its BPM).
     let mut typing = sample_player(fonts());
@@ -24903,6 +25180,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         followed: None,
         chords: None,
         part: false,
+        style: false,
     };
     st.done = vec![
         take(1, 0, false, false),
@@ -24916,13 +25194,15 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     undo.tick(UNDO_HOLD);
     undo.apply(ToUi::Rows(crate::app::RowKey::Pick(-1)));
     out.push(("undo-history", undo));
-    // Prefs with the Appearance row selected, stepped to Console.
+    // Prefs' Appearance tab, Console tapped: the gallery with "Keep this
+    // theme?" in the In use card.
     let mut look = sample_player(fonts());
     let mut l = crate::app::App::new(44_100, false);
     let mut fx = l.open_tab(View::Prefs);
-    let at = l.row_of(crate::app::Item::Appearance).unwrap_or(0);
-    for _ in 0..3 {
-        fx.extend(l.step_item(at, 1));
+    if let Some(i) = l.prefs_go_to(crate::app::Item::Appearance) {
+        let console = l.theme_choices().position(|t| t.0 == "console");
+        let console = console.unwrap_or(3);
+        fx.extend(l.choose(i, console));
     }
     apply_effects(&mut look, fx);
     out.push(("prefs-appearance", look));
@@ -24932,7 +25212,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut g = crate::app::App::new(44_100, false);
     let mut fx = g.start();
     fx.extend(g.open_tab(View::Prefs));
-    fx.extend(g.step_item(g.row_of(crate::app::Item::FindButtons).unwrap_or(0), 1));
+    let at = g.prefs_go_to(crate::app::Item::FindButtons).unwrap_or(0);
+    fx.extend(g.step_item(at, 1));
     fx.extend(g.button(button_play(), true, 0.0));
     apply_effects(&mut guide, fx);
     out.push(("guide", guide));
@@ -24941,7 +25222,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut m = sample_app();
     (m.map.rec, m.map.overdub) = (None, None);
     let mut fx = m.open_tab(View::Prefs);
-    fx.extend(m.step_item(m.row_of(crate::app::Item::MapControls).unwrap_or(0), 1));
+    let at = m.prefs_go_to(crate::app::Item::MapControls).unwrap_or(0);
+    fx.extend(m.step_item(at, 1));
     fx.extend(m.map_row(0));
     fx.extend(m.button(73, true, 0.0));
     fx.extend(m.button(73, false, 0.0));
@@ -25252,6 +25534,34 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                     l.selected = time_view::CLIP_PHRASE;
                 }
                 out.push(("clips-card-phrase", p));
+            }
+            // The same clip scrolled to its Style row (composing step 6,
+            // board D): either arrow opens Make a style.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                let mut st = st.clone();
+                if let Some(c) = st
+                    .focus()
+                    .and_then(|(t, s)| st.tracks.get_mut(t)?.slots.get_mut(s)?.as_mut())
+                {
+                    c.notes = c.notes.max(8);
+                }
+                p.time_page.clip_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
+                    l.selected = time_view::CLIP_STYLE;
+                }
+                out.push(("clips-card-style", p));
+            }
+            // Make a style open from it (board D): a two-bar drum groove
+            // read, Plan the nearest built-in style.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                let mut st = st.clone();
+                st.style_sheet = Some(Box::new(mpfree_time_ui::sample::style_sheet_sample()));
+                p.time_page.clip_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                out.push(("clips-make-style", p));
             }
             // Make a phrase open from it (board E): a C minor bass line of
             // two bars read as Bass from C2 on 1/16s, a held pad playing it.
@@ -26134,6 +26444,39 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("arrange-song-tempo", p));
         }
         Err(e) => eprintln!("arrange-song-tempo sample: {e}"),
+    }
+    // The Chords lane under Tempo (composing step 6, board C): what each
+    // scene the busy song plays gives, bar by bar, the Verse's second chord
+    // yours (Ab7); then the chord picker open on it.
+    match mpfree_time_ui::sample::song_chords_state() {
+        Ok(state) => {
+            use mpfree_time_ui::add_view::{shown_line, ChordPick};
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.apply(ToUi::Time(Box::new(state.clone())));
+            p.apply(ToUi::Show(View::Arrange));
+            p.refresh_hint();
+            out.push(("arrange-song-chords", p));
+            let lane = mpfree_time_ui::view::song_chord_lane(&state);
+            let verse = state.scene_sections.get(1).map(|s| s.2);
+            let open = lane
+                .chips
+                .iter()
+                .position(|c| Some(c.row) == verse && c.chip == 1);
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            if let (Some(k), Some(row)) = (open, verse) {
+                if let Some(line) = shown_line(&state, row) {
+                    p.time_page.chord_pick = ChordPick::open(row, &line, 1);
+                    p.time_page.song_chord = Some(k);
+                }
+            }
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.refresh_hint();
+            out.push(("arrange-song-chord-picker", p));
+        }
+        Err(e) => eprintln!("arrange-song-chords sample: {e}"),
     }
     // The same with two audio lanes under the song (layout spec 4c): a
     // vocal punched in over bars 5-8 and that region picked, a guitar
@@ -29694,10 +30037,173 @@ mod tests {
         );
     }
 
+    /// The Song view's Chords lane through the screen (composing step 6,
+    /// board C): a chip opens the chord picker under it with its hint, and
+    /// a root, a kind and Use ask the time engine to set the scene's chords
+    /// (one take); the picker closes.
+    #[test]
+    fn the_chords_lane_opens_the_picker_and_use_sets_the_scenes_chords() {
+        use mpfree_time_ui::adding::ChordsAction;
+        use mpfree_time_ui::song::SongLanes;
+        use mpfree_ui::Rect;
+        let state = mpfree_time_ui::sample::song_chords_state().unwrap();
+        let verse = state.scene_sections[1].2;
+        let mut p = quiet_player(Fonts::embedded());
+        p.apply(ToUi::Time(Box::new(state)));
+        p.apply(ToUi::Show(View::Arrange));
+        let tap = |p: &mut Player, r: Rect| {
+            let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let lanes = |p: &Player| {
+            p.ui.get::<SongLanes>(time_view::SONG)
+                .unwrap()
+                .clone_without_waves()
+        };
+        let r = p.ui.rect_of(time_view::SONG).unwrap();
+        let l = lanes(&p);
+        let (k, chip) = l
+            .chord_chip_rects(r)
+            .into_iter()
+            .find(|(k, _)| l.chords.chips[*k].row == verse && l.chords.chips[*k].chip == 0)
+            .expect("the Verse's first chord shows");
+        assert_eq!(tap(&mut p, chip), None);
+        assert_eq!(p.time_page.song_chord, Some(k));
+        let pick = p.time_page.chord_pick.expect("the picker opens");
+        assert_eq!((pick.row, pick.chip), (verse, 0));
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.starts_with("A root, then a kind"), "{hint}");
+        let g = lanes(&p).chord_picker_geo(r).expect("the picker shows");
+        tap(&mut p, g.roots[8]);
+        tap(&mut p, g.kinds[2]);
+        p.outbox.clear();
+        tap(&mut p, g.buttons[3]);
+        let asked: Vec<_> = std::mem::take(&mut p.outbox)
+            .into_iter()
+            .filter_map(|a| match a {
+                FromUi::Time(TimeAction::Chords(ChordsAction::Set { row, line, .. })) => {
+                    Some((row, line.spans()[0].answer.name()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(asked, [(verse, "Ab7".to_string())]);
+        assert_eq!(
+            (p.time_page.chord_pick, p.time_page.song_chord),
+            (None, None)
+        );
+        assert!(lanes(&p).chords.picker.is_none(), "the picker closes");
+    }
+
     /// The scene card (the Arrange refactor's 5.2): a row's number held
     /// opens it; a tap on Mutes' value takes the mutes as they are, a tap
     /// on the name types the scene's name on the text keyboard, and a tap
     /// off the card closes it.
+    /// Make a style (composing step 6, board D): the clip card's Style
+    /// row asks for the sheet; open, it takes the card's column and the
+    /// hint; Name opens the text keyboard and Enter names the style; Plan's
+    /// halves, Back and Keep go to the time engine; the wheel picks the
+    /// row and - / + step Plan (on Name, the keyboard).
+    #[test]
+    fn make_a_style_names_steps_and_keeps_from_its_sheet() {
+        use crate::app::RowKey;
+        use mpfree_time_ui::style_sheet::{StyleSheetView, NAME_ROW, PLAN_ROW, STYLE_SHEET};
+        use mpfree_ui::textpad::{char_key, TextPad, KEY_CLEAR, KEY_ENTER};
+        use mpfree_ui::Rect;
+        let mut p = sample_clips(Fonts::embedded()).unwrap();
+        let tap = |p: &mut Player, r: Rect| {
+            let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let tap_at = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let style = |a: StyleAction| Some(FromUi::Time(TimeAction::Style(a)));
+        // The card's Style row.
+        let mut st = p.time.clone();
+        st.armed = Some(0);
+        if let Some(c) = st
+            .focus()
+            .and_then(|(t, s)| st.tracks.get_mut(t)?.slots.get_mut(s)?.as_mut())
+        {
+            c.notes = c.notes.max(8);
+        }
+        let (track, slot) = st.focus().unwrap();
+        assert_eq!(
+            time_view::card_action(&st, time_view::CLIP_STYLE, 1, false),
+            Ok(TimeAction::MakeStyle { track, slot })
+        );
+        // Open.
+        st.style_sheet = Some(Box::new(mpfree_time_ui::sample::style_sheet_sample()));
+        p.apply(ToUi::Time(Box::new(st)));
+        p.apply(ToUi::Show(View::Arrange));
+        assert_eq!(
+            p.ui.layout_of(time_view::CLIPS_PAGE),
+            Some(time_view::CLIPS_STYLE_LAYOUT)
+        );
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.starts_with("Read from the clip"), "{hint}");
+        let r = p.ui.rect_of(STYLE_SHEET).unwrap();
+        let g = p.ui.get::<StyleSheetView>(STYLE_SHEET).unwrap().geo(r);
+        // Name: the keyboard on the name read; Enter names it.
+        assert_eq!(tap(&mut p, g.rows[NAME_ROW]), None);
+        assert_eq!(p.page(), TEXTPAD_PAGE);
+        let pad = p.ui.rect_of(TEXTPAD).unwrap();
+        assert_eq!(
+            p.ui.get::<TextPad>(TEXTPAD).unwrap().text(),
+            "Clip 1 groove"
+        );
+        tap_at(&mut p, TextPad::key_at(pad, KEY_CLEAR));
+        for c in "Night".chars() {
+            tap_at(&mut p, TextPad::key_at(pad, char_key(c).unwrap().0));
+        }
+        let enter = tap_at(&mut p, TextPad::key_at(pad, KEY_ENTER));
+        let mut got = p.take_actions();
+        got.extend(enter);
+        let named = FromUi::Time(TimeAction::Style(StyleAction::Name("Night".into())));
+        assert!(got.contains(&named), "{got:?}");
+        assert_eq!(p.page(), CLIPS_PAGE);
+        // Plan's right half, Back, Keep.
+        let plan = g.rows[PLAN_ROW];
+        let right = Rect::new(plan.right() - 20, plan.y, 16, plan.h);
+        assert_eq!(
+            tap(&mut p, right),
+            style(StyleAction::Step {
+                row: PLAN_ROW,
+                delta: 1
+            })
+        );
+        assert_eq!(tap(&mut p, g.buttons[0]), style(StyleAction::Back));
+        assert_eq!(tap(&mut p, g.buttons[1]), style(StyleAction::Keep));
+        // The wheel picks Plan (the sheet opens on Name, as drawn); - / +
+        // step Plan there, and on Name open the keyboard.
+        p.take_actions();
+        p.apply(ToUi::Rows(RowKey::Pick(1)));
+        assert_eq!(
+            p.take_actions(),
+            [FromUi::Time(TimeAction::Style(StyleAction::Pick(PLAN_ROW)))]
+        );
+        let mut st = p.time.clone();
+        st.style_sheet.as_mut().unwrap().row = PLAN_ROW;
+        p.apply(ToUi::Time(Box::new(st)));
+        p.apply(ToUi::Rows(RowKey::Step(1)));
+        assert_eq!(
+            p.take_actions(),
+            [FromUi::Time(TimeAction::Style(StyleAction::Step {
+                row: PLAN_ROW,
+                delta: 1
+            }))]
+        );
+        let mut st = p.time.clone();
+        st.style_sheet.as_mut().unwrap().row = NAME_ROW;
+        p.apply(ToUi::Time(Box::new(st)));
+        p.apply(ToUi::Rows(RowKey::Step(1)));
+        assert_eq!(p.page(), TEXTPAD_PAGE);
+    }
+
     #[test]
     fn a_held_row_number_opens_the_scene_card_and_rename_types_its_name() {
         use mpfree_time_ui::widgets::ClipGrid;
@@ -32067,6 +32573,7 @@ mod tests {
             followed: None,
             chords: None,
             part: false,
+            style: false,
         };
         let mut st = p.time.clone();
         st.done = vec![take(1), take(2), take(3)];
@@ -32953,6 +33460,7 @@ mod tests {
             followed: None,
             chords: None,
             part: false,
+            style: false,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
@@ -36683,6 +37191,37 @@ mod tests {
         assert_eq!(p.rec_chip().alert, RecAlert::None);
     }
 
+    /// The audio tracks rethink's phase 4e.1 (board 7): the Loop group's
+    /// "Armed" half names the audio track armed by its own arm, never the
+    /// armed note track; with none it says none, and with the switch off
+    /// the group goes.
+    #[test]
+    fn with_loops_on_the_loop_groups_armed_half_names_the_armed_audio_track() {
+        use crate::loop_row::{LoopRow, LOOP_ROW};
+        let mut st = mpfree_time_ui::sample::clips_audio_state().unwrap();
+        st.loops_on = true;
+        let vocal = st.audio[0].row;
+        let note = (0..st.tracks.len())
+            .find(|&t| st.audio_lane_at(t).is_none())
+            .expect("a note track");
+        st.armed = Some(note);
+        st.audio_focus = None;
+        let mut p = quiet_player(Fonts::embedded());
+        let armed = |p: &Player| {
+            p.ui.get::<LoopRow>(LOOP_ROW)
+                .and_then(|r| r.group.as_ref())
+                .map(|g| g.armed.clone())
+        };
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(armed(&p), Some(None), "a note track armed: none");
+        st.audio_focus = Some(vocal);
+        p.apply(ToUi::Time(Box::new(st.clone())));
+        assert_eq!(armed(&p), Some(Some("Vocal".to_string())));
+        st.loops_on = false;
+        p.apply(ToUi::Time(Box::new(st)));
+        assert_eq!(armed(&p), None, "no group with the switch off");
+    }
+
     /// The audio tracks rethink's phase 4c.3 and board 2: a loop holding a
     /// closed layer not yet on the stick gives its cells the writing dot;
     /// the others don't.
@@ -37012,6 +37551,7 @@ mod tests {
             row_tool: None,
             chords: None,
             part: false,
+            style: false,
         });
         p.apply(ToUi::Time(Box::new(st)));
         assert_eq!(undo(&mut p, false), [FromUi::Time(TimeAction::Undo)]);
@@ -37297,7 +37837,11 @@ mod tests {
         let clips = p.ui.rect_of(time_view::CLIPS).unwrap();
         assert!(clips.w > 780 && clips.h > 500, "{clips:?}");
         p.apply(ToUi::Show(View::Prefs));
-        assert!(p.ui.rect_of("options").unwrap().h > 600);
+        assert_eq!(
+            p.ui.rect_of(crate::prefs_page::WIDGET),
+            Some(mpfree_ui::Rect::new(12, 84, 1256, 666)),
+            "the slot prefs_page's tests lay out in"
+        );
         let c = Console::new(Fonts::embedded(), "touch", None);
         assert!(c.ui.rect_of("log").unwrap().h > 600);
     }
@@ -37311,8 +37855,8 @@ mod tests {
         let mut fx = app.button(1, true, 0.0);
         app.button(1, false, 0.0);
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
-        // Prefs' last row opens the touch screen section; its last row, + on it, opens the lab.
-        fx.extend(app.step_item(usize::MAX, 1));
+        // Prefs opens on Playing, whose last row is Touch lab (the Touch
+        // screen card's last): + on it opens the lab.
         fx.extend(app.step_item(usize::MAX, 1));
         assert!(fx.contains(&crate::app::Effect::TouchLab), "{fx:?}");
         for e in fx {
@@ -37355,8 +37899,8 @@ mod tests {
         let mut fx = app.button(1, true, 0.0);
         app.button(1, false, 0.0);
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
-        // In the touch screen section, Calibrate touch is the row before the Touch lab.
-        fx.extend(app.step_item(usize::MAX, 1));
+        // On Playing's Touch screen card, Calibrate touch is the row before
+        // the Touch lab, the tab's last.
         fx.extend(app.step_item(app_rows(&app) - 2, 1));
         assert_eq!(
             fx.last(),

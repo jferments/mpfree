@@ -179,7 +179,7 @@ pub struct Desk<'a> {
     pub card: u32,
     /// The one history across the engines, for UNDO with Dev's "Loops on
     /// audio tracks" on (audio tracks phase 4d.1).
-    pub undo: &'a crate::one_undo::OneUndo,
+    pub undo: &'a mut crate::one_undo::OneUndo,
 }
 
 impl Desk<'_> {
@@ -417,10 +417,18 @@ impl Desk<'_> {
             gui::FromUi::Tab(k) => fx.extend(app.tab(k)),
             gui::FromUi::MenuSelect(k) => fx.extend(app.select(k)),
             gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),
+            gui::FromUi::PrefsTab(i) => fx.extend(app.pick_prefs_tab(i)),
+            gui::FromUi::MenuChoose(i, k) => fx.extend(app.choose(i, k)),
+            gui::FromUi::MenuValue(i, v) => fx.extend(app.set_value(i, v)),
             gui::FromUi::GuideButton(k) => fx.extend(app.guide_button(k)),
             gui::FromUi::HelpButton(k) => fx.extend(app.help_button(k)),
             gui::FromUi::KitTuning { kit, delta } => fx.extend(app.step_kit_tuning(kit, delta)),
-            gui::FromUi::Arp(a) => fx.extend(app.arp_action(a)),
+            gui::FromUi::Arp(a) => {
+                // New idea's Style row runs on into the song's styles made
+                // from clips (composing step 6).
+                app.styles_from(&time.project().styles);
+                fx.extend(app.arp_action(a))
+            }
             gui::FromUi::Workspace(a) => fx.extend(app.workspace_action(*a)),
             gui::FromUi::ArpChip => fx.extend(app.toggle_panel()),
             gui::FromUi::StatusChip => fx.extend(app.toggle_status()),
@@ -875,7 +883,9 @@ impl Desk<'_> {
             // The Q-Links' values, for MIDI Follow's Send values back.
             | gui::FromUi::QLinkValues(_)
             // Your XY layouts: the loop names each setting (xy_song.rs).
-            | gui::FromUi::Xy(_)) => return Some(a),
+            | gui::FromUi::Xy(_)
+            // The Loop group runs in the audio loop (loop_group.rs).
+            | gui::FromUi::LoopGroup(_)) => return Some(a),
         }
         None
     }

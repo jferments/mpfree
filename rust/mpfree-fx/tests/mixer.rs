@@ -1696,3 +1696,65 @@ fn wanted_is_the_last_value_queued_else_the_value_now() {
     assert_eq!(m.wanted(t, mx::VOLUME), -5.0);
     assert!(m.wanted(StripId::Track(99), mx::VOLUME).is_nan());
 }
+
+/// A performance offset on a send (the Play page's Loop group adds its
+/// Delay to an audio track's Send A this way): a gain on top of the send's
+/// own level as it plays, with the send's glide, the same as the send set
+/// to that level; the send's own value is never written, so taking the
+/// offset away puts the sound back exactly, and the mixer's answers for a
+/// recording's input count the offset.
+#[test]
+fn a_send_offset_plays_on_top_of_the_send_and_never_writes_it() {
+    let n = 9600;
+    let a = mono(sine(220.0, 0.2, n));
+    let feed = Script {
+        feeds: vec![(StripId::Track(0), a.clone())],
+        ..Default::default()
+    };
+    // The same, with Send A moved to `db` on the first frame.
+    let to = |db: f32| Script {
+        feeds: vec![(StripId::Track(0), a.clone())],
+        events: vec![(0, StripId::Track(0), mx::send(0), db)],
+        ..Default::default()
+    };
+    let db = |g: f32| 20.0 * g.log10();
+    // Half a unit on Send A, which is off: as the send moved to -6 dB.
+    let mut m = mixer(small());
+    assert!(m.set_send_add(StripId::Track(0), 0, 0.5));
+    assert_eq!(m.send_add(StripId::Track(0), 0), 0.5);
+    let wet = play(&mut m, &feed, n, &mut blocks(100)).out;
+    let mut r = mixer(small());
+    let want = play(&mut r, &to(db(0.5)), n, &mut blocks(100)).out;
+    close("with the offset", &wet, &want, 1e-6);
+    assert_eq!(m.param(StripId::Track(0), mx::send(0)), SILENT_DB);
+    // Counted where the mixer asks what a strip's sound reaches.
+    let master = (StripId::Master, CapturePoint::BeforeInserts);
+    assert!(m.capture_for(master, StripId::Track(0)).is_err());
+    // Taken away: as the send moved back to off, and still off.
+    assert!(m.set_send_add(StripId::Track(0), 0, 0.0));
+    let back = play(&mut m, &feed, n, &mut blocks(100)).out;
+    let want = play(&mut r, &to(SILENT_DB), n, &mut blocks(100)).out;
+    close("back at rest", &back, &want, 1e-6);
+    assert_eq!(m.param(StripId::Track(0), mx::send(0)), SILENT_DB);
+    assert!(m.capture_for(master, StripId::Track(0)).is_ok());
+    // On a send of its own: the offset adds to its gain.
+    let mut m = mixer(small());
+    m.set_now(StripId::Track(0), mx::send(0), -6.0);
+    assert!(m.set_send_add(StripId::Track(0), 0, 0.25));
+    let both = play(&mut m, &feed, n, &mut blocks(100)).out;
+    let mut r = mixer(small());
+    r.set_now(StripId::Track(0), mx::send(0), -6.0);
+    let want = play(
+        &mut r,
+        &to(db(db_to_gain(-6.0) + 0.25)),
+        n,
+        &mut blocks(100),
+    )
+    .out;
+    close("on top of its own", &both, &want, 1e-5);
+    assert_eq!(m.param(StripId::Track(0), mx::send(0)), -6.0);
+    // Up to +6 dB at most; the master has no sends.
+    assert!(m.set_send_add(StripId::Track(0), 0, 9.0));
+    assert!(m.send_add(StripId::Track(0), 0) < 2.0);
+    assert!(!m.set_send_add(StripId::Master, 0, 0.5));
+}

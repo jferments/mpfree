@@ -272,6 +272,9 @@ pub fn to_text(p: &Project) -> String {
     if p.next_clip != 0 {
         let _ = writeln!(s, "nextclip {}", p.next_clip);
     }
+    for st in p.styles.iter().take(crate::MAX_STYLES) {
+        let _ = writeln!(s, "style {}", one_line(st));
+    }
     for t in &p.tracks {
         let _ = writeln!(s, "track {}", one_line(&t.name));
         if t.id.is_given() {
@@ -870,6 +873,13 @@ pub fn from_text(text: &str) -> Result<Project, String> {
             ("id", At::Clip(c, _)) => {
                 let id: u32 = num(w.next()).filter(|&n| n >= 1).ok_or_else(|| bad("id"))?;
                 c.id = crate::ClipId(id);
+            }
+            // A style made from a clip, as the composer wrote it; past
+            // the most a project keeps, skipped.
+            ("style", At::Top) => {
+                if p.styles.len() < crate::MAX_STYLES && !rest.trim().is_empty() {
+                    p.styles.push(rest.trim().to_string());
+                }
             }
             ("nextclip", At::Top) => {
                 p.next_clip = num(w.next())
@@ -3220,6 +3230,27 @@ mod tests {
                 let _ = from_text(&text[..k]);
             }
         }
+    }
+
+    /// Styles made from clips (composing step 6) read back in order, one
+    /// line each; an older build skips the lines as unknown ones.
+    #[test]
+    fn styles_made_from_clips_read_back() {
+        let mut p = Project::new();
+        p.tracks.push(Track::new("Keys", 0));
+        p.styles = vec![
+            "plan=Groove grid=16 name=Clip 1 groove".to_string(),
+            "plan=Minimal grid=8 name=Two words".to_string(),
+        ];
+        let text = to_text(&p);
+        assert!(text.contains("\nstyle plan=Groove grid=16 name=Clip 1 groove\n"));
+        assert_eq!(from_text(&text).unwrap(), p);
+        p.styles = (0..crate::MAX_STYLES + 3)
+            .map(|k| format!("name=S{k}"))
+            .collect();
+        let back = from_text(&to_text(&p)).unwrap();
+        assert_eq!(back.styles.len(), crate::MAX_STYLES);
+        assert_eq!(back.styles[0], "name=S0");
     }
 
     #[test]
