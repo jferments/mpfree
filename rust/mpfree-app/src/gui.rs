@@ -9582,6 +9582,24 @@ impl Player {
         self.refresh_hint();
     }
 
+    /// The hint line says this even with Hint line Off: a held button's
+    /// jobs, a pop-up's keys (the power card, a number or letters pad) and
+    /// Map controls' steps.
+    fn hint_needed(&self) -> bool {
+        let st = &self.status;
+        let holding = st.main_held.is_some()
+            || st.full_held
+            || st.tap_held
+            || st.copy
+            || st.shift
+            || st.erase;
+        self.power.is_some()
+            || self.typing.is_some()
+            || self.learning.is_some()
+            || (self.ready && holding)
+            || self.play.held_name().is_some()
+    }
+
     fn refresh_hint(&mut self) {
         let stop = self.stop_words();
         self.stop_said = stop;
@@ -10137,6 +10155,13 @@ impl Player {
             Some(_) => controller_qlinks_hint(&text),
             None => text,
         };
+        // Hint line Off (Prefs › Screen and lights): only what a held
+        // button does, a pop-up's keys and what the app tells.
+        let text = if self.settings.hint_line || self.hint_needed() {
+            text
+        } else {
+            String::new()
+        };
         let asking = self.view == View::Looper && self.looper.smart.asking.is_some();
         let (text, tone) = match &self.told {
             Some((t, _, tone)) => (t.clone(), *tone),
@@ -10319,6 +10344,8 @@ impl Player {
                 );
             }
         }
+        // Hint line on or off shows at once.
+        self.refresh_hint();
     }
 
     /// The last run crashed: Prefs > At start opens nothing this time, and
@@ -25392,6 +25419,17 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         apply_effects(&mut p, fx);
         out.push((name, p));
     }
+    // Prefs' Screen and lights: Pads show on Hit heat, the picture with
+    // pads hit from soft to hard.
+    let mut lights = sample_player(fonts());
+    let mut l = crate::app::App::new(44_100, false);
+    let mut fx = l.open_tab(View::Prefs);
+    fx.extend(l.pick_prefs_tab(crate::app::PrefsTab::Lights.index()));
+    if let Some(i) = l.row_of(crate::app::Item::PadsShow) {
+        fx.extend(l.choose(i, 3));
+    }
+    apply_effects(&mut lights, fx);
+    out.push(("prefs-lights", lights));
     // The guide from Prefs ("Find the buttons again"), PLAY pressed when it
     // asks for MENU.
     let mut guide = sample_player(fonts());
@@ -29383,6 +29421,39 @@ mod tests {
         assert!(p.new_track_ask(there).is_some());
         assert_eq!(asks(&mut p), [FromUi::AddPartSound(AddSound::Back)]);
         assert!(p.add_held.is_none());
+    }
+
+    /// Hint line Off (Prefs › Screen and lights): the page's help goes,
+    /// a held button's line and what the app tells still show, and On
+    /// brings the help back at once.
+    #[test]
+    fn hint_line_off_keeps_only_held_buttons_and_told_lines() {
+        let mut p = sample_player(Fonts::embedded());
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(!hint(&p).is_empty(), "the page's help");
+        let on = p.settings.clone();
+        p.apply(ToUi::Settings(Settings {
+            hint_line: false,
+            ..on.clone()
+        }));
+        assert_eq!(hint(&p), "", "the help goes at once");
+        p.apply(ToUi::Status(Status {
+            full_held: true,
+            ..p.status.clone()
+        }));
+        assert!(
+            !hint(&p).is_empty(),
+            "FULL LEVEL held still says what a hit does"
+        );
+        p.apply(ToUi::Status(Status {
+            full_held: false,
+            ..p.status.clone()
+        }));
+        assert_eq!(hint(&p), "");
+        p.tell("Saved");
+        assert_eq!(hint(&p), "Saved", "what the app tells shows");
+        p.apply(ToUi::Settings(on));
+        assert_eq!(hint(&p), "Saved");
     }
 
     /// The held buttons' lines: hold MAIN (the pads pick a track), hold
