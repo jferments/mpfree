@@ -27,6 +27,7 @@ use std::fmt;
 use std::fs::File;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::policy::Device;
@@ -62,6 +63,49 @@ impl fmt::Debug for Card {
             .field("insertion", &self.insertion)
             .field("valid", &self.valid())
             .finish()
+    }
+}
+
+/// One opening of the card, as the app's SD card slot hears it: made when
+/// the card's window opens it (every check passed), and revoked when the
+/// slot hears it closed (taken out, closed by the system, or put away).
+/// An opening heard again while the card is still open is the same
+/// lease, so it is never taken for a new insertion.
+#[derive(Debug)]
+pub struct Lease {
+    root: PathBuf,
+    valid: AtomicBool,
+}
+
+impl Lease {
+    /// The card opened with its files at `root` (its mount point).
+    pub fn new(root: &Path) -> Arc<Lease> {
+        Arc::new(Lease {
+            root: root.to_path_buf(),
+            valid: AtomicBool::new(true),
+        })
+    }
+
+    /// The card closed: nothing more is read on this lease, at once and
+    /// for good.
+    pub fn revoke(&self) {
+        self.valid.store(false, Ordering::Release);
+    }
+}
+
+impl CardHandle for Lease {
+    fn root(&self) -> &Path {
+        &self.root
+    }
+    fn valid(&self) -> bool {
+        self.valid.load(Ordering::Acquire)
+    }
+}
+
+/// Leases are told apart by which opening they are, not by where.
+impl PartialEq for Lease {
+    fn eq(&self, other: &Lease) -> bool {
+        std::ptr::eq(self, other)
     }
 }
 

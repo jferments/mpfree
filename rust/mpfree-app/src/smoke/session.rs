@@ -2857,6 +2857,7 @@ impl Session {
             FromUi::OpenLoops(l) => self.looper.open(*l),
             FromUi::OpenAudio(a) => self.tracks.open(*a),
             FromUi::AudioFiles(dir) => self.tracks.record_to(dir),
+            FromUi::AudioDrive(lease) => self.tracks.own_drive(lease),
             FromUi::AudioSavedInto(dir) => self.tracks.saved_into(dir),
             FromUi::ExportAsk => {
                 // Nothing plays outside here, and every track plays the

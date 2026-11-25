@@ -56,6 +56,7 @@ use std::time::Duration;
 
 use mpfree_stream::player::Player;
 use mpfree_stream::status::Watch;
+use mpfree_stream::storage::CardHandle;
 use mpfree_stream::writer::Gate;
 
 use mpfree_transport::time::TempoMap;
@@ -66,7 +67,9 @@ use crate::files::{
     Said, WriterConfig,
 };
 use crate::save::{Saved, TakeFile};
-use crate::streaming::{self, FromStream, Head, Read, Stream, StreamConfig, ToStream};
+use crate::streaming::{
+    self, Board, FromStream, Head, Read, Stream, StreamConfig, Syncs, Timings, ToStream,
+};
 use crate::stretch::{fit_ratio, StretchJob};
 use crate::{
     AudioTracks, Command, Io, RecordingId, TakeInfo, CHUNK, MAX_REGIONS, MAX_TAKES, MAX_TRACKS,
@@ -229,6 +232,11 @@ enum ToWorker {
     Drop(Vec<f32>),
     DropSaved(Saved),
     DropWave(TakeWave),
+    /// The card opened, its files under its root: a drive of its own
+    /// (reads there get an I/O thread of their own, and a writer there
+    /// waits only for that drive's reads), and an insertion that takes
+    /// there open through.
+    Device(Arc<dyn CardHandle>),
     /// Record into `dir` from now on.
     Files {
         dir: PathBuf,
@@ -460,6 +468,8 @@ pub struct FitCopy {
 /// The audio tracks with their worker; see the module notes.
 pub struct AudioHost {
     pub tracks: AudioTracks,
+    /// Each drive's read and sync times ([`AudioHost::timings`]).
+    timings: Board,
     /// The drive's last look (System status's stick meter).
     drive: Arc<DriveSeen>,
     tx: Option<Sender<ToWorker>>,
@@ -563,12 +573,15 @@ impl AudioHost {
         let (tx, jobs) = channel::<ToWorker>();
         let (done, rx) = channel();
         let back = tx.clone();
+        let timings = Board::default();
+        let board = timings.clone();
         let spawned = std::thread::Builder::new()
             .name("mpfree-audiotracks".into())
-            .spawn(move || work(rate, &jobs, &done, &back))
+            .spawn(move || work(rate, &jobs, &done, &back, board))
             .is_ok();
         AudioHost {
             tracks: AudioTracks::new(rate, seconds),
+            timings,
             drive: Arc::new(DriveSeen::default()),
             tx: spawned.then_some(tx),
             rx: spawned.then_some(rx),
@@ -644,6 +657,15 @@ impl AudioHost {
         self.head_frames = (head_s * f64::from(self.tracks.rate())) as u64;
         self.send(ToWorker::Stream(Box::new(cfg)));
         true
+    }
+
+    /// How long each drive's reads and the recording's syncs take (the
+    /// median, the slowest 1 in 100 and 1 in 1,000, the worst), for Dev
+    /// and the device rounds' logs (the SD card plan's B2a): the reads
+    /// once takes play from their files, the syncs while the writer runs.
+    /// Allocates: never in a period.
+    pub fn timings(&self) -> Timings {
+        self.timings.lock().map(|t| t.clone()).unwrap_or_default()
     }
 
     /// Whether takes play from their files (asked for: the player may be
@@ -952,6 +974,18 @@ impl AudioHost {
 
     fn problem(&mut self, p: Problem) {
         keep_problem(&mut self.files.problems, &mut self.problems_lost, p);
+    }
+
+    /// The SD card opened, its files under `card.root()` (its mount
+    /// point): a drive of its own, so takes there play from an I/O thread
+    /// of their own and the recording writer there waits only for that
+    /// drive's reads, never for the stick's (the SD card plan's S2b, phase
+    /// B2); and an insertion (phase B2a), so takes there are read only
+    /// while `card` holds, and those that went with an earlier opening
+    /// open again. The same opening given again changes nothing.
+    /// Allocates the message: between periods.
+    pub fn own_device(&self, card: Arc<dyn CardHandle>) {
+        self.send(ToWorker::Device(card));
     }
 
     /// Look at the drive takes record to with `probe` every few seconds,
@@ -1881,6 +1915,12 @@ impl AudioHost {
                         });
                     }
                     self.tracks_in();
+                } else if self.tracks.take(take).is_some_and(|t| t.rec == rec)
+                    && self.tracks.file_gen(take).is_some_and(|g| g != gen)
+                {
+                    // Its file opened again (its card came back): the
+                    // source it had is gone, so the take moves to this one.
+                    self.tracks.command(Command::Refile { take, rec, gen });
                 } else if self
                     .tracks
                     .take(take)
@@ -2486,11 +2526,20 @@ fn keep_problem(room: &mut Vec<Problem>, lost: &mut u64, p: Problem) {
 /// and the files (see the module notes). It wakes at least every 20 ms
 /// while the writer runs, to see how its takes stand. `back` is its own
 /// channel, for the stream thread's whole-file reads.
-fn work(rate: u32, jobs: &Receiver<ToWorker>, done: &Sender<FromWorker>, back: &Sender<ToWorker>) {
+fn work(
+    rate: u32,
+    jobs: &Receiver<ToWorker>,
+    done: &Sender<FromWorker>,
+    back: &Sender<ToWorker>,
+    board: Board,
+) {
     let mut w = Worker {
         rate,
+        board,
         files: Files::new(rate),
         stream: None,
+        cards: Vec::new(),
+        work_gate: None,
         wants: Vec::new(),
         next_job: 1,
         era: 0,
@@ -2527,6 +2576,7 @@ fn work(rate: u32, jobs: &Receiver<ToWorker>, done: &Sender<FromWorker>, back: &
                 return;
             }
         }
+        w.note_syncs();
         w.open_finished();
         if !w.tend_layers(done) {
             return;
@@ -2554,6 +2604,14 @@ struct Worker {
     files: Files,
     /// The stream layer, once started.
     stream: Option<Stream>,
+    /// The card last opened at each folder ([`ToWorker::Device`]), given
+    /// to the stream layer once it starts.
+    cards: Vec<Arc<dyn CardHandle>>,
+    /// Where the recording's sync times go, with the stream thread's
+    /// reads.
+    board: Board,
+    /// Playback's cushion on the drive takes record to.
+    work_gate: Option<Arc<Gate>>,
     /// Whole-file reads asked of the stream thread, and what each is for.
     wants: Vec<(u32, Want)>,
     next_job: u32,
@@ -2574,7 +2632,10 @@ impl Worker {
     /// cushion allows; each finished, or failed, is said and its buffers
     /// go back. False once the audio thread has gone.
     fn tend_layers(&mut self, done: &Sender<FromWorker>) -> bool {
-        let cushion = self.stream.as_ref().map(|st| st.gate.cushion());
+        let cushion = self
+            .stream
+            .as_ref()
+            .map(|st| self.work_gate.as_ref().unwrap_or(&st.gate).cushion());
         let mut spent = Vec::new();
         let mut i = 0;
         while i < self.layers.len() {
@@ -2632,6 +2693,26 @@ impl Worker {
             move |p| done.send(FromWorker::Problem(p)).is_ok(),
         );
         self.drive_stop = started.is_ok().then_some(stop);
+    }
+
+    /// The writer's sync times onto the board, when there are new ones.
+    fn note_syncs(&mut self) {
+        let now = self.files.syncs();
+        let Ok(mut t) = self.board.lock() else {
+            return;
+        };
+        let same = match (&t.syncs, &now) {
+            (Some(s), Some((dir, times))) => s.dir == *dir && s.times == *times,
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            t.syncs = now.map(|(dir, times)| Syncs {
+                on_card: self.cards.iter().any(|c| dir.starts_with(c.root())),
+                dir: dir.to_path_buf(),
+                times,
+            });
+        }
     }
 
     /// Take files finished (recorded, or a project's) go to the stream
@@ -2817,11 +2898,22 @@ impl Worker {
                 };
                 FromWorker::LayerRead { rec, audio }
             }
+            ToWorker::Device(card) => {
+                if let Some(st) = &mut self.stream {
+                    // Without its own thread, its files read on the
+                    // first drive's, as before.
+                    let _ = st.card(card.clone());
+                }
+                self.cards.retain(|c| c.root() != card.root());
+                self.cards.push(card);
+                return None;
+            }
             ToWorker::Files { dir, cfg } => {
                 let gate = self
                     .stream
                     .as_ref()
-                    .map_or_else(|| Arc::new(Gate::new()), |st| st.gate.clone());
+                    .map_or_else(|| Arc::new(Gate::new()), |st| st.gate_for(&dir));
+                self.work_gate = Some(gate.clone());
                 match files.start(dir, cfg, gate) {
                     Ok(()) => {
                         self.look_at_drive(done);
@@ -2891,9 +2983,12 @@ impl Worker {
                     let back = back.clone();
                     move |r| back.send(ToWorker::Read(r)).is_ok()
                 };
-                match streaming::start(rate, *cfg, answer, read) {
-                    Ok((player, st)) => {
+                match streaming::start(rate, *cfg, answer, read, self.board.clone()) {
+                    Ok((player, mut st)) => {
                         files.stream();
+                        for card in &self.cards {
+                            let _ = st.card(card.clone());
+                        }
                         self.stream = Some(st);
                         FromWorker::Player(player)
                     }
@@ -2920,7 +3015,7 @@ impl Worker {
             } => {
                 let written = match (files.work_dir(), &self.stream) {
                     (Some(dir), Some(st)) => {
-                        files::write_take(dir, rec, channels, rate, &audio, &st.gate)
+                        files::write_take(dir, rec, channels, rate, &audio, &st.gate_for(dir))
                             .map_err(|e| e.to_string())
                     }
                     (None, _) => Err("there is no folder to record into".into()),

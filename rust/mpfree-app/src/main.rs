@@ -172,7 +172,7 @@ mod sampler_commands;
 mod screen_cost;
 mod screen_picture;
 mod script;
-// The SD card's read-only window, the pad player's side, for the Browser's "SD card" place.
+// The SD card's windows, the pad player's side, for the Browser's "SD card" place.
 mod sd_card;
 mod set_checks;
 mod set_play;
@@ -11633,6 +11633,8 @@ fn player_session(
                 // Each take to a file of its own from now on (phase 3a),
                 // and where a project save put them.
                 gui::FromUi::AudioFiles(dir) => tracks.record_to(dir),
+                // The SD card: a drive of its own (S2b, phase B2).
+                gui::FromUi::AudioDrive(lease) => tracks.own_drive(lease),
                 gui::FromUi::AudioSavedInto(dir) => tracks.saved_into(dir),
                 gui::FromUi::OpenProject(mut o) => {
                     // Everything stops first: the clips change under the

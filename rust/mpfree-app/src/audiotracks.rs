@@ -661,6 +661,15 @@ impl TrackHost {
         self.tend_files();
     }
 
+    /// The SD card opened, its files under `lease.root()` (its mount
+    /// point): a drive of its own, so takes there play from an I/O thread
+    /// of their own and the recorder there waits only for that drive's
+    /// reads; and the opening takes there read on, until it is revoked
+    /// (`AudioHost::own_device`). Allocates the message: between periods.
+    pub fn own_drive(&mut self, lease: std::sync::Arc<mpfree_stream::storage::Lease>) {
+        self.host.own_device(lease);
+    }
+
     fn tend_files(&mut self) {
         if let Some(dir) = self.files_dir.take() {
             let cfg = mpfree_audiotracks::files::WriterConfig::default();
@@ -3310,8 +3319,9 @@ impl TrackHost {
                 n.on_file, n.takes, n.silent_s, n.heads_held, n.heads_wanted
             )
         });
+        let times = timings_line(&self.host.timings());
         format!(
-            "audio tracks: {} takes, {:.0} of {:.0} s used, {} refused, {} dropped, {} cut short{lost}{}{files}",
+            "audio tracks: {} takes, {:.0} of {:.0} s used, {} refused, {} dropped, {} cut short{lost}{}{files}{times}",
             tr.takes().count(),
             m.used as f64 / (2.0 * self.rate as f64),
             m.capacity as f64 / (2.0 * self.rate as f64),
@@ -3321,6 +3331,24 @@ impl TrackHost {
             if self.active { "" } else { " (song mode off)" }
         )
     }
+}
+
+/// The status line's timings (the SD card plan's B2a, for the device
+/// rounds' logs): each drive's reads that have run, and the recording's
+/// syncs, as "; stick reads: median 2.0 ms, 1 in 100 40 ms, 1 in 1,000
+/// 300 ms, worst 1.20 s, of 1234, 0 waiting; syncs on the card: …".
+/// Empty while nothing has been read or synced.
+fn timings_line(t: &mpfree_audiotracks::streaming::Timings) -> String {
+    let mut line = String::new();
+    for d in t.reads.iter().filter(|d| d.reads.count > 0) {
+        let drive = if d.root.is_some() { "card" } else { "stick" };
+        line += &format!("; {drive} reads: {}, {} waiting", d.reads, d.queue);
+    }
+    if let Some(s) = t.syncs.as_ref().filter(|s| s.times.count > 0) {
+        let drive = if s.on_card { "the card" } else { "the stick" };
+        line += &format!("; syncs on {drive}: {}", s.times);
+    }
+    line
 }
 
 /// The track level's top: +6 dB. A region's gain goes to the engine's
@@ -3749,6 +3777,42 @@ mod tests {
     use super::*;
     use mpfree_transport::{Command as T, State, Transport};
     use std::time::{Duration, Instant};
+
+    /// The status line says each drive's read times that ran and the
+    /// recording's syncs, for the device rounds' logs; nothing before any.
+    #[test]
+    fn the_status_line_says_each_drives_read_and_sync_times() {
+        use mpfree_audiotracks::streaming::{Syncs, Timings};
+        use mpfree_stream::coord::DriveTimes;
+        use mpfree_stream::times::Summary;
+        assert_eq!(timings_line(&Timings::default()), "");
+        let times = Summary {
+            count: 1234,
+            median: 0.002,
+            p99: 0.04,
+            p999: 0.3,
+            worst: 1.2,
+        };
+        let drive = |root: Option<&str>, count| DriveTimes {
+            root: root.map(std::path::PathBuf::from),
+            reads: Summary { count, ..times },
+            queue: 2,
+            speed: 1e7,
+        };
+        let t = Timings {
+            reads: vec![drive(None, 0), drive(Some("/run/mpfree-sd"), 1234)],
+            syncs: Some(Syncs {
+                dir: "/run/mpfree-sd/MPFree/.work/audiotracks".into(),
+                on_card: true,
+                times,
+            }),
+        };
+        let all = "median 2.0 ms, 1 in 100 40 ms, 1 in 1,000 300 ms, worst 1.20 s, of 1234";
+        assert_eq!(
+            timings_line(&t),
+            format!("; card reads: {all}, 2 waiting; syncs on the card: {all}")
+        );
+    }
 
     /// A take's problem names the project track its engine track plays,
     /// by its lasting id, so System status can name it; with no track, or

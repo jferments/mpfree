@@ -891,3 +891,177 @@ fn a_recording_longer_than_memory_records_on_as_its_file_takes_it() {
     assert!(r.events().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The SD card plan's phase B2a: a project's takes on the card are read
+/// only while the card is open. When it goes, System status hears it and
+/// a cue waiting for their audio is short at once; when it opens again (a
+/// new insertion), they open again from the same files, the regions'
+/// starts are held again, and the song plays as before. A project opened
+/// while the card is out leaves its takes out, and says why.
+#[test]
+fn takes_on_the_card_open_again_when_the_card_comes_back() {
+    use mpfree_audiotracks::files::Problem;
+    use mpfree_audiotracks::host::CueAudio;
+    use mpfree_status::{kinds, Report};
+    use mpfree_stream::storage::Lease;
+    let card = scratch("card");
+    let (_, want) = from_memory();
+    let mut first = Rig::new(Some(&card), false);
+    first.record(true);
+    let saved = first.save();
+    assert!(saved
+        .takes
+        .iter()
+        .all(|k| k.path.as_ref().is_some_and(|p| p.starts_with(&card))));
+
+    let mut r = Rig::new(None, true);
+    r.live = false;
+    let lease = Lease::new(&card);
+    r.h.own_device(lease.clone());
+    r.h.own_device(lease.clone());
+    assert!(r.h.load(saved.clone()).is_ok());
+    r.run_until(|r| r.h.opening() == 0);
+    assert!(r.all_on_file());
+    assert!(r.play_song() == want);
+    r.run_until(|r| r.h.heads_wanted > 0 && r.h.heads_held == r.h.heads_wanted);
+    let gens = |r: &Rig| -> Vec<Option<u32>> {
+        r.h.tracks
+            .takes()
+            .map(|k| r.h.tracks.file_gen(k.id))
+            .collect()
+    };
+    let before = gens(&r);
+    assert!(before.iter().all(Option::is_some));
+    let _ = std::iter::from_fn(|| r.h.take_problem()).count();
+
+    // The card goes.
+    lease.revoke();
+    let mut got: Vec<Problem> = Vec::new();
+    r.run_until(|r| {
+        got.extend(std::iter::from_fn(|| r.h.take_problem()));
+        !got.is_empty()
+    });
+    assert_eq!(
+        got,
+        [Problem {
+            report: Report::happened(&kinds::CARD_REMOVED, 1),
+            track: None,
+        }]
+    );
+    let k = r.h.tracks.takes().next().unwrap();
+    r.h.hold_cue(5, &[(k.rec, BAR as i64, 2 * BAR as i64)]);
+    let mut said = None;
+    r.run_until(|r| {
+        said = r.h.cue_audio();
+        said.is_some()
+    });
+    assert_eq!(said, Some((5, CueAudio::Short)), "its audio can't come");
+    assert_eq!(gens(&r), before, "nothing opens again until it is back");
+
+    // It opens again: a new insertion.
+    let again = Lease::new(&card);
+    r.h.own_device(again.clone());
+    r.run_until(|r| {
+        gens(r)
+            .iter()
+            .zip(&before)
+            .all(|(now, was)| now.is_some() && now != was)
+    });
+    r.run_until(|r| r.h.heads_held == r.h.heads_wanted);
+    assert!(r.play_song() == want, "read again from the card, the same");
+    assert_eq!(r.h.tracks.stats().missed, 0);
+    let ev = r.events();
+    assert!(ev.is_empty(), "{ev:?}");
+
+    // Out again, and the project opened again meanwhile: its takes are
+    // left out, and why is said.
+    again.revoke();
+    assert!(r.h.clear());
+    r.run_to(r.frame + 4 * P);
+    assert!(r.h.load(saved).is_ok());
+    r.run_until(|r| r.h.opening() == 0);
+    assert_eq!(r.h.tracks.takes().count(), 0);
+    let ev = r.events();
+    assert_eq!(ev.len(), 2, "{ev:?}");
+    assert!(
+        ev.iter().all(|e| matches!(
+            e,
+            FileEvent::Unopened { kept: false, why, .. } if why.contains("the SD card isn't there")
+        )),
+        "{ev:?}"
+    );
+    let _ = std::fs::remove_dir_all(&card);
+}
+
+/// The SD card plan's phase B2a: sound never clicks as it goes missing or
+/// comes back. A take on the card plays on after the card is pulled until
+/// the cache runs out; at every gap in what plays (the card's, or a read
+/// late on a busy machine) the sound has faded to nearly nothing on both
+/// sides, where without the fade it would stop and start at full level.
+#[test]
+fn sound_fades_at_every_gap_instead_of_clicking() {
+    use mpfree_stream::player::DECLICK;
+    use mpfree_stream::storage::Lease;
+    let card = scratch("declick");
+    std::fs::create_dir_all(&card).unwrap();
+    let mut r = Rig::with(Some(&card), Some(cache(24)));
+    let lease = Lease::new(&card);
+    r.h.own_device(lease.clone());
+    r.record_long(24);
+    // The recording's sync times are the card's, for Dev and the logs.
+    r.run_until(|r| r.h.timings().syncs.is_some_and(|s| s.times.count > 0));
+    let syncs = r.h.timings().syncs.unwrap();
+    assert!(syncs.on_card && syncs.dir.starts_with(&card), "{syncs:?}");
+    // Played from the take's start, and the card pulled two bars in: the
+    // cache can't hold the whole take, so what it hasn't read goes missing.
+    r.t.command(r.frame, T::Locate(8 * BAR_T));
+    let from = r.out.len();
+    r.t.command(r.frame, T::Play);
+    r.run_to(r.frame + 2 * BAR);
+    lease.revoke();
+    r.run_to(r.frame + 16 * BAR);
+    assert!(r.h.tracks.stats().missed > 0, "the card's audio ran out");
+    // Its reads were the card's own drive's: the stick read nothing.
+    r.run_until(|r| r.h.timings().reads.len() == 2);
+    let reads = r.h.timings().reads;
+    assert_eq!(reads[1].root.as_deref(), Some(card.as_path()));
+    assert!(
+        reads[1].reads.count > 0 && reads[0].reads.count == 0,
+        "{reads:?}"
+    );
+    let out = &r.out[from..];
+    let silent = |j: usize| out[2 * j] == 0.0 && out[2 * j + 1] == 0.0;
+    let quiet = |j: usize| out[2 * j].abs() < 0.05 && out[2 * j + 1].abs() < 0.05;
+    let frames = out.len() / 2;
+    let (mut j, mut gaps) = (0, 0);
+    while j < frames {
+        if !silent(j) {
+            j += 1;
+            continue;
+        }
+        let start = j;
+        while j < frames && silent(j) {
+            j += 1;
+        }
+        if j - start < 2 * DECLICK {
+            continue;
+        }
+        gaps += 1;
+        if start >= 4 {
+            assert!(
+                (start - 4..start).all(quiet),
+                "a cliff into the gap at frame {start}: {:?}",
+                &out[2 * (start - 4)..2 * start]
+            );
+        }
+        if j + 4 <= frames {
+            assert!(
+                (j..j + 4).all(quiet),
+                "a cliff out of the gap at frame {j}: {:?}",
+                &out[2 * j..2 * (j + 4)]
+            );
+        }
+    }
+    assert!(gaps > 0, "a gap to look at");
+    let _ = std::fs::remove_dir_all(&card);
+}

@@ -17,7 +17,9 @@ in them:
   sampler's and synth's render means over that part (from the status lines
   the app writes at each mark); where takes play from their files (the
   stream test, D3), the takes on files and the seconds that went silent
-  because the drive was late, over each part (any silence fails the run);
+  because the drive was late, over each part (any silence fails the run),
+  and each drive's read and sync times at the run's end (the SD card plan's
+  B2a);
   the screen's frames; your listening answer;
 - every project open the runs made (live shows A4): how long the whole open
   took and each part of it (the library's read, the build with the plugins'
@@ -200,6 +202,16 @@ def analyse(run):
             "done": done < len(lines)}
 
 
+def drive_timings(lines):
+    """Each drive's read and sync times from the run's last audio tracks status line that has them, or None."""
+    for ln in reversed(lines):
+        if FILES.match(ln):
+            rest = ln.split("region starts held", 1)[1].lstrip("; ")
+            if rest:
+                return rest
+    return None
+
+
 def fmt(v, digits=0):
     if v is None:
         return "-"
@@ -258,6 +270,9 @@ def workflow_section(runs, out, answer):
             out.append(f"| {p['name']} | {fmt(p.get('underruns'))} | {fmt(p.get('periods'))} | {p['slow']} "
                        f"| {fmt(p.get('late'))} | {fmt(p.get('sampler'))} | {fmt(p.get('synth'))} |"
                        + (f" {p.get('on_file') or '-'} | {fmt(p.get('silent'), 2)} |" if files else ""))
+        timings = drive_timings(run.lines)
+        if timings:
+            out.append(f"Drive timings at the run's end: {timings}.\n")
         e = a["end"]
         if e and e.get("sampler_max") is not None:
             out.append(f"\nWorst period of the run: sampler {e['sampler_max']} µs, synth {fmt(e.get('synth_max'))} µs.")

@@ -528,6 +528,13 @@ impl Files {
         self.writing.is_some()
     }
 
+    /// While the writer runs: the folder it records into, and how long its
+    /// rounds that wrote to the drive took (its sync times).
+    pub fn syncs(&self) -> Option<(&Path, mpfree_stream::times::Summary)> {
+        let w = self.writing.as_ref()?;
+        Some((w.dir.as_path(), w.rec.stats().syncs))
+    }
+
     /// Record into `dir` from now on (made if missing), the writer's
     /// rounds waiting for playback's reads through `gate` (the stream
     /// coordinator's, while takes play from their files).

@@ -98,10 +98,15 @@ def effects():
     return body
 
 
-def files(takes, silent):
+TIMINGS = ("card reads: median 2.0 ms, 1 in 100 40 ms, 1 in 1,000 300 ms, worst 1.20 s, of 1234, 0 waiting; "
+           "syncs on the card: median 9.0 ms, 1 in 100 80 ms, 1 in 1,000 80 ms, worst 90 ms, of 60")
+
+
+def files(takes, silent, timings=""):
     """The audio tracks' status line while takes play from their files (the stream test's runs)."""
     return [f"    status: audio tracks: {takes} takes, 0 of 60 s used, 0 refused, 0 dropped, 0 cut short; from their "
-            f"files: {takes} of {takes} takes, {silent:.2f} s went silent, {takes} of {takes} region starts held"]
+            f"files: {takes} of {takes} takes, {silent:.2f} s went silent, {takes} of {takes} region starts held"
+            + (f"; {timings}" if timings else "")]
 
 
 def eight(silent_in_play=0.0):
@@ -113,7 +118,7 @@ def eight(silent_in_play=0.0):
     body += ["    script: line 99 at 190.000 s: expect project: 8 audio tracks and 10 takes in",
              "    project: 8 audio tracks and 10 takes in",
              "    script: done"]
-    body += status(0, 65450, 130, 60) + files(8, silent_in_play)
+    body += status(0, 65450, 130, 60) + files(8, silent_in_play, TIMINGS)
     return body
 
 
@@ -218,6 +223,8 @@ class ReportTests(unittest.TestCase):
         self.assertIn("| part | underruns | periods | slow periods | late parts | sampler render µs | synth render µs "
                       "| takes on files | went silent (s) |", out)
         self.assertIn("| record-eight | 0 | 42025 | 0 | 0 | 122 | 50 | 8 of 8 | 0.00 |", out)
+        # Each drive's read and sync times at the run's end (the SD card plan's B2a).
+        self.assertIn(f"Drive timings at the run's end: {TIMINGS}.", out)
         # Takes that played silence because the drive was late fail the run, and the part says where.
         res = self.report(self.write("07-streamtest.log", run("eight-tracks", "default", eight(0.35))))
         self.assertEqual(res.returncode, 1, res.stdout)
@@ -227,6 +234,7 @@ class ReportTests(unittest.TestCase):
         res = self.report(self.write("08-devtest.log", run("effects", "default", effects())))
         self.assertIn("| effects | 0 | yes | 1 of 1 | 0 | 0 | 0 | 0 |\n", res.stdout)
         self.assertNotIn("went silent", res.stdout)
+        self.assertNotIn("Drive timings", res.stdout)
 
     def test_the_opens_and_song_changes_say_each_part_and_the_memory(self):
         res = self.report(self.write("05-devtest.log", run("sets", "default", sets())))
