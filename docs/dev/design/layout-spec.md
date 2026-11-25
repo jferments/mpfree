@@ -98,9 +98,11 @@ Text sizes and contrast get their own section with the text profile, and workflo
 
 - Each finger on the Clips grid is its own, and in Perform nothing on the grid drags: a clip or a row's number acts on the lift only while the finger is still on it (#1008, section 4h). Perform's clip launch is on the lift until the clip grid's redesign moves it to the press.
 - A tap on a mixer strip's level opens the number pad; it no longer resets the fader (#1007).
-- A page switch cancels every finger first (`switch_page`), and lost touch sync cancels the contacts it lost (`mpfree-touch`).
+- A page switch cancels every finger first (`switch_page`), the cards that show as pages of their own (the number and text pads, Undo history, the power card, Sample Recall) and the way back from them too, and lost touch sync cancels the contacts it lost (`mpfree-touch`) (A1).
+- STOP that silences (STOP while stopped, SHIFT + STOP, Panic) cancels every finger on the screen and lets go of the Perform pads' throws, so a held throw, the XY pad and a pad held on the screen let go (A1).
+- A tap on a mixer strip's pan leaves it; SHIFT + the wheel's push centres it (A1).
 - Perform's half-second hold on deleting and clearing ([make-perform.md](make-perform.md)).
-- Not yet: everything else in this section. It lands with the touch plan's pieces (the toolkit and the touch audit first, then Play, the Perform mixer, the Perform clip grid, text and contrast, and profiles), each with its own approval of screens. Until then, for example, the mixer's MUTE and SOLO act on the press in both modes, and a tap on a strip's pan centres it.
+- Not yet: everything else in this section. It lands with the touch plan's pieces (the toolkit and the touch audit first, then Play, the Perform mixer, the Perform clip grid, text and contrast, and profiles), each with its own approval of screens. Until then, for example, the mixer's MUTE and SOLO act on the press in both modes.
 
 ## 2. The top bar
 

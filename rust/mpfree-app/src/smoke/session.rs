@@ -3127,7 +3127,11 @@ impl Session {
                             self.app.set_pad_layout(Some(self.synth.pad_layout()));
                         }
                     }
-                    Effect::StopSounds => self.synth.stop(),
+                    // As main.rs: the screen lets go of every finger too.
+                    Effect::StopSounds => {
+                        self.synth.stop();
+                        self.out.show(ToUi::LetGo);
+                    }
                     // What the pads play, as main.rs: the screen names it;
                     // the pads follow once the kit has (change_kit).
                     Effect::PadsFocus(f) => {

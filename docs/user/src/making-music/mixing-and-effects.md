@@ -43,7 +43,7 @@ From top to bottom, each strip has:
 - **M** (mute) and **S** (solo). Solo keeps the strip and everything it feeds or is fed by, so soloing the snare's pad still lets you hear it through the Drums track.
 - **The output**: where the strip goes. A pad goes to its track; a track to the master or a submix; a submix to the master or a higher-numbered submix.
 
-Drag a fader, pan or send with your finger, and tap M, S or the output to change them. To put a fader back to 0 dB, tap it so the wheel's outline is on it, then press **SHIFT + push**. With the mixer open, **UNDO** takes back the last change to a strip (one drag of a fader is one UNDO) and **SHIFT + UNDO** puts it back.
+Drag a fader, pan or send with your finger, and tap M, S or the output to change them. A tap on a pan leaves it where it is, so a finger reaching for the fader never moves it. To put a fader back to 0 dB or a pan back in the middle, tap it so the wheel's outline is on it, then press **SHIFT + push**. With the mixer open, **UNDO** takes back the last change to a strip (one drag of a fader is one UNDO) and **SHIFT + UNDO** puts it back.
 
 ## Every chain at once: Effects
 
