@@ -366,6 +366,12 @@ when an effect's mode switch moved the controls a Q-Link had learned.
   better. A meant change writes the list with `MPFREE_TOUCH_BLESS=1 cargo
   test -p mpfree-app --test touch_audit` and gives its line a reason
   ([touch rules in code](../design/ui-architecture.md#touch-rules-in-code)).
+  Its live probes (`smoke/touch_probe.rs`, in the app's own tests) touch
+  each kind of control once in the ways that must not commit (landing then
+  a cancel, a slide off and lift) and compare what it asks for with how it
+  declares it commits; today's breaks are in `golden/touch-acts.txt`, and
+  `MPFREE_TOUCH_BLESS=1 cargo test -p mpfree-app --bin mpfree touch_probe`
+  writes it.
 - **Audio-thread code doesn't allocate or block.** Each engine proves this
   with a counting allocator (`tests/no_alloc.rs`), CI runs
   `mpfree-bench --check-allocs` over the profiled engines, and

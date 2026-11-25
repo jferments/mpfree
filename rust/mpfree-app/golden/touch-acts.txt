@@ -1,0 +1,350 @@
+# How today's controls break the layout spec's rules of how a control acts
+# (section 1a), found by the touch audit's live probes (smoke/touch_probe.rs):
+#     KIND BREAK # REASON
+# acts-on-landing: declares a lift or a hold, asks for something as the finger lands
+# quiet-on-landing: declares Press, asks for nothing as the finger lands
+# landing-moves: a drag that follows the finger asks for something as it lands
+# cancel-commits: quiet as the finger lands, asks for something when it is cancelled
+# slide-off-commits: quiet as the finger lands, asks for something when it slides off and lifts
+# A break not listed fails. Write the list with
+#     MPFREE_TOUCH_BLESS=1 cargo test -p mpfree-app --bin mpfree touch_probe
+add-part/add-back acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+add-part/add-close acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+add-part/add-keep acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+add-part/add-part-kind acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+add-part/add-row-more acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+add-part/add-step acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+add-part/add-try-again acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-actions/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-list/row acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-mini/faster acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-mini/latch acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-mini/open acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-mini/slower acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-mod/modifier acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-modes/segment acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-patterns/group acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-patterns/row acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-answer/answer-capture acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-answer/answer-mode acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-answer/answers-for acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-answer/plays-when acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-answer/records acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-kinds/kind acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-list/new-idea acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-list/phrase acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-maker/maker-back acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-maker/maker-close acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-maker/maker-keep acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-maker/maker-row-less acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-maker/maker-row-more acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-maker/maker-step acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-maker/maker-try-again acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-plays/follow acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-plays/more-like-this acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-plays/move acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-plays/plays-when acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-phrase-plays/records acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-ws-grid/cell acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+arp-ws-tools/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+browser/pad-map acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/add acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/add-follower acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/add-lfo acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/back acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/eq-add acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/learn acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/macro acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/move-down acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/move-up acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/note acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/note-on acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/notes-add acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/plays-on acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/remove acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/sidechain-off acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/slot acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/slot-on acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/strip acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chain/xy acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+chords-card/tab acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clip-card/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/add-kind acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/add-part acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/back-to-song acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/capture-scene acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/chord acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/chord-root acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/edit acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/rec-song acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/scene-after acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/scene-before acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/scene-cell acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/scene-delete acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/scene-done acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/scene-foot acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/scene-less acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/scene-more acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/scene-mutes-now acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/scene-name acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/scene-tempo-now acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/show-view acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/track acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+clips/view acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+controls/row acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+dtabs/segment acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+edit-clips/row acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+edit-options/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+edit-options/row-less acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+edit-options/row-more acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+guide/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+header/chip acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+header/folder-icon acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+header/tab acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+help/link acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+kits/row acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+lanes-card/button slide-off-commits # acts after the finger slides off and lifts (found 25 Nov); to look into: a slide off calls a lift-inside control off (spec 1a)
+lask/ask-no acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+lask/ask-yes acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+ldeck/loop acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+ldeck/loop-level landing-moves # jumps to where the finger lands (found 25 Nov); spec 1a: it follows the finger from where it lands, so landing moves nothing; fixed when its screen is redone
+ldeck/loop-mute acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+ldeck/loop-solo acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+ldeck/pads-keys acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+ldeck/records-from acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+ldeck/ring acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/bars acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/capture slide-off-commits # acts after the finger slides off and lifts (found 25 Nov); to look into: a slide off calls a lift-inside control off (spec 1a)
+leditor/chip acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/chip-act acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/clear acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/double acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/free-loops acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/half acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/layer-delete acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/layer-listen acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/layer-mute acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/layer-solo acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/listen acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/merge acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/overdubs acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/point-ab acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/point-close acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/point-nudge acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/point-pick acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/point-step acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/point-window acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/read-as acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/reverse acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/source acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/speed acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/starts acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/sync acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/then acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+leditor/undo acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+macros/back acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+macros/bank acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+macros/morph landing-moves # jumps to where the finger lands (found 25 Nov); spec 1a: it follows the finger from where it lands, so landing moves nothing; fixed when its screen is redone
+macros/save acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+macros/snap acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+make-phrase/sheet-back acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+make-phrase/sheet-close acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+make-phrase/sheet-keep acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+make-phrase/sheet-row-less acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+make-phrase/sheet-row-more acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+make-style/style-back acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+make-style/style-close acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+make-style/style-keep acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+make-style/style-name acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+make-style/style-plan-less acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+make-style/style-plan-more acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+mapcard/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+master/level landing-moves # jumps to where the finger lands (found 25 Nov); spec 1a: it follows the finger from where it lands, so landing moves nothing; fixed when its screen is redone
+mixer/eq slide-off-commits # moves with the finger (a drag, a lasso or a move); it declares its movement when its screen is redone
+mixer/eq-add acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+mixer/eq-name acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+mixer/fx slide-off-commits # moves with the finger (a drag, a lasso or a move); it declares its movement when its screen is redone
+mixer/fx-add acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+mixer/fx-name acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+mixer/look acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+mixer/view acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+morph/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+morph/crossfader landing-moves # jumps to where the finger lands (found 25 Nov); spec 1a: it follows the finger from where it lands, so landing moves nothing; fixed when its screen is redone
+morph/row-down acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+morph/row-up acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+notes/add-part acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+notes/aim-pick acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+notes/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+notes/chord-pick acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+notes/continue-bar slide-off-commits # moves with the finger (a drag, a lasso or a move); it declares its movement when its screen is redone
+notes/ghost-note slide-off-commits # moves with the finger (a drag, a lasso or a move); it declares its movement when its screen is redone
+notes/list-row acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+notes/note slide-off-commits # moves with the finger (a drag, a lasso or a move); it declares its movement when its screen is redone
+notes/note-mark slide-off-commits # moves with the finger (a drag, a lasso or a move); it declares its movement when its screen is redone
+notes/pads-write acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+notes/roll slide-off-commits # moves with the finger (a drag, a lasso or a move); it declares its movement when its screen is redone
+notes/scale-pick acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+notes/scale-root acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+notes/show-none acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+notes/show-pick acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+notes/tool-cancel acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+notes/tool-done acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+notes/tool-option acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+notes/tracker-row acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+options/back acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+options/row-less acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+options/row-more acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+pad-map/add-layer acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+pad-map/base acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+pad-map/done acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+pad-map/layer acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+pad-map/row acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+pads/pad acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+patch-list/close slide-off-commits # acts after the finger slides off and lifts (found 25 Nov); to look into: a slide off calls a lift-inside control off (spec 1a)
+play-loop/arm acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+play-loop/capture acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+play-loop/layer-mute acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+play-loop/loop acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+play-loop/loop-mute acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+play-loop/loop-solo acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+play-loop/pads-keys acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+play-loop/ring acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+play-transport/tempo acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+play-transport/view acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+power/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prefs/back acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prefs/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prefs/choice acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prefs/keep acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prefs/look acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prefs/new acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prefs/slider landing-moves # jumps to where the finger lands (found 25 Nov); spec 1a: it follows the finger from where it lands, so landing moves nothing; fixed when its screen is redone
+prefs/stepper acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prefs/steps landing-moves # a row of choices: a tap picks the one under the finger, by design; it declares itself a row of choices when Prefs is redone
+prefs/swatch acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prefs/switch acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prefs/tab acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prefs/theme acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prefs/tile acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prf-acts/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prf-bar/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prf-list/row-less acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prf-list/row-more acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prf-map/bank acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prf-map/pad slide-off-commits # acts after the finger slides off and lifts (found 25 Nov); to look into: a slide off calls a lift-inside control off (spec 1a)
+prf-page/chip acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prf-pick-a/chip acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prf-pick-b/chip acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+prf-type/chip acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+rec-list/close slide-off-commits # acts after the finger slides off and lifts (found 25 Nov); to look into: a slide off calls a lift-inside control off (spec 1a)
+rec-list/switch acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+record/row-less acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+record/row-more acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+show/lens acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+smp-bar/name acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+smp-bar/track-kit slide-off-commits # acts after the finger slides off and lifts (found 25 Nov); to look into: a slide off calls a lift-inside control off (spec 1a)
+smp-pads-bar/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+smp-pads-kits/perform acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+smp-pads-kits/track acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+smp-pads-map/bank acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+smp-pads-map/pad slide-off-commits # acts after the finger slides off and lifts (found 25 Nov); to look into: a slide off calls a lift-inside control off (spec 1a)
+smp-play-bar/back acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+smp-play-bar/name acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+smp-play-keys/keys acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+smp-play-scenes/slider landing-moves # jumps to where the finger lands (found 25 Nov); spec 1a: it follows the finger from where it lands, so landing moves nothing; fixed when its screen is redone
+smp-recall-list/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+smp-recorder/more acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+smp-recorder/rec acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+smp-region/value slide-off-commits # acts after the finger slides off and lifts (found 25 Nov); to look into: a slide off calls a lift-inside control off (spec 1a)
+smp-send/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/add acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/link-choice acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/loop acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/report-done acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/report-undo acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/scene-after acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/scene-before acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/scene-cell acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/scene-done acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/scene-foot acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/scene-less acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/scene-more acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/scene-mutes-now acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/scene-name acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/scene-tempo-now acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/times-less acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/times-more acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song-list/view acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/arm acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/chord-button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/chord-close slide-off-commits # acts after the finger slides off and lifts (found 25 Nov); to look into: a slide off calls a lift-inside control off (spec 1a)
+song/panel-arm acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/panel-close acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/panel-effects acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/panel-from-less acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/panel-from-more acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/panel-input acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/panel-level-less acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/panel-level-more acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/panel-mix acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/panel-monitor acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/panel-mute acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/panel-pan-less acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/panel-pan-more acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/panel-solo acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/panel-strip acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/panel-takes acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/rec-song acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/region acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/region-button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/report-done acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/report-undo acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/section slide-off-commits # moves with the finger (a drag, a lasso or a move); it declares its movement when its screen is redone
+song/section-button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/tempo-button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/view acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+step-inspector/clear acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+step-inspector/join acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+step-inspector/off acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+step-inspector/unlock acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+step-size/row acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+steps-continue/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+steps-continue/less acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+steps-continue/more acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+steps/head acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+steps/lane-rows acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+steps/note acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+steps/row-depth landing-moves # jumps to where the finger lands (found 25 Nov); spec 1a: it follows the finger from where it lands, so landing moves nothing; fixed when its screen is redone
+steps/row-off acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+steps/rows-add acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+synth-inst/card acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+synth-pads-head/layout acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+synth-pads-head/play acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+synth-pick/all-banks acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+synth-pick/bank-only acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+synth-pick/cancel acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+synth-pick/keep acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+synth-pick/kit acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+synth-pick/layer acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+synth-pick/side acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+synth-pick/synth acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+synth-presets/row acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+synth-title/gear acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+takes/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+textpad/key acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+throws/throw acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+transport/mode acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+transport/play acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+transport/rec acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+transport/stop acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+transport/undo acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+xy-banner/cancel acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+xy-banner/done acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+xy-list/choice acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+xy-list/yours acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+xy-setup/delete acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+xy-setup/name acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+xy-setup/save acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+xy/xy landing-moves # the XY pad is absolute by design (spec 1a: where the finger is, is the point); it declares it with the Play page (touch plan A6)
