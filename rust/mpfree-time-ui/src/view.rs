@@ -6284,9 +6284,18 @@ pub struct AudioWaitCounts {
     pub cancelled: u64,
     /// Held, then given back before they landed.
     pub given_back: u64,
-    /// Rises whenever the audio the waiting cues need changes, so the
-    /// app asks for it only then.
+    /// Rises whenever the audio or the tempo copies the waiting cues need
+    /// change, so the app asks for them only then.
     pub needs_rev: u64,
+    /// Kept back for their tempo copies (phase 5b.4), ready in time, moved
+    /// to a later line for want of them, gone in on Repitch (Play on
+    /// time), and cancelled (Keep pitch). Moves and cancels are counted in
+    /// `moved` and `cancelled` too.
+    pub copy_kept: u64,
+    pub copy_ready: u64,
+    pub copy_moved: u64,
+    pub copy_repitch: u64,
+    pub copy_cancelled: u64,
 }
 
 /// Mute and solo changes waiting for one launch line (sequencer S4's mute

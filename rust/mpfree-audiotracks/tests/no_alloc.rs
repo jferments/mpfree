@@ -1162,6 +1162,7 @@ fn copies_made_and_played(keep_pitch: bool) {
         len: 2 * bar,
         last_frame: frames as i64,
         priority: Priority::Prepared,
+        bpm: 0.0,
     }]);
     let mut t = Transport::new(RATE, 90.0).unwrap();
     let mut b = Block::new();

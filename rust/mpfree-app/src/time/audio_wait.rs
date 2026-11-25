@@ -27,7 +27,23 @@
 //!   A hold given back before the cue lands takes it out of the view again
 //!   and moves it ([`TimeControl::audio_given_back`]).
 //!
+//! - **Copies** (phase 5b.4, Jay's decision 2). A cue that launches an
+//!   audio clip with a region on Stretch whose made-at tempo is known and
+//!   isn't the tempo at its line waits for that region's tempo copy too,
+//!   streaming on or not, when the app has turned copy waits on
+//!   ([`TimeControl::set_copy_waits`]). Its needs gain each such region
+//!   ([`CopyNeed`]); the app has them made at once and says when they are
+//!   ready ([`TimeControl::copies_ready`]). A wait goes into the view when
+//!   its audio is held (or it needs none) and its copies are ready. A line
+//!   played without its copies moves it as for audio; waiting on copies
+//!   alone, on Play on time it goes in at its second move and lands on
+//!   that line (from its copy if it came meanwhile, else on Repitch), and
+//!   on Keep pitch it is cancelled after its second move. At Now, Play on
+//!   time goes in after [`NOW_BARS`] bars where Keep pitch is cancelled.
+//!
 //! [`TimeControl::audio_held`]: super::control::TimeControl::audio_held
+//! [`TimeControl::set_copy_waits`]: super::control::TimeControl::set_copy_waits
+//! [`TimeControl::copies_ready`]: super::control::TimeControl::copies_ready
 //! [`TimeControl::set_audio_waits`]: super::control::TimeControl::set_audio_waits
 //! [`TimeControl::audio_given_back`]: super::control::TimeControl::audio_given_back
 
@@ -47,6 +63,14 @@ pub const NOW_BARS: Tick = 2;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CueKey(u32);
 
+#[cfg(test)]
+impl CueKey {
+    /// A key for a test of what the app does with the needs.
+    pub fn test(n: u32) -> CueKey {
+        CueKey(n)
+    }
+}
+
 /// Audio a waiting cue needs held before it can go: frames `from..to` of
 /// recording `rec`, the first second of a region from where it starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,7 +81,20 @@ pub struct AudioNeed {
     pub to: i64,
 }
 
-/// Cues decided together, kept back until their audio is held.
+/// A tempo copy a waiting cue needs ready before it goes (5b.4): region
+/// `region` of the audio clip in `slot` of `track`, at `bpm`, the tempo at
+/// the cue's line.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CopyNeed {
+    pub cue: CueKey,
+    pub track: usize,
+    pub slot: usize,
+    pub region: usize,
+    pub bpm: f64,
+}
+
+/// Cues decided together, kept back until their audio is held and their
+/// tempo copies are ready.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Wait {
     key: CueKey,
@@ -78,7 +115,14 @@ pub(super) struct Wait {
     /// At Now: the frame it gives up on.
     until: u64,
     moves: u8,
+    /// Its audio is held, or it needs none (streaming off).
     held: bool,
+    /// It waits for tempo copies (5b.4), whether they are ready (or given
+    /// up on, on Play on time), and whether a region needing one is on
+    /// Keep pitch.
+    copies: bool,
+    ready: bool,
+    keep: bool,
     /// What the log calls it.
     pub what: String,
 }
@@ -105,8 +149,11 @@ pub(super) struct Ctx<'a> {
 #[derive(Clone, Debug, Default)]
 pub(super) struct AudioWaits {
     on: bool,
+    /// Copy waits on (5b.4: the live engine, never the offline copy).
+    copy_on: bool,
     waits: Vec<Wait>,
     needs: Vec<AudioNeed>,
+    copy_needs: Vec<CopyNeed>,
     /// The cues at the last compile.
     seen: Vec<Cue>,
     /// Each track's scene program change at the last compile, by id.
@@ -140,7 +187,36 @@ fn line_name(info: &TransportInfo, line: Tick) -> String {
     }
 }
 
+/// The regions of the audio clip cue `c` launches that need a tempo copy
+/// at `bpm`: on Stretch with a made-at tempo known (its own, else its
+/// recording's) that isn't `bpm`. With whether each is on Keep pitch.
+fn copies_of<'a>(cx: &'a Ctx, c: &Cue, bpm: f64) -> impl Iterator<Item = (usize, bool)> + 'a {
+    let regions = c
+        .slot
+        .filter(|_| launches_audio(cx.project, c))
+        .and_then(|s| cx.project.clip(c.track, s))
+        .and_then(|clip| clip.audio.as_ref())
+        .map_or(&[][..], |a| &a.regions[..]);
+    regions.iter().enumerate().filter_map(move |(i, r)| {
+        if r.follow != mpfree_seq::FollowTempo::Stretch {
+            return None;
+        }
+        let (_, made) = per_tick(cx, r)?;
+        (made != bpm && valid_bpm(bpm)).then_some((i, r.keep_pitch))
+    })
+}
+
 impl Wait {
+    /// Whether it goes into the view: its audio held and its copies ready.
+    fn goes(&self) -> bool {
+        self.held && self.ready
+    }
+
+    /// Whether it waits on its copies alone, its audio held.
+    fn copies_only(&self) -> bool {
+        self.held && !self.ready
+    }
+
     /// How long it waited for its audio before it was cancelled, in ticks
     /// (bars of `bar` ticks at Now): for the cell's hint.
     pub fn waited(&self, bar: Tick) -> Tick {
@@ -157,39 +233,88 @@ impl AudioWaits {
     pub fn late(&self) -> Vec<(usize, Tick)> {
         self.waits
             .iter()
-            .filter(|w| !w.held && w.moves > 0)
+            .filter(|w| !w.goes() && w.moves > 0)
             .filter(|w| !matches!(w.grid, LaunchGrid::Now | LaunchGrid::At(_)))
             .flat_map(|w| w.cues.iter().map(move |c| (c.track, w.line)))
             .collect()
     }
 
-    /// Waits on (streaming on) or off. Off, every waiting cue goes into the
-    /// next view as it is: true when one did, and it should compile.
+    /// Waits on (streaming on) or off. Off, every waiting cue's audio
+    /// counts as held, so one waiting for nothing else goes into the next
+    /// view as it is: true when one did, and it should compile.
     pub fn set_on(&mut self, on: bool) -> bool {
         self.on = on;
         if on || self.waits.is_empty() {
             return false;
         }
-        self.waits.clear();
-        self.set_needs(Vec::new());
-        true
+        let went = self.waits.iter().any(|w| !w.held && w.ready);
+        for w in &mut self.waits {
+            w.held = true;
+        }
+        self.waits.retain(|w| w.copies);
+        self.keep_needs();
+        went
+    }
+
+    /// Copy waits on or off (5b.4). Off, every waiting cue's copies count
+    /// as ready, so one waiting for nothing else goes into the next view
+    /// as it is: true when one did, and it should compile.
+    pub fn set_copies_on(&mut self, on: bool) -> bool {
+        self.copy_on = on;
+        if on || self.waits.is_empty() {
+            return false;
+        }
+        let went = self.waits.iter().any(|w| w.held && !w.ready);
+        for w in &mut self.waits {
+            (w.copies, w.ready) = (false, true);
+        }
+        // Streaming off, a wait was only for its copies: it goes. On, it
+        // stays until its cues land, so its audio stays held.
+        let on = self.on;
+        self.waits.retain(|w| on || !w.held);
+        self.keep_needs();
+        went
+    }
+
+    /// The needs of the waits left, after some went without a context.
+    fn keep_needs(&mut self) {
+        let on = self.on;
+        let keys = |w: &Wait, k: CueKey| w.key == k;
+        let needs: Vec<AudioNeed> = self
+            .needs
+            .iter()
+            .filter(|n| on && self.waits.iter().any(|w| keys(w, n.cue)))
+            .copied()
+            .collect();
+        let copies: Vec<CopyNeed> = self
+            .copy_needs
+            .iter()
+            .filter(|n| self.waits.iter().any(|w| w.copies && keys(w, n.cue)))
+            .copied()
+            .collect();
+        self.set_needs(needs, copies);
     }
 
     pub fn needs(&self) -> &[AudioNeed] {
         &self.needs
     }
 
+    pub fn copy_needs(&self) -> &[CopyNeed] {
+        &self.copy_needs
+    }
+
     /// The counts, with how many wait now, for the screens' state.
     pub fn counts(&self) -> AudioWaitCounts {
         AudioWaitCounts {
-            waiting: self.waits.iter().filter(|w| !w.held).count() as u32,
+            waiting: self.waits.iter().filter(|w| !w.goes()).count() as u32,
             ..self.counts
         }
     }
 
-    fn set_needs(&mut self, needs: Vec<AudioNeed>) {
-        if needs != self.needs {
+    fn set_needs(&mut self, needs: Vec<AudioNeed>, copies: Vec<CopyNeed>) {
+        if needs != self.needs || copies != self.copy_needs {
             self.needs = needs;
+            self.copy_needs = copies;
             self.counts.needs_rev += 1;
         }
     }
@@ -220,7 +345,11 @@ impl AudioWaits {
             .filter(|c| !self.seen.contains(c))
             .copied()
             .collect();
-        if self.on {
+        // Each fresh cue's regions that need a tempo copy at the tempo
+        // at its line (one steady tempo in 5b), when copy waits are on.
+        let bpm = cx.info.bpm;
+        let copies = self.copy_on && fresh.iter().any(|c| copies_of(cx, c, bpm).next().is_some());
+        if self.on || copies {
             if let Some(first) = fresh.iter().find(|c| launches_audio(cx.project, c)) {
                 let new_programs = programs
                     .iter()
@@ -235,9 +364,21 @@ impl AudioWaits {
                     .map(|w| w.0)
                     .collect();
                 let scene = scene.filter(|_| scene != self.seen_scene);
-                let w = self.wait(cx, &fresh, *first, new_programs, mutes, scene);
+                let mut w = self.wait(cx, &fresh, *first, new_programs, mutes, scene);
+                // Streaming off, its audio needs nothing.
+                w.held = !self.on;
+                if copies {
+                    w.copies = true;
+                    w.ready = false;
+                    w.keep = fresh
+                        .iter()
+                        .any(|c| copies_of(cx, c, bpm).any(|(_, keep)| keep));
+                    self.counts.copy_kept += 1;
+                }
+                if self.on {
+                    self.counts.kept += 1;
+                }
                 self.waits.push(w);
-                self.counts.kept += 1;
                 changed = true;
             }
         }
@@ -299,6 +440,9 @@ impl AudioWaits {
             until,
             moves: 0,
             held: false,
+            copies: false,
+            ready: true,
+            keep: false,
             what,
         }
     }
@@ -307,21 +451,40 @@ impl AudioWaits {
         frames_between(0, ticks.max(0), cx.info.bpm, cx.rate).ceil() as u64
     }
 
-    /// Every waiting cue's needs, in the order they wait.
+    /// Every waiting cue's needs, in the order they wait: its audio
+    /// (streaming on) and its copies. A copy said ready stays needed until
+    /// its cue lands or goes.
     fn make_needs(&mut self, cx: &Ctx) {
         let mut needs = Vec::new();
+        let mut copies = Vec::new();
+        let bpm = cx.info.bpm;
         for w in &self.waits {
             for c in &w.cues {
-                needs_of(cx, w, c, &mut needs);
+                if self.on {
+                    needs_of(cx, w, c, &mut needs);
+                }
+                if w.copies {
+                    let (Some(slot), cue) = (c.slot, w.key) else {
+                        continue;
+                    };
+                    copies.extend(copies_of(cx, c, bpm).map(|(region, _)| CopyNeed {
+                        cue,
+                        track: c.track,
+                        slot,
+                        region,
+                        bpm,
+                    }));
+                }
             }
         }
-        self.set_needs(needs);
+        self.set_needs(needs, copies);
     }
 
-    /// The view leaves out what waits: the cues of each wait not held,
-    /// with the scene program changes that wait with them.
+    /// The view leaves out what waits: the cues of each wait not held or
+    /// with its copies not ready, with the scene program changes that wait
+    /// with them.
     pub fn hold_back(&self, v: &mut PlayView) {
-        for w in self.waits.iter().filter(|w| !w.held) {
+        for w in self.waits.iter().filter(|w| !w.goes()) {
             for c in &w.cues {
                 v.hold_back_cue(c.track);
             }
@@ -335,7 +498,7 @@ impl AudioWaits {
 
     /// The mute queue waits too: a wait not held queued some of it.
     pub fn holds_queue(&self) -> bool {
-        self.waits.iter().any(|w| !w.held && !w.mutes.is_empty())
+        self.waits.iter().any(|w| !w.goes() && !w.mutes.is_empty())
     }
 
     /// The app held the audio `key` needs (`ok`), or can't hold it yet.
@@ -346,11 +509,30 @@ impl AudioWaits {
         if w.held == ok {
             return Some(false);
         }
+        let before = w.goes();
         w.held = ok;
+        let after = w.goes();
         if ok {
             self.counts.held += 1;
         }
-        Some(true)
+        Some(before != after)
+    }
+
+    /// The app has the tempo copies `key` needs ready (`ok`), or not (any
+    /// more). Some(true) when the view must compile; None when nothing
+    /// waits for copies under `key`.
+    pub fn copies_ready(&mut self, key: CueKey, ok: bool) -> Option<bool> {
+        let w = self.waits.iter_mut().find(|w| w.key == key && w.copies)?;
+        if w.ready == ok {
+            return Some(false);
+        }
+        let before = w.goes();
+        w.ready = ok;
+        let after = w.goes();
+        if ok {
+            self.counts.copy_ready += 1;
+        }
+        Some(before != after)
     }
 
     /// The app gave back the audio `key` held before its cues landed: they
@@ -373,65 +555,107 @@ impl AudioWaits {
                 cue_tick(&after, g)
             }
         };
-        Some(self.moved(cx, i, line))
+        let (gone, said, _) = self.moved(cx, i, line);
+        Some((gone, said))
     }
 
     /// Wait `i` moves to `line`, or is cancelled past [`MOVES`]: what to
-    /// take back, and the log's line.
-    fn moved(&mut self, cx: &Ctx, i: usize, line: Tick) -> (Option<Wait>, String) {
+    /// take back, the log's line, and whether it went into the view (on
+    /// Play on time, waiting on its copies alone at its last move).
+    fn moved(&mut self, cx: &Ctx, i: usize, line: Tick) -> (Option<Wait>, String, bool) {
         let w = &mut self.waits[i];
         w.moves += 1;
+        let copy = w.copies_only();
+        let what = if copy {
+            "copy not ready"
+        } else {
+            "audio not ready"
+        };
+        if copy && !w.keep && w.moves >= MOVES {
+            // Play on time: it lands on this line all the same, from its
+            // copy if it comes meanwhile, else on Repitch.
+            w.line = line;
+            w.ready = true;
+            self.counts.copy_repitch += 1;
+            let said = format!(
+                "{what}: {} starts on Repitch at {}",
+                w.what,
+                line_name(cx.info, line)
+            );
+            return (None, said, true);
+        }
         if w.moves > MOVES {
             let w = self.waits.remove(i);
             self.counts.cancelled += 1;
-            let said = format!(
-                "audio not ready: {} cancelled after {} moves",
-                w.what, MOVES
-            );
+            if copy {
+                self.counts.copy_cancelled += 1;
+            }
+            let said = format!("{what}: {} cancelled after {} moves", w.what, MOVES);
             self.make_needs(cx);
-            return (Some(w), said);
+            return (Some(w), said, false);
         }
         w.line = line;
         self.counts.moved += 1;
-        let said = format!(
-            "audio not ready: {} moves to {}",
-            w.what,
-            line_name(cx.info, line)
-        );
+        if copy {
+            self.counts.copy_moved += 1;
+        }
+        let said = format!("{what}: {} moves to {}", w.what, line_name(cx.info, line));
         // A legato clip's place in the pass moves with the line.
         self.make_needs(cx);
-        (None, said)
+        (None, said, false)
     }
 
     /// After each period: a line played without its cues moves them, past
     /// [`MOVES`] they are cancelled, and at Now they give up after
-    /// [`NOW_BARS`] bars. The waits cancelled, with the log's lines.
-    /// `period` is the period's length in ticks. Allocates only when one
-    /// moves or is cancelled.
-    pub fn period(&mut self, cx: &Ctx, period: Tick) -> Vec<(Option<Wait>, String)> {
+    /// [`NOW_BARS`] bars; waiting on copies alone on Play on time, they go
+    /// in at their last move instead. The waits cancelled, with the log's
+    /// lines, and whether one went in (the view compiles). `period` is the
+    /// period's length in ticks. Allocates only when one moves, goes in or
+    /// is cancelled.
+    pub fn period(&mut self, cx: &Ctx, period: Tick) -> (Vec<(Option<Wait>, String)>, bool) {
         let pos = cx.info.position;
         let last = self.last_pos.replace(pos);
-        if !self.on || self.waits.is_empty() || !cx.info.state.rolling() {
-            return Vec::new();
+        let mut went = false;
+        if self.waits.is_empty() || !cx.info.state.rolling() {
+            return (Vec::new(), went);
         }
         let jumped = last.is_none_or(|l| pos < l || pos > l + period + 1);
         let mut out = Vec::new();
         let mut i = 0;
         while i < self.waits.len() {
             let w = &mut self.waits[i];
-            if w.held {
+            if w.goes() {
                 i += 1;
                 continue;
             }
             match w.grid {
                 LaunchGrid::Now | LaunchGrid::At(_) => {
                     if cx.heard >= w.until {
+                        if w.copies_only() && !w.keep {
+                            // Play on time: it goes now, on Repitch.
+                            w.ready = true;
+                            self.counts.copy_repitch += 1;
+                            out.push((
+                                None,
+                                format!(
+                                    "copy not ready: {} starts on Repitch after {} bars",
+                                    w.what, NOW_BARS
+                                ),
+                            ));
+                            went = true;
+                            i += 1;
+                            continue;
+                        }
+                        let copy = w.copies_only();
                         let w = self.waits.remove(i);
                         self.counts.cancelled += 1;
-                        let said = format!(
-                            "audio not ready: {} cancelled after {} bars",
-                            w.what, NOW_BARS
-                        );
+                        let what = if copy {
+                            self.counts.copy_cancelled += 1;
+                            "copy not ready"
+                        } else {
+                            "audio not ready"
+                        };
+                        let said = format!("{what}: {} cancelled after {} bars", w.what, NOW_BARS);
                         out.push((Some(w), said));
                         self.make_needs(cx);
                         continue;
@@ -445,8 +669,9 @@ impl AudioWaits {
                 // them. A line a loop's end sent back to its start comes
                 // after the jump, which aims it again.
                 g if last.is_some_and(|l| l <= w.line) && w.line < pos => {
-                    let (gone, said) = self.moved(cx, i, cue_tick(cx.info, g));
+                    let (gone, said, went_in) = self.moved(cx, i, cue_tick(cx.info, g));
                     let cancelled = gone.is_some();
+                    went |= went_in;
                     out.push((gone, said));
                     if cancelled {
                         continue;
@@ -456,7 +681,7 @@ impl AudioWaits {
             }
             i += 1;
         }
-        out
+        (out, went)
     }
 }
 
