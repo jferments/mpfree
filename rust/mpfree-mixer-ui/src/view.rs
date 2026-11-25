@@ -7,9 +7,10 @@
 //! slot), sends A to D (drag to set; a tap on the letter takes it before or
 //! after the fader), pan (drag; a tap centres it), the fader beside a
 //! stereo meter (drag; it moves relative to where the finger lands, with a
-//! detent at 0 dB), the level (a tap sets 0 dB), Mute and Solo (and Arm on
-//! an input), and the output (a tap opens the picker). An input strip
-//! trades its last two insert rows for its Source and Monitor.
+//! detent at 0 dB), the level (a tap let go on it opens the number pad;
+//! SHIFT + the wheel's push sets 0 dB), Mute and Solo (and Arm on an
+//! input), and the output (a tap opens the picker). An input strip trades
+//! its last two insert rows for its Source and Monitor.
 //!
 //! Once the app offers takes ([`MixState::takes`]), a tap on the selected
 //! strip's name opens its menu: Freeze or Thaw (a track or a pad), Print
