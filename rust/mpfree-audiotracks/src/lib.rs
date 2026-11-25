@@ -106,7 +106,7 @@ pub use clips::{
     VOICES,
 };
 use clips::{Glide, Lane, Mode, Shape, Window, NO_TAKE_ID};
-pub use loop_play::{LoopPlayer, LoopRun, LOOP_VOICES};
+pub use loop_play::{LoopPlayer, LoopRun, LISTEN, LOOP_VOICES};
 
 /// Each loop's buffer for the period, by its id
 /// ([`AudioTracks::process_with_loops`]).
