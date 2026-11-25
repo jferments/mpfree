@@ -127,8 +127,9 @@ pub const MAX_TOUCH_POINTS: usize = 65536;
 /// `mpfree_looper::MAX_LOOPS`.
 pub const LOOPS: usize = 8;
 
-/// One note in a clip, in the clip's own ticks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// One note in a clip, in the clip's own ticks. Its `Hash` is by hand
+/// (below), every field in five words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Note {
     /// Start, from the clip's start: `0 <= tick < clip length`.
     pub tick: Tick,
@@ -179,6 +180,45 @@ pub struct Note {
     /// it skips its track's arp and MIDI effects on playback even with
     /// [`Track::through_arp`] on, and is never played over again.
     pub heard: bool,
+}
+
+/// Every field of a note, in five words: the derived hash made a write a
+/// field (fifteen), and the note editor's picks and `take_out_each` hash
+/// every note of a clip with SipHash, which costs by the write (the
+/// "Note editor: 8,192 notes" bench). Equal notes hash alike, as `Eq`
+/// needs: each word holds its fields whole.
+impl std::hash::Hash for Note {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        let Note {
+            tick,
+            len,
+            note,
+            velocity,
+            chance,
+            cond,
+            ratchet,
+            touch,
+            on,
+            ramp,
+            join,
+            group,
+            heard,
+        } = *self;
+        h.write_i64(tick);
+        h.write_i64(len);
+        h.write_u64(u64::from(touch.first) | u64::from(touch.len) << 32);
+        h.write_u64(
+            u64::from(note)
+                | u64::from(velocity) << 8
+                | u64::from(chance) << 16
+                | u64::from(ratchet) << 24
+                | u64::from(on) << 32
+                | u64::from(ramp as u8) << 40
+                | (join as u64) << 48
+                | u64::from(group) << 56,
+        );
+        h.write_u32(cond.word() | u32::from(heard) << 24);
+    }
 }
 
 /// How a note starts ([`Note::join`]): with its own attack, or joined to
@@ -372,6 +412,23 @@ pub enum Cond {
 }
 
 impl Cond {
+    /// The condition whole in the low 24 bits, a different word for each
+    /// (its kind, then `a` and `b` for [`Cond::Every`]), for a note's hash.
+    pub fn word(self) -> u32 {
+        match self {
+            Cond::Always => 0,
+            Cond::Every { a, b } => 1 | u32::from(a) << 8 | u32::from(b) << 16,
+            Cond::Fill => 2,
+            Cond::NotFill => 3,
+            Cond::Pre => 4,
+            Cond::NotPre => 5,
+            Cond::Nei => 6,
+            Cond::NotNei => 7,
+            Cond::First => 8,
+            Cond::NotFirst => 9,
+        }
+    }
+
     /// Whether a note with this condition and `chance` (percent) is
     /// conditional: whether it played becomes its track's last result.
     /// Not for `Pre` and `Nei` (and their opposites), which read it.
@@ -2502,6 +2559,54 @@ mod track_id_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A note's hand-made hash: equal notes hash alike, and a note changed
+    /// in any one field hashes apart from it (each word holds its fields
+    /// whole, so none is lost), every condition included.
+    #[test]
+    fn a_note_hashes_every_field() {
+        use std::hash::{BuildHasher, RandomState};
+        let s = RandomState::new();
+        let base = Note::new(480, 240, 60, 100);
+        let changed = [
+            Note { tick: 481, ..base },
+            Note { len: 241, ..base },
+            Note { note: 61, ..base },
+            Note {
+                velocity: 99,
+                ..base
+            },
+            Note { chance: 50, ..base },
+            Note { ratchet: 2, ..base },
+            Note {
+                touch: Touch { first: 1, len: 0 },
+                ..base
+            },
+            Note {
+                touch: Touch { first: 0, len: 1 },
+                ..base
+            },
+            Note { on: false, ..base },
+            Note { ramp: -3, ..base },
+            Note {
+                join: Join::Slide,
+                ..base
+            },
+            Note { group: 7, ..base },
+            Note {
+                heard: true,
+                ..base
+            },
+        ];
+        assert_eq!(s.hash_one(base), s.hash_one(Note { ..base }));
+        for n in changed {
+            assert_ne!(s.hash_one(n), s.hash_one(base), "{n:?}");
+        }
+        let words: std::collections::HashSet<u32> =
+            Cond::all().into_iter().map(Cond::word).collect();
+        assert_eq!(words.len(), Cond::all().len());
+        assert!(words.iter().all(|w| w >> 24 == 0));
+    }
 
     /// Play directions (S6): each a pass plays every step it should, and
     /// `played_at` finds where a step plays.
