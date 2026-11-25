@@ -170,8 +170,10 @@ pub struct TimeAudio {
     /// ([`TimeAudio::set_lead`]). The arps and Note Repeat take their time
     /// from it, and the mixer's context ([`TimeAudio::tempo_block`]).
     lead: Option<Span>,
-    /// This period as the lead has it, while it leads.
-    lead_block: Block,
+    /// This period as the lead has it, while it leads. Boxed, made once
+    /// in [`TimeAudio::new`]: a block is some 8.5 KB, and inline it made
+    /// everything holding the time engine that much bigger on the stack.
+    lead_block: Box<Block>,
     led: bool,
     /// [`TimeAudio::advance`] ran the transport for the coming period (and
     /// whether it could).
@@ -317,7 +319,7 @@ impl TimeAudio {
             click: Click::new(rate),
             metronome: false,
             lead: None,
-            lead_block: Block::new(),
+            lead_block: Box::new(Block::new()),
             led: false,
             advanced: None,
             jump_pending: false,
