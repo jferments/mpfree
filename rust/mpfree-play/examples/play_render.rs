@@ -360,6 +360,7 @@ impl Session {
                         dest: 0,
                         event,
                         notes: false,
+                        heard: false,
                     },
                 );
             }
@@ -678,6 +679,7 @@ fn arp_out(block: &Block, offset: u32, kind: EventKind) -> Out {
         dest: 0,
         event,
         notes: false,
+        heard: false,
     }
 }
 
@@ -696,6 +698,7 @@ fn notes(list: &[(i64, i64, u8, u8)]) -> Vec<Note> {
             ramp: 0,
             join: mpfree_seq::Join::Attack,
             group: 0,
+            heard: false,
         })
         .collect()
 }
@@ -788,6 +791,7 @@ fn song() -> (Project, Vec<Launch>) {
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
                 group: 0,
+                heard: false,
             })
         })
         .collect();

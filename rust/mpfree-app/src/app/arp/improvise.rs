@@ -21,14 +21,24 @@
 //! pick, another track, or a try of New idea or More like this starts it
 //! again from the phrase as picked. When I stop (Answer) is in
 //! `answer.rs`.
+//!
+//! **Records** (both halves; the composing tools' contract 8): what REC
+//! keeps of the armed track while it plays on the Phrase tab. You keeps
+//! the pads as pressed; mpfree and Both keep what the arp played, marked
+//! to play as heard, so playback never improvises again
+//! (`mpfree_play::Keeps`, which the time engine reads). While I hold your
+//! chord makes no sound of its own, so mpfree and Both keep the same
+//! notes; When I stop, mpfree leaves out your call. Each half keeps its
+//! own pick: While I hold starts on mpfree, When I stop on Both.
 
 use crate::app::{App, Effect};
 use mpfree_arp::scale::NOTE_NAMES;
 use mpfree_arp::{HeldChord, Phrase, PPQ};
 use mpfree_arp_ui::phrase_tab::{Sketch, SketchNote};
-use mpfree_arp_ui::view::{ImproviseAction, ImproviseNow, PlaysWhen};
+use mpfree_arp_ui::view::{ImproviseAction, ImproviseNow, PlaysWhen, Records};
 use mpfree_compose::idea::{evolve, NewIdea};
 use mpfree_compose::GROOVE;
+use mpfree_play::Keeps;
 use mpfree_time_ui::TimeAction;
 
 /// Evolve changes the phrase once in this many bars: a phrase of 1 or 2
@@ -68,6 +78,19 @@ pub(in crate::app) struct Improvise {
     sent: bool,
     /// Where the bars to the next Evolve stand: for the screen's line.
     bars_left: Option<u32>,
+    /// Each half of the Plays row's Records pick, by its place in
+    /// `PlaysWhen::ALL`; None is where it starts ([`Records::start`]).
+    records: [Option<Records>; 2],
+    /// The track whose arp was told what REC keeps, to tell it again when
+    /// the armed track changes.
+    keeps_on: Option<usize>,
+}
+
+impl Improvise {
+    /// What REC keeps on half `when` of the Plays row.
+    pub fn records(&self, when: PlaysWhen) -> Records {
+        self.records[when as usize].unwrap_or(Records::start(when))
+    }
 }
 
 /// A chord as the line under the picture names it: "F major", "A minor",
@@ -113,6 +136,16 @@ impl App {
             ImproviseAction::Plays(w) => {
                 self.improvise.when = w;
                 vec![Effect::Note(format!("improvise: plays {}", w.label()))]
+            }
+            ImproviseAction::Records(r) => {
+                let when = self.improvise.when;
+                self.improvise.records[when as usize] = Some(r);
+                self.records_poll();
+                vec![Effect::Note(format!(
+                    "improvise: records {} ({})",
+                    r.label(),
+                    when.label()
+                ))]
             }
             ImproviseAction::Hold => {
                 self.improvise.evolve = false;
@@ -305,8 +338,34 @@ impl App {
                 .chord_held()
                 .map(|c| chord_name(&c)),
             answers: true,
+            records: im.records(im.when),
             answer: self.answer_view(),
         }
+    }
+
+    /// What REC keeps of the armed track, for its arp to say to the time
+    /// engine: the Phrase tab's Records row while the track plays a phrase
+    /// on a synth, else as its "Clips through the arp" switch says. Each
+    /// poll, and at once when Records changes.
+    pub(super) fn records_poll(&mut self) {
+        let track = self.track;
+        let when = self.improvise.when;
+        let keeps = if self.arp_mode == mpfree_arp::Mode::Phrase && !self.phrase_on_kit() {
+            match (self.improvise.records(when), when) {
+                (Records::You, _) => Keeps::Yours,
+                // When I stop your call plays through the arp as pressed:
+                // mpfree leaves it out. While I hold it makes no sound.
+                (Records::Mpfree, PlaysWhen::WhenIStop) => Keeps::Its,
+                (Records::Mpfree | Records::Both, _) => Keeps::Both,
+            }
+        } else {
+            Keeps::Switch
+        };
+        if let Some(was) = self.improvise.keeps_on.filter(|&t| t != track) {
+            self.arps.set_keeps(was, Keeps::Switch);
+        }
+        self.improvise.keeps_on = Some(track);
+        self.arps.set_keeps(track, keeps);
     }
 }
 
@@ -474,5 +533,50 @@ mod tests {
             PlaysWhen::WhenIStop,
         )));
         assert_eq!(app.improvise_view().when, PlaysWhen::WhenIStop);
+    }
+
+    /// Records: each half of the Plays row keeps its own pick (While I
+    /// hold starts on mpfree, When I stop on Both), and the armed track's
+    /// arp says what REC keeps: You the pads, mpfree and Both what it
+    /// played (When I stop, mpfree without your call). Off the Phrase tab's
+    /// mode, the switch says it again.
+    #[test]
+    fn records_picks_what_rec_keeps_on_each_half() {
+        let mut app = on_the_phrase_tab("Minor hook");
+        let t = app.track;
+        app.arp_poll();
+        assert_eq!(app.improvise_view().records, Records::Mpfree);
+        assert_eq!(
+            app.arps.keeps(t),
+            Keeps::Both,
+            "While I hold: what it played"
+        );
+        app.arp_action(ArpAction::Improvise(ImproviseAction::Records(Records::You)));
+        assert_eq!(app.arps.keeps(t), Keeps::Yours);
+        app.arp_action(ArpAction::Improvise(ImproviseAction::Plays(
+            PlaysWhen::WhenIStop,
+        )));
+        app.arp_poll();
+        assert_eq!(app.improvise_view().records, Records::Both);
+        assert_eq!(app.arps.keeps(t), Keeps::Both);
+        let fx = app.arp_action(ArpAction::Improvise(ImproviseAction::Records(
+            Records::Mpfree,
+        )));
+        assert_eq!(
+            fx,
+            [Effect::Note(
+                "improvise: records mpfree (When I stop)".to_string()
+            )]
+        );
+        assert_eq!(app.arps.keeps(t), Keeps::Its);
+        app.arp_action(ArpAction::Improvise(ImproviseAction::Plays(
+            PlaysWhen::WhileIHold,
+        )));
+        app.arp_poll();
+        assert_eq!(app.improvise_view().records, Records::You, "its own pick");
+        assert_eq!(app.arps.keeps(t), Keeps::Yours);
+        app.arp_action(ArpAction::Mode(Mode::Arp));
+        app.arp_poll();
+        assert_eq!(app.arps.keeps(t), Keeps::Switch);
     }
 }

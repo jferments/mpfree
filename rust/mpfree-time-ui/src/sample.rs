@@ -302,6 +302,7 @@ fn clip(name: &str, length: Tick, notes: &[(Tick, u8, u8)]) -> Clip {
             ramp: 0,
             join: mpfree_seq::Join::Attack,
             group: 0,
+            heard: false,
         })
         .expect("sample note in range");
     }
@@ -1296,6 +1297,7 @@ pub fn song_audio_blocks_state() -> Result<TimeState, String> {
             pass,
             once,
             pieces: vec![piece(pass / BAR)],
+            looped: None,
         });
         placements.push(PlacementInfo {
             track: row,
@@ -1307,6 +1309,55 @@ pub fn song_audio_blocks_state() -> Result<TimeState, String> {
     }
     state.placements = placements.into();
     state.selected = Some(riff);
+    Ok(state)
+}
+
+/// The Song view with loop blocks (the rethink's phase 4e.3, board 8),
+/// from [`song_audio_blocks_state`]: on Vocal's lane after its takes, Vox
+/// loop (a loop cell of two bars) played twice from bar 9, then again from
+/// bar 13 starting a bar into its loop ("from bar 2"), picked; the loop's
+/// small wave as the looper gives it.
+pub fn song_loop_blocks_state() -> Result<TimeState, String> {
+    use crate::song::ClipBlock;
+    use crate::view::PlacementInfo;
+    let mut state = song_audio_blocks_state()?;
+    let v = 0;
+    let row = state.audio[v].row;
+    if state.audio[v].blocks.iter().any(|b| b.end > 8 * BAR) {
+        return Err("loop blocks sample: Vocal has takes past bar 8".into());
+    }
+    let id: u128 = 0x005a_fe10_0b01;
+    state.loops.ids[0] = id;
+    // A vocal's swell and fall over its two bars, 24 columns.
+    let mut wave = [0u8; crate::widgets::CELL_WAVE];
+    for (k, w) in wave.iter_mut().enumerate() {
+        let x = k as f32 / crate::widgets::CELL_WAVE as f32;
+        let phrase = (x * 2.0 * std::f32::consts::PI).sin().abs();
+        *w = (40.0 + 190.0 * phrase * (1.0 - 0.4 * x)) as u8;
+    }
+    state.loops.loops[0].wave = wave;
+    state.loops.in_use = 1;
+    let mut placements = state.placements.to_vec();
+    let picked = placements.len() + 1;
+    for (start, origin) in [(8 * BAR, 8 * BAR), (12 * BAR, 11 * BAR)] {
+        state.audio[v].clips.push(ClipBlock {
+            index: placements.len(),
+            origin,
+            pass: 2 * BAR,
+            once: false,
+            pieces: Vec::new(),
+            looped: Some(id),
+        });
+        placements.push(PlacementInfo {
+            track: row,
+            start,
+            length: 4 * BAR,
+            name: "Vox loop".into(),
+            unique: false,
+        });
+    }
+    state.placements = placements.into();
+    state.selected = Some(picked);
     Ok(state)
 }
 

@@ -6766,6 +6766,7 @@ fn song_lanes_with(
         on: st.song_on,
         rec: st.song_rec,
         audio: st.audio.clone(),
+        loop_waves: loop_block_waves(st),
         region: st.region.map(|r| (r.track, r.index)),
         panel: st.audio_panel,
         takes_open: st.audio_takes,
@@ -6850,6 +6851,24 @@ pub fn song_chord_lane(st: &TimeState) -> crate::song::SongChordLane {
         open: None,
         picker: None,
     }
+}
+
+/// The small waves of the loops that blocks on the audio lanes play
+/// (phase 4e.3), by lasting id: only those, so a loop recording elsewhere
+/// never draws the Song view again.
+fn loop_block_waves(st: &TimeState) -> Vec<(u128, [u8; crate::widgets::CELL_WAVE])> {
+    let named = |id: u128| {
+        st.audio
+            .iter()
+            .any(|l| l.clips.iter().any(|c| c.looped == Some(id)))
+    };
+    st.loops
+        .ids
+        .iter()
+        .zip(&st.loops.loops)
+        .filter(|(&id, _)| id != 0 && named(id))
+        .map(|(&id, f)| (id, f.wave))
+        .collect()
 }
 
 /// Each track's name and colour, for the conversion report card's rows.
@@ -9346,6 +9365,7 @@ mod tests {
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
                 group: 0,
+                heard: false,
             })
             .unwrap();
             t.slots[0] = Some(c);

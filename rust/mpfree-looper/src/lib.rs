@@ -284,6 +284,12 @@ pub enum Command {
     /// with no other side, while busy or overdubbing, at another speed,
     /// with a print playing, or in a loop shorter than three beats.
     AbSeam(bool),
+    /// A/B on the seam against a move of your own (Move start / Move
+    /// end, [`Snap::To`]): as [`Command::AbSeam`]`(true)`, but the other
+    /// side is the start and end here, from your press and tap. While it
+    /// runs, another `AbMove` changes the other side from the next half
+    /// way; `AbSeam(false)` ends it as for the snap's.
+    AbMove(Shift),
     /// A note played on song frame `frame` (a pad hit, which the host
     /// sees before the looper hears it): starts a loop armed to start
     /// when you play ([`Starts::Play`]) that isn't listening by ear
@@ -1157,6 +1163,11 @@ pub enum Snap {
     /// Read as: read the loop as this many bars of the song's meter. Its
     /// length and its sound stay; the tempo changes so they fit it.
     Bars(u32),
+    /// Move start / Move end: put the start and the end here, in frames
+    /// from your press and your closing tap (as [`Status::offer`] and
+    /// [`Status::moved`] count them), within what the first pass kept.
+    /// It lands as a snap does: the bars stay and the tempo follows.
+    To(Shift),
     /// Undo the last step, a snap ([`Step::Snap`], [`Step::Bars`]).
     Undo,
     /// Redo the next step, a snap.
@@ -1423,6 +1434,10 @@ pub struct Status {
     /// How far the loop's start and end are from your press and tap
     /// (Auto, or a snap): [`Snap::Press`] and [`Snap::Tap`] put them back. Lasts as [`Status::offer`] does.
     pub moved: Option<Shift>,
+    /// What smart loop end found, from your press and tap (not from where
+    /// the loop is, as [`Status::offer`] is): a loop moved but not there
+    /// was moved by hand ([`Snap::To`]). Lasts as [`Status::offer`] does.
+    pub found: Option<Shift>,
     /// A snap given to land on this frame ([`Looper::snap_at`]).
     pub snapping: Option<u64>,
     /// The first pass closed on bars Length didn't say, because Length's
@@ -2367,6 +2382,9 @@ struct Loop {
     /// own, but the first pass's last beat (and first, when the start
     /// moves) is the other side's.
     ab_views: [View; MAX_LAYERS],
+    /// A move's A/B asked for another side while it ran
+    /// ([`Command::AbMove`]): made at the next half way.
+    ab_next: Option<Shift>,
 
     /// The first pass's writer is still at work (it runs `latency` frames
     /// behind).
@@ -2749,6 +2767,7 @@ impl Loop {
         ab_last: 0.0,
         ab_version: 0,
         ab_views: [View::EMPTY; MAX_LAYERS],
+        ab_next: None,
         first_open: false,
         tail: false,
         short: false,
@@ -3045,6 +3064,10 @@ pub struct Looper {
     /// The loops on audio tracks ([`Looper::play`]): where the track
     /// player says each sounds next. None: the loop launches itself.
     on_track: [Option<OnTrack>; MAX_LOOPS],
+    /// The free loops whose cells are on audio tracks, a bit a loop
+    /// ([`Looper::free_on_track`]): each launches itself on the free clock
+    /// as ever, but its buffer is for its track.
+    free_tracked: u32,
 }
 
 /// The looper's side of the free loops ([`Clock::Free`]).
@@ -3431,6 +3454,7 @@ impl Looper {
             free_ticks: [0.0; RUN],
             outs: LoopOuts::new(MAX_PERIOD as usize),
             on_track: [None; MAX_LOOPS],
+            free_tracked: 0,
         }
     }
 
@@ -3614,6 +3638,9 @@ impl Looper {
             l.solo = false;
             OnTrack::default()
         });
+        // A free loop on a track made a song loop (Make song) played itself
+        // until now: the track takes it over here, with no gap.
+        self.free_tracked &= !(1 << n);
         if !t.tell(runs) {
             self.stats.refused += 1;
             return false;
@@ -3622,11 +3649,58 @@ impl Looper {
     }
 
     /// Loop `n` launches itself again, as it did before it went on a
-    /// track ([`Looper::play`]): on, from the next period.
+    /// track ([`Looper::play`]) or while its cell was on one
+    /// ([`Looper::free_on_track`]): from the next period, in the looper's
+    /// mix again.
     pub fn leave_track(&mut self, n: usize) {
         if let Some(t) = self.on_track.get_mut(n) {
             *t = None;
         }
+        if n < MAX_LOOPS {
+            self.free_tracked &= !(1 << n);
+        }
+    }
+
+    /// Free loop `n`'s cell is on an audio track (`on`), or no longer is
+    /// (audio tracks phase 4e.4, free cells). On one, it launches itself on
+    /// the free clock as ever ([`Looper::launch`]; `Some(Tick::MIN)` lands
+    /// on the free clock's next bar line) and fades in and out with its
+    /// launches, but its buffer ([`LoopOuts::loop_out`]) is for its track:
+    /// the looper's mix leaves it out, it doesn't resample, it is out of
+    /// the loops' solo, and its own Mute, Solo and Sync are refused (its
+    /// track mutes and solos it). Putting it on unmutes and unsolos it.
+    /// It stays on through a Clear until it is taken off here, with
+    /// [`Looper::leave_track`], or by the track player's first runs for it
+    /// ([`Looper::play`]): when Make song makes it a song loop it plays
+    /// itself on, still out of the mix, until its track places it, with no
+    /// gap. Make song undone, the loop is free again and is put back on
+    /// here. False, and counted as refused, for a song loop (`on`) or a
+    /// loop past the loops.
+    pub fn free_on_track(&mut self, n: usize, on: bool) -> bool {
+        let Some(l) = self.loops.get_mut(n) else {
+            self.stats.refused += 1;
+            return false;
+        };
+        if !on {
+            self.free_tracked &= !(1 << n);
+            return true;
+        }
+        if l.clock != Clock::Free {
+            self.stats.refused += 1;
+            return false;
+        }
+        if self.free_tracked & (1 << n) == 0 {
+            l.muted = false;
+            l.solo = false;
+        }
+        self.on_track[n] = None;
+        self.free_tracked |= 1 << n;
+        true
+    }
+
+    /// Free loop `n`'s cell is on an audio track ([`Looper::free_on_track`]).
+    pub fn free_tracked(&self, n: usize) -> bool {
+        n < MAX_LOOPS && self.free_tracked & (1 << n) != 0
     }
 
     /// Loop `n` is on an audio track ([`Looper::play`]).
@@ -3764,6 +3838,7 @@ impl Looper {
                 .and_then(|(f, m)| f.map(|f| f - m))
                 .filter(|o| !o.is_none()),
             moved: l.smart_now().map(|(_, m)| m).filter(|m| !m.is_none()),
+            found: l.smart_now().and_then(|(f, _)| f),
             snapping: l.snap.map(|p| p.at),
             asks: l.asks,
             ab: l.ab_on.then_some(l.ab_other),
@@ -4699,12 +4774,14 @@ impl Looper {
         // ended, its own fade in under way) rises on to full gain as it
         // would have off the track, so the track takes it on unfaded with
         // no step (`LoopPlayer::moving`).
-        let tracked = |k: usize| self.on_track[k].is_some();
+        // A free loop whose cell is on a track is its track's to solo too.
+        let free_tracked = self.free_tracked;
+        let tracked = |k: usize| self.on_track[k].is_some() || free_tracked & (1 << k) != 0;
         let any_solo = (self.loops.iter().enumerate())
             .any(|(k, l)| l.solo && l.phase != Phase::Empty && !tracked(k));
         let mut told = [None; MAX_LOOPS];
         for (k, l) in self.loops.iter_mut().enumerate() {
-            l.solo_out = any_solo && !l.solo;
+            l.solo_out = any_solo && !l.solo && free_tracked & (1 << k) == 0;
             if let Some(t) = self.on_track[k].as_mut() {
                 told[k] = Some(t.take());
                 l.solo_out = false;
@@ -4794,12 +4871,14 @@ impl Looper {
         // Loops resampling run last in each run, on what the others played
         // in it.
         // (Not a loop on a track: it hears its track's input.)
+        // (Nor a free loop whose cell is on a track.)
         let rs = loops.iter().enumerate().fold(0u32, |m, (k, l)| {
             m | (u32::from(l.resample && on_track[k].is_none()) << k)
-        });
+        }) & !free_tracked;
         outs.set_resampling(rs);
         outs.set_on_track(
-            (on_track.iter().enumerate()).fold(0u32, |m, (k, t)| m | (u32::from(t.is_some()) << k)),
+            (on_track.iter().enumerate()).fold(0u32, |m, (k, t)| m | (u32::from(t.is_some()) << k))
+                | free_tracked,
         );
         // Free loops keep time with the free clock: each run gets its ticks
         // too, its bar lines cut the runs, and of the song's marks they
@@ -5126,7 +5205,7 @@ impl Looper {
         let ticks = l.snap_ticks(s, span.meter.bar_ticks())?;
         let len = l.len as i64 + by.longer();
         let fits = match s {
-            Snap::Found | Snap::Tap | Snap::Press => l.shifted(by).is_some(),
+            Snap::Found | Snap::Tap | Snap::Press | Snap::To(_) => l.shifted(by).is_some(),
             Snap::Bars(_) | Snap::Undo | Snap::Redo => true,
         };
         if !fits && l.short && by.end > 0 {
@@ -6388,6 +6467,13 @@ impl Looper {
             {
                 self.stats.refused += 1
             }
+            // A free loop whose cell is on a track: its track mutes and
+            // solos it, and it keeps its clock.
+            Queued::Loop(Command::Mute(_) | Command::Solo(_) | Command::SetClock(_))
+                if self.free_tracked(s) =>
+            {
+                self.stats.refused += 1
+            }
             Queued::Loop(Command::SetLatency(l)) => {
                 for lp in &mut self.loops {
                     lp.latency = l;
@@ -7487,6 +7573,7 @@ impl Loop {
                 | Command::FreePlay
                 | Command::UseReading
                 | Command::AbSeam(_)
+                | Command::AbMove(_)
                 | Command::Played(_)
                 | Command::StartsByEar(_)
                 | Command::TempoFromLoop(_)
@@ -7609,7 +7696,16 @@ impl Loop {
             Command::UseReading => stats.refused += 1,
             Command::AbSeam(true) if self.ab_on => self.ab_off = false,
             Command::AbSeam(true) => {
-                if !self.ab_start() {
+                if !self.ab_start(None) {
+                    stats.refused += 1;
+                }
+            }
+            Command::AbMove(to) if self.ab_on => {
+                self.ab_next = Some(to);
+                self.ab_off = false;
+            }
+            Command::AbMove(to) => {
+                if !self.ab_start(Some(to)) {
                     stats.refused += 1;
                 }
             }
@@ -7768,20 +7864,40 @@ impl Loop {
     /// it kept, its start moved and its length changed by `by` (an
     /// [`Edit::Move`] and an [`Edit::Resize`] at once). None if it can't
     /// be made.
-    /// A/B on the seam ([`Command::AbSeam`]) starts: the other side's
-    /// seam made, played from the next half way. False if it can't.
-    fn ab_start(&mut self) -> bool {
-        let Some((found, moved)) = self.smart_now() else {
+    /// A/B on the seam ([`Command::AbSeam`], [`Command::AbMove`]) starts:
+    /// the other side's seam made, played from the next half way (or, for
+    /// a move while it runs, from the next half way on). False if it
+    /// can't.
+    fn ab_start(&mut self, to: Option<Shift>) -> bool {
+        let Some(seam) = self.ab_seam(to) else {
             return false;
         };
+        self.ab_views = self.views;
+        self.ab_views[0] = seam;
+        self.ab_on = true;
+        self.ab_other = false;
+        self.ab_off = false;
+        self.ab_next = None;
+        self.ab_last = self.pos;
+        self.ab_version = self.version;
+        true
+    }
+
+    /// The other side's seam for A/B ([`Loop::ab_start`]): its first
+    /// layer's view, the loop's own but for its last beat (and its first,
+    /// when the start moves). None if it can't be made.
+    fn ab_seam(&self, to: Option<Shift>) -> Option<View> {
+        let (found, moved) = self.smart_now()?;
         if self.od_open || self.busy() || self.speed != 0 || self.rate != 0 || self.print_on > 0.0 {
-            return false;
+            return None;
         }
-        // The other side: the snap from your tap (what Snap would make);
-        // from the snap, your tap, or your press if only the start moved
-        // (what Use my tap or Use my press would).
-        let by = match found {
-            Some(f) if f != moved => f - moved,
+        // The other side: a move of your own; else the snap from your tap
+        // (what Snap would make); from the snap, your tap, or your press
+        // if only the start moved (what Use my tap or Use my press would).
+        let by = match (to, found) {
+            (Some(t), _) if t != moved => t - moved,
+            (Some(_), _) => return None,
+            (None, Some(f)) if f != moved => f - moved,
             _ if moved.end != 0 => Shift {
                 start: 0,
                 end: -moved.end,
@@ -7790,18 +7906,16 @@ impl Loop {
                 start: -moved.start,
                 end: 0,
             },
-            _ => return false,
+            _ => return None,
         };
-        let Some(other) = self.shifted(by) else {
-            return false;
-        };
+        let other = self.shifted(by)?;
         // A beat (a quarter) of the loop, in frames.
         let ticks = i128::from(self.len_ticks.max(1));
         let beat = ((i128::from(PPQ) * self.len as i128 + ticks / 2) / ticks) as usize;
         let (v, w) = (self.views[0], other.views[0]);
         let (len, wl) = (v.len(), w.len());
         if beat == 0 || 3 * beat > len || 3 * beat > wl {
-            return false;
+            return None;
         }
         let seam = || {
             let end = w.cut(wl - beat, wl)?;
@@ -7811,17 +7925,7 @@ impl Loop {
                 w.cut(0, beat)?.then(&v.cut(beat, len - beat)?)?.then(&end)
             }
         };
-        let Some(seam) = seam().filter(|s| s.len() == len) else {
-            return false;
-        };
-        self.ab_views = self.views;
-        self.ab_views[0] = seam;
-        self.ab_on = true;
-        self.ab_other = false;
-        self.ab_off = false;
-        self.ab_last = self.pos;
-        self.ab_version = self.version;
-        true
+        seam().filter(|s| s.len() == len)
     }
 
     /// A/B on the seam, each frame while it runs: from half way round
@@ -7844,6 +7948,17 @@ impl Loop {
             || (self.busy() && self.snap.is_none());
         if changed || (crossed && self.ab_off) {
             self.ab_end();
+        } else if let Some(to) = self.ab_next.filter(|_| crossed) {
+            // A move's new other side, from half way, where both play the
+            // same: it plays next.
+            self.ab_next = None;
+            match self.ab_seam(Some(to)) {
+                Some(seam) => {
+                    self.ab_views[0] = seam;
+                    self.ab_other = true;
+                }
+                None => self.ab_end(),
+            }
         } else if crossed {
             self.ab_other = !self.ab_other;
         }
@@ -7853,6 +7968,7 @@ impl Loop {
         self.ab_on = false;
         self.ab_other = false;
         self.ab_off = false;
+        self.ab_next = None;
     }
 
     fn shifted(&self, by: Shift) -> Option<Shape> {
@@ -8938,10 +9054,11 @@ impl Loop {
         };
         match s {
             Snap::Bars(_) => Ok(Shift::NONE),
-            Snap::Found | Snap::Tap | Snap::Press => {
+            Snap::Found | Snap::Tap | Snap::Press | Snap::To(_) => {
                 let (found, moved) = self.smart_now().ok_or("the loop has changed since")?;
                 let to = match s {
                     Snap::Found => found.ok_or("smart loop end found nothing to change")?,
+                    Snap::To(to) => to,
                     Snap::Tap => Shift {
                         start: moved.start,
                         end: 0,
@@ -8954,7 +9071,7 @@ impl Loop {
                 let by = to - moved;
                 if by.is_none() {
                     return Err(match s {
-                        Snap::Found => "the loop is already there",
+                        Snap::Found | Snap::To(_) => "the loop is already there",
                         Snap::Tap => "the loop already ends on your tap",
                         _ => "the loop already starts on your press",
                     });
@@ -8985,7 +9102,7 @@ impl Loop {
             },
             Snap::Undo => kept(&self.done[..self.n_done]).ok_or("the last step isn't a snap"),
             Snap::Redo => kept(&self.undone[..self.n_undone]).ok_or("the next step isn't a snap"),
-            Snap::Found | Snap::Tap | Snap::Press => Ok(self.len_ticks),
+            Snap::Found | Snap::Tap | Snap::Press | Snap::To(_) => Ok(self.len_ticks),
         }
     }
 
@@ -9005,7 +9122,7 @@ impl Loop {
         let landed = ready
             && self.snap_by(p.snap) == Ok(p.by)
             && match p.snap {
-                Snap::Found | Snap::Tap | Snap::Press => self.make_shift(stats, p.by),
+                Snap::Found | Snap::Tap | Snap::Press | Snap::To(_) => self.make_shift(stats, p.by),
                 Snap::Bars(b) => self.make_bars(stats, b, p.ticks),
                 Snap::Undo => {
                     self.undo();
@@ -10104,6 +10221,27 @@ impl Loop {
             // The gap before this run: only a writer still going is run.
             let (a, b) = (at.max(off), from.min(end));
             at = at.max(to);
+            // A load or a copy still coming into it (an opened project's
+            // loop that a cell names, phase 4e.3): it finishes on its
+            // frame in a gap too, as off the track, nothing of it heard.
+            if a < b && self.phase == Phase::Empty && (self.loading || self.adding) {
+                let (j, m) = (a - off, b - a);
+                let cut = Run {
+                    from: r.from + j,
+                    ticks: &r.ticks[j..j + m],
+                    input: &r.input[2 * j..2 * (j + m)],
+                    f: r.f + j as u64,
+                    playing: r.playing,
+                    first: None,
+                };
+                let mut gone = [[0f32; 2]; RUN];
+                self.run(store, stats, me, &cut, print, waiting, &mut gone[..m]);
+                // In, it is at full gain at once, as a loop on a track
+                // always is: the track fades it, not the looper.
+                if self.phase != Phase::Empty {
+                    self.gain = 1.0;
+                }
+            }
             let tail = self.phase == Phase::Overdubbing || self.od_open;
             let gap = t
                 .last

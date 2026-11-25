@@ -46,7 +46,7 @@ pub mod view;
 
 pub use ahead::{is_gear_control, Ahead, AheadCounts, MAX_AHEAD};
 pub use arp::ArpHost;
-pub use arps::{PadRows, Through, TrackArps, LAYOUT_PADS, PAD_NOTES};
+pub use arps::{Keeps, PadRows, Through, TrackArps, LAYOUT_PADS, PAD_NOTES};
 pub use audio::{AudioAnswer, AudioChange, AudioPlays, MAX_AUDIO_CHANGES};
 pub use mpfree_param;
 pub use player::{

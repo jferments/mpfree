@@ -3,8 +3,9 @@
 //! rounds on the interval, waiting for playback but never past the
 //! longest wait, spread or together, the interval lengthening when rounds
 //! fall behind and coming back, the capture reserve, "Unsaved" seconds,
-//! capture memory running out; then the recorder on its own thread with
-//! real files.
+//! capture memory running out, every due round in a pass on a stick
+//! slower than its takes; then the recorder on its own thread with real
+//! files.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -427,6 +428,59 @@ fn a_round_stops_waiting_for_playback_once_capture_memory_is_half_full() {
     b.check_saved(no);
     assert_eq!(b.gate.capture_fill(), 0.0, "nothing recording");
     assert!(!b.gate.recording(), "saved: background work goes on");
+}
+
+#[test]
+fn on_a_stick_slower_than_its_takes_every_due_round_runs_in_the_pass() {
+    // D4 on the MPC (24 and 25 Nov): 8 stereo float takes (3.07 MB/s) on a
+    // stick that wrote about 2 MB/s, where each write waits for the stick
+    // (the writeback limit is 1 MiB). A pass writes every take's units
+    // first, so passes take seconds; with one round a pass, the rounds
+    // starved and some take had nearly its whole 42 s unsaved at the stop.
+    let mut b = Bench::new(WriterConfig::default());
+    let nos: Vec<TakeNo> = (1..=8).map(|m| b.arm(STEREO_FLOAT, m)).collect();
+    let clock = b.clock.clone();
+    b.stick
+        .with(|s| s.write_cost = Some((clock, 1_048_576.0 / 2_000_000.0)));
+    let mut worst = 0.0f64;
+    // As the recorder's thread drives it: a pass, then the frames that
+    // came meanwhile (they come every 10 ms), then the next pass.
+    while b.clock.now_s() < 42.0 {
+        b.capture();
+        for no in &nos {
+            worst = worst.max(b.w.view(*no).unwrap().unsaved_s);
+        }
+        b.w.tick();
+        b.clock.advance(0.01);
+    }
+    b.capture();
+    let now = b.clock.now_s();
+    // The stick writes 2 of every 3.07 MB: about 35% of what was captured
+    // can't be written yet, whatever the schedule. Before, some takes had
+    // up to 45 s of 46 unsaved here, after one or two commits each.
+    let backlog = (1.0 - 2_000_000.0 / 3_072_000.0) * now;
+    for no in &nos {
+        let v = b.w.view(*no).unwrap();
+        assert!(
+            v.unsaved_s < backlog + 1.0,
+            "{no:?}: {:.1} s unsaved at {now:.1} s, the stick's backlog {backlog:.1} s",
+            v.unsaved_s
+        );
+        assert!(
+            v.stats.rounds >= 6,
+            "{no:?} committed {} times",
+            v.stats.rounds
+        );
+    }
+    assert!(worst < backlog + 1.0, "{worst:.1} s unsaved at the worst");
+    b.stick.with(|s| s.write_cost = None);
+    for no in &nos {
+        b.w.stop(*no);
+    }
+    b.passes();
+    for no in nos {
+        b.check_saved(no);
+    }
 }
 
 // ---- on its own thread ------------------------------------------------------

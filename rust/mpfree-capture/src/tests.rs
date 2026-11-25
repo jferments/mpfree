@@ -500,6 +500,7 @@ fn timed(notes: &[(Tick, f64)], length: Tick, song_start: Tick) -> Phrase {
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
                 group: 0,
+                heard: false,
             },
             song: Some(song),
             track: ARMED,
@@ -604,6 +605,7 @@ fn kept_free_a_new_clip_starts_on_the_next_bar() {
                 ramp: 0,
                 join: mpfree_seq::Join::Attack,
                 group: 0,
+                heard: false,
             },
             song: None,
             track: ARMED,
@@ -1115,16 +1117,19 @@ const PAD_OF_NOTES: Took = Took {
     holds: Holds::Hits,
     paired: true,
     group: 0,
+    heard: false,
 };
 const NOTE_OF_PAD: Took = Took {
     holds: Holds::Notes,
     paired: true,
     group: 0,
+    heard: false,
 };
 const NOTE_ALONE: Took = Took {
     holds: Holds::Notes,
     paired: false,
     group: 0,
+    heard: false,
 };
 
 #[test]

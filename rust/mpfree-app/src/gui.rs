@@ -258,6 +258,9 @@ pub const EDIT_CLIPS_LAYOUT: &str =
 /// The hint line under an empty clip's note editor (composing tools S2.6,
 /// board D).
 const EMPTY_CLIP_HINT: &str = "Add a part: Arrange's panel on this clip's row and track   ·   play or draw: the clip is yours as now   ·   Continue shows once the clip has notes";
+/// The Looper tab's hint line while the loop point view shows starts
+/// with this (Q1 and Q2 move its start and end).
+const LOOPER_POINT_HINT: &str = "Q1: move the start";
 const EDIT_CLIPS_HINT: &str = "Tap a clip, or turn the wheel and push: the Sequencer edits it and nothing starts   ·   Back or a tab: close the list";
 /// The Sequencer's step size chip's list (step sequencer refactor D1).
 pub const STEP_SIZE_PAGE: &str = "Step size";
@@ -829,6 +832,8 @@ enum TypeTo {
     ClipName(usize, usize),
     /// A layout of yours and its directions' names (XY Setup's name).
     XyNames(usize),
+    /// Customise's theme name (its Rename).
+    ThemeName,
     /// The style Make a style keeps (composing step 6): its sheet's Name.
     StyleName,
     /// A mixer strip's level, from a tap on the number under its fader
@@ -849,6 +854,7 @@ impl TypeTo {
                 | TypeTo::PatchName(_)
                 | TypeTo::ClipName(..)
                 | TypeTo::XyNames(_)
+                | TypeTo::ThemeName
                 | TypeTo::StyleName
         )
     }
@@ -1517,6 +1523,13 @@ pub enum ToUi {
     /// The themes folder's theme files, read at start: the file name
     /// (what `Settings::theme` holds when one is picked) and the theme.
     ThemeFiles(Vec<(String, Theme)>),
+    /// A theme file Customise saved (new, or written again).
+    ThemeFile(String, Box<Theme>),
+    /// Customise's copy of a theme on the whole screen, or (None) the
+    /// theme in use back.
+    LiveTheme(Option<Box<Theme>>),
+    /// Customise's Rename: the text keyboard, with the theme's name now.
+    NameTheme(String),
     /// Theme safety nets at start, added to the Debug page's counts: theme
     /// files left out (no one could read their text, or they aren't text),
     /// lines of theme files that used the base theme's value (a mistake,
@@ -2014,6 +2027,10 @@ pub enum FromUi {
     MenuStep(usize, i32),
     /// Prefs: a tab of the sidebar picked.
     PrefsTab(usize),
+    /// Prefs › Themes: the New theme tile (true) or Customise › (false).
+    NewTheme(bool),
+    /// Customise's Rename: the name typed.
+    ThemeName(String),
     /// Prefs: choice `k` of row `i` picked (a button of a choice, a tile,
     /// a step of a slider, a theme).
     MenuChoose(usize, usize),
@@ -2294,6 +2311,9 @@ pub enum FromUi {
     LoopSide(crate::looping::Side, bool),
     /// The loop point view's A/B.
     LoopAb(bool),
+    /// The loop point view's Move start / Move end
+    /// ([`crate::looping::LoopAction::Move`]).
+    LoopMove(crate::looping::MoveAct),
     /// A free loop's header's Make song.
     LoopMakeSong,
     /// The hint line's Snap anyway (true) or Not now.
@@ -5814,7 +5834,7 @@ impl Player {
             let rows = if answering {
                 self.ui
                     .get::<mpfree_arp_ui::answer_panel::AnswerPanel>(arp_view::ANSWER)
-                    .map(|w| w.sliders.rows.clone())
+                    .map(|w| w.qlinks.clone())
             } else {
                 self.ui
                     .get::<SliderStack>(arp_view::QLINKS)
@@ -8702,6 +8722,19 @@ impl Player {
                 self.outbox.push(f);
             }
         }
+        // The loop point view came or went (its look comes with the
+        // looper's view): the hint line says what the Q-Links do now.
+        let point = self.view == View::Looper
+            && self.looper.smart.length.is_none()
+            && self.looper.smart.asking.is_none()
+            && crate::looper_page::LooperPage::point_showing(&self.ui);
+        let said = self
+            .ui
+            .get::<mpfree_ui::widgets::Label>("hint")
+            .is_some_and(|l| l.text.starts_with(LOOPER_POINT_HINT));
+        if point != said && self.view == View::Looper {
+            self.refresh_hint();
+        }
     }
 
     /// A Q-Link on the Looper tab: the loops' levels (Q-LINK: loops 5 to
@@ -8730,6 +8763,14 @@ impl Player {
                     .push(FromUi::LoopCommand(mpfree_looper::Command::Edit(
                         mpfree_looper::Edit::SeamFade(f),
                     )))
+            }
+            // A step a detent, as the view's arrows (16 at most a turn).
+            Some(LoopTurn::Move(edge, ticks)) => {
+                let d = ticks.signum() as i8;
+                for _ in 0..ticks.unsigned_abs().min(16) {
+                    self.outbox
+                        .push(FromUi::LoopMove(crate::looping::MoveAct::Step(edge, d)));
+                }
             }
             None => {}
         }
@@ -9089,6 +9130,7 @@ impl Player {
                 }
                 LoopAct::Side(side, keep) => out.push(FromUi::LoopSide(side, keep)),
                 LoopAct::Ab(on) => out.push(FromUi::LoopAb(on)),
+                LoopAct::Move(a) => out.push(FromUi::LoopMove(a)),
                 LoopAct::PointView(open) => out.push(FromUi::LoopPointView(open)),
                 LoopAct::Answer(anyway) => out.push(FromUi::LoopAnswer(anyway)),
             }
@@ -9854,6 +9896,9 @@ impl Player {
                     .asking
                     .map(|(snap, read)| crate::looping::ask_words(self.looper.selected, snap, read))
                     .unwrap_or_default(),
+                View::Looper if crate::looper_page::LooperPage::point_showing(&self.ui) => format!("{LOOPER_POINT_HINT}   ·   Q2: move the end   ·   \
+                                         a step a click (STEP: 1/16, 1 ms, Hit)   ·   drag a window: put an edge there   ·   \
+                                         ×: close   ·   {stop}"),
                 View::Looper if self.looper_page.history_open() => format!("Tap a step: back or forward to it   ·   \
                                          drag: scroll   ·   Undo history: close   ·   UNDO: undo (SHIFT: redo)   ·   {stop}"),
                 View::Looper => format!("Tap a ring: record, play, overdub   ·   hold it: clear   ·   \
@@ -10020,7 +10065,7 @@ impl Player {
                 View::System => "Read when the page opens   ·   MENU: back to Prefs   ·   a tab: leave".to_string(),
                 View::SystemStatus => "Tap a system: its problems   ·   Wheel or - / +: the systems   ·   push: open a card   ·   \
                                        MENU or the status chip: close".to_string(),
-                View::Prefs => self.prefs_hint().to_string(),
+                View::Prefs => self.prefs_hint(),
                 View::Options if self.menu_editing => OPTIONS_EDIT_HINT.to_string(),
                 View::Options => OPTIONS_HINT.to_string(),
                 View::Mixer => mpfree_mixer_ui::io_hint(&self.ui)
@@ -10167,6 +10212,29 @@ impl Player {
         }
     }
 
+    /// A theme by what `Settings::theme` holds: built in, or a theme file.
+    fn theme_named(&self, name: &str) -> Option<Theme> {
+        Theme::builtin(name).or_else(|| {
+            self.theme_files
+                .iter()
+                .find(|(f, _)| f == name)
+                .map(|(_, t)| t.clone())
+        })
+    }
+
+    /// Draws everything in `t` from now on.
+    fn show_theme(&mut self, t: Theme) {
+        // A plugin's skin: MPFree's pop-ups over it follow too.
+        let moved = self
+            .ui
+            .get_mut::<skin_page::SkinWidget>(skin_page::SKIN)
+            .map(|w| w.set_theme(&t));
+        if let Some(moved) = moved {
+            self.report_skin_colours(moved);
+        }
+        self.ui.set_theme(t);
+    }
+
     fn set_settings(&mut self, s: Settings) {
         let resumed = self.settings.console_paused && !s.console_paused;
         let retab = self.settings.debug_mode != s.debug_mode;
@@ -10174,22 +10242,8 @@ impl Player {
         // from --theme is neither built in nor in the themes folder, and the
         // screen keeps it.)
         if self.settings.theme != s.theme {
-            let file = || {
-                self.theme_files
-                    .iter()
-                    .find(|(f, _)| *f == s.theme)
-                    .map(|(_, t)| t.clone())
-            };
-            if let Some(t) = Theme::builtin(&s.theme).or_else(file) {
-                // A plugin's skin: MPFree's pop-ups over it follow too.
-                let moved = self
-                    .ui
-                    .get_mut::<skin_page::SkinWidget>(skin_page::SKIN)
-                    .map(|w| w.set_theme(&t));
-                if let Some(moved) = moved {
-                    self.report_skin_colours(moved);
-                }
-                self.ui.set_theme(t);
+            if let Some(t) = self.theme_named(&s.theme) {
+                self.show_theme(t);
                 // The theme asked for shows now: the status board's "Your
                 // theme couldn't be used" ends, if it was going.
                 self.end_problem(&mpfree_status::kinds::THEME_NOT_FOUND);
@@ -11787,6 +11841,7 @@ impl Player {
             | TypeTo::PatchName(_)
             | TypeTo::ClipName(..)
             | TypeTo::XyNames(_)
+            | TypeTo::ThemeName
             | TypeTo::StyleName => None,
         }
     }
@@ -11813,6 +11868,10 @@ impl Player {
             let (_, name) = names.into_iter().next()?;
             self.patch_named(i, &name);
             return None;
+        }
+        if to == Some(TypeTo::ThemeName) {
+            let (_, name) = names.into_iter().next()?;
+            return Some(FromUi::ThemeName(name));
         }
         if let Some(TypeTo::XyNames(layout)) = to {
             let named = |key: &str| {
@@ -12547,9 +12606,16 @@ impl Player {
                     if self.time.loops_on && self.refresh_loop_places() {
                         self.refresh_looper();
                     }
-                    // Loop cells on audio tracks too (phase 4).
+                    // Loop cells on audio tracks too (phase 4), and the
+                    // Song view's loop blocks, which draw their loops'
+                    // waves (4e.3).
+                    let blocks = || {
+                        let a = &self.time.audio;
+                        a.iter().any(|l| l.clips.iter().any(|c| c.looped.is_some()))
+                    };
                     if self.time.tracks.iter().any(|t| t.loops.is_some())
                         || (self.time.loops_on && self.time.loop_cells() > 0)
+                        || blocks()
                     {
                         self.time_page.update(&mut self.ui, &self.time);
                     }
@@ -12963,6 +13029,36 @@ impl Player {
                 }
                 self.theme_files = t;
             }
+            ToUi::ThemeFile(file, theme) => {
+                match self.theme_files.iter_mut().find(|(f, _)| *f == file) {
+                    Some(entry) => entry.1 = *theme,
+                    None => self.theme_files.push((file, *theme)),
+                }
+                let files = self.theme_files.clone();
+                if let Some(p) = self
+                    .ui
+                    .get_mut::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET)
+                {
+                    p.files = files;
+                }
+            }
+            ToUi::LiveTheme(Some(t)) => self.show_theme(*t),
+            ToUi::LiveTheme(None) => {
+                let name = self.settings.theme.clone();
+                if let Some(t) = self.theme_named(&name) {
+                    self.show_theme(t);
+                }
+            }
+            ToUi::NameTheme(name) => self.open_textpad(
+                vec![mpfree_ui::textpad::TextAsk {
+                    key: "theme".to_string(),
+                    label: "Theme".to_string(),
+                    title: "Name your theme".to_string(),
+                    value: name,
+                    max_len: crate::app::THEME_NAME_MAX,
+                }],
+                TypeTo::ThemeName,
+            ),
             ToUi::ThemeFallbacks {
                 left_out,
                 lines_fell_back,
@@ -17213,6 +17309,8 @@ impl Player {
                 | FromUi::Tab(_)
                 | FromUi::MenuSelect(_)
                 | FromUi::PrefsTab(_)
+                | FromUi::NewTheme(_)
+                | FromUi::ThemeName(_)
                 | FromUi::GuideButton(_)
                 | FromUi::HelpButton(_)
                 | FromUi::UndoReady(_)
@@ -17583,29 +17681,34 @@ impl Player {
         }
     }
 
-    /// Prefs' hint line: the themes', or a tab's with the wheel's push on
-    /// a setting or not.
-    fn prefs_hint(&self) -> &'static str {
-        let themes = self
+    /// Prefs' hint line: the tab's own (Customise's), the themes', or a
+    /// tab's with the wheel's push on a setting or not.
+    fn prefs_hint(&self) -> String {
+        let page = self
             .ui
-            .get::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET)
-            .is_some_and(|p| p.view.gallery.is_some());
-        if themes {
+            .get::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET);
+        if let Some(own) = page.and_then(|p| p.view.hint.clone()) {
+            return own;
+        }
+        if page.is_some_and(|p| p.view.gallery.is_some()) {
             PREFS_THEMES_HINT
         } else if self.menu_editing {
             PREFS_EDIT_HINT
         } else {
             PREFS_HINT
         }
+        .to_string()
     }
 
     /// What a touch on Prefs asks of the app.
     fn prefs_event(kind: EventKind) -> Option<FromUi> {
-        use crate::prefs_page::{BACK, GO_BACK, KEEP};
+        use crate::prefs_page::{BACK, CUSTOMISE, GO_BACK, KEEP, NEW_THEME};
         match kind {
             EventKind::Tab(BACK) => Some(FromUi::OptionsButton),
             EventKind::Tab(KEEP) => Some(FromUi::HelpButton(0)),
             EventKind::Tab(GO_BACK) => Some(FromUi::HelpButton(1)),
+            EventKind::Tab(NEW_THEME) => Some(FromUi::NewTheme(true)),
+            EventKind::Tab(CUSTOMISE) => Some(FromUi::NewTheme(false)),
             EventKind::Tab(i) => Some(FromUi::PrefsTab(i)),
             EventKind::Cell { row, col } => Some(FromUi::MenuChoose(row, col)),
             EventKind::Step { index, delta } => Some(FromUi::MenuStep(index, delta)),
@@ -21920,6 +22023,9 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::Guide(g) => p.apply(ToUi::Guide(g)),
             Effect::Status(s) => p.apply(ToUi::Status(s)),
             Effect::Settings(s) => p.apply(ToUi::Settings(s)),
+            Effect::LiveTheme(t) => p.apply(ToUi::LiveTheme(t)),
+            Effect::NameTheme(n) => p.apply(ToUi::NameTheme(n)),
+            Effect::SaveTheme { file, theme, .. } => p.apply(ToUi::ThemeFile(file, theme)),
             Effect::Arp(v) => p.apply(ToUi::Arp(Box::new(v))),
             Effect::SixteenLevels => p.apply(ToUi::SixteenLevels),
             Effect::LevelsWheel(d) => p.apply(ToUi::LevelsWheel(d)),
@@ -23091,11 +23197,49 @@ fn sample_smart_loop_end(p: &mut Player, name: &str, open: bool) {
             })
         }
         "looper-smart-close-call" => v.smart.close_call = Some(8),
+        // Moved by hand to a quieter hit 65 ms before the tap.
+        "looper-moved" => {
+            s.moved = Some(Shift {
+                start: 0,
+                end: ms(-65.0),
+            });
+            s.offer = Some(Shift {
+                start: 0,
+                end: ms(17.0),
+            });
+        }
         _ => {
             s.offer = Some(Shift {
                 start: 0,
                 end: ms(-48.0),
             })
+        }
+    }
+    // What it found: the snap's place, or what is on offer.
+    s.found = s.offer.or(s.moved);
+    let move_screen = name.starts_with("looper-move");
+    if move_screen {
+        s.found = Some(Shift {
+            start: 0,
+            end: ms(-48.0),
+        });
+    }
+    // Move start / Move end: a move set up on the end, on a quieter hit
+    // 65 ms before the tap, by the Hit step; with A/B, the round that
+    // plays the move's end.
+    if name == "looper-move" || name == "looper-move-ab" {
+        let to = Shift {
+            start: 0,
+            end: ms(-65.0),
+        };
+        let ppq = f64::from(mpfree_transport::time::PPQ);
+        let bpm =
+            60.0 * f64::from(rate) * s.ticks as f64 / (ppq * (s.frames as i64 + to.end) as f64);
+        v.smart.moving = Some(crate::looping::Moving { to, makes: Ok(bpm) });
+        v.smart.move_step = crate::looping::MoveStep::Hit;
+        if name == "looper-move-ab" {
+            v.smart.ab = true;
+            s.ab = Some(true);
         }
     }
     // Loop memory was full as the pass closed: nothing kept after the
@@ -23136,18 +23280,33 @@ fn sample_smart_loop_end(p: &mut Player, name: &str, open: bool) {
         out
     };
     if open {
-        v.smart.point = Some(LoopPoint {
-            start: hits(POINT_START_FROM_MS, 3.0, 0.02),
-            end: hits(POINT_END_FROM_MS, -48.0, 0.05),
-        });
+        let mut end = hits(POINT_END_FROM_MS, -48.0, 0.05);
+        let mut point = LoopPoint::new(hits(POINT_START_FROM_MS, 3.0, 0.02), end, rate);
+        point.hits[0][0] = ms(3.0);
+        point.hits[1][0] = ms(-48.0);
+        point.n_hits = [1, 1];
+        if move_screen {
+            // A quieter hit 17 ms before the loud one.
+            let quiet = hits(POINT_END_FROM_MS, -65.0, 0.0);
+            for (e, q) in end.iter_mut().zip(quiet) {
+                *e = (*e).max((f32::from(q) * 0.4) as u8);
+            }
+            point.end = end;
+            point.hits[1][..2].copy_from_slice(&[ms(-65.0), ms(-48.0)]);
+            point.n_hits = [1, 2];
+        }
+        v.smart.point = Some(point);
     }
-    p.apply(ToUi::Looper(Box::new(v)));
+    p.apply(ToUi::Looper(Box::new(v.clone())));
     if open {
         if let Some(e) =
             p.ui.get_mut::<crate::looper_tab::LoopEditor>(crate::looper_tab::EDITOR)
         {
             e.open_point();
         }
+        // The looper's next view: the Q-Links and the hint line follow
+        // the view (Q1 and Q2 move its start and end).
+        p.apply(ToUi::Looper(Box::new(v)));
     }
     // (The tab telling the looper, for a desk there is none of here.)
     let _ = crate::looper_tab::take_actions(&mut p.ui);
@@ -25156,6 +25315,32 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     apply_effects(&mut look, fx);
     out.push(("prefs-appearance", look));
+    // Prefs' Customise: a copy of the theme in use, its second accent
+    // turned;
+    // then with Words tapped, its hue, colour and light on the knobs.
+    for (name, words) in [("prefs-customise", false), ("prefs-customise-colour", true)] {
+        let mut p = sample_player(fonts());
+        let mut c = crate::app::App::new(44_100, false);
+        let mut fx = c.open_tab(View::Prefs);
+        fx.extend(c.pick_prefs_tab(crate::app::PrefsTab::Customise.index()));
+        let row = |c: &mut crate::app::App, t| c.row_of(crate::app::Item::Theme(t));
+        if words {
+            if let Some(i) = row(&mut c, crate::app::ThemeItem::Colours) {
+                fx.extend(c.choose(i, 4));
+            }
+            if let Some(i) = row(&mut c, crate::app::ThemeItem::Dial(2)) {
+                fx.extend(c.select(i));
+            }
+        } else if let Some(i) = row(&mut c, crate::app::ThemeItem::Dial(1)) {
+            // The second accent turned: one change, Save lit.
+            fx.extend(c.select(i));
+            for _ in 0..6 {
+                fx.extend(c.step_item(i, 1));
+            }
+        }
+        apply_effects(&mut p, fx);
+        out.push((name, p));
+    }
     // The guide from Prefs ("Find the buttons again"), PLAY pressed when it
     // asks for MENU.
     let mut guide = sample_player(fonts());
@@ -26451,6 +26636,26 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-song-audio-blocks sample: {e}"),
     }
+    // Loop blocks on the vocal's lane (the rethink's phase 4e.3, board
+    // 8): Vox loop played twice from bar 9, then from bar 13 a bar into
+    // its loop, picked.
+    match mpfree_time_ui::sample::song_loop_blocks_state() {
+        Ok(state) => {
+            let mut p = quiet_player(fonts());
+            // The looper holds the loop, with its lasting id and its small
+            // wave, as the loops' facts come from it.
+            let mut v = crate::looping::LooperView::default();
+            v.loops[0].phase = mpfree_looper::Phase::Playing;
+            v.loops[0].layers = 2;
+            v.ids[0] = state.loops.ids[0];
+            v.cell_waves[0] = state.loops.loops[0].wave;
+            p.apply(ToUi::Looper(Box::new(v)));
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            out.push(("arrange-song-loop-blocks", p));
+        }
+        Err(e) => eprintln!("arrange-song-loop-blocks sample: {e}"),
+    }
     // The same project on the Clips grid (layout spec 4f): the vocal and
     // the guitar are columns after the note tracks, a wave mark and their
     // input under their names, their cells dashed, the guitar armed; the
@@ -26754,6 +26959,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         ("looper-smart-start", false),
         ("looper-smart-close-call", false),
         ("looper-smart-ask", false),
+        // Move start / Move end (the looper refactor's R2).
+        ("looper-move", true),
+        ("looper-move-ab", true),
+        ("looper-moved", true),
     ] {
         match sample_looper_picking(fonts(), 0) {
             Ok(mut p) => {
@@ -28689,6 +28898,20 @@ pub fn sample_sets(name: &str, fonts: Fonts) -> Result<Player, String> {
         "browser-sets-soundcheck" => browser_set_soundcheck(fonts),
         _ => Err(format!("{name}: not a Sets sample screen")),
     }
+}
+
+/// Move start / Move end's sample screens (the looper refactor's R2):
+/// a move set up, A/B against it, and a loop moved by hand.
+#[cfg_attr(not(test), allow(dead_code))]
+pub const MOVE_SAMPLES: [&str; 3] = ["looper-move", "looper-move-ab", "looper-moved"];
+
+/// One of [`MOVE_SAMPLES`], with the loop point view open, on its own so
+/// that a test can sweep it without building every screen.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn sample_move(name: &str, fonts: Fonts) -> Player {
+    let mut p = sample_looper_picking(fonts, 0).expect("the looper sample");
+    sample_smart_loop_end(&mut p, name, true);
+    p
 }
 
 pub const PHRASE_SAMPLES: [&str; 8] = [
@@ -50328,19 +50551,42 @@ mod tests {
     /// each list sends (`--nocapture` prints the table).
     #[test]
     fn every_sample_screen_plays_back_the_same_from_its_display_list() {
+        use std::hash::{Hash, Hasher};
         let _alone = all_screens();
+        // A frame's pixels, hashed.
+        let px = |c: &SoftCanvas| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            c.px.hash(&mut h);
+            h.finish()
+        };
         std::thread::Builder::new()
             .stack_size(SCREENS_STACK)
-            .spawn(|| {
-                let direct = sample_screens(Fonts::embedded);
+            .spawn(move || {
+                // Each screen painted straight first, its two frames kept as
+                // hashes, so one set of screens is held at a time, as in
+                // every_sample_screen_draws: two sets at once outgrew the
+                // 32-bit address space of the ARMv7 job, which runs this
+                // under qemu (3.6 GB at most natively, against 2.0 GB).
+                let mut direct = Vec::new();
+                for (name, mut a) in sample_screens(Fonts::embedded) {
+                    let mut straight = SoftCanvas::new(SCREEN.0, SCREEN.1);
+                    a.ui.paint(&mut straight);
+                    let first = px(&straight);
+                    // The next frame, a tick later, as the screen loop paints it.
+                    a.tick(0.033);
+                    a.ui.paint(&mut straight);
+                    direct.push((name, first, px(&straight)));
+                }
                 let recorded = sample_screens(Fonts::embedded);
+                assert_eq!(direct.len(), recorded.len());
                 let mut sent = 0usize;
                 eprintln!(
                     "screen                     ops  masks  new items  KiB sent  next frame KiB"
                 );
-                for ((name, mut a), (_, mut b)) in direct.into_iter().zip(recorded) {
-                    let mut straight = SoftCanvas::new(SCREEN.0, SCREEN.1);
-                    a.ui.paint(&mut straight);
+                for ((name, straight, straight_next), (named, mut b)) in
+                    direct.into_iter().zip(recorded)
+                {
+                    assert_eq!(name, named);
                     let mut rec = mpfree_ui::record::Recorder::new(SCREEN.0, SCREEN.1);
                     let mut copy = mpfree_ui::record::Store::new(usize::MAX);
                     let mut wire = Vec::new();
@@ -50360,18 +50606,18 @@ mod tests {
                     let mut played = SoftCanvas::new(SCREEN.0, SCREEN.1);
                     send(&mut rec, &mut played);
                     assert!(
-                        straight.px == played.px,
+                        px(&played) == straight,
                         "{name}: the played-back picture differs"
                     );
-                    // The next frame, a tick later, as the screen loop paints it.
-                    a.tick(0.033);
                     b.tick(0.033);
-                    a.ui.paint(&mut straight);
                     rec.begin_frame();
                     b.ui.paint(&mut rec);
                     let next = rec.stats();
                     send(&mut rec, &mut played);
-                    assert!(straight.px == played.px, "{name}: the next frame differs");
+                    assert!(
+                        px(&played) == straight_next,
+                        "{name}: the next frame differs"
+                    );
                     sent += first.sent_bytes();
                     eprintln!(
                         "{name:<26} {:>4} {:>6} {:>10} {:>9.1} {:>15.1}",

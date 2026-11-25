@@ -328,6 +328,62 @@ fn after_silence_it_starts_at_its_place_with_no_crossfade() {
     }
 }
 
+/// Phase 4e.3: a loop opened onto a track (a project's, loaded while a
+/// cell names it) finishes loading on its frame with no run told, as it
+/// would off the track, silent there; the track's first run then plays
+/// it from its place at full gain from its first frame.
+#[test]
+fn a_loop_loaded_on_a_track_finishes_loading_with_no_run_and_plays_where_told() {
+    for period in [128, 1000] {
+        let mut r = Rig::new(period);
+        let mut f = r.l.loop_file(0).expect("savable");
+        let version = r.l.status().version;
+        for (k, y) in f.layers.iter_mut().enumerate() {
+            y.audio = vec![0.0; 2 * f.frames];
+            assert_eq!(r.l.read_layer(0, k, 0, &mut y.audio), Some(version));
+        }
+        // Cleared, then loaded back in while it is on the track.
+        assert!(r.l.command(L::Clear));
+        let at = r.frame;
+        r.run(at + BAR / 2, None, &[]);
+        assert_eq!(r.l.loop_status(0).unwrap().phase, Phase::Empty);
+        assert!(r.l.load(0, f).is_ok());
+        let on = r.frame;
+        // Its copy takes a bar's frames over 64, then it plays.
+        r.run(on + BAR / 64 + 2 * period as u64, Some(()), &[]);
+        assert_eq!(
+            r.l.loop_status(0).unwrap().phase,
+            Phase::Playing,
+            "period {period}: loaded with no run told"
+        );
+        assert!(r.own[on as usize..].iter().all(|&v| v == 0.0), "silent");
+        // Told: from its place, at full gain from the first frame.
+        let o = r.origin() + BAR_TICKS / 4.0;
+        let (a, b) = (r.frame + 3_001, r.frame + 3_001 + BAR / 2);
+        r.run(
+            b + 100,
+            Some(()),
+            &[Told {
+                from: a,
+                to: b,
+                origin: o,
+            }],
+        );
+        for f in a..b {
+            let (want, clear) = place(f, o);
+            if clear {
+                assert!(
+                    (r.at(f) - want).abs() < 1e-3,
+                    "period {period} frame {f}: {} not {want}",
+                    r.at(f)
+                );
+            }
+        }
+        let (want, _) = place(a, o);
+        assert!((r.at(a) - want).abs() < 1e-3, "period {period}: full gain");
+    }
+}
+
 #[test]
 fn runs_out_of_order_are_refused_and_counted() {
     let mut r = Rig::new(128);

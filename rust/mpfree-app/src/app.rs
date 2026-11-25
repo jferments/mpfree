@@ -31,6 +31,7 @@
 
 mod add_sound;
 mod arp;
+mod customise;
 pub mod mapper;
 mod pad_layers;
 mod pad_map_panel;
@@ -38,6 +39,7 @@ mod pads_focus;
 mod prefs_tabs;
 mod route_synths;
 pub mod saved;
+pub use customise::{ThemeItem, THEME_NAME_MAX};
 pub use prefs_tabs::PrefsTab;
 pub mod step_pads;
 mod synth_pads;
@@ -1035,6 +1037,8 @@ pub enum Item {
     /// Row `k` of the Tunings page (tunings step T6,
     /// [`tunings_page::TuningsRow`]).
     Tunings(u16),
+    /// A row of Prefs › Appearance › Customise.
+    Theme(ThemeItem),
 }
 
 /// A row whose + opens a page or does a thing once, rather than stepping
@@ -1483,6 +1487,18 @@ pub enum Effect {
     ClearConsole,
     /// A line for the log.
     Note(String),
+    /// Prefs › Appearance › Customise's copy of a theme drawn on the whole
+    /// screen, or (None) the theme in use back.
+    LiveTheme(Option<Box<mpfree_ui::Theme>>),
+    /// Customise's Save theme: the file in the themes folder, what it
+    /// says, and the theme it gives.
+    SaveTheme {
+        file: String,
+        text: String,
+        theme: Box<mpfree_ui::Theme>,
+    },
+    /// Customise's Rename: the text keyboard, with the name now.
+    NameTheme(String),
     /// A line for the log that the screen also shows in place, long enough
     /// to read ([`crate::gui::TELL_SECONDS`]): why something did nothing,
     /// or was refused (Jay, 12 Nov: say in place when it would do nothing).
@@ -1822,6 +1838,12 @@ pub struct App {
     /// Prefs > Appearance just changed the theme: "Keep this theme?" asks
     /// until it is kept, or puts the old one back (owner, 22 Nov 07:17Z).
     theme_trial: Option<ThemeTrial>,
+    /// The theme files' themes, by file name, for Customise to copy.
+    pub theme_looks: Vec<(String, mpfree_ui::Theme)>,
+    /// Customise's copy of a theme, kept until Prefs closes for good.
+    custom: Option<customise::Custom>,
+    /// Customise's copy is on the screen (Customise is open).
+    custom_live: bool,
     /// The time [`App::tick`] was last given, in its seconds: when a
     /// theme trial ends.
     tick_t: f64,
@@ -2252,6 +2274,9 @@ impl App {
             themes_left_out: Vec::new(),
             theme_fallbacks: 0,
             theme_trial: None,
+            theme_looks: Vec::new(),
+            custom: None,
+            custom_live: false,
             tick_t: 0.0,
             tuning_files: Vec::new(),
             sound_cores_now: SoundCores::Shared,
@@ -4524,7 +4549,15 @@ impl App {
         if self.view == View::Prefs && v != View::Prefs && self.theme_trial.is_some() {
             back = self.end_theme_trial(false);
         }
+        // Customise's copy shows only while Customise is open.
+        let opening = v == View::Prefs && self.view != View::Prefs;
+        if self.view == View::Prefs && v != View::Prefs {
+            back.extend(self.custom_leave());
+        }
         let mut fx = self.show_inner(v);
+        if opening && self.view == View::Prefs && self.prefs_tab == PrefsTab::Customise {
+            back.extend(self.custom_open(false));
+        }
         if !back.is_empty() {
             back.append(&mut fx);
             fx = back;
@@ -4778,6 +4811,9 @@ impl App {
             let mut fx = Vec::new();
             if v == View::Prefs && self.theme_trial.is_some() {
                 fx = self.end_theme_trial(false);
+            }
+            if v == View::Prefs {
+                fx.extend(self.custom_leave());
             }
             self.menu_editing = false;
             self.view = back;
@@ -5452,6 +5488,7 @@ impl App {
             Item::Synth(a) => self.synth_item_text(a),
             // The Tunings page draws its own rows (tunings_page_view).
             Item::Tunings(_) => ("Tunings", String::new()),
+            Item::Theme(t) => self.custom_text(t),
         }
     }
 
@@ -5764,7 +5801,7 @@ impl App {
             ],
             Item::Arp(a) => Self::arp_item_help(a),
             Item::Synth(a) => self.synth_item_help(a),
-            Item::Tunings(_) => Vec::new(),
+            Item::Tunings(_) | Item::Theme(_) => Vec::new(),
         }
     }
 
@@ -5775,7 +5812,10 @@ impl App {
         let items = self.items();
         let selected = self.selected.min(items.len() - 1);
         let title = match (self.view, self.back) {
-            (View::Prefs, _) => format!("Prefs · {}", self.prefs_tab.name()),
+            (View::Prefs, _) => match self.prefs_tab.view_name() {
+                Some(v) => format!("Prefs · {} · {v}", self.prefs_tab.name()),
+                None => format!("Prefs · {}", self.prefs_tab.name()),
+            },
             (_, View::Arp) if self.mod_section => "Arp options · Modifier".to_string(),
             (_, View::Arp) => "Arp options".to_string(),
             (_, View::Debug) => "MIDI log options".to_string(),
@@ -6015,11 +6055,11 @@ impl App {
             return self.end_theme_trial(true);
         }
         if items[i] == Item::Appearance {
-            // The themes: the wheel tries them, so the push has nothing to
-            // open.
-            return Vec::new();
+            // The themes: the wheel tries them, so the push opens
+            // Customise on the theme in use.
+            return self.pick_prefs_tab(PrefsTab::Customise.index());
         }
-        if opens_something(items[i]) {
+        if opens_something(items[i]) || self.custom_opens(items[i]) {
             return self.step_item(i, 1);
         }
         if self.item_mark(items[i]).fixed {
@@ -6059,6 +6099,9 @@ impl App {
     /// Step `item` by `delta`'s sign; the settings (and the menu, when it
     /// shows) follow.
     fn apply_item(&mut self, item: Item, delta: i32) -> Vec<Effect> {
+        if let Item::Theme(t) = item {
+            return self.custom_step(t, delta);
+        }
         let d = delta.signum();
         let mut fx = Vec::new();
         self.save_dirty = true;
@@ -6348,6 +6391,7 @@ impl App {
             Item::Arp(a) => fx.extend(self.step_arp_item(a, d)),
             Item::Synth(a) => fx.extend(self.step_synth_item(a, d)),
             Item::Tunings(k) => fx.extend(self.step_tunings_row(usize::from(k), d)),
+            Item::Theme(_) => {}
         }
         fx.push(Effect::Settings(self.settings.clone()));
         if self.in_menu() {
@@ -8300,18 +8344,22 @@ mod tests {
             "{fx:?}"
         );
         // A tap on the sidebar, the wheel back on the tab's first row.
-        let fx = app.pick_prefs_tab(4);
+        let system = PrefsTab::System.index();
+        let fx = app.pick_prefs_tab(system);
         assert!(
             matches!(fx.last(), Some(Effect::Menu(m)) if m.title == "Prefs · System" && m.selected == 0),
             "{fx:?}"
         );
-        assert!(app.pick_prefs_tab(4).is_empty(), "the tab showing");
-        assert!(app.pick_prefs_tab(5).is_empty(), "no such tab");
+        assert!(app.pick_prefs_tab(system).is_empty(), "the tab showing");
+        assert!(
+            app.pick_prefs_tab(PrefsTab::ALL.len()).is_empty(),
+            "no such tab"
+        );
         // MENU closes Prefs, and it opens again on System.
         assert!(press(&mut app, MENU).contains(&Effect::Show(View::Play)));
         assert_eq!(app.view(), View::Play);
         assert!(app.pick_prefs_tab(0).is_empty(), "Prefs closed");
-        assert_eq!(tab(&open(&mut app)).1, Some(4));
+        assert_eq!(tab(&open(&mut app)).1, Some(system));
     }
 
     /// The Appearance tab: a tap on a theme tries it, the wheel alone steps
@@ -8348,9 +8396,17 @@ mod tests {
         assert!(fx.contains(&Effect::Note(
             "theme: back to Default (Slate not kept)".into()
         )));
-        // With no theme on trial, the push on the tab does nothing.
+        // With no theme on trial, the push on the tab opens Customise on
+        // a copy of the theme in use, drawn on the whole screen.
         go(&mut app, Item::Appearance);
-        assert!(app.wheel_push().is_empty());
+        let fx = app.wheel_push();
+        assert!(
+            matches!(fx.last(), Some(Effect::Menu(m)) if m.title == "Prefs · Appearance · Customise"),
+            "{fx:?}"
+        );
+        assert!(fx
+            .iter()
+            .any(|e| matches!(e, Effect::LiveTheme(Some(t)) if t.name == "My theme")));
     }
 
     /// A tap on a choice or a tile sets it at once, telling the rest of the

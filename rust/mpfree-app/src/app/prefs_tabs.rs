@@ -3,9 +3,10 @@
 //! ([`crate::prefs_page`] draws them). The redesign canvas, round 2, Jay's
 //! go 24 Nov 2026 17:35Z.
 
+use super::customise::{ThemeItem, CUSTOMISE_ROWS};
 use super::*;
 use crate::prefs_page::{
-    CardView, Control, Gallery, Hue, Picture, PrefsView, RowView, Split, ThemeTile,
+    CardView, Control, Gallery, Hue, Picture, PrefsView, RowView, SideTab, Split, ThemeTile,
 };
 
 /// The sidebar's tabs.
@@ -16,6 +17,8 @@ pub enum PrefsTab {
     Sound,
     /// Appearance: the themes gallery.
     Themes,
+    /// Appearance: Customise, a copy of the theme in use changed.
+    Customise,
     Projects,
     System,
 }
@@ -104,6 +107,71 @@ const SOUND: &[CardPlan] = &[
 ];
 
 const THEMES: &[CardPlan] = &[card("Themes", "", Hue::Grey, 0, &[Item::Appearance])];
+
+const fn th(t: ThemeItem) -> Item {
+    Item::Theme(t)
+}
+
+const CUSTOMISE: &[CardPlan] = &[
+    card(
+        "",
+        "",
+        Hue::Grey,
+        2,
+        &[
+            th(ThemeItem::Name),
+            th(ThemeItem::Undo),
+            th(ThemeItem::Save),
+        ],
+    ),
+    card(
+        "Colours",
+        "the greys move together",
+        Hue::Cyan,
+        0,
+        &[
+            th(ThemeItem::Dial(0)),
+            th(ThemeItem::Dial(1)),
+            th(ThemeItem::Dial(2)),
+            th(ThemeItem::Dial(3)),
+            th(ThemeItem::Colours),
+            th(ThemeItem::Mode),
+            th(ThemeItem::Panels),
+        ],
+    ),
+    card(
+        "Shape",
+        "sizes and places never change",
+        Hue::Coral,
+        0,
+        &[
+            th(ThemeItem::Corners),
+            th(ThemeItem::Radius),
+            th(ThemeItem::Outlines),
+        ],
+    ),
+    card(
+        "Effects",
+        "drawn under every page",
+        Hue::Pink,
+        1,
+        &[
+            th(ThemeItem::Glow),
+            th(ThemeItem::TextGlow),
+            th(ThemeItem::Tint),
+            th(ThemeItem::Pattern),
+            th(ThemeItem::Backdrop),
+            th(ThemeItem::BackdropColours),
+        ],
+    ),
+    card(
+        "Track colours",
+        "also the Q-Links, graphs and EQ bands",
+        Hue::Lime,
+        1,
+        &[th(ThemeItem::Tracks), th(ThemeItem::TrackSet)],
+    ),
+];
 
 const PROJECTS: &[CardPlan] = &[
     CardPlan {
@@ -204,7 +272,19 @@ const SYSTEM_ROWS: &[Item] = &[
 const LATENCY_KNOB_FRAMES: f32 = 2048.0;
 
 impl PrefsTab {
-    pub const ALL: [PrefsTab; 5] = [
+    /// Every tab in SHIFT + the wheel's order, Appearance's views
+    /// (Themes, Customise) where Appearance sits.
+    pub const ALL: [PrefsTab; 6] = [
+        PrefsTab::Playing,
+        PrefsTab::Sound,
+        PrefsTab::Themes,
+        PrefsTab::Customise,
+        PrefsTab::Projects,
+        PrefsTab::System,
+    ];
+
+    /// The sidebar's tabs, each with its drawing's number.
+    const SIDEBAR: [PrefsTab; 5] = [
         PrefsTab::Playing,
         PrefsTab::Sound,
         PrefsTab::Themes,
@@ -212,13 +292,23 @@ impl PrefsTab {
         PrefsTab::System,
     ];
 
+    /// Its tab's name in the sidebar (Appearance for its views).
     pub fn name(self) -> &'static str {
         match self {
             PrefsTab::Playing => "Playing",
             PrefsTab::Sound => "Sound",
-            PrefsTab::Themes => "Appearance",
+            PrefsTab::Themes | PrefsTab::Customise => "Appearance",
             PrefsTab::Projects => "Projects",
             PrefsTab::System => "System",
+        }
+    }
+
+    /// One of Appearance's views: its name under Appearance.
+    pub fn view_name(self) -> Option<&'static str> {
+        match self {
+            PrefsTab::Themes => Some("Themes"),
+            PrefsTab::Customise => Some("Customise"),
+            _ => None,
         }
     }
 
@@ -227,7 +317,7 @@ impl PrefsTab {
         match self {
             PrefsTab::Playing => "Pads, latch, touch",
             PrefsTab::Sound => "Buffer, memory, input",
-            PrefsTab::Themes => "Themes",
+            PrefsTab::Themes | PrefsTab::Customise => "Themes, customise",
             PrefsTab::Projects => "Start, export, sets",
             PrefsTab::System => "Info, setup, checks",
         }
@@ -238,6 +328,7 @@ impl PrefsTab {
             PrefsTab::Playing => PLAYING,
             PrefsTab::Sound => SOUND,
             PrefsTab::Themes => THEMES,
+            PrefsTab::Customise => CUSTOMISE,
             PrefsTab::Projects => PROJECTS,
             PrefsTab::System => SYSTEM,
         }
@@ -249,6 +340,7 @@ impl PrefsTab {
             PrefsTab::Playing => PLAYING_ROWS,
             PrefsTab::Sound => SOUND_ROWS,
             PrefsTab::Themes => THEMES_ROWS,
+            PrefsTab::Customise => CUSTOMISE_ROWS,
             PrefsTab::Projects => PROJECTS_ROWS,
             PrefsTab::System => SYSTEM_ROWS,
         }
@@ -259,8 +351,14 @@ impl PrefsTab {
         PrefsTab::ALL.into_iter().find(|t| t.rows().contains(&item))
     }
 
-    fn index(self) -> usize {
+    /// Its number, as taps on the sidebar give it.
+    pub fn index(self) -> usize {
         PrefsTab::ALL.iter().position(|&t| t == self).unwrap_or(0)
+    }
+
+    /// One of Appearance's views.
+    fn appearance(self) -> bool {
+        self.view_name().is_some()
     }
 }
 
@@ -285,10 +383,15 @@ impl App {
         let mut fx = Vec::new();
         if self.theme_trial.is_some() {
             fx = self.end_theme_trial(false);
+            fx.retain(|e| !matches!(e, Effect::Menu(_)));
         }
+        fx.extend(self.custom_leave());
         self.prefs_tab = tab;
         self.selected = 0;
         self.menu_editing = false;
+        if tab == PrefsTab::Customise {
+            fx.extend(self.custom_open(false));
+        }
         fx.push(self.menu_view());
         fx
     }
@@ -326,6 +429,9 @@ impl App {
         if item == Item::Appearance {
             return self.pick_theme(k);
         }
+        if let Item::Theme(ti) = item {
+            return self.custom_choose(ti, k);
+        }
         let Some((_, at)) = self.prefs_choices(item) else {
             return vec![self.menu_view()];
         };
@@ -362,6 +468,9 @@ impl App {
         self.selected = i;
         self.menu_editing = false;
         let p = permille.clamp(0, 1000) as f32 / 1000.0;
+        if let Item::Theme(ti) = items[i] {
+            return self.custom_value(ti, p);
+        }
         let s = &mut self.settings;
         let mut fx = Vec::new();
         match items[i] {
@@ -535,6 +644,9 @@ impl App {
 
     /// Row `item` as Prefs draws it.
     fn prefs_row(&self, item: Item) -> RowView {
+        if let Item::Theme(ti) = item {
+            return self.custom_row(ti);
+        }
         let s = &self.settings;
         let (name, _) = self.item_text(item);
         let row = |desc: &str, control: Control| RowView {
@@ -733,10 +845,12 @@ impl App {
                 .filter(|l| !l.is_empty()),
         );
         Gallery {
+            customise: trial.is_none(),
             tiles,
             at,
             trial,
             about,
+            new_theme: true,
         }
     }
 
@@ -753,7 +867,11 @@ impl App {
                 .iter()
                 .map(|c| CardView {
                     title: c.title.to_string(),
-                    note: c.note.to_string(),
+                    note: if tab == PrefsTab::Customise {
+                        self.custom_note(c.note)
+                    } else {
+                        c.note.to_string()
+                    },
                     hue: c.hue,
                     column: c.column,
                     fill: c.fill,
@@ -763,17 +881,41 @@ impl App {
                 })
                 .collect()
         };
+        // The sidebar: the five tabs, Appearance's views under it while
+        // one of them is open.
+        let mut tabs = Vec::new();
+        for (icon, t) in PrefsTab::SIDEBAR.into_iter().enumerate() {
+            tabs.push(SideTab {
+                name: t.name().to_string(),
+                line: t.line().to_string(),
+                sub: false,
+                tab: t.index(),
+                lit: t == tab || (t.appearance() && tab.appearance()),
+                icon,
+            });
+            if t.appearance() && tab.appearance() {
+                for v in [PrefsTab::Themes, PrefsTab::Customise] {
+                    tabs.push(SideTab {
+                        name: v.view_name().unwrap_or_default().to_string(),
+                        sub: true,
+                        tab: v.index(),
+                        lit: v == tab,
+                        ..SideTab::default()
+                    });
+                }
+            }
+        }
         PrefsView {
-            tabs: PrefsTab::ALL
-                .iter()
-                .map(|t| (t.name().to_string(), t.line().to_string()))
-                .collect(),
+            tabs,
             tab: tab.index(),
             cards,
             rows: rows.iter().map(|&i| self.prefs_row(i)).collect(),
             selected: self.selected.min(rows.len() - 1),
             editing: self.menu_editing,
             gallery: (tab == PrefsTab::Themes).then(|| self.prefs_gallery()),
+            hint: (tab == PrefsTab::Customise)
+                .then(|| self.custom_hint())
+                .flatten(),
         }
     }
 
@@ -826,7 +968,7 @@ mod tests {
     fn each_tabs_rows_are_its_cards_left_column_first() {
         for tab in PrefsTab::ALL {
             let mut order: Vec<Item> = Vec::new();
-            for col in 0..2 {
+            for col in [2, 0, 1] {
                 for c in tab.cards().iter().filter(|c| c.column == col) {
                     order.extend(c.rows);
                 }
