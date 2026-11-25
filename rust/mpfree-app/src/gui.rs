@@ -26794,7 +26794,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Err(e) => eprintln!("arrange-clips-audio-cells sample: {e}"),
     }
     // The Song view with "+ Track"'s chooser open beside it (4c, as
-    // drawn): Note track, Audio track, Loop track.
+    // drawn): Note track, Audio track, Loop track. Ten tracks and the
+    // Chords lane don't fit, so the lanes are scrolled to their end, as a
+    // drag up on the names leaves them, to show "+ Track".
     match mpfree_time_ui::sample::song_audio_state() {
         Ok(mut state) => {
             state.region = None;
@@ -26803,6 +26805,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             p.apply(ToUi::Show(View::Arrange));
             p.time_page.adding = true;
             p.time_page.update(&mut p.ui, &p.time);
+            if let Some(l) =
+                p.ui.get_mut::<mpfree_time_ui::song::SongLanes>(time_view::SONG)
+            {
+                l.first_lane = 1000;
+            }
             p.refresh_hint();
             out.push(("arrange-song-add", p));
         }
