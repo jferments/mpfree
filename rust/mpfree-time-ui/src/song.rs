@@ -156,6 +156,15 @@ pub const TEMPO_ROW: usize = 0x500;
 /// What Tab reports for a tap on section `k`'s name on the ruler: this
 /// plus `k` (fewer than `mpfree_seq::arrange::MAX_MARKERS`, 256).
 pub const SECTION_TAP: usize = 0x200;
+/// What Tab reports for a tap on the Chords lane's chip `k` (composing
+/// step 6, board C): this plus `k`, an index into [`SongChordLane::chips`].
+pub const CHORD_CHIP: usize = 0x1000;
+/// The most chips the Chords lane reports a tap on.
+pub const CHORD_CHIPS: usize = 0x1000;
+/// What Tab reports for a touch while the chord picker is open from the
+/// Chords lane: this plus the picker's answer
+/// ([`crate::chord_strip::picker_hit`]).
+pub const CHORD_PICK: usize = 0x2000;
 /// What Tab reports while a dragged block or section is held at the left
 /// or right edge: the bars scroll one back or on.
 pub const BARS_BACK: usize = 0x300;
@@ -642,6 +651,10 @@ pub struct SongLanes {
     /// The tempo point picked (an index into `tempo`), for the wheel and
     /// Ramp and Delete. The app sets it.
     pub tempo_pick: Option<usize>,
+    /// The Chords lane under Tempo (composing step 6, board C): the chords
+    /// each section's scene plays, bar by bar, and the chord picker when
+    /// it is open on one.
+    pub chords: SongChordLane,
     /// The last conversion's report card, open over the lanes (the
     /// Arrange refactor's 4.3): it takes their touches and their targets.
     pub report: Option<ReportCard>,
@@ -650,6 +663,35 @@ pub struct SongLanes {
     pub over: Vec<LaneOver>,
     /// What the last whole paint showed: see [`Painted`].
     pub(crate) painted: Painted,
+}
+
+/// The Song view's Chords lane (composing step 6, board C): the chords
+/// each section's scene plays, laid end to end through the section.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SongChordLane {
+    pub chips: Vec<SongChip>,
+    /// The chip the chord picker is open on (an index into `chips`).
+    pub open: Option<usize>,
+    pub picker: Option<crate::chord_strip::PickerView>,
+    /// The song has sections made from scenes whose chords are still
+    /// being heard: the empty lane says so.
+    pub hearing: bool,
+}
+
+/// One chord on the Chords lane.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SongChip {
+    /// Song ticks.
+    pub from: Tick,
+    pub to: Tick,
+    /// "Cm7", or "–" for a bar heard as no clear chord.
+    pub name: String,
+    /// Its root ("C"), for a chip too narrow for the name.
+    pub root: String,
+    pub look: crate::chord_strip::ChipLook,
+    /// The scene's row and the chip's place in the row's chords.
+    pub row: usize,
+    pub chip: usize,
 }
 
 /// A clip launched over the song (the Arrange refactor's 5.1, D3): the
@@ -735,6 +777,8 @@ const SOUND_LANE_H: i32 = 34;
 const RULER_H: i32 = 26;
 /// The tempo lane's height, under the ruler.
 const TEMPO_H: i32 = 24;
+/// The Chords lane's height (composing step 6, board C).
+const CHORDS_H: i32 = 24;
 /// How near a point a finger picks it up, across.
 const TEMPO_HIT: i32 = 14;
 const TOOLS_H: i32 = 48;
@@ -842,6 +886,7 @@ impl Default for SongLanes {
             tempo: Vec::new(),
             tempo_base: 120.0,
             tempo_pick: None,
+            chords: SongChordLane::default(),
             report: None,
             over: Vec::new(),
             painted: Painted::default(),
@@ -905,6 +950,8 @@ struct Geo {
     ruler: Rect,
     /// The tempo lane, the name column included.
     tempo: Rect,
+    /// The Chords lane under it, the name column included.
+    chords: Rect,
     lanes: Rect,
     /// The height of every lane but the take lanes.
     lane_h: i32,
@@ -1161,6 +1208,7 @@ impl SongLanes {
             tempo: self.tempo.clone(),
             tempo_base: self.tempo_base,
             tempo_pick: self.tempo_pick,
+            chords: self.chords.clone(),
             report: self.report.clone(),
             over: self.over.clone(),
             painted: Painted::default(),
@@ -1308,12 +1356,9 @@ impl SongLanes {
         );
         let (ruler, below) = rest.take_top(RULER_H);
         let tempo = Rect::new(below.x, below.y + 2, below.w, TEMPO_H);
-        let lanes = Rect::new(
-            below.x,
-            tempo.bottom() + GAP,
-            below.w,
-            below.h - 2 - TEMPO_H - GAP,
-        );
+        let chords = Rect::new(below.x, tempo.bottom() + 2, below.w, CHORDS_H);
+        let top = chords.bottom() + GAP;
+        let lanes = Rect::new(below.x, top, below.w, below.bottom() - top);
         // Take lanes keep their height; the others share what is left.
         let takes = self.take_count() as i32;
         let n = (self.lane_count() as i32 - takes).max(1);
@@ -1322,6 +1367,7 @@ impl SongLanes {
         Geo {
             ruler,
             tempo,
+            chords,
             lanes,
             lane_h,
             tools,
@@ -2349,6 +2395,133 @@ impl SongLanes {
         ((t + bar / 2).div_euclid(bar) * bar).max(0)
     }
 
+    /// The Chords lane where the chips go (right of the name column).
+    pub fn chords_rect(&self, r: Rect) -> Rect {
+        let g = self.geo(r);
+        Rect::new(
+            g.chords.x + NAME_W,
+            g.chords.y,
+            g.chords.w - NAME_W,
+            g.chords.h,
+        )
+    }
+
+    /// Each chip of the Chords lane that shows, by its index, clipped to
+    /// the lane; 2 px apart.
+    pub fn chord_chip_rects(&self, r: Rect) -> Vec<(usize, Rect)> {
+        let g = self.geo(r);
+        let lane = self.chords_rect(r);
+        self.chords
+            .chips
+            .iter()
+            .enumerate()
+            .take(CHORD_CHIPS)
+            .filter_map(|(k, c)| {
+                let x0 = self.x_of(g.lanes, c.from).max(lane.x);
+                let x1 = (self.x_of(g.lanes, c.to) - 2).min(lane.right());
+                (x1 - x0 >= 4).then(|| (k, Rect::new(x0, lane.y + 1, x1 - x0, lane.h - 2)))
+            })
+            .collect()
+    }
+
+    /// The chord picker open from the Chords lane, under its chip, over the
+    /// lanes; None while it is closed or its chip doesn't show.
+    pub fn chord_picker_geo(&self, r: Rect) -> Option<crate::chord_strip::PickerGeo> {
+        self.chords.picker.as_ref()?;
+        let open = self.chords.open?;
+        let chip = self
+            .chord_chip_rects(r)
+            .into_iter()
+            .find(|(k, _)| *k == open)
+            .map(|(_, c)| c)?;
+        let g = self.geo(r);
+        let area = Rect::new(
+            g.lanes.x,
+            g.chords.y,
+            g.lanes.w,
+            g.lanes.bottom() - g.chords.y,
+        );
+        Some(crate::chord_strip::picker_geo(chip, area))
+    }
+
+    /// The Chords lane: "Chords" in the name column, then a chip for each
+    /// chord the sections' scenes play, bar by bar: heard solid, suggested
+    /// dashed, yours in the accent colour, the one the picker is open on
+    /// ringed. A chip too narrow for the chord's name shows its root (as
+    /// at 64 bars), and one too narrow for that is a plain chip. With no
+    /// chords: why, in the lane.
+    fn paint_chords(&self, cx: &mut PaintCx, r: Rect) {
+        use crate::chord_strip::{dashed, ChipLook};
+        let t = cx.theme.clone();
+        let g = &self.geo(r);
+        cx.text(
+            FontId::Sans,
+            t.size_small - 2.0,
+            Rect::new(g.chords.x, g.chords.y, NAME_W - 8, g.chords.h),
+            Align::Left,
+            t.text_dim,
+            "Chords",
+        );
+        let lane = Rect::new(
+            g.chords.x + NAME_W,
+            g.chords.y,
+            g.chords.w - NAME_W,
+            g.chords.h,
+        );
+        let chips = self.chord_chip_rects(r);
+        if chips.is_empty() {
+            let fill = t.raised.mix(t.surface, 0.6);
+            cx.canvas.fill_round_rect(lane, 4, fill);
+            let words = if self.chords.hearing {
+                "Hearing the scenes' chords…"
+            } else {
+                "No chords yet: a section that plays a scene shows its chords here"
+            };
+            cx.text(
+                FontId::Sans,
+                t.size_small - 3.0,
+                lane.inset_xy(8, 0),
+                Align::Left,
+                t.readable(t.text_dim, fill),
+                words,
+            );
+            return;
+        }
+        let size = t.size_small - 3.0;
+        for (k, c) in chips {
+            let chip = &self.chords.chips[k];
+            let (fill, ink) = match chip.look {
+                ChipLook::Heard => (Some(t.raised), t.text),
+                ChipLook::Suggested => (None, t.text_dim),
+                ChipLook::Yours => (Some(t.accent.mix(t.surface, 0.8)), t.accent),
+            };
+            match fill {
+                Some(f) => cx.canvas.fill_round_rect(c, 4, f),
+                None => dashed(cx, c, t.text_faint),
+            }
+            if chip.look == ChipLook::Yours {
+                cx.canvas.stroke_round_rect(c, 4, 1, t.accent);
+            }
+            if self.chords.open == Some(k) {
+                cx.canvas.stroke_round_rect(c.inset(-1), 5, 2, t.accent);
+            }
+            let room = c.w - 8;
+            let label = [chip.name.as_str(), chip.root.as_str()]
+                .into_iter()
+                .find(|l| cx.measure(FontId::Bold, size, l) <= room);
+            if let Some(label) = label {
+                cx.text(
+                    FontId::Bold,
+                    size,
+                    c.inset_xy(4, 0),
+                    Align::Left,
+                    ink,
+                    label,
+                );
+            }
+        }
+    }
+
     /// The tempo lane where the points go (right of the name column).
     pub fn tempo_rect(&self, r: Rect) -> Rect {
         let g = self.geo(r);
@@ -3238,6 +3411,7 @@ impl Widget for SongLanes {
             );
         }
         self.paint_tempo(cx, &g);
+        self.paint_chords(cx, r);
         // A scroll bar at the left edge when the lanes scroll.
         let n = self.lane_count();
         let shown = self.shown(&g);
@@ -3525,6 +3699,9 @@ impl Widget for SongLanes {
         if let Some(rows) = self.chooser_rects(r) {
             paint_chooser(cx, &rows);
         }
+        if let (Some(v), Some(pg)) = (&self.chords.picker, self.chord_picker_geo(r)) {
+            crate::chord_strip::paint_picker(cx, &pg, v);
+        }
         if let Some(card) = &self.report {
             card.paint(cx, r);
         }
@@ -3576,6 +3753,44 @@ impl Widget for SongLanes {
                 .map(|(k, b)| Target::tap("add-kind", k, ADD_KINDS[k].0, *b))
                 .collect();
             out.push(Target::tap("add-close", 0, "Close", r));
+            return out;
+        }
+        // The chord picker open from the Chords lane: its parts, and
+        // anywhere else closes it (as the Clips grid's chords row).
+        if let (Some(p), Some(g)) = (&self.chords.picker, self.chord_picker_geo(r)) {
+            use crate::chord_strip::{
+                picker_buttons, KINDS, PICK_CLOSE, PICK_DISMISS, PICK_KIND, PICK_SPLIT, ROOTS,
+            };
+            let mut out = Vec::new();
+            for (i, b) in g.roots.iter().enumerate() {
+                out.push(Target::tap("chord-root", CHORD_PICK + i, ROOTS[i], *b));
+            }
+            for (i, b) in g.kinds.iter().enumerate() {
+                out.push(Target::tap(
+                    "chord-kind",
+                    CHORD_PICK + PICK_KIND + i,
+                    KINDS[i],
+                    *b,
+                ));
+            }
+            for (i, ((name, live), b)) in picker_buttons(p).into_iter().zip(g.buttons).enumerate() {
+                out.push(
+                    Target::tap("chord-button", CHORD_PICK + PICK_SPLIT + i, name, b)
+                        .disabled_if(!live),
+                );
+            }
+            out.push(Target::tap(
+                "chord-close",
+                CHORD_PICK + PICK_CLOSE,
+                "Close",
+                g.close,
+            ));
+            out.push(Target::tap(
+                "chord-dismiss",
+                CHORD_PICK + PICK_DISMISS,
+                "Close",
+                r,
+            ));
             return out;
         }
         let audio = self.region.is_some();
@@ -3630,6 +3845,15 @@ impl Widget for SongLanes {
         }
         if free.w >= 2 * TEMPO_HIT {
             out.push(Target::tap("tempo-lane", 0, "Tempo", free));
+        }
+        // The Chords lane's chips.
+        for (k, c) in self.chord_chip_rects(r) {
+            out.push(Target::tap(
+                "chord",
+                CHORD_CHIP + k,
+                self.chords.chips[k].name.clone(),
+                c,
+            ));
         }
         out.push(Target::tap("rec-song", 0, "Rec song", self.rec_rect(r)));
         if let Some(b) = self.show_rect(r) {
@@ -3780,6 +4004,16 @@ impl Widget for SongLanes {
                 .chooser_rects(r)
                 .and_then(|rows| rows.iter().position(|b| b.contains(x, y)));
             return Some(EventKind::Tab(kind.map_or(ADD_CLOSE, |k| ADD_KINDS[k].1)));
+        }
+        // The chord picker open from the Chords lane: a touch is its, and
+        // one off it closes it.
+        if let Some(pg) = self.chord_picker_geo(r) {
+            if phase != Touch::Down {
+                return None;
+            }
+            return Some(EventKind::Tab(
+                CHORD_PICK + crate::chord_strip::picker_hit(&pg, x, y),
+            ));
         }
         let g = self.geo(r);
         let names = Rect::new(g.lanes.x - 12, g.lanes.y, NAME_W + 12, g.lanes.h);
@@ -3981,6 +4215,14 @@ impl Widget for SongLanes {
                 self.grip = Some(Grip::new(Held::Start { index: i, dt }, x, y));
                 return None;
             }
+        }
+        // The Chords lane: a chip opens the chord picker on it.
+        if self.chords_rect(r).contains(x, y) {
+            return self
+                .chord_chip_rects(r)
+                .into_iter()
+                .find(|(_, c)| c.contains(x, y))
+                .map(|(k, _)| EventKind::Tab(CHORD_CHIP + k));
         }
         // The tempo lane: a point (nearest first) or the lane itself, held
         // to tap (on the lift) or drag.
@@ -5005,7 +5247,8 @@ mod tests {
             &mut s,
             vec![audio_lane(1, "Vocal", vec![block(0, 3840, 0)])],
         );
-        let r = Rect::new(12, 140, 814, 534);
+        // Tall enough for the panel under the lane, below the Chords lane.
+        let r = Rect::new(12, 140, 814, 562);
         assert_eq!(s.panel_parts(r), None, "no panel open");
         s.panel = Some(4);
         assert_eq!(s.panel_parts(r), None, "no lane for that track");
@@ -5734,5 +5977,104 @@ mod tests {
         );
         assert!(!same_waves(&[w(1, 1000)], &[w(2, 1000)]));
         assert!(!same_waves(&[w(1, 1000)], &[]));
+    }
+
+    /// The Chords lane (composing step 6, board C): a chip per chord
+    /// between the tempo lane and the lanes, at its bars; a tap on a chip
+    /// is its index; with the picker open on one, the picker's parts
+    /// report themselves and a touch anywhere is the picker's.
+    #[test]
+    fn the_chords_lane_shows_a_chip_per_chord_and_a_tap_opens_the_picker() {
+        use crate::chord_strip::{ChipLook, PICK_DISMISS, PICK_KIND, PICK_ROOT};
+        let mut s = lanes();
+        let r = Rect::new(12, 140, 814, 534);
+        let bar = s.bar;
+        let chip = |from: Tick, to: Tick, name: &str, k: usize| SongChip {
+            from,
+            to,
+            name: name.into(),
+            root: name[..1].into(),
+            look: ChipLook::Heard,
+            row: 0,
+            chip: k,
+        };
+        s.chords.chips = vec![
+            chip(0, bar, "C", 0),
+            chip(bar, 2 * bar, "G7", 1),
+            chip(2 * bar, 3 * bar, "C", 0),
+        ];
+        let g = s.geo(r);
+        assert!(g.tempo.bottom() <= g.chords.y && g.chords.bottom() < g.lanes.y);
+        let chips = s.chord_chip_rects(r);
+        assert_eq!(chips.len(), 3);
+        for (k, c) in &chips {
+            let b = &s.chords.chips[*k];
+            assert_eq!(c.x, s.x_of(g.lanes, b.from), "chip {k} at its bar");
+            assert!(g.chords.contains(c.x, c.y) && c.bottom() <= g.chords.bottom());
+        }
+        let ids: Vec<&str> = s
+            .targets(r)
+            .iter()
+            .map(|t| t.id)
+            .filter(|i| *i == "chord")
+            .collect();
+        assert_eq!(ids.len(), 3);
+        let c = chips[1].1;
+        assert_eq!(
+            s.touch(1, Touch::Down, c.x + 4, c.y + 4, r),
+            Some(EventKind::Tab(CHORD_CHIP + 1))
+        );
+        // The picker open on bar 2's chip: its roots and kinds answer, and
+        // a touch off it closes it.
+        s.chords.open = Some(1);
+        s.chords.picker = Some(crate::chord_strip::PickerView {
+            chip: 1,
+            bar: 2,
+            heard: "G7".into(),
+            picked: "G7".into(),
+            root: Some(7),
+            kind: Some(2),
+            can_split: true,
+            can_join: false,
+            can_as_heard: false,
+            can_use: false,
+        });
+        let pg = s.chord_picker_geo(r).expect("the picker shows");
+        assert!(
+            pg.panel.y >= c.bottom() || pg.panel.bottom() <= c.y,
+            "clear of its chip"
+        );
+        let t = s.targets(r);
+        assert_eq!(t.iter().filter(|t| t.id == "chord-root").count(), 12);
+        assert_eq!(t.iter().filter(|t| t.id == "chord-kind").count(), 12);
+        assert!(t.iter().any(|t| t.id == "chord-dismiss"));
+        let at = |b: Rect| (b.x + b.w / 2, b.y + b.h / 2);
+        let (x, y) = at(pg.roots[8]);
+        assert_eq!(
+            s.touch(2, Touch::Down, x, y, r),
+            Some(EventKind::Tab(CHORD_PICK + PICK_ROOT + 8))
+        );
+        let (x, y) = at(pg.kinds[2]);
+        assert_eq!(
+            s.touch(3, Touch::Down, x, y, r),
+            Some(EventKind::Tab(CHORD_PICK + PICK_KIND + 2))
+        );
+        let off = g.ruler;
+        assert_eq!(
+            s.touch(4, Touch::Down, off.x + 2, off.y + 2, r),
+            Some(EventKind::Tab(CHORD_PICK + PICK_DISMISS))
+        );
+        // Drawn: the lane and the picker over the lanes.
+        let mut ui = mpfree_ui::Ui::new(
+            mpfree_ui::Theme::dark(),
+            mpfree_ui::Fonts::embedded(),
+            1280,
+            800,
+        );
+        ui.add("song", s);
+        ui.add_page("p", "song").unwrap();
+        ui.show("p").unwrap();
+        let mut canvas = mpfree_ui::SoftCanvas::new(1280, 800);
+        assert!(!ui.paint(&mut canvas).is_empty());
     }
 }

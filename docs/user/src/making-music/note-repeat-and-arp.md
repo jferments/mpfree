@@ -206,7 +206,7 @@ MPFree can write a phrase for you. **New idea**, at the right of the list's head
 {{shot: arp-phrase-new-idea | New idea open on the Phrase tab: Kind Bass, Style Groove, 2 bars, Activity Middle; the third try shows on the right under "Try 3 · Back keeps Night drive", and plays from the latched pad.}}
 
 1. On the Phrase tab, tap **New idea**. It opens on the kind the list shows.
-2. Change the rows with their **‹** and **›**, or turn the data wheel to a row and press **–** or **+**: **Kind** (Bass, Riff, Chords, Arp lines), **Style** (Minimal, Groove, Jazz-ish), **Bars** (1, 2 or 4) and **Activity** (Sparse to Very busy). Each change makes a new try.
+2. Change the rows with their **‹** and **›**, or turn the data wheel to a row and press **–** or **+**: **Kind** (Bass, Riff, Chords, Arp lines), **Style** (Minimal, Groove, Jazz-ish, then any you made from a clip: see [Make a style](clips.md#make-a-style)), **Bars** (1, 2 or 4) and **Activity** (Sparse to Very busy). Each change makes a new try.
 3. **Try again** makes another with the same choices. **‹ Try 2** goes back to an earlier one: the last eight are kept while the panel is open.
 4. **Keep** puts the try on **Yours** under the name the panel says ("Groove bass 1"), and the track plays it. **Back** or **×** closes the panel and the track's phrase plays again, as it was.
 
@@ -225,7 +225,7 @@ A clip of notes you played or drew, or a MIDI file, can become a phrase of your 
 - **From a clip:** on **Arrange**, open the clip's card (the Record panel's **Clip** tab) and step its **Phrase** row (**Make ›**) with either arrow: the **Make a phrase** sheet opens in the card's place.
 - **From a MIDI file:** press **BROWSE**, pick the file and tap **Make a phrase** beside **Load**: the sheet opens over the **Selected** panel, made from the file's first track with notes, from its start. Nothing is loaded into the song.
 
-{{shot: clips-card-phrase | The clip card scrolled to its last row, Phrase, which reads Make › on a clip of notes.}}
+{{shot: clips-card-phrase | The clip card scrolled to its Phrase row, which reads Make › on a clip of notes.}}
 
 {{shot: clips-make-phrase | Make a phrase open from Clip 1: a picture of the phrase, heard in C minor on 1/16s, Kind Bass and Home C2, and Keep puts it on Yours as Clip 1.}}
 

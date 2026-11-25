@@ -64,6 +64,7 @@ use mpfree_sampler_ui::recall::RecallFrom;
 use mpfree_synth_ui::view as synth_view;
 use mpfree_synth_ui::{SynthAction, SynthPanel, SynthState};
 use mpfree_time_ui::editor::{EditAction, Lens, NoteGrid, Tool};
+use mpfree_time_ui::style_sheet::{self, StyleAction};
 use mpfree_time_ui::view::{
     self as time_view, AudioAction, TimePage, TimeState, TransportInfo, CLIPS_HINT, CLIPS_PAGE,
 };
@@ -830,6 +831,8 @@ enum TypeTo {
     XyNames(usize),
     /// Customise's theme name (its Rename).
     ThemeName,
+    /// The style Make a style keeps (composing step 6): its sheet's Name.
+    StyleName,
 }
 
 impl TypeTo {
@@ -846,6 +849,7 @@ impl TypeTo {
                 | TypeTo::ClipName(..)
                 | TypeTo::XyNames(_)
                 | TypeTo::ThemeName
+                | TypeTo::StyleName
         )
     }
 }
@@ -9774,6 +9778,12 @@ impl Player {
                     .as_deref()
                     .map_or_else(String::new, time_view::report_hint),
                 View::Arrange if self.time.scene_open.is_some() => time_view::SCENE_CARD_HINT.to_string(),
+                // The Make a style sheet (composing step 6).
+                View::Arrange if self.time.style_sheet.is_some() => self
+                    .time
+                    .style_sheet
+                    .as_deref()
+                    .map_or_else(String::new, |s| s.hint().to_string()),
                 // The Make a phrase sheet (step 3 of the phrases).
                 View::Arrange if self.time_page.make.is_some() => {
                     self.sheet.as_ref().map(|v| v.hint.clone()).unwrap_or_default()
@@ -11250,6 +11260,29 @@ impl Player {
     /// Opens the text keyboard for `asks` over the page showing (the
     /// Sample tab's pad and its sound, a MIDI port, a scene's name), its
     /// names going `to`.
+    /// Make a style's Name (composing step 6): the text keyboard, on the
+    /// name the sheet shows.
+    fn open_style_name(&mut self) {
+        let Some(name) = self
+            .time
+            .style_sheet
+            .as_deref()
+            .map(|s| s.made.name.clone())
+        else {
+            return;
+        };
+        self.open_textpad(
+            vec![mpfree_ui::textpad::TextAsk {
+                key: "style".to_string(),
+                label: "Style".to_string(),
+                title: "Name the style".to_string(),
+                value: name,
+                max_len: style_sheet::MAX_STYLE_NAME,
+            }],
+            TypeTo::StyleName,
+        );
+    }
+
     fn open_textpad(&mut self, asks: Vec<mpfree_ui::textpad::TextAsk>, to: TypeTo) {
         let back = self.ui.page().to_string();
         if let Some(p) = self.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD) {
@@ -11724,7 +11757,8 @@ impl Player {
             | TypeTo::PatchName(_)
             | TypeTo::ClipName(..)
             | TypeTo::XyNames(_)
-            | TypeTo::ThemeName => None,
+            | TypeTo::ThemeName
+            | TypeTo::StyleName => None,
         }
     }
 
@@ -11775,6 +11809,10 @@ impl Player {
             return Some(FromUi::Time(TimeAction::SongMarker(
                 mpfree_time_ui::MarkerEdit::Rename { index, name },
             )));
+        }
+        if to == Some(TypeTo::StyleName) {
+            let (_, name) = names.into_iter().next()?;
+            return Some(FromUi::Time(TimeAction::Style(StyleAction::Name(name))));
         }
         if let Some(TypeTo::ClipName(track, slot)) = to {
             let (_, name) = names.into_iter().next()?;
@@ -13643,6 +13681,33 @@ impl Player {
                 if let Some(l) = self.ui.get_mut::<OptionList>(list) {
                     l.editing = on;
                 }
+            }
+            return;
+        }
+        // Make a style's sheet (composing step 6): the wheel picks Name or
+        // Plan; - / + step Plan, and on Name open the text keyboard.
+        if let Some(sheet) = self
+            .time
+            .style_sheet
+            .as_deref()
+            .filter(|_| self.view == View::Arrange)
+        {
+            let row = sheet.row;
+            match k {
+                RowKey::Pick(d) => {
+                    let to = (row as i32 + d).clamp(0, style_sheet::PLAN_ROW as i32) as usize;
+                    self.outbox
+                        .push(FromUi::Time(TimeAction::Style(StyleAction::Pick(to))));
+                }
+                RowKey::Step(_) if row == style_sheet::NAME_ROW => self.open_style_name(),
+                RowKey::Step(delta) => {
+                    self.outbox
+                        .push(FromUi::Time(TimeAction::Style(StyleAction::Step {
+                            row,
+                            delta,
+                        })))
+                }
+                RowKey::Editing(_) | RowKey::Arrow { .. } => {}
             }
             return;
         }
@@ -19604,10 +19669,12 @@ impl Player {
                 None
             }
             // Add a part, the row's chords under its row, the chord picker
-            // and the Chords tab (composing tools S2.6, layout spec 4r):
+            // and the Chords tab (composing tools S2.6, layout spec 4r),
+            // and the Song view's Chords lane (composing step 6, board C):
             // the page's own; what they ask of the time engine goes at
             // once, and why not is said in place.
             (time_view::CLIPS, EventKind::Toggle(_))
+            | (time_view::SONG, EventKind::Tab(_))
             | (time_view::ADD_PANEL | time_view::CHORDS_CARD, _)
                 if self.time_page.owns(&ev) =>
             {
@@ -19654,6 +19721,13 @@ impl Player {
                 );
                 None
             }
+            // Make a style's Name (composing step 6): the text keyboard.
+            (style_sheet::STYLE_SHEET, EventKind::Toggle(style_sheet::STYLE_NAME)) => {
+                self.open_style_name();
+                None
+            }
+            // The sheet's other touches are the time engine's.
+            (style_sheet::STYLE_SHEET, _) => time_view::action(&ev, &self.time).map(FromUi::Time),
             // The scene card's Rename: the text keyboard, its name typed
             // over the scene's.
             (
@@ -25042,6 +25116,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         followed: None,
         chords: None,
         part: false,
+        style: false,
     };
     st.done = vec![
         take(1, 0, false, false),
@@ -25421,6 +25496,34 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
                     l.selected = time_view::CLIP_PHRASE;
                 }
                 out.push(("clips-card-phrase", p));
+            }
+            // The same clip scrolled to its Style row (composing step 6,
+            // board D): either arrow opens Make a style.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                let mut st = st.clone();
+                if let Some(c) = st
+                    .focus()
+                    .and_then(|(t, s)| st.tracks.get_mut(t)?.slots.get_mut(s)?.as_mut())
+                {
+                    c.notes = c.notes.max(8);
+                }
+                p.time_page.clip_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
+                    l.selected = time_view::CLIP_STYLE;
+                }
+                out.push(("clips-card-style", p));
+            }
+            // Make a style open from it (board D): a two-bar drum groove
+            // read, Plan the nearest built-in style.
+            if let Ok(mut p) = sample_clips(fonts()) {
+                let mut st = st.clone();
+                st.style_sheet = Some(Box::new(mpfree_time_ui::sample::style_sheet_sample()));
+                p.time_page.clip_card = true;
+                p.apply(ToUi::Time(Box::new(st)));
+                p.apply(ToUi::Show(View::Arrange));
+                out.push(("clips-make-style", p));
             }
             // Make a phrase open from it (board E): a C minor bass line of
             // two bars read as Bass from C2 on 1/16s, a held pad playing it.
@@ -26303,6 +26406,39 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("arrange-song-tempo", p));
         }
         Err(e) => eprintln!("arrange-song-tempo sample: {e}"),
+    }
+    // The Chords lane under Tempo (composing step 6, board C): what each
+    // scene the busy song plays gives, bar by bar, the Verse's second chord
+    // yours (Ab7); then the chord picker open on it.
+    match mpfree_time_ui::sample::song_chords_state() {
+        Ok(state) => {
+            use mpfree_time_ui::add_view::{shown_line, ChordPick};
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            p.apply(ToUi::Time(Box::new(state.clone())));
+            p.apply(ToUi::Show(View::Arrange));
+            p.refresh_hint();
+            out.push(("arrange-song-chords", p));
+            let lane = mpfree_time_ui::view::song_chord_lane(&state);
+            let verse = state.scene_sections.get(1).map(|s| s.2);
+            let open = lane
+                .chips
+                .iter()
+                .position(|c| Some(c.row) == verse && c.chip == 1);
+            let mut p = quiet_player(fonts());
+            busy_sounds(&mut p);
+            if let (Some(k), Some(row)) = (open, verse) {
+                if let Some(line) = shown_line(&state, row) {
+                    p.time_page.chord_pick = ChordPick::open(row, &line, 1);
+                    p.time_page.song_chord = Some(k);
+                }
+            }
+            p.apply(ToUi::Time(Box::new(state)));
+            p.apply(ToUi::Show(View::Arrange));
+            p.refresh_hint();
+            out.push(("arrange-song-chord-picker", p));
+        }
+        Err(e) => eprintln!("arrange-song-chords sample: {e}"),
     }
     // The same with two audio lanes under the song (layout spec 4c): a
     // vocal punched in over bars 5-8 and that region picked, a guitar
@@ -29845,10 +29981,173 @@ mod tests {
         );
     }
 
+    /// The Song view's Chords lane through the screen (composing step 6,
+    /// board C): a chip opens the chord picker under it with its hint, and
+    /// a root, a kind and Use ask the time engine to set the scene's chords
+    /// (one take); the picker closes.
+    #[test]
+    fn the_chords_lane_opens_the_picker_and_use_sets_the_scenes_chords() {
+        use mpfree_time_ui::adding::ChordsAction;
+        use mpfree_time_ui::song::SongLanes;
+        use mpfree_ui::Rect;
+        let state = mpfree_time_ui::sample::song_chords_state().unwrap();
+        let verse = state.scene_sections[1].2;
+        let mut p = quiet_player(Fonts::embedded());
+        p.apply(ToUi::Time(Box::new(state)));
+        p.apply(ToUi::Show(View::Arrange));
+        let tap = |p: &mut Player, r: Rect| {
+            let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let lanes = |p: &Player| {
+            p.ui.get::<SongLanes>(time_view::SONG)
+                .unwrap()
+                .clone_without_waves()
+        };
+        let r = p.ui.rect_of(time_view::SONG).unwrap();
+        let l = lanes(&p);
+        let (k, chip) = l
+            .chord_chip_rects(r)
+            .into_iter()
+            .find(|(k, _)| l.chords.chips[*k].row == verse && l.chords.chips[*k].chip == 0)
+            .expect("the Verse's first chord shows");
+        assert_eq!(tap(&mut p, chip), None);
+        assert_eq!(p.time_page.song_chord, Some(k));
+        let pick = p.time_page.chord_pick.expect("the picker opens");
+        assert_eq!((pick.row, pick.chip), (verse, 0));
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.starts_with("A root, then a kind"), "{hint}");
+        let g = lanes(&p).chord_picker_geo(r).expect("the picker shows");
+        tap(&mut p, g.roots[8]);
+        tap(&mut p, g.kinds[2]);
+        p.outbox.clear();
+        tap(&mut p, g.buttons[3]);
+        let asked: Vec<_> = std::mem::take(&mut p.outbox)
+            .into_iter()
+            .filter_map(|a| match a {
+                FromUi::Time(TimeAction::Chords(ChordsAction::Set { row, line, .. })) => {
+                    Some((row, line.spans()[0].answer.name()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(asked, [(verse, "Ab7".to_string())]);
+        assert_eq!(
+            (p.time_page.chord_pick, p.time_page.song_chord),
+            (None, None)
+        );
+        assert!(lanes(&p).chords.picker.is_none(), "the picker closes");
+    }
+
     /// The scene card (the Arrange refactor's 5.2): a row's number held
     /// opens it; a tap on Mutes' value takes the mutes as they are, a tap
     /// on the name types the scene's name on the text keyboard, and a tap
     /// off the card closes it.
+    /// Make a style (composing step 6, board D): the clip card's Style
+    /// row asks for the sheet; open, it takes the card's column and the
+    /// hint; Name opens the text keyboard and Enter names the style; Plan's
+    /// halves, Back and Keep go to the time engine; the wheel picks the
+    /// row and - / + step Plan (on Name, the keyboard).
+    #[test]
+    fn make_a_style_names_steps_and_keeps_from_its_sheet() {
+        use crate::app::RowKey;
+        use mpfree_time_ui::style_sheet::{StyleSheetView, NAME_ROW, PLAN_ROW, STYLE_SHEET};
+        use mpfree_ui::textpad::{char_key, TextPad, KEY_CLEAR, KEY_ENTER};
+        use mpfree_ui::Rect;
+        let mut p = sample_clips(Fonts::embedded()).unwrap();
+        let tap = |p: &mut Player, r: Rect| {
+            let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let tap_at = |p: &mut Player, (x, y): (i32, i32)| {
+            let down = p.touch(1, Touch::Down, x, y);
+            down.or(p.touch(1, Touch::Up, x, y))
+        };
+        let style = |a: StyleAction| Some(FromUi::Time(TimeAction::Style(a)));
+        // The card's Style row.
+        let mut st = p.time.clone();
+        st.armed = Some(0);
+        if let Some(c) = st
+            .focus()
+            .and_then(|(t, s)| st.tracks.get_mut(t)?.slots.get_mut(s)?.as_mut())
+        {
+            c.notes = c.notes.max(8);
+        }
+        let (track, slot) = st.focus().unwrap();
+        assert_eq!(
+            time_view::card_action(&st, time_view::CLIP_STYLE, 1, false),
+            Ok(TimeAction::MakeStyle { track, slot })
+        );
+        // Open.
+        st.style_sheet = Some(Box::new(mpfree_time_ui::sample::style_sheet_sample()));
+        p.apply(ToUi::Time(Box::new(st)));
+        p.apply(ToUi::Show(View::Arrange));
+        assert_eq!(
+            p.ui.layout_of(time_view::CLIPS_PAGE),
+            Some(time_view::CLIPS_STYLE_LAYOUT)
+        );
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert!(hint.starts_with("Read from the clip"), "{hint}");
+        let r = p.ui.rect_of(STYLE_SHEET).unwrap();
+        let g = p.ui.get::<StyleSheetView>(STYLE_SHEET).unwrap().geo(r);
+        // Name: the keyboard on the name read; Enter names it.
+        assert_eq!(tap(&mut p, g.rows[NAME_ROW]), None);
+        assert_eq!(p.page(), TEXTPAD_PAGE);
+        let pad = p.ui.rect_of(TEXTPAD).unwrap();
+        assert_eq!(
+            p.ui.get::<TextPad>(TEXTPAD).unwrap().text(),
+            "Clip 1 groove"
+        );
+        tap_at(&mut p, TextPad::key_at(pad, KEY_CLEAR));
+        for c in "Night".chars() {
+            tap_at(&mut p, TextPad::key_at(pad, char_key(c).unwrap().0));
+        }
+        let enter = tap_at(&mut p, TextPad::key_at(pad, KEY_ENTER));
+        let mut got = p.take_actions();
+        got.extend(enter);
+        let named = FromUi::Time(TimeAction::Style(StyleAction::Name("Night".into())));
+        assert!(got.contains(&named), "{got:?}");
+        assert_eq!(p.page(), CLIPS_PAGE);
+        // Plan's right half, Back, Keep.
+        let plan = g.rows[PLAN_ROW];
+        let right = Rect::new(plan.right() - 20, plan.y, 16, plan.h);
+        assert_eq!(
+            tap(&mut p, right),
+            style(StyleAction::Step {
+                row: PLAN_ROW,
+                delta: 1
+            })
+        );
+        assert_eq!(tap(&mut p, g.buttons[0]), style(StyleAction::Back));
+        assert_eq!(tap(&mut p, g.buttons[1]), style(StyleAction::Keep));
+        // The wheel picks Plan (the sheet opens on Name, as drawn); - / +
+        // step Plan there, and on Name open the keyboard.
+        p.take_actions();
+        p.apply(ToUi::Rows(RowKey::Pick(1)));
+        assert_eq!(
+            p.take_actions(),
+            [FromUi::Time(TimeAction::Style(StyleAction::Pick(PLAN_ROW)))]
+        );
+        let mut st = p.time.clone();
+        st.style_sheet.as_mut().unwrap().row = PLAN_ROW;
+        p.apply(ToUi::Time(Box::new(st)));
+        p.apply(ToUi::Rows(RowKey::Step(1)));
+        assert_eq!(
+            p.take_actions(),
+            [FromUi::Time(TimeAction::Style(StyleAction::Step {
+                row: PLAN_ROW,
+                delta: 1
+            }))]
+        );
+        let mut st = p.time.clone();
+        st.style_sheet.as_mut().unwrap().row = NAME_ROW;
+        p.apply(ToUi::Time(Box::new(st)));
+        p.apply(ToUi::Rows(RowKey::Step(1)));
+        assert_eq!(p.page(), TEXTPAD_PAGE);
+    }
+
     #[test]
     fn a_held_row_number_opens_the_scene_card_and_rename_types_its_name() {
         use mpfree_time_ui::widgets::ClipGrid;
@@ -32218,6 +32517,7 @@ mod tests {
             followed: None,
             chords: None,
             part: false,
+            style: false,
         };
         let mut st = p.time.clone();
         st.done = vec![take(1), take(2), take(3)];
@@ -33104,6 +33404,7 @@ mod tests {
             followed: None,
             chords: None,
             part: false,
+            style: false,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
         assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
@@ -37163,6 +37464,7 @@ mod tests {
             row_tool: None,
             chords: None,
             part: false,
+            style: false,
         });
         p.apply(ToUi::Time(Box::new(st)));
         assert_eq!(undo(&mut p, false), [FromUi::Time(TimeAction::Undo)]);

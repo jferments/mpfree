@@ -1011,6 +1011,8 @@ pub struct ClipSettings {
 pub enum ModelError {
     ClipLength,
     TooManyNotes,
+    /// Styles made from clips past [`MAX_STYLES`].
+    TooManyStyles,
     /// A note's tick, length, note number, velocity, chance, condition,
     /// ratchet or ramp is out of range.
     BadNote(usize),
@@ -2007,7 +2009,14 @@ pub struct Project {
     /// UNDO took one away. UNDO and REDO never wind it back. 0 before any
     /// was given (a project saved before clips had ids).
     pub next_clip: u32,
+    /// Styles made from clips (composing step 6), each one line of text
+    /// the composer reads (`mpfree_compose::ClipStyle::to_text`), at most
+    /// [`MAX_STYLES`]. They join every Style row after the built-in ones.
+    pub styles: Vec<String>,
 }
+
+/// The most styles made from clips a project keeps.
+pub const MAX_STYLES: usize = 16;
 
 impl Project {
     pub fn new() -> Project {

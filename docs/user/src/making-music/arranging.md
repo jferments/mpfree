@@ -63,8 +63,8 @@ Every change plays at once, and **UNDO** takes it back. Turning one setting many
 3. The try plays in its cell with the row, dashed in the track's colour, from the next bar line while the row plays (press **PLAY** and launch the row to hear it).
 4. Change it until you like it:
    - **Role** says how it plays with the others: **Support** (with the beat, under the tune), **Answer** (where the tune rests), **Interlock** (in the beat's gaps) or **Stay out** (sparse, out of the way). The words under it say what the role does.
-   - **Style** (Minimal, Groove, Jazz-ish), and **Bars**: the row's length, or 1, 2, 4, 8 or 16 bars.
-   - **A phrase as the part:** step **Style** on past Jazz-ish and it runs on into the arp's phrases of the part's kind, MPFree's and then yours (for Bass the bass lines, for Chords the chords, for a melody the riffs and arp lines; drums take none). The row then reads **Phrase**, and the part is the phrase played over the row's chords, moved to each chord's root in the row's key, as the arp moves it from a note you hold. A phrase plays one way, so **Try again** is faint and the Q-Links read "–"; step back to a style for a part the composer writes. See [Phrases](note-repeat-and-arp.md#phrases).
+   - **Style** (Minimal, Groove, Jazz-ish, then any you made from a clip: see [Make a style](clips.md#make-a-style)), and **Bars**: the row's length, or 1, 2, 4, 8 or 16 bars.
+   - **A phrase as the part:** step **Style** on past Jazz-ish (and your own styles) and it runs on into the arp's phrases of the part's kind, MPFree's and then yours (for Bass the bass lines, for Chords the chords, for a melody the riffs and arp lines; drums take none). The row then reads **Phrase**, and the part is the phrase played over the row's chords, moved to each chord's root in the row's key, as the arp moves it from a note you hold. A phrase plays one way, so **Try again** is faint and the Q-Links read "–"; step back to a style for a part the composer writes. See [Phrases](note-repeat-and-arp.md#phrases).
    - **Track**: the track whose empty cell gets the part. It starts on a track whose name says the part (a "Bass" track for Bass), else the first with room. **Sound** says what plays it.
    - **New track**, the Track row's last choice: the part goes on a track **Keep** adds, named for the part ("Bass", or "Bass 2" when you have one). **Sound** then picks the synth it plays: for Bass the Bass synth first, then Squelch, Analog, Poly, FM and Pluck; for Chords Poly, Keys, Strings, Drawbar, Choir, Analog and FM; for a melody FM, Pluck, Analog, Wind, Poly, Keys, Strings and Squelch; drums play the Drums synth. The status says "Making the Bass synth…" for a moment before the first try. When every track has a clip in the row, the panel opens on New track.
    - The Q-Links: **Similarity**, **Variation**, **Activity** and **Range**, as on Continue.
@@ -212,6 +212,16 @@ A ramp plays as a quick staircase of tempos, one step every 1/16 note, each step
 Points are at least a 1/16 apart, and a song has up to 31.
 
 *Example:* tap the lane at bar 9, push the wheel and turn it to 140, then tap the lane at bar 5 and tap **Ramp**. With Song on, bars 1 to 4 play the project's tempo, bars 5 to 8 speed up to 140, and from bar 9 the song plays at 140.
+
+### The song's chords
+
+The **Chords** lane, under Tempo, shows the chords each scene plays, bar by bar, along the song: the same chips as the row's chords on Clips. Chords heard in your clips are solid, suggested ones are dashed, and chords you set are blue. A section that plays a scene shows that scene's chords from its start, over and over until the section ends; a section of the song's own clips shows none. When there are many bars a chip shows only its chord's root.
+
+{{shot: arrange-song-chords | The Chords lane under Tempo: each scene's chords through its section, the Verse's second chord set to Ab7 (blue).}}
+
+Tap a chip to change the chord. The same picker as on Clips opens under it: tap a root, then a kind, then **Use**. The change is the scene's, so every place the scene plays in the song shows it, and it is one **UNDO** ("row 2's chords"). Clips that no longer fit are marked, never rewritten, and the **Chords** tab fits them (see [Clips that don't fit the new chords](#clips-that-dont-fit-the-new-chords)). **×**, or a tap anywhere else, closes the picker with nothing changed.
+
+{{shot: arrange-song-chord-picker | The chord picker open on the Verse's Ab7 from the Chords lane.}}
 
 ### Audio in the song
 

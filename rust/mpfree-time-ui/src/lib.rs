@@ -48,6 +48,7 @@ pub mod sample;
 pub mod scene_card;
 pub mod show;
 pub mod song;
+pub mod style_sheet;
 pub mod view;
 pub mod widgets;
 

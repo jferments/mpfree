@@ -19,9 +19,11 @@ abletown clips-add-part 4 # new screen (composing tools S2.6): the playing rings
 abletown clips-add-part-new-track 3 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips
 abletown clips-add-part-phrase 4 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips
 abletown clips-card 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown clips-card-style 1 # the clip card's own runs, as clips-card (the card scrolled to its Style row, composing step 6); none of the Style row's
 abletown clips-card-continue 1 # the clip card's own runs, as clips-card (baseline before the theme refactor)
 abletown clips-card-phrase 1 # the clip card's own runs, as clips-card-continue (the card scrolled to its Phrase row)
 abletown clips-make-phrase 1 # the Clips grid's runs (row 1's progress ring), as clips-card; none of the Make a phrase sheet's own
+abletown clips-make-style 1 # the Clips grid's runs, as clips-make-phrase; none of the Make a style sheet's own
 abletown clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 abletown clips-card-direction 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown clips-card-mutate 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
@@ -83,9 +85,11 @@ console clips-add-part 4 # new screen (composing tools S2.6): the playing rings'
 console clips-add-part-new-track 4 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips
 console clips-add-part-phrase 5 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips, and the faint Try again of a phrase
 console clips-card 1 # before the theme refactor (phase 0 baseline)
+console clips-card-style 1 # the clip card's own runs, as clips-card (the card scrolled to its Style row, composing step 6); none of the Style row's
 console clips-card-continue 1 # the clip card's own runs, as clips-card (baseline before the theme refactor)
 console clips-card-phrase 1 # the clip card's own runs, as clips-card-continue (the card scrolled to its Phrase row)
 console clips-make-phrase 1 # the Clips grid's runs (row 1's progress ring), as clips-card; none of the Make a phrase sheet's own
+console clips-make-style 1 # the Clips grid's runs, as clips-make-phrase; none of the Make a style sheet's own
 console clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 console clips-card-direction 1 # before the theme refactor (phase 0 baseline)
 console clips-card-mutate 1 # before the theme refactor (phase 0 baseline)
@@ -247,9 +251,11 @@ default clips-add-part 4 # new screen (composing tools S2.6): the playing rings'
 default clips-add-part-new-track 4 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips
 default clips-add-part-phrase 5 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips, and the faint Try again of a phrase
 default clips-card 1 # before the theme refactor (phase 0 baseline)
+default clips-card-style 1 # the clip card's own runs, as clips-card (the card scrolled to its Style row, composing step 6); none of the Style row's
 default clips-card-continue 1 # the clip card's own runs, as clips-card (baseline before the theme refactor)
 default clips-card-phrase 1 # the clip card's own runs, as clips-card-continue (the card scrolled to its Phrase row)
 default clips-make-phrase 1 # the Clips grid's runs (row 1's progress ring), as clips-card; none of the Make a phrase sheet's own
+default clips-make-style 1 # the Clips grid's runs, as clips-make-phrase; none of the Make a style sheet's own
 default clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 default clips-card-direction 1 # before the theme refactor (phase 0 baseline)
 default clips-card-mutate 1 # before the theme refactor (phase 0 baseline)
@@ -396,9 +402,11 @@ light clips-add-part 4 # new screen (composing tools S2.6): the playing rings' t
 light clips-add-part-new-track 3 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips
 light clips-add-part-phrase 4 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips
 light clips-card 1 # Light (phase 4): faint text, under 3:1 in Default too
+light clips-card-style 1 # the clip card's own runs, as clips-card (the card scrolled to its Style row, composing step 6); none of the Style row's
 light clips-card-continue 1 # the clip card's own runs, as clips-card (baseline before the theme refactor)
 light clips-card-phrase 1 # the clip card's own runs, as clips-card-continue (the card scrolled to its Phrase row)
 light clips-make-phrase 1 # the Clips grid's runs (row 1's progress ring), as clips-card; none of the Make a phrase sheet's own
+light clips-make-style 1 # the Clips grid's runs, as clips-make-phrase; none of the Make a style sheet's own
 light clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 light clips-card-direction 1 # Light (phase 4): faint text, under 3:1 in Default too
 light clips-card-mutate 1 # Light (phase 4): faint text, under 3:1 in Default too
@@ -446,9 +454,11 @@ slate clips-add-part 4 # new screen (composing tools S2.6): the playing rings' t
 slate clips-add-part-new-track 3 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips
 slate clips-add-part-phrase 4 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips
 slate clips-card 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate clips-card-style 1 # the clip card's own runs, as clips-card (the card scrolled to its Style row, composing step 6); none of the Style row's
 slate clips-card-continue 1 # the clip card's own runs, as clips-card (baseline before the theme refactor)
 slate clips-card-phrase 1 # the clip card's own runs, as clips-card-continue (the card scrolled to its Phrase row)
 slate clips-make-phrase 1 # the Clips grid's runs (row 1's progress ring), as clips-card; none of the Make a phrase sheet's own
+slate clips-make-style 1 # the Clips grid's runs, as clips-make-phrase; none of the Make a style sheet's own
 slate clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 slate clips-card-direction 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate clips-card-mutate 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
@@ -520,6 +530,8 @@ spaceship arrange-song-audio 10 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-audio-blocks 10 # the same Song view chrome as arrange-song-audio (none in the audio blocks, whose names use ink_on)
 spaceship arrange-song-block 10 # arrange-song with Hook picked (Arrange phase 6): its start grip, Split and Duplicate; the same 10 runs as arrange-song
 spaceship arrange-song-box 12 # new screen (Arrange 6.5): arrange-song's faint runs (the ruler's numbers, the faint Duplicate, Make unique and Delete, the morph bar's and Takes' faint labels); the box adds none
+spaceship arrange-song-chord-picker 13 # new screen (composing step 6, board C): arrange-song-chords' 12 runs and the picker's faint Use Ab7 (nothing changed yet)
+spaceship arrange-song-chords 12 # new screen (composing step 6, board C): arrange-song's 10 runs and the faint Duplicate and Make unique with nothing picked, as arrange-report; none of the Chords lane's
 spaceship arrange-song-loops 12 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-over 12 # the Song view's runs, as arrange-song; none of the preview's own
 spaceship arrange-song-panel 12 # before the theme refactor (phase 0 baseline)
@@ -552,9 +564,11 @@ spaceship clips-add-part-new-track 41 # new screen (composing tools S2.6b): as c
 spaceship clips-add-part-phrase 41 # new screen (composing tools P2, board H): as clips-add-part (the faint + of empty cells, the playing rings and the transport's Undo), with the faint Try again of a phrase, which plays one way (spaceship's text_faint)
 spaceship clips-bank-b 56 # the Clips grid's runs (its empty cells' faint +), as clips; none of the bank chip's own
 spaceship clips-card 68 # before the theme refactor (phase 0 baseline)
+spaceship clips-card-style 68 # the clip card's own runs, as clips-card (the card scrolled to its Style row, composing step 6); none of the Style row's
 spaceship clips-card-continue 68 # the clip card's own runs, as clips-card (baseline before the theme refactor)
 spaceship clips-card-phrase 68 # the clip card's own runs, as clips-card-continue (the card scrolled to its Phrase row)
 spaceship clips-make-phrase 66 # the Clips grid's runs (row 1's progress ring), as clips-card; none of the Make a phrase sheet's own
+spaceship clips-make-style 66 # the Clips grid's runs, as clips-make-phrase; none of the Make a style sheet's own
 spaceship clips-card-convert 67 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 spaceship clips-card-direction 68 # before the theme refactor (phase 0 baseline)
 spaceship clips-card-mutate 68 # before the theme refactor (phase 0 baseline)
@@ -738,9 +752,11 @@ synthwave clips-add-part 4 # new screen (composing tools S2.6): the playing ring
 synthwave clips-add-part-new-track 3 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips
 synthwave clips-add-part-phrase 4 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips
 synthwave clips-card 1 # before the theme refactor (phase 0 baseline)
+synthwave clips-card-style 1 # the clip card's own runs, as clips-card (the card scrolled to its Style row, composing step 6); none of the Style row's
 synthwave clips-card-continue 1 # the clip card's own runs, as clips-card (baseline before the theme refactor)
 synthwave clips-card-phrase 1 # the clip card's own runs, as clips-card-continue (the card scrolled to its Phrase row)
 synthwave clips-make-phrase 1 # the Clips grid's runs (row 1's progress ring), as clips-card; none of the Make a phrase sheet's own
+synthwave clips-make-style 1 # the Clips grid's runs, as clips-make-phrase; none of the Make a style sheet's own
 synthwave clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 synthwave clips-card-direction 1 # before the theme refactor (phase 0 baseline)
 synthwave clips-card-mutate 1 # before the theme refactor (phase 0 baseline)
