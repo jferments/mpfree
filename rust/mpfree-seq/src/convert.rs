@@ -103,7 +103,7 @@ impl Clip {
         &self,
         pad_notes: impl Fn(u8) -> &'a [u8],
     ) -> Result<Converted, Vec<Refused>> {
-        if self.looped.is_some() {
+        if self.loop_clip.is_some() {
             return Err(vec![Refused::Loop]);
         }
         if self.holds == Holds::Notes {
@@ -447,8 +447,7 @@ mod tests {
         let mut n = Clip::new("n", 3840);
         n.holds = Holds::Notes;
         assert_eq!(n.convert_to_notes(pads).unwrap_err(), vec![Refused::Notes]);
-        let mut l = Clip::new("l", 3840);
-        l.looped = Some(0);
+        let l = Clip::new_audio_loop(crate::LoopId(1), "l", 3840);
         assert_eq!(l.convert_to_notes(pads).unwrap_err(), vec![Refused::Loop]);
     }
 

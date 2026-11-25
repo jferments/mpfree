@@ -823,10 +823,6 @@ pub struct Settings {
     /// as it was at start, if the stream layer started): a project opening
     /// then reads only its takes' headers. Never saved.
     pub audio_streams: bool,
-    /// Loops play on audio tracks (the audio tracks rethink, phase 4:
-    /// docs/dev/design/loops-on-audio-tracks.md), on for everyone since
-    /// 4e.5 switched it on; Dev's switch is gone. Never saved.
-    pub loops_on: bool,
     /// Prefs "At start": open the last project (true, the default since
     /// round 4 of the creator run: a restart lost the pads the owner had
     /// set) or start with a new one. The screen opens it once the sound is
@@ -926,7 +922,6 @@ impl Default for Settings {
             audio_memory: crate::audiotracks::AudioMemory::default(),
             stream_audio: false,
             audio_streams: false,
-            loops_on: true,
             open_last: true,
             export_mode: mpfree_export::Mode::Fast,
             export_bits: mpfree_fx::Bits::I24,
@@ -5155,20 +5150,10 @@ impl App {
         fx
     }
 
-    /// A Loop cell armed on the grid: the looper records its Loop track's
-    /// `input` (loop-tracks.md part 4). Line in switches the line input
-    /// on as its Settings row does; Resample keeps the source (the desk
-    /// makes REC's Record a Resample, which records the other loops).
-    pub fn loop_input(&mut self, input: mpfree_seq::LoopInput) -> Vec<Effect> {
-        use mpfree_seq::LoopInput;
-        let mut fx = match input {
-            LoopInput::Line if !self.settings.line_input => {
-                return self.looper_setting(Item::LineInput, 1)
-            }
-            LoopInput::Line => self.set_loop_source(LoopSource::Line),
-            LoopInput::Pads => self.set_loop_source(LoopSource::Pads),
-            LoopInput::Resample => Vec::new(),
-        };
+    /// A loop cell armed on an audio track with no engine track to say
+    /// its input: the looper records the pads.
+    pub fn loop_input_pads(&mut self) -> Vec<Effect> {
+        let mut fx = self.set_loop_source(LoopSource::Pads);
         if !fx.is_empty() {
             self.save_dirty = true;
             fx.push(Effect::Settings(self.settings.clone()));
@@ -5176,10 +5161,10 @@ impl App {
         fx
     }
 
-    /// An audio track's empty cell armed for a loop (audio tracks phase 4b,
-    /// behind Dev's switch): the looper records the track's own input, as
-    /// a take on the track would ([`crate::looping::TrackInput`]). A line
-    /// pick switches the line input on, as a Loop track's Line in does.
+    /// An audio track's empty cell armed for a loop (audio tracks phase
+    /// 4b): the looper records the track's own input, as a take on the
+    /// track would ([`crate::looping::TrackInput`]). A line pick switches
+    /// the line input on.
     /// Records from shows it until another source is picked or a Loop
     /// cell is armed.
     pub fn loop_track_input(&mut self, input: crate::looping::TrackInput) -> Vec<Effect> {
@@ -8192,7 +8177,6 @@ mod tests {
     #[test]
     fn loops_play_on_audio_tracks_for_everyone_and_the_old_switch_is_left() {
         let mut app = App::new(44_100, false);
-        assert!(app.settings.loops_on);
         app.set_debug_mode(true);
         app.debug_page(1);
         app.button(MENU, true, 0.0);
@@ -8205,7 +8189,8 @@ mod tests {
         old.set_bool("loops-on-tracks", false);
         let mut next = App::new(44_100, false);
         next.restore(&old, &mpfree_store::Settings::default());
-        assert!(next.settings.loops_on);
+        let again = next.app_settings();
+        assert_eq!(again.get_bool("loops-on-tracks"), None, "read and left");
     }
 
     /// Layout spec 4c: Prefs "Audio track memory", right after Loop
@@ -10097,10 +10082,9 @@ mod tests {
             p.tracks.push(t);
         }
         assert_eq!(synth_track(&p, 2, false, app_side), SynthTake::Full);
-        // A Loop track is never one.
-        let loops = Track::new_loops("Track 7", 0);
-        p.tracks[6] = loops;
-        assert_eq!(unfit(&p, 6, free), Some("is a Loop track"));
+        // An audio track is never one.
+        p.tracks[6] = Track::new_audio("Track 7", 0);
+        assert_eq!(unfit(&p, 6, free), Some("is an audio track"));
     }
 
     /// The recording plan's words on the REC chip (step 5b): where REC

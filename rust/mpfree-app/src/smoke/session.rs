@@ -417,9 +417,7 @@ impl Session {
         let mut kits = gui::sample_kits();
         let n = kits.len();
         kits.push(synth.kit_view());
-        let mut time = time::TimeHost::new(RATE, app.settings.bpm).expect("the time engine starts");
-        // Loops play on audio tracks (phase 4e.5), as main.rs starts.
-        time.set_loops_on(app.settings.loops_on);
+        let time = time::TimeHost::new(RATE, app.settings.bpm).expect("the time engine starts");
         let mix = mixing::MixHost::new(RATE, level_db, MAX_DB);
         let panels = modpanels::Panels::new();
         let music = midi_in::MusicIn::new();
@@ -540,7 +538,7 @@ impl Session {
         s.looper.finder.inline = true;
         // Loops record by layers and play on their tracks, as main.rs sets
         // the looper (phase 4e.5: for everyone).
-        s.looper.set_recordings(s.app.settings.loops_on);
+        s.looper.set_recordings(true);
         // The app has the list from the first period, as main.rs's (its
         // `list_changed` starts true), kits and all.
         let fx = s.app.set_instrument_list(&s.instrument_list);
@@ -2205,7 +2203,7 @@ impl Session {
             }
         }
         let (mut ll, mut lr) = ([0f32; PERIOD], [0f32; PERIOD]);
-        for line in self.looper.follow_plan(&self.time.loop_plan()) {
+        for line in self.looper.follow_untracked() {
             self.out.note(&line);
         }
         self.looper
@@ -2233,8 +2231,7 @@ impl Session {
         // Loops on audio tracks (phase 4b, for everyone since 4e.5), as
         // main.rs: the track player plans each track's loops, and each
         // loop a cell names is told its runs before the looper runs.
-        let loops_on = self.app.settings.loops_on;
-        if loops_on {
+        {
             self.tracks
                 .sync(self.time.project(), self.time.silenced(), false);
             self.tracks.loops_moving(&self.looper.moving_ids());
@@ -2289,13 +2286,9 @@ impl Session {
         // (4e.4), the hint saying where; its cells follow it.
         if let Some(now) = self.looper.grid_now() {
             let before = self.time.project().tracks.len();
-            let lines = if loops_on {
-                let room = self.tracks.free_slot().is_some();
-                self.time.loops_are_on(&now, &self.looper.loop_ids(), room)
-            } else {
-                self.time.loops_are(&now)
-            };
-            if loops_on && !lines.is_empty() {
+            let room = self.tracks.free_slot().is_some();
+            let lines = self.time.loops_are_on(&now, &self.looper.loop_ids(), room);
+            if !lines.is_empty() {
                 self.looper.look_again();
                 self.tracks
                     .sync(self.time.project(), self.time.silenced(), true);
@@ -2311,14 +2304,12 @@ impl Session {
             }
             for line in lines {
                 self.out.note(&format!("time: {line}"));
-                if loops_on {
-                    self.out.show(ToUi::Tell(line));
-                }
+                self.out.show(ToUi::Tell(line));
             }
         }
         // The one UNDO follows the engines' steps (4d.1) and asks them to
         // forget what it can't reach (4d.3), as main.rs.
-        if loops_on {
+        {
             if let Some(next) = self.one_undo.follow(&self.time, &self.tracks, &self.looper) {
                 self.out.show(ToUi::OneUndo(next));
             }
@@ -2385,7 +2376,7 @@ impl Session {
         let silenced = self.time.silenced();
         self.tracks.sync(self.time.project(), silenced, false);
         self.tracks.feed_inside(&mut self.mix);
-        if loops_on {
+        {
             // Listen and the free cells through their tracks (4e.2, 4e.4),
             // the Loop group on each loop (4e.1), each loop on a track into
             // its track (4b), as main.rs.
@@ -2425,16 +2416,6 @@ impl Session {
                     ))
                 });
             self.loop_group.sends(&mut self.mix.mixer, |s| plays[s]);
-        } else {
-            self.loop_group.sends(&mut self.mix.mixer, |_| None);
-            let time = &self.time;
-            self.tracks.period(
-                time.block(),
-                time.tempo_map(),
-                time.song_on(),
-                (&line, &line),
-                Some(&|p| time.audio(p)),
-            );
         }
         self.tracks.play_into(&mut self.mix);
         let mut played = 0;
@@ -2666,8 +2647,6 @@ impl Session {
         self.app.tempo_by_hand = false;
         if let Some(mut t) = o.time.take() {
             (t.metronome, t.click_gain) = (self.time.metronome, self.time.click_gain);
-            // Loops play on audio tracks in it too, as main.rs tells it.
-            t.set_loops_on(self.app.settings.loops_on);
             std::mem::swap(&mut self.time, &mut *t);
             o.time = Some(t);
             self.out.show(ToUi::Time(Box::new(self.time.state())));

@@ -2578,8 +2578,7 @@ mod tests {
         t.redo(&mut p);
         assert_eq!(p.clip(1, 0).unwrap().name, "bass");
         // Something in it (a loop's cell): it stays, and nothing changes.
-        let mut c = Clip::new("loop", 3840);
-        c.looped = Some(0);
+        let c = Clip::new_audio_loop(mpfree_seq::LoopId(1), "loop", 3840);
         p.tracks[1].slots[1] = Some(c);
         let now = p.clone();
         assert_eq!(

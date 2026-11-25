@@ -328,7 +328,7 @@ const SHIFT_PERFORM_HINT: &str = "SHIFT + a pad: learn a key on your gear for it
 /// SHIFT held on Arrange's Clips grid (sequencer S5: a tap learns).
 const SHIFT_CLIPS_HINT: &str =
     "SHIFT +   tap a clip, a scene or a track's name: MIDI Learn   ·   drag a clip: copy   ·   \
-     + Track: Loop track   ·   MENU: Prefs   ·   STOP: back to bar 1";
+     + Track: audio track   ·   MENU: Prefs   ·   STOP: back to bar 1";
 /// SHIFT held on the Sequencer's Steps (refactor C4).
 const SHIFT_SEQ_HINT: &str =
     "SHIFT +   tap steps: pick several, one turn sets them all   ·   a lock's drag: fine   ·   \
@@ -1097,8 +1097,7 @@ pub fn no_pad_mutes(what: &str, kit: Option<usize>) -> Option<String> {
 /// Writes what each track plays under its name: its own instrument's
 /// name, or another track's ("Track 3's FM", `sends`), else what it plays
 /// of the list of kits (`kits`): "Kit" (kit 1), "Kit 2" and on, or
-/// "Synth"; a Loop track's input ("Pads", for the pads and the synth);
-/// an audio track's input ("In L", "In ST", "From Mix": layout spec 4f).
+/// "Synth"; an audio track's input ("In L", "In ST", "From Mix": layout spec 4f).
 /// And which tracks play notes, so transpose moves them
 /// (`TrackInfo::melodic`): one with an instrument (not the drum engine),
 /// or one that plays the synth while it plays notes (`synth_notes`).
@@ -1153,7 +1152,7 @@ fn fill_sounds(
         let played = played(sounds, sends, i);
         let own = played.map(|(h, _)| h);
         let lane = audio.iter().find(|l| l.row == i).filter(|_| t.audio);
-        let name: Cow<str> = match (t.loops, played) {
+        let name: Cow<str> = match played {
             _ if t.audio => match lane {
                 // Its input under the name, as drawn: "In L", or "From
                 // Mix" while it records from inside the mix.
@@ -1161,10 +1160,9 @@ fn fill_sounds(
                 Some(l) => format!("In {}", mpfree_time_ui::song::input_chip(l.input)).into(),
                 None => "".into(),
             },
-            (Some(input), _) => input.short().into(),
-            (None, Some((h, from))) => played_name(h, from).into(),
-            (None, None) if kits.plays_synth(i) => "Synth".into(),
-            (None, None) => match kits.entry(i) {
+            Some((h, from)) => played_name(h, from).into(),
+            None if kits.plays_synth(i) => "Synth".into(),
+            None => match kits.entry(i) {
                 0 => "Kit".into(),
                 k => format!("Kit {}", k + 1).into(),
             },
@@ -1172,8 +1170,7 @@ fn fill_sounds(
         if t.sound != name {
             t.sound = name.into_owned();
         }
-        t.melodic = t.loops.is_none()
-            && !t.audio
+        t.melodic = !t.audio
             && match own {
                 Some(h) => h.id != DRUMS_ENGINE,
                 None => synth_notes && kits.plays_synth(i),
@@ -1191,7 +1188,7 @@ const LAYER_DIRS: usize = 8;
 
 pub const ON_TRACKS_INPUT: &str = "A loop records from its track's input: tap the input under an audio track's name on Clips to change it";
 
-/// The loops as the Loop tracks' cells show them, from the Looper's view:
+/// The loops as their cells show them, from the Looper's view:
 /// each loop's layers and whether it overdubs, how many hold a loop, and
 /// the memory in use.
 fn loops_info(v: &crate::looping::LooperView) -> mpfree_time_ui::view::LoopsInfo {
@@ -1741,8 +1738,8 @@ pub enum ToUi {
     /// What the Looper tab shows: the looper, the line input's meter.
     Looper(Box<LooperView>),
     /// What UNDO and SHIFT + UNDO would take back or bring back from the
-    /// one history across the engines (Dev's "Loops on audio tracks",
-    /// audio tracks phase 4d.1: [`crate::one_undo`]).
+    /// one history across the engines (audio tracks phase 4d.1:
+    /// [`crate::one_undo`]).
     OneUndo(crate::one_undo::UndoNext),
     /// The audio tracks' level bars, 0 to 1, by track (Arrange's Song
     /// view, a few times a second).
@@ -2227,8 +2224,8 @@ pub enum FromUi {
     /// Looper tab's deck and on Play's loop row (SHIFT + SAMPLER on the
     /// Looper tab does the same).
     LoopKeys,
-    /// The Loop group's knobs and switch as they are now (Play's loop row
-    /// with Dev's "Loops on audio tracks": audio tracks phase 4e.1).
+    /// The Loop group's knobs and switch as they are now (Play's loop row:
+    /// audio tracks phase 4e.1).
     LoopGroup(crate::loop_group::GroupSet),
     /// The Perform set off the pads: Play's "Pads: Perform B" chip, the
     /// Pads tab's Perform view's "On the pads" switch.
@@ -2291,8 +2288,7 @@ pub enum FromUi {
     /// old, the seam fade, After recording).
     LoopCommand(mpfree_looper::Command),
     /// UNDO, or SHIFT + UNDO (`redo`), from the one history across the
-    /// engines (Dev's "Loops on audio tracks", audio tracks phase 4d.1:
-    /// [`crate::one_undo::press`]).
+    /// engines (audio tracks phase 4d.1: [`crate::one_undo::press`]).
     OneUndo {
         redo: bool,
     },
@@ -3054,12 +3050,9 @@ pub struct Player {
     /// All view: the loop's (true) or the takes' (false); and the counts
     /// each was last seen at.
     undo_loop: bool,
-    /// UNDO on Arrange undoes the audio tracks' region edits (their
-    /// history moved last, layout spec 4c), not the takes.
-    undo_audio: bool,
     seen_takes: (usize, usize),
-    /// What UNDO and SHIFT + UNDO would do from the one history (Dev's
-    /// "Loops on audio tracks": [`crate::one_undo`]).
+    /// What UNDO and SHIFT + UNDO would do from the one history
+    /// ([`crate::one_undo`]).
     one_undo: crate::one_undo::UndoNext,
     /// The Song view's picked block or section is grabbed by the wheel's
     /// push: turns move it (Jay, 14 Nov: drag and drop).
@@ -3511,7 +3504,6 @@ impl Player {
             save_sent: None,
             told: None,
             undo_loop: false,
-            undo_audio: false,
             song_grab: false,
             seen_takes: (0, 0),
             one_undo: crate::one_undo::UndoNext::default(),
@@ -3822,13 +3814,9 @@ impl Player {
     /// The Pads tab's Kit of row: each track that plays a kit, with the
     /// kit (the armed one outlined), and the tracks with clips or the
     /// armed one that play the synth or an instrument of their own, faint.
-    /// Loop tracks have no kit.
     fn refresh_kit_tracks(&mut self) {
         let mut tracks = Vec::new();
         for (t, info) in self.time.tracks.iter().enumerate() {
-            if info.loops.is_some() {
-                continue;
-            }
             // The selected track's kit is the one the pads play.
             let armed = self.time.selected() == Some(t);
             let clips = info.slots.iter().any(Option::is_some);
@@ -4776,7 +4764,7 @@ impl Player {
                 self.time
                     .tracks
                     .get(t)
-                    .is_some_and(|i| i.loops.is_none() && i.slots.iter().any(Option::is_some))
+                    .is_some_and(|i| i.slots.iter().any(Option::is_some))
             })
             .collect();
         if shared.is_empty() {
@@ -5209,9 +5197,7 @@ impl Player {
             } else {
                 kit_name(k)
             };
-            let track = (0..self.time.tracks.len())
-                .filter(|&t| self.time.tracks[t].loops.is_none())
-                .find(|&t| plays_kit(t) == Some(k));
+            let track = (0..self.time.tracks.len()).find(|&t| plays_kit(t) == Some(k));
             let sub = if empty {
                 "Start a kit here".to_string()
             } else {
@@ -7239,13 +7225,9 @@ impl Player {
         moved
     }
 
-    /// The tracks Play's switch goes through: every track but the Loop
-    /// tracks, which have no pads.
+    /// The tracks Play's switch goes through: every track.
     fn pad_tracks(&self) -> Vec<usize> {
-        let tracks = &self.time.tracks;
-        (0..tracks.len())
-            .filter(|&t| tracks[t].loops.is_none())
-            .collect()
+        (0..self.time.tracks.len()).collect()
     }
 
     /// The track `d` places after (or before) the one the pads play, round
@@ -7811,7 +7793,6 @@ impl Player {
             .tracks
             .iter()
             .enumerate()
-            .filter(|(_, tr)| tr.loops.is_none())
             .map(|(t, tr)| {
                 let also = self.time.also & (1u128 << t.min(127)) != 0;
                 let armed = self.rec.armed(Target::Notes) && (main == Some(t) || also);
@@ -8091,9 +8072,8 @@ impl Player {
         chip
     }
 
-    /// Each loop's place, and with Dev's "Loops on audio tracks" where
-    /// the next loop goes, to the Looper tab (phase 4, board 5). True when
-    /// either changed.
+    /// Each loop's place, and where the next loop goes, to the Looper tab
+    /// (phase 4, board 5). True when either changed.
     fn refresh_loop_places(&mut self) -> bool {
         let places = time_view::loop_places(&self.time);
         let into = self.records_into();
@@ -8102,11 +8082,9 @@ impl Player {
     }
 
     /// Play's Loop group (audio tracks phase 4e.1, board 7): on the loop
-    /// row with Dev's "Loops on audio tracks" on, its switch naming the
-    /// audio track armed by its own arm (`TimeState::audio_focus`; an
-    /// audio track is never the armed note track). When the switch goes off the
-    /// group goes, and the audio is told it is at rest, so a new start of
-    /// the group is at rest everywhere.
+    /// row, its switch naming the audio track armed by its own arm
+    /// (`TimeState::audio_focus`; an audio track is never the armed note
+    /// track).
     fn refresh_loop_group(&mut self) {
         use crate::loop_row::{GroupPanel, LoopRow, LOOP_ROW};
         let st = &self.time;
@@ -8114,31 +8092,21 @@ impl Player {
             .audio_focus
             .filter(|&t| st.audio_lane_at(t).is_some())
             .map(|t| self.track_name(t));
-        let on = st.loops_on;
         let Some(row) = self.ui.get_mut::<LoopRow>(LOOP_ROW) else {
             return;
         };
-        match (&mut row.group, on) {
-            (Some(g), true) => {
+        match &mut row.group {
+            Some(g) => {
                 if g.armed != armed {
                     g.armed = armed;
                 }
             }
-            (None, true) => {
+            None => {
                 row.group = Some(GroupPanel {
                     armed,
                     ..GroupPanel::default()
                 });
             }
-            (Some(g), false) => {
-                let was = g.set;
-                row.group = None;
-                if !was.at_rest() || was.armed_only {
-                    self.outbox
-                        .push(FromUi::LoopGroup(crate::loop_group::GroupSet::default()));
-                }
-            }
-            (None, false) => {}
         }
     }
 
@@ -8152,7 +8120,7 @@ impl Player {
         use mpfree_time_ui::song::SongLanes;
         use mpfree_time_ui::widgets::ClipGrid;
         let page = self.ui.page().to_string();
-        if page != time_view::CLIPS_PAGE || !self.time.loops_on {
+        if page != time_view::CLIPS_PAGE {
             return;
         }
         if self.input_list.is_some() {
@@ -8229,16 +8197,12 @@ impl Player {
         self.refresh_hint();
     }
 
-    /// With Dev's "Loops on audio tracks" on (phase 4, board 5): where REC
-    /// puts the next loop and from what, for the Looper tab's header in
-    /// Records from's place: the armed empty audio cell ("Vocal · row 3 ·
-    /// Line L"), else the picked loop's cell, which REC overdubs, else that
-    /// none is armed. None with the switch off.
+    /// Where REC puts the next loop and from what (phase 4, board 5), for
+    /// the Looper tab's header in Records from's place: the armed empty
+    /// audio cell ("Vocal · row 3 · Line L"), else the picked loop's cell,
+    /// which REC overdubs, else that none is armed.
     fn records_into(&self) -> Option<String> {
         let st = &self.time;
-        if !st.loops_on {
-            return None;
-        }
         let at = |t: usize, s: usize| {
             let place = format!(
                 "{} \u{b7} {}",
@@ -8266,22 +8230,18 @@ impl Player {
         )
     }
 
-    /// The REC chip's words for a loop on an audio track, with Dev's
-    /// "Loops on audio tracks" on (phase 4, board 3; layout spec 4c, What
-    /// REC records): an armed empty audio cell and the track's input
+    /// The REC chip's words for a loop on an audio track (phase 4, board
+    /// 3; layout spec 4c, What REC records): an armed empty audio cell and the track's input
     /// ("Vocal · row 3 · Line L"); while another loop's first pass
     /// records, that REC closes it first, in amber ("Bass · row 2 · closes
     /// Vocal's loop"); the picked loop in an audio cell, which REC
     /// overdubs ("Vox loop · overdub"); with every loop in use and the
     /// picked one in no cell, the refusal ("8 loops · clear one"). None:
-    /// the Loop track's words.
+    /// the picked loop's name.
     fn audio_loop_chip(&self) -> Option<(String, play_widgets::RecAlert)> {
         use mpfree_looper::Phase;
         use play_widgets::RecAlert;
         let st = &self.time;
-        if !st.loops_on {
-            return None;
-        }
         let places = time_view::loop_places(st);
         if st.loop_cell_audio() {
             let place = time_view::loop_cell_name(st)?;
@@ -8334,13 +8294,9 @@ impl Player {
         }
     }
 
-    /// Loop `n`'s audio track, with Dev's "Loops on audio tracks" on, as
-    /// (its engine track, muted, soloed): its M and S on the Looper tab are
-    /// the track's (board 5).
+    /// Loop `n`'s audio track, as (its engine track, muted, soloed): its M
+    /// and S on the Looper tab are the track's (board 5).
     fn track_of_loop(&self, n: usize) -> Option<(usize, bool, bool)> {
-        if !self.time.loops_on {
-            return None;
-        }
         let place = self.looper_page.place(n).filter(|p| p.audio)?;
         let lane = self.time.audio_lane_at(place.track)?;
         Some((lane.track, lane.mute, lane.solo))
@@ -8424,9 +8380,7 @@ impl Player {
                 // goes and from which input, or what else REC does.
                 let (what, alert) = self.audio_loop_chip().unwrap_or_else(|| {
                     (
-                        // A Loop cell armed on the grid: "Loops C · Drop".
-                        time_view::loop_cell_name(&self.time)
-                            .unwrap_or_else(|| self.looper_page.loop_name(self.looper.selected)),
+                        self.looper_page.loop_name(self.looper.selected),
                         play_widgets::RecAlert::None,
                     )
                 });
@@ -9019,7 +8973,7 @@ impl Player {
                         out.push(FromUi::Looper(crate::looper_page::B_RECORD));
                     }
                 }
-                // A loop on an audio track (Dev's switch, board 5): its M
+                // A loop on an audio track (board 5): its M
                 // and S are its track's.
                 LoopAct::Mute(n) | LoopAct::Solo(n) if self.track_of_loop(n).is_some() => {
                     if let Some((track, mute, solo)) = self.track_of_loop(n) {
@@ -9053,11 +9007,11 @@ impl Player {
                 }
                 // With loops in audio cells (board 5) a loop records from
                 // its track's input: the header says where it goes.
-                LoopAct::Strip(Ctl::Input) if self.time.loops_on => {
+                LoopAct::Strip(Ctl::Input) if self.looper_page.records_into_shown() => {
                     self.tell(ON_TRACKS_INPUT);
                 }
-                // Records from (the deck's header): its choices open in the
-                // lanes' place.
+                // Records from (the deck's header, until the app says where
+                // the next loop goes): its choices open in the lanes' place.
                 LoopAct::Strip(Ctl::Input) => {
                     let now = self.looper_page.source_index(&self.looper);
                     if let Some(e) = self
@@ -10402,31 +10356,12 @@ impl Player {
     /// takes on the Sequencer, on Arrange and on the Arp and pattern
     /// screens, and on Play (the loop row and the pattern) whichever of the
     /// two changed last. Other pages say they have nothing to undo.
-    /// With Dev's "Loops on audio tracks" on, every page whose UNDO takes
-    /// the takes, a loop's steps or the audio tracks' takes the newest of
-    /// all of them, from the one history (audio tracks phase 4d.1).
+    /// Every page whose UNDO takes the takes, a loop's steps or the audio
+    /// tracks' takes the newest of all of them, from the one history
+    /// (audio tracks phase 4d.1).
     fn undo(&mut self, redo: bool) {
-        use mpfree_looper::Command;
         let to = match self.undo_source() {
-            Some(HistoryOf::Loop | HistoryOf::Takes) if self.time.loops_on => {
-                FromUi::OneUndo { redo }
-            }
-            Some(HistoryOf::Loop) => {
-                FromUi::LoopCommand(if redo { Command::Redo } else { Command::Undo })
-            }
-            // The audio tracks' region edits, while they moved last.
-            Some(HistoryOf::Takes) if self.view == View::Arrange && self.undo_audio => {
-                FromUi::Time(TimeAction::Audio(if redo {
-                    AudioAction::Redo
-                } else {
-                    AudioAction::Undo
-                }))
-            }
-            Some(HistoryOf::Takes) => FromUi::Time(if redo {
-                TimeAction::Redo
-            } else {
-                TimeAction::Undo
-            }),
+            Some(HistoryOf::Loop | HistoryOf::Takes) => FromUi::OneUndo { redo },
             Some(HistoryOf::Turns(on)) => FromUi::UndoOn { on, redo },
             Some(HistoryOf::Perform) => {
                 self.perform_undo(redo);
@@ -10979,15 +10914,7 @@ impl Player {
     /// Pads tabs too, whose UNDO the app sends straight on).
     fn undo_ready(&self) -> bool {
         match self.undo_source() {
-            Some(HistoryOf::Loop | HistoryOf::Takes) if self.time.loops_on => {
-                self.one_undo.undo.is_some()
-            }
-            Some(HistoryOf::Loop) => {
-                !self.looper.history.done().is_empty()
-                    || (self.looper.status.kept
-                        && self.looper.status.phase == mpfree_looper::Phase::Empty)
-            }
-            Some(HistoryOf::Takes) => !self.time.done.is_empty(),
+            Some(HistoryOf::Loop | HistoryOf::Takes) => self.one_undo.undo.is_some(),
             Some(HistoryOf::Sample) => self.sample.can_undo(),
             Some(HistoryOf::Perform) => self.perform.can_undo(),
             Some(HistoryOf::Patches) => self.patch.can_undo(),
@@ -12675,13 +12602,13 @@ impl Player {
                 if asked != self.looper.smart.asking || self.stop_words() != self.stop_said {
                     self.refresh_hint();
                 }
-                // The Loop tracks' cells follow the loops.
+                // The loop cells follow the loops.
                 let loops = loops_info(&self.looper);
                 if loops != self.time.loops {
                     self.time.loops = loops;
                     // Loops on audio tracks: their cards find their places
                     // by the loops' ids (phase 4).
-                    if self.time.loops_on && self.refresh_loop_places() {
+                    if self.refresh_loop_places() {
                         self.refresh_looper();
                     }
                     // Loop cells on audio tracks too (phase 4), and the
@@ -12691,10 +12618,7 @@ impl Player {
                         let a = &self.time.audio;
                         a.iter().any(|l| l.clips.iter().any(|c| c.looped.is_some()))
                     };
-                    if self.time.tracks.iter().any(|t| t.loops.is_some())
-                        || (self.time.loops_on && self.time.loop_cells() > 0)
-                        || blocks()
-                    {
+                    if self.time.loop_cells() > 0 || blocks() {
                         self.time_page.update(&mut self.ui, &self.time);
                     }
                 }
@@ -13562,16 +13486,10 @@ impl Player {
                 // The note editor opened or closed: the Sequencer's Notes
                 // or Steps.
                 let notes = st.edit.is_some() != self.time.edit.is_some();
-                // A region edited, undone or redone: UNDO on Arrange takes
-                // the audio tracks' history, until a take moves.
-                if st.audio_history != self.time.audio_history {
-                    self.undo_audio = true;
-                }
                 // A take made, undone or redone: UNDO on All takes the takes.
                 let seen = (st.done.len(), st.undone.len());
                 if seen != self.seen_takes {
                     self.undo_loop = false;
-                    self.undo_audio = false;
                     self.seen_takes = seen;
                 }
                 let synth = self.synth_plays_notes();
@@ -13605,16 +13523,16 @@ impl Player {
                     // The armed track, and where it is transposed to.
                     self.refresh_levels();
                 }
-                // The input list closes once its page goes, or the switch.
+                // The input list closes once its page goes.
                 let gone = self
                     .input_list
                     .as_ref()
-                    .is_some_and(|(p, _)| self.ui.page() != p || !self.time.loops_on);
+                    .is_some_and(|(p, _)| self.ui.page() != p);
                 if gone {
                     self.close_input_list();
                 }
-                // Play's Loop group with Dev's switch, and the armed track
-                // its switch names (4e.1).
+                // Play's Loop group, and the armed track its switch names
+                // (4e.1).
                 self.refresh_loop_group();
                 // Play's strip and the Looper tab name a loop by its place.
                 if self.refresh_loop_places() {
@@ -18528,10 +18446,7 @@ impl Player {
             return false;
         }
         let (track, slot) = (t.index / ROWS, t.index % ROWS);
-        self.time
-            .tracks
-            .get(track)
-            .is_some_and(|tr| tr.loops.is_none() && !tr.audio)
+        self.time.tracks.get(track).is_some_and(|tr| !tr.audio)
             && self.time.clip(track, slot).is_none()
     }
 
@@ -19455,7 +19370,7 @@ impl Player {
                 None
             }
             // Play's head: the track switch picks the track before or after
-            // the selected one (Loop tracks have no pads, so it skips them).
+            // the selected one.
             (play_page::STEPS, EventKind::Tab(k))
                 if k == play_widgets::HEAD_TRACK_PREV || k == play_widgets::HEAD_TRACK_NEXT =>
             {
@@ -19821,12 +19736,12 @@ impl Player {
                 self.arrange_lens(ArrangeLens::Show);
                 None
             }
-            // A track's sound line: its instrument on the Synth tab; a Loop
-            // track's input steps to the next (Pads, Line in, Resample).
+            // A track's sound line: its instrument on the Synth tab; an
+            // audio track's input list.
             (time_view::CLIPS, EventKind::Tab(k)) if k >= mpfree_time_ui::widgets::SOUND_TAP => {
                 let t = k - mpfree_time_ui::widgets::SOUND_TAP;
                 let lane = self.time.audio_lane_at(t).map(|l| l.track);
-                if let Some(lane) = lane.filter(|_| self.time.loops_on) {
+                if let Some(lane) = lane {
                     // Its input list (phase 4, board 4): the app says what
                     // the mixer offers, and it opens.
                     Some(FromUi::Time(TimeAction::Audio(AudioAction::Inputs(lane))))
@@ -19838,8 +19753,6 @@ impl Player {
                     );
                     self.tell(&line);
                     None
-                } else if self.time.tracks.get(t).is_some_and(|tr| tr.loops.is_some()) {
-                    Some(FromUi::Time(TimeAction::LoopInput(t)))
                 } else {
                     Some(FromUi::TrackInstrument(t))
                 }
@@ -19900,16 +19813,16 @@ impl Player {
             // SHIFT + a tap on a clip, a row's scene button, Stop all, Back
             // to song or a track's name: MIDI Learn waits for a control to
             // press it (sequencer S5, Jay's card of 18 Nov). SHIFT + a drag
-            // still copies, and SHIFT + "+ Track" adds a Loop track.
+            // still copies, and SHIFT + "+ Track" adds an audio track.
             (time_view::CLIPS, EventKind::Select(_) | EventKind::Toggle(_) | EventKind::Tab(_))
                 if self.status.shift && time_view::learn_target(&ev, &self.time).is_some() =>
             {
                 time_view::learn_target(&ev, &self.time)
                     .map(|a| FromUi::LearnValue(LearnValue::Param(a)))
             }
-            // "+ Track" opens its chooser (Note track, Audio track, Loop
-            // track; layout spec 4c), and a touch off it closes it: the
-            // page's own. SHIFT + "+ Track" still adds a Loop track. The
+            // "+ Track" opens its chooser (Note track, Audio track; layout
+            // spec 4c), and a touch off it closes it: the page's own. SHIFT
+            // + "+ Track" adds an audio track at once. The
             // song list's Link opens its chooser the same way (4b.5).
             (time_view::CLIPS | time_view::SONG_LIST, EventKind::Toggle(_))
             | (time_view::SONG, EventKind::Tab(_))
@@ -20067,12 +19980,7 @@ impl Player {
                     _ => false,
                 };
                 // A track picked in the chooser: it closes.
-                if matches!(
-                    a,
-                    Some(
-                        TimeAction::AddTrack | TimeAction::AddAudioTrack | TimeAction::AddLoopTrack
-                    )
-                ) {
+                if matches!(a, Some(TimeAction::AddTrack | TimeAction::AddAudioTrack)) {
                     self.time_page.update(&mut self.ui, &self.time);
                 }
                 // Link's choice (4b.5): its chooser closed, and its hint with it.
@@ -21516,6 +21424,11 @@ fn busy_loops() -> &'static LooperView {
         v.memory.used += theirs.memory.used;
         v.memory.capacity =
             crate::looping::LoopMemory::default().seconds() as usize * RATE as usize;
+        // The lasting ids the sample projects' loop cells name (loop `n`'s
+        // is `n + 1`); the lead, still on its first pass, has no cell.
+        for n in 0..=4 {
+            v.ids[n] = n as u128 + 1;
+        }
         v
     })
 }
@@ -23090,6 +23003,17 @@ fn sample_instrument_mixer(synth: &crate::synth::Synth) -> mpfree_mixer_ui::MixS
 /// hats, muted.
 fn sample_looper(fonts: Fonts) -> Result<Player, String> {
     sample_looper_picking(fonts, 0)
+}
+
+/// [`sample_looper`] before the app has said where the next loop goes
+/// (no time state yet): the deck's header shows Records from, whose
+/// picker the looper thread takes out (mpfree-claude TODO.md).
+#[cfg(test)]
+fn sample_looper_records_from(fonts: Fonts) -> Result<Player, String> {
+    let mut p = sample_looper(fonts)?;
+    p.looper_page.set_on_tracks(None);
+    p.refresh_looper();
+    Ok(p)
 }
 
 /// [`sample_looper`] with loop `picked` picked (an empty one shows What
@@ -26265,8 +26189,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("arrange-list-link sample: {e}"),
     }
-    // Loop tracks: Loops A to C after three note tracks, row 2 playing,
-    // Loop 2 overdubbing (its third layer), the loops' memory a third used.
+    // Loops on audio tracks: Vocal and Guitar after three note tracks,
+    // row 2 playing, Loop 2 overdubbing (its third layer), the loops'
+    // memory a third used.
     match mpfree_time_ui::sample::loops_playing() {
         Ok(s) => {
             use mpfree_looper::Phase;
@@ -26280,6 +26205,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             ] {
                 v.loops[n].phase = phase;
                 v.loops[n].layers = layers;
+                v.ids[n] = n as u128 + 1;
                 // A beat's hits on every fourth column, the loop's own
                 // way, as the looper's small waves draw them.
                 for (c, w) in v.cell_waves[n].iter_mut().enumerate() {
@@ -26295,9 +26221,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             v.memory.capacity = 300;
             v.memory.used = 114;
             p.apply(ToUi::Looper(Box::new(v)));
-            // Loops C's row 1 armed: REC records a loop there.
+            // Guitar's row 1 armed: REC records a loop there.
             let mut st = s.state();
-            st.loop_cell = Some((5, 0));
+            st.loop_cell = Some((4, 0));
             p.apply(ToUi::Time(Box::new(st)));
             p.apply(ToUi::Show(View::Arrange));
             out.push(("clips-loops", p));
@@ -26899,9 +26825,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         Err(e) => eprintln!("arrange-clips-audio-cells sample: {e}"),
     }
     // The Song view with "+ Track"'s chooser open beside it (4c, as
-    // drawn): Note track, Audio track, Loop track. Ten tracks and the
-    // Chords lane don't fit, so the lanes are scrolled to their end, as a
-    // drag up on the names leaves them, to show "+ Track".
+    // drawn): Note track, Audio track. Ten tracks and the Chords lane
+    // don't fit, so the lanes are scrolled to their end, as a drag up on
+    // the names leaves them, to show "+ Track".
     match mpfree_time_ui::sample::song_audio_state() {
         Ok(mut state) => {
             state.region = None;
@@ -27052,18 +26978,6 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             out.push(("arrange-song-takes", p));
         }
         Err(e) => eprintln!("arrange-song-takes sample: {e}"),
-    }
-    // The Song view with Loop tracks (loop-tracks.md part 5): the rows of
-    // clips-loops' grid made into a song, song mode on, so the Loop
-    // tracks' lanes hold their loops' blocks.
-    match mpfree_time_ui::sample::song_loops_state() {
-        Ok(state) => {
-            let mut p = quiet_player(fonts());
-            p.apply(ToUi::Time(Box::new(state)));
-            p.apply(ToUi::Show(View::Arrange));
-            out.push(("arrange-song-loops", p));
-        }
-        Err(e) => eprintln!("arrange-song-loops sample: {e}"),
     }
     // The Song view of the 24-track project, scrolled down to the last
     // tracks and "+ Track".
@@ -27306,13 +27220,18 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         }
         Err(e) => eprintln!("looper-perform-throws sample: {e}"),
     }
-    // The same on Loop tracks (clips-loops' grid): each loop named by its
-    // place, and Show in Clips lit.
+    // The same with loops on audio tracks (clips-loops' grid): each loop
+    // named by its place, and Show in Clips lit.
     match (
         sample_looper(fonts()),
         mpfree_time_ui::sample::loops_playing(),
     ) {
         (Ok(mut p), Ok(s)) => {
+            let mut v = p.looper.clone();
+            for n in 0..4 {
+                v.ids[n] = n as u128 + 1;
+            }
+            p.apply(ToUi::Looper(Box::new(v)));
             p.apply(ToUi::Time(Box::new(s.state())));
             p.apply(ToUi::Show(View::Looper));
             out.push(("looper-loops", p));
@@ -31728,16 +31647,16 @@ mod tests {
     /// instrument, step 2); the status lights it and the hint says what
     /// the pads are. Play's loop row lights its own Pads switch, and a tap
     /// on it gives the pads back; neither page has a chip in the top bar.
-    /// Records from's mixes: the mixer's strips but the Loop track, named
-    /// as the Mix tab names them; a tap records from that mix, and the
-    /// deck's chip names it.
+    /// Records from's mixes (before the header says Records into): the
+    /// mixer's strips but the Loop strip, named as the Mix tab names them;
+    /// a tap records from that mix, and the deck's chip names it.
     #[test]
     fn records_from_offers_the_master_tracks_and_submixes() {
         use crate::looper_deck::{LoopDeck, DECK};
         use crate::looper_tab::{LoopEditor, EDITOR};
         use mpfree_fx::StripId;
         use mpfree_ui::Widget;
-        let mut p = sample_looper(Fonts::embedded()).unwrap();
+        let mut p = sample_looper_records_from(Fonts::embedded()).unwrap();
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
         p.take_actions();
         let r = p.ui.rect_of(DECK).unwrap();
@@ -31777,7 +31696,7 @@ mod tests {
                 "Bass line",
                 "Submix 1"
             ],
-            "never the Loop track"
+            "never the Loop strip"
         );
         let sub =
             p.ui.get::<LoopEditor>(EDITOR)
@@ -31812,12 +31731,13 @@ mod tests {
                 .collect()
         };
         let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
-        let mut p = sample_looper(Fonts::embedded()).unwrap();
+        let mut p = sample_looper_records_from(Fonts::embedded()).unwrap();
         p.ui.paint(&mut SoftCanvas::new(SCREEN.0, SCREEN.1));
         p.take_actions();
         let r = p.ui.rect_of(DECK).unwrap();
-        // Records from beside it opens its choices in the lanes' place;
-        // Line in there switches to the line input.
+        // Records from beside it (before the header says Records into)
+        // opens its choices in the lanes' place; Line in there switches to
+        // the line input.
         {
             use crate::looper_tab::{LoopEditor, EDITOR};
             let (x, y) = centre_of(LoopDeck::input_rect(r));
@@ -33752,13 +33672,12 @@ mod tests {
         assert_eq!((h.rows.len(), h.now), (2, 0));
     }
 
-    /// With Dev's "Loops on audio tracks" on, UNDO and SHIFT + UNDO on
-    /// Play, the Sequencer, Arrange and the Looper tab take the one
-    /// history across the engines (audio tracks phase 4d.1), and the
-    /// UNDO light follows what it holds; the Synth tab keeps its own
-    /// turns. With the switch off, each page's own history as before.
+    /// UNDO and SHIFT + UNDO on Play, the Sequencer, Arrange and the
+    /// Looper tab take the one history across the engines (audio tracks
+    /// phase 4d.1), and the UNDO light follows what it holds; the Synth
+    /// tab keeps its own turns.
     #[test]
-    fn with_loops_on_undo_takes_the_one_history_on_the_songs_and_loops_pages() {
+    fn undo_takes_the_one_history_on_the_songs_and_loops_pages() {
         let mut p = sample_play(Fonts::embedded(), PlayView::All);
         p.take_actions();
         let undo = |p: &mut Player, redo: bool| {
@@ -33768,9 +33687,6 @@ mod tests {
                 .filter(|a| !matches!(a, FromUi::Arm(_)))
                 .collect::<Vec<_>>()
         };
-        let mut st = p.time.clone();
-        st.loops_on = true;
-        p.apply(ToUi::Time(Box::new(st.clone())));
         for v in [View::Play, View::Sequencer, View::Arrange, View::Looper] {
             p.apply(ToUi::Show(v));
             assert_eq!(
@@ -33799,16 +33715,10 @@ mod tests {
                 redo: false
             }]
         );
-        // Off: the Looper tab's UNDO is the loop's again.
-        st.loops_on = false;
-        p.apply(ToUi::Time(Box::new(st)));
-        p.apply(ToUi::Show(View::Looper));
-        assert_eq!(
-            undo(&mut p, false),
-            [FromUi::LoopCommand(mpfree_looper::Command::Undo)]
-        );
     }
 
+    /// UNDO follows the page; the undo history list (UNDO held) shows
+    /// the history of the one that moved last on Play's All view.
     #[test]
     fn undo_follows_the_page_and_the_play_view() {
         use mpfree_time_ui::view::TakeRow;
@@ -33822,9 +33732,8 @@ mod tests {
                 .filter(|a| !matches!(a, FromUi::Arm(_)))
                 .collect::<Vec<_>>()
         };
-        let looper = |c| vec![FromUi::LoopCommand(c)];
-        let takes = |a| vec![FromUi::Time(a)];
-        use mpfree_looper::Command as L;
+        let looper = Some(HistoryOf::Loop);
+        let takes = Some(HistoryOf::Takes);
         // All: a take was made last, so the takes.
         let mut st = p.time.clone();
         st.done.push(TakeRow {
@@ -33852,25 +33761,24 @@ mod tests {
             style: false,
         });
         p.apply(ToUi::Time(Box::new(st.clone())));
-        assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
-        // The loop's history moved since: the loop, both ways.
+        assert_eq!(p.undo_source(), takes);
+        // The loop's history moved since: the loop.
         p.apply(ToUi::Looper(Box::default()));
-        assert_eq!(undo(&mut p, false), looper(L::Undo));
-        assert_eq!(undo(&mut p, true), looper(L::Redo));
+        assert_eq!(p.undo_source(), looper);
         // The same takes again change nothing; a new take does.
         p.apply(ToUi::Time(Box::new(st.clone())));
-        assert_eq!(undo(&mut p, false), looper(L::Undo));
+        assert_eq!(p.undo_source(), looper);
         st.undone.push(st.done.pop().unwrap());
         p.apply(ToUi::Time(Box::new(st)));
-        assert_eq!(undo(&mut p, true), takes(TimeAction::Redo));
+        assert_eq!(p.undo_source(), takes);
         // The Looper tab: the loop; the Sequencer: the takes; Arrange: the
         // takes.
         p.apply(ToUi::Show(View::Looper));
-        assert_eq!(undo(&mut p, false), looper(L::Undo));
+        assert_eq!(p.undo_source(), looper);
         p.apply(ToUi::Show(View::Sequencer));
-        assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
+        assert_eq!(p.undo_source(), takes);
         p.apply(ToUi::Show(View::Arrange));
-        assert_eq!(undo(&mut p, false), takes(TimeAction::Undo));
+        assert_eq!(p.undo_source(), takes);
         // The pages that arm what they show: the Looper tab the loop, the
         // Sequencer the notes; Play (one view, All, with the loop row and
         // the pattern) leaves the arm.
@@ -37462,13 +37370,13 @@ mod tests {
         assert!(!fx.contains(&Effect::QLinkBank), "{fx:?}");
     }
 
-    /// The audio tracks rethink's phase 4, board 4: with Dev's "Loops on
-    /// audio tracks" on, a tap on an audio column's input line asks the
+    /// The audio tracks rethink's phase 4, board 4: a tap on an audio
+    /// column's input line asks the
     /// app for its input list; the list opens over the grid under the
     /// column's head, the grid veiled but for it, each instrument's strip
     /// in its track's colour; a dim input says why and stays open; a pick
     /// goes to the tracks and closes it; a touch on the grid only closes
-    /// it. With the switch off the line says where the panel is, as before.
+    /// it.
     #[test]
     fn an_audio_columns_input_line_opens_its_input_list() {
         use mpfree_time_ui::inputs::{Choice, InputChoices, InputList, INPUT_LIST, STRIP};
@@ -37478,8 +37386,7 @@ mod tests {
             widget: widget.to_string(),
             kind,
         };
-        let mut st = mpfree_time_ui::sample::clips_audio_state().unwrap();
-        st.loops_on = true;
+        let st = mpfree_time_ui::sample::clips_audio_state().unwrap();
         let vocal = st.audio[0].row;
         let mut p = quiet_player(Fonts::embedded());
         p.apply(ToUi::Time(Box::new(st.clone())));
@@ -37582,30 +37489,19 @@ mod tests {
         assert!(p.input_list.is_none());
         p.apply(ToUi::InputList(Box::new(c)));
         assert!(p.input_list.is_none());
-        // The switch off: the line says where the panel is.
-        p.apply(ToUi::Show(View::Arrange));
-        st.loops_on = false;
-        p.apply(ToUi::Time(Box::new(st)));
-        assert_eq!(
-            p.on_event(ev(time_view::CLIPS, EventKind::Tab(SOUND_TAP + vocal))),
-            None
-        );
-        assert!(p.told.as_ref().is_some_and(|t| t.0.contains("Song view")));
     }
 
-    /// The audio tracks rethink's phase 4, board 3: with Dev's "Loops on
-    /// audio tracks" on and an empty audio cell armed, the REC chip names
-    /// the cell and the track's input; while another loop's first pass
-    /// records it says, in amber, that REC closes it; the picked loop in an
-    /// audio cell is overdubbed; with all 8 loops in use and none picked in
-    /// a cell, it is refused in red. With the switch off, the old words.
+    /// The audio tracks rethink's phase 4, board 3: with an empty audio
+    /// cell armed, the REC chip names the cell and the track's input;
+    /// while another loop's first pass records it says, in amber, that REC
+    /// closes it; the picked loop in an audio cell is overdubbed; with all
+    /// 8 loops in use and none picked in a cell, it is refused in red.
     #[test]
-    fn with_loops_on_rec_names_the_cell_and_hands_over_a_first_pass() {
+    fn rec_names_the_loop_cell_and_hands_over_a_first_pass() {
         use crate::rec_arm::Target;
         use mpfree_looper::Phase;
         use play_widgets::RecAlert;
         let mut st = mpfree_time_ui::sample::clips_audio_state().unwrap();
-        st.loops_on = true;
         let vocal = st.audio[0].row;
         let empty = st.tracks[vocal]
             .slots
@@ -37643,22 +37539,15 @@ mod tests {
         assert_eq!(chip.what, "8 loops \u{b7} clear one");
         assert_eq!(chip.alert, RecAlert::Refused);
         assert!(chip.line().starts_with("REC: "), "{}", chip.line());
-        // The switch off: the old words.
-        st.loops_on = false;
-        st.loop_cell = Some((vocal, empty));
-        p.apply(ToUi::Time(Box::new(st)));
-        assert_eq!(p.rec_chip().alert, RecAlert::None);
     }
 
     /// The audio tracks rethink's phase 4e.1 (board 7): the Loop group's
     /// "Armed" half names the audio track armed by its own arm, never the
-    /// armed note track; with none it says none, and with the switch off
-    /// the group goes.
+    /// armed note track; with none it says none.
     #[test]
-    fn with_loops_on_the_loop_groups_armed_half_names_the_armed_audio_track() {
+    fn the_loop_groups_armed_half_names_the_armed_audio_track() {
         use crate::loop_row::{LoopRow, LOOP_ROW};
         let mut st = mpfree_time_ui::sample::clips_audio_state().unwrap();
-        st.loops_on = true;
         let vocal = st.audio[0].row;
         let note = (0..st.tracks.len())
             .find(|&t| st.audio_lane_at(t).is_none())
@@ -37674,11 +37563,8 @@ mod tests {
         p.apply(ToUi::Time(Box::new(st.clone())));
         assert_eq!(armed(&p), Some(None), "a note track armed: none");
         st.audio_focus = Some(vocal);
-        p.apply(ToUi::Time(Box::new(st.clone())));
-        assert_eq!(armed(&p), Some(Some("Vocal".to_string())));
-        st.loops_on = false;
         p.apply(ToUi::Time(Box::new(st)));
-        assert_eq!(armed(&p), None, "no group with the switch off");
+        assert_eq!(armed(&p), Some(Some("Vocal".to_string())));
     }
 
     /// The audio tracks rethink's phase 4c.3 and board 2: a loop holding a
@@ -37697,13 +37583,12 @@ mod tests {
             .all(|(n, f)| f.writing == (n == 2)));
     }
 
-    /// The audio tracks rethink's phase 4, board 6: with Dev's "Loops on
-    /// audio tracks" on, an audio track's strip says its input and, while
-    /// it plays one, what ("loop · row 2" over the clip's name, or a take
-    /// clip's "take · row 1"); with no Loop track in the project there is
-    /// no Loop strip.
+    /// The audio tracks rethink's phase 4, board 6: an audio track's strip
+    /// says its input and, while it plays one, what ("loop · row 2" over
+    /// the clip's name, or a take clip's "take · row 1"); there is no Loop
+    /// strip.
     #[test]
-    fn with_loops_on_the_mixer_tags_what_an_audio_track_plays() {
+    fn the_mixer_tags_what_an_audio_track_plays() {
         use mpfree_fx::StripId;
         let mut project = mpfree_seq::Project::new();
         project.tracks.push(mpfree_seq::Track::new("Drums", 0));
@@ -37752,10 +37637,7 @@ mod tests {
             Some(("loop \u{b7} row 2".to_string(), "Vox loop".to_string()))
         );
         assert!(had_loop, "the Loop strip was there");
-        assert!(
-            !st.strips.iter().any(|v| v.id == looper),
-            "no Loop track: no Loop strip"
-        );
+        assert!(!st.strips.iter().any(|v| v.id == looper), "no Loop strip");
         // A take clip: "take"; nothing playing: no tag.
         tracks.dress_loop_strips(
             &mut st,
@@ -37974,46 +37856,16 @@ mod tests {
         });
         let audio = |a| FromUi::Time(TimeAction::Audio(a));
         assert_eq!(to_cell, Some(audio(AudioAction::ToCell(r))));
-        // UNDO and SHIFT + UNDO on Arrange: the takes, until the audio
-        // tracks' history moves; then the region edits, until a take moves.
+        // UNDO and SHIFT + UNDO on Arrange: the one history, whichever of
+        // the takes and the region edits moved last (audio tracks 4d.1).
         p.apply(ToUi::Show(View::Arrange));
         let undo = |p: &mut Player, redo| {
             p.take_actions();
             p.apply(ToUi::Undo(redo));
             p.take_actions()
         };
-        assert_eq!(undo(&mut p, false), [FromUi::Time(TimeAction::Undo)]);
-        let mut st = p.time.clone();
-        st.audio_history = (1, 0);
-        p.apply(ToUi::Time(Box::new(st.clone())));
-        assert_eq!(undo(&mut p, false), [audio(AudioAction::Undo)]);
-        assert_eq!(undo(&mut p, true), [audio(AudioAction::Redo)]);
-        st.done.push(mpfree_time_ui::view::TakeRow {
-            number: 1,
-            captured: false,
-            edited: true,
-            made: false,
-            at: None,
-            added: 0,
-            erased: 0,
-            deleted: false,
-            new_track: None,
-            dropped: None,
-            song: None,
-            settings: false,
-            pasted: false,
-            replaced: None,
-            variant: None,
-            scene: None,
-            rows: None,
-            followed: None,
-            row_tool: None,
-            chords: None,
-            part: false,
-            style: false,
-        });
-        p.apply(ToUi::Time(Box::new(st)));
-        assert_eq!(undo(&mut p, false), [FromUi::Time(TimeAction::Undo)]);
+        assert_eq!(undo(&mut p, false), [FromUi::OneUndo { redo: false }]);
+        assert_eq!(undo(&mut p, true), [FromUi::OneUndo { redo: true }]);
     }
 
     #[test]
@@ -38609,7 +38461,7 @@ mod tests {
             .time
             .tracks
             .iter()
-            .position(|t| t.loops.is_none() && t.slots.iter().any(Option::is_some))
+            .position(|t| t.slots.iter().any(Option::is_some))
             .expect("a track with a clip");
         p.time.armed = Some(with_clip + 1);
         assert_eq!(p.kit_for_load(), Ok(Some(n)));

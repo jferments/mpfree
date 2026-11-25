@@ -603,8 +603,6 @@ pub struct GridTrack {
     /// A mute or solo change waiting for its line: the header is hatched
     /// and this says what and when ("mutes in 2 beats") under the name.
     pub waiting: Option<String>,
-    /// A Loop track: a wave mark before what it records, under its name.
-    pub loops: bool,
     /// An audio track (layout spec 4f): a wave mark before its input,
     /// under its name, and its cells empty and dashed until audio clips
     /// come.
@@ -1729,7 +1727,6 @@ impl Widget for ClipGrid {
                 || old.solo != new.solo
                 || old.waiting != new.waiting
                 || old.sound != new.sound
-                || old.loops != new.loops
                 || old.audio != new.audio
                 || old.cells.len() != new.cells.len()
             {
@@ -2091,9 +2088,9 @@ impl Widget for ClipGrid {
             } else if two {
                 let mut sound = Rect::new(head.x + 10, head.y + 22, sound_w, 18);
                 let dim = if track.mute { t.text_faint } else { t.text_dim };
-                if track.loops || track.audio {
-                    // A Loop or audio track's mark: a little wave before
-                    // its input.
+                if track.audio {
+                    // An audio track's mark: a little wave before its
+                    // input.
                     let cy = sound.y + sound.h / 2;
                     for (k, h) in [6, 10, 5].into_iter().enumerate() {
                         let x = sound.x + 3 * k as i32;
@@ -2918,8 +2915,8 @@ fn paint_cell_body(cx: &mut PaintCx, cr: Rect, cell: &GridCell, base: Color) {
         _ => t.readable(t.text_dim, fill),
     };
     let rolling = matches!(cell.state, CellState::Playing | CellState::Recording);
-    // A Loop track's loop shows its pass on its wave, not with a ring; a
-    // loop cell on an audio track has its ring, stopped or not.
+    // A cell with a wave shows its pass on it, not with a ring; a loop
+    // cell on an audio track has its ring, stopped or not.
     let ringed = (rolling && cell.wave.is_none()) || cell.looped;
     let ring_room = if ringed { RING + 4 } else { 0 };
     let foot = Rect::new(
@@ -3564,7 +3561,6 @@ mod tests {
                 mute: false,
                 solo: false,
                 waiting: None,
-                loops: false,
                 audio: false,
                 song: SongMark::None,
                 cells,

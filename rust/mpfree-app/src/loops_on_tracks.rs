@@ -1,16 +1,15 @@
 //! Loops on audio tracks, the loop host's side (the audio tracks rethink,
-//! phase 4, step 4b: docs/dev/design/loops-on-audio-tracks.md), behind
-//! Dev's "Loops on audio tracks" until 4e.
+//! phase 4, step 4b: docs/dev/design/loops-on-audio-tracks.md).
 //!
 //! The loop host keeps a table from each slot (a loop number, 0 to 7) to
 //! the lasting id of the loop it holds (`mpfree_seq::LoopId`), saved with
-//! the loop (`LoopFile::id`). A loop gets its id when it first has sound
-//! with the switch on, from the audio tracks' id maker. A slot whose loop
+//! the loop (`LoopFile::id`). A loop gets its id when it first has sound,
+//! from the audio tracks' id maker. A slot whose loop
 //! a loop cell (or a block of one) names is on that cell's track: each
 //! period, before the looper runs, the track player's runs for its id go
 //! to the looper ([`mpfree_looper::Looper::play`]), and after it runs its
 //! own buffer goes to the track ([`OnTracks::out`]). A slot no loop cell
-//! names launches itself, as on the Loop track.
+//! names plays on the Loop strip, launched at once.
 //!
 //! Which ids the project names is looked at every [`LOOK_EVERY`] periods
 //! (a project's cells and blocks are walked, without allocating), as the
@@ -667,11 +666,11 @@ mod tests {
         assert!(!looper.on_track(1));
     }
 
-    /// The whole chain as the audio thread runs it with Dev's switch on
-    /// (main.rs): a loop recorded on the looper gets an id, a loop cell on
-    /// an audio track names it, and while the arranger says the cell plays
-    /// the loop sounds in that track's channel and not on the Loop track.
-    /// With the cell gone it plays on the Loop track again.
+    /// The whole chain as the audio thread runs it (main.rs): a loop
+    /// recorded on the looper gets an id, a loop cell on an audio track
+    /// names it, and while the arranger says the cell plays the loop
+    /// sounds in that track's channel and not on the Loop strip. With the
+    /// cell gone it plays on the Loop strip again.
     #[test]
     fn a_loop_cell_plays_its_loop_in_its_track_and_not_on_the_loop_track() {
         use crate::audiotracks::TrackHost;
@@ -730,7 +729,7 @@ mod tests {
             stamp: 1,
         };
 
-        // `n` periods as main.rs runs them: the peaks of the Loop track's
+        // `n` periods as main.rs runs them: the peaks of the Loop strip's
         // output and the audio track's channel over the last 20.
         let mut run = |h: &mut LoopHost, tracks: &mut TrackHost, p: &Project, n: usize| {
             let ans = if p.loop_track(id).is_some() {
@@ -763,14 +762,14 @@ mod tests {
         let periods = 2 * LOOK_EVERY as usize + 400;
         let (on_loop, on_track) = run(&mut h, &mut tracks, &p, periods);
         assert!(h.looper.on_track(0));
-        assert!(on_loop < 1e-6, "the Loop track is silent: {on_loop}");
+        assert!(on_loop < 1e-6, "the Loop strip is silent: {on_loop}");
         assert!(on_track > 0.1, "the audio track plays the loop: {on_track}");
         assert_eq!((h.on_tracks.dropped, h.on_tracks.refused), (0, 0));
 
         p.tracks[0].slots[0] = None;
         let (on_loop, on_track) = run(&mut h, &mut tracks, &p, periods);
         assert!(!h.looper.on_track(0));
-        assert!(on_loop > 0.1, "back on the Loop track: {on_loop}");
+        assert!(on_loop > 0.1, "back on the Loop strip: {on_loop}");
         assert!(on_track < 1e-6, "the audio track is silent: {on_track}");
     }
 
@@ -1094,28 +1093,27 @@ mod tests {
         assert_eq!((strip, track), (0.0, 0.0), "untold: nowhere");
     }
 
-    /// Making a loop cell, as main.rs runs it with Dev's switch on: an
-    /// audio track's empty cell armed, a loop recorded on the looper gets
-    /// its lasting id while it records, and when its first pass ends the
-    /// time engine puts it in that cell, launched from the loop's own
-    /// start; from the next period it plays in the track and not on the
-    /// Loop strip. Straight on: the Loop strip and the track together are,
-    /// to float rounding, the Loop strip alone with the time engine's
-    /// switch off (the loop on a Loop track), from the first pass's first
-    /// frame on, its own fade in included. With no cell armed for it
-    /// (phase 4e.4) it lands in the audio track's first cell all the same,
-    /// and plays on there just as straight.
+    /// Making a loop cell, as main.rs runs it: an audio track's empty
+    /// cell armed, a loop recorded on the looper gets its lasting id while
+    /// it records, and when its first pass ends the time engine puts it in
+    /// that cell, launched from the loop's own start; from the next period
+    /// it plays in the track and not on the Loop strip. Straight on: the
+    /// Loop strip and the track together are, to float rounding, the Loop
+    /// strip alone with the loop never put on a track, from the first
+    /// pass's first frame on, its own fade in included. With no cell armed
+    /// for it (phase 4e.4) it lands in the audio track's first cell all the
+    /// same, and plays on there just as straight.
     #[test]
     fn a_loop_recorded_into_an_armed_audio_cell_plays_on_in_that_track() {
-        let plain = record_a_loop(Lands::LoopTrack);
-        assert_eq!(plain.said, "Loop 1 on Loops A, row 1, playing");
+        let plain = record_a_loop(Lands::Nowhere);
+        assert!(!plain.in_cell && !plain.on_track);
         for into in [Lands::Armed, Lands::NoCell] {
             heard_straight_on(record_a_loop(into), &plain);
         }
     }
 
     /// `armed` landed in Audio 1's first cell and plays on there exactly as
-    /// `plain` (the loop on a Loop track) did on the Loop strip.
+    /// `plain` (the loop on no track) did on the Loop strip.
     fn heard_straight_on(armed: Heard, plain: &Heard) {
         let k = armed.landed;
         assert_eq!(armed.said, "Loop 1 on Audio 1, row 1, playing");
@@ -1148,8 +1146,8 @@ mod tests {
         }
     }
 
-    /// Free cells (the rethink's phase 4e.4), as main.rs runs them with
-    /// Dev's switch on: a free loop (Sync: Free) recorded with no cell
+    /// Free cells (the rethink's phase 4e.4), as main.rs runs them: a free
+    /// loop (Sync: Free) recorded with no cell
     /// lands in Audio 1's first cell, not launched by the arranger; from
     /// then it is heard through Audio 1 and not on the Loop strip, with
     /// nothing lost or doubled at the hand-off; it plays on through STOP;
@@ -1192,7 +1190,7 @@ mod tests {
             let (time, h, tracks) = (&mut r.time, &mut r.h, &mut r.tracks);
             time.advance(PERIOD as u32);
             time.period(PERIOD as u32, &mut Quiet);
-            let _ = h.follow_plan(&time.loop_plan());
+            let _ = h.follow_untracked();
             let (mut l, mut rr) = ([0.0; PERIOD], [0.0; PERIOD]);
             if h.looper.status().phase != Phase::Playing {
                 for i in 0..PERIOD {
@@ -1240,8 +1238,7 @@ mod tests {
         let audio_id = a.id;
         p.tracks.push(a);
         let audio = p.tracks.len() - 1;
-        let mut time = TimeHost::with_project(RATE, 120.0, p).unwrap();
-        time.set_loops_on(true);
+        let time = TimeHost::with_project(RATE, 120.0, p).unwrap();
         let h = LoopHost::new(RATE, 20);
         let mut tracks = TrackHost::new(RATE, 10);
         tracks.sync(time.project(), 0, true);
@@ -1317,8 +1314,8 @@ mod tests {
             .all(|&(s, t)| s == 0.0 && t > 0.05));
     }
 
-    /// Make song on a free cell (phase 4d.2), as main.rs runs it with Dev's
-    /// switch on: a free loop playing in Audio 1's free cell with the song
+    /// Make song on a free cell (phase 4d.2), as main.rs runs it: a free
+    /// loop playing in Audio 1's free cell with the song
     /// stopped becomes a song loop on the free clock's bar line, the song
     /// starting there, and its cell a song cell launched from the loop's
     /// origin, which Audio 1 takes over; what Audio 1 plays is what it
@@ -1363,7 +1360,7 @@ mod tests {
             let (time, h, tracks) = (&mut r.time, &mut r.h, &mut r.tracks);
             time.advance(PERIOD as u32);
             time.period(PERIOD as u32, &mut Quiet);
-            let _ = h.follow_plan(&time.loop_plan());
+            let _ = h.follow_untracked();
             let (mut l, mut rr) = ([0.0; PERIOD], [0.0; PERIOD]);
             if h.looper.status().phase != Phase::Playing {
                 for i in 0..PERIOD {
@@ -1418,8 +1415,7 @@ mod tests {
             p.give_track_id(&mut a);
             let audio_id = a.id;
             p.tracks.push(a);
-            let mut time = TimeHost::with_project(RATE, 120.0, p).unwrap();
-            time.set_loops_on(true);
+            let time = TimeHost::with_project(RATE, 120.0, p).unwrap();
             let mut tracks = TrackHost::new(RATE, 10);
             tracks.sync(time.project(), 0, true);
             let slot = tracks.slots.slot_of(audio_id).expect("an engine track");
@@ -1541,14 +1537,15 @@ mod tests {
         Armed,
         /// No cell armed (phase 4e.4: in Audio 1's first cell all the same).
         NoCell,
-        /// The time engine's switch off: on a new Loop track.
-        LoopTrack,
+        /// Never told to the time engine: it plays on the Loop strip, on no
+        /// track (its "landed" is the period its first pass ends in).
+        Nowhere,
     }
 
-    /// One bar of a tone recorded on the looper from the pads with Dev's
-    /// switch on, landing `into`, and the periods as main.rs runs them:
-    /// the left side of the Loop strip and of Audio 1, and the period the
-    /// first pass landed in.
+    /// One bar of a tone recorded on the looper from the pads, landing
+    /// `into`, and the periods as main.rs runs them: the left side of the
+    /// Loop strip and of Audio 1, and the period the first pass landed
+    /// in.
     fn record_a_loop(into: Lands) -> Heard {
         use crate::audiotracks::TrackHost;
         use crate::looping::LoopHost;
@@ -1575,7 +1572,6 @@ mod tests {
         p.tracks.push(a);
         let audio = p.tracks.len() - 1;
         let mut time = TimeHost::with_project(RATE, 120.0, p).unwrap();
-        time.set_loops_on(into != Lands::LoopTrack);
         if into == Lands::Armed {
             time.act(TimeAction::LoopCell(Some((audio, 0)))).unwrap();
         }
@@ -1600,7 +1596,7 @@ mod tests {
             let f = (k * PERIOD) as u64;
             time.advance(PERIOD as u32);
             time.period(PERIOD as u32, &mut Quiet);
-            for line in h.follow_plan(&time.loop_plan()) {
+            for line in h.follow_untracked() {
                 assert!(!line.contains("refused"), "{line}");
             }
             // The pads play the tone until the first pass ends.
@@ -1632,7 +1628,11 @@ mod tests {
             // (Interleaved: its left side.)
             let out = tracks.host.tracks.track_out(slot, PERIOD);
             track.extend(out.iter().step_by(2).take(PERIOD));
-            if let Some(now) = h.grid_now() {
+            if into == Lands::Nowhere {
+                if landed.is_none() && h.looper.status().phase == Phase::Playing {
+                    landed = Some((k, String::new()));
+                }
+            } else if let Some(now) = h.grid_now() {
                 let lines = time.loops_are_on(&now, &h.loop_ids(), true);
                 if !lines.is_empty() {
                     h.look_again();

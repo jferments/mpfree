@@ -2838,7 +2838,7 @@ impl MixHost {
     }
 
     /// What a loop recorded into an audio track's cell records this period
-    /// (audio tracks phase 4b, behind Dev's switch), and its latency:
+    /// (audio tracks phase 4b), and its latency:
     /// `from`, the track's input inside the mix, where the mixer says a
     /// recording into `channel` (the track's own) takes it
     /// ([`mpfree_fx::Mixer::capture_for`]): the strip itself, or a submix

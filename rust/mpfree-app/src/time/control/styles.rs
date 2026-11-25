@@ -50,7 +50,8 @@ impl TimeControl {
             .project
             .clip(track, slot)
             .ok_or("Make a style: no such clip")?;
-        if clip.looped.is_some() {
+        // An audio track's loop cell: the looper's audio, no notes.
+        if clip.loop_clip.is_some() {
             return Err("A loop's cell has no notes to make a style of".into());
         }
         let notes: Vec<PlainNote> = clip
