@@ -7882,14 +7882,17 @@ impl Widget for NoteGrid {
         if tool {
             return out;
         }
-        // The clip's end handle (plan 1A.2): dragged a unit in, to its
-        // stop at most, while the clip can be shorter.
+        // The clip's end handle (plan 1A.2): dragged a whole unit in while
+        // the clip can be shorter. The end snaps to the nearest unit and
+        // stops at the clip's shortest, so a stop less than half a unit in
+        // (the last note ending near the end) is reached only by a finger
+        // past the half: a unit in always gets there.
         if let Some(e) = self
             .end_grip(&g)
             .filter(|_| self.length > self.shortest && self.drag.is_none())
         {
             let unit = self.end_unit(g.v.ppt);
-            let to = (self.length - unit).max(self.shortest);
+            let to = self.length - unit;
             let dx = (self.x_of(&g, to) - self.x_of(&g, self.length)).min(-END_W);
             out.push(Target::drag("end", 0, "clip's end", e).towards(dx, 0));
         }
@@ -11755,6 +11758,25 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, Some(EventKind::Stretch { .. }))),
             "{sent:?}"
+        );
+        // Its stop under half a bar in (the last note ending near the
+        // end): the sweep's drag, a whole bar in, still gets there.
+        g.view = g.view.clamped(g0.roll, g.length, g.rows());
+        g.shortest = 4 * bar - 3 * 240;
+        let t = g
+            .targets(R)
+            .into_iter()
+            .find(|t| t.id == "end")
+            .expect("the end");
+        let (x, y) = mid(t.rect);
+        g.touch(6, Touch::Down, x, y, R);
+        g.touch(6, Touch::Move, x + t.towards.0, y, R);
+        assert_eq!(
+            g.touch(6, Touch::Up, x + t.towards.0, y, R),
+            Some(EventKind::Stretch {
+                index: CLIP_END,
+                to: 4 * bar - 3 * 240
+            })
         );
         // At its stop: not swept.
         g.shortest = g.length;
