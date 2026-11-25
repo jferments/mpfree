@@ -211,6 +211,11 @@ pub enum FileEvent {
     /// couldn't be read back from there (`why`) for a save, which holds
     /// silence there.
     Unread { track: usize, why: String },
+    /// The drive a take of `track` recorded on went (the SD card taken
+    /// out, or closed) and the take carries on in the folder recording
+    /// moved to (the stick's): its first `hole_s` seconds stay on the
+    /// drive that went, and play as silence until they are brought back.
+    CarriedOn { track: usize, hole_s: f32 },
 }
 
 impl FileEvent {
@@ -225,6 +230,7 @@ impl FileEvent {
             | FileEvent::Unwritten { track, .. }
             | FileEvent::FromBoth { track, .. }
             | FileEvent::Unread { track, .. }
+            | FileEvent::CarriedOn { track, .. }
             | FileEvent::TrackLeftOut { track } => *track,
             FileEvent::NoStream { .. } | FileEvent::HeadsShort { .. } => 0,
         }
@@ -255,6 +261,14 @@ impl FileEvent {
             FileEvent::Unread { why, .. } => format!(
                 "audio tracks: the start of a take of {who} couldn't be read back from the drive \
                  ({why}), so the saved take is silent there"
+            ),
+            FileEvent::CarriedOn { hole_s, .. } if *hole_s > 0.0 => format!(
+                "audio tracks: {who}'s take carries on on the USB stick, as the SD card went; \
+                 its first {hole_s:.1} s stay on the card and play as silence until it is back"
+            ),
+            FileEvent::CarriedOn { .. } => format!(
+                "audio tracks: {who}'s take carries on on the USB stick, as the SD card went \
+                 before any of it was saved there"
             ),
             FileEvent::State { state, .. } => match state {
                 TakeState::AtRisk(w) => format!(
@@ -338,6 +352,9 @@ pub(crate) enum Said {
     Failed { rec: RecordingId, why: String },
     /// A take's file stands at `view` now.
     View { rec: RecordingId, view: FileView },
+    /// A take carried on in another folder ([`Files::carry_on`]), its
+    /// first `hole` frames left on the drive that went.
+    CarriedOn { rec: RecordingId, hole: u64 },
 }
 
 /// How often the worker looks at the writer's takes.
@@ -381,6 +398,13 @@ struct FileRec {
     /// the samples pushed.
     peaks: Vec<(f32, f32)>,
     pushed: usize,
+    /// Asked to carry on in `dir` and not there yet ([`Files::carry_on`]):
+    /// its file isn't opened or grown meanwhile.
+    moving: bool,
+    /// Frames at its start left on a drive that went (it carried on): its
+    /// file in the work folder holds zeros there, and stays for them to be
+    /// brought back, whatever a save copies.
+    hole: u64,
 }
 
 /// The writer and the folder it records into.
@@ -577,6 +601,41 @@ impl Files {
         Ok(())
     }
 
+    /// The drive takes record on went (the SD card taken out, or closed,
+    /// the SD card plan's B2c): every take in flight in the folder there,
+    /// recording, being finished or only armed, carries on in `to` (made
+    /// if missing), the same writer going on there
+    /// ([`Recorder::carry_on`]), and takes record into `to` from now on.
+    /// What they committed stays on the drive that went. Each take's file
+    /// opens again to play from once it is there ([`Said::CarriedOn`]).
+    /// Gives how many were carried; nothing when recording is already in
+    /// `to`.
+    pub fn carry_on(&mut self, to: PathBuf) -> io::Result<usize> {
+        let Some(w) = &mut self.writing else {
+            return Ok(0);
+        };
+        if w.dir == to {
+            return Ok(0);
+        }
+        std::fs::create_dir_all(&to)?;
+        let old = std::mem::replace(&mut w.dir, to.clone());
+        if !self.was.contains(&old) {
+            self.was.push(old.clone());
+        }
+        let mut n = 0;
+        for f in &mut self.recs {
+            let Some(no) = f.no else { continue };
+            if f.dir.as_deref() != Some(old.as_path()) {
+                continue;
+            }
+            w.rec.carry_on(no, &to, [0; 16], 0);
+            f.dir = Some(to.clone());
+            f.moving = true;
+            n += 1;
+        }
+        Ok(n)
+    }
+
     fn find(&mut self, rec: RecordingId) -> Option<&mut FileRec> {
         self.recs.iter_mut().find(|f| f.rec == rec)
     }
@@ -626,6 +685,8 @@ impl Files {
             grown: 0,
             peaks: Vec::new(),
             pushed: 0,
+            moving: false,
+            hole: 0,
         });
         None
     }
@@ -745,6 +806,8 @@ impl Files {
             grown: 0,
             peaks: Vec::new(),
             pushed: 0,
+            moving: false,
+            hole: 0,
         });
     }
 
@@ -810,6 +873,28 @@ impl Files {
                     }
                 }
                 Some(Status::Take(v)) => {
+                    if f.moving && !v.carrying {
+                        // The writer took the ask (its status says carrying
+                        // until then): the take is in the new folder
+                        // (carried on), or still where it was (saved, or
+                        // being finished, there: nothing to carry).
+                        let at = w.rec.final_path(no);
+                        let dir = at.as_deref().and_then(Path::parent).map(Path::to_path_buf);
+                        f.moving = false;
+                        if dir.is_some() && dir == f.dir {
+                            // Opened again from its file there.
+                            f.grown = 0;
+                            f.hole = v.hole;
+                            if f.take {
+                                out.push(Said::CarriedOn {
+                                    rec: f.rec,
+                                    hole: v.hole,
+                                });
+                            }
+                        } else if dir.is_some() {
+                            f.dir = dir;
+                        }
+                    }
                     if !f.take {
                         if !f.ready {
                             f.ready = true;
@@ -824,7 +909,7 @@ impl Files {
                     // them from now on, and their memory goes.
                     let unit = (UNIT / ch.max(1)) as u64;
                     let to = v.committed / unit * unit;
-                    let more = v.state != TakeState::Saved && to > f.grown;
+                    let more = v.state != TakeState::Saved && to > f.grown && !f.moving;
                     if let Some(id) = f.id.filter(|_| self.streams && more) {
                         let stem = f.name.strip_suffix(".wav").unwrap_or(&f.name);
                         self.grows.push(if f.grown == 0 {
@@ -966,7 +1051,7 @@ impl Files {
                 continue;
             }
             if let Some(old) = &f.path {
-                if in_work(old) && *old != there && f.no.is_none() {
+                if in_work(old) && *old != there && f.no.is_none() && f.hole == 0 {
                     let _ = std::fs::remove_file(old);
                 }
             }
@@ -1701,6 +1786,8 @@ mod tests {
             grown: 256,
             peaks: Vec::new(),
             pushed: 0,
+            moving: false,
+            hole: 0,
         };
         let mut f = Files::new(48_000);
         f.stream();

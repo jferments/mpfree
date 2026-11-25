@@ -178,8 +178,12 @@ pub struct TakeView {
     /// another folder ([`Writer::carry_on`]).
     pub hole: u64,
     /// Asked to carry on in another folder and not there yet (its files
-    /// there couldn't be made yet: tried again each pass).
+    /// there couldn't be made yet: tried again each pass). A
+    /// [`Recorder`]'s status says so from the moment it is asked, until
+    /// the writer has taken the ask.
     pub carrying: bool,
+    /// Asks to carry on the writer has taken ([`Writer::carry_on`]).
+    pub asks: u32,
 }
 
 /// The writer's counts, for Dev.
@@ -223,8 +227,10 @@ struct Entry {
     due: f64,
     /// This round's wait for playback is counted.
     waiting: bool,
-    /// Where it is to carry on, until it has ([`Writer::carry_on`]).
+    /// Where it is to carry on, until it has ([`Writer::carry_on`]), and
+    /// how many such asks it has taken.
     carry: Option<Carry>,
+    asks: u32,
 }
 
 /// A take's move to another folder after its drive went.
@@ -323,6 +329,7 @@ impl Writer {
             due,
             waiting: false,
             carry: None,
+            asks: 0,
         });
         Ok(())
     }
@@ -342,6 +349,7 @@ impl Writer {
             card,
             serial,
         });
+        self.takes[i].asks += 1;
         self.try_carry(i);
         true
     }
@@ -474,6 +482,7 @@ impl Writer {
             stats: t.stats(),
             hole: t.hole(),
             carrying: self.takes[self.find(no)?].carry.is_some(),
+            asks: self.takes[self.find(no)?].asks,
         })
     }
 
@@ -675,6 +684,8 @@ struct Sent {
     align: usize,
     full: bool,
     counts: Arc<Counts>,
+    /// Asks to carry on sent ([`Recorder::carry_on`]).
+    carries: u32,
 }
 
 /// A [`Writer`] on a thread of its own. Calls never wait for the stick:
@@ -741,6 +752,7 @@ impl Recorder {
                 align: fmt.block_align(),
                 full: false,
                 counts: Arc::clone(&counts),
+                carries: 0,
             },
         );
         self.shown().status.insert(no, Status::Arming);
@@ -812,13 +824,24 @@ impl Recorder {
     /// The drive take `no` records on went: it carries on in `dir`
     /// ([`Writer::carry_on`]). Its finished file is then in `dir`
     /// ([`Recorder::final_path`]), and its view says what stayed behind.
+    /// Its status says it is carrying from now on, until the writer has
+    /// carried it (or found nothing to carry: it is saved, or being
+    /// finished), so a status read before the writer took the ask is never
+    /// taken for its answer.
     pub fn carry_on(&mut self, no: TakeNo, dir: &Path, card: [u8; 16], serial: u32) {
+        if let Some(s) = self.sent.get_mut(&no) {
+            s.carries += 1;
+        }
         self.send(Cmd::CarryOn(no, dir.to_path_buf(), card, serial));
     }
 
     /// What the writer last saw of a take.
     pub fn status(&self, no: TakeNo) -> Option<Status> {
-        self.shown().status.get(&no).cloned()
+        let mut st = self.shown().status.get(&no).cloned();
+        if let (Some(Status::Take(v)), Some(s)) = (st.as_mut(), self.sent.get(&no)) {
+            v.carrying |= s.carries > v.asks;
+        }
+        st
     }
 
     /// Where a take's finished file is.

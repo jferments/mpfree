@@ -993,6 +993,123 @@ fn takes_on_the_card_open_again_when_the_card_comes_back() {
     let _ = std::fs::remove_dir_all(&card);
 }
 
+/// The SD card plan's phase B2c: a take recording on the card when the
+/// card goes (taken out: its opening revoked) carries on on the stick, the
+/// same take, recording on: once the app asks for the stick's folder, the
+/// take's file there holds zeros for what was committed on the card and
+/// everything after, the card's part is left where it was, the take plays
+/// from its file on the stick from then on, and the log says so.
+#[test]
+fn a_take_on_the_card_carries_on_on_the_stick_when_the_card_goes() {
+    use mpfree_stream::rec::Hole;
+    use mpfree_stream::storage::Lease;
+    let card = scratch("carry-card");
+    let stick = scratch("carry-stick");
+    let mut mem = Rig::sized(None, None, 30);
+    record_paced(&mut mem, 8, false);
+    let want = mem.save();
+
+    let mut r = Rig::sized(None, Some(small()), 30);
+    let lease = Lease::new(&card);
+    r.h.own_device(lease.clone());
+    assert!(r.h.record_to(card.clone(), quick()).is_ok());
+    r.h.command(A::Arm(0, true));
+    r.armed(&[0]);
+    r.t.command(START, T::Record);
+    r.t.command(START + 8 * BAR, T::Stop);
+    let paced = |r: &mut Rig| {
+        r.period();
+        if r.frame > START {
+            std::thread::sleep(Duration::from_millis(3));
+        }
+    };
+    while r.frame < START + 2 * BAR {
+        paced(&mut r);
+    }
+    // Some of it is on the card, its memory given back.
+    let t0 = Instant::now();
+    let k = loop {
+        let k = r.h.tracks.takes().next().map(|k| k.id);
+        if let Some(k) = k.filter(|&k| r.h.tracks.file_frames(k).is_some_and(|n| n > 0)) {
+            break k;
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(30),
+            "nothing on the card"
+        );
+        paced(&mut r);
+    };
+    assert!(r.frame < START + 6 * BAR, "the card took too long");
+    let on_card = r.h.tracks.file_gen(k).unwrap();
+
+    // The card goes; the app moves recording to the stick.
+    lease.revoke();
+    assert!(
+        r.h.record_to(stick.clone(), quick()).is_ok(),
+        "nothing waits"
+    );
+    while r.frame < START + 8 * BAR + 4 * P {
+        paced(&mut r);
+    }
+    r.h.command(A::Arm(0, false));
+    r.live = false;
+    r.run_until(|r| r.h.file(k).is_some_and(|f| f.state == TakeState::Saved) && r.all_on_file());
+    assert_eq!(r.h.tracks.stats().full, 0);
+    let now = r.h.tracks.file_gen(k).unwrap();
+    assert_ne!(now, on_card, "it plays from its file on the stick");
+
+    // Its file on the stick: zeros for the card's part, then the rest.
+    let holes: Vec<PathBuf> = std::fs::read_dir(&stick)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.to_string_lossy().ends_with(".wav.hole"))
+        .collect();
+    assert_eq!(holes.len(), 1);
+    let hole = Hole::decode(&std::fs::read(&holes[0]).unwrap()).expect("a hole record");
+    assert!(hole.frames > 0);
+    assert_eq!(hole.from.parent(), Some(card.as_path()));
+    let saved = r.save();
+    let path = saved.takes[0].path.as_ref().expect("its file holds it all");
+    assert!(path.starts_with(&stick));
+    let (audio, ch, _) = from_wav(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(ch, 1);
+    let mut wanted = want.takes[0].audio.clone();
+    assert_eq!(audio.len(), wanted.len());
+    wanted[..hole.frames as usize].fill(0.0);
+    assert!(
+        audio == wanted,
+        "zeros where the card has it, then the take"
+    );
+    // The card's part is left where it was, for when the card is back.
+    let name = hole.from.to_string_lossy().into_owned();
+    let ckpt = PathBuf::from(name.replace(".wav.recording", ".wav.checkpoint"));
+    assert!(name.ends_with(".wav.recording") && ckpt.is_file());
+    let bytes = std::fs::read(&hole.from).unwrap();
+    let l = mpfree_stream::format::layout(&mut std::io::Cursor::new(&bytes)).unwrap();
+    let n = hole.frames as usize;
+    assert!(l.frames as usize >= n);
+    let mut there = vec![0.0f32; n];
+    let from = l.data_at as usize;
+    mpfree_stream::format::decode(
+        l.sample,
+        l.endian,
+        &bytes[from..from + n * l.block_align()],
+        &mut there,
+    );
+    assert!(there == want.takes[0].audio[..n], "the card holds its part");
+    let ev = r.events();
+    assert!(
+        ev.iter().any(|e| matches!(
+            e,
+            FileEvent::CarriedOn { track: 0, hole_s }
+                if (*hole_s - hole.frames as f32 / RATE as f32).abs() < 1e-3
+        )),
+        "{ev:?}"
+    );
+    let _ = std::fs::remove_dir_all(&card);
+    let _ = std::fs::remove_dir_all(&stick);
+}
+
 /// The SD card plan's phase B2a: sound never clicks as it goes missing or
 /// comes back. A take on the card plays on after the card is pulled until
 /// the cache runs out; at every gap in what plays (the card's, or a read

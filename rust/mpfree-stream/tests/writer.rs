@@ -592,6 +592,88 @@ fn the_recorder_records_on_its_own_thread() {
 }
 
 #[test]
+fn the_recorders_status_says_carrying_until_the_writer_has_carried_the_take() {
+    let card = folder("writer-carry-card");
+    let stick = folder("writer-carry-stick");
+    let cfg = WriterConfig {
+        interval_s: 0.05,
+        commit_s: 0.01,
+        ..WriterConfig::default()
+    };
+    let mut r = Recorder::start(
+        Box::new(StdFs::default()),
+        Arc::new(RealClock::new()),
+        Arc::new(Gate::new()),
+        cfg,
+    )
+    .expect("starts");
+    let no = r.arm(
+        &card,
+        "Take 1",
+        RecId::random(),
+        STEREO_FLOAT,
+        Meta::default(),
+    );
+    wait_for(&r, no, "armed", |s| matches!(s, Status::Take(_)));
+    let mut sent = 0u64;
+    for _ in 0..10 {
+        assert_eq!(r.push(no, &audio(STEREO_FLOAT, 1, sent, 2_400)), 2_400);
+        sent += 2_400;
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let Status::Take(v) = wait_for(
+        &r,
+        no,
+        "a round committed",
+        |s| matches!(s, Status::Take(v) if v.committed > 0),
+    ) else {
+        unreachable!()
+    };
+    assert!(!v.carrying);
+    r.carry_on(no, &stick, [0; 16], 0);
+    // From the ask on, it is never seen settled where it was: carrying,
+    // until the writer has it in the new folder.
+    let t = Instant::now();
+    let hole = loop {
+        let Some(Status::Take(v)) = r.status(no) else {
+            panic!("{:?}", r.status(no));
+        };
+        let dir = r
+            .final_path(no)
+            .and_then(|p| p.parent().map(Path::to_path_buf));
+        if !v.carrying {
+            assert_eq!(
+                dir.as_deref(),
+                Some(stick.as_path()),
+                "settled where it was"
+            );
+            assert_eq!(v.asks, 1);
+            break v.hole;
+        }
+        assert!(t.elapsed() < Duration::from_secs(20), "never carried");
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert!(hole > 0 && hole <= sent);
+    for _ in 0..5 {
+        assert_eq!(r.push(no, &audio(STEREO_FLOAT, 1, sent, 2_400)), 2_400);
+        sent += 2_400;
+    }
+    r.stop(no);
+    wait_for(&r, no, "saved", saved);
+    let path = r.final_path(no).expect("named");
+    assert_eq!(path.parent(), Some(stick.as_path()));
+    let got = read_file(&path, STEREO_FLOAT);
+    let mut want = audio(STEREO_FLOAT, 1, 0, sent);
+    want[..hole as usize * 2].fill(0.0);
+    assert!(
+        got == want,
+        "zeros for what stayed on the card, then the rest"
+    );
+    r.forget(no);
+    r.close();
+}
+
+#[test]
 fn the_recorder_counts_capture_memory_while_the_stick_is_busy() {
     let dir = folder("writer-memory");
     let cfg = WriterConfig {
