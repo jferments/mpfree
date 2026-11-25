@@ -1,7 +1,8 @@
 //! Every read that plays audio at another speed, measured one way (DSP
 //! quality step 1.6, `docs/dev/design/pitched-reads.md`): the sampler's
-//! pad reads, the grain reads, the streaming cursor's reads and the
-//! stretch's resampler. Each keeps its own code, tuned to its own memory
+//! pad reads, the grain reads, the streaming cursor's reads, the
+//! stretch's resampler and an audio track's region following the tempo
+//! on Repitch (phase 5a). Each keeps its own code, tuned to its own memory
 //! access; measured the same way, any difference between them is chosen,
 //! not accidental.
 //!
@@ -111,10 +112,15 @@ pub enum Reader {
     /// convert_rate`), off the sound thread: its pitch shift and the
     /// conversion of sounds loaded at another rate.
     Stretch,
+    /// An audio track's region following the song's tempo on Repitch (the
+    /// audio tracks rethink's phase 5a): the whole track player, its take
+    /// made at one tempo and the song at another, which reads through the
+    /// streaming cursor's band-limited read on frames it gathers itself.
+    Tracks,
 }
 
 impl Reader {
-    pub const ALL: [Reader; 8] = [
+    pub const ALL: [Reader; 9] = [
         Reader::Pad,
         Reader::PadVintage,
         Reader::PadGrains,
@@ -123,6 +129,7 @@ impl Reader {
         Reader::Stream16,
         Reader::StreamNear,
         Reader::Stretch,
+        Reader::Tracks,
     ];
 
     /// How the report names it.
@@ -136,6 +143,7 @@ impl Reader {
             Reader::Stream16 => "stream sinc16",
             Reader::StreamNear => "stream 8-point",
             Reader::Stretch => "stretch",
+            Reader::Tracks => "tracks repitch",
         }
     }
 
@@ -158,6 +166,8 @@ impl Reader {
             Reader::Stream8 | Reader::Stream16 | Reader::StreamNear => {
                 (exact <= mpfree_stream::cursor::MAX_SPEED).then_some(exact)
             }
+            // The song's tempo over the take's: exact, up to its fastest.
+            Reader::Tracks => (exact <= mpfree_audiotracks::MAX_SPEED).then_some(exact),
             // convert_rate takes whole rates: the sound as if recorded at
             // `from`, played at `rate`.
             Reader::Stretch => Some((f64::from(rate) * exact).round() / f64::from(rate)),
@@ -246,6 +256,7 @@ impl Reader {
                 };
                 stream_play(x, read, v, rate, frames, looped)
             }
+            Reader::Tracks => tracks_play(x, v, rate, frames),
             Reader::Stretch => {
                 let data: Vec<f32> = x.iter().map(|&s| s as f32).collect();
                 let from = (f64::from(rate) * v).round() as u32;
@@ -301,6 +312,79 @@ fn stream_play(
     let _ = std::fs::remove_dir_all(&dir);
     got
 }
+
+/// `frames` output frames of mono `x` played by an audio track (phase
+/// 5a): `x` a take made at [`MADE_AT`] BPM, one region of it following the
+/// tempo on Repitch from its frame 8, the song at `speed` times that
+/// tempo, from its start (left channel).
+fn tracks_play(x: &[f64], speed: f64, rate: u32, frames: usize) -> Vec<f64> {
+    use mpfree_audiotracks::save::{TakeFile, TrackFile};
+    use mpfree_audiotracks::{AudioTracks, FollowTempo, Input, Monitor, RecordingId, Region};
+    use mpfree_transport::time::PPQ;
+    use mpfree_transport::{Block, Command as T, Transport};
+    let seconds = (x.len() as u64 / u64::from(rate) + 2) as u32;
+    let mut a = AudioTracks::new(rate, seconds);
+    let audio: Vec<f32> = x.iter().map(|&s| s as f32).collect();
+    let take = TakeFile {
+        id: 0,
+        rec: RecordingId(1),
+        track: 0,
+        group: 0,
+        pass: 0,
+        bpm: MADE_AT,
+        varied: false,
+        anchor: 0.0,
+        frames: audio.len(),
+        channels: 1,
+        file: String::new(),
+        path: None,
+        audio,
+    };
+    assert!(a.load_take(take).is_ok(), "the lab's take goes in");
+    let bpm = MADE_AT * speed;
+    // The song ticks the output frames span, and a beat more.
+    let ticks = (frames as f64 * bpm * f64::from(PPQ) / (60.0 * f64::from(rate))) as i64;
+    let region = Region {
+        follow: FollowTempo::Repitch,
+        ..Region::of(0, ticks + i64::from(PPQ), 0, (8, 0.0), MADE_AT)
+    };
+    let track = TrackFile {
+        index: 0,
+        id: 0,
+        input: Input::Left,
+        monitor: Monitor::Off,
+        from: String::new(),
+        regions: vec![region],
+    };
+    assert!(a.load_track(&track), "the lab's region goes in");
+    let mut t = Transport::new(rate, bpm).expect("the lab's tempo");
+    let mut b = Block::new();
+    const PERIOD: usize = 512;
+    let input = vec![0.0f32; 2 * PERIOD];
+    let mut out = vec![0.0f32; 2 * PERIOD];
+    // The take copies in before the song starts.
+    while a.loading() > 0 {
+        t.process(PERIOD as u32, &mut b);
+        a.process(&b, t.tempo_map(), &input, &mut out);
+    }
+    assert!(t.command(0, T::PlayStart));
+    let mut got = Vec::with_capacity(frames + PERIOD);
+    while got.len() < frames {
+        out.fill(0.0);
+        t.process(PERIOD as u32, &mut b);
+        let map = *t.tempo_map();
+        a.process(&b, &map, &input, &mut out);
+        got.extend(out.iter().step_by(2).map(|&s| f64::from(s)));
+    }
+    assert_eq!(a.stats().too_fast, 0, "{speed}x is a speed the tracks read");
+    got.truncate(frames);
+    got
+}
+
+/// The tempo the lab's take for [`Reader::Tracks`] is made at, BPM: the
+/// song plays at it times the speed, inside the tempos MPFree plays for
+/// every speed measured.
+const MADE_AT: f64 = 100.0;
 
 /// What a reader made of a pitched sine.
 struct Pitched {
@@ -552,6 +636,25 @@ mod tests {
         for r in Reader::ALL {
             let p = pitched_sine(r, 700, 3_000.0, 44_100);
             assert!(p.spur_db < -20.0, "{r:?}: {} dB", p.spur_db);
+        }
+    }
+
+    /// An audio track following the tempo reads through the streaming
+    /// cursor's band-limited read (phase 5a): measured through the whole
+    /// track player, its images are the cursor's, row for row.
+    #[test]
+    fn the_tracks_repitch_reads_as_the_streaming_cursors_band_limited_read() {
+        for cents in [-200, 100, 700] {
+            let (t, s) = (
+                pitched_sine(Reader::Tracks, cents, 9_000.0, 44_100),
+                pitched_sine(Reader::Stream8, cents, 9_000.0, 44_100),
+            );
+            assert!(
+                (t.spur_db - s.spur_db).abs() < 0.5,
+                "{cents} cents: {} against {} dB",
+                t.spur_db,
+                s.spur_db
+            );
         }
     }
 

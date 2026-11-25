@@ -17,7 +17,7 @@ Five parts of mpfree play recorded audio at another speed: the sampler's pads, t
 | Sampler grains | `mpfree-sampler` `grain_clip.rs` | the pad's 8-point read at and under two semitones up and for any pitch down; the band-limited read above (DSP quality step 1.8; Hermite at and under before it) | Grains worst, 5 pads: 4.8 M instructions a block (4.0 M with Hermite); clean read 14.2 M |
 | Grain engine | `mpfree-grain` `buffer.rs` (`Clip`, the live buffer) | the pad's 8-point read at and under two semitones up; faster, a Kaiser-windowed sinc stretched by the speed, up to an octave's stretch (step 1.8; Hermite at every speed before it) | Grains FX (dense): 529 k instructions a block (473 k with Hermite) |
 | Streaming cursor | `mpfree-stream` `cursor.rs` | band-limited, 8 zero crossings a side (the default) or 16; the pads' 8-point read as the cheap choice (`Read::Near`, its cut stretched with the speed past 1) | 64 voices at 1.5x: 782 instructions a voice a frame (8), 1,442 (16), 453 (8-point); at 0.75x, 225 (8-point) |
-| Audio tracks, Repitch | `mpfree-audiotracks` `lib.rs` (`Reader::add_pitched`), through `mpfree-stream` `cursor.rs` (`read_gathered`) | the streaming cursor's band-limited read, 8 zero crossings a side, on frames the track gathers itself, at every speed but 1 (at 1, the recording's own samples), up to four times ([tempo-follow.md](tempo-follow.md), phase 5a) | as the streaming cursor's 8; its own rows and bench rows come with phase 5a.2 |
+| Audio tracks, Repitch | `mpfree-audiotracks` `lib.rs` (`Reader::add_pitched`), through `mpfree-stream` `cursor.rs` (`read_gathered`) | the streaming cursor's band-limited read, 8 zero crossings a side, on frames the track gathers itself, at every speed but 1 (at 1, the recording's own samples), up to four times ([tempo-follow.md](tempo-follow.md), phase 5a) | 8 tracks of comped takes repitched, all of the track player: see the bench rows `Audio tracks: 8 playing comped takes, repitched to 0.9x` and `1.3x` |
 | Stretch | `mpfree-stretch` `resample.rs` (`convert_rate`) | a long windowed sinc, off the sound thread | a minute of 48 kHz stereo is about 300 million multiplies |
 
 The pad and grain costs are a whole voice's (envelope, filter and mix included), from `rust/mpfree-bench/instructions.txt`; the streaming cursor's are its read alone.
@@ -52,10 +52,13 @@ One read is an exception by choice, measured with no target: the **Vintage pad**
 | Streaming cursor, 8 | 20 of 20 (−59.1) | 14 of 14 | 2 of 2 (−54.9) | 3 of 3 (exact) |
 | Streaming cursor, 16 | 20 of 20 (−73.3) | 14 of 14 | 2 of 2 (−67.4) | 3 of 3 (exact) |
 | Streaming cursor, 8-point | 20 of 20 (−55.2) | 14 of 14 | **1 of 2 (−30.8 dB at 18 kHz a fifth up)** | 3 of 3 (exact) |
+| Audio tracks, Repitch (25 Nov) | 20 of 20 (−59.1) | 14 of 14 | 2 of 2 (−54.9) | no loops |
 | Stretch | 23 of 23 (−82.9) | 22 of 22 | 2 of 2 (−94.1) | no loops |
 | Vintage pad | no target: −26.3 dB at 9 kHz two semitones down | no target: −1.1 dB at 9 kHz a fifth down | no target: −5.4 and −3.0 dB, folds come through almost whole | exact (−50.8 dB before step 1.7) |
 
 The step 3.3 rows, tracked by every reader: an octave down at 9 kHz out is −22.5 dB on a pad, −41.8 on the streaming cursor's 8 and −71.6 on its 16; 13.5 kHz a fifth down is −9.3, −13.3 and −28.2.
+
+An audio track's region following the tempo is measured through the whole track player (`Reader::Tracks`: a take made at 100 BPM, the song at the speed's tempo), and its every row is the streaming cursor's 8, as it reads through that code (`the_tracks_repitch_reads_as_the_streaming_cursors_band_limited_read`).
 
 At its own speed or slower the streaming cursor's 8-point read is the pad's, from the same table and summed the same way, so their rows match within 0.005 dB; faster, it stretches where the pad hands over to its band-limited read, and that is where its one fold row misses. The streaming cursor's default read is longer than the pad's 8-point read (16 taps a frame at its own speed or slower, against 8) and has more margin at 3 kHz; both meet the standard, so the difference is a choice of cost against margin, not a gap.
 

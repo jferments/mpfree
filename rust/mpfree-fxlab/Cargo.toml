@@ -16,6 +16,10 @@ mpfree-sampler-ui = { path = "../mpfree-sampler-ui" }
 # (readers.rs); the testkit plays a file as a stem plays.
 mpfree-stream = { path = "../mpfree-stream", features = ["testkit"] }
 mpfree-stretch = { path = "../mpfree-stretch" }
+# An audio track's region following the tempo, measured as a pitched read
+# (readers.rs, the audio tracks rethink's phase 5a).
+mpfree-audiotracks = { path = "../mpfree-audiotracks" }
+mpfree-transport = { path = "../mpfree-transport" }
 mpfree-synth = { path = "../mpfree-synth" }
 mpfree-synth-ui = { path = "../mpfree-synth-ui" }
 # A keygroup in a tuning, for the pad filter's key tracking (PF9).
