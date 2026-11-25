@@ -926,6 +926,59 @@ pub(crate) fn seam(
 }
 
 impl crate::Reader<'_> {
+    /// The copy region `i` of `set` plays in its pass from song tick
+    /// `base`, on lane `owner` for a voice started on frame `since`
+    /// ([`crate::Reader::source`]): decided as it is first heard, or only
+    /// looked up.
+    /// Inlined, so a region not on Stretch costs one test.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn clip_source(
+        &mut self,
+        owner: u16,
+        since: u64,
+        set: &Set,
+        i: usize,
+        base: f64,
+        map: &TempoMap,
+        rate: u32,
+        f: u64,
+        decide: bool,
+    ) -> Option<usize> {
+        if set.regions[i].follow != FollowTempo::Stretch {
+            return None;
+        }
+        self.stretch_source(owner, since, set, i, base, map, rate, f, decide)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline(never)]
+    fn stretch_source(
+        &mut self,
+        owner: u16,
+        since: u64,
+        set: &Set,
+        i: usize,
+        base: f64,
+        map: &TempoMap,
+        rate: u32,
+        f: u64,
+        decide: bool,
+    ) -> Option<usize> {
+        let r = &set.regions[i];
+        let frames = self.frames_of(r.take);
+        let (ends, reach) = crate::copies::clip_shape(
+            &set.regions[..set.n],
+            i,
+            set.len,
+            set.last_frame,
+            frames,
+            rate,
+        );
+        let at = base + r.start as f64;
+        self.source(owner, since, r, at, ends, reach, map, rate, f, decide)
+    }
+
     /// The frames take `id` has, if it is here.
     fn frames_of(&self, id: u16) -> Option<usize> {
         self.takes
@@ -942,6 +995,7 @@ impl crate::Reader<'_> {
     pub(crate) fn add_voice(
         &mut self,
         v: &mut Voice,
+        owner: u16,
         map: &TempoMap,
         rate: u32,
         bpm: f64,
@@ -1018,18 +1072,25 @@ impl crate::Reader<'_> {
                         continue;
                     }
                     alive = true;
+                    let since = v.since;
+                    let copy = self.clip_source(owner, since, set, i, base, map, rate, f0, true);
+                    // Each join, then the fade if the two play from
+                    // different audio (a copy: [`crate::copies`]).
                     let before = if i > 0 {
                         let a = &set.regions[i - 1];
-                        if a.end == r.start {
+                        let j = if a.end == r.start {
                             crate::join_run(a, placed(a, base), r, len0, rate)
                         } else {
                             Join::Fade
-                        }
+                        };
+                        let sa =
+                            self.clip_source(owner, since, set, i - 1, base, map, rate, f0, false);
+                        crate::copies::join_sources(j, sa, copy)
                     } else if p > set.first {
                         let a = &set.regions[n - 1];
                         let len_a = placed(a, base - lenp);
                         let frames = self.frames_of(a.take);
-                        seam(
+                        let j = seam(
                             a,
                             len_a,
                             a.end == set.len,
@@ -1038,12 +1099,24 @@ impl crate::Reader<'_> {
                             r.start == 0,
                             frames,
                             rate,
-                        )
+                        );
+                        let sa = self.clip_source(
+                            owner,
+                            since,
+                            set,
+                            n - 1,
+                            base - lenp,
+                            map,
+                            rate,
+                            f0,
+                            false,
+                        );
+                        crate::copies::join_sources(j, sa, copy)
                     } else if let Some(ps) = prev.filter(|ps| ps.n > 0) {
                         let a = &ps.regions[ps.n - 1];
                         let len_a = placed(a, ps.base(ps.last));
                         let frames = self.frames_of(a.take);
-                        seam(
+                        let j = seam(
                             a,
                             len_a,
                             a.end == ps.len,
@@ -1052,7 +1125,11 @@ impl crate::Reader<'_> {
                             r.start == 0,
                             frames,
                             rate,
-                        )
+                        );
+                        let pb = ps.base(ps.last);
+                        let sa =
+                            self.clip_source(owner, since, ps, ps.n - 1, pb, map, rate, f0, false);
+                        crate::copies::join_sources(j, sa, copy)
                     } else if at <= v.t_start + EPS {
                         // It started in this region: the voice's window
                         // fades it in.
@@ -1068,15 +1145,20 @@ impl crate::Reader<'_> {
                         v.end_join
                     } else if i + 1 < n {
                         let b = &set.regions[i + 1];
-                        if r.end == b.start {
+                        let j = if r.end == b.start {
                             crate::join_run(r, len0, b, placed(b, base), rate)
                         } else {
                             Join::Fade
-                        }
+                        };
+                        // The next is decided if it is heard this run.
+                        let heard = base + (b.start as f64) < tick1;
+                        let sb =
+                            self.clip_source(owner, since, set, i + 1, base, map, rate, f0, heard);
+                        crate::copies::join_sources(j, copy, sb)
                     } else if p < set.last {
                         let b = &set.regions[0];
                         let len_b = placed(b, base + lenp);
-                        seam(
+                        let j = seam(
                             r,
                             len0,
                             r.end == set.len,
@@ -1085,11 +1167,15 @@ impl crate::Reader<'_> {
                             b.start == 0,
                             frames,
                             rate,
-                        )
+                        );
+                        let nb = base + lenp;
+                        let heard = nb + (b.start as f64) < tick1;
+                        let sb = self.clip_source(owner, since, set, 0, nb, map, rate, f0, heard);
+                        crate::copies::join_sources(j, copy, sb)
                     } else if let Some(nx) = follow.filter(|nx| nx.n > 0) {
                         let b = &nx.regions[0];
                         let len_b = placed(b, nx.origin);
-                        seam(
+                        let j = seam(
                             r,
                             len0,
                             r.end == set.len,
@@ -1098,7 +1184,11 @@ impl crate::Reader<'_> {
                             b.start == 0,
                             frames,
                             rate,
-                        )
+                        );
+                        let heard = nx.origin + (b.start as f64) < tick1;
+                        let sb =
+                            self.clip_source(owner, since, nx, 0, nx.origin, map, rate, f0, heard);
+                        crate::copies::join_sources(j, copy, sb)
                     } else {
                         Join::Fade
                     };
@@ -1109,6 +1199,7 @@ impl crate::Reader<'_> {
                         before,
                         after,
                         shape: v.shape,
+                        copy,
                     };
                     self.add(&pl, map, rate, bpm, tick0, f0, dst);
                 }

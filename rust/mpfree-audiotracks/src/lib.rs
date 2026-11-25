@@ -103,6 +103,8 @@
 #![forbid(unsafe_code)]
 
 pub mod clips;
+pub mod copies;
+pub mod copying;
 pub mod files;
 pub mod host;
 pub mod loop_play;
@@ -783,6 +785,10 @@ pub struct Stats {
     /// Frames of regions following the tempo that played nothing because
     /// the song asked them faster than [`MAX_SPEED`] (phase 5).
     pub too_fast: u64,
+    /// Frames of regions on Stretch played from their copies, and played
+    /// on Repitch for want of one (Play on time: phase 5b).
+    pub copied: u64,
+    pub for_now: u64,
 }
 
 /// What the host does about the recording files while
@@ -1455,6 +1461,9 @@ struct Placed<'a> {
     before: Join,
     after: Join,
     shape: Shape,
+    /// The copy it plays (a slot of [`copies::Copies`]), on Stretch with
+    /// its copy here when it was first heard; else its recording.
+    copy: Option<usize>,
 }
 
 /// What a run reads regions through: the takes, the pool, the stream
@@ -1472,9 +1481,63 @@ struct Reader<'a> {
     gathered: &'a mut [f32],
     pitched: &'a mut [f32],
     stats: &'a mut Stats,
+    copies: &'a mut copies::Copies,
 }
 
 impl Reader<'_> {
+    /// The copy region `r` plays as it starts at song tick `at` on lane
+    /// `owner` (a voice started on frame `since`), heard on frame `f`:
+    /// decided as it is first heard (`decide`), or only looked up. Ends
+    /// `ends`, its copy covering `reach` of its recording after its start.
+    /// None (its recording) unless it is on Stretch and its copy was here
+    /// when it was first heard.
+    #[allow(clippy::too_many_arguments)]
+    fn source(
+        &mut self,
+        owner: u16,
+        since: u64,
+        r: &Region,
+        at: f64,
+        ends: copies::Ends,
+        reach: i64,
+        map: &TempoMap,
+        rate: u32,
+        f: u64,
+        decide: bool,
+    ) -> Option<usize> {
+        if r.follow != FollowTempo::Stretch {
+            return None;
+        }
+        let tk = self
+            .takes
+            .get(r.take as usize)
+            .filter(|k| k.live && !k.loading && !k.recording)?;
+        let key = copies::steady(map, at, (r.end - r.start) as f64)
+            .and_then(|bpm| copies::CopyKey::of(r, tk.rec, tk.frames, bpm, rate, ends, reach));
+        let id = copies::instance(owner, at, since, r);
+        self.copies.source(id, key, f, decide)
+    }
+
+    /// Adds the copy in `slot` into `dst` (a run's frames), from `e0`
+    /// frames past its region's start: at one `plain` gain, or at
+    /// `gain(j)` on frame `j` of the run. Kept apart from
+    /// [`Reader::add`], so the regions without copies cost what they did.
+    #[inline(never)]
+    fn add_copied(
+        &mut self,
+        slot: usize,
+        e0: i64,
+        dst: &mut [f32],
+        plain: Option<f32>,
+        gain: &impl Fn(usize) -> f32,
+    ) {
+        match plain {
+            Some(g) => self.copies.add(slot, e0, dst, &|_| g),
+            None => self.copies.add(slot, e0, dst, gain),
+        }
+        self.stats.copied += (dst.len() / 2) as u64;
+    }
+
     /// Add `p` into `dst` (interleaved stereo, a run's frames) from song
     /// tick `tick0`, frame `f0`: its gain, its own fades, the crossfades
     /// its joins ask for and the [`FADE`] frames past its end, through its
@@ -1559,11 +1622,21 @@ impl Reader<'_> {
         let plain =
             outer.is_some() && e0 >= plain_from.max(edge) && e0 + len as i64 <= plain_to.min(len_f);
         let g = r.gain * outer.unwrap_or(1.0);
+        // On Stretch with its copy: the copy's frames at speed 1, from
+        // where the region is ([`copies`]).
+        if let Some(slot) = p.copy {
+            let gain = |j: usize| gain_at(e0 + j as i64) * heard(j);
+            self.add_copied(slot, e0, dst, plain.then_some(g), &gain);
+            return;
+        }
         // Following the tempo at another speed than its own: read between
         // its frames ([`Reader::add_pitched`]). At its own speed it plays
         // its frames as Off does, from the frame its mapping says.
         let speed = r.speed(bpm);
         if let Some(sp) = speed.filter(|&s| s != 1.0) {
+            if r.follow == FollowTempo::Stretch {
+                self.stats.for_now += len as u64;
+            }
             let x = r.src as f64 + r.src_pos(map, p.at, tick0, rate);
             let gain = |j: usize| {
                 if plain {
@@ -1835,6 +1908,8 @@ pub struct AudioTracks {
     /// No take's pool memory goes to its file for now
     /// ([`AudioTracks::keep_memory`]).
     keep: bool,
+    /// Stretch's copies and what each region heard plays (phase 5b).
+    copies: copies::Copies,
 }
 
 /// One track's room in [`AudioTracks::inside_input`].
@@ -1889,6 +1964,7 @@ impl AudioTracks {
             let_go: false,
             cues: [[None; 2]; MAX_TRACKS],
             reserved: [false; MAX_TAKES],
+            copies: copies::Copies::new(),
         }
     }
 
@@ -3189,6 +3265,9 @@ impl AudioTracks {
         self.groups = 0;
         self.h_done = 0;
         self.h_redo = 0;
+        // Their copies go with them (nothing plays now).
+        self.copies.unlatch();
+        self.copies.clear();
         true
     }
 
@@ -3251,6 +3330,107 @@ impl AudioTracks {
     /// Takes still copying in.
     pub fn loading(&self) -> usize {
         self.loads.len()
+    }
+
+    // ---- Stretch's copies (phase 5b) -------------------------------------
+
+    /// Takes a finished copy in ([`copies`]), in place of one with its key.
+    /// Gives it back if [`copies::MAX_COPIES`] are held (drop one first)
+    /// or one with its key plays now. Real-time safe.
+    #[allow(clippy::result_large_err)]
+    pub fn put_copy(&mut self, c: copies::Copy) -> Result<(), copies::Copy> {
+        self.copies.put(c)
+    }
+
+    /// Lets the copy with `key` go, unless a region plays it now: true if
+    /// it went. Its audio waits in [`AudioTracks::take_dropped_copy`].
+    pub fn drop_copy(&mut self, key: &copies::CopyKey) -> bool {
+        self.copies.drop_key(key)
+    }
+
+    /// Lets every copy go that no region plays now (Clear copies): how
+    /// many went. No recording is touched; each is made again when next
+    /// needed.
+    pub fn clear_copies(&mut self) -> usize {
+        self.copies.clear()
+    }
+
+    /// A copy's audio let go, for the host to drop off the audio thread.
+    pub fn take_dropped_copy(&mut self) -> Option<std::sync::Arc<[f32]>> {
+        self.copies.take_dropped()
+    }
+
+    /// The copies held.
+    pub fn copies(&self) -> impl Iterator<Item = copies::CopyView> + '_ {
+        self.copies.views()
+    }
+
+    /// Whether the copy with `key` is held.
+    pub fn has_copy(&self, key: &copies::CopyKey) -> bool {
+        self.copies.has(key)
+    }
+
+    /// Memory the copies hold, and how many there are.
+    pub fn copy_bytes(&self) -> (usize, usize) {
+        (self.copies.bytes(), self.copies.len())
+    }
+
+    /// The copy key of song region `r` along `map`: None unless it is on
+    /// Stretch over one steady tempo, its take finished and here.
+    pub fn song_copy_key(&self, r: &Region, map: &TempoMap) -> Option<copies::CopyKey> {
+        let tk = self
+            .takes
+            .get(r.take as usize)
+            .filter(|k| k.live && !k.loading && !k.recording)?;
+        let bpm = copies::steady(map, r.start as f64, (r.end - r.start) as f64)?;
+        let reach = r.src_len(0, self.rate);
+        copies::CopyKey::of(
+            r,
+            tk.rec,
+            tk.frames,
+            bpm,
+            self.rate,
+            copies::Ends::Edges,
+            reach,
+        )
+    }
+
+    /// The copy keys of clip `c`'s regions on Stretch at a steady `bpm`,
+    /// as its voice works them out, each given to `each` with the region's
+    /// place in the clip.
+    pub fn clip_copy_keys(
+        &self,
+        c: &ClipPlay,
+        bpm: f64,
+        each: &mut dyn FnMut(usize, copies::CopyKey),
+    ) {
+        let mut set = clips::Set::EMPTY;
+        set.fill(c, &self.takes_for(c));
+        let regions = &set.regions[..set.n];
+        for (i, r) in regions.iter().enumerate() {
+            if r.follow != FollowTempo::Stretch {
+                continue;
+            }
+            let Some(tk) = self
+                .takes
+                .get(r.take as usize)
+                .filter(|k| k.live && !k.loading && !k.recording)
+            else {
+                continue;
+            };
+            let (ends, reach) = copies::clip_shape(
+                regions,
+                i,
+                set.len,
+                set.last_frame,
+                Some(tk.frames),
+                self.rate,
+            );
+            if let Some(k) = copies::CopyKey::of(r, tk.rec, tk.frames, bpm, self.rate, ends, reach)
+            {
+                each(i, k);
+            }
+        }
     }
 
     /// A loaded take's audio, done with: drop it off the audio thread.
@@ -3558,6 +3738,16 @@ impl AudioTracks {
         let now = block.start_frame;
         if let Some(p) = self.player.as_mut() {
             p.begin();
+        }
+        self.copies.set_now(now);
+        // Stopped: what each region plays is decided again as it is next
+        // heard.
+        if block
+            .spans()
+            .iter()
+            .any(|s| !matches!(s.state, State::Playing | State::Recording))
+        {
+            self.copies.unlatch();
         }
         for i in 0..self.q_len {
             if let Some(c) = self.queue[i].take() {
@@ -4048,6 +4238,8 @@ impl AudioTracks {
             Mark::Located { from, .. } => from as f64,
             _ => return,
         };
+        // Every region heard from here is heard anew.
+        self.copies.unlatch();
         for t in &mut self.tracks {
             t.lane.jump();
         }
@@ -4236,6 +4428,7 @@ impl AudioTracks {
             gathered,
             pitched,
             stats,
+            copies,
             ..
         } = self;
         let tr = &mut tracks[t];
@@ -4252,6 +4445,31 @@ impl AudioTracks {
             gathered,
             pitched,
             stats,
+            copies,
+        };
+        // The song's lane, for its regions' choices of copy ([`copies`]):
+        // a song region's copy covers its own frames, with its edges.
+        let owner = (t as u16) << 3;
+        let source = |reader: &mut Reader, r: &Region, decide: bool| {
+            // Only Stretch plays copies: nothing more is worked out for
+            // the rest, so Off and Repitch cost what they did.
+            if r.follow != FollowTempo::Stretch {
+                return None;
+            }
+            let reach = r.src_len(0, rate);
+            let at = r.start as f64;
+            reader.source(
+                owner,
+                0,
+                r,
+                at,
+                copies::Ends::Edges,
+                reach,
+                map,
+                rate,
+                f0,
+                decide,
+            )
         };
         let dst = &mut buf[2 * off..2 * (off + len)];
         for (i, r) in regions.iter().enumerate().skip(first) {
@@ -4263,19 +4481,28 @@ impl AudioTracks {
                 // Over before the song came in.
                 continue;
             }
+            let copy = source(&mut reader, r, true);
             // How it meets the regions either side ([`Join`]), or the
-            // song's own start or end ([`clips::Lane::song_from`]).
+            // song's own start or end ([`clips::Lane::song_from`]); two
+            // playing from different audio (a copy) fade.
             let before = match i.checked_sub(1) {
                 _ if (start - from).abs() < clips::LINE => Join::Fade,
-                Some(h) => join(&regions[h], r, map, rate),
+                Some(h) => {
+                    let a = &regions[h];
+                    let j = join(a, r, map, rate);
+                    copies::join_sources(j, source(&mut reader, a, false), copy)
+                }
                 None => Join::Fade,
             };
             let after = if (end - to).abs() < clips::LINE {
                 Join::Fade
             } else {
-                regions
-                    .get(i + 1)
-                    .map_or(Join::Fade, |n| join(r, n, map, rate))
+                regions.get(i + 1).map_or(Join::Fade, |n| {
+                    let j = join(r, n, map, rate);
+                    // The next is decided if it is heard this run.
+                    let heard = (n.start as f64) < tick1;
+                    copies::join_sources(j, copy, source(&mut reader, n, heard))
+                })
             };
             let len_f = r.frames_to(map, start, end, rate);
             let placed = Placed {
@@ -4285,6 +4512,7 @@ impl AudioTracks {
                 before,
                 after,
                 shape,
+                copy,
             };
             reader.add(&placed, map, rate, span.bpm, tick0, f0, dst);
         }
@@ -4316,6 +4544,7 @@ impl AudioTracks {
             pitched,
             stats,
             vbuf,
+            copies,
             ..
         } = self;
         let tr = &mut tracks[t];
@@ -4335,11 +4564,14 @@ impl AudioTracks {
                 gathered,
                 pitched,
                 stats,
+                copies,
             };
             let vb = &mut vbuf[..2 * len];
-            for v in lane.voices.iter_mut().filter(|v| v.on) {
+            for (k, v) in lane.voices.iter_mut().enumerate().filter(|(_, v)| v.on) {
                 vb.fill(0.0);
-                let on = reader.add_voice(v, map, rate, span.bpm, tick0, f0, vb);
+                // Each voice its own lane for its regions' choices of copy.
+                let owner = ((t as u16) << 3) | (k as u16 + 1);
+                let on = reader.add_voice(v, owner, map, rate, span.bpm, tick0, f0, vb);
                 for (d, s) in dst.iter_mut().zip(vb.iter()) {
                     *d += *s;
                 }

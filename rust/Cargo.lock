@@ -820,6 +820,7 @@ dependencies = [
  "mpfree-status",
  "mpfree-store",
  "mpfree-stream",
+ "mpfree-stretch",
  "mpfree-synth",
  "mpfree-synth-ui",
  "mpfree-time-ui",

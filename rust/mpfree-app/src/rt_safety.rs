@@ -99,7 +99,17 @@ fn tone(frames: usize, f: f32) -> Vec<i16> {
 }
 
 impl Rig {
+    /// The rig. The time engine starts first, in a frame of its own: its
+    /// start runs a megabyte deep in a debug build, and under the frame
+    /// that builds the rest of the rig (two thirds of a megabyte) it
+    /// passed a test thread's 2 MiB stack.
     fn new(synth_on: bool) -> Rig {
+        let time = time::TimeHost::new(RATE, 120.0).unwrap();
+        Rig::with_time(synth_on, time)
+    }
+
+    #[inline(never)]
+    fn with_time(synth_on: bool, time: time::TimeHost) -> Rig {
         let a = kit::build(&[
             (PAD_NOTES[0], "Kick", &tone(6000, 0.01)[..]),
             (PAD_NOTES[1], "Snare", &tone(4000, 0.07)[..]),
@@ -130,7 +140,7 @@ impl Rig {
             },
             // The device's default: 6 dB under a -12 dB maximum.
             mix: mixing::MixHost::new(RATE, -18.0, -12.0),
-            time: time::TimeHost::new(RATE, 120.0).unwrap(),
+            time,
             app,
             events: Events::new(),
             synth_on,
