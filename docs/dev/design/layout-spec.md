@@ -13,10 +13,94 @@
   - the page's own content;
   - the hint line, 26 px, which says what the buttons do on that page. When a red System status problem starts, it says so once, in red, for 4 s: the problem's title and "Tap the status chip to see why." (Jay's approval of the System status plan, 22 Nov 2026 08:35Z). A red problem that keeps happening says it again only after a minute; a yellow one never does. Nothing else about the hint line changes. **While a setting waits for the XY pad** (section 4o's banner; Jay's approval of the XY mockups, 23 Nov 2026 10:34Z ("Approve, start phase 2"; canvas https://claude.ai/artifact/X2A8nsHiwCf6S6PuZQDq4n, pictures in mpfree-claude `xy-controller/mockups/`), board 4), a 48 px banner takes the hint line's place on every page, reaching up into the margin above it, so no page loses room.
 - **Full-screen pages** (Loading, Touch lab, Calibrate touch) have no top bar. Any page change or MENU closes them.
-- **Touch targets** (Jay after live test 3, 13 Nov): anything tapped answers over its whole visible button, and packed rows (pattern lanes, list rows) answer over the row's full pitch with no dead gap between them. A mute is at least the width of the name it belongs to, never a bare 32 px icon. Where a control can't be that big, the wheel and – / + reach it.
+- **Touch:** section 1a (sizes, hit areas and gaps, how a control acts, fingers, musical timing, Perform's protection, profiles, and the touch audit). It folds in the rule of 13 Nov (Jay after live test 3): anything tapped answers over its whole visible button, packed rows answer over their full pitch, and the wheel and – / + reach a control that can't be big enough.
 - **Typing a number** (Jay after live test 3: "Warp tempo (and other numeric fields with large range) should have ability to enter a number, instead of only being able to use dial"): a field that can be typed has a dotted line under its value, and a tap on the value opens the number pad over the page, under the top bar (keys 0 to 9, the point and the minus where the field takes them, Delete, Cancel and a two-row Enter, every key at least 64 px). It shows the range and the value now; Enter out of range keeps the pad open and says the range in red; Cancel or a change of page leaves the field as it was. The wheel and – / + step the number, and the wheel's push is Enter. Fields so far: the Sample tab's Warp tempo (the Warp tool) and the tempo (hold Play's BPM). A typed value is one undo step.
 - **Typing a name** (the sampler review's R1: "No names. There is no way to type one"; Jay, 17 Nov 15:20Z, on the `sample-name` screen: "Your text input box looks good. It would be nice to be able to input more symbols though"): a name that can be typed has a dotted line under it, and a tap on it opens the text keyboard over the page, under the top bar, as the number pad does (the `Type a name` page, `mpfree_ui::textpad`). Its head says what is named, the name now and how long a name may be (32 characters; 24 for a port), with a switch at its right when there is more than one name to type (Pad and Sound, 168 × 64 px each, the one showing outlined). Under it the name, large, with the cursor; then five rows of ten places: the digits; Q to P; A to L and Delete; Shift, Z to M, the hyphen and the apostrophe; Cancel (two places), Clear, #+=, Space (three), the point and Enter (two, in the accent). #+= turns the letter keys into symbols (! @ # $ % ^ & * ( ) ~ ` = + [ ] { } ; : " < > ? / |), outlined, until it is pressed again (it reads ABC then); a new keyboard starts with letters. Every key is at least 64 px. The name starts as it is, with the cursor at its end, so Delete takes off its last letter and Clear the lot. Shift is for one letter (on by itself in an empty name, outlined while on) and shows the digits as ! @ # $ % & ( ) _ + and the point as a comma; the keys show what they type. A key that can't type (the name is full, nothing before the cursor) is drawn as a button that can't be used. The wheel and – / + move the cursor, and the wheel's push is Enter. Enter with a name left empty keeps the keyboard open and says so in red; Cancel or a change of page changes nothing. BROWSE has its own keyboard for its names (Rename, New folder, Save as, Search), the same size; its Sets place types a set's name there (32 characters) and a set song's **Notes** (240 characters, the field showing the last three lines and the count; section 4o). Names so far: the Sample tab's pad and its sound (a tap on the pad bar's title, on Wave, with any tool, and on Edit pad; the names typed are one undo step), and a USB MIDI device (Name on its port page in the I/O view, 24 characters at most so it fits Routing's columns; the 5-pin jacks keep the panel's MIDI In and MIDI Out; a rig setting, as the rest of the port page, so not on UNDO: typing its own name takes the given one off).
 - **Button labels** (Jay after live test 3: "light gray on a medium gray button is no bueno"): a label on a `raised` fill is `text`, or `text_dim` while the button can't be used (`Theme::button_ink`); `text_faint` is not for labels. `Theme::check` holds both inks at 4.5:1 on `raised` in every theme, and the built-in themes are tested against it.
+
+## 1a. Touch
+
+Approved by Jay on 25 Nov 2026 at 11:54Z ("I liked your designs and spec rules"), as revision 2 of the touchscreen usability review (https://claude.ai/artifact/X9nnakkSLuoN4sYMspASLu), which took in his second review. The designs that build on it are the touch design set (https://claude.ai/artifact/RziyGJoTaANk5gfhUoeX8Z). The rules bind new and redrawn controls. Today's controls that break them go in the touch audit's baseline when it lands, and come off it screen by screen; until a screen is redone, its controls keep the behaviour they have now. What is built is at the end of this section.
+
+Geometry, touch behaviour, musical timing and accessibility settings are separate: changing a control's size never changes when its action lands, and a profile never changes what an action does.
+
+**Sizes.** Sizes are physical. The MPC One's screen has 8.49 px to the millimetre: 44 px is 5.2 mm, 64 px 7.5 mm, 85 px 10 mm. A control's size is the short side of its hit area; a continuous control also has its travel, the distance its whole range takes.
+
+| Class | For | Minimum | Preferred |
+|---|---|---|---|
+| Precision | notes, markers, automation points, wave handles, EQ dots | none | the largest grab zone that overlaps nothing |
+| Dense (an exception) | a row of one kind edited as a set: steps, 16 Levels, keys, Make's clip rows, list rows | 44 px (5.2 mm) | 48 to 64 px |
+| Secondary | settings, rare options, chips in a page's head; a minor consequence | 48 px (5.7 mm) | 64 px |
+| Normal | navigation, dialog buttons, browser rows, number and text keys | 64 px (7.5 mm) | 76 to 85 px |
+| Performance | used while playing in Perform: MUTE, SOLO, clip cells, scene launch, throws, loop rings | 76 px (9 mm) | 85 to 104 px |
+| Critical | time-sensitive or costly: record, loop record, Stop all | 85 px (10 mm) | 104 to 128 px |
+| Large profile | discrete controls with the Large profile on; precision exceptions listed | 104 px (12.3 mm) | 128 to 160 px |
+
+- A control's class is the highest that its context (Make, Perform or both), its consequence (minor, disruptive or destructive) and its timing (none, quantized or immediate) call for. Dense is an exception for rows of one kind, with an alternative; it never lowers a Performance or Critical control.
+- Edges and corners add risk: there, prefer the larger dimension across the edge, and keep costly actions out of the corners. Numbers come after the tap test on the MPC.
+- The tabs answer over the whole 60 px top bar. They are the one Normal control allowed at 60 px, and the mode buttons reach them.
+- A mute meets its class, names the track it mutes, and looks different from solo, arm and select. (This replaces "at least the width of the name it belongs to".)
+- Every Precision control, and any control under its class, has an alternative that does the same thing, can be found, doesn't need the small control first, and is quick enough for the task: the wheel's outline and – / +, a Q-Link, the number pad, the pads, or a bigger view. For a time-sensitive action it is one action away (TRACK MUTE's pads for a mute). Touch and hardware alternatives both count.
+
+**Hit areas and gaps.**
+
+- Whatever is drawn as a button answers over all of it.
+- A hit area can be bigger than its drawing, but only into space no other control uses.
+- For a given screen and gesture, a touch belongs to one control or to none. Sibling buttons never overlap. Where areas must overlap (a handle on a waveform, a button in a selectable strip, a card over a page), the widget says which wins, and a test covers it. A card blocks what is under it; no touch passes through to a control it hides.
+- Where two neighbours share a gap with no dead space, the boundary is the gap's middle.
+
+| Neighbours | Dead gap |
+|---|---|
+| Selection rows, tabs, Make's steps and clip rows | none: each answers over its full pitch |
+| Independent actions | 8 px |
+| Perform's clip cells and scene buttons | 6 px, 12 where there is room |
+| Performance actions with different results, or easily confused (MUTE and SOLO, a level and MUTE, a scene and a clip) | 12 px, 16 preferred |
+| Beside an action that loses material (Clear, Delete) | 24 px and a guard |
+
+These are design targets; the tap test can change them.
+
+**How a control acts.** Each control says how it commits and how it moves.
+
+- **Commit.** Press: it acts as the finger lands, where timing matters: the screen's pads, the transport, loop record, the throws, and in Perform the clip cells and the mixer's MUTE and SOLO. Lift inside, the default: it acts when the finger lifts while still on it, so a slide off calls it off: navigation, cards, lists, setup changes, number and text keys, a row's number, and in Make the clip cells and the mixer's MUTE and SOLO. Hold: a guarded action (Perform's protection, below).
+- **Movement.** None. Relative: faders, pans, sends, knobs and Q-Link cards follow the finger from where it lands, so landing moves nothing and a tap changes nothing (on a value that can be typed, a tap opens the number pad); the move works in the control's own scale (dB, octaves), and SHIFT while moving makes it fine. Absolute: the XY pad, since where the finger is, is the point. Structural: it moves a thing (a clip, a row, a block, an effect, a loop).
+- **Lifetime.** One-shot, continuous, momentary (on while held: the throws, the XY effect) or latched.
+- **Cancel.** A lift outside a lift-inside control, a cancelled touch, a page switch or lost touch sync never commits an action not yet committed; a momentary action releases; a continuous move ends where it is. Sound already played stays played.
+- **Fingers.** Each finger owns what it first touched, by identity, until it lifts or is cancelled. If that thing leaves the screen (the grid pages, the bank changes), the lift does nothing. A second finger on a control already held is ignored, except on surfaces that declare two-finger gestures. Actions from several fingers reach the engine in the order they commit, and the musical rules settle conflicts (one clip per track). A widget that keeps touch state keeps it per finger.
+- **Nothing moves under a finger.** A layout change (rows, strips, packing) waits until no finger is down, unless it is a page switch the musician asked for.
+- **Thresholds per gesture:** tap tolerance, structural pickup (12 px, 1.4 mm, as section 4h), hold slop, scroll start and pinch. Touch assistance (a profile setting, below) can raise the first three (pickup to 20 or 28 px) and never adds a dead zone or smoothing to faders or the XY pad.
+
+**Musical timing.**
+
+- When an action lands is the engine's decision, not the widget's. A quantized action lands on the first line still ahead of the moment it is committed, counting what the engine has already rendered. Nothing lands after the fact.
+- Make commits a clip launch on the lift, Perform on the press. A waiting launch shows its countdown and can be called off before its line.
+- A momentary action is released by the engine as well as the screen: on its lift or cancel, a page switch, lost touch sync, a project change and Stop.
+- A late launch that starts in phase is not a rule. If wanted, it would be an explicit option for audio clips.
+
+**Perform's protection.**
+
+- Structural moves are off in Perform: clips, rows, Song view blocks, effects in a chain, loops. Expressive drags stay: faders, the XY pad, scrolling. (A temporary "edit layout" may come later.)
+- Protection follows consequence, reversibility and urgency. Undoable edits rely on UNDO (Perform's existing holds stay). Losing material (clearing a loop, deleting a take) needs a hold and space around it. Permanent loss (deleting from the card, overwriting a project) needs a named confirmation in both modes. Urgent actions (Stop all, the transport) act at once, and are big and set apart.
+- A hold says it is needed, shows a fill, is called off by an early lift or a slide off the control (small movement inside it is fine), fires once and confirms. Each hold has an alternative with the same protection (ERASE + a tap, or a two-tap confirm); Make's one tap with UNDO counts only where UNDO brings the thing back.
+- Perform's own looks (the Perform mixer, the five-row clip grid) show what a set needs at Performance size; Make keeps everything.
+
+**Profiles.** Accessibility settings are separate from themes and from Make and Perform: text size, control density, contrast and touch assistance, each set on its own, with presets (Standard, Large, Stage). A larger setting picks a different layout (fewer steps a page, fewer strips), never a bigger copy that clips or overlaps; Play, the Perform mixer, the Clips grid, the number pad and the browser reflow first. A theme still can't change a size, and a project never changes the profile.
+
+**Tested.**
+
+- Each control declares, in code, a stable id, its class, context, consequence, timing, commit and movement.
+- A test draws every sample screen in each profile, measures hit areas, gaps and travel, and compares them with a baseline (`golden/touch.txt`) that lists each control breaking a rule today, with its reason and planned fix. It fails when a new control breaks its class, a control that met the rules stops meeting them, a listed control gets worse, sibling hit areas overlap without a declared and tested precedence, a costly neighbour appears beside a Performance action, or an alternative disappears. It warns under the preferred size. A control may shrink while it still meets its class.
+- The smoke sweep presses every target through its real handler and checks the command reaches the object the target names, and nothing else.
+- Dynamic cases are sample screens too: long names, 128 tracks, open cards, touches across a page switch.
+
+Text sizes and contrast get their own section with the text profile, and workflow principles a later one; neither is part of this approval.
+
+**Built so far** (25 Nov 2026):
+
+- Each finger on the Clips grid is its own, and in Perform nothing on the grid drags: a clip or a row's number acts on the lift only while the finger is still on it (#1008, section 4h). Perform's clip launch is on the lift until the clip grid's redesign moves it to the press.
+- A tap on a mixer strip's level opens the number pad; it no longer resets the fader (#1007).
+- A page switch cancels every finger first (`switch_page`), and lost touch sync cancels the contacts it lost (`mpfree-touch`).
+- Perform's half-second hold on deleting and clearing ([make-perform.md](make-perform.md)).
+- Not yet: everything else in this section. It lands with the touch plan's pieces (the toolkit and the touch audit first, then Play, the Perform mixer, the Perform clip grid, text and contrast, and profiles), each with its own approval of screens. Until then, for example, the mixer's MUTE and SOLO act on the press in both modes, and a tap on a strip's pan centres it.
 
 ## 2. The top bar
 
@@ -688,7 +772,7 @@ Jay asked for these in the app thread (message of 13 Nov 11:46Z). The ones that 
 
 - **A Mix/FX tab** in the top bar for the mixer and effects, and a **dramatic overhaul of adding effects** to pads, tracks and audio channels. (**+ FX** on the mixer is built; see below. **The Mix tab** is built: section 3a, #353.)
 - **BROWSE opens the top-level browser** (projects, samples and the rest), as the browser plan's overlay under the top bar; projects load from it and **save**. A **New project** button starts from a fresh, empty project. **Built** by the project thread ("Add project New, Save and Load", 13 Nov): see section 3 ("Not tabs") and section 6 (BROWSE).
-- **Touch targets big enough to hit, or reachable with the wheel and – / +**, everywhere. The rule is in section 1, and the mutes and + FX are built (below); the wheel's outline reaches every control on Play, the Looper tab, the mixer and the chain editor (section 6). The FX page's buttons and the pages with rows still need a pass.
+- **Touch targets big enough to hit, or reachable with the wheel and – / +**, everywhere. The rule is in section 1a, and the mutes and + FX are built (below); the wheel's outline reaches every control on Play, the Looper tab, the mixer and the chain editor (section 6). The FX page's buttons and the pages with rows still need a pass.
 - **More steps and more tracks** in the sequencer, with a clear way to add them (32, 64, 128 steps; more than 8 tracks). (**The steps** are built: the pattern's head in section 4. **More tracks** are built, up to 128: section 4f, #332.)
 - **Several throws at once** with several fingers on the Play page. The screen and the mixer already hold one throw per finger (tests `two_fingers_hold_two_throws_at_once` and `two_throws_held_at_once_each_hold_their_pad`), so what's left is the panel: the device check `touch` (step 3) checks that it reports two fingers.
 - **Typing a number** for fields with a wide range (Warp tempo first), instead of only the wheel. (**Built** for the Warp tempo and the tempo: section 1, Typing a number. Other wide fields can ask for the same pad.)
