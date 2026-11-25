@@ -1018,17 +1018,24 @@ fn sound_fades_at_every_gap_instead_of_clicking() {
     let from = r.out.len();
     r.t.command(r.frame, T::Play);
     r.run_to(r.frame + 2 * BAR);
+    // Some of the card's reads came back, and their times are up (the
+    // stream thread puts them up every LOOK), before the card goes: a read
+    // that comes back after it went is never used or timed, and a release
+    // build can get here before any has come back.
+    r.run_until(|r| {
+        r.h.timings()
+            .reads
+            .get(1)
+            .is_some_and(|d| d.reads.count > 0)
+    });
     lease.revoke();
     r.run_to(r.frame + 16 * BAR);
     assert!(r.h.tracks.stats().missed > 0, "the card's audio ran out");
     // Its reads were the card's own drive's: the stick read nothing.
-    r.run_until(|r| r.h.timings().reads.len() == 2);
     let reads = r.h.timings().reads;
+    assert_eq!(reads.len(), 2, "{reads:?}");
     assert_eq!(reads[1].root.as_deref(), Some(card.as_path()));
-    assert!(
-        reads[1].reads.count > 0 && reads[0].reads.count == 0,
-        "{reads:?}"
-    );
+    assert_eq!(reads[0].reads.count, 0, "{reads:?}");
     let out = &r.out[from..];
     let silent = |j: usize| out[2 * j] == 0.0 && out[2 * j + 1] == 0.0;
     let quiet = |j: usize| out[2 * j].abs() < 0.05 && out[2 * j + 1].abs() < 0.05;
