@@ -655,8 +655,10 @@ impl Region {
     /// song tick `t` along `map`: the frames it plays for; to its end, its
     /// length. Off, the frame of its recording `t` plays is `src` plus
     /// this ([`Region::src_frames_to`] says which frame for any setting).
+    /// To the nearest frame by [`nearest`], so two regions meeting
+    /// straight agree on the frame one stops and the next starts.
     pub fn frames_to(&self, map: &TempoMap, at: f64, t: f64, rate: u32) -> i64 {
-        (f64::from(self.phase) + frames_from(map, at, t, rate)).round() as i64
+        nearest(f64::from(self.phase) + frames_from(map, at, t, rate))
     }
 
     /// Its recording's frames a song tick when it follows the tempo
@@ -789,6 +791,10 @@ pub struct Stats {
     /// on Repitch for want of one (Play on time: phase 5b).
     pub copied: u64,
     pub for_now: u64,
+    /// Frames of regions on Keep pitch played on at speed 1 from the
+    /// audio they were latched to, drifting from the bars after a tempo
+    /// change (5b.4).
+    pub drifted: u64,
 }
 
 /// What the host does about the recording files while
@@ -1296,6 +1302,17 @@ pub fn frames_from(map: &TempoMap, a: f64, b: f64, rate: u32) -> f64 {
     map.frames_between(a, b, rate)
 }
 
+/// The nearest whole frame to `x`, halves up before 0 as after it, and
+/// within a millionth of a frame of a half counted as one. Two regions
+/// meeting straight then agree on the frame one stops and the next
+/// starts: `round` takes 105753.5 up but -86.5 down, and -86.5 worked out
+/// from the far side comes out -86.50000000001, either a frame of silence
+/// between them (found by 5b.4's tests, after a tempo change on a tick
+/// whose frame falls on a half).
+pub fn nearest(x: f64) -> i64 {
+    (x + 0.5 + 1e-6).floor() as i64
+}
+
 /// The tick (fractional) `frames` frames after tick `a` along the tempo map.
 pub fn tick_after(map: &TempoMap, a: f64, frames: f64, rate: u32) -> f64 {
     map.tick_after(a, frames, rate)
@@ -1486,11 +1503,12 @@ struct Reader<'a> {
 
 impl Reader<'_> {
     /// The copy region `r` plays as it starts at song tick `at` on lane
-    /// `owner` (a voice started on frame `since`), heard on frame `f`:
-    /// decided as it is first heard (`decide`), or only looked up. Ends
-    /// `ends`, its copy covering `reach` of its recording after its start.
-    /// None (its recording) unless it is on Stretch and its copy was here
-    /// when it was first heard.
+    /// `owner` (a voice started on frame `since`), heard in the run at
+    /// `run`: decided as it is first heard (`decide`), or only looked up.
+    /// Ends `ends`, its copy covering `reach` of its recording after its
+    /// start. None (its recording) unless it is on Stretch and its copy was
+    /// here when it was first heard; [`copies::DRIFT`] and up while it
+    /// drifts from the bars on Keep pitch.
     #[allow(clippy::too_many_arguments)]
     fn source(
         &mut self,
@@ -1502,7 +1520,7 @@ impl Reader<'_> {
         reach: i64,
         map: &TempoMap,
         rate: u32,
-        f: u64,
+        run: &copies::RunAt,
         decide: bool,
     ) -> Option<usize> {
         if r.follow != FollowTempo::Stretch {
@@ -1512,10 +1530,21 @@ impl Reader<'_> {
             .takes
             .get(r.take as usize)
             .filter(|k| k.live && !k.loading && !k.recording)?;
-        let key = copies::steady(map, at, (r.end - r.start) as f64)
-            .and_then(|bpm| copies::CopyKey::of(r, tk.rec, tk.frames, bpm, rate, ends, reach));
+        let ticks = (r.end - r.start) as f64;
+        let bpm = copies::steady(map, at, ticks);
+        let key =
+            bpm.and_then(|bpm| copies::CopyKey::of(r, tk.rec, tk.frames, bpm, rate, ends, reach));
         let id = copies::instance(owner, at, since, r);
-        self.copies.source(id, key, f, decide)
+        let keep = r.keep_pitch.then(|| copies::Keep {
+            tempo: bpm.map_or(0, f64::to_bits),
+            made_at: r.bpm.to_bits(),
+            at,
+            end: at + ticks,
+            phase: f64::from(r.phase),
+            run: *run,
+            rate,
+        });
+        self.copies.source(id, key, run.f, decide, keep.as_ref())
     }
 
     /// Adds the copy in `slot` into `dst` (a run's frames), from `e0`
@@ -1536,6 +1565,129 @@ impl Reader<'_> {
             None => self.copies.add(slot, e0, dst, gain),
         }
         self.stats.copied += (dst.len() / 2) as u64;
+    }
+
+    /// Adds a region drifting on Keep pitch with latch `li` into `dst` (a
+    /// run's frames from frame `f0`, song tick `tick0` at `bpm`), `e0`
+    /// frames past its start by the bars: the audio it drifted on at speed
+    /// 1 from where it was, then from its rejoin's bar line the audio for
+    /// the tempo now where the bars put it, the two crossfaded with equal
+    /// gain over [`FADE`] frames (the same audio a little apart, as
+    /// [`Join::Ramp`]); `gain(j)` weighs frame `j` of the run.
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn add_drifting(
+        &mut self,
+        li: usize,
+        p: &Placed,
+        map: &TempoMap,
+        rate: u32,
+        bpm: f64,
+        tick0: f64,
+        f0: u64,
+        e0: i64,
+        dst: &mut [f32],
+        gain: &impl Fn(usize) -> f32,
+    ) {
+        let Some(d) = self.copies.drifting(li) else {
+            return;
+        };
+        let r = p.r;
+        let n = dst.len() / 2;
+        // The rejoin's crossfade over frames `a..b` of the run, from frame
+        // `jf` (before the run when it began in one before).
+        let jf = d.join.map(|t| copies::frames_over(t - tick0, bpm, rate));
+        let (a, b) = match jf {
+            Some(j) => {
+                let at = |x: i64| x.clamp(0, n as i64) as usize;
+                (at(j), at(j + FADE as i64))
+            }
+            None => (n, n),
+        };
+        let jf = jf.unwrap_or(0);
+        // How far into the crossfade frame `j` is, 0 to 1.
+        let x = |j: usize| (j as i64 - jf).clamp(0, FADE as i64) as f32 / FADE as f32;
+        if b > 0 {
+            let e = d.e + (f0 as i64 - d.f as i64);
+            let g = |j: usize| {
+                let w = if j >= a { 1.0 - x(j) } else { 1.0 };
+                gain(j) * w
+            };
+            self.add_at(d.from, r, e, tick0, &mut dst[..2 * b], &g);
+            self.stats.drifted += b as u64;
+        }
+        if a < n {
+            let e = match d.to {
+                Some(_) => e0 + a as i64,
+                None => r.src_frames_to(map, p.at, tick0, rate) + a as i64,
+            };
+            let g = |j: usize| {
+                let w = if j + a < b { x(j + a) } else { 1.0 };
+                gain(j + a) * w
+            };
+            self.add_at(d.to, r, e, tick0, &mut dst[2 * a..], &g);
+            if d.to.is_some() {
+                self.stats.copied += (n - a) as u64;
+            }
+        }
+    }
+
+    /// Adds region `r`'s audio at speed 1 into `dst` (a run's frames, at
+    /// song tick `tick0`), from frame `e` of it past the region's start:
+    /// the copy in `slot`, or with None its recording, missed frames
+    /// counted.
+    fn add_at(
+        &mut self,
+        slot: Option<usize>,
+        r: &Region,
+        e: i64,
+        tick0: f64,
+        dst: &mut [f32],
+        gain: &impl Fn(usize) -> f32,
+    ) {
+        match slot {
+            Some(slot) => self.copies.add(slot, e, dst, gain),
+            None => self.add_take(r.take, r.src + e, tick0, dst, gain),
+        }
+    }
+
+    /// Adds take `id`'s frames from frame `k` at speed 1 into `dst` (a
+    /// run's frames, at song tick `tick0`), `gain(j)` weighing frame `j`:
+    /// from memory or its file, those that miss counted.
+    #[inline(always)]
+    fn add_take(
+        &mut self,
+        id: u16,
+        k: i64,
+        tick0: f64,
+        dst: &mut [f32],
+        gain: &impl Fn(usize) -> f32,
+    ) {
+        let Some(tk) = self.takes.get(id as usize).filter(|k| k.live && !k.loading) else {
+            return;
+        };
+        let (pool, reads) = (self.pool, &mut *self.reads);
+        let (missed, after) = match tk.store {
+            Store::File { gen } => {
+                let p = self.player.as_deref_mut();
+                tk.add_from_file(p, id, gen, tk.frames, k, dst, reads, gain)
+            }
+            Store::Part { gen, freed, .. } if freed > 0 => {
+                let p = self.player.as_deref_mut();
+                tk.add_part(pool, p, id, gen, freed, k, dst, reads, gain)
+            }
+            Store::Pool | Store::Part { .. } => {
+                tk.add_into(pool, id, k, dst, gain);
+                (0, CLEAR)
+            }
+        };
+        let m = &mut self.takes[id as usize];
+        m.after = after;
+        if missed > 0 {
+            m.missed += missed;
+            m.miss_tick = tick0;
+            self.stats.missed += missed;
+        }
     }
 
     /// Add `p` into `dst` (interleaved stereo, a run's frames) from song
@@ -1626,7 +1778,13 @@ impl Reader<'_> {
         // where the region is ([`copies`]).
         if let Some(slot) = p.copy {
             let gain = |j: usize| gain_at(e0 + j as i64) * heard(j);
-            self.add_copied(slot, e0, dst, plain.then_some(g), &gain);
+            if slot >= copies::DRIFT {
+                // Drifting from the bars on Keep pitch.
+                let li = slot - copies::DRIFT;
+                self.add_drifting(li, p, map, rate, bpm, tick0, f0, e0, dst, &gain);
+            } else {
+                self.add_copied(slot, e0, dst, plain.then_some(g), &gain);
+            }
             return;
         }
         // Following the tempo at another speed than its own: read between
@@ -3370,6 +3528,12 @@ impl AudioTracks {
         self.copies.has(key)
     }
 
+    /// The copies for the tempo now that the regions drifting on Keep
+    /// pitch wait for, to rejoin the bars (5b.4).
+    pub fn drift_wants(&self, f: &mut dyn FnMut(copies::CopyKey)) {
+        self.copies.drift_wants(f);
+    }
+
     /// Memory the copies hold, and how many there are.
     pub fn copy_bytes(&self) -> (usize, usize) {
         (self.copies.bytes(), self.copies.len())
@@ -4450,6 +4614,12 @@ impl AudioTracks {
         // The song's lane, for its regions' choices of copy ([`copies`]):
         // a song region's copy covers its own frames, with its edges.
         let owner = (t as u16) << 3;
+        let run = copies::RunAt {
+            f: f0,
+            tick: tick0,
+            bar: span.meter.next_bar(tick0.ceil() as Tick) as f64,
+            bpm: span.bpm,
+        };
         let source = |reader: &mut Reader, r: &Region, decide: bool| {
             // Only Stretch plays copies: nothing more is worked out for
             // the rest, so Off and Repitch cost what they did.
@@ -4467,7 +4637,7 @@ impl AudioTracks {
                 reach,
                 map,
                 rate,
-                f0,
+                &run,
                 decide,
             )
         };
@@ -4571,7 +4741,7 @@ impl AudioTracks {
                 vb.fill(0.0);
                 // Each voice its own lane for its regions' choices of copy.
                 let owner = ((t as u16) << 3) | (k as u16 + 1);
-                let on = reader.add_voice(v, owner, map, rate, span.bpm, tick0, f0, vb);
+                let on = reader.add_voice(v, owner, map, rate, span, tick0, f0, vb);
                 for (d, s) in dst.iter_mut().zip(vb.iter()) {
                     *d += *s;
                 }

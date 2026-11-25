@@ -45,8 +45,10 @@
 //! Everything here happens on a frame and is the same for any period
 //! size, and nothing allocates.
 
+use crate::copies::RunAt;
 use crate::{Envelope, FollowTempo, Join, Region, FADE};
 use mpfree_transport::time::{ticks_in, TempoMap, Tick};
+use mpfree_transport::transport::Span;
 
 pub use crate::RecordingId;
 
@@ -942,13 +944,13 @@ impl crate::Reader<'_> {
         base: f64,
         map: &TempoMap,
         rate: u32,
-        f: u64,
+        run: &RunAt,
         decide: bool,
     ) -> Option<usize> {
         if set.regions[i].follow != FollowTempo::Stretch {
             return None;
         }
-        self.stretch_source(owner, since, set, i, base, map, rate, f, decide)
+        self.stretch_source(owner, since, set, i, base, map, rate, run, decide)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -962,7 +964,7 @@ impl crate::Reader<'_> {
         base: f64,
         map: &TempoMap,
         rate: u32,
-        f: u64,
+        run: &RunAt,
         decide: bool,
     ) -> Option<usize> {
         let r = &set.regions[i];
@@ -976,7 +978,7 @@ impl crate::Reader<'_> {
             rate,
         );
         let at = base + r.start as f64;
-        self.source(owner, since, r, at, ends, reach, map, rate, f, decide)
+        self.source(owner, since, r, at, ends, reach, map, rate, run, decide)
     }
 
     /// The frames take `id` has, if it is here.
@@ -988,7 +990,7 @@ impl crate::Reader<'_> {
     }
 
     /// Adds voice `v` into `dst` (a run's frames from frame `f0`, song
-    /// tick `tick0`, at `bpm`): the regions of each of its passes the run
+    /// tick `tick0`, in `span`): the regions of each of its passes the run
     /// hears, as song regions play. False once it has nothing more to
     /// play.
     #[allow(clippy::too_many_arguments)]
@@ -998,11 +1000,19 @@ impl crate::Reader<'_> {
         owner: u16,
         map: &TempoMap,
         rate: u32,
-        bpm: f64,
+        span: &Span,
         tick0: f64,
         f0: u64,
         dst: &mut [f32],
     ) -> bool {
+        let bpm = span.bpm;
+        // Where the run is, for the regions drifting on Keep pitch.
+        let run = RunAt {
+            f: f0,
+            tick: tick0,
+            bar: span.meter.next_bar(tick0.ceil() as Tick) as f64,
+            bpm,
+        };
         let len = dst.len() / 2;
         let fade_t = ticks_in(FADE as f64, bpm, rate) + 1.0;
         let tick1 = tick0 + ticks_in(len as f64, bpm, rate) + 1.0;
@@ -1073,7 +1083,7 @@ impl crate::Reader<'_> {
                     }
                     alive = true;
                     let since = v.since;
-                    let copy = self.clip_source(owner, since, set, i, base, map, rate, f0, true);
+                    let copy = self.clip_source(owner, since, set, i, base, map, rate, &run, true);
                     // Each join, then the fade if the two play from
                     // different audio (a copy: [`crate::copies`]).
                     let before = if i > 0 {
@@ -1083,8 +1093,17 @@ impl crate::Reader<'_> {
                         } else {
                             Join::Fade
                         };
-                        let sa =
-                            self.clip_source(owner, since, set, i - 1, base, map, rate, f0, false);
+                        let sa = self.clip_source(
+                            owner,
+                            since,
+                            set,
+                            i - 1,
+                            base,
+                            map,
+                            rate,
+                            &run,
+                            false,
+                        );
                         crate::copies::join_sources(j, sa, copy)
                     } else if p > set.first {
                         let a = &set.regions[n - 1];
@@ -1108,7 +1127,7 @@ impl crate::Reader<'_> {
                             base - lenp,
                             map,
                             rate,
-                            f0,
+                            &run,
                             false,
                         );
                         crate::copies::join_sources(j, sa, copy)
@@ -1127,8 +1146,17 @@ impl crate::Reader<'_> {
                             rate,
                         );
                         let pb = ps.base(ps.last);
-                        let sa =
-                            self.clip_source(owner, since, ps, ps.n - 1, pb, map, rate, f0, false);
+                        let sa = self.clip_source(
+                            owner,
+                            since,
+                            ps,
+                            ps.n - 1,
+                            pb,
+                            map,
+                            rate,
+                            &run,
+                            false,
+                        );
                         crate::copies::join_sources(j, sa, copy)
                     } else if at <= v.t_start + EPS {
                         // It started in this region: the voice's window
@@ -1152,8 +1180,17 @@ impl crate::Reader<'_> {
                         };
                         // The next is decided if it is heard this run.
                         let heard = base + (b.start as f64) < tick1;
-                        let sb =
-                            self.clip_source(owner, since, set, i + 1, base, map, rate, f0, heard);
+                        let sb = self.clip_source(
+                            owner,
+                            since,
+                            set,
+                            i + 1,
+                            base,
+                            map,
+                            rate,
+                            &run,
+                            heard,
+                        );
                         crate::copies::join_sources(j, copy, sb)
                     } else if p < set.last {
                         let b = &set.regions[0];
@@ -1170,7 +1207,7 @@ impl crate::Reader<'_> {
                         );
                         let nb = base + lenp;
                         let heard = nb + (b.start as f64) < tick1;
-                        let sb = self.clip_source(owner, since, set, 0, nb, map, rate, f0, heard);
+                        let sb = self.clip_source(owner, since, set, 0, nb, map, rate, &run, heard);
                         crate::copies::join_sources(j, copy, sb)
                     } else if let Some(nx) = follow.filter(|nx| nx.n > 0) {
                         let b = &nx.regions[0];
@@ -1186,8 +1223,8 @@ impl crate::Reader<'_> {
                             rate,
                         );
                         let heard = nx.origin + (b.start as f64) < tick1;
-                        let sb =
-                            self.clip_source(owner, since, nx, 0, nx.origin, map, rate, f0, heard);
+                        let sb = self
+                            .clip_source(owner, since, nx, 0, nx.origin, map, rate, &run, heard);
                         crate::copies::join_sources(j, copy, sb)
                     } else {
                         Join::Fade

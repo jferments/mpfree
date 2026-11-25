@@ -27,8 +27,17 @@
 //!   for the next start and the pitch never moves mid-pass; a tempo change
 //!   that leaves its copy behind plays Repitch to its end. A locate, a
 //!   jump or the transport stopping starts the latches again.
+//! - **Keep pitch through a tempo change** (5b.4). A region on Keep pitch
+//!   latched to a copy, or to its recording at its own tempo, doesn't
+//!   switch to Repitch when the tempo moves away from it: it plays on from
+//!   that audio at speed 1, in pitch, from where it was, drifting from the
+//!   bars ([`Drift`]). Once the copy for the tempo now is held it rejoins
+//!   on the next bar line (the run's meter), from that copy where the bars
+//!   put it, crossfaded with equal gain over [`FADE`] frames, and holds
+//!   that copy from there. The host asks for a drifting region's copy at
+//!   once ([`Copies::drift_wants`]).
 //! - **Where two meet** playing from different audio (a recording and a
-//!   copy, or two copies), they meet with the equal-gain fade
+//!   copy, or two copies), they meet with the equal-power fade
 //!   ([`Join::Fade`]), never straight. A looping clip's one region meets
 //!   itself straight on its wrapped copy ([`Ends::Wrapped`]).
 //! - **Made** from its source frames by a [`CopyJob`] on the worker:
@@ -43,7 +52,7 @@ use std::sync::Arc;
 use mpfree_stretch::{auto_window, Job, Settings, StretchError, TimeMap, MAX_SLOPE, MIN_SLOPE};
 use mpfree_transport::time::{valid_bpm, TempoMap, Tick, PPQ};
 
-use crate::{FollowTempo, Join, RecordingId, Region, MAX_SPEED};
+use crate::{FollowTempo, Join, RecordingId, Region, FADE, MAX_SPEED};
 
 /// Copies the track player holds at most.
 pub const MAX_COPIES: usize = 64;
@@ -55,6 +64,9 @@ const MAX_LATCHES: usize = 128;
 pub const SEAM: usize = 1024;
 /// No copy: a latch that plays the recording.
 const NONE: u16 = u16::MAX;
+/// What [`Copies::source`] gives for a region drifting on Keep pitch:
+/// this plus its latch ([`Copies::drifting`]). Never a copy's slot.
+pub(crate) const DRIFT: usize = 1 << 16;
 
 /// How a copy's ends are made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -312,6 +324,12 @@ struct Latch {
     slot: u16,
     serial: u32,
     heard: u64,
+    /// The tempo (bits) the audio it plays is on the bars at: its copy's,
+    /// or its made-at tempo when it plays its recording at its own; 0 when
+    /// it plays Repitch (Keep pitch has nothing to keep).
+    tempo: u64,
+    /// On Keep pitch, since the tempo moved away from `tempo`.
+    drift: Option<Drift>,
 }
 
 const FREE: Latch = Latch {
@@ -319,7 +337,94 @@ const FREE: Latch = Latch {
     slot: NONE,
     serial: 0,
     heard: 0,
+    tempo: 0,
+    drift: None,
 };
+
+/// A region on Keep pitch playing on at speed 1 from the audio it was
+/// latched to, after the tempo moved away from it (see the module notes).
+#[derive(Clone, Copy)]
+struct Drift {
+    /// The audio it plays on from: the copy in `slot` (its `serial`), or
+    /// its recording ([`NONE`]).
+    slot: u16,
+    serial: u32,
+    /// The frame of that audio from the region's start (past the copy's
+    /// lead, or the recording's past the region's first frame) that played
+    /// on output frame `f`.
+    e: i64,
+    f: u64,
+    /// The bar line (song tick) it rejoins on, and what it rejoins: the
+    /// copy in `to_slot` (its `to_serial`) or its recording ([`NONE`]), on
+    /// the bars at `to_tempo`.
+    join: Option<f64>,
+    to_slot: u16,
+    to_serial: u32,
+    to_tempo: u64,
+    /// The copy for the tempo now, for the host to ask for at once.
+    want: Option<CopyKey>,
+}
+
+/// What a region on Keep pitch is, where a run is: for [`Copies::source`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Keep {
+    /// The one steady tempo over it now (bits; 0 if there isn't one), and
+    /// its made-at tempo (bits).
+    pub tempo: u64,
+    pub made_at: u64,
+    /// The song ticks it plays from and to as heard, and where between
+    /// frames it starts ([`Region::phase`]).
+    pub at: f64,
+    pub end: f64,
+    pub phase: f64,
+    pub run: RunAt,
+    pub rate: u32,
+}
+
+/// Where a run is: its first frame and song tick, the first bar line at
+/// or after it (its meter's), and its tempo.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RunAt {
+    pub f: u64,
+    pub tick: f64,
+    pub bar: f64,
+    pub bpm: f64,
+}
+
+impl RunAt {
+    /// Output frames from the run's first frame to song tick `t`, at its
+    /// tempo.
+    pub(crate) fn frames_to(&self, t: f64, rate: u32) -> i64 {
+        frames_over(t - self.tick, self.bpm, rate)
+    }
+}
+
+/// Output frames `ticks` song ticks take at `bpm`, to the nearest
+/// ([`crate::nearest`], as [`Region::frames_to`]).
+pub(crate) fn frames_over(ticks: f64, bpm: f64, rate: u32) -> i64 {
+    crate::nearest(ticks * frames_per_tick(bpm, rate))
+}
+
+/// Frames a song tick at `bpm`.
+fn frames_per_tick(bpm: f64, rate: u32) -> f64 {
+    60.0 * f64::from(rate) / (bpm * f64::from(PPQ))
+}
+
+/// A region drifting on Keep pitch, as a run plays it
+/// ([`Copies::drifting`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Drifting {
+    /// The audio it plays on from (a copy's slot, or None for its
+    /// recording) and that audio's frame from the region's start on output
+    /// frame `f`.
+    pub from: Option<usize>,
+    pub e: i64,
+    pub f: u64,
+    /// The bar line it rejoins on and what it rejoins (a copy's slot, or
+    /// None for its recording at its own tempo).
+    pub join: Option<f64>,
+    pub to: Option<usize>,
+}
 
 /// A number for region `r` as it plays this time: on lane `owner` (a
 /// track's song or one of its voices), from song tick `at`, the voice
@@ -343,7 +448,7 @@ pub(crate) fn instance(owner: u16, at: f64, since: u64, r: &Region) -> u64 {
 pub struct Copies {
     held: Vec<Option<Held>>,
     serial: u32,
-    latches: Box<[Latch; MAX_LATCHES]>,
+    latches: Box<[Latch]>,
     any_latch: bool,
     dropped: Vec<Arc<[f32]>>,
     /// The frame of the latest period, for what counts as playing now.
@@ -359,7 +464,7 @@ impl Copies {
         Copies {
             held: (0..MAX_COPIES).map(|_| None).collect(),
             serial: 0,
-            latches: Box::new([FREE; MAX_LATCHES]),
+            latches: vec![FREE; MAX_LATCHES].into_boxed_slice(),
             any_latch: false,
             dropped: Vec::with_capacity(2 * MAX_COPIES),
             now: 0,
@@ -470,18 +575,67 @@ impl Copies {
         }
     }
 
-    /// Whether a region heard lately plays slot `i`.
+    /// Whether a region heard lately plays slot `i`: latched to it, or
+    /// drifting on it or about to rejoin it.
     fn playing(&self, i: usize) -> bool {
         let Some(h) = &self.held[i] else {
             return false;
         };
+        let on = |slot: u16, serial: u32| slot as usize == i && serial == h.serial;
         self.any_latch
             && self.latches.iter().any(|l| {
                 l.id != 0
-                    && l.slot as usize == i
-                    && l.serial == h.serial
                     && l.heard + PLAYING >= self.now
+                    && (on(l.slot, l.serial)
+                        || l.drift.is_some_and(|d| {
+                            on(d.slot, d.serial) || (d.join.is_some() && on(d.to_slot, d.to_serial))
+                        }))
             })
+    }
+
+    /// Whether `slot` still holds the copy put with `serial` (the
+    /// recording, [`NONE`], always is).
+    fn holds(&self, slot: u16, serial: u32) -> bool {
+        slot == NONE
+            || self
+                .held
+                .get(slot as usize)
+                .and_then(Option::as_ref)
+                .is_some_and(|h| h.serial == serial)
+    }
+
+    fn hear(&mut self, slot: u16, f: u64) {
+        if let Some(h) = self.held.get_mut(slot as usize).and_then(Option::as_mut) {
+            h.heard = h.heard.max(f);
+        }
+    }
+
+    /// The copies the regions drifting on Keep pitch want, for the host to
+    /// ask for first.
+    pub(crate) fn drift_wants(&self, f: &mut dyn FnMut(CopyKey)) {
+        if !self.any_latch {
+            return;
+        }
+        for l in self.latches.iter() {
+            if l.id != 0 && l.heard + PLAYING >= self.now {
+                if let Some(k) = l.drift.and_then(|d| d.want) {
+                    f(k);
+                }
+            }
+        }
+    }
+
+    /// How the region with latch `li` drifts, if it does.
+    pub(crate) fn drifting(&self, li: usize) -> Option<Drifting> {
+        let d = self.latches.get(li)?.drift?;
+        let slot = |s: u16| (s != NONE).then_some(s as usize);
+        Some(Drifting {
+            from: slot(d.slot),
+            e: d.e,
+            f: d.f,
+            join: d.join,
+            to: slot(d.to_slot),
+        })
     }
 
     /// Forgets every region's choice: a locate, a jump, the transport
@@ -495,35 +649,25 @@ impl Copies {
 
     /// The copy region instance `id` plays, deciding if it hasn't yet and
     /// `decide`: the copy with `key` if one is held (and still the one it
-    /// latched), else its recording (None). Heard on frame `f`.
+    /// latched), else its recording (None). Heard on frame `f`. A region on
+    /// Keep pitch (`keep`) drifting from the bars gives [`DRIFT`] plus its
+    /// latch ([`Copies::drifting`]).
     pub(crate) fn source(
         &mut self,
         id: u64,
         key: Option<CopyKey>,
         f: u64,
         decide: bool,
+        keep: Option<&Keep>,
     ) -> Option<usize> {
-        if let Some(l) = self.latches.iter_mut().find(|l| l.id == id) {
+        if let Some(li) = self.latches.iter().position(|l| l.id == id) {
+            let mut l = self.latches[li];
             if decide {
                 l.heard = l.heard.max(f);
             }
-            if l.slot == NONE {
-                return None;
-            }
-            let slot = l.slot as usize;
-            let still = matches!((&self.held[slot], key), (Some(h), Some(k)) if h.serial == l.serial && h.copy.key == k);
-            if !still {
-                // Its copy went, or the tempo moved away from it: its
-                // recording to its end.
-                l.slot = NONE;
-                return None;
-            }
-            if decide {
-                if let Some(h) = self.held[slot].as_mut() {
-                    h.heard = h.heard.max(f);
-                }
-            }
-            return Some(slot);
+            let out = self.latched(&mut l, li, key, f, decide, keep);
+            self.latches[li] = l;
+            return out;
         }
         if !decide {
             return None;
@@ -537,6 +681,13 @@ impl Copies {
             }
             None => (NONE, 0),
         };
+        // The tempo its audio is on the bars at, for Keep pitch: its
+        // copy's, or its own when it plays its recording at its own tempo.
+        let tempo = match (found, keep) {
+            (Some(_), _) => key.map_or(0, |k| k.tempo),
+            (None, Some(k)) if k.tempo != 0 && k.tempo == k.made_at => k.made_at,
+            _ => 0,
+        };
         // A free entry, else the one heard longest ago.
         let e = match self.latches.iter().position(|l| l.id == 0) {
             Some(e) => e,
@@ -549,9 +700,137 @@ impl Copies {
             slot,
             serial,
             heard: f,
+            tempo,
+            drift: None,
         };
         self.any_latch = true;
         found
+    }
+
+    /// [`Copies::source`] for a region already latched (`l`, entry `li`).
+    fn latched(
+        &mut self,
+        l: &mut Latch,
+        li: usize,
+        key: Option<CopyKey>,
+        f: u64,
+        decide: bool,
+        keep: Option<&Keep>,
+    ) -> Option<usize> {
+        if decide && l.drift.is_none() {
+            if let Some(k) = keep {
+                // On Keep pitch, the tempo moved away from the audio it
+                // plays: it plays on from there at speed 1.
+                if l.tempo != 0 && k.tempo != l.tempo && self.holds(l.slot, l.serial) {
+                    let ticks = k.run.tick - k.at;
+                    let e = (k.phase + ticks * frames_per_tick(f64::from_bits(l.tempo), k.rate))
+                        .round() as i64;
+                    l.drift = Some(Drift {
+                        slot: l.slot,
+                        serial: l.serial,
+                        e,
+                        f,
+                        join: None,
+                        to_slot: NONE,
+                        to_serial: 0,
+                        to_tempo: 0,
+                        want: None,
+                    });
+                }
+            }
+        }
+        if let Some(d) = l.drift {
+            if !decide {
+                return Some(DRIFT + li);
+            }
+            return self.drift(l, d, li, key, f, keep);
+        }
+        if l.slot == NONE {
+            return None;
+        }
+        let slot = l.slot as usize;
+        let still = matches!((&self.held[slot], key), (Some(h), Some(k)) if h.serial == l.serial && h.copy.key == k);
+        if !still {
+            // Its copy went, or the tempo moved away from it: its
+            // recording to its end. Only looked up on Keep pitch, it is
+            // left for its own decision (it may drift).
+            if decide || keep.is_none() {
+                l.slot = NONE;
+                l.tempo = 0;
+            }
+            return None;
+        }
+        if decide {
+            self.hear(l.slot, f);
+        }
+        Some(slot)
+    }
+
+    /// A region drifting on Keep pitch (`l`, its drift `d`), decided on
+    /// frame `f`: whether and where it rejoins the bars, and once over the
+    /// crossfade, the audio it rejoined.
+    fn drift(
+        &mut self,
+        l: &mut Latch,
+        mut d: Drift,
+        li: usize,
+        key: Option<CopyKey>,
+        f: u64,
+        keep: Option<&Keep>,
+    ) -> Option<usize> {
+        let Some(k) = keep.filter(|_| self.holds(d.slot, d.serial)) else {
+            // Keep pitch turned off, or its audio went: Repitch to its end.
+            l.drift = None;
+            l.slot = NONE;
+            l.tempo = 0;
+            return None;
+        };
+        d.want = key;
+        // What it rejoins: its recording back at its own tempo, else the
+        // copy for the tempo now, if it is here.
+        let target = if k.tempo != 0 && k.tempo == k.made_at {
+            Some((NONE, 0, k.made_at))
+        } else {
+            key.and_then(|kk| {
+                let i = self.find(&kk)?;
+                let h = self.held[i].as_ref()?;
+                Some((i as u16, h.serial, kk.tempo))
+            })
+        };
+        if let Some(join) = d.join {
+            // Once its crossfade has begun it finishes; before, it waits
+            // for what is wanted now.
+            let begun = k.run.tick >= join;
+            let same = target == Some((d.to_slot, d.to_serial, d.to_tempo));
+            if !self.holds(d.to_slot, d.to_serial) || !(begun || same) {
+                d.join = None;
+            }
+        }
+        if d.join.is_none() {
+            if let Some((slot, serial, tempo)) = target {
+                // On the first bar line from here, if the region still
+                // plays there.
+                if k.run.bar < k.end {
+                    (d.join, d.to_slot, d.to_serial, d.to_tempo) =
+                        (Some(k.run.bar), slot, serial, tempo);
+                }
+            }
+        }
+        if let Some(join) = d.join {
+            if k.run.frames_to(join, k.rate) + FADE as i64 <= 0 {
+                // Over the crossfade: it holds what it rejoined.
+                (l.slot, l.serial, l.tempo, l.drift) = (d.to_slot, d.to_serial, d.to_tempo, None);
+                if l.slot == NONE {
+                    return None;
+                }
+                self.hear(l.slot, f);
+                return Some(l.slot as usize);
+            }
+            self.hear(d.to_slot, f);
+        }
+        self.hear(d.slot, f);
+        l.drift = Some(d);
+        Some(DRIFT + li)
     }
 
     /// Adds `gain`-weighted frames of the copy in `slot` into the
@@ -597,7 +876,7 @@ impl Copies {
 }
 
 /// Two regions that meet, `a` playing `sa` and `b` playing `sb` (a copy's
-/// slot, or None for the recording): their join `j`, or the equal-gain
+/// slot, or None for the recording): their join `j`, or the equal-power
 /// fade if they play from different audio. The same copy (a looping
 /// clip's one region, pass to pass) keeps its join.
 pub(crate) fn join_sources(j: Join, sa: Option<usize>, sb: Option<usize>) -> Join {

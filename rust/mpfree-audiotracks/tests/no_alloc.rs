@@ -1083,6 +1083,18 @@ fn loops_through_the_track_player_never_allocate() {
 /// stepped between periods, isn't watched: it has its own thread.
 #[test]
 fn the_host_period_hardly_allocates_while_copies_are_made_and_played() {
+    copies_made_and_played(false);
+}
+
+/// Phase 5b.4, Keep pitch: the same with the song region on Keep pitch,
+/// so after the tempo change it drifts on its copy for 90 and rejoins the
+/// bars on the copy for 100: no more allocation.
+#[test]
+fn a_region_drifting_on_keep_pitch_and_rejoining_never_allocates() {
+    copies_made_and_played(true);
+}
+
+fn copies_made_and_played(keep_pitch: bool) {
     use mpfree_audiotracks::copying::ClipWant;
     use mpfree_audiotracks::host::AudioHost;
     use mpfree_audiotracks::save::TrackFile;
@@ -1117,6 +1129,7 @@ fn the_host_period_hardly_allocates_while_copies_are_made_and_played() {
     assert!(h.tracks.load_take(take).is_ok());
     let region = Region {
         follow: FollowTempo::Stretch,
+        keep_pitch,
         ..Region::of(0, 2 * bar, 0, (0, 0.0), 120.0)
     };
     let track = TrackFile {
@@ -1161,6 +1174,7 @@ fn the_host_period_hardly_allocates_while_copies_are_made_and_played() {
     // new two made; 3: played on.
     let mut stage = 0;
     let mut at = 0u64;
+    let mut turned = 0u64;
     while stage < 4 {
         assert!(
             t0.elapsed() < Duration::from_secs(60),
@@ -1174,7 +1188,7 @@ fn the_host_period_hardly_allocates_while_copies_are_made_and_played() {
             }
             1 if frame > at + u64::from(RATE) => {
                 assert!(t.command(frame, T::TempoNow(100.0)));
-                stage = 2;
+                (stage, turned) = (2, frame);
             }
             2 if h.copy_counts().made == 4 => {
                 (stage, at) = (3, frame);
@@ -1195,13 +1209,29 @@ fn the_host_period_hardly_allocates_while_copies_are_made_and_played() {
     }
     let st = h.tracks.stats();
     assert!(st.copied > 0, "{st:?}");
+    if keep_pitch {
+        assert!(st.drifted > 0 && st.for_now == 0, "{st:?}");
+        // It rejoined: it stopped drifting before the end.
+        assert!(st.drifted + 4 * (P as u64) < frame - turned, "{st:?}");
+        // Stopped, nothing plays a copy.
+        assert!(t.command(frame, T::Stop));
+        t.process(P as u32, &mut b);
+        let map = *t.tempo_map();
+        CALLS.with(|c| c.set(0));
+        watch(true);
+        h.period(&b, &map, &input, &mut out);
+        watch(false);
+        calls += CALLS.with(Cell::get);
+    }
     CALLS.with(|c| c.set(0));
     watch(true);
     let gone = h.clear_copies();
     watch(false);
     let cleared = CALLS.with(Cell::get);
     assert_eq!(gone, 4);
-    assert_eq!(cleared, 0, "{cleared} allocations clearing the copies");
+    // Nothing of its own; sending the four to the worker may take a block
+    // of the channel (one in 31 sends), as the period may.
+    assert!(cleared <= 1, "{cleared} allocations clearing the copies");
     // None in practice; the channel to the worker may take a block now
     // and then.
     assert!(calls <= 4, "{calls} allocations in the host's period");
