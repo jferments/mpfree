@@ -2058,6 +2058,87 @@ mod looper {
         });
     }
 
+    /// Make song (the looper refactor's R2, Jay's go of 24 Nov), the whole
+    /// way from the screen: a free loop recorded in your own time, at a
+    /// tempo of its own. With the song playing, the header's Make song is
+    /// faint and a tap says why on the hint line. Once STOP stops the song
+    /// (the free loop plays on), Make song starts the song on the free
+    /// loop's next bar line at its tempo, the loop a song loop in its
+    /// place, on a Loop track, and the app's tempo with it. UNDO makes it
+    /// free again, playing on, and the song stops, back at its tempo;
+    /// REDO makes the song again.
+    #[test]
+    fn make_song_turns_the_free_loops_into_the_song_and_undo_takes_it_back() {
+        on_big_stack(|| {
+            use crate::looping::{SongButton, MAKE_SONG_STOP_FIRST};
+            use mpfree_looper::Clock;
+            use mpfree_transport::State;
+            let mut s = Session::new();
+            s.make_sounds();
+            s.press("header", "tab", "Looper");
+            s.press("leditor", "sync", "Free").run_for(0.1);
+            s.press("leditor", "bars", "Until tap").run_for(0.1);
+            assert_eq!(smart_editor(&s).song, None, "no free loop yet");
+            s.button("REC").run_for(0.1);
+            for _ in 0..5 {
+                s.pad(0, 120, 0.1).run_for(0.4);
+            }
+            s.button("REC");
+            until_phase(&mut s, Phase::Playing, 3.0);
+            s.run_for(4.5);
+            let before = s.time.info().bpm;
+            let free = s.looper.looper.free_clock().expect("a free clock").bpm;
+            assert!((free - before).abs() > 0.01, "{free} vs {before}");
+            assert_eq!(smart_editor(&s).song, Some(SongButton::Ready));
+            // The song playing: faint, and a tap says why.
+            s.button("STOP").run_for(0.2);
+            s.button("PLAY").run_for(0.3);
+            assert_eq!(s.time.info().state, State::Playing);
+            assert_eq!(smart_editor(&s).song, Some(SongButton::Faint));
+            s.press("leditor", "make-song", "Make song").run_for(0.1);
+            assert_eq!(s.hint(), MAKE_SONG_STOP_FIRST);
+            assert_eq!(status(&s).clock, Clock::Free);
+            // STOP: the song alone, the free loop plays on. Make song: the
+            // song starts on its next bar line, at its tempo.
+            s.button("STOP").run_for(0.2);
+            assert_eq!(free_runs(&s), Some(true));
+            assert_eq!(smart_editor(&s).song, Some(SongButton::Ready));
+            let bar = 4.0 * 60.0 / free;
+            s.press("leditor", "make-song", "Make song").run_for(0.1);
+            s.run_for(bar + 0.3);
+            assert_eq!(status(&s).clock, Clock::Song);
+            assert_eq!(s.time.info().state, State::Playing);
+            assert!((s.time.info().bpm - free).abs() < 1e-6);
+            assert!((s.app.settings.bpm - free).abs() < 1e-6, "the app's too");
+            assert_eq!(free_runs(&s), None, "the free clock went");
+            let made = format!(
+                "looper: Made a song from 1 free loop: {free:.2} BPM, 4/4; UNDO takes it back"
+            );
+            assert!(s.said().contains(&made), "{:?}", s.said());
+            assert!(
+                s.said().iter().any(|l| l.starts_with("time: Loop 1 on ")),
+                "on a Loop track: {:?}",
+                s.said()
+            );
+            assert_eq!(smart_editor(&s).song, None, "no free loop now");
+            // UNDO: free again and playing on; the song stops, back at its
+            // tempo.
+            s.button("UNDO").run_for(0.3);
+            assert_eq!(status(&s).clock, Clock::Free);
+            assert_eq!(free_runs(&s), Some(true));
+            assert_eq!(s.time.info().state, State::Stopped);
+            assert!((s.time.info().bpm - before).abs() < 1e-6);
+            let back = format!(
+                "looper: Make song taken back: Loop 1 is free again, the song at {before:.2} BPM, stopped"
+            );
+            assert!(s.said().contains(&back), "{:?}", s.said());
+            // REDO: the song again.
+            s.button_with("SHIFT", "UNDO").run_for(bar + 0.4);
+            assert_eq!(status(&s).clock, Clock::Song);
+            assert_eq!(s.time.info().state, State::Playing);
+        });
+    }
+
     /// Free loops on Play (mockup 5) and the loop keys: the hint line says
     /// what STOP and PLAY do; with the free loops stopped, the loop row's
     /// free loop rests with ▶ and its ring plays them (not an overdub).

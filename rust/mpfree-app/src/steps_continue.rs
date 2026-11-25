@@ -39,10 +39,17 @@ pub const TRY_AGAIN: usize = 0;
 pub const BACK_A_TRY: usize = 1;
 pub const CANCEL: usize = 2;
 pub const DONE: usize = 3;
-/// The panel's rows: Style, Bars and Ending (the note editor's first
-/// three). A tap on a value's ‹ or › is `Step { index: row, delta }`, on
+/// The panel's rows: Style, Bars and Ending (the note editor's rows
+/// [`SET_ROWS`]). A tap on a value's ‹ or › is `Step { index: row, delta }`, on
 /// its name `Select(row)`.
 pub const ROWS: usize = 3;
+/// The note editor's Continue row each of the panel's rows is
+/// (`CONTINUE_ROWS`): Character is the note editor's alone, since a beat
+/// is carried on from itself.
+pub const SET_ROWS: [usize; ROWS] = {
+    use mpfree_time_ui::editor::compose::{BARS_ROW, ENDING_ROW, STYLE_ROW};
+    [STYLE_ROW, BARS_ROW, ENDING_ROW]
+};
 
 /// One bar in the strip: what it does, and its hits as small marks.
 #[derive(Clone, Debug, Default, PartialEq)]

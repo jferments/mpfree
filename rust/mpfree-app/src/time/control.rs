@@ -7655,10 +7655,14 @@ impl TimeControl {
                 self.changed = true;
                 let more = more_bars(settings.bars.max(1), &name);
                 if let Some(again) = scope.again() {
-                    return Ok(format!(
-                        "continue: trying {} (the rest stays as it is)",
-                        again.words()
-                    ));
+                    // An aimed try changes one thing (S5), the others
+                    // change only part of the try.
+                    let rest = if again.aim().is_some() {
+                        "only that changes"
+                    } else {
+                        "the rest stays as it is"
+                    };
+                    return Ok(format!("continue: trying {} ({rest})", again.words()));
                 }
                 Ok(if playing {
                     format!(

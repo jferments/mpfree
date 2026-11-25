@@ -98,13 +98,13 @@ impl Player {
         let out = match (w, e) {
             (sc::PANEL, EventKind::Step { index, delta }) if index < sc::ROWS => {
                 set.row = index;
-                let changed = set.step(index, delta);
+                let changed = set.step(sc::SET_ROWS[index], delta);
                 self.steps_cont = Some(set);
                 if !changed {
                     self.refresh_steps_continue();
                     return None;
                 }
-                let said = set.said(index);
+                let said = set.said(sc::SET_ROWS[index]);
                 self.tell(&format!("continue: {said}"));
                 self.steps_continue_ask()
             }
@@ -277,8 +277,8 @@ impl Player {
         let rows = (0..sc::ROWS)
             .map(|r| {
                 (
-                    mpfree_time_ui::editor::compose::CONTINUE_ROWS[r].to_string(),
-                    set.value(r),
+                    mpfree_time_ui::editor::compose::CONTINUE_ROWS[sc::SET_ROWS[r]].to_string(),
+                    set.value(sc::SET_ROWS[r]),
                 )
             })
             .collect();

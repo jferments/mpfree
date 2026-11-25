@@ -360,6 +360,24 @@ The free loops stop at their **tops**: each waits at its place on the free loops
 
 {{shot: looper-free-stopped | After STOP, STOP: Song stopped and Free ■ over the loops, the free loops wait at their tops with ▶ on their rings, Play free in Listen's place, and the hint line says PLAY starts the song and the free loops.}}
 
+### Make song: free loops into the song
+
+When a jam on free loops is going well and you want the sequencer, the arps, the metronome or MIDI clock out to join in, tap **Make song** on a free loop's header (left of Stop free or Play free). Every free loop becomes a song loop where it is, and the song takes the free loops' tempo, its bar lines on theirs. Nothing you hear changes.
+
+| The song and the free loops when you tap Make song | What happens |
+|---|---|
+| **The song stopped, the free loops playing** | On the free loops' next bar line the song starts at their tempo, from the start of the bar it was stopped in. Make song lights up until then. From that bar line the loops are song loops: they play on exactly as they were, and STOP now stops them with the song. |
+| **The song and the free loops stopped** | The song takes their tempo at once, and the loops wait at their tops as song loops. PLAY starts the song and them together, as before. |
+| **The song playing** | Nothing: Make song is faint, and a tap says why on the hint line ("Stop the song first: Make song moves its tempo and bar lines"). STOP stops only the song, so it's one tap away. |
+
+The log and the screen say what it did ("Made a song from 2 free loops: 92.00 BPM, 4/4"). Each loop lands on a Loop track of the Clips grid as a newly recorded loop does, in the row of the scene playing. A song loop that was there already follows the new tempo, as it does any tempo change.
+
+**UNDO** on the Looper tab takes it back as long as no loop has changed since: the loops are free again on the same clock and play on, the song goes back to its tempo and place, and it stops if Make song started it. **SHIFT + UNDO** (REDO) makes the song again. Once a loop changes (an overdub, an edit, a new loop), UNDO goes back to the loops' own steps.
+
+Make song waits while a free loop records, overdubs or is busy (a snap, a merge, a copy), plays at another speed with a print, or waits for a launch; while the song follows another device's clock, has tempo points, or an export runs; and while **Loops on audio tracks** is on in Dev (its one UNDO can't take Make song back yet). The hint line says which.
+
+{{shot: looper-free-make-song | The free loops playing on with the song stopped at 120 BPM: Make song on Loop 1's header, left of Stop free.}}
+
 ### What keeps time with the free loops
 
 Out of the box, the arps, Note Repeat and the effects and synths that keep time follow the song: with the song stopped, an arp runs at the song's tempo, beside the free loops rather than with them. To play along with the free loops instead, set **Tempo follows: Free loops** in the Looper tab's MENU. While the free loops play, these then keep their tempo and their beats, so an arp's sixteenths, a synced delay's echoes and an LFO's sweeps fall on the free loops' grid:
@@ -377,7 +395,7 @@ Whenever the free loops are stopped, or there are none, everything follows the s
 - **Capture** into a free loop takes the free loops' last bars, and What you played shows and numbers their bar lines. **Smart loop end** works as it does for the first loop: Snap, Use my tap and Read as change the free loops' tempo, never the song's.
 - **Play's loop row** shows them as the Looper tab does: **free** after the loop's name, a stopped free loop's ring at rest with ▶ (a tap plays the free loops), and **Pads · free** on empty loops.
 - **They are saved with the project**, free clock and all, and open stopped at their tops: PLAY, or Play on a free loop's header, starts them. An older MPFree won't open a project with a free loop.
-- **They aren't on the Clips grid or in the song yet**: scenes, launches and Stop all don't reach them, and the looper alone says when they play. So a loop you record into a Loop cell keeps time with the song whatever Sync says: tapping an empty Loop cell picks an empty loop on **Song** (Sync stays Free for the loops you pick after it), and tapping **Sync: Free** with a cell armed lets the cell go ("Loops A · row 3 let go: a free loop has no cell"). The same goes for **SHIFT + Arm**: a new loop recorded with the notes is a song loop, so it keeps time with the clip you record beside it ("Loop 1 records with the song: the notes are armed too"), and Sync stays Free for the loops after it.
+- **They aren't on the Clips grid or in the song** until [Make song](#make-song-free-loops-into-the-song) makes them song loops: scenes, launches and Stop all don't reach them, and the looper alone says when they play. So a loop you record into a Loop cell keeps time with the song whatever Sync says: tapping an empty Loop cell picks an empty loop on **Song** (Sync stays Free for the loops you pick after it), and tapping **Sync: Free** with a cell armed lets the cell go ("Loops A · row 3 let go: a free loop has no cell"). The same goes for **SHIFT + Arm**: a new loop recorded with the notes is a song loop, so it keeps time with the clip you record beside it ("Loop 1 records with the song: the notes are armed too"), and Sync stays Free for the loops after it.
 
 {{shot: play-free-loops | Play with the song stopped and Loop 1 playing on free: free after its name, Pads · free on every empty loop, and the hint line says STOP stops the free loops.}}
 

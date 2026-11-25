@@ -2195,6 +2195,12 @@ impl Session {
             .unwrap_or_else(|| self.tracks.host.tracks.has_regions());
         let said = self.looper.tend_snap(&mut self.time, audio);
         self.out.loop_start(said);
+        let (said, song_tempo) = self.looper.tend_song(
+            &mut self.time,
+            self.export.running(),
+            self.app.settings.loops_on,
+        );
+        self.out.loop_start(said);
         if let Some(line) = self.looper.run(self.time.block(), &mut ll, &mut lr) {
             self.out.note(&line);
         }
@@ -2213,7 +2219,8 @@ impl Session {
         self.out.loop_start(self.looper.take_asks());
         let (said, snapped) = self.looper.take_snap();
         self.out.loop_start(said);
-        self.loop_tempo = tempo.or(snapped).or(self.loop_tempo);
+        self.out.loop_start(self.looper.take_song());
+        self.loop_tempo = tempo.or(snapped).or(song_tempo).or(self.loop_tempo);
         // The Looper tab and the Play page's strip follow the loop, as
         // main.rs shows them: its wave a slice at a time, its changes in
         // the log, and the loop's view about as often as the transport card

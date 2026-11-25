@@ -1624,7 +1624,14 @@ pub fn riff_clip() -> Clip {
 /// shows the new bars faintly after yours, each bar's job on the ruler and
 /// the chords under it, the drawer Continue's settings and the tries.
 pub fn notes_continue_state() -> Result<TimeState, String> {
-    continue_sample(false)
+    continue_sample(false, false)
+}
+
+/// [`notes_continue_state`] with a Character (S5 board A): Yearning
+/// picked in the drawer, the try made with it, the tool bar's title
+/// naming it and its line saying what it does.
+pub fn notes_continue_character_state() -> Result<TimeState, String> {
+    continue_sample(false, true)
 }
 
 /// [`notes_continue_state`] a step on (phase 1 step 3): bar 4 locked, bar
@@ -1632,10 +1639,10 @@ pub fn notes_continue_state() -> Result<TimeState, String> {
 /// ruler marks both, the drawer's button unlocks or locks bar 6 and the
 /// tool bar's button tries it again.
 pub fn notes_continue_picks_state() -> Result<TimeState, String> {
-    continue_sample(true)
+    continue_sample(true, false)
 }
 
-fn continue_sample(picks: bool) -> Result<TimeState, String> {
+fn continue_sample(picks: bool, yearning: bool) -> Result<TimeState, String> {
     use crate::continuing::{Again, Continuing, Try};
     use crate::editor::compose::{self, Picks};
     use crate::editor::{NoteTool, ToolKind};
@@ -1645,7 +1652,11 @@ fn continue_sample(picks: bool) -> Result<TimeState, String> {
     let mut s = playing()?;
     let riff = riff_clip();
     s.project.tracks[CHORDS].slots[1] = Some(riff.clone());
-    let set = compose::ContinueSet::default();
+    let mut set = compose::ContinueSet::default();
+    if yearning {
+        set.character = mpfree_compose::Character::Yearning;
+        set.row = compose::CHARACTER_ROW;
+    }
     let settings = mpfree_compose::Settings {
         seed: 2,
         ..set.settings(set.q)
@@ -1711,6 +1722,7 @@ fn continue_sample(picks: bool) -> Result<TimeState, String> {
     tool.q = set.q;
     editor.open_tool = Some(tool);
     editor.row = crate::editor::CONTINUE_ROW;
+    editor.continuing = set;
     if picks {
         editor.continue_picks = Picks {
             bars: vec![5],

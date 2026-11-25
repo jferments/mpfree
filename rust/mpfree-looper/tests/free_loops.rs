@@ -11,14 +11,20 @@
 //! project's free clock opens as soon as the old free loops are empty; and
 //! Capture into a free loop takes the free clock's bars (as it runs, or as
 //! it last ran), or with none, the song's, setting the free clock from
-//! them. The free clock itself counts as the song's spans do.
+//! them. The free clock itself counts as the song's spans do. Make song
+//! turns the free loops into song loops with nothing heard changing,
+//! playing (on the free clock's bar line, the song starting there) or
+//! stopped (PLAY then starts them with the song from their tops), only
+//! once the song stops and the free loops are still, and only if the song
+//! starts on its bar line; its Undo makes them free again and they play
+//! on.
 //!
 //! 22.05 kHz at 240 BPM in 4/4 makes a bar exactly 22 050 frames (1 s).
 
 use mpfree_looper::save::{from_text, to_text, ClockFile, Saved};
 use mpfree_looper::{
-    Clock, Command as L, FreeClock, Looper, NoteStart, Phase, Shift, SmartEnd, Snap, Starts,
-    Status, FADE,
+    Clock, Command as L, FreeClock, Looper, NoteStart, Phase, Shift, SmartEnd, Snap, SongDone,
+    SongPlan, Starts, Status, FADE,
 };
 use mpfree_transport::{Block, Command as T, Meter, State, Transport};
 
@@ -1592,4 +1598,330 @@ fn a_song_loop_waiting_on_its_length_sets_the_tempo_only_once_you_say() {
     assert_eq!(r.status(0).phase, Phase::Empty);
     assert_eq!(r.status(0).asks, None);
     assert_eq!(r.l.take_tempo().map(|t| t.0), None);
+}
+
+/// Two free loops playing with the song stopped: loop 1 (two bars)
+/// recorded with the song, which then stopped, and loop 2 (one bar) on the
+/// free clock after. The song has since moved to another tempo and place.
+fn two_free_loops(r: &mut Rig) {
+    record_with_the_song(r, Clock::Free, 2);
+    let stop = START + 3 * BAR + BAR / 2;
+    r.at(stop, T::Stop);
+    r.run(stop + BAR / 4, &noise);
+    r.select(1);
+    r.cmd(L::SetClock(Clock::Free));
+    r.cmd(L::SetBars(Some(1)));
+    r.cmd(L::Record);
+    let until = r.frame + 4 * BAR;
+    r.run(until, &noise);
+    let s = r.status(1);
+    assert_eq!((s.phase, s.clock), (Phase::Playing, Clock::Free));
+    let f = r.frame;
+    r.at(f, T::SetTempo(120.0));
+    r.at(f, T::Locate(5 * BAR_TICKS + 700));
+    r.run(f + r.period as u64, &noise);
+    assert_eq!(r.t.state(), State::Stopped);
+    assert!(r.l.free_clock().is_some_and(|c| c.running));
+}
+
+/// The most two outputs differ by on any frame. Make song moves a loop's
+/// ticks by whole bars, so its place works out from other numbers: the
+/// same to well under a millionth (rounding), not bit for bit.
+fn most_apart(a: &[f32], b: &[f32]) -> f32 {
+    assert_eq!(a.len(), b.len(), "the same frames");
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0, f32::max)
+}
+
+/// Make song as the host does it: worked out against the transport's next
+/// frame, the song started on its frame (back to the start of the bar it
+/// is stopped in, at the free clock's tempo), or with the free loops
+/// stopped, that tempo and place at once; then the plan given back.
+fn make_song(r: &mut Rig) -> SongPlan {
+    let p = r.l.song_plan(r.frame).expect("Make song can");
+    let at = p.at.unwrap_or(r.frame);
+    if r.t.position() != p.tick {
+        r.at(at, T::Locate(p.tick));
+    }
+    r.at(at, T::SetTempo(p.bpm));
+    if p.at.is_some() {
+        r.at(at, T::Play);
+    }
+    assert!(r.l.make_song(p));
+    assert!(r.l.song_waits());
+    p
+}
+
+#[test]
+fn make_song_turns_playing_free_loops_into_song_loops_with_nothing_heard_changing() {
+    let go = |make: bool| {
+        let mut r = Rig::new(128);
+        two_free_loops(&mut r);
+        let p = make.then(|| make_song(&mut r));
+        let to = r.frame + 3 * BAR;
+        r.run(to, &noise);
+        (r, p)
+    };
+    let (free, _) = go(false);
+    let (mut made, p) = go(true);
+    let p = p.unwrap();
+    assert!(!made.silent(made.frame - 2 * BAR, made.frame), "they play");
+    let d = most_apart(&free.out, &made.out);
+    assert!(d < 1e-5, "nothing you hear changes: {d}");
+    // On the free clock's bar line, the song from the start of the bar it
+    // was stopped in, at the free clock's tempo.
+    let at = p.at.expect("on the free clock's bar line");
+    assert_eq!((at - START) % BAR, 0, "a bar line of the free loops");
+    assert_eq!((p.tick, p.bpm, p.count()), (5 * BAR_TICKS, 240.0, 2));
+    assert_eq!(p.shift % BAR_TICKS, 0, "whole bars");
+    assert_eq!(
+        made.l.take_song(),
+        Some(SongDone {
+            plan: p,
+            refused: None
+        })
+    );
+    assert_eq!(made.l.take_song(), None, "said once");
+    assert!(!made.l.song_waits());
+    assert_eq!((made.t.state(), made.t.bpm()), (State::Playing, 240.0));
+    let ticks = (made.frame - at) as i64 * BAR_TICKS / BAR as i64;
+    assert!(
+        made.t.position().abs_diff(p.tick + ticks) <= 1,
+        "the song from there"
+    );
+    // Song loops now, each in its place, its ticks moved by the shift.
+    for n in 0..2 {
+        let (a, b) = (free.status(n), made.status(n));
+        assert_eq!((a.clock, b.clock), (Clock::Free, Clock::Song));
+        assert_eq!(b.origin, a.origin + p.shift);
+        assert_eq!((b.frames, b.ticks), (a.frames, a.ticks));
+        assert!((a.position - b.position).abs() < 1e-6);
+    }
+    assert!(
+        made.l.free_clock().is_none(),
+        "the free clock went with them"
+    );
+    // They are the song's: STOP stops them.
+    let stop = made.frame + 1_000;
+    made.at(stop, T::Stop);
+    made.run(stop + BAR, &noise);
+    assert!(made.silent(stop + FADE as u64 + 1, stop + BAR));
+}
+
+#[test]
+fn make_song_with_the_free_loops_stopped_starts_them_with_the_song_from_their_tops() {
+    let go = |make: bool| {
+        let mut r = Rig::new(128);
+        two_free_loops(&mut r);
+        // STOP with the song stopped: the free loops stop at their tops.
+        let f = r.frame;
+        r.at(f, T::Stop);
+        r.run(f + BAR, &noise);
+        assert!(r.l.free_clock().is_some_and(|c| !c.running));
+        let p = make.then(|| make_song(&mut r));
+        let to = r.frame + BAR;
+        r.run(to, &noise);
+        let play = r.frame + 77;
+        r.at(play, T::Play);
+        r.run(play + 3 * BAR, &noise);
+        (r, p)
+    };
+    let (free, _) = go(false);
+    let (made, p) = go(true);
+    let p = p.unwrap();
+    assert!(!made.silent(made.frame - 2 * BAR, made.frame), "they play");
+    let d = most_apart(&free.out, &made.out);
+    assert!(d < 1e-5, "{d}");
+    assert_eq!(p.at, None, "at once");
+    let top = free.l.free_clock().unwrap().top;
+    assert_eq!(p.shift, p.tick - top, "their bar 1 on the song's bar");
+    assert_eq!(made.t.bpm(), 240.0, "the song took the free loops' tempo");
+    for n in 0..2 {
+        let (a, b) = (free.status(n), made.status(n));
+        assert_eq!((a.clock, b.clock), (Clock::Free, Clock::Song));
+        assert_eq!(b.origin, a.origin + p.shift);
+    }
+    assert!(made.l.free_clock().is_none());
+}
+
+#[test]
+fn make_song_waits_for_the_song_to_stop_and_the_free_loops_to_be_still() {
+    let mut r = Rig::new(128);
+    r.run(256, &quiet);
+    assert_eq!(r.l.song_plan(r.frame), Err("there are no free loops"));
+    record_with_the_song(&mut r, Clock::Free, 1);
+    assert_eq!(r.l.song_plan(r.frame), Err("the song is playing"));
+    let stop = r.frame + 100;
+    r.at(stop, T::Stop);
+    r.run(stop + BAR, &noise);
+    assert!(r.l.song_plan(r.frame).is_ok());
+    // A free loop armed: it would record on the free clock's bar line.
+    r.select(1);
+    r.cmd(L::SetClock(Clock::Free));
+    r.cmd(L::SetBars(Some(1)));
+    r.cmd(L::Record);
+    r.run(r.frame + 128, &noise);
+    assert_eq!(r.status(1).phase, Phase::Armed);
+    assert_eq!(r.l.song_plan(r.frame), Err("a free loop is recording"));
+    r.cmd(L::Record);
+    r.run(r.frame + 128, &noise);
+    assert_eq!(r.status(1).phase, Phase::Empty);
+    // An overdub on a free loop.
+    r.select(0);
+    r.cmd(L::Overdub);
+    r.run(r.frame + BAR, &noise);
+    assert_eq!(r.status(0).phase, Phase::Overdubbing);
+    assert_eq!(r.l.song_plan(r.frame), Err("a loop is overdubbing"));
+    r.cmd(L::Overdub);
+    r.run(r.frame + BAR, &noise);
+    assert!(r.l.song_plan(r.frame).is_ok());
+    // A song in another meter: the song keeps its own.
+    r.t.set_meter(Meter::new(3, 4).unwrap()).unwrap();
+    r.run(r.frame + 128, &noise);
+    assert_eq!(
+        r.l.song_plan(r.frame),
+        Err("the free loops' meter isn't the song's")
+    );
+}
+
+#[test]
+fn make_song_lands_only_if_the_song_starts_on_its_bar_line() {
+    let go = |make: bool| {
+        let mut r = Rig::new(128);
+        two_free_loops(&mut r);
+        if make {
+            // Given, but the song isn't started.
+            let p = r.l.song_plan(r.frame).unwrap();
+            assert!(r.l.make_song(p));
+            assert!(!r.l.make_song(p), "one at a time");
+            assert_eq!(
+                r.l.take_song().and_then(|d| d.refused),
+                Some("Make song waits for its bar line")
+            );
+        }
+        let to = r.frame + 3 * BAR;
+        r.run(to, &noise);
+        r
+    };
+    let free = go(false);
+    let mut made = go(true);
+    assert_eq!(first_difference(&free.out, &made.out), None);
+    assert_eq!(
+        made.l.take_song().and_then(|d| d.refused),
+        Some("the song didn't start on the free loops' bar line at their tempo")
+    );
+    assert!(!made.l.song_waits());
+    assert_eq!(made.status(0).clock, Clock::Free);
+    assert_eq!(made.status(1).clock, Clock::Free);
+    assert_eq!(made.l.stats().refused, free.l.stats().refused + 2);
+}
+
+#[test]
+fn undo_of_make_song_makes_the_loops_free_again_and_they_play_on() {
+    let go = |make: bool| {
+        let mut r = Rig::new(128);
+        two_free_loops(&mut r);
+        let at = r.l.song_plan(r.frame).unwrap().at.unwrap();
+        if make {
+            let p = make_song(&mut r);
+            r.run(at + BAR + 300, &noise);
+            assert_eq!(r.status(0).clock, Clock::Song);
+            assert!(r.l.take_song().is_some_and(|d| d.refused.is_none()));
+            // The host's Undo: the loops free again, then the song stopped,
+            // back at its tempo and its place.
+            r.l.make_free(p).unwrap();
+            assert_eq!(r.status(0).clock, Clock::Free);
+            let f = r.frame;
+            r.at(f, T::Stop);
+            r.at(f, T::Locate(5 * BAR_TICKS + 700));
+            r.at(f, T::SetTempo(120.0));
+        } else {
+            r.run(at + BAR + 300, &noise);
+        }
+        let to = r.frame + 3 * BAR;
+        r.run(to, &noise);
+        // STOP with the song stopped, and PLAY: they start from their tops
+        // as before.
+        let f = r.frame;
+        r.at(f, T::Stop);
+        r.run(f + BAR, &noise);
+        let play = r.frame + 33;
+        r.at(play, T::Play);
+        r.run(play + 2 * BAR, &noise);
+        r
+    };
+    let free = go(false);
+    let made = go(true);
+    let d = most_apart(&free.out, &made.out);
+    assert!(d < 1e-5, "{d}");
+    for n in 0..2 {
+        let (a, b) = (free.status(n), made.status(n));
+        assert_eq!((b.clock, b.origin), (Clock::Free, a.origin));
+    }
+    let (a, b) = (free.l.free_clock().unwrap(), made.l.free_clock().unwrap());
+    assert_eq!((b.bpm, b.top, b.meter), (a.bpm, a.top, a.meter));
+    assert_eq!(made.t.bpm(), 120.0);
+}
+
+#[test]
+fn undo_of_make_song_waits_on_the_songs_tempo_and_a_second_free_clock() {
+    let mut r = Rig::new(128);
+    two_free_loops(&mut r);
+    let p = make_song(&mut r);
+    r.run(p.at.unwrap() + BAR, &noise);
+    // The song's tempo changed since: the loops' bars aren't at it.
+    let f = r.frame;
+    r.at(f, T::TempoNow(200.0));
+    r.run(f + BAR, &noise);
+    let refused = r.l.stats().refused;
+    assert_eq!(r.l.make_free(p), Err("the song's tempo has changed since"));
+    assert_eq!(r.l.stats().refused, refused + 1);
+    let f = r.frame;
+    r.at(f, T::TempoNow(240.0));
+    r.run(f + BAR, &noise);
+    // A new free loop, with a free clock of its own.
+    r.select(2);
+    r.cmd(L::SetClock(Clock::Free));
+    r.cmd(L::SetBars(Some(1)));
+    r.cmd(L::Record);
+    r.run(r.frame + 3 * BAR, &noise);
+    assert_eq!(r.status(2).phase, Phase::Playing);
+    assert_eq!(r.l.make_free(p), Err("another free loop has sound"));
+    assert_eq!(r.status(0).clock, Clock::Song);
+}
+
+#[test]
+fn make_song_at_a_tempo_off_the_frame_grid_moves_the_loops_less_than_a_frame() {
+    let go = |make: bool| {
+        let mut r = Rig::new(128);
+        r.run(1_000, &quiet);
+        // A little over 1.6 s: one bar at a tempo whose bar lines fall
+        // between frames.
+        let (_, closed) = record_in_own_time(&mut r, 0, 35_280 + 37, &noise);
+        r.run(closed + 5_000, &noise);
+        let p = make.then(|| make_song(&mut r));
+        let mut places = Vec::new();
+        for _ in 0..40 {
+            let to = r.frame + 997;
+            r.run(to, &noise);
+            places.push(r.status(0).position);
+        }
+        (r, p, places)
+    };
+    let (free, _, a) = go(false);
+    let (made, p, b) = go(true);
+    let p = p.unwrap();
+    assert!(p.at.is_some());
+    assert_eq!(made.status(0).clock, Clock::Song);
+    assert_eq!(made.t.state(), State::Playing);
+    let c = free.l.free_clock().unwrap();
+    assert!((c.bpm - 150.0).abs() > 1e-6, "off the grid: {} BPM", c.bpm);
+    let frames = free.status(0).frames as f64;
+    for (x, y) in a.iter().zip(&b) {
+        let d = (f64::from(*x) - f64::from(*y)).abs();
+        let d = d.min(1.0 - d) * frames;
+        assert!(d < 1.0, "{d} frames apart");
+    }
 }
