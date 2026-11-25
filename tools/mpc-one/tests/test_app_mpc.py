@@ -41,7 +41,10 @@ LINKED_SRC = (os.path.join(REPO, "rust", "mpfree-touch", "src"), os.path.join(RE
               # The Plugins place: mpcstore writes only under files/plugins/, mpcskin only reads.
               os.path.join(REPO, "rust", "mpfree-mpcstore", "src"), os.path.join(REPO, "rust", "mpfree-mpcskin", "src"),
               # The audio tracks and the stream layer (audio tracks phase 3a, 22 Nov 2026): takes record to files
-              # under library/.work/audiotracks, and leftovers there move into the library's Recordings place.
+              # under library/.work/audiotracks, and leftovers there move into the library's Recordings place. Since
+              # SD card step S2b's B2b (the owner's go, 25 Nov 2026; switched on in B2c), while the write window has the card open with
+              # its MPFree folder writable, they record under the card's MPFree/.work/audiotracks instead, and its
+              # leftovers move into the card's MPFree/Recordings (card_takes.rs).
               os.path.join(REPO, "rust", "mpfree-audiotracks", "src"), os.path.join(REPO, "rust", "mpfree-stream", "src"))
 # The two writers the storage spec allows (approved by Jay 12 Nov 00:56Z): mpfree-store under the folder it is
 # given (settings/ and files/), and mpfree-library under the library/ folder in it. The library is linked since
@@ -1336,14 +1339,18 @@ class StaticTests(unittest.TestCase):
                      "fs::rename(self.dir.join(FILE), self.dir.join(OLD)).map_err(|e| self.say(e))?;"),
                     # The stream layer's one file layer (mpfree-stream/fsio.rs, StdFs), which only the audio
                     # tracks' recorder and its recovery use (mpfree-audiotracks/files.rs), on the folder the app
-                    # gives them: library/.work/audiotracks (Library::work_dir, under --data). A take's file is
+                    # gives them: library/.work/audiotracks (Library::work_dir, under --data), or, since SD card step
+                    # S2b's B2b, the card's MPFree/.work/audiotracks (card_takes.rs makes it with create_dir_all, only
+                    # under the folder the write window gives as writable; the window mounts the rest of the card
+                    # read-only, so the kernel refuses a write anywhere else on it). A take's file is
                     # finished by renaming it to NAME_ID.wav there, and its checkpoint is removed once it is done.
                     ("mpfree-stream/fsio.rs", "fs::rename(from, to)"),
                     ("mpfree-stream/fsio.rs", "fs::remove_file(path)"),
                     # The audio tracks (files.rs): once a project save has copied a take into its samples/, the
                     # take's copy in the work folder goes (only a file directly in that folder); at start, takes a
                     # cut-off run left there are moved into the library's Recordings place under a free name
-                    # (never over a file), regular files only (symlink_metadata).
+                    # (never over a file), regular files only (symlink_metadata). On the SD card (S2b's B2b) the
+                    # same, from the card's work folder into the card's MPFree/Recordings, when the card opens.
                     ("mpfree-audiotracks/files.rs", "let _ = std::fs::remove_file(old);"),
                     ("mpfree-audiotracks/files.rs", "std::fs::rename(&from, &to)?;"),
                     # Loop layers' files (files.rs, audio tracks phase 4c.3): written in the same work folder
@@ -1355,7 +1362,8 @@ class StaticTests(unittest.TestCase):
                     # request and close are small files in /run/mpfree-app (RAM, Paths::on_the_stick with
                     # REPORT_DIR), written whole under a hidden name there (one an earlier try left removed
                     # first) and renamed in; a request nobody picked up in time is taken back. The card itself
-                    # is mounted read-only by the stick's root service and never opened for writing here.
+                    # is never opened for writing here: the stick's root service mounts it read-only, or (the write
+                    # window, S2b) read-only but for its MPFree folder, where only the audio tracks write (above).
                     ("mpfree-app/sd_card.rs", "match fs::remove_file(&tmp) {"),
                     ("mpfree-app/sd_card.rs", "fs::rename(&tmp, path)"),
                     ("mpfree-app/sd_card.rs", "let _ = fs::remove_file(&paths.request);")} \
@@ -1430,7 +1438,8 @@ class StaticTests(unittest.TestCase):
             "let mut old = OpenOptions::new().append(true).open(self.dir.join(FILE)).map_err(|e| self.say(e))?;",
             "let f = OpenOptions::new().create(true).write(true).truncate(true).mode(0o644).open(self.dir.join(FILE))"
             ".map_err(|e| self.say(e))?;",
-            # mpfree-stream/fsio.rs (StdFs): the audio tracks' files in library/.work/audiotracks: a take's file
+            # mpfree-stream/fsio.rs (StdFs): the audio tracks' files in library/.work/audiotracks (or, S2b's B2b,
+            # the SD card's MPFree/.work/audiotracks): a take's file
             # and its checkpoint, made new (create_new); recovery's file for the stretch past a cut-off take's last
             # checkpoint, beside it (create, truncate); and either opened again to write on
             "let f = OpenOptions::new().read(true).write(true).open(path)?;",

@@ -1928,12 +1928,13 @@ pub enum FromUi {
     /// their own thread: they go in once the old ones are emptied.
     OpenAudio(Box<mpfree_audiotracks::save::Saved>),
     /// The audio tracks record each take to a file of its own in this
-    /// folder (the library's work folder for them) from now on: sent once
-    /// at start, after what a cut-off run left there is recovered.
+    /// folder (the library's work folder for them, or the SD card's: see
+    /// card_takes.rs) from now on, after what a cut-off run left there is
+    /// recovered.
     AudioFiles(std::path::PathBuf),
     /// The SD card opened, its files under the lease's root (its mount
     /// point): a drive of its own, so the audio tracks read them on an I/O
-    /// thread of their own and a recorder there never waits for the
+    /// thread of their own and record there without waiting for the
     /// stick's reads; and one opening, so takes there are read only until
     /// the lease is revoked (the card closed). Sent each time the slot
     /// says the card is open: the same lease while it stays open, a new
@@ -2747,6 +2748,9 @@ pub struct Player {
     /// when the place asks and put away once the browser has been hidden
     /// for a while (sd_card.rs).
     pub(crate) sd_card: crate::sd_card::Slot,
+    /// Where the audio tracks record: the stick, or the SD card's MPFree
+    /// folder once the card opens for saving (card_takes.rs).
+    card_takes: crate::card_takes::CardTakes,
     /// The card's current opening, given to the audio tracks
     /// ([`FromUi::AudioDrive`]) and revoked when the slot hears it closed.
     card_lease: Option<std::sync::Arc<mpfree_stream::storage::Lease>>,
@@ -3607,6 +3611,7 @@ impl Player {
             plugin_page: crate::plugin_page::PluginPage::new(),
             plugins_hinted: "",
             sd_card: crate::sd_card::Slot::on_the_mpc(std::path::Path::new(crate::REPORT_DIR)),
+            card_takes: Default::default(),
             card_lease: None,
             track_sounds: [None; crate::instruments::HOLDERS],
             track_sends: [None; crate::instruments::TRACKS],
@@ -11266,6 +11271,7 @@ impl Player {
             ram_pct: self.ram_pct,
             free: self.mem_free,
             stick: self.drive.as_ref().and_then(|d| d.get()).flatten(),
+            card: self.drive.as_ref().is_some_and(|d| d.on_card()),
             heat: self.heat,
             engines: self.engines.as_deref().and_then(crate::engines::shares),
             tracks: self.engines.as_deref().and_then(|e| self.status_tracks(e)),
@@ -14313,7 +14319,33 @@ impl Player {
             "audio tracks: each take is saved to a file as it records, in {}",
             work.display()
         ));
-        self.outbox.push(FromUi::AudioFiles(work));
+        self.outbox.push(FromUi::AudioFiles(work.clone()));
+        // Then the SD card, where takes go once it opens for saving.
+        let can = self.sd_card.writes();
+        let dos = self.card_takes.stick_ready(work, can);
+        self.card_do(dos);
+    }
+
+    /// What card_takes.rs says to do about where takes record.
+    fn card_do(&mut self, dos: Vec<crate::card_takes::Do>) {
+        use crate::card_takes::Do;
+        for d in dos {
+            match d {
+                Do::Say(line) => self.say(line),
+                Do::Tell(line) => self.tell(line),
+                Do::Ask => self.sd_card.open(),
+                Do::RecordTo(dir) => self.outbox.push(FromUi::AudioFiles(dir)),
+                Do::Found(found) => {
+                    let first = self.status_watch.add_found_takes(found.found);
+                    for mut r in found.reports {
+                        if let Some(n) = r.subject.found_take_number() {
+                            r.subject = mpfree_status::Subject::found_take(first + n);
+                        }
+                        self.report_problem(r);
+                    }
+                }
+            }
+        }
     }
 
     /// The Pads tab's browser is `b`, with its Recent and Favourites from
@@ -14735,7 +14767,12 @@ impl Player {
     /// place says). The card is in use while the browser shows or its
     /// worker has jobs (a copy from the card, say).
     fn sd_card_tick(&mut self) {
-        let using = self.browsing() || self.browser.as_ref().is_some_and(|b| b.busy());
+        // The card is in use while takes record on it, too.
+        let using = self.browsing()
+            || self.browser.as_ref().is_some_and(|b| b.busy())
+            || self.card_takes.holds();
+        let dos = self.card_takes.tick(std::time::Instant::now());
+        self.card_do(dos);
         for h in self.sd_card.tick(using) {
             use crate::sd_card::Heard;
             use mpfree_browser_ui::CardState;
@@ -14749,6 +14786,10 @@ impl Player {
                     // and this opening the one their takes there read on.
                     let lease = self.card_lease(&card.mount);
                     self.outbox.push(FromUi::AudioDrive(lease));
+                    let dos = self
+                        .card_takes
+                        .opened(card.write.as_deref(), card.read_only.as_deref());
+                    self.card_do(dos);
                     (
                         Some(card.mount.clone()),
                         CardState::Open {
@@ -14760,12 +14801,17 @@ impl Player {
                 Heard::NotOpened(why) => {
                     self.card_gone();
                     self.say(format!("sd card: not opened: {why}"));
+                    let again = self.sd_card.worth_asking_again();
+                    let dos = self.card_takes.not_opened(again, std::time::Instant::now());
+                    self.card_do(dos);
                     (None, CardState::NotOpened(why))
                 }
                 Heard::Closed(line) => {
                     // Nothing more is read on this opening, at once.
                     self.card_gone();
                     self.say(line);
+                    let dos = self.card_takes.closed();
+                    self.card_do(dos);
                     (None, CardState::Closed)
                 }
             };
@@ -41898,6 +41944,146 @@ mod tests {
                 .iter()
                 .any(|l| l == "sd card: closed: The card was taken out.")
         });
+        assert!(
+            !lease.valid(),
+            "its opening is over: nothing more is read on it"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S2b phase B2b, switched on here as B2c will: once the stick's own
+    /// recovery is done, the card is asked for; opened for saving (here a
+    /// write window open from before, taken over), its work folder is
+    /// looked at and the audio tracks record into `MPFree/.work/audiotracks`
+    /// there. While takes record on it the card isn't put away, browser
+    /// hidden or not. When it closes (taken out), takes record on the stick
+    /// again.
+    #[test]
+    fn takes_record_on_the_card_once_it_opens_for_saving_and_on_the_stick_once_it_closes() {
+        use crate::sd_card::{Paths, Slot, Timing};
+        use std::time::Duration;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("mpfree-card-takes-{}-{nanos}", std::process::id()));
+        let card = dir.join("card");
+        let mpfree = card.join("MPFree");
+        std::fs::create_dir_all(&mpfree).unwrap();
+        std::fs::create_dir_all(dir.join("run")).unwrap();
+        std::fs::write(dir.join("setup-sd-card.sh"), "# service\n").unwrap();
+        std::fs::write(dir.join("setup-sd-card-write.sh"), "# write window\n").unwrap();
+        std::fs::write(
+            dir.join("mounts"),
+            format!("card {} exfat rw 0 0\n", card.display()),
+        )
+        .unwrap();
+        let open = format!(
+            "state=open\nmessage=The SD card is open; its MPFree folder can be written.\nask=00dd\ncard=mmcblk1\nfs=exfat\nsectors=124735488\nmount={}\nwrite={}\n",
+            card.display(),
+            mpfree.display()
+        );
+        std::fs::write(dir.join("run/sd-card-write-status"), &open).unwrap();
+        let mut p = browser_samples(Fonts::embedded()).unwrap();
+        p.card_takes = crate::card_takes::CardTakes::new(true);
+        // A library of its own, on disk (the stick's data partition).
+        std::fs::create_dir_all(dir.join("data")).unwrap();
+        let lib = mpfree_library::Library::at(&dir.join("data")).unwrap();
+        p.set_browser(mpfree_browser_ui::Browser::inline(lib), "");
+        let paths = |w: &str| Paths {
+            service: dir.join(format!("setup-sd-card{w}.sh")),
+            status: dir.join(format!("run/sd-card{w}-status")),
+            request: dir.join(format!("run/sd-card{w}.request")),
+            close: dir.join(format!("run/sd-card{w}.close")),
+            alive: dir.join(format!("run/sd-card{w}.alive")),
+            mounts: dir.join("mounts"),
+        };
+        let timing = Timing {
+            poll: Duration::from_millis(5),
+            answer: Duration::from_millis(500),
+            close: Duration::from_millis(50),
+            beat: Duration::from_millis(10),
+        };
+        p.sd_card =
+            Slot::new(paths(""), timing, Duration::from_millis(100)).with_writing(paths("-write"));
+        p.apply(ToUi::Show(View::Play));
+        let files = |p: &Player| -> Vec<std::path::PathBuf> {
+            p.outbox
+                .iter()
+                .filter_map(|a| match a {
+                    FromUi::AudioFiles(d) => Some(d.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let until = |p: &mut Player, n: usize| {
+            let end = Instant::now() + Duration::from_secs(5);
+            while files(p).len() < n {
+                assert!(Instant::now() < end, "not yet: {:?}", files(p));
+                p.tick(0.01);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
+        p.recover_audio_files();
+        until(&mut p, 2);
+        let got = files(&p);
+        let stick = got[0].clone();
+        assert!(stick.ends_with(".work/audiotracks") && !stick.starts_with(&card));
+        assert_eq!(got[1], mpfree.join(".work/audiotracks"));
+        assert!(got[1].is_dir());
+        // The card was given to the audio tracks as a drive of its own
+        // before they record there.
+        use mpfree_stream::storage::CardHandle;
+        let drive = p
+            .outbox
+            .iter()
+            .position(|a| matches!(a, FromUi::AudioDrive(l) if l.root() == card))
+            .expect("the card is a drive of its own");
+        let there = p
+            .outbox
+            .iter()
+            .position(|a| matches!(a, FromUi::AudioFiles(d) if d.starts_with(&card)))
+            .expect("records on the card");
+        assert!(drive < there);
+        // Said open again while it stays open: the same opening, never
+        // taken for a new insertion.
+        p.sd_card.open();
+        p.tick(0.01);
+        let leases: Vec<_> = p
+            .outbox
+            .iter()
+            .filter_map(|a| match a {
+                FromUi::AudioDrive(l) => Some(l.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(leases.len(), 2);
+        assert!(std::sync::Arc::ptr_eq(&leases[0], &leases[1]));
+        let lease = leases[0].clone();
+        assert!(lease.valid());
+        assert!(
+            !dir.join("run/sd-card-write.request").exists(),
+            "taken over, not asked again"
+        );
+        // Hidden past the put-away time: still open, as takes record on it.
+        std::thread::sleep(Duration::from_millis(150));
+        for _ in 0..5 {
+            p.tick(0.01);
+        }
+        assert!(!dir.join("run/sd-card-write.close").exists());
+        // Taken out: the window says so, and takes go back to the stick.
+        std::fs::write(
+            dir.join("run/sd-card-write-status"),
+            "state=closed\nmessage=The card was taken out.\nask=00dd\n",
+        )
+        .unwrap();
+        until(&mut p, 3);
+        assert_eq!(files(&p)[2], stick);
+        assert!(p
+            .said_all
+            .iter()
+            .any(|l| l == "sd card: closed: The card was taken out."));
         assert!(
             !lease.valid(),
             "its opening is over: nothing more is read on it"

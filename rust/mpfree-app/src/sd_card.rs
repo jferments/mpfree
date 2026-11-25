@@ -531,6 +531,10 @@ pub struct Slot {
     unused_since: Option<Instant>,
     looked: Instant,
     heard: Vec<Heard>,
+    /// The last opening's answer may change if asked again (the window
+    /// failed, or didn't answer in time), as against an empty slot, no
+    /// service or a refused card.
+    again: bool,
 }
 
 impl Slot {
@@ -546,7 +550,20 @@ impl Slot {
             unused_since: None,
             looked: Instant::now(),
             heard: Vec::new(),
+            again: false,
         }
+    }
+
+    /// Whether this stick has the write window, so a card can be saved to.
+    pub fn writes(&self) -> bool {
+        self.write.as_ref().is_some_and(|w| w.service.exists())
+    }
+
+    /// Whether the last card that didn't open might open if asked again:
+    /// its window failed (the first-start backup running, the internal
+    /// drive open) or didn't answer in time.
+    pub fn worth_asking_again(&self) -> bool {
+        self.again
     }
 
     /// The write window too: asked first, the read-only window when it
@@ -639,12 +656,16 @@ impl Slot {
                             self.unused_since = None;
                             self.looked = Instant::now();
                         }
-                        Err(e) => self.heard.push(Heard::NotOpened(e.message())),
+                        Err(e) => {
+                            self.again = matches!(e, NotOpened::Failed(_) | NotOpened::NoAnswer(_));
+                            self.heard.push(Heard::NotOpened(e.message()));
+                        }
                     }
                     break;
                 }
                 Err(TryRecvError::Empty) => return,
                 Err(TryRecvError::Disconnected) => {
+                    self.again = false;
                     self.heard.push(Heard::NotOpened(
                         "The SD card didn't open: its thread stopped.".to_string(),
                     ));

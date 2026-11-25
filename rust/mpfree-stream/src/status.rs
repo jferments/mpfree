@@ -26,9 +26,9 @@
 //! [`Coordinator::lost`]: crate::coord::Coordinator::lost
 
 use mpfree_status::kinds::{
-    CARD_REMOVED, NOT_SAVED_YET, RECORDING_AT_RISK, RECORDING_MAY_STOP, RECORDING_STOPPED,
-    STICK_FELL_BEHIND, STICK_MISSING, STICK_NEARLY_FULL, STREAMING_AT_LIMIT, TAKE_DAMAGED,
-    TAKE_RECOVERED,
+    CARD_MISSING, CARD_NEARLY_FULL, CARD_REMOVED, NOT_SAVED_YET, RECORDING_AT_RISK,
+    RECORDING_MAY_STOP, RECORDING_STOPPED, STICK_FELL_BEHIND, STICK_MISSING, STICK_NEARLY_FULL,
+    STREAMING_AT_LIMIT, TAKE_DAMAGED, TAKE_RECOVERED,
 };
 use mpfree_status::{Kind, Report, Subject};
 
@@ -46,9 +46,12 @@ pub const NEARLY_FULL_S: f64 = 600.0;
 /// hovering at the line doesn't come and go.
 const NEARLY_FULL_ENDS: f64 = 1.1;
 
-/// The stick's data partition as the caller found it.
+/// The drive the takes record to (the stick's data partition, or the SD
+/// card's `MPFree` folder) as the caller found it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Drive {
+    /// It is the SD card (S2b, phase B2b): its problems say so.
+    pub card: bool,
     /// There, and not read-only (`statvfs` answered without `ST_RDONLY`).
     pub writable: bool,
     /// Bytes free for MPFree (`f_bavail` x `f_frsize`).
@@ -171,16 +174,43 @@ impl Watch {
         }
     }
 
-    /// The stick's data partition.
+    /// The drive the takes record to: missing, or nearly full, as the
+    /// stick's or the SD card's problems. The other drive's end.
     pub fn drive(&mut self, d: &Drive, out: &mut dyn FnMut(Report)) {
-        self.set(&STICK_MISSING, Subject::NONE, !d.writable, out);
+        let ((missing, nearly), (not_missing, not_nearly)) = if d.card {
+            (
+                (&CARD_MISSING, &CARD_NEARLY_FULL),
+                (&STICK_MISSING, &STICK_NEARLY_FULL),
+            )
+        } else {
+            (
+                (&STICK_MISSING, &STICK_NEARLY_FULL),
+                (&CARD_MISSING, &CARD_NEARLY_FULL),
+            )
+        };
+        self.set(not_missing, Subject::NONE, false, out);
+        self.set(not_nearly, Subject::NONE, false, out);
+        self.set(missing, Subject::NONE, !d.writable, out);
         let line = d.line();
-        let full = if self.is_going(&STICK_NEARLY_FULL, Subject::NONE) {
+        let full = if self.is_going(nearly, Subject::NONE) {
             (d.free as f64) < line as f64 * NEARLY_FULL_ENDS
         } else {
             d.free < line
         };
-        self.set(&STICK_NEARLY_FULL, Subject::NONE, d.writable && full, out);
+        self.set(nearly, Subject::NONE, d.writable && full, out);
+    }
+
+    /// The takes no longer record to the drive watched (they moved to
+    /// another): what it had going ends.
+    pub fn drive_gone(&mut self, out: &mut dyn FnMut(Report)) {
+        for kind in [
+            &STICK_MISSING,
+            &STICK_NEARLY_FULL,
+            &CARD_MISSING,
+            &CARD_NEARLY_FULL,
+        ] {
+            self.set(kind, Subject::NONE, false, out);
+        }
     }
 
     /// What recovery found for one take: a take it finished after a cut.
