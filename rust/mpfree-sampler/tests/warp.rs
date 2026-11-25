@@ -480,3 +480,152 @@ fn a_stretch_the_memory_floor_cant_spare_is_refused_and_says_why() {
     assert_eq!(w.asked(), 0);
     assert_eq!(jobs.counts().refused, 1);
 }
+
+/// The audio tracks rethink 5b.3: the copies count in the one budget for
+/// derived audio. Their room is what the other caches leave, and a copy a
+/// voice or an engine view still plays is never let go of to make room,
+/// and is counted until its last handle goes.
+#[test]
+fn the_copies_share_the_one_budget_and_one_still_played_counts_until_it_goes() {
+    use mpfree_stretch::budget::{Budget, Cache};
+    use std::sync::Arc;
+    let s = sine(1.0, 220.0);
+    let p = project(&s, warped_pad(&s, 100.0, WarpMethod::Stretch));
+    let ps = std::slice::from_ref(&p);
+    // One copy at 100 BPM is the source's size: 44100 frames, stereo.
+    let one = 44_100 * 2 * 4;
+    let budget = Arc::new(Budget::new(10 * one as u64));
+    let mut warps = Warps::new(100.0);
+    warps.join(budget.clone());
+    make_copies(&p, &mut warps);
+    assert_eq!(budget.share(Cache::Warps), (one as u64, 0));
+    // The tracks' copies hold most of it: the room left is a copy and a
+    // half.
+    budget.set_held(Cache::Tracks, 8 * one as u64 + one as u64 / 2);
+    assert_eq!(warps.room(), one + one / 2);
+    // A view plays the 100 BPM copy as the tempo moves: it stays, past
+    // the room, until the view lets it go.
+    let at_100 = warps.wanted(&p)[0];
+    let played = warps.copy(&at_100).unwrap();
+    warps.set_tempo(110.0);
+    make_copies(&p, &mut warps);
+    assert!(warps.peek(&at_100).is_some(), "still played");
+    assert!(warps.bytes() > warps.room());
+    assert_eq!(budget.share(Cache::Warps).0, warps.bytes() as u64);
+    drop(played);
+    warps.tidy(ps);
+    assert!(warps.peek(&at_100).is_none());
+    assert!(warps.bytes() <= warps.room());
+    assert_eq!(budget.share(Cache::Warps).0, warps.bytes() as u64);
+    // A new project: a copy still played is counted until it goes.
+    let at_110 = warps.wanted(&p)[0];
+    let played = warps.copy(&at_110).unwrap();
+    warps.clear();
+    assert!(warps.peek(&at_110).is_none());
+    assert_eq!(budget.share(Cache::Warps).0, played.len() as u64 * 4);
+    drop(played);
+    warps.tidy(&[]);
+    assert_eq!(budget.share(Cache::Warps).0, 0);
+}
+
+/// 5b.3: the worker's copies go on the one scheduler within the one
+/// budget. Asked for and not back, a copy counts in it; past the room for
+/// a copy set up to come it is refused, and says why; one a pad waits on
+/// (Protect) may fill the whole budget.
+#[test]
+fn a_copy_past_the_budget_for_its_priority_is_refused_and_one_waited_on_is_made() {
+    use mpfree_sampler::jobs::{Config, Jobs};
+    use mpfree_sampler::warp::{Done, Worker};
+    use mpfree_stretch::budget::Cache;
+    use mpfree_stretch::sched::Priority;
+    use std::sync::Arc;
+    use std::time::Duration;
+    let s = sine(1.0, 220.0);
+    let p = project(&s, warped_pad(&s, 100.0, WarpMethod::Stretch));
+    let jobs = Jobs::new(Config::default());
+    let w = Worker::on(jobs.clone());
+    let budget = w.budget();
+    assert!(Arc::ptr_eq(&budget, &jobs.stretch().budget()));
+    let k = Warps::new(120.0).missing(&p)[0];
+    let copy = k.frames * 2 * 4;
+    // Room for four copies; the tracks' copies hold three. A copy set up
+    // to come may fill three quarters.
+    budget.set_total(4 * copy);
+    budget.set_held(Cache::Tracks, 3 * copy);
+    assert!(w.send(k, Warps::spec(&p, &k).unwrap(), 0));
+    match w.recv_timeout(Duration::from_secs(20)) {
+        Some(Done::Refused(r, why)) => {
+            assert_eq!(r, k);
+            assert!(why.starts_with("no room for more copies"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(budget.share(Cache::Warps), (0, 0));
+    assert_eq!(jobs.counts().refused, 1);
+    // Waited on, it is made, and counts while it is on its way.
+    jobs.hold(true);
+    assert!(w.send_at(k, Warps::spec(&p, &k).unwrap(), 0, Priority::Protect));
+    assert_eq!(budget.share(Cache::Warps), (0, copy));
+    jobs.hold(false);
+    match w.recv_timeout(Duration::from_secs(20)) {
+        Some(Done::Copy(c, data, _)) => {
+            assert_eq!(c, k);
+            assert_eq!(data.len() as u64 * 4, copy);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(budget.share(Cache::Warps), (0, 0));
+}
+
+/// 5b.3: a copy a pad waits on goes ahead of the ones set up to come, and
+/// one asked for again more urgently while it waits, or whose pad the
+/// page comes to show ([`Worker::raise`]), is raised, not made twice.
+#[test]
+fn a_copy_waited_on_goes_ahead_and_one_asked_again_or_shown_is_raised() {
+    use mpfree_sampler::jobs::{Config, Jobs};
+    use mpfree_sampler::warp::{Done, Worker};
+    use mpfree_stretch::sched::Priority;
+    use std::time::Duration;
+    let (a, b) = (sine(1.0, 220.0), sine(1.0, 330.0));
+    let (pa, pb) = (
+        project(&a, warped_pad(&a, 100.0, WarpMethod::Stretch)),
+        project(&b, warped_pad(&b, 100.0, WarpMethod::Stretch)),
+    );
+    let warps = Warps::new(120.0);
+    let (ka, kb) = (warps.missing(&pa)[0], warps.missing(&pb)[0]);
+    let jobs = Jobs::new(Config::default());
+    let w = Worker::on(jobs.clone());
+    jobs.hold(true);
+    assert!(w.send(ka, Warps::spec(&pa, &ka).unwrap(), 0));
+    assert!(w.send(kb, Warps::spec(&pb, &kb).unwrap(), 0));
+    assert!(w.send_at(kb, Warps::spec(&pb, &kb).unwrap(), 0, Priority::Protect));
+    assert_eq!((jobs.waiting(), w.asked()), (2, 2));
+    // Raising a copy not asked for does nothing.
+    let other = Warps::new(90.0).missing(&pa)[0];
+    assert!(!w.raise(&other, Priority::Protect));
+    jobs.hold(false);
+    let made: Vec<CopyKey> = (0..2)
+        .map(|_| match w.recv_timeout(Duration::from_secs(20)) {
+            Some(Done::Copy(k, ..)) => k,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(made, vec![kb, ka]);
+    assert!(w.recv_timeout(Duration::from_millis(100)).is_none());
+    assert_eq!(jobs.counts().done, 2);
+    // A pad shown while its copy waits is raised ahead of one asked first.
+    jobs.hold(true);
+    let warps = Warps::new(90.0);
+    let (ka, kb) = (warps.missing(&pa)[0], warps.missing(&pb)[0]);
+    assert!(w.send(ka, Warps::spec(&pa, &ka).unwrap(), 0));
+    assert!(w.send(kb, Warps::spec(&pb, &kb).unwrap(), 0));
+    assert!(w.raise(&kb, Priority::Protect));
+    jobs.hold(false);
+    let made: Vec<CopyKey> = (0..2)
+        .map(|_| match w.recv_timeout(Duration::from_secs(20)) {
+            Some(Done::Copy(k, ..)) => k,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(made, vec![kb, ka]);
+}

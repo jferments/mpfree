@@ -113,6 +113,8 @@ use mpfree_sampler_ui::wave_tab::{
 };
 use mpfree_sampler_ui::widgets::SettingList;
 use mpfree_seq::{Clip, Lock, Note};
+use mpfree_stretch::budget::NO_ROOM;
+use mpfree_stretch::sched::Priority;
 use mpfree_transport::PPQ;
 use mpfree_ui::widgets::Card;
 use mpfree_ui::{EventKind, Tone, Ui, UiEvent};
@@ -1025,6 +1027,14 @@ pub struct SamplePage {
     /// Copies refused for want of memory at this tempo, said once each
     /// (their pads repitch).
     unstretched: Vec<CopyKey>,
+    /// Copies refused for want of room in the one budget for derived
+    /// audio (their pads repitch meanwhile), asked for again once the
+    /// budget has room or every [`crate::views::RETRY`]; since when, and
+    /// what all derived audio used then.
+    no_room: Vec<CopyKey>,
+    no_room_since: Option<(Instant, u64)>,
+    /// A refusal for room said since the last tempo turn: said once.
+    no_room_said: bool,
     /// The memory free for new loads ([`crate::memory::free_bytes`]; a
     /// test gives its own).
     mem_free: fn() -> Option<u64>,
@@ -1320,6 +1330,9 @@ impl SamplePage {
             stretcher: None,
             stretching: Vec::new(),
             unstretched: Vec::new(),
+            no_room: Vec::new(),
+            no_room_since: None,
+            no_room_said: false,
             mem_free: crate::memory::free_bytes,
             rec_settings: rec_tab::RecSettings::default(),
             // A sixtieth of a second a column at 44.1 kHz.
@@ -1879,6 +1892,7 @@ impl SamplePage {
         self.pad = pad;
         self.velocity = None;
         self.stale = true;
+        self.raise_shown();
     }
 
     /// Whether the Play tab shows its keyboard.
@@ -8097,12 +8111,73 @@ impl SamplePage {
         })
     }
 
+    /// The copies kit `kit`'s pad the page shows (a hit picks it) and the
+    /// take it has open play at the tempo: they wait on them, so they go
+    /// first ([`Priority::Protect`]).
+    fn shown_copies(&self, kit: usize) -> Vec<CopyKey> {
+        let Some(project) = self.projects.get(kit).filter(|_| kit == self.kit) else {
+            return Vec::new();
+        };
+        let pad = project.pad(self.pad).into_iter();
+        let take = self.open.and_then(|t| project.takes().get(t)).into_iter();
+        pad.chain(take)
+            .flat_map(|p| {
+                p.layers
+                    .iter()
+                    .filter_map(|l| self.warps.key_for(&l.region, l.tune_cents + p.tune_cents))
+            })
+            .collect()
+    }
+
+    /// The copies on their way that the pad now shown waits on go first.
+    fn raise_shown(&self) {
+        let Some(w) = self
+            .stretcher
+            .as_ref()
+            .filter(|_| !self.stretching.is_empty())
+        else {
+            return;
+        };
+        for k in self.shown_copies(self.kit) {
+            if self.stretching.contains(&k) {
+                w.raise(&k, Priority::Protect);
+            }
+        }
+    }
+
     fn cancel_stretching(&mut self) {
         if let Some(w) = &self.stretcher {
             w.cancel();
         }
         self.stretching.clear();
         self.unstretched.clear();
+        self.no_room.clear();
+        self.no_room_since = None;
+        self.no_room_said = false;
+    }
+
+    /// The copies refused for want of room are asked for again once all
+    /// derived audio uses less than it did then (a copy let go of, the
+    /// tracks' or the Warps'), or every [`crate::views::RETRY`].
+    fn ask_again_for_room(&mut self) {
+        let Some((since, used)) = self.no_room_since else {
+            return;
+        };
+        if self.warps.budget().used() >= used && since.elapsed() < crate::views::RETRY {
+            return;
+        }
+        let keys = std::mem::take(&mut self.no_room);
+        self.no_room_since = None;
+        for kit in 0..self.projects.len() {
+            if self
+                .warps
+                .wanted(&self.projects[kit])
+                .iter()
+                .any(|k| keys.contains(k))
+            {
+                self.ask_for_copies(kit);
+            }
+        }
     }
 
     /// Copies kit `kit` needs at the tempo go to the job service.
@@ -8114,15 +8189,24 @@ impl SamplePage {
             .warps
             .missing(project)
             .into_iter()
-            .filter(|k| !self.stretching.contains(k) && !self.unstretched.contains(k))
+            .filter(|k| {
+                !self.stretching.contains(k)
+                    && !self.unstretched.contains(k)
+                    && !self.no_room.contains(k)
+            })
             .collect();
         if missing.is_empty() {
             return;
         }
+        let shown = self.shown_copies(kit);
         let jobs = &self.jobs;
         let w = self
             .stretcher
             .get_or_insert_with(|| Worker::on(jobs.clone()));
+        // The copies count in the one budget for derived audio the
+        // worker's scheduler checks (the process's, beside the audio
+        // tracks' tempo copies).
+        self.warps.join(w.budget());
         for k in missing {
             let spec = match Warps::spec(project, &k) {
                 Ok(spec) => spec,
@@ -8143,7 +8227,12 @@ impl SamplePage {
                     .push(format!("Not stretched, the pad repitches instead: {why}"));
                 continue;
             }
-            if w.send(k, spec, need) {
+            let priority = if shown.contains(&k) {
+                Priority::Protect
+            } else {
+                Priority::Prepared
+            };
+            if w.send_at(k, spec, need, priority) {
                 self.stretching.push(k);
             }
         }
@@ -8157,6 +8246,10 @@ impl SamplePage {
         while let Some(d) = w.try_recv() {
             done.push(d);
         }
+        // Copies an engine view played until a moment ago go once it has,
+        // as far as the budget needs, and what they hold is said.
+        self.warps.tidy(&self.projects);
+        self.ask_again_for_room();
         for d in done {
             match d {
                 Done::Copy(key, data, took) => {
@@ -8194,6 +8287,24 @@ impl SamplePage {
                     self.lines.push(format!("sample: stretch failed: {e}"));
                 }
                 Done::Cancelled(key) => self.stretching.retain(|k| *k != key),
+                Done::Refused(key, why) if why.starts_with(NO_ROOM) => {
+                    // No room in the one budget for now: asked for again
+                    // once there is, said once.
+                    self.stretching.retain(|k| *k != key);
+                    if !self.no_room.contains(&key) {
+                        self.no_room.push(key);
+                    }
+                    let used = self.warps.budget().used();
+                    self.no_room_since.get_or_insert((Instant::now(), used));
+                    if !self.no_room_said {
+                        self.no_room_said = true;
+                        self.lines.push(format!(
+                            "sample: not stretched for now, the pad repitches until there is room ({why})"
+                        ));
+                        self.told
+                            .push(format!("Not stretched for now, the pad repitches: {why}"));
+                    }
+                }
                 Done::Refused(key, why) => {
                     self.stretching.retain(|k| *k != key);
                     self.unstretched.push(key);
