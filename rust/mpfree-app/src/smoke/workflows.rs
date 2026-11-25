@@ -67,6 +67,31 @@ mod tests {
             .param(id)
     }
 
+    /// Opens `strip`'s effect `name` in the chain editor as a musician
+    /// would (touch plan A7): the strip's FX summary turns the mixer to
+    /// its Effects look, a tap there picks the effect and a second opens
+    /// it.
+    fn open_effect(s: &mut Session, strip: &str, name: &str) {
+        to_effects(s, strip);
+        s.press("mixer", "fx", name);
+        if s.view() == View::Mixer {
+            s.press("mixer", "fx", name);
+        }
+    }
+
+    /// The mixer on its Effects look, from `strip`'s FX summary when the
+    /// Faders look shows.
+    fn to_effects(s: &mut Session, strip: &str) {
+        let fx = format!("{strip} effects");
+        if s.control("mixer", "strip-fx", &fx).is_some() {
+            s.press("mixer", "strip-fx", &fx);
+        }
+        assert_eq!(
+            mpfree_mixer_ui::look(&s.screen.ui),
+            mpfree_mixer_ui::Look::Effects
+        );
+    }
+
     /// The insert rows a strip shows on the mixer.
     fn strip_inserts(s: &Session, strip: &str) -> Vec<String> {
         let v = s.screen.ui.get::<MixerView>(MIXER).expect("the mixer");
@@ -402,7 +427,8 @@ mod tests {
         on_big_stack(|| {
             let mut s = Session::new();
             s.press("header", "tab", "Mix");
-            s.press("mixer", "insert", "Filter · DJ").run_for(0.2);
+            open_effect(&mut s, "Drums", "Filter · DJ");
+            s.run_for(0.2);
             assert_eq!(s.view(), View::Chain);
             assert_eq!(engine(&mut s).title, "Drums FX");
             s.press("chain", "strip", "Drums").run_for(0.3);
@@ -524,7 +550,8 @@ mod tests {
             assert_eq!(strip_inserts(&s, "Drums"), ["Filter · DJ"]);
 
             // "+ Insert" opens the editor in the mixer's place, picker up.
-            s.press("mixer", "add-insert", "Drums + Insert");
+            to_effects(&mut s, "Drums");
+            s.press("mixer", "fx-add", "Drums + FX");
             assert_eq!(s.view(), View::Chain);
             assert!(s.control("chain", "cancel", "Cancel").is_some());
             s.press("chain", "pick", "Compressor").run_for(0.1);
@@ -579,7 +606,7 @@ mod tests {
             assert_eq!(strip_inserts(&s, "Drums"), ["Compressor", "Filter · DJ"]);
 
             // Its row opens the editor on it.
-            s.press("mixer", "insert", "Compressor");
+            open_effect(&mut s, "Drums", "Compressor");
             assert_eq!(s.view(), View::Chain);
             assert_eq!(engine(&mut s).selected, Some(0));
             agree(&mut s, "opened from its row");
@@ -601,7 +628,8 @@ mod tests {
         on_big_stack(|| {
             let mut s = Session::new();
             s.press("header", "tab", "Mix");
-            s.press("mixer", "add-insert", "Loop + Insert");
+            to_effects(&mut s, "Loop");
+            s.press("mixer", "fx-add", "Loop + FX");
             s.press("chain", "cancel", "Cancel").run_for(0.1);
             assert_eq!(s.view(), View::Chain);
             assert!(
@@ -632,7 +660,7 @@ mod tests {
             let drums = StripId::Track(0);
             let mut s = Session::new();
             s.press("header", "tab", "Mix");
-            s.press("mixer", "insert", "Filter · DJ");
+            open_effect(&mut s, "Drums", "Filter · DJ");
             s.press("chain", "knob", "Position");
             let at = node_param(&s, drums, 0, "Position");
             s.press("chain", "macro", "Macro 1");
@@ -674,7 +702,7 @@ mod tests {
             let drums = StripId::Track(0);
             let mut s = Session::new();
             s.press("header", "tab", "Mix");
-            s.press("mixer", "insert", "Filter · DJ");
+            open_effect(&mut s, "Drums", "Filter · DJ");
             s.press("chain", "knob", "Position");
             s.press("chain", "learn", "Learn");
             let n = s.sent.len();
@@ -798,6 +826,13 @@ mod tests {
             s.press("mixer", "solo", "Drums S");
             assert!(s.mix.mixer.is_audible(synth));
 
+            // The strip's sends summary: the Sends look, a row a strip
+            // (touch plan A7).
+            s.press("mixer", "strip-path", "Drums sends");
+            assert_eq!(
+                mpfree_mixer_ui::look(&s.screen.ui),
+                mpfree_mixer_ui::Look::Sends
+            );
             let a0 = p(&s, mx::send(0));
             s.press("mixer", "send", "Drums send A");
             assert!(p(&s, mx::send(0)) > a0, "send A went up");
@@ -874,7 +909,7 @@ mod tests {
         on_big_stack(|| {
             let mut s = Session::new();
             s.press("header", "tab", "Mix");
-            s.press("mixer", "insert", "Filter · DJ");
+            open_effect(&mut s, "Drums", "Filter · DJ");
             s.press("chain", "knob", "Resonance");
             assert!(s.control("chain", "depth", "").is_none());
             s.press("chain", "add-lfo", "+ LFO").run_for(0.1);

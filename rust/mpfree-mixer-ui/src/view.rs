@@ -24,7 +24,8 @@
 use std::cell::{Cell, RefCell};
 
 use mpfree_fx::ids::mixer::{self as mx, output};
-use mpfree_fx::{StripId, BUSES, SILENT_DB};
+use mpfree_fx::{StripId, BUSES, RETURNS, SILENT_DB};
+use mpfree_ui::touch::Class;
 use mpfree_ui::{
     Align, Color, Commit, Consequence, Context, EventKind, Fingers, FontId, PaintCx, Rect, Target,
     Theme, Timing, Tone, Touch, Widget,
@@ -118,27 +119,35 @@ pub enum MixAction {
     },
 }
 
-/// The Mix tab's three looks of the same strips (layout spec section
-/// 3a): Faders, the strips side by side; Effects, each strip's chain as a
-/// row of slots; and EQ, each strip's EQ as a curve. On Effects and EQ the
-/// master's row is pinned under the strips'.
+/// The Mix tab's four looks of the same strips (layout spec section
+/// 3a): Faders, the strips side by side; Sends, each strip's pan, sends
+/// and output as a row (the touch plan's A7); Effects, each strip's chain
+/// as a row of slots; and EQ, each strip's EQ as a curve. On Sends,
+/// Effects and EQ the master's row is pinned under the strips'.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Look {
     #[default]
     Faders,
+    Sends,
     Effects,
     Eq,
 }
 
 impl Look {
-    pub const ALL: [Look; 3] = [Look::Faders, Look::Effects, Look::Eq];
+    pub const ALL: [Look; 4] = [Look::Faders, Look::Sends, Look::Effects, Look::Eq];
 
     pub fn label(self) -> &'static str {
         match self {
             Look::Faders => "Faders",
+            Look::Sends => "Sends",
             Look::Effects => "Effects",
             Look::Eq => "EQ",
         }
+    }
+
+    /// A look of rows, a strip a row, rather than strips side by side.
+    pub fn rows(self) -> bool {
+        self != Look::Faders
     }
 }
 
@@ -215,7 +224,7 @@ const MIN_CHIP_W: i32 = 124;
 const IO_CHIP_W: i32 = 76;
 const ARROW_W: i32 = 52;
 const PAGE_W: i32 = 120;
-/// The Faders, Effects and EQ toggle.
+/// The Faders, Sends, Effects and EQ toggle.
 const LOOK_W: i32 = 246;
 /// The view chips without their counts, when the full ones don't fit
 /// beside the toggle (the Mix tab beside the Q-Link column): Tracks,
@@ -409,20 +418,24 @@ fn layout(r: Rect) -> Layout {
     }
 }
 
-/// The toggle's parts: Faders, Effects, EQ.
-fn look_halves(r: Rect) -> [Rect; 3] {
+/// The toggle's parts: Faders, Sends, Effects, EQ, each as wide as its
+/// word needs (EQ the narrowest).
+fn look_halves(r: Rect) -> [Rect; 4] {
+    const WEIGHTS: [i32; 4] = [6, 6, 7, 4];
     let inner = r.inset(4);
-    let w = (inner.w - 8) / 3;
-    [
-        Rect::new(inner.x, inner.y, w, inner.h),
-        Rect::new(inner.x + w + 4, inner.y, w, inner.h),
-        Rect::new(
-            inner.x + 2 * (w + 4),
-            inner.y,
-            inner.w - 2 * (w + 4),
-            inner.h,
-        ),
-    ]
+    let room = inner.w - 3 * 4;
+    let total: i32 = WEIGHTS.iter().sum();
+    let mut x = inner.x;
+    std::array::from_fn(|i| {
+        let w = if i == 3 {
+            inner.right() - x
+        } else {
+            room * WEIGHTS[i] / total
+        };
+        let h = Rect::new(x, inner.y, w, inner.h);
+        x += w + 4;
+        h
+    })
 }
 
 /// The Effects look: the panel over the strips and the master, a title
@@ -530,69 +543,133 @@ fn row_sub(s: &StripView) -> String {
     parts.join(" · ")
 }
 
-/// The parts of one strip.
+/// The parts of one strip (layout spec 3a; the touch plan's A7). In
+/// Make: the name, the chain's summary (a tap opens the Effects look) and
+/// the signal's (sends, pan and output; a tap opens the Sends look), the
+/// fader, the level, and M and S stacked full width (and Arm on an input).
+/// In Perform: the name, a pan row that only drags, a longer fader, the
+/// level shown, and two big slots (MUTE and SOLO). The master has no
+/// buttons: its Limit (Make) or its safety (Perform) where they go.
 struct Parts {
     name: Rect,
-    inserts: [Rect; 4],
-    sends: [Rect; 4],
-    /// The sends' area, which the master uses for Master safety.
-    send_area: Rect,
+    /// Make: the chain's summary.
+    fx: Rect,
+    /// Make: the sends, pan and output (the master: its safety).
+    path: Rect,
+    /// Perform: the pan row.
     pan: Rect,
     fader: Rect,
     value: Rect,
-    buttons: Rect,
-    output: Rect,
+    /// The buttons, top first ([`Parts::n`] of them).
+    buttons: [Rect; 3],
+    n: usize,
+    /// Where the buttons go, all of them.
+    button_area: Rect,
 }
 
-fn parts(s: Rect) -> Parts {
-    parts_with(s, 0)
+impl Parts {
+    /// The buttons there are: M and S, and Arm on an input in Make.
+    fn buttons(&self) -> &[Rect] {
+        &self.buttons[..self.n]
+    }
 }
+
+/// A strip's name block, its colour stripe at the top.
+const NAME_H: i32 = 44;
+/// Make: the chain's summary (Dense, a row of one kind across the page).
+const FX_H: i32 = 44;
+/// Make: the sends, pan and output (Normal).
+const PATH_H: i32 = 64;
+/// Make: M and S, full width and stacked (Normal), and an input's Arm
+/// under them (Dense).
+const MAKE_BUTTON_H: i32 = 64;
+/// MUTE and SOLO are easily confused: 12 px apart (layout spec 1a).
+const MAKE_BUTTON_GAP: i32 = 12;
+const ARM_H: i32 = 44;
+/// Perform: the pan row, and the two slots with a dead gap between
+/// (MUTE and SOLO, 92 x 85 px: 10.8 x 10 mm).
+const PAN_ROW_H: i32 = 44;
+const SLOT_H: i32 = 85;
+const SLOT_GAP: i32 = 12;
+/// The level under the fader.
+const VALUE_H: i32 = 24;
+/// Between a strip's parts: independent actions (layout spec 1a).
+const PART_GAP: i32 = 8;
 
 /// A strip's tag under its name (phase 4, board 6): two lines.
 const TAG_H: i32 = 34;
 
-/// The parts of strip `v` at `s`: a tagged strip's name block is taller,
-/// its fader shorter.
-fn parts_of(s: Rect, v: &StripView) -> Parts {
-    parts_with(s, if v.tag.is_some() { TAG_H } else { 0 })
+/// The parts of strip `v` at `s`, in Make or (`perform`) in Perform: a
+/// tagged strip's name block is taller, its fader shorter.
+fn parts_of(s: Rect, v: &StripView, perform: bool) -> Parts {
+    let tag = if v.tag.is_some() { TAG_H } else { 0 };
+    let arm = v.input.is_some() && !perform;
+    parts_with(s, tag, perform, arm)
 }
 
-fn parts_with(s: Rect, tag: i32) -> Parts {
+fn parts_with(s: Rect, tag: i32, perform: bool, arm: bool) -> Parts {
     let inner = s.inset_xy(6, 6);
-    let (name, rest) = inner.take_top(30 + tag);
-    let rest = rest.take_top(6).1;
-    let (ins, rest) = rest.take_top(4 * 24);
-    let rest = rest.take_top(6).1;
-    let (send_area, rest) = rest.take_top(4 * 20);
-    let rest = rest.take_top(6).1;
-    let (pan, rest) = rest.take_top(26);
-    let rest = rest.take_top(8).1;
-    let (output, rest) = rest.take_bottom(30);
-    let rest = rest.take_bottom(6).1;
-    let (buttons, rest) = rest.take_bottom(36);
-    let rest = rest.take_bottom(6).1;
-    let (value, rest) = rest.take_bottom(22);
-    let fader = rest.take_bottom(6).1;
-    let row = |area: Rect, i: i32, h: i32| Rect::new(area.x, area.y + i * h, area.w, h - 3);
+    let (name, rest) = inner.take_top(NAME_H + tag);
+    let rest = rest.take_top(PART_GAP).1;
+    let mut buttons = [Rect::default(); 3];
+    if perform {
+        let (pan, rest) = rest.take_top(PAN_ROW_H);
+        // The pan and the fader are both played: 12 px apart.
+        let rest = rest.take_top(SLOT_GAP).1;
+        let (button_area, rest) = rest.take_bottom(2 * SLOT_H + SLOT_GAP);
+        let (mute, solo) = button_area.take_top(SLOT_H);
+        buttons[0] = mute;
+        buttons[1] = solo.take_bottom(SLOT_H).0;
+        let rest = rest.take_bottom(6).1;
+        let (value, rest) = rest.take_bottom(VALUE_H);
+        let fader = rest.take_bottom(4).1;
+        return Parts {
+            name,
+            fx: Rect::default(),
+            path: Rect::default(),
+            pan,
+            fader,
+            value,
+            buttons,
+            n: 2,
+            button_area,
+        };
+    }
+    let (fx, rest) = rest.take_top(FX_H);
+    let rest = rest.take_top(PART_GAP).1;
+    let (path, rest) = rest.take_top(PATH_H);
+    let rest = rest.take_top(PART_GAP).1;
+    let area_h = 2 * MAKE_BUTTON_H + MAKE_BUTTON_GAP + if arm { PART_GAP + ARM_H } else { 0 };
+    let (button_area, rest) = rest.take_bottom(area_h);
+    let (m, more) = button_area.take_top(MAKE_BUTTON_H);
+    let more = more.take_top(MAKE_BUTTON_GAP).1;
+    let (solo, more) = more.take_top(MAKE_BUTTON_H);
+    buttons[0] = m;
+    buttons[1] = solo;
+    if arm {
+        buttons[2] = more.take_top(PART_GAP).1.take_top(ARM_H).0;
+    }
+    // A level and MUTE are easily confused: 12 px apart (layout spec 1a).
+    let rest = rest.take_bottom(MAKE_BUTTON_GAP).1;
+    let (value, rest) = rest.take_bottom(VALUE_H);
+    let fader = rest.take_bottom(PART_GAP).1;
     Parts {
         name,
-        inserts: std::array::from_fn(|i| row(ins, i as i32, 24)),
-        sends: std::array::from_fn(|i| row(send_area, i as i32, 20)),
-        send_area,
-        pan,
+        fx,
+        path,
+        pan: Rect::default(),
         fader,
         value,
         buttons,
-        output,
+        n: if arm { 3 } else { 2 },
+        button_area,
     }
 }
 
-/// A strip's insert rows as one area (an input's first two: the last two
-/// are its Source and Monitor).
-fn insert_area(p: &Parts, s: &StripView) -> Rect {
-    let n = if s.input.is_some() { 2 } else { 4 };
-    let (a, b) = (p.inserts[0], p.inserts[n - 1]);
-    Rect::new(a.x, a.y, a.w, b.bottom() - a.y)
+/// Row `k`'s cells on the Sends look of a panel at `r` (the samples and
+/// tests aim at them).
+pub(crate) fn sends_cells(r: Rect, k: usize) -> crate::sends_look::Row {
+    crate::sends_look::row_parts(grid(&layout(r)).row(k), FX_NAME_W)
 }
 
 /// The fader's travel inside its area: (top, bottom) of the cap's centre.
@@ -611,14 +688,6 @@ fn fader_columns(f: Rect, master: bool) -> (Rect, Rect, Rect) {
     let meter_w = if master { 30 } else { 16 };
     let (meter, track) = rest.take_right(meter_w);
     (scale, track, meter)
-}
-
-/// M, S and (on an input) Arm buttons.
-fn buttons(b: Rect, n: i32) -> Vec<Rect> {
-    let w = (b.w - (n - 1) * 4) / n;
-    (0..n)
-        .map(|i| Rect::new(b.x + i * (w + 4), b.y, w, b.h))
-        .collect()
 }
 
 /// What a finger is doing.
@@ -658,6 +727,9 @@ enum Grab {
     /// The level under a fader: let go on it, the number pad opens
     /// ([`MixAction::TypeLevel`]); slid off first, nothing.
     Level { id: StripId, at: Rect },
+    /// A button that acts on the lift inside it (layout spec 1a): slid
+    /// off first, nothing.
+    Tap { id: StripId, what: Tap, at: Rect },
     /// A curve on the EQ look, the dot under the finger if any: a tap
     /// picks the EQ (and the band), a tap again opens it; a dot that moves
     /// past the lift follows the finger.
@@ -669,6 +741,22 @@ enum Grab {
         y0: i32,
         moved: bool,
     },
+}
+
+/// What a [`Grab::Tap`] does when the finger lifts on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tap {
+    /// A Make strip's chain summary: the Effects look on its row.
+    Effects,
+    /// A Make strip's sends, pan and output: the Sends look on its row.
+    Sends,
+    Mute,
+    Solo,
+    Arm,
+    /// Send `k`'s pre toggle on the Sends look.
+    Pre(usize),
+    /// The output picker.
+    Output,
 }
 
 /// The choices of the output picker: (OUTPUT value, track), in order.
@@ -699,8 +787,11 @@ enum Dirty {
 /// The mixer panel. See the module docs.
 pub struct MixerView {
     state: MixState,
-    /// Faders or Effects.
+    /// Faders, Sends, Effects or EQ.
     look: Look,
+    /// The project is in Perform: Faders draws the Perform strip (big
+    /// MUTE and SOLO, a longer fader, nothing else to hit by mistake).
+    perform: bool,
     /// The effect picked on the Effects look, or the EQ on the EQ look:
     /// (strip, slot).
     pick: Option<(StripId, usize)>,
@@ -739,16 +830,21 @@ impl Default for MixerView {
 }
 
 impl MixerView {
-    /// The strip a fader, pan or send target (the Faders look) is on, and
-    /// which send (0 for a fader or a pan).
+    /// The strip a fader, pan or send target (the Faders or Sends look) is
+    /// on, and which send (0 for a fader or a pan).
     fn strip_of(&self, t: &Target, r: Rect) -> Option<(StripId, usize)> {
         let l = layout(r);
-        let mut strips: Vec<StripId> = self
-            .shown(&l)
-            .into_iter()
-            .map(|(i, _)| self.state.strips[i].id)
-            .collect();
-        strips.push(self.state.master.id);
+        let strips: Vec<StripId> = if self.look == Look::Sends {
+            self.sends_rows(&l).into_iter().map(|(id, _)| id).collect()
+        } else {
+            let mut v: Vec<StripId> = self
+                .shown(&l)
+                .into_iter()
+                .map(|(i, _)| self.state.strips[i].id)
+                .collect();
+            v.push(self.state.master.id);
+            v
+        };
         let (k, j) = match t.id {
             "send" => (t.index / 4, t.index % 4),
             _ => (t.index, 0),
@@ -781,6 +877,7 @@ impl MixerView {
         MixerView {
             state: MixState::default(),
             look: Look::Faders,
+            perform: false,
             pick: None,
             eq_dot: None,
             eq_curves: RefCell::new(Vec::new()),
@@ -811,7 +908,7 @@ impl MixerView {
                 Grab::Fader { id, .. } => (id, vec![mx::VOLUME]),
                 Grab::Pan { id, .. } => (id, vec![mx::PAN]),
                 Grab::Send { id, r, .. } => (id, vec![mx::send(r)]),
-                Grab::Fx { .. } | Grab::Level { .. } => continue,
+                Grab::Fx { .. } | Grab::Level { .. } | Grab::Tap { .. } => continue,
                 Grab::Eq {
                     id,
                     slot,
@@ -923,9 +1020,28 @@ impl MixerView {
         }
     }
 
-    /// The look showing: Faders or Effects.
+    /// The look showing: Faders, Sends, Effects or EQ.
     pub fn look(&self) -> Look {
         self.look
+    }
+
+    /// Whether Faders draws the Perform strip.
+    pub fn perform(&self) -> bool {
+        self.perform
+    }
+
+    /// The project went to Perform (`on`) or back to Make: Faders draws
+    /// its strips for it. The same mixer state drawn another way: no
+    /// value, selection or routing changes. A menu or the output picker
+    /// closes, and a finger on a strip lets go.
+    pub fn set_perform(&mut self, on: bool) {
+        if on != self.perform {
+            self.perform = on;
+            self.menu = None;
+            self.picker = None;
+            self.grabs.clear();
+            self.mark(Dirty::All);
+        }
     }
 
     /// Shows look `l` (TRACK MIX opens on Faders), as a tap on the toggle
@@ -959,7 +1075,7 @@ impl MixerView {
     fn page_size(&self, l: &Layout) -> usize {
         match self.look {
             Look::Faders => l.per_page,
-            Look::Effects | Look::Eq => grid(l).rows.min(l.per_page.max(1)),
+            Look::Sends | Look::Effects | Look::Eq => grid(l).rows.min(l.per_page.max(1)),
         }
     }
 
@@ -1190,6 +1306,10 @@ impl MixerView {
             self.eq_down(finger, x, y, &l);
             return;
         }
+        if self.look == Look::Sends {
+            self.sends_down(finger, x, y, &l);
+            return;
+        }
         let mut hits: Vec<(StripId, Rect)> = self
             .shown(&l)
             .into_iter()
@@ -1202,64 +1322,22 @@ impl MixerView {
         let Some(s) = self.state.strip(id).cloned() else {
             return;
         };
-        let p = parts_of(sr, &s);
+        let p = parts_of(sr, &s, self.perform);
         if p.name.contains(x, y) {
-            if self.state.selected == Some(id) {
-                if self.state.takes {
-                    self.menu = Some(id);
-                }
-            } else {
-                self.state.selected = Some(id);
-                self.push(MixAction::Select(id));
-            }
+            self.name_down(id);
             return;
         }
-        for (i, row) in p.inserts.iter().enumerate() {
-            if !row.contains(x, y) {
-                continue;
-            }
-            if let Some(inp) = s.input.filter(|_| i >= 2) {
-                if i == 2 {
-                    self.set(id, mx::SOURCE, f32::from((inp.source + 1) % 4));
-                } else {
-                    self.set(id, mx::MONITOR, f32::from((inp.monitor + 1) % 3));
-                }
-            } else if i == 3 && s.inserts.len() > 4 {
-                // "+N more": the strip's first hidden slot.
-                self.push(MixAction::OpenInsert { strip: id, slot: 3 });
-            } else if i < s.inserts.len() {
-                self.push(MixAction::OpenInsert { strip: id, slot: i });
-            } else if s.inserts.len() < s.slots {
-                // Every empty row is one "+ FX" button.
-                self.push(MixAction::AddInsert { strip: id });
-            }
+        let tap = |what: Tap, at: Rect| Grab::Tap { id, what, at };
+        if !self.perform && p.fx.contains(x, y) {
+            self.grabs.put(finger, tap(Tap::Effects, p.fx));
             return;
         }
-        if let Some(sends) = s.sends {
-            for (k, row) in p.sends.iter().enumerate() {
-                if !row.contains(x, y) {
-                    continue;
-                }
-                let (letter, bar) = row.take_left(18);
-                if letter.contains(x, y) {
-                    self.set(id, mx::send_pre(k), if sends[k].pre { 0.0 } else { 1.0 });
-                } else {
-                    let w = (bar.w - 34).max(1) as f32;
-                    self.grabs.put(
-                        finger,
-                        Grab::Send {
-                            id,
-                            r: k,
-                            x0: x,
-                            pos0: db_to_pos(sends[k].db),
-                            w,
-                        },
-                    );
-                }
-                return;
-            }
+        if !self.perform && p.path.contains(x, y) && id != StripId::Master {
+            self.grabs.put(finger, tap(Tap::Sends, p.path));
+            return;
         }
-        if p.pan.contains(x, y) {
+        if self.perform && p.pan.contains(x, y) {
+            // The pan row only drags: a tap leaves it.
             self.grabs.put(
                 finger,
                 Grab::Pan {
@@ -1285,25 +1363,161 @@ impl MixerView {
             );
             return;
         }
-        if p.value.contains(x, y) {
+        if !self.perform && p.value.contains(x, y) {
             self.grabs.put(finger, Grab::Level { id, at: p.value });
             return;
         }
-        if p.buttons.contains(x, y) && id != StripId::Master {
-            let n = if s.input.is_some() { 3 } else { 2 };
-            let b = buttons(p.buttons, n);
-            if b[0].contains(x, y) {
-                self.set(id, mx::MUTE, if s.mute { 0.0 } else { 1.0 });
-            } else if b[1].contains(x, y) {
-                self.set(id, mx::SOLO, if s.solo { 0.0 } else { 1.0 });
-            } else if n == 3 && b[2].contains(x, y) {
+        if id == StripId::Master {
+            return;
+        }
+        let what = [Tap::Mute, Tap::Solo, Tap::Arm];
+        let Some(k) = p.buttons().iter().position(|b| b.contains(x, y)) else {
+            return;
+        };
+        if self.perform {
+            // Perform's slots act as the finger lands: timing matters.
+            self.tap(id, what[k]);
+        } else {
+            // Make's act on the lift, so a slip slides off (Jay's second
+            // review: a studio mute is release-inside).
+            self.grabs.put(finger, tap(what[k], p.buttons[k]));
+        }
+    }
+
+    /// A strip's name pressed (Faders, Sends, Effects, EQ): it is selected
+    /// for the Q-Links; the selected one's opens its menu, with takes.
+    fn name_down(&mut self, id: StripId) {
+        if self.state.selected == Some(id) {
+            if self.state.takes {
+                self.menu = Some(id);
+            }
+        } else {
+            self.state.selected = Some(id);
+            self.push(MixAction::Select(id));
+        }
+    }
+
+    /// What a [`Tap`] does on strip `id`.
+    fn tap(&mut self, id: StripId, what: Tap) {
+        let Some(s) = self.state.strip(id).cloned() else {
+            return;
+        };
+        match what {
+            Tap::Effects | Tap::Sends => {
+                if self.state.selected != Some(id) {
+                    self.state.selected = Some(id);
+                    self.push(MixAction::Select(id));
+                }
+                let look = if what == Tap::Effects {
+                    Look::Effects
+                } else {
+                    Look::Sends
+                };
+                self.set_look(look);
+                self.push(MixAction::Look(look));
+            }
+            Tap::Mute => self.set(id, mx::MUTE, if s.mute { 0.0 } else { 1.0 }),
+            Tap::Solo => self.set(id, mx::SOLO, if s.solo { 0.0 } else { 1.0 }),
+            Tap::Arm => {
                 let arm = s.input.is_some_and(|i| i.arm);
                 self.set(id, mx::ARM, if arm { 0.0 } else { 1.0 });
             }
+            Tap::Pre(k) => {
+                if let Some(sends) = s.sends {
+                    self.set(id, mx::send_pre(k), if sends[k].pre { 0.0 } else { 1.0 });
+                }
+            }
+            Tap::Output => {
+                if s.has_output() {
+                    self.picker = Some(id);
+                }
+            }
+        }
+    }
+
+    /// The Sends look's rows on this page and the master's, pinned:
+    /// (strip, row).
+    fn sends_rows(&self, l: &Layout) -> Vec<(StripId, Rect)> {
+        let mut rows: Vec<(StripId, Rect)> = self
+            .rows(l)
+            .into_iter()
+            .map(|(i, row)| (self.state.strips[i].id, row))
+            .collect();
+        rows.push((StripId::Master, grid(l).master));
+        rows
+    }
+
+    /// A finger on the Sends look: a strip's name selects it (again: its
+    /// menu, with takes); the pan and a send's level drag from where the
+    /// finger lands; a send's pre and the output act on the lift.
+    fn sends_down(&mut self, finger: u64, x: i32, y: i32, l: &Layout) {
+        let Some((id, row)) = self
+            .sends_rows(l)
+            .into_iter()
+            .find(|(_, row)| row.contains(x, y))
+        else {
+            return;
+        };
+        let Some(s) = self.state.strip(id).cloned() else {
+            return;
+        };
+        let r = crate::sends_look::row_parts(row, FX_NAME_W);
+        if r.name.contains(x, y) {
+            self.name_down(id);
             return;
         }
-        if p.output.contains(x, y) && s.has_output() {
-            self.picker = Some(id);
+        if r.pan.contains(x, y) {
+            self.grabs.put(
+                finger,
+                Grab::Pan {
+                    id,
+                    x0: x,
+                    v0: s.pan,
+                    w: r.pan.w.max(1) as f32,
+                    moved: false,
+                },
+            );
+            return;
+        }
+        if r.output.contains(x, y) && s.has_output() {
+            self.grabs.put(
+                finger,
+                Grab::Tap {
+                    id,
+                    what: Tap::Output,
+                    at: r.output,
+                },
+            );
+            return;
+        }
+        let Some(sends) = s.sends else {
+            return;
+        };
+        for k in 0..RETURNS {
+            if r.pre[k].contains(x, y) {
+                self.grabs.put(
+                    finger,
+                    Grab::Tap {
+                        id,
+                        what: Tap::Pre(k),
+                        at: r.pre[k],
+                    },
+                );
+                return;
+            }
+            if r.send[k].contains(x, y) {
+                self.grabs.put(
+                    finger,
+                    Grab::Send {
+                        id,
+                        r: k,
+                        x0: x,
+                        pos0: db_to_pos(sends[k].db),
+                        w: r.send[k].w.max(1) as f32,
+                    },
+                );
+                return;
+            }
         }
     }
 
@@ -1587,7 +1801,7 @@ impl MixerView {
                 }
                 self.eq_drag(id, slot, dot, x, y, r);
             }
-            Grab::Eq { .. } | Grab::Level { .. } => {}
+            Grab::Eq { .. } | Grab::Level { .. } | Grab::Tap { .. } => {}
             Grab::Fx {
                 id,
                 from,
@@ -1670,6 +1884,11 @@ impl MixerView {
         let Some(g) = self.grabs.take(finger) else {
             return;
         };
+        if let Grab::Tap { id, what, at } = g {
+            if !cancel && at.contains(x, y) {
+                self.tap(id, what);
+            }
+        }
         if let Grab::Level { id, at } = g {
             let s = self
                 .state
@@ -1856,7 +2075,7 @@ impl MixerView {
 
     fn paint_strip(&self, cx: &mut PaintCx, s: &StripView, sr: Rect) {
         let t = cx.theme.clone();
-        let p = parts_of(sr, s);
+        let p = parts_of(sr, s, self.perform);
         let master = s.id == StripId::Master;
         let selected = self.state.selected == Some(s.id);
         cx.canvas.fill_round_rect(sr, t.round(12), t.surface);
@@ -1922,234 +2141,33 @@ impl MixerView {
         if master {
             self.paint_cost(cx, label, false);
         }
-        // Inserts (an input's last two rows are its Source and Monitor).
-        for (i, row) in p.inserts.iter().enumerate() {
-            if let Some(inp) = s.input.filter(|_| i >= 2) {
-                let (k, v) = if i == 2 {
-                    ("Src", choice(mx::SOURCE, inp.source))
-                } else {
-                    ("Mon", choice(mx::MONITOR, inp.monitor))
-                };
-                cx.canvas.fill_round_rect(*row, t.round(6), t.raised);
-                cx.text(
-                    FontId::Sans,
-                    t.size_small,
-                    row.inset_xy(7, 0),
-                    Align::Left,
-                    t.text_dim,
-                    k,
-                );
-                cx.text(
-                    FontId::Bold,
-                    t.size_small,
-                    row.inset_xy(7, 0),
-                    Align::Right,
-                    t.text,
-                    v,
-                );
-                continue;
-            }
-            let more = s.inserts.len() > 4 && i == 3;
-            if more {
-                cx.canvas.stroke_round_rect(*row, t.round(6), 1, t.outline);
-                cx.text(
-                    FontId::Sans,
-                    t.size_small,
-                    row.inset_xy(7, 0),
-                    Align::Left,
-                    t.text_dim,
-                    &format!("+{} more", s.inserts.len() - 3),
-                );
-            } else if let Some(ins) = s.inserts.get(i) {
-                cx.canvas.fill_round_rect(
-                    *row,
-                    t.round(6),
-                    if ins.on {
-                        t.raised
-                    } else {
-                        t.surface.mix(t.raised, 0.4)
-                    },
-                );
-                if let Some(c) = ins.cost_pct {
-                    let w = ((row.w as f32) * (c / 10.0).clamp(0.0, 1.0)) as i32;
-                    cx.canvas.fill_round_rect(
-                        Rect::new(row.x, row.bottom() - 3, w.max(2), 3),
-                        1,
-                        if c <= 2.0 {
-                            t.good
-                        } else if c <= 5.0 {
-                            t.warn
-                        } else {
-                            t.bad
-                        },
-                    );
-                }
-                let inner = row.inset_xy(7, 0);
-                let sc = ins.key.is_some() || ins.nothing_picked;
-                let (tag, name_r) = if sc {
-                    inner.take_right(22)
-                } else {
-                    (Rect::default(), inner)
-                };
-                cx.text(
-                    FontId::Sans,
-                    t.size_small,
-                    name_r,
-                    Align::Left,
-                    t.button_ink(ins.on),
-                    &ins.name,
-                );
-                if sc {
-                    // It listens to another strip (a sidechain); red when
-                    // none is picked.
-                    cx.text(
-                        FontId::Bold,
-                        t.size_small - 3.0,
-                        tag,
-                        Align::Right,
-                        if ins.nothing_picked { t.bad } else { t.accent },
-                        "SC",
-                    );
-                }
-            } else if i == s.inserts.len() && s.inserts.len() < s.slots {
-                // The empty rows as one "+ FX" button (Jay after live
-                // test 3: "+ Insert" was too small and unclear).
-                let last = if s.input.is_some() { 1 } else { 3 };
-                let b = Rect::new(row.x, row.y, row.w, p.inserts[last].bottom() - row.y);
-                cx.canvas.fill_round_rect(b, t.round(6), t.raised);
-                cx.canvas.stroke_round_rect(b, t.round(6), 1, t.outline);
-                cx.text(FontId::Bold, t.size_small, b, Align::Center, t.text, "+ FX");
-            }
+        if self.perform {
+            self.paint_perform_strip(cx, s, &p);
+            return;
         }
-        self.paint_freeze(cx, s, insert_area(&p, s));
-        // Sends, or Master safety on the master.
+        // The chain's summary: a tap opens the Effects look.
+        self.paint_fx_summary(cx, s, p.fx);
+        self.paint_freeze(cx, s, p.fx);
+        // The signal's: the sends, the pan and the output (a tap opens
+        // the Sends look), or the master's safety.
         if master {
-            self.paint_safety(cx, p.send_area);
-        } else if let Some(sends) = s.sends {
-            for (k, row) in p.sends.iter().enumerate() {
-                let (letter, rest) = row.take_left(18);
-                let l = ["A", "B", "C", "D"][k];
-                if sends[k].pre {
-                    cx.canvas.fill_round_rect(letter.inset_xy(1, 1), 4, t.warn);
-                    cx.text(
-                        FontId::Bold,
-                        t.size_small - 2.0,
-                        letter,
-                        Align::Center,
-                        t.ink_on(t.warn),
-                        l,
-                    );
-                } else {
-                    cx.text(
-                        FontId::Bold,
-                        t.size_small - 2.0,
-                        letter,
-                        Align::Center,
-                        t.text_dim,
-                        l,
-                    );
-                }
-                let (val, bar) = rest.take_right(34);
-                let track = Rect::new(bar.x + 3, bar.y + bar.h / 2 - 3, bar.w - 6, 6);
-                cx.canvas.fill_round_rect(track, 3, t.raised);
-                let pos = db_to_pos(sends[k].db);
-                if pos > 0.0 {
-                    cx.canvas.fill_round_rect(
-                        Rect::new(track.x, track.y, ((track.w as f32) * pos) as i32, track.h),
-                        3,
-                        if s.audible { t.accent } else { t.text_faint },
-                    );
-                }
-                let v = if sends[k].db <= SILENT_DB {
-                    "off".to_string()
-                } else {
-                    format!("{:.0}", sends[k].db)
-                };
-                cx.text(
-                    FontId::Sans,
-                    t.size_small - 2.0,
-                    val,
-                    Align::Right,
-                    if sends[k].db <= SILENT_DB {
-                        t.text_faint
-                    } else {
-                        t.text_dim
-                    },
-                    &v,
-                );
-            }
+            self.paint_safety(cx, p.path);
         } else {
-            cx.text(
-                FontId::Sans,
-                t.size_small - 2.0,
-                p.send_area.take_top(20).0,
-                Align::Left,
-                t.text_faint,
-                "No sends",
-            );
+            self.paint_path(cx, s, p.path);
         }
-        // Pan.
-        cx.canvas.fill_round_rect(p.pan, 7, t.raised);
-        let cxm = p.pan.x + p.pan.w / 2;
-        let px = cxm + ((p.pan.w / 2 - 4) as f32 * (s.pan / 100.0)) as i32;
-        let (a, b) = if px < cxm { (px, cxm) } else { (cxm, px) };
-        if b > a {
-            cx.canvas.fill_rect(
-                Rect::new(a, p.pan.y + 3, b - a, p.pan.h - 6),
-                t.accent.mix(t.raised, 0.45),
-            );
-        }
-        cx.canvas
-            .fill_rect(Rect::new(cxm, p.pan.y + 3, 1, p.pan.h - 6), t.outline);
-        cx.canvas
-            .fill_rect(Rect::new(px - 1, p.pan.y + 2, 3, p.pan.h - 4), ink);
-        cx.text(
-            FontId::Sans,
-            t.size_small - 2.0,
-            p.pan.inset_xy(6, 0),
-            Align::Left,
-            t.text_faint,
-            "Pan",
-        );
-        cx.text(
-            FontId::Bold,
-            t.size_small - 2.0,
-            p.pan.inset_xy(6, 0),
-            Align::Right,
-            ink,
-            &pan_text(s.pan),
-        );
-        // Fader and meter.
         self.paint_fader(cx, s, p.fader, master);
-        let level = db_text(s.volume_db);
-        cx.text(
-            FontId::Bold,
-            t.size_small,
-            p.value,
-            Align::Center,
-            ink,
-            &level,
-        );
-        // A dotted line under the level, as under every number that can
-        // be typed: a tap opens the number pad.
-        let w = cx
-            .measure(FontId::Bold, t.size_small, &level)
-            .min(p.value.w);
-        let (x0, y) = (p.value.x + (p.value.w - w) / 2, p.value.bottom() - 3);
-        let mut x = x0;
-        while x + 4 <= x0 + w {
-            cx.canvas.fill_rect(Rect::new(x, y, 4, 2), t.text_dim);
-            x += 8;
-        }
-        // Mute, solo, arm; the master shows its limiting.
+        self.paint_level(cx, s, p.value, true);
         if master {
+            // The master's limiting, where a strip's M goes, and where
+            // it plays.
+            let b = p.buttons[0];
             let red = self.state.safety.reduction_db;
             let tone = if red < -6.0 { t.warn } else { t.text_dim };
-            cx.canvas.fill_round_rect(p.buttons, t.round(8), t.raised);
+            cx.canvas.fill_round_rect(b, t.round(8), t.raised);
             cx.text(
                 FontId::Sans,
                 t.size_small,
-                p.buttons.inset_xy(8, 0),
+                b.inset_xy(10, 0),
                 Align::Left,
                 t.text_dim,
                 "Limit",
@@ -2157,69 +2175,295 @@ impl MixerView {
             cx.text(
                 FontId::Bold,
                 t.size_small,
-                p.buttons.inset_xy(8, 0),
+                b.inset_xy(10, 0),
                 Align::Right,
                 tone,
                 &format!("{red:.1} dB"),
             );
-        } else {
-            let arm = s.input.map(|i| i.arm);
-            let n = if arm.is_some() { 3 } else { 2 };
-            let bs = buttons(p.buttons, n);
-            let spec = [
-                ("M", s.mute, t.warn),
-                ("S", s.solo, t.picked()),
-                ("R", arm.unwrap_or(false), t.bad),
-            ];
-            for (i, b) in bs.iter().enumerate() {
-                let (txt, on, c) = spec[i];
-                cx.canvas
-                    .fill_round_rect(*b, t.round(8), if on { c } else { t.raised });
-                cx.text(
-                    FontId::Bold,
-                    t.size_body,
-                    *b,
-                    Align::Center,
-                    if on { t.ink_on(c) } else { t.text_dim },
-                    txt,
-                );
-            }
-        }
-        // Output.
-        if s.has_output() {
-            let open = self.picker == Some(s.id);
-            cx.canvas.fill_round_rect(
-                p.output,
-                t.round(8),
-                if open { t.picked() } else { t.raised },
-            );
-            let none = s.output == output::NONE as u8;
-            let c = if open {
-                t.on_picked()
-            } else if none {
-                t.warn
-            } else {
-                t.text
-            };
             cx.text(
                 FontId::Sans,
-                t.size_small,
-                p.output,
-                Align::Center,
-                c,
-                &s.output_label(),
-            );
-        } else {
-            let to = if master { "Out 1+2" } else { "Master" };
-            cx.text(
-                FontId::Sans,
-                t.size_small,
-                p.output,
+                t.size_small - 1.0,
+                p.buttons[1],
                 Align::Center,
                 t.text_faint,
-                to,
+                &format!("Pan {} · Out 1+2", pan_text(s.pan)),
+            );
+            return;
+        }
+        let arm = s.input.map(|i| i.arm);
+        let spec = [
+            ("M", s.mute, t.warn),
+            ("S", s.solo, t.picked()),
+            ("Arm", arm.unwrap_or(false), t.bad),
+        ];
+        for (b, (txt, on, c)) in p.buttons().iter().zip(spec) {
+            self.paint_button(cx, *b, txt, on, c, t.size_body + 2.0);
+        }
+    }
+
+    /// The Perform strip below its name: the pan row, the fader, the
+    /// level (shown, not typed) and the two slots; the master's safety
+    /// where they go.
+    fn paint_perform_strip(&self, cx: &mut PaintCx, s: &StripView, p: &Parts) {
+        let t = cx.theme.clone();
+        let master = s.id == StripId::Master;
+        let ink = if s.audible { t.text } else { t.text_faint };
+        // The pan row: a track with the pan's bar and a mark, L and R at
+        // its ends; it only drags.
+        let r = p.pan;
+        cx.canvas.stroke_round_rect(r, t.round(8), 1, t.outline);
+        let track = r.inset_xy(14, 0);
+        let mid = track.x + track.w / 2;
+        let px = mid + ((track.w / 2) as f32 * (s.pan / 100.0)) as i32;
+        let (a, b) = if px < mid { (px, mid) } else { (mid, px) };
+        let bar_y = r.y + r.h / 2 - 2;
+        cx.canvas
+            .fill_rect(Rect::new(track.x, bar_y + 1, track.w, 2), t.raised);
+        if b > a {
+            cx.canvas.fill_rect(
+                Rect::new(a, bar_y, b - a, 4),
+                strip_color(&t, s.id).mix(t.surface, 0.6),
             );
         }
+        cx.canvas
+            .fill_round_rect(Rect::new(px - 2, r.y + 8, 4, r.h - 16), 2, ink);
+        cx.text(
+            FontId::Sans,
+            t.size_small - 4.0,
+            r.inset_xy(5, 2).take_top(12).0,
+            Align::Left,
+            t.text_faint,
+            "L",
+        );
+        cx.text(
+            FontId::Sans,
+            t.size_small - 4.0,
+            r.inset_xy(5, 2).take_top(12).0,
+            Align::Right,
+            t.text_faint,
+            "R",
+        );
+        cx.text(
+            FontId::Sans,
+            t.size_small - 4.0,
+            r.inset_xy(5, 2).take_bottom(12).0,
+            Align::Right,
+            t.text_dim,
+            &pan_text(s.pan),
+        );
+        self.paint_fader(cx, s, p.fader, master);
+        self.paint_level(cx, s, p.value, false);
+        if master {
+            let (safety, rest) = p.button_area.take_top(80);
+            self.paint_safety(cx, safety);
+            let red = self.state.safety.reduction_db;
+            cx.text(
+                FontId::Sans,
+                t.size_small - 1.0,
+                rest.take_top(12).1.take_top(22).0.inset_xy(8, 0),
+                Align::Left,
+                if red < -6.0 { t.warn } else { t.text_dim },
+                &format!("Limit {red:.1} dB"),
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small - 1.0,
+                rest.take_bottom(22).0.inset_xy(8, 0),
+                Align::Left,
+                t.text_faint,
+                "Out 1+2",
+            );
+            return;
+        }
+        let spec = [("MUTE", s.mute, t.warn), ("SOLO", s.solo, t.picked())];
+        for (b, (txt, on, c)) in p.buttons().iter().zip(spec) {
+            self.paint_button(cx, *b, txt, on, c, t.size_body + 2.0);
+        }
+    }
+
+    /// A strip's button: lit in `c` while on.
+    fn paint_button(&self, cx: &mut PaintCx, b: Rect, txt: &str, on: bool, c: Color, size: f32) {
+        let t = cx.theme.clone();
+        cx.canvas
+            .fill_round_rect(b, t.round(10), if on { c } else { t.raised });
+        cx.text(
+            FontId::Bold,
+            size,
+            b,
+            Align::Center,
+            if on { t.ink_on(c) } else { t.text_dim },
+            txt,
+        );
+    }
+
+    /// The level under a fader; `typed`: with the dotted line every number
+    /// that can be typed has (Make: a tap opens the number pad).
+    fn paint_level(&self, cx: &mut PaintCx, s: &StripView, r: Rect, typed: bool) {
+        let t = cx.theme.clone();
+        let ink = if s.audible { t.text } else { t.text_faint };
+        let level = db_text(s.volume_db);
+        cx.text(FontId::Bold, t.size_small, r, Align::Center, ink, &level);
+        if !typed {
+            return;
+        }
+        let w = cx.measure(FontId::Bold, t.size_small, &level).min(r.w);
+        let (x0, y) = (r.x + (r.w - w) / 2, r.bottom() - 3);
+        let mut x = x0;
+        while x + 4 <= x0 + w {
+            cx.canvas.fill_rect(Rect::new(x, y, 4, 2), t.text_dim);
+            x += 8;
+        }
+    }
+
+    /// A Make strip's chain, read only: "FX 2" and the effects' names
+    /// ("FX" and "none" with none; red while a sidechain has nothing
+    /// picked), and an arrow: a tap opens the Effects look.
+    fn paint_fx_summary(&self, cx: &mut PaintCx, s: &StripView, r: Rect) {
+        let t = cx.theme.clone();
+        cx.canvas.fill_round_rect(r, t.round(8), t.raised);
+        let inner = r.inset_xy(8, 4);
+        let (arrow, words) = inner.take_right(12);
+        let (top, bottom) = words.take_top(words.h / 2);
+        let title = if s.inserts.is_empty() {
+            "FX".to_string()
+        } else {
+            format!("FX {}", s.inserts.len())
+        };
+        cx.text(
+            FontId::Bold,
+            t.size_small - 1.0,
+            top,
+            Align::Left,
+            t.text,
+            &title,
+        );
+        let unpicked = s.inserts.iter().any(|i| i.nothing_picked);
+        let names = if s.inserts.is_empty() {
+            "none".to_string()
+        } else {
+            s.inserts
+                .iter()
+                .map(|i| i.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        cx.text(
+            FontId::Sans,
+            t.size_small - 3.0,
+            bottom,
+            Align::Left,
+            if unpicked {
+                t.bad
+            } else if s.inserts.is_empty() {
+                t.text_faint
+            } else {
+                t.text_dim
+            },
+            &names,
+        );
+        cx.text(
+            FontId::Bold,
+            t.size_body,
+            arrow,
+            Align::Right,
+            t.text_dim,
+            "›",
+        );
+    }
+
+    /// A Make strip's signal, read only, in three lines: the sends that
+    /// are on (the first two, "+1" for more; one before the fader in
+    /// amber), the pan (an input: its source and monitor) and where it
+    /// goes. A tap opens the Sends look.
+    fn paint_path(&self, cx: &mut PaintCx, s: &StripView, r: Rect) {
+        let t = cx.theme.clone();
+        cx.canvas.fill_round_rect(r, t.round(8), t.raised);
+        let inner = r.inset_xy(8, 3);
+        let h = inner.h / 3;
+        let line = |i: i32| Rect::new(inner.x, inner.y + i * h, inner.w, h);
+        let size = t.size_small - 3.0;
+        match s.sends {
+            None => {
+                cx.text(
+                    FontId::Sans,
+                    size,
+                    line(0),
+                    Align::Left,
+                    t.text_faint,
+                    "No sends",
+                );
+            }
+            Some(sends) => {
+                let on: Vec<usize> = (0..RETURNS).filter(|&k| sends[k].db > SILENT_DB).collect();
+                let shown: Vec<usize> = if on.is_empty() {
+                    vec![0, 1]
+                } else {
+                    on.iter().copied().take(2).collect()
+                };
+                let mut x = line(0).x;
+                for k in shown {
+                    let letter = ["A", "B", "C", "D"][k];
+                    let (words, ink) = if sends[k].db <= SILENT_DB {
+                        (format!("{letter} off"), t.text_faint)
+                    } else if sends[k].pre {
+                        (format!("{letter} {:.0}", sends[k].db), t.warn)
+                    } else {
+                        (format!("{letter} {:.0}", sends[k].db), t.text)
+                    };
+                    let w = cx.measure(FontId::Sans, size, &words);
+                    let l0 = line(0);
+                    cx.text(
+                        FontId::Sans,
+                        size,
+                        Rect::new(x, l0.y, (l0.right() - x).max(0), l0.h),
+                        Align::Left,
+                        ink,
+                        &words,
+                    );
+                    x += w + 8;
+                }
+                if on.len() > 2 {
+                    cx.text(
+                        FontId::Sans,
+                        size,
+                        line(0),
+                        Align::Right,
+                        t.text_dim,
+                        &format!("+{}", on.len() - 2),
+                    );
+                }
+            }
+        }
+        let second = match s.input {
+            Some(inp) => format!(
+                "{} · {}",
+                choice(mx::SOURCE, inp.source),
+                choice(mx::MONITOR, inp.monitor)
+            ),
+            None => format!("Pan {}", pan_text(s.pan)),
+        };
+        cx.text(
+            FontId::Sans,
+            size,
+            line(1),
+            Align::Left,
+            t.text_dim,
+            &second,
+        );
+        let to = if s.has_output() {
+            s.output_label()
+        } else {
+            "Master".to_string()
+        };
+        let none = s.has_output() && s.output == output::NONE as u8;
+        cx.text(
+            FontId::Sans,
+            size,
+            line(2),
+            Align::Left,
+            if none { t.warn } else { t.text_dim },
+            &format!("→ {to}"),
+        );
     }
 
     /// The Effects look: each strip's chain as a row of slots, in order
@@ -2292,6 +2536,219 @@ impl MixerView {
         let line = Rect::new(g.left, g.master.y - 6, g.width, 1);
         cx.canvas.fill_rect(line, t.raised);
         self.paint_row(cx, &self.state.master, g.master);
+    }
+
+    /// The Sends look: each strip's pan, sends and output as a row, with
+    /// the master's row pinned under them.
+    fn paint_sends(&self, cx: &mut PaintCx, l: &Layout) {
+        let t = cx.theme.clone();
+        let g = grid(l);
+        cx.canvas.fill_round_rect(g.panel, 14, t.surface);
+        let rows = self.rows(l);
+        let title = match (rows.first(), rows.last()) {
+            (Some((a, _)), Some((b, _))) => format!(
+                "{} {}-{} · PAN, SENDS AND WHERE EACH GOES",
+                self.state.view.label().to_uppercase(),
+                a + 1,
+                b + 1
+            ),
+            _ => self.state.view.label().to_uppercase(),
+        };
+        cx.text(
+            FontId::Bold,
+            t.size_small - 2.0,
+            g.title,
+            Align::Left,
+            t.text_dim,
+            &title,
+        );
+        let head = crate::sends_look::row_parts(g.numbers, FX_NAME_W);
+        let small = t.size_small - 2.0;
+        cx.text(
+            FontId::Sans,
+            small,
+            head.name,
+            Align::Left,
+            t.text_faint,
+            "Strip",
+        );
+        cx.text(
+            FontId::Sans,
+            small,
+            head.pan,
+            Align::Center,
+            t.text_faint,
+            "Pan",
+        );
+        for k in 0..RETURNS {
+            let both = Rect::new(
+                head.pre[k].x,
+                head.pre[k].y,
+                head.send[k].right() - head.pre[k].x,
+                head.pre[k].h,
+            );
+            cx.text(
+                FontId::Sans,
+                small,
+                both,
+                Align::Center,
+                t.text_faint,
+                &format!("Send {}", ["A", "B", "C", "D"][k]),
+            );
+        }
+        cx.text(
+            FontId::Sans,
+            small,
+            head.output,
+            Align::Center,
+            t.text_faint,
+            "Output",
+        );
+        for (i, row) in rows {
+            self.paint_sends_row(cx, &self.state.strips[i], row);
+        }
+        let line = Rect::new(g.left, g.master.y - 6, g.width, 1);
+        cx.canvas.fill_rect(line, t.raised);
+        self.paint_sends_row(cx, &self.state.master, g.master);
+    }
+
+    /// One strip's row on the Sends look.
+    fn paint_sends_row(&self, cx: &mut PaintCx, s: &StripView, row: Rect) {
+        let t = cx.theme.clone();
+        let r = crate::sends_look::row_parts(row, FX_NAME_W);
+        self.paint_row_name(cx, s, r.name);
+        let ink = if s.audible { t.text } else { t.text_faint };
+        let color = s.color.unwrap_or_else(|| strip_color(&t, s.id));
+        // The pan: its bar from the middle and a mark.
+        let p = r.pan;
+        cx.canvas.fill_round_rect(p, t.round(8), t.raised);
+        let track = p.inset_xy(12, 0);
+        let mid = track.x + track.w / 2;
+        let px = mid + ((track.w / 2) as f32 * (s.pan / 100.0)) as i32;
+        let (a, b) = if px < mid { (px, mid) } else { (mid, px) };
+        if b > a {
+            cx.canvas.fill_rect(
+                Rect::new(a, p.y + p.h / 2 - 2, b - a, 4),
+                color.mix(t.raised, 0.6),
+            );
+        }
+        cx.canvas
+            .fill_rect(Rect::new(mid, p.y + 8, 1, p.h - 16), t.outline);
+        cx.canvas
+            .fill_round_rect(Rect::new(px - 2, p.y + 7, 4, p.h - 14), 2, ink);
+        cx.text(
+            FontId::Sans,
+            t.size_small - 2.0,
+            p.inset_xy(8, 0),
+            Align::Left,
+            t.text_dim,
+            &pan_text(s.pan),
+        );
+        // The sends: pre, and the level as a bar from the left. What is off
+        // (pre unlit, a send at off) is faded, never under 3:1 (`faded`).
+        if let Some(sends) = s.sends {
+            for k in 0..RETURNS {
+                let pre = sends[k].pre;
+                cx.canvas.fill_round_rect(
+                    r.pre[k],
+                    t.round(8),
+                    if pre { t.warn } else { t.raised },
+                );
+                cx.text(
+                    FontId::Bold,
+                    t.size_small - 2.0,
+                    r.pre[k],
+                    Align::Center,
+                    if pre {
+                        t.ink_on(t.warn)
+                    } else {
+                        t.faded(t.text, t.raised)
+                    },
+                    "pre",
+                );
+                let bar = r.send[k];
+                cx.canvas.fill_round_rect(bar, t.round(8), t.raised);
+                let on = sends[k].db > SILENT_DB;
+                if on {
+                    let w = ((bar.w as f32) * db_to_pos(sends[k].db)) as i32;
+                    let fill = if s.audible { t.accent } else { t.text_faint };
+                    cx.canvas.fill_round_rect(
+                        Rect::new(bar.x, bar.y, w.max(3), bar.h),
+                        t.round(8),
+                        fill.mix(t.raised, 0.4),
+                    );
+                    cx.canvas
+                        .fill_rect(Rect::new(bar.x + w.max(3) - 3, bar.y, 3, bar.h), fill);
+                }
+                let v = if on {
+                    format!("{:.0} dB", sends[k].db)
+                } else {
+                    "off".to_string()
+                };
+                cx.text(
+                    if on { FontId::Bold } else { FontId::Sans },
+                    t.size_small - 1.0,
+                    bar.inset_xy(8, 0),
+                    Align::Right,
+                    if on { ink } else { t.faded(t.text, t.raised) },
+                    &v,
+                );
+            }
+        } else if s.id != StripId::Master {
+            let all = Rect::new(
+                r.pre[0].x,
+                r.pre[0].y,
+                r.send[RETURNS - 1].right() - r.pre[0].x,
+                r.pre[0].h,
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small - 1.0,
+                all,
+                Align::Center,
+                t.text_faint,
+                "No sends",
+            );
+        }
+        // The output.
+        if s.has_output() {
+            let open = self.picker == Some(s.id);
+            cx.canvas.fill_round_rect(
+                r.output,
+                t.round(8),
+                if open { t.picked() } else { t.raised },
+            );
+            let none = s.output == output::NONE as u8;
+            let c = if open {
+                t.on_picked()
+            } else if none {
+                t.warn
+            } else {
+                t.text
+            };
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                r.output,
+                Align::Center,
+                c,
+                &s.output_label(),
+            );
+        } else {
+            let to = if s.id == StripId::Master {
+                "Out 1+2"
+            } else {
+                "Master"
+            };
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                r.output,
+                Align::Center,
+                t.text_faint,
+                to,
+            );
+        }
     }
 
     /// One strip's row on the Effects look.
@@ -2663,29 +3120,45 @@ impl MixerView {
         let sf = &self.state.safety;
         cx.canvas
             .fill_round_rect(area, t.round(8), t.raised.mix(t.surface, 0.5));
+        // Four rows, or three in the Make strip's 64 px (the mode as the
+        // title).
         let rows = area.inset_xy(8, 4);
-        let h = rows.h / 4;
+        let short = area.h < 76;
+        let n = if short { 3 } else { 4 };
+        let h = rows.h / n;
         let row = |i: i32| Rect::new(rows.x, rows.y + i * h, rows.w, h);
-        cx.text(
-            FontId::Bold,
-            t.size_small - 2.0,
-            row(0),
-            Align::Left,
-            t.text_dim,
-            "MASTER SAFETY",
-        );
+        if short {
+            cx.text(
+                FontId::Bold,
+                t.size_small - 3.0,
+                row(0),
+                Align::Left,
+                t.text_dim,
+                &sf.mode.to_uppercase(),
+            );
+        } else {
+            cx.text(
+                FontId::Bold,
+                t.size_small - 2.0,
+                row(0),
+                Align::Left,
+                t.text_dim,
+                "MASTER SAFETY",
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small,
+                row(1),
+                Align::Left,
+                t.text,
+                &sf.mode,
+            );
+        }
+        let size = t.size_small - if short { 3.0 } else { 1.0 };
         cx.text(
             FontId::Sans,
-            t.size_small,
-            row(1),
-            Align::Left,
-            t.text,
-            &sf.mode,
-        );
-        cx.text(
-            FontId::Sans,
-            t.size_small - 1.0,
-            row(2),
+            size,
+            row(n - 2),
             Align::Left,
             t.text_dim,
             &format!("Ceiling {:.1} dB", sf.ceiling_db),
@@ -2693,8 +3166,8 @@ impl MixerView {
         let tone = if sf.overs > 0 { t.warn } else { t.text_dim };
         cx.text(
             FontId::Sans,
-            t.size_small - 1.0,
-            row(3),
+            size,
+            row(n - 1),
             Align::Left,
             tone,
             &format!("Caught {}", sf.overs),
@@ -2889,6 +3362,51 @@ impl MixerView {
         cx.canvas
             .fill_round_rect(area, t.round(8), t.surface.mix(t.accent, 0.12));
         cx.canvas.stroke_round_rect(area, t.round(8), 1, t.accent);
+        if area.h < 60 {
+            // The Make strip's chain summary (44 px): what it is, how far
+            // (or that it waits for the loop), and the bar.
+            let inner = area.inset_xy(8, 4);
+            let (top, rest) = inner.take_top(17);
+            let (words, line, done) = match s.take {
+                Some(TakeView { print, done }) => (
+                    if print { "Print" } else { "Freeze" },
+                    match done {
+                        None => "next loop".to_string(),
+                        Some(d) => format!("{:.0} %", (d * 100.0).clamp(0.0, 100.0)),
+                    },
+                    Some(done),
+                ),
+                None => ("Frozen", format!("FX {}", s.inserts.len()), None),
+            };
+            cx.text(
+                FontId::Bold,
+                t.size_small - 2.0,
+                top,
+                Align::Left,
+                t.accent,
+                words,
+            );
+            cx.text(
+                FontId::Sans,
+                t.size_small - 3.0,
+                rest.take_top(15).0,
+                Align::Left,
+                t.text_dim,
+                &line,
+            );
+            if let Some(done) = done {
+                let bar = Rect::new(inner.x, inner.bottom() - 3, inner.w, 3);
+                cx.canvas.fill_round_rect(bar, 1, t.raised);
+                if let Some(d) = done {
+                    let w = ((bar.w as f32) * d.clamp(0.0, 1.0)) as i32;
+                    if w > 0 {
+                        cx.canvas
+                            .fill_round_rect(Rect::new(bar.x, bar.y, w, bar.h), 1, t.accent);
+                    }
+                }
+            }
+            return;
+        }
         let inner = area.inset_xy(8, 8);
         let (title, rest) = inner.take_top(24);
         match s.take {
@@ -2950,22 +3468,26 @@ impl MixerView {
         let l = layout(r);
         let profiling = self.state.cost_pct.is_some();
         let mut v: Vec<Rect> = Vec::new();
+        let perform = self.perform;
         let mut add = |sr: Rect, master: bool, s: &StripView| {
-            let p = parts_of(sr, s);
+            let p = parts_of(sr, s, perform);
             v.push(fader_columns(p.fader, master).2);
-            if s.take.is_some() {
+            if s.take.is_some() && !perform {
                 // A take's progress.
-                v.push(insert_area(&p, s));
+                v.push(p.fx);
             }
             if master {
-                v.push(p.send_area);
-                v.push(p.buttons);
+                // Its safety and its limiting.
+                v.push(p.path);
+                v.push(p.button_area);
             }
             if profiling {
-                v.extend(p.inserts);
+                v.push(p.fx);
             }
         };
-        if self.look == Look::Effects && self.state.view != MixView::Io {
+        if self.look == Look::Sends && self.state.view != MixView::Io {
+            // No meters here, nor costs or takes.
+        } else if self.look == Look::Effects && self.state.view != MixView::Io {
             // No meters here: a take's progress, and the costs while
             // profiling.
             let g = grid(&l);
@@ -2991,7 +3513,7 @@ impl MixerView {
             }
             add(l.master, true, &self.state.master);
             if profiling {
-                v.push(parts(l.master).name);
+                v.push(parts_of(l.master, &self.state.master, perform).name);
             }
         }
         if self.picker.is_some() {
@@ -3215,7 +3737,7 @@ impl MixerView {
         if self.state.view != MixView::Io {
             let shown = match self.look {
                 Look::Faders => self.shown(l).len(),
-                Look::Effects | Look::Eq => self.rows(l).len(),
+                Look::Sends | Look::Effects | Look::Eq => self.rows(l).len(),
             };
             return (self.first, shown, n);
         }
@@ -3638,13 +4160,13 @@ impl Widget for MixerView {
         if !clip.intersect(Rect::new(r.x, r.y, r.w, HEAD_H)).is_empty() {
             self.paint_head(cx, &l);
         }
-        let effects = self.look != Look::Faders && self.state.view != MixView::Io;
+        let effects = self.look.rows() && self.state.view != MixView::Io;
         if effects {
             if !clip.intersect(grid(&l).panel).is_empty() {
-                if self.look == Look::Eq {
-                    self.paint_eq(cx, &l);
-                } else {
-                    self.paint_effects(cx, &l);
+                match self.look {
+                    Look::Eq => self.paint_eq(cx, &l),
+                    Look::Sends => self.paint_sends(cx, &l),
+                    _ => self.paint_effects(cx, &l),
                 }
             }
         } else {
@@ -3795,6 +4317,75 @@ impl Widget for MixerView {
             }
             return out;
         }
+        if self.look == Look::Sends {
+            for (k, (id, row)) in self.sends_rows(&l).into_iter().enumerate() {
+                let Some(s) = self.state.strip(id) else {
+                    continue;
+                };
+                let r = crate::sends_look::row_parts(row, FX_NAME_W);
+                let name = &s.name;
+                let obj = format!("strip {:?}", s.id);
+                let edit = (Context::Make, Consequence::Disruptive, Timing::None);
+                let picked = self.state.selected == Some(s.id);
+                // The rows' cells are rows of one kind: Dense, as the
+                // Effects look's.
+                out.push(
+                    Target::tap("sends-name", k, name.clone(), r.name)
+                        .object(obj.clone())
+                        .commit(Commit::Press)
+                        .class(Class::Dense)
+                        .disabled_if(picked && !self.state.takes),
+                );
+                out.push(
+                    Target::drag("pan", k, format!("{name} pan"), r.pan)
+                        .towards(40, 0)
+                        .object(obj.clone())
+                        .class(Class::Dense)
+                        .plays(edit.0, edit.1, edit.2),
+                );
+                if let Some(_sends) = s.sends {
+                    for j in 0..RETURNS {
+                        let send = ["A", "B", "C", "D"][j];
+                        out.push(
+                            Target::tap(
+                                "send-pre",
+                                k * 4 + j,
+                                format!("{name} send {send} pre/post"),
+                                r.pre[j],
+                            )
+                            .object(obj.clone())
+                            .class(Class::Dense)
+                            .plays(
+                                Context::Make,
+                                Consequence::Minor,
+                                Timing::None,
+                            ),
+                        );
+                        out.push(
+                            Target::drag(
+                                "send",
+                                k * 4 + j,
+                                format!("{name} send {send}"),
+                                r.send[j],
+                            )
+                            .towards(40, 0)
+                            .object(obj.clone())
+                            .class(Class::Dense)
+                            .plays(edit.0, edit.1, edit.2),
+                        );
+                    }
+                }
+                if s.has_output() {
+                    out.push(
+                        Target::tap("output", k, format!("{name} output"), r.output)
+                            .object(obj.clone())
+                            .class(Class::Dense)
+                            .plays(Context::Make, Consequence::Minor, Timing::None),
+                    );
+                }
+            }
+            return out;
+        }
         if self.look == Look::Effects {
             let mut rows: Vec<(&StripView, Rect)> = self
                 .rows(&l)
@@ -3826,63 +4417,45 @@ impl Widget for MixerView {
             .collect();
         strips.push((&self.state.master, l.master));
         for (k, (s, sr)) in strips.into_iter().enumerate() {
-            let p = parts_of(sr, s);
+            let p = parts_of(sr, s, self.perform);
             let name = &s.name;
-            // What each control says about touch (layout spec 1a), as the
-            // strip acts today: its taps act on the press, except the
-            // level's, which asks for a number on the lift (#1007).
+            // What each control says about touch (layout spec 1a; the
+            // touch plan's A7): Make's taps act on the lift, Perform's
+            // MUTE and SOLO on the press.
             let obj = format!("strip {:?}", s.id);
-            let tap = |t: Target| t.object(obj.clone()).commit(Commit::Press);
             let edit = (Context::Make, Consequence::Disruptive, Timing::None);
-            // The selected strip's name opens its menu only with takes.
+            // The names across the page are a row of one kind: Dense. The
+            // selected one's opens its menu only with takes.
             let picked = self.state.selected == Some(s.id);
             out.push(
-                tap(Target::tap("strip-name", k, name.clone(), p.name))
+                Target::tap("strip-name", k, name.clone(), p.name.take_top(NAME_H).0)
+                    .object(obj.clone())
+                    .commit(Commit::Press)
+                    .class(Class::Dense)
                     .disabled_if(picked && !self.state.takes),
             );
-            let rows = if s.input.is_some() { 2 } else { 4 };
-            for (i, row) in p.inserts.iter().enumerate() {
-                if let Some(_inp) = s.input.filter(|_| i >= 2) {
-                    let id = if i == 2 { "source" } else { "monitor" };
-                    let t = Target::tap(id, k, format!("{name} {id}"), *row);
-                    out.push(tap(t).plays(edit.0, edit.1, edit.2));
-                } else if i < rows && i < s.inserts.len().min(4) {
-                    let label = s.inserts.get(i).map_or(String::new(), |v| v.name.clone());
-                    out.push(tap(Target::tap("insert", k * 4 + i, label, *row)));
-                } else if i < rows && i == s.inserts.len() && s.inserts.len() < s.slots {
-                    out.push(tap(Target::tap(
-                        "add-insert",
-                        k,
-                        format!("{name} + Insert"),
-                        *row,
-                    )));
-                }
-            }
-            if s.sends.is_some() {
-                for (j, row) in p.sends.iter().enumerate() {
-                    let (letter, bar) = row.take_left(18);
-                    let send = ["A", "B", "C", "D"][j.min(3)];
-                    let pre = Target::tap(
-                        "send-pre",
-                        k * 4 + j,
-                        format!("{name} send {send} pre/post"),
-                        letter,
-                    );
-                    out.push(tap(pre).plays(edit.0, edit.1, edit.2));
+            if !self.perform {
+                // The chain's summaries across the page: Dense, as the
+                // names; the Effects look is the bigger way in.
+                out.push(
+                    Target::tap("strip-fx", k, format!("{name} effects"), p.fx)
+                        .object(obj.clone())
+                        .class(Class::Dense),
+                );
+                if s.id != StripId::Master {
                     out.push(
-                        Target::drag("send", k * 4 + j, format!("{name} send {send}"), bar)
-                            .towards(40, 0)
-                            .object(obj.clone())
-                            .plays(edit.0, edit.1, edit.2),
+                        Target::tap("strip-path", k, format!("{name} sends"), p.path)
+                            .object(obj.clone()),
                     );
                 }
+            } else {
+                out.push(
+                    Target::drag("pan", k, format!("{name} pan"), p.pan)
+                        .towards(40, 0)
+                        .object(obj.clone())
+                        .plays(Context::Perform, Consequence::Disruptive, Timing::None),
+                );
             }
-            out.push(
-                Target::drag("pan", k, format!("{name} pan"), p.pan)
-                    .towards(40, 0)
-                    .object(obj.clone())
-                    .plays(edit.0, edit.1, edit.2),
-            );
             // A fader is played in Perform as well.
             out.push(
                 Target::drag("fader", k, format!("{name} fader"), p.fader)
@@ -3890,26 +4463,42 @@ impl Widget for MixerView {
                     .object(obj.clone())
                     .plays(Context::Both, Consequence::Disruptive, Timing::None),
             );
-            out.push(
-                Target::tap("value", k, format!("{name} level (type it)"), p.value)
-                    .object(obj.clone()),
-            );
-            if s.id != StripId::Master {
-                let n = if s.input.is_some() { 3 } else { 2 };
-                for (j, b) in buttons(p.buttons, n).into_iter().enumerate() {
-                    let id = ["mute", "solo", "arm"][j];
-                    let t = Target::tap(id, k, format!("{name} {}", ["M", "S", "Arm"][j]), b);
-                    // Played in both modes, at once.
-                    out.push(tap(t).plays(
-                        Context::Both,
+            if !self.perform {
+                // The level types a number on the lift (#1007): a small
+                // target, with Q-Link 1 and the wheel beside it.
+                out.push(
+                    Target::tap("value", k, format!("{name} level (type it)"), p.value)
+                        .object(obj.clone())
+                        .class(Class::Precision),
+                );
+            }
+            if s.id == StripId::Master {
+                continue;
+            }
+            let ids = ["mute", "solo", "arm"];
+            let words = if self.perform {
+                ["MUTE", "SOLO", "Arm"]
+            } else {
+                ["M", "S", "Arm"]
+            };
+            for (j, b) in p.buttons().iter().enumerate() {
+                let t =
+                    Target::tap(ids[j], k, format!("{name} {}", words[j]), *b).object(obj.clone());
+                out.push(if self.perform {
+                    // Played: on the press, at once.
+                    t.commit(Commit::Press).class(Class::Performance).plays(
+                        Context::Perform,
                         Consequence::Disruptive,
                         Timing::Immediate,
-                    ));
-                }
-            }
-            if s.has_output() {
-                let t = Target::tap("output", k, format!("{name} output"), p.output);
-                out.push(tap(t).plays(edit.0, edit.1, edit.2));
+                    )
+                } else if j == 2 {
+                    // An input's Arm under M and S: Dense (the pads and
+                    // REC arm too).
+                    t.class(Class::Dense)
+                        .plays(edit.0, edit.1, Timing::Immediate)
+                } else {
+                    t.plays(edit.0, edit.1, Timing::Immediate)
+                });
             }
         }
         out
@@ -3993,7 +4582,7 @@ impl Widget for MixerView {
 mod tests {
     use super::*;
     use crate::state::{default_name, InsertView, SendView, TakeView};
-    use mpfree_fx::RETURNS;
+
     use mpfree_ui::{Fonts, SoftCanvas, Ui};
 
     fn state(n: usize) -> MixState {
@@ -4029,14 +4618,30 @@ mod tests {
     }
 
     fn strip_parts(ui: &Ui, col: usize) -> Parts {
+        strip_parts_in(ui, col, false)
+    }
+
+    /// Strip `col`'s parts in Make or (`perform`) in Perform.
+    fn strip_parts_in(ui: &Ui, col: usize, perform: bool) -> Parts {
         let r = ui.rect_of(crate::MIXER).unwrap();
         let l = layout(r);
-        parts(Rect::new(
-            l.strips.x + col as i32 * (STRIP_W + GAP),
-            l.strips.y,
-            STRIP_W,
-            l.strips.h,
-        ))
+        parts_with(
+            Rect::new(
+                l.strips.x + col as i32 * (STRIP_W + GAP),
+                l.strips.y,
+                STRIP_W,
+                l.strips.h,
+            ),
+            0,
+            perform,
+            false,
+        )
+    }
+
+    /// Row `k`'s cells on the Sends look.
+    fn sends_row(ui: &Ui, k: usize) -> crate::sends_look::Row {
+        let r = ui.rect_of(crate::MIXER).unwrap();
+        crate::sends_look::row_parts(grid(&layout(r)).row(k), FX_NAME_W)
     }
 
     fn mid(r: Rect) -> (i32, i32) {
@@ -4131,7 +4736,10 @@ mod tests {
             want,
             "the screen follows at once"
         );
-        let (x, y) = mid(p.pan);
+        // The pan and the sends on the Sends look.
+        crate::set_look(&mut ui, Look::Sends);
+        ui.paint(&mut c);
+        let (x, y) = mid(sends_row(&ui, 2).pan);
         ui.focus_at(x, y);
         ui.focus_step(-3);
         assert_eq!(
@@ -4143,8 +4751,7 @@ mod tests {
             }]
         );
         // Strip 1's send B sits at -12 dB.
-        let p = strip_parts(&ui, 0);
-        let (x, y) = mid(p.sends[1].take_left(18).1);
+        let (x, y) = mid(sends_row(&ui, 0).send[1]);
         assert_eq!(ui.focus_at(x, y).unwrap().id, "send");
         ui.focus_step(1);
         let a = crate::take_actions(&mut ui);
@@ -4157,7 +4764,9 @@ mod tests {
             }]
         );
         // A mute is a tap: the wheel does not turn it.
-        let (x, y) = mid(buttons(p.buttons, 2)[0]);
+        crate::set_look(&mut ui, Look::Faders);
+        ui.paint(&mut c);
+        let (x, y) = mid(strip_parts(&ui, 0).buttons[0]);
         assert_eq!(ui.focus_at(x, y).unwrap().id, "mute");
         assert!(!ui.focus_steps());
     }
@@ -4180,14 +4789,17 @@ mod tests {
         let set = |strip, id, value| MixAction::Set { strip, id, value };
         let t0 = StripId::Track(0);
         assert_eq!(crate::take_actions(&mut ui), vec![set(t0, mx::VOLUME, 0.0)]);
-        let (x, y) = mid(p.pan);
+        crate::set_look(&mut ui, Look::Sends);
+        ui.paint(&mut c);
+        let row = sends_row(&ui, 0);
+        let (x, y) = mid(row.pan);
         ui.focus_at(x, y);
         ui.focus_step(5);
         crate::take_actions(&mut ui);
         ui.focus_reset();
         assert_eq!(crate::take_actions(&mut ui), vec![set(t0, mx::PAN, 0.0)]);
         // Send B sits at -12 dB: off.
-        let (x, y) = mid(p.sends[1].take_left(18).1);
+        let (x, y) = mid(row.send[1]);
         ui.focus_at(x, y);
         ui.focus_reset();
         assert_eq!(
@@ -4196,25 +4808,30 @@ mod tests {
         );
     }
 
+    /// Make's strip (the touch plan's A7): M and S act on the lift, and a
+    /// finger that slides off does nothing; the level asks for a number;
+    /// the chain's summary opens the Effects look and the sends' the
+    /// Sends look, each on that strip; the name selects.
     #[test]
-    fn taps_mute_solo_type_a_level_and_open_inserts_and_leave_the_pan() {
+    fn taps_mute_solo_on_the_lift_type_a_level_and_open_the_looks() {
         let mut ui = ui(state(12));
         let p = strip_parts(&ui, 0);
-        let b = buttons(p.buttons, 2);
+        let b = p.buttons;
         let tap = |ui: &mut Ui, (x, y): (i32, i32)| {
             ui.touch(9, Touch::Down, x, y);
             ui.touch(9, Touch::Up, x, y);
         };
-        tap(&mut ui, mid(b[0]));
+        let (mx_, my_) = mid(b[0]);
+        ui.touch(9, Touch::Down, mx_, my_);
+        assert_eq!(crate::take_actions(&mut ui), vec![], "nothing on the press");
+        ui.touch(9, Touch::Up, mx_, my_);
         tap(&mut ui, mid(b[1]));
         tap(&mut ui, mid(p.value));
-        tap(&mut ui, mid(p.pan));
-        tap(&mut ui, mid(p.inserts[0]));
-        tap(&mut ui, mid(p.inserts[1]));
-        // Every empty row is part of the one "+ FX" button.
-        tap(&mut ui, mid(p.inserts[3]));
-        tap(&mut ui, mid(p.sends[1].take_left(18).0));
         tap(&mut ui, mid(p.name));
+        // Slid off M before letting go: nothing.
+        ui.touch(9, Touch::Down, mx_, my_);
+        ui.touch(9, Touch::Move, mx_, b[0].y - 30);
+        ui.touch(9, Touch::Up, mx_, b[0].y - 30);
         let t0 = StripId::Track(0);
         assert_eq!(
             crate::take_actions(&mut ui),
@@ -4234,14 +4851,6 @@ mod tests {
                     db: 0.0,
                     name: default_name(t0),
                 },
-                MixAction::OpenInsert { strip: t0, slot: 0 },
-                MixAction::AddInsert { strip: t0 },
-                MixAction::AddInsert { strip: t0 },
-                MixAction::Set {
-                    strip: t0,
-                    id: mx::send_pre(1),
-                    value: 0.0
-                },
                 MixAction::Select(t0),
             ]
         );
@@ -4255,32 +4864,147 @@ mod tests {
             }],
             "a second tap unmutes"
         );
+        // The chain's summary: the Effects look, on the selected strip.
+        tap(&mut ui, mid(p.fx));
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Look(Look::Effects)]
+        );
+        assert_eq!(crate::look(&ui), Look::Effects);
+        // Strip 2's sends: it is selected, and the Sends look shows.
+        crate::set_look(&mut ui, Look::Faders);
+        let p1 = strip_parts(&ui, 1);
+        tap(&mut ui, mid(p1.path));
+        let t1 = StripId::Track(1);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Select(t1), MixAction::Look(Look::Sends)]
+        );
+        assert_eq!(crate::look(&ui), Look::Sends);
+        assert_eq!(crate::hint(&ui), crate::MIXER_HINT_SENDS);
     }
 
-    /// The strip's controls say how they act (layout spec 1a), as they act
-    /// today: M, S and the inserts on the press, played in both modes; the
-    /// fader, pan and sends follow the finger; the level asks on the lift.
-    /// Each names its strip.
+    /// Perform's strip: MUTE and SOLO act as the finger lands (a second
+    /// press undoes); the pan row only drags; the level is only shown;
+    /// nothing opens a look. The same state: switching changes no value.
+    #[test]
+    fn performs_strip_mutes_on_the_press_and_has_nothing_else_to_hit() {
+        let mut ui = ui(state(12));
+        crate::set_perform(&mut ui, true);
+        assert_eq!(crate::hint(&ui), crate::MIXER_HINT_PERFORM);
+        let p = strip_parts_in(&ui, 0, true);
+        assert_eq!((p.buttons[0].w, p.buttons[0].h), (92, 85), "10.8 x 10 mm");
+        assert_eq!(p.buttons[1].y - p.buttons[0].bottom(), 12, "a dead gap");
+        let t0 = StripId::Track(0);
+        let (x, y) = mid(p.buttons[0]);
+        ui.touch(9, Touch::Down, x, y);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Set {
+                strip: t0,
+                id: mx::MUTE,
+                value: 1.0
+            }],
+            "on the press"
+        );
+        ui.touch(9, Touch::Up, x, y);
+        // A tap on the level, between the buttons or on the pan: nothing.
+        for at in [mid(p.value), (x, p.buttons[0].bottom() + 6), mid(p.pan)] {
+            ui.touch(9, Touch::Down, at.0, at.1);
+            ui.touch(9, Touch::Up, at.0, at.1);
+        }
+        assert_eq!(crate::take_actions(&mut ui), vec![]);
+        assert_eq!(crate::look(&ui), Look::Faders);
+        let (x, y) = mid(p.buttons[1]);
+        ui.touch(9, Touch::Down, x, y);
+        ui.touch(9, Touch::Up, x, y);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::Set {
+                strip: t0,
+                id: mx::SOLO,
+                value: 1.0
+            }]
+        );
+        // The fader is longer than Make's.
+        let make = strip_parts_in(&ui, 0, false);
+        assert!(
+            p.fader.h > make.fader.h + 15,
+            "{} {}",
+            p.fader.h,
+            make.fader.h
+        );
+        crate::set_perform(&mut ui, false);
+        let v = ui.get::<MixerView>(crate::MIXER).unwrap();
+        assert!(v.state().strips[0].mute && v.state().strips[0].solo, "kept");
+    }
+
+    /// Make's buttons are big and stacked; an input's Arm under them.
+    #[test]
+    fn makes_m_and_s_are_full_width_and_stacked() {
+        let ui = ui(state(12));
+        let p = strip_parts(&ui, 0);
+        assert_eq!(p.n, 2);
+        assert_eq!((p.buttons[0].w, p.buttons[0].h), (92, 64));
+        assert_eq!(p.buttons[1].y - p.buttons[0].bottom(), 12, "M and S apart");
+        assert!(p.fader.h >= 242, "longer than 238: {}", p.fader.h);
+        let r = ui.rect_of(crate::MIXER).unwrap();
+        let l = layout(r);
+        let mut input = StripView::new(StripId::Input(0), "Line in");
+        input.input = Some(crate::InputView {
+            source: 1,
+            monitor: 2,
+            arm: false,
+        });
+        let sr = Rect::new(l.strips.x, l.strips.y, STRIP_W, l.strips.h);
+        let pi = parts_of(sr, &input, false);
+        assert_eq!(pi.n, 3);
+        assert_eq!(pi.buttons[2].h, ARM_H);
+        assert_eq!(parts_of(sr, &input, true).n, 2, "no Arm in Perform");
+    }
+
+    /// The strip's controls say how they act (layout spec 1a; the touch
+    /// plan's A7): in Make, M and S on the lift (Normal), the summaries
+    /// Dense and Normal, the level Precision; in Perform, MUTE and SOLO on
+    /// the press (Performance); the fader and pan follow the finger. Each
+    /// names its strip.
     #[test]
     fn the_strip_says_how_each_control_acts() {
         use mpfree_ui::{Class, Commit, Context, Movement};
-        let ui = ui(state(12));
+        let mut ui = ui(state(12));
         let r = ui.rect_of(crate::MIXER).unwrap();
         let all = ui.get::<MixerView>(crate::MIXER).unwrap().targets(r);
-        let find = |id: &str| all.iter().find(|t| t.id == id && t.index == 0).unwrap();
-        let mute = find("mute");
-        assert_eq!(mute.commit, Commit::Press);
-        assert_eq!(mute.context, Context::Both);
-        assert_eq!(mute.needed_class(), Class::Performance);
+        let find = |all: &[Target], id: &str| {
+            all.iter()
+                .find(|t| t.id == id && t.index == 0)
+                .cloned()
+                .unwrap()
+        };
+        let mute = find(&all, "mute");
+        assert_eq!(mute.commit, Commit::LiftInside);
+        assert_eq!(mute.context, Context::Make);
+        assert_eq!(mute.needed_class(), Class::Normal);
         assert_eq!(mute.object.as_deref(), Some("strip Track(0)"));
-        for id in ["fader", "pan"] {
-            assert_eq!(find(id).movement, Movement::Relative, "{id}");
-            assert_eq!(find(id).object, mute.object, "{id}");
-        }
-        assert_eq!(find("value").commit, Commit::LiftInside);
-        assert_eq!(find("insert").commit, Commit::Press);
-        assert_eq!(find("fader").needed_class(), Class::Performance);
-        assert_eq!(find("pan").needed_class(), Class::Normal);
+        assert_eq!(find(&all, "fader").movement, Movement::Relative);
+        assert_eq!(find(&all, "fader").object, mute.object);
+        assert_eq!(find(&all, "fader").needed_class(), Class::Performance);
+        assert_eq!(find(&all, "value").commit, Commit::LiftInside);
+        assert_eq!(find(&all, "value").needed_class(), Class::Precision);
+        assert_eq!(find(&all, "strip-fx").needed_class(), Class::Dense);
+        assert_eq!(find(&all, "strip-path").needed_class(), Class::Normal);
+        assert!(!all
+            .iter()
+            .any(|t| matches!(t.id, "pan" | "send" | "insert" | "output")));
+        crate::set_perform(&mut ui, true);
+        let all = ui.get::<MixerView>(crate::MIXER).unwrap().targets(r);
+        let mute = find(&all, "mute");
+        assert_eq!(mute.commit, Commit::Press);
+        assert_eq!(mute.context, Context::Perform);
+        assert_eq!(mute.needed_class(), Class::Performance);
+        assert_eq!(find(&all, "pan").movement, Movement::Relative);
+        assert!(!all
+            .iter()
+            .any(|t| matches!(t.id, "value" | "strip-fx" | "strip-path")));
     }
 
     /// A tap on a strip's pan leaves it where it is (the touch usability
@@ -4293,9 +5017,9 @@ mod tests {
         let mut st = state(12);
         st.strips[0].pan = -40.0;
         let mut ui = ui(st);
-        let p = strip_parts(&ui, 0);
+        crate::set_look(&mut ui, Look::Sends);
         let t0 = StripId::Track(0);
-        let (x, y) = mid(p.pan);
+        let (x, y) = mid(sends_row(&ui, 0).pan);
         ui.touch(9, Touch::Down, x, y);
         ui.touch(9, Touch::Move, x + 3, y + 1);
         ui.touch(9, Touch::Up, x + 3, y + 1);
@@ -4339,7 +5063,7 @@ mod tests {
             }]
         );
         // Slid off onto M before letting go, or cancelled: nothing.
-        let m = mid(buttons(p.buttons, 2)[0]);
+        let m = mid(p.buttons[0]);
         ui.touch(9, Touch::Down, x, y);
         ui.touch(9, Touch::Move, m.0, m.1);
         ui.touch(9, Touch::Up, m.0, m.1);
@@ -4380,9 +5104,10 @@ mod tests {
             .map(|p| StripView::new(StripId::Pad(p), default_name(StripId::Pad(p))))
             .collect();
         let mut ui = ui(st);
-        let p = strip_parts(&ui, 1);
-        let (x, y) = mid(p.output);
+        crate::set_look(&mut ui, Look::Sends);
+        let (x, y) = mid(sends_row(&ui, 1).output);
         ui.touch(1, Touch::Down, x, y);
+        assert_eq!(ui.get::<MixerView>(crate::MIXER).unwrap().picker(), None);
         ui.touch(1, Touch::Up, x, y);
         assert_eq!(
             ui.get::<MixerView>(crate::MIXER).unwrap().picker(),
@@ -4479,7 +5204,7 @@ mod tests {
                 .map(|t| t.rect)
         };
         assert!(find(&ui, "fx", 0).is_none(), "Faders first");
-        let [faders, effects, _] = look_halves(l.look);
+        let [faders, _, effects, _] = look_halves(l.look);
         tap(&mut ui, mid(effects));
         assert_eq!(
             crate::take_actions(&mut ui),
@@ -4726,7 +5451,7 @@ mod tests {
 
         // The master prints but does not freeze; a tap outside closes.
         let l = layout(r);
-        let mp = parts(l.master);
+        let mp = parts_with(l.master, 0, false, false);
         let (mx_, my_) = mid(mp.name);
         tap(&mut ui, mx_, my_);
         tap(&mut ui, mx_, my_);

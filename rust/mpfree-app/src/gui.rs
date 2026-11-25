@@ -13921,8 +13921,12 @@ impl Player {
                     self.refresh_hint();
                 }
                 if switched {
-                    // MAKE or PERFORM on the top bar.
+                    // MAKE or PERFORM on the top bar; the mixer's strips
+                    // turn with it (touch plan A7: Perform's strip is its
+                    // fader, its pan and big MUTE and SOLO).
+                    mpfree_mixer_ui::set_perform(&mut self.ui, self.time.perform);
                     self.refresh_chips();
+                    self.refresh_hint();
                 }
                 if notes && self.ready && self.view == View::Sequencer {
                     self.show_view(View::Sequencer);
@@ -25666,6 +25670,7 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     );
     eq_state.selected = Some(mpfree_fx::StripId::Track(3));
     eq_state.cost_pct = eq_state.cost_pct.map(|_| 18.0);
+    let st_sends = st.clone();
     mixer.apply(ToUi::Show(View::Mixer));
     mixer.apply(ToUi::Mixer(Box::new(st)));
     out.push(("mixer", mixer));
@@ -25693,6 +25698,22 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         let _ = eq_look.take_actions();
     }
     out.push(("mixer-eq", eq_look));
+    // The Sends look (touch plan A7): a row a strip, its pan, its four
+    // sends with their pre toggles and its output, each 44 px tall.
+    let mut sends = sample_player(fonts());
+    sends.apply(ToUi::Show(View::Mixer));
+    sends.apply(ToUi::Mixer(Box::new(st_sends.clone())));
+    mpfree_mixer_ui::set_look(&mut sends.ui, mpfree_mixer_ui::Look::Sends);
+    out.push(("mixer-sends", sends));
+    // The mixer in Perform (touch plan A7): a strip is its pan, its fader
+    // and big MUTE and SOLO, which act on the press.
+    let mut perform = sample_player(fonts());
+    let mut pst = perform.time.clone();
+    pst.perform = true;
+    perform.apply(ToUi::Time(Box::new(pst)));
+    perform.apply(ToUi::Show(View::Mixer));
+    perform.apply(ToUi::Mixer(Box::new(st_sends)));
+    out.push(("mixer-perform", perform));
     // The mixer's I/O view (the I/O icon lit), while the tempo follows a
     // clock on MIDI In: the tempo chip with its green dot.
     let mut io = sample_player(fonts());

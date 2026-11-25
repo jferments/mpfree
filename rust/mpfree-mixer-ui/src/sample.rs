@@ -336,6 +336,16 @@ pub fn shape_eqs(m: &mut Mixer) {
     }
 }
 
+/// Faders drawn for Perform, its hint with it.
+fn perform(mut ui: Ui) -> Ui {
+    crate::set_perform(&mut ui, true);
+    let hint = crate::hint(&ui);
+    if let Some(h) = ui.get_mut::<mpfree_ui::widgets::Label>("hint") {
+        h.text = hint.to_string();
+    }
+    ui
+}
+
 fn tap(ui: &mut Ui, x: i32, y: i32) {
     ui.touch(1, Touch::Down, x, y);
     ui.touch(1, Touch::Up, x, y);
@@ -365,6 +375,8 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
         Sample { name: "mixer-inputs", about: "Inputs: the line input armed and heard through a compressor (Auto monitoring); the mic on input 2 into the vocal track, not monitored", ui: screen(fonts(), inputs)? },
         Sample { name: "mixer-submixes", about: "Submixes and returns: the drum bus with glue and drive, the music bus, the reverb and delay returns", ui: screen(fonts(), buses)? },
         Sample { name: "mixer-io", about: "The I/O view, Audio: every strip with an output and where it goes, the inputs with their Source and Monitor (MIDI, Sync and CV join the list from their own crates)", ui: screen(fonts(), io)? },
+        Sample { name: "mixer-sends", about: "The Sends look: each track's pan, its four sends with their pre toggles and its output as a row, the master's pinned at the bottom (the touch plan's A7)", ui: look(screen(fonts(), tracks.clone())?, crate::Look::Sends) },
+        Sample { name: "mixer-perform", about: "Faders in Perform: each strip's name, a pan row that only drags, a longer fader, and MUTE and SOLO big and stacked (the vocal track muted)", ui: perform(screen(fonts(), tracks.clone())?) },
         Sample { name: "mixer-effects", about: "The Effects look: each track's chain as a row of eight slots in order, + FX in the first free one, the master's row pinned at the bottom", ui: effects(screen(fonts(), tracks.clone())?) },
         Sample { name: "mixer-effects-pads", about: "The Effects look on the pads: each pad channel's chain", ui: effects(screen(fonts(), pads.clone())?) },
     ];
@@ -400,7 +412,7 @@ pub fn samples(fonts: impl Fn() -> Fonts) -> Result<Vec<Sample>, String> {
     out.push(Sample { name: "mixer-tracks-page-2", about: "Track Mix, the second page: tracks 11 to 16 (the arrows, or a pad press selecting a track off the page)", ui });
     // The output picker open on the hat's pad channel.
     let mut ui = screen(fonts(), pads)?;
-    let (x, y) = output_button(&ui, 2);
+    let (x, y) = output_button(&mut ui, 2);
     tap(&mut ui, x, y);
     let _ = crate::take_actions(&mut ui);
     out.push(Sample {
@@ -492,10 +504,11 @@ pub fn eq_dot(ui: &Ui, track: usize, band: usize) -> Option<(i32, i32)> {
 }
 
 /// Where strip `col`'s output button is (the bottom of the strip).
-pub fn output_button(ui: &Ui, col: usize) -> (i32, i32) {
+pub fn output_button(ui: &mut Ui, col: usize) -> (i32, i32) {
+    crate::set_look(ui, crate::Look::Sends);
     let r = ui.rect_of(crate::MIXER).expect("the mixer page");
-    let x = r.x + col as i32 * (crate::view::STRIP_W + 6) + crate::view::STRIP_W / 2;
-    (x, r.bottom() - 6 - 15)
+    let o = crate::view::sends_cells(r, col).output;
+    (o.x + o.w / 2, o.y + o.h / 2)
 }
 
 #[cfg(test)]
@@ -506,7 +519,7 @@ mod tests {
     #[test]
     fn the_samples_read_a_real_mixer_and_paint() {
         let s = samples(Fonts::embedded).unwrap();
-        assert_eq!(s.len(), 13);
+        assert_eq!(s.len(), 15);
         let mut st = MixState::default();
         for mut sample in s {
             let mut c = SoftCanvas::new(1280, 800);
@@ -570,7 +583,7 @@ mod tests {
             MixState::from_mixer(&mut m, MixView::Pads, &name),
         )
         .unwrap();
-        let (x, y) = output_button(&ui, 2);
+        let (x, y) = output_button(&mut ui, 2);
         tap(&mut ui, x, y);
         let r = ui.rect_of(crate::MIXER).unwrap();
         let b = ui

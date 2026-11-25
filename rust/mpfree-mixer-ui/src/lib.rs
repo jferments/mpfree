@@ -4,9 +4,11 @@
 //! The Mix tab (layout spec section 3a) holds it: TRACK MIX opens the tab
 //! on the tracks and SHIFT + TRACK MIX on the pads, both on Faders; the
 //! same button again goes back to the page before. This crate is the
-//! panel under the top bar, in two looks of the same strips
-//! ([`Look`]): Faders, the strips side by side, and Effects, each strip's
-//! chain as a row of slots.
+//! panel under the top bar, in four looks of the same strips
+//! ([`Look`]): Faders, the strips side by side (drawn for Make or for
+//! Perform, [`set_perform`]); Sends, each strip's pan, sends and output as
+//! a row ([`sends_look`]); Effects, each strip's chain as a row of slots;
+//! and EQ, each strip's EQ as a curve ([`eq_look`]).
 //!
 //! - [`state`]: what the screen shows ([`MixState`]), built by the control
 //!   thread from its copy of the settings and the meters
@@ -49,6 +51,7 @@ pub mod eq_look;
 pub mod io;
 pub mod qlinks;
 pub mod sample;
+pub mod sends_look;
 pub mod state;
 pub mod view;
 
@@ -70,10 +73,14 @@ pub const MIXER_PAGE: &str = "mixer";
 /// The page: the app's header, the mixer, the hint line.
 pub const MIXER_LAYOUT: &str = "col(header:60, mixer:*, hint:26)";
 /// The hint line while the mixer is open on Faders.
-pub const MIXER_HINT: &str = "Drag a fader, pan or send  ·  tap M, S or an output  ·  a strip's name: its Q-Links  ·  + FX or an effect: its chain  ·  Effects: every chain  ·  TRACK MIX: back";
+pub const MIXER_HINT: &str = "Drag a fader  ·  tap M or S  ·  a strip's name: its Q-Links  ·  FX or sends: their look  ·  the level: type it  ·  TRACK MIX: back";
 /// The hint line on Faders once the app offers Freeze, Thaw and Print
 /// ([`MixState::takes`]).
-pub const MIXER_HINT_TAKES: &str = "Drag a fader, pan or send  ·  tap M, S or an output  ·  a strip's name: its Q-Links (again: Freeze, Print)  ·  + FX or an effect: its chain  ·  Effects: every chain  ·  TRACK MIX: back";
+pub const MIXER_HINT_TAKES: &str = "Drag a fader  ·  tap M or S  ·  a strip's name: its Q-Links (again: Freeze, Print)  ·  FX or sends: their look  ·  the level: type it  ·  TRACK MIX: back";
+/// The hint line on Sends.
+pub const MIXER_HINT_SENDS: &str = "Drag a pan or a send  ·  tap pre: before the fader  ·  an output: where it goes  ·  a strip's name: its Q-Links  ·  Faders: the levels  ·  TRACK MIX: back";
+/// The hint line on Faders in Perform.
+pub const MIXER_HINT_PERFORM: &str = "Tap MUTE or SOLO: at once  ·  drag a fader or a pan  ·  a strip's name: its Q-Links  ·  Make: the sends and effects  ·  TRACK MIX: back";
 /// The hint line on Effects.
 pub const MIXER_HINT_EFFECTS: &str = "Tap + FX: add an effect  ·  tap an effect: its knobs, again: its chain  ·  drag one along its row: move it  ·  Faders: the levels  ·  TRACK MIX: back";
 /// The hint line on EQ.
@@ -172,21 +179,36 @@ pub fn set_look(ui: &mut Ui, l: Look) {
     }
 }
 
-/// The hint line for the strip views: [`MIXER_HINT_EFFECTS`] on Effects,
-/// [`MIXER_HINT_TAKES`] or [`MIXER_HINT`] on Faders. The I/O view has its
-/// own ([`io_hint`]).
+/// The hint line for the strip views: [`MIXER_HINT_SENDS`] on Sends,
+/// [`MIXER_HINT_EFFECTS`] on Effects, [`MIXER_HINT_EQ`] on EQ, and on
+/// Faders [`MIXER_HINT_PERFORM`] in Perform, else [`MIXER_HINT_TAKES`] or
+/// [`MIXER_HINT`]. The I/O view has its own ([`io_hint`]).
 pub fn hint(ui: &Ui) -> &'static str {
-    ui.get::<MixerView>(MIXER)
-        .map_or(MIXER_HINT, |v| hint_for(v.look(), v.state().takes))
+    ui.get::<MixerView>(MIXER).map_or(MIXER_HINT, |v| {
+        if v.look() == Look::Faders && v.perform() {
+            MIXER_HINT_PERFORM
+        } else {
+            hint_for(v.look(), v.state().takes)
+        }
+    })
 }
 
-/// The hint line for look `l`; `takes` as [`MixState::takes`].
+/// The hint line for look `l` in Make; `takes` as [`MixState::takes`].
 pub fn hint_for(l: Look, takes: bool) -> &'static str {
     match l {
+        Look::Sends => MIXER_HINT_SENDS,
         Look::Effects => MIXER_HINT_EFFECTS,
         Look::Eq => MIXER_HINT_EQ,
         Look::Faders if takes => MIXER_HINT_TAKES,
         Look::Faders => MIXER_HINT,
+    }
+}
+
+/// Faders draws its strips for Perform (`on`) or for Make
+/// ([`MixerView::set_perform`]): the app follows the project's Perform.
+pub fn set_perform(ui: &mut Ui, on: bool) {
+    if let Some(v) = ui.get_mut::<MixerView>(MIXER) {
+        v.set_perform(on);
     }
 }
 
