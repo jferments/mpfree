@@ -13,11 +13,14 @@
 //!    says play ([`Priority::Protect`]), then what comes in the next eight
 //!    bars and the clips set up to come ([`Priority::Prepared`]), then the
 //!    rest ([`Priority::Speculative`]).
-//! 2. **Room.** The copies have a share of memory ([`DEFAULT_BUDGET`],
-//!    counting those held and those being made). A copy that wouldn't fit
-//!    makes room by letting go of copies nothing wants, the one played
-//!    longest ago first, never one playing; if there still isn't room it
-//!    isn't made, and its region plays Repitch.
+//! 2. **Room.** The copies share the one budget for derived audio with
+//!    the sampler's Warps and the rest (`mpfree_stretch::budget`, 5b.3):
+//!    the host says what they use, those held and those being made, and a
+//!    copy is asked for only if it fits within the limit for its priority
+//!    beside the others. One that wouldn't fit makes room by letting go of
+//!    copies nothing wants, the one played longest ago first, never one
+//!    playing; if there still isn't room it isn't made, and its region
+//!    plays Repitch until room comes back.
 //! 3. **Its source.** The recording's frames it is made from are read
 //!    from memory into a buffer the worker makes, at [`READ_SPEED`]
 //!    frames a frame played, one copy at a time.
@@ -33,6 +36,9 @@
 //! Not yet: copies of a take on its file (it plays Repitch; streaming
 //! stays off on the MPC for now), and ramps and steps (5d).
 
+use std::sync::Arc;
+
+use mpfree_stretch::budget::{Budget, Cache};
 use mpfree_stretch::sched::Priority;
 use mpfree_transport::time::{TempoMap, Tick, PPQ};
 
@@ -40,9 +46,6 @@ use crate::clips::{ClipPlay, ClipRegion, MAX_CLIP_REGIONS};
 use crate::copies::{CopyKey, CopySpec};
 use crate::{AudioTracks, FollowTempo, MAX_TRACKS};
 
-/// The copies' share of memory to start with: the sampler's Warps budget
-/// today. 5b.3 makes it one budget for every kind of derived audio.
-pub const DEFAULT_BUDGET: usize = 200 << 20;
 /// Copies wanted at once, at most: past it the least urgent are left
 /// out (counted).
 pub const MAX_WANTED: usize = 256;
@@ -136,14 +139,20 @@ pub(crate) struct CopySide {
     /// Frames the map has held for.
     held_for: u64,
     reading: Option<Reading>,
+    /// Copies with the scheduler, and the memory each will take.
     making: Vec<(CopyKey, u64)>,
     failed: Vec<CopyKey>,
-    pub budget: usize,
+    /// The one budget for derived audio: the process's, or the one of the
+    /// scheduler a test gave the host.
+    pub(crate) budget: Arc<Budget>,
     pub counts: CopyCounts,
     periods: u64,
     /// Look at the next steady period, not wait for the next
     /// [`WANT_EVERY`]: something was edited, or a copy came.
     relook: bool,
+    /// What all derived audio used at the last look: once it is less,
+    /// copies that found no room are asked for again.
+    used_at_look: u64,
 }
 
 impl CopySide {
@@ -157,10 +166,11 @@ impl CopySide {
             reading: None,
             making: Vec::with_capacity(MAX_MAKING),
             failed: Vec::with_capacity(MAX_FAILED),
-            budget: DEFAULT_BUDGET,
+            budget: Budget::shared(),
             counts: CopyCounts::default(),
             periods: 0,
             relook: false,
+            used_at_look: 0,
         }
     }
 
@@ -243,6 +253,13 @@ impl CopySide {
         ask: &mut dyn FnMut(Ask),
         drop: &mut dyn FnMut(Vec<f32>),
     ) {
+        // Room came back (a cache let copies go, or the budget grew): what
+        // couldn't be made may be now.
+        let used = self.budget.used();
+        if used < self.used_at_look {
+            self.failed.clear();
+        }
+        self.used_at_look = used;
         let mut out = std::mem::take(&mut self.scratch);
         out.clear();
         let bar = 4.0 * f64::from(PPQ);
@@ -357,7 +374,7 @@ impl CopySide {
             return;
         };
         let need = w.key.bytes(usize::from(w.channels));
-        if !self.room(tracks, need as usize) {
+        if !self.room(tracks, need, w.priority) {
             self.counts.no_room += 1;
             self.fail(w.key);
             return;
@@ -367,14 +384,29 @@ impl CopySide {
         ask(Ask::Buffer { n, key: w.key, gen });
     }
 
-    /// Room for `need` more bytes in the copies' share, letting go of
-    /// copies nothing wants (the one played longest ago first, never one
-    /// playing) if it must. Whether there is.
-    fn room(&mut self, tracks: &mut AudioTracks, need: usize) -> bool {
+    /// What the copies use now: those held and those being made.
+    fn uses(&self, tracks: &AudioTracks) -> u64 {
+        let making: u64 = self.making.iter().map(|m| m.1).sum();
+        tracks.copy_bytes().0 as u64 + making
+    }
+
+    /// Tells the budget what the copies hold and have under way now.
+    pub(crate) fn report(&self, tracks: &AudioTracks) {
+        let making: u64 = self.making.iter().map(|m| m.1).sum();
+        self.budget
+            .set_held(Cache::Tracks, tracks.copy_bytes().0 as u64);
+        self.budget.set_making(Cache::Tracks, making);
+    }
+
+    /// Room for a copy of `need` bytes for `priority` in the budget,
+    /// letting go of copies nothing wants (the one played longest ago
+    /// first, never one playing) if it must. Whether there is.
+    fn room(&mut self, tracks: &mut AudioTracks, need: u64, priority: Priority) -> bool {
         loop {
-            let making: u64 = self.making.iter().map(|m| m.1).sum();
-            let used = tracks.copy_bytes().0 + making as usize;
-            if used + need <= self.budget && tracks.copy_bytes().1 < crate::copies::MAX_COPIES {
+            let own = self.uses(tracks) + need;
+            if self.budget.fits(Cache::Tracks, own, priority)
+                && tracks.copy_bytes().1 < crate::copies::MAX_COPIES
+            {
                 return true;
             }
             let old = tracks
@@ -476,7 +508,7 @@ impl CopySide {
         }
         let need = CopySpec::need(&key, want.channels);
         if self.making.len() < self.making.capacity() {
-            self.making.push((key, need));
+            self.making.push((key, key.bytes(ch)));
         }
         ask(Ask::Make {
             spec: CopySpec {
@@ -494,11 +526,16 @@ impl CopySide {
     /// wanted, and room for it).
     pub(crate) fn made(&mut self, key: &CopyKey, tracks: &mut AudioTracks, bytes: usize) -> bool {
         self.making.retain(|m| m.0 != *key);
-        if !self.wants(key) {
+        let Some(priority) = self
+            .wanted
+            .iter()
+            .find(|w| w.key == *key)
+            .map(|w| w.priority)
+        else {
             self.counts.stale += 1;
             return false;
-        }
-        if !self.room(tracks, bytes) {
+        };
+        if !self.room(tracks, bytes as u64, priority) {
             self.counts.no_room += 1;
             self.fail(*key);
             return false;
