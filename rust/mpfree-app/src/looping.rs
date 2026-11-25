@@ -44,7 +44,7 @@ use mpfree_looper::{
 };
 use mpfree_seq::loops::{LoopNow, LoopPlan};
 use mpfree_transport::time::{Tick, PPQ};
-use mpfree_transport::Block;
+use mpfree_transport::{Block, Span, State, Swing};
 use mpfree_ui::wave::{Peaks, WaveColumn};
 use std::ops::Range;
 use std::sync::mpsc::{
@@ -1507,6 +1507,27 @@ pub struct LooperView {
     /// 4c.3, with recordings on: [`LoopHost::unsaved_layers`]): its ring's
     /// dot.
     pub unsaved: [bool; MAX_LOOPS],
+}
+
+/// A free clock as a transport span: playing, straight (no swing), on its
+/// anchor, tempo and meter (the looper copies a song span into a free
+/// clock the other way, `FreeClock::of_song`), so whatever follows a span
+/// keeps the free loops' time. Its offset, length and frame are each
+/// period's to set.
+pub fn lead_span(c: &FreeClock) -> Span {
+    Span {
+        offset: 0,
+        len: 0,
+        frame: c.anchor_frame,
+        state: State::Playing,
+        overdub: false,
+        anchor_frame: c.anchor_frame,
+        anchor_tick: c.anchor_tick,
+        bpm: c.bpm,
+        rate: c.rate,
+        swing: Swing::default(),
+        meter: c.meter,
+    }
 }
 
 impl LooperView {
@@ -3425,6 +3446,18 @@ impl LoopHost {
             said.push(format!("loop {}: {what}", n + 1));
         }
         (!said.is_empty()).then(|| format!("looper: STOP: {}", said.join("; ")))
+    }
+
+    /// Tempo follows: Free loops (the looper refactor's R2, tempo
+    /// context): the free loops' clock as a span the time engine copies
+    /// over each period ([`crate::time::TimeHost::set_lead`]), while it
+    /// runs; None while it is stopped or there is none, when the song's
+    /// clock leads.
+    pub fn tempo_lead(&self) -> Option<Span> {
+        self.looper
+            .free_clock()
+            .filter(|c| c.running)
+            .map(|c| lead_span(&c))
     }
 
     /// SHIFT + STOP and a set's Panic stop everything, the free loops too
@@ -9036,6 +9069,51 @@ mod tests {
             "recording: kept"
         );
         assert_eq!(h.looper.stats().refused, 0);
+    }
+
+    /// Tempo follows: Free loops (the looper refactor's R2): the lead is
+    /// the free loops' clock as a playing span, giving its ticks on every
+    /// frame, only while it runs: none before there is a free loop, and
+    /// none once a second STOP stops it.
+    #[test]
+    fn the_tempo_lead_is_the_free_clock_while_it_runs() {
+        let mut h = LoopHost::new(44_100, 30);
+        let mut t = Transport::new(44_100, 120.0).unwrap();
+        let mut b = Block::new();
+        assert_eq!(h.tempo_lead(), None, "no free loop");
+        h.command(Command::SetClock(Clock::Free));
+        h.command(Command::SetBars(Some(1)));
+        h.command(Command::Record);
+        t.command(0, T::Play);
+        let period = |h: &mut LoopHost, t: &mut Transport, b: &mut Block| {
+            assert!(t.process(PERIOD as u32, b));
+            let l = [0.25; PERIOD];
+            h.take_pads(&l, &l);
+            let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+            h.period(b, &mut l, &mut r);
+        };
+        while h.looper.status().phase != Phase::Playing {
+            period(&mut h, &mut t, &mut b);
+        }
+        t.command(t.frame(), T::Stop);
+        for _ in 0..20 {
+            period(&mut h, &mut t, &mut b);
+        }
+        assert_eq!(t.state(), mpfree_transport::State::Stopped);
+        let c = h.looper.free_clock().expect("the free clock");
+        assert!(c.running, "the free loop plays on");
+        let s = h.tempo_lead().expect("it leads");
+        assert_eq!((s.bpm, s.state, s.meter), (120.0, State::Playing, c.meter));
+        for f in [t.frame(), t.frame() + 12_345, t.frame() + 1_000_000] {
+            assert_eq!(s.tick_at(f), c.tick_at(f), "its ticks on frame {f}");
+        }
+        // A second STOP stops the free loops: the song's clock leads.
+        t.command(t.frame(), T::Stop);
+        for _ in 0..20 {
+            period(&mut h, &mut t, &mut b);
+        }
+        assert!(h.looper.free_clock().is_some_and(|c| !c.running));
+        assert_eq!(h.tempo_lead(), None);
     }
 
     /// A free loop keeps its own tempo: when the song's tempo changes, the

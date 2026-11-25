@@ -108,6 +108,12 @@
 //! however many stages are late in a block, the mixer never waits past the
 //! point where the card would run dry.
 //!
+//! **The song's clock for frozen audio** ([`Mixer::set_song_clock`]): when
+//! a block's context keeps another clock (the free loops', which the
+//! inserts follow while Tempo follows is on Free loops), the host gives
+//! that block the song's too; frozen audio plays, and fades while stopped,
+//! on the song's.
+//!
 //! **Returns a block late** ([`Mixer::set_pipelined_returns`], off by
 //! default): a reverb return's inserts can run on another core one block
 //! behind, so the reverb leaves the audio core, and still sound on time.
@@ -1404,6 +1410,21 @@ pub struct Mixer {
     pipe: Option<Box<Pipe>>,
     /// The next block's deadline for every lane join ([`Mixer::set_lane_deadline`]).
     deadline: Option<Instant>,
+    /// The next block's song clock for frozen audio, when the block's
+    /// context keeps another clock ([`Mixer::set_song_clock`]).
+    song: Option<SongClock>,
+}
+
+/// The song's clock for one block, for frozen audio when the block's
+/// [`Ctx`] keeps another clock ([`Mixer::set_song_clock`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SongClock {
+    /// The song's tempo.
+    pub bpm: f64,
+    /// The song's position in beats at the block's first frame.
+    pub beats: f64,
+    /// Whether the song is playing.
+    pub playing: bool,
 }
 
 impl Mixer {
@@ -1478,6 +1499,7 @@ impl Mixer {
             split: None,
             pipe: None,
             deadline: None,
+            song: None,
         };
         m.reorder();
         m.aud = topo.audible(&m.sw);
@@ -2305,6 +2327,15 @@ impl Mixer {
         self.deadline = deadline;
     }
 
+    /// The next [`Mixer::process`]'s song clock, when its context keeps
+    /// another (the free loops' time, which the inserts and the mod engine
+    /// follow): frozen audio plays, and fades while stopped, on this clock
+    /// instead of the context's. It holds for that one block; without one,
+    /// frozen audio keeps the context's. No allocation.
+    pub fn set_song_clock(&mut self, song: Option<SongClock>) {
+        self.song = song;
+    }
+
     /// Whether inserts run partly on a second core ([`Mixer::set_lane`]).
     pub fn lane_on(&self) -> bool {
         self.split.is_some()
@@ -2665,7 +2696,9 @@ impl Mixer {
             return;
         }
         let whole = self.profiling.then(Span::start);
-        self.rolling = ctx.playing;
+        // Frozen audio keeps the song's clock when the host gave one.
+        let song = self.song.take();
+        self.rolling = song.map_or(ctx.playing, |s| s.playing);
         // This block's deadline, if the host set one, for every join in it.
         let until = self.deadline.take();
         if let Some(sp) = self.split.as_mut() {
@@ -2765,6 +2798,15 @@ impl Mixer {
             sidechain: None,
             ..*ctx
         };
+        let fz_ctx = match song {
+            Some(s) => Ctx {
+                bpm: s.bpm,
+                beats: s.beats,
+                playing: s.playing,
+                ..base
+            },
+            None => base,
+        };
         let (left, right) = (&mut left[..len], &mut right[..len]);
         for st in strips.iter_mut().take(topo.inputs) {
             fill_input(st, hw, len);
@@ -2847,7 +2889,7 @@ impl Mixer {
                             st.chain.flush_events();
                         }
                         if let Some(f) = &st.frozen {
-                            play_frozen(f, &base, &mut st.fz_gate, st.fz_quiet, bl, br);
+                            play_frozen(f, &fz_ctx, &mut st.fz_gate, st.fz_quiet, bl, br);
                         }
                     }
                     Fz::In(w) | Fz::Out(w) => {
@@ -2856,7 +2898,9 @@ impl Mixer {
                         let [fl, fr] = fz_buf;
                         let (fl, fr) = (&mut fl[..len], &mut fr[..len]);
                         match &st.frozen {
-                            Some(f) => play_frozen(f, &base, &mut st.fz_gate, st.fz_quiet, fl, fr),
+                            Some(f) => {
+                                play_frozen(f, &fz_ctx, &mut st.fz_gate, st.fz_quiet, fl, fr)
+                            }
                             None => {
                                 fl.fill(0.0);
                                 fr.fill(0.0);

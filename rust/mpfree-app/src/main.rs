@@ -15152,6 +15152,7 @@ fn player_session(
             mix.pad_synths.end_track(t as u16, 0);
         }
         let key = synth.transpose_key();
+        let exporting = export.running();
         let mut seq = SeqPads {
             player: &mut player,
             synth: &mut synth,
@@ -15174,6 +15175,14 @@ fn player_session(
             key,
             by_note: &mut by_note,
         };
+        // Tempo follows: Free loops: the arps, Note Repeat and the mixer's
+        // context keep the free loops' time while their clock runs (an
+        // export keeps the song's).
+        time.set_lead(if app.settings.tempo_follows_free && !exporting {
+            looper.tempo_lead()
+        } else {
+            None
+        });
         time.period_arps(PERIOD as u32, &mut seq, &mut app.arps);
         // MIDI out's period ends after the mixer's (below), which has the
         // tracks' controllers out.
@@ -15235,7 +15244,8 @@ fn player_session(
         {
             let (track, page) = (app.track() as u8, app.kit_page());
             // A copy (no heap): the notes record into `time` as they play.
-            let block = time.block().clone();
+            // On the clock the clips' arps followed (Tempo follows).
+            let block = time.tempo_block().clone();
             pads_arp.period(&block, &mut |to, n, rec| {
                 let lit = play_pads_arp(
                     to,
@@ -15636,8 +15646,9 @@ fn player_session(
         voices = voices.max(player.playing() + synth.active_voices());
         parts.lap(parts::PADS);
         let t_render = Instant::now();
-        // Warped pads play at the transport's tempo.
-        player.set_tempo(time.info().bpm);
+        // Warped pads play at the transport's tempo, or the free loops'
+        // while Tempo follows them.
+        player.set_tempo(time.lead_bpm().unwrap_or(time.info().bpm));
         // Each instrument plays its own tuning or the song's (tunings
         // step T5), handed over when its pick changes.
         for line in
@@ -15645,8 +15656,9 @@ fn player_session(
         {
             out.note(&line);
         }
-        // A synced pad LFO keeps to the beats while the transport rolls.
-        player.set_beat(time.block().spans().first().and_then(|s| {
+        // A synced pad LFO keeps to the beats while the transport rolls
+        // (or the free loops' clock, while Tempo follows it).
+        player.set_beat(time.tempo_block().spans().first().and_then(|s| {
             s.state
                 .rolling()
                 .then(|| s.tick_at(s.frame) / f64::from(mpfree_transport::PPQ))
@@ -16039,7 +16051,13 @@ fn player_session(
         {
             line_level_said = Some(line_level);
         }
-        let ctx = mixing::ctx(RATE, i * PERIOD as u64, time.info().bpm, time.block());
+        // The song's context, and the mixer's: the free loops' while they
+        // lead (Tempo follows), when frozen audio, Freeze and Print still
+        // keep the song's.
+        let song = mixing::ctx(RATE, i * PERIOD as u64, time.info().bpm, time.block());
+        let ctx = mixing::ctx(RATE, i * PERIOD as u64, time.info().bpm, time.tempo_block());
+        mix.mixer
+            .set_song_clock(time.lead_bpm().map(|_| mixing::song_clock(&song)));
         // The mixer's lanes (each stage's inserts, the returns), the
         // tracks' instruments' lanes and the pads' synths' keep the same
         // deadline.
@@ -16161,7 +16179,7 @@ fn player_session(
         // Freeze and Print: the take under way and the frozen strips
         // (takes.rs). A print goes to the screen to be saved.
         let n_tracks = time.project().tracks.len();
-        match mix.takes_period(&ctx, n_tracks, &|t| time.now_playing(t)) {
+        match mix.takes_period(&song, n_tracks, &|t| time.now_playing(t)) {
             Some(takes::Said::Note(l)) => {
                 let l = format!("mixer: {l}");
                 out.note(&l);
