@@ -365,7 +365,7 @@ pub struct PrefsPage {
     /// A finger turning a knob: its finger, row, where it went down and
     /// the value then.
     drag: Option<(u64, usize, i32, f32)>,
-    /// A finger moving a slider: its finger and row.
+    /// A finger on a row of choices: its finger and row.
     slide: Option<(u64, usize)>,
     /// A finger down on Reset: it acts when that finger lifts on it, so
     /// a finger that slides off or is cancelled changes nothing.
@@ -373,6 +373,10 @@ pub struct PrefsPage {
     /// The level a meter row shows, dBFS: what comes in now, None while
     /// nothing is listened to (the screen sets it as levels arrive).
     pub meter: Option<f32>,
+    /// A finger moving a slider: its finger, row, where it went down (x)
+    /// and the slider's place then. The slider follows the finger from
+    /// there (layout spec 1a): landing moves nothing.
+    sliding: Option<(u64, usize, i32, f32)>,
 }
 
 impl PrefsPage {
@@ -920,9 +924,6 @@ impl PrefsPage {
                         row: i,
                         col: nearest(&geo.parts, x),
                     });
-                }
-                Some(Control::Slider { .. }) if geo.control.contains(x, y) => {
-                    return Some(slider_value(i, geo.control, x));
                 }
                 Some(Control::Switch(on)) if geo.control.contains(x, y) => {
                     let delta = if *on { -1 } else { 1 };
@@ -1963,6 +1964,12 @@ impl Widget for PrefsPage {
                                 return None;
                             }
                         }
+                        if let Some(Control::Slider { pos }) = row.control {
+                            if g.rows[i].control.contains(x, y) {
+                                self.sliding = Some((finger, i, x, pos));
+                                return None;
+                            }
+                        }
                     }
                 }
                 let ev = self.hit(&g, x, y);
@@ -1971,7 +1978,6 @@ impl Widget for PrefsPage {
                     return None;
                 }
                 self.slide = match ev {
-                    Some(EventKind::Values { index, .. }) => Some((finger, index)),
                     Some(EventKind::Cell { row, .. })
                         if matches!(
                             self.view.rows.get(row).and_then(|r| r.control.as_ref()),
@@ -1994,14 +2000,18 @@ impl Widget for PrefsPage {
                         });
                     }
                 }
-                // A slider follows the finger that went down on it.
+                // A slider follows the finger that went down on it, from
+                // where it landed.
+                if let Some((f, i, x0, pos0)) = self.sliding {
+                    if f == finger && i < g.rows.len() {
+                        return Some(slider_moved(i, g.rows[i].control, pos0, x - x0));
+                    }
+                }
                 let (f, i) = self.slide?;
                 if f != finger || i >= g.rows.len() {
                     return None;
                 }
-                let c = g.rows[i].control;
                 match self.view.rows[i].control {
-                    Some(Control::Slider { .. }) => Some(slider_value(i, c, x)),
                     Some(Control::Steps { at, .. }) => {
                         let col = nearest(&g.rows[i].parts, x);
                         (col != at).then_some(EventKind::Cell { row: i, col })
@@ -2020,6 +2030,9 @@ impl Widget for PrefsPage {
                     self.resetting = None;
                     let on = g.reset.is_some_and(|r| r.contains(x, y));
                     return (phase == Touch::Up && on).then_some(EventKind::Tab(RESET));
+                }
+                if self.sliding.is_some_and(|d| d.0 == finger) {
+                    self.sliding = None;
                 }
                 None
             }
@@ -2090,9 +2103,11 @@ fn nearest(parts: &[Rect], x: i32) -> usize {
 }
 
 /// A slider's value at `x`, as the event Prefs takes: row `i`, 0 to 1000.
-fn slider_value(i: usize, c: Rect, x: i32) -> EventKind {
-    let track = Rect::new(c.x + 18, c.y, c.w - 36, c.h);
-    let pos = ((x - track.x) as f32 / track.w.max(1) as f32).clamp(0.0, 1.0);
+/// Row `i`'s slider (control `c`) after a finger that went down with it
+/// at `pos0` moved `dx` along it: as far along as the finger went.
+fn slider_moved(i: usize, c: Rect, pos0: f32, dx: i32) -> EventKind {
+    let track_w = (c.w - 36).max(1);
+    let pos = (pos0 + dx as f32 / track_w as f32).clamp(0.0, 1.0);
     EventKind::Values {
         index: i,
         set: vec![(0, (pos * 1000.0).round() as i32)],
@@ -2741,7 +2756,7 @@ mod tests {
                     })
                 ),
                 "steps" => assert!(matches!(ev, Some(EventKind::Cell { row: 2, .. }))),
-                "slider" => assert!(matches!(ev, Some(EventKind::Values { index: 3, .. }))),
+                "slider" => assert!(ev.is_none(), "a slider waits for the finger's move"),
                 "switch" => assert_eq!(ev, Some(EventKind::Step { index: 1, delta: 1 })),
                 "button" => assert_eq!(
                     ev,
@@ -2784,6 +2799,37 @@ mod tests {
         // Another finger's lift doesn't press it.
         assert_eq!(p.touch(4, Touch::Down, x, y, R), None);
         assert_eq!(p.touch(5, Touch::Up, x, y, R), None);
+    }
+
+    /// A slider follows the finger from where it lands (layout spec 1a):
+    /// landing anywhere on it moves nothing, and a drag moves it as far as
+    /// the finger goes.
+    #[test]
+    fn a_slider_follows_the_finger_from_where_it_lands() {
+        let mut p = PrefsPage {
+            view: sample(),
+            ..PrefsPage::default()
+        };
+        let t = p.targets(R).into_iter().find(|t| t.id == "slider").unwrap();
+        let Some(Control::Slider { pos }) = p.view.rows[t.index].control else {
+            panic!("a slider");
+        };
+        let (x, y) = (t.rect.x + 4, t.rect.y + t.rect.h / 2);
+        assert_eq!(
+            p.touch(1, Touch::Down, x, y, R),
+            None,
+            "landing moves nothing"
+        );
+        let w = t.rect.w - 36;
+        let Some(EventKind::Values { index, set }) = p.touch(1, Touch::Move, x + w / 5, y, R)
+        else {
+            panic!("a value");
+        };
+        assert_eq!(index, t.index);
+        let want = ((pos + 0.2).min(1.0) * 1000.0).round() as i32;
+        assert!((set[0].1 - want).abs() <= 5, "{set:?}, {want}");
+        assert_eq!(p.touch(1, Touch::Up, x + w / 5, y, R), None);
+        assert_eq!(p.touch(1, Touch::Move, x + w, y, R), None, "let go");
     }
 
     /// Customise's controls: a banner across both columns, dials, swatches,

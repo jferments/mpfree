@@ -173,7 +173,7 @@ Hold **UNDO** for a moment for the page's **undo history**: every step, oldest a
 ## Touch
 
 - **Tap** to press a button, pick a tab, a pad or a step. Anything you can tap answers over its whole button, and packed rows (pattern lanes, list rows) answer over the full row with no gap between them.
-- **Drag** to move a knob, a fader or the XY pad, or to scroll a list.
+- **Drag** to move a knob, a fader or the XY pad, or to scroll a list. Knobs, faders, sliders and level bars follow your finger from where you touch them, so touching one never makes it jump and a tap leaves it as it was. The XY pad is the one exception: where your finger is, is the point.
 - **Hold** a throw or the XY pad to play it for as long as you hold.
 
 If taps land in the wrong place, calibrate the screen from Prefs (the **Playing** tab, **Calibrate touch**).

@@ -34453,10 +34453,19 @@ mod tests {
         assert!(p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap().touched[2]);
         p.apply(ToUi::QLinkTouch(2, false));
         assert!(!p.ui.get::<QLinkColumn>(play_page::QLINKS).unwrap().touched[2]);
-        // The master bar sets the master fader in dB, and shows the one the app keeps.
+        // The master bar sets the master fader in dB, and shows the one the
+        // app keeps. It follows the finger from where it lands (layout spec
+        // 1a): a tap moves nothing, a drag to the top gives +6 dB.
         let master = p.ui.rect_of(play_page::MASTER).unwrap();
         let top = MasterBar::track(master);
-        assert_eq!(tap(&mut p, (top.x + 4, top.y)), Some(FromUi::LevelDb(6.0)));
+        let (x, y) = (top.x + 4, top.y + top.h / 2);
+        assert_eq!(tap(&mut p, (x, y)), None, "a tap moves nothing");
+        p.take_actions();
+        let mut asked: Vec<FromUi> = p.touch(7, Touch::Down, x, y).into_iter().collect();
+        asked.extend(p.touch(7, Touch::Move, x, y - top.h));
+        asked.extend(p.touch(7, Touch::Up, x, y - top.h));
+        asked.extend(p.take_actions());
+        assert!(asked.contains(&FromUi::LevelDb(6.0)), "{asked:?}");
         p.apply(ToUi::Level { db: -6.0 });
         let m = p.ui.get::<MasterBar>(play_page::MASTER).unwrap();
         assert_eq!((m.text.as_str(), m.fader_db), ("-6.0", -6.0));
@@ -36659,17 +36668,27 @@ mod tests {
         };
         assert!(moved(&p, "Cutoff"));
         assert!(!moved(&p, "Tune"));
-        // A finger at the bar's left end: the row (the matrix's 3) to
-        // -100 %, the bar following at once.
+        // A tap on the bar's left end changes nothing: the depth follows
+        // the finger from where it lands (layout spec 1a).
         let bar = steps_target(&p, "row-depth", 0);
         let a = steps_tap(&mut p, mpfree_ui::Rect::new(bar.x, bar.y, 8, bar.h));
-        assert_eq!(
-            a,
-            Some(FromUi::LaneRows(LaneRowsAsk::Depth {
+        assert_eq!(a, None);
+        assert_eq!(grid(&p).1.unwrap().rows[0].1, 0.25);
+        // A drag left the bar's whole width: the row (the matrix's 3) to
+        // -100 %, the bar following at once.
+        let (cx, cy) = (bar.x + bar.w / 2, bar.y + bar.h / 2);
+        p.take_actions();
+        let mut asked: Vec<FromUi> = p.touch(8, Touch::Down, cx, cy).into_iter().collect();
+        asked.extend(p.touch(8, Touch::Move, cx - bar.w, cy));
+        asked.extend(p.touch(8, Touch::Up, cx - bar.w, cy));
+        asked.extend(p.take_actions());
+        assert!(
+            asked.contains(&FromUi::LaneRows(LaneRowsAsk::Depth {
                 target,
                 row: 3,
                 depth: -1.0
-            }))
+            })),
+            "{asked:?}"
         );
         assert_eq!(grid(&p).1.unwrap().rows[0].1, -1.0);
         // Its ×: the row off.

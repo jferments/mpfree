@@ -2593,8 +2593,9 @@ impl Widget for ClipGrid {
 /// The scene morph under the grid: the rows on A and B (a tap on a chip's
 /// left half steps it down, on its right half up: `Step { index: 0 or 1,
 /// delta }`), the crossfader between them (`Value`, while the finger is
-/// down), Snap back, Keep and Save (`Tab(0)`, `Tab(1)`, `Tab(2)`), and
-/// Reload clip (`Tab(3)`, sequencer S4, mockup C).
+/// down; it follows the finger from where it lands, layout spec 1a, so
+/// landing moves nothing), Snap back, Keep and Save (`Tab(0)`, `Tab(1)`,
+/// `Tab(2)`), and Reload clip (`Tab(3)`, sequencer S4, mockup C).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MorphBar {
     /// The rows on A and B, shown 1-based.
@@ -2611,6 +2612,28 @@ pub struct MorphBar {
     /// Its reload waits for the launch line: Reload clip is outlined
     /// amber.
     pub reload_waiting: bool,
+    /// Each finger on the crossfader.
+    pub sliding: Sliding,
+}
+
+/// Each finger on a slider: where it landed (x or y) and the slider's
+/// place then. Equal whatever it holds, so a widget compared with the
+/// engine's state is compared by what it shows; keep it when the widget
+/// is replaced by a new copy ([`Sliding::keep`]).
+#[derive(Clone, Debug, Default)]
+pub struct Sliding(pub Fingers<(i32, f32)>);
+
+impl PartialEq for Sliding {
+    fn eq(&self, _: &Sliding) -> bool {
+        true
+    }
+}
+
+impl Sliding {
+    /// Carry the fingers of `old` (the copy being replaced) over.
+    pub fn keep(&mut self, old: &mut Sliding) {
+        std::mem::swap(&mut self.0, &mut old.0);
+    }
 }
 
 const CHIP_W: i32 = 96;
@@ -2631,6 +2654,7 @@ impl Default for MorphBar {
             params: 0,
             reload: false,
             reload_waiting: false,
+            sliding: Sliding::default(),
         }
     }
 }
@@ -2778,7 +2802,7 @@ impl Widget for MorphBar {
         out
     }
 
-    fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
+    fn touch(&mut self, finger: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let (a, fader, b, buttons) = MorphBar::parts(r);
         let slide = fader.inset_xy(-12, 0);
         match phase {
@@ -2792,14 +2816,20 @@ impl Widget for MorphBar {
                 if let Some(i) = buttons.iter().position(|br| br.contains(x, y)) {
                     return Some(EventKind::Tab(i));
                 }
-                slide.contains(x, y).then(|| {
-                    EventKind::Value(((x - fader.x) as f32 / fader.w.max(1) as f32).clamp(0.0, 1.0))
-                })
+                if slide.contains(x, y) {
+                    self.sliding.0.put(finger, (x, self.pos));
+                }
+                None
             }
-            Touch::Move if slide.inset_xy(0, -40).contains(x, y) => Some(EventKind::Value(
-                ((x - fader.x) as f32 / fader.w.max(1) as f32).clamp(0.0, 1.0),
-            )),
-            _ => None,
+            Touch::Move => {
+                let &(from, at) = self.sliding.0.get(finger)?;
+                let pos = (at + (x - from) as f32 / fader.w.max(1) as f32).clamp(0.0, 1.0);
+                Some(EventKind::Value(pos))
+            }
+            Touch::Up | Touch::Cancel => {
+                self.sliding.0.take(finger);
+                None
+            }
         }
     }
 }
@@ -4230,16 +4260,22 @@ mod tests {
             m.touch(1, Touch::Down, b.right() - 4, b.y + 4, r),
             Some(EventKind::Step { index: 1, delta: 1 })
         );
+        // The crossfader follows the finger from where it lands: landing
+        // in the middle moves nothing, a drag half the track moves it half
+        // way, and past the end it holds at B. Only that finger moves it.
         let mid = fader.x + fader.w / 2;
+        assert_eq!(m.touch(1, Touch::Down, mid, fader.y + 10, r), None);
+        assert_eq!(m.touch(2, Touch::Move, mid + 40, fader.y + 10, r), None);
         assert_eq!(
-            m.touch(1, Touch::Down, mid, fader.y + 10, r),
+            m.touch(1, Touch::Move, mid + fader.w / 2, fader.y + 10, r),
             Some(EventKind::Value(0.5))
         );
         assert_eq!(
-            m.touch(1, Touch::Move, fader.right() + 5, fader.y + 10, r),
+            m.touch(1, Touch::Move, fader.right() + fader.w, fader.y + 10, r),
             Some(EventKind::Value(1.0)),
             "a drag past the end holds at B"
         );
+        assert_eq!(m.touch(1, Touch::Up, mid, fader.y + 10, r), None);
         for (i, br) in buttons.iter().enumerate() {
             assert_eq!(
                 m.touch(1, Touch::Down, br.x + 4, br.y + 4, r),

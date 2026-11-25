@@ -178,7 +178,12 @@ enum Drag {
         y0: i32,
         v0: f32,
     },
-    Morph,
+    /// The morph's slider follows the finger from where it landed (`x0`,
+    /// the morph `p0` then): landing moves nothing (layout spec 1a).
+    Morph {
+        x0: i32,
+        p0: f32,
+    },
     /// The From (`to` false) or To handle of the target being edited.
     End {
         to: bool,
@@ -288,9 +293,11 @@ impl MacrosView {
         (((x - t.x) as f32 / t.w.max(1) as f32).clamp(0.0, 1.0) * 100.0).round() / 100.0
     }
 
-    fn slider_pos(l: &MacrosLayout, x: i32) -> f32 {
+    /// The morph a finger that landed at `x0` with the morph at `p0` gives
+    /// at `x`: as far along the slider as the finger went.
+    fn slider_pos(l: &MacrosLayout, x: i32, x0: i32, p0: f32) -> f32 {
         let s = l.slider.inset_xy(18, 0);
-        (((x - s.x) as f32 / s.w.max(1) as f32).clamp(0.0, 1.0) * 100.0).round() / 100.0
+        ((p0 + (x - x0) as f32 / s.w.max(1) as f32).clamp(0.0, 1.0) * 100.0).round() / 100.0
     }
 }
 
@@ -716,9 +723,8 @@ impl MacrosView {
                     }
                 }
                 if l.slider.contains(x, y) {
-                    self.drag = Some((finger, Drag::Morph));
-                    let p = Self::slider_pos(&l, x);
-                    self.push(MacroAction::Morph(p));
+                    let p0 = self.state.morph;
+                    self.drag = Some((finger, Drag::Morph { x0: x, p0 }));
                     return None;
                 }
                 if l.snap.contains(x, y) {
@@ -744,8 +750,8 @@ impl MacrosView {
                             self.push(MacroAction::Macro { m, value });
                         }
                     }
-                    Drag::Morph => {
-                        let p = Self::slider_pos(&l, x);
+                    Drag::Morph { x0, p0 } => {
+                        let p = Self::slider_pos(&l, x, x0, p0);
                         if p != self.state.morph {
                             self.push(MacroAction::Morph(p));
                         }
@@ -946,5 +952,18 @@ mod tests {
             .take_actions()
             .iter()
             .any(|a| matches!(a, MacroAction::Release(_))));
+        // It follows the finger from where it lands: landing in the middle
+        // moves nothing, a drag a quarter of the way along moves it a
+        // quarter, and past the end it holds at B.
+        let w = l.slider.inset_xy(18, 0).w;
+        v.touch_inner(10, Touch::Down, sx, sy, r);
+        assert_eq!(v.take_actions(), [], "landing moves nothing");
+        v.touch_inner(10, Touch::Move, sx + w / 4, sy, r);
+        v.touch_inner(10, Touch::Move, sx + 2 * w, sy, r);
+        v.touch_inner(10, Touch::Up, sx + 2 * w, sy, r);
+        assert_eq!(
+            v.take_actions(),
+            [MacroAction::Morph(0.25), MacroAction::Morph(1.0)]
+        );
     }
 }

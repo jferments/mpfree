@@ -10,7 +10,7 @@ checked: 2026-11-24 680edcc7
 
 The settings are on five tabs down the left: **Playing**, **Sound**, **Appearance**, **Projects** and **System**. Tap one, or hold **SHIFT** and turn the data wheel. Prefs opens on the tab you used last.
 
-Each tab's settings sit on cards, and each setting says in a line what it does. Tap to set one: a button of a choice, a tile, a switch, a point on a slider. Drag a knob up or down. The data wheel picks a setting (an outline goes round it) and **–** or **+** change it. Or press the wheel down: the outline thickens, and turning the wheel changes the setting; press it again to set it, and the wheel goes back to picking. On a setting that opens something, such as **Touch lab**, pressing the wheel opens it. You can also rest a finger on a setting and turn the wheel ([Hold and turn](../getting-started/the-screen.md#hold-and-turn)).
+Each tab's settings sit on cards, and each setting says in a line what it does. Tap to set one: a button of a choice, a tile, a switch. Drag a slider along, or a knob up or down: each follows your finger from where you touch it, so a tap leaves it as it was. The data wheel picks a setting (an outline goes round it) and **–** or **+** change it. Or press the wheel down: the outline thickens, and turning the wheel changes the setting; press it again to set it, and the wheel goes back to picking. On a setting that opens something, such as **Touch lab**, pressing the wheel opens it. You can also rest a finger on a setting and turn the wheel ([Hold and turn](../getting-started/the-screen.md#hold-and-turn)).
 
 {{shot: prefs | Prefs, on the Playing tab.}}
 
