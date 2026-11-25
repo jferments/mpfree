@@ -1389,6 +1389,7 @@ pub fn clips_audio_state() -> Result<TimeState, String> {
                 wave: sample_wave(seed, shape),
                 missing: None,
                 ring: None,
+                ..AudioCellInfo::default()
             }),
             loop_id: None,
         }

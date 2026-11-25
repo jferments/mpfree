@@ -1472,6 +1472,11 @@ pub struct OptionRow {
     /// arrows, and a tap on it picks the row but steps nothing ("12-TET
     /// (can't follow)", a plugin that takes only MIDI notes).
     pub fixed: bool,
+    /// The setting doesn't apply now: its value drawn faint with no
+    /// arrows ("—"), and a tap picks the row but steps nothing (an audio
+    /// clip's Until ready unless its Tempo is Stretch). The wheel still
+    /// gives `Step`, for the app to say why.
+    pub faint: bool,
     /// A section heading over the rows after it, in small dim capitals
     /// ("THE SONG'S TUNING"): no value, and a tap picks nothing.
     pub heading: bool,
@@ -1492,9 +1497,9 @@ impl OptionRow {
         !self.heading
     }
 
-    /// Whether its arrows step its value (neither fixed nor a heading).
+    /// Whether its arrows step its value (not fixed, faint or a heading).
     pub fn steps(&self) -> bool {
-        !self.fixed && !self.heading
+        !self.fixed && !self.faint && !self.heading
     }
 }
 
@@ -1528,7 +1533,10 @@ impl OptionRow {
 /// [`OptionButton::explains`]).
 ///
 /// With a `note`, two lines sit between the rows and the buttons (an
-/// audio clip's made-at line over Fit to tempo, layout spec 4j).
+/// audio clip's made-at tempo over what its Tempo does with it, over From
+/// its length, layout spec 4j). A note that [`OptionNote::picks`] is
+/// picked by a tap, as a row is: `Select(rows.len())`, and the wheel's
+/// steps go to it as to a row of that index.
 ///
 /// A row can be more than a name and a value ([`OptionRow`], tunings step
 /// T6): a section heading over the rows after it (no value, and a tap
@@ -1585,7 +1593,7 @@ pub struct OptionButton {
     /// line); a tap takes it back.
     pub waiting: bool,
     /// Drawn off, a tap still gives `Toggle(i)`, for the app to say why
-    /// it does nothing (Fit to tempo on a clip at the project's tempo).
+    /// it does nothing (From its length on a clip whose length fits its sound).
     pub explains: bool,
     /// A job it started, this far done (0 to 1): it fills from the left
     /// in a dim accent, under its label ("Fitting… 40 %").
@@ -1603,13 +1611,44 @@ impl OptionButton {
 }
 
 /// The two lines an [`OptionList`] shows over its buttons: `lead` in bold
-/// on the first, amber when it `warn`s, and `rest` under it ("Made at
-/// 120 BPM:" over "at 92 a 1.2 s gap each pass").
+/// on the first and `rest` under it, each in its own [`NoteTone`] ("Made
+/// at 120 BPM:" over "at 92 a 1.2 s gap each pass", both amber).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct OptionNote {
     pub lead: String,
     pub rest: String,
-    pub warn: bool,
+    pub lead_tone: NoteTone,
+    pub rest_tone: NoteTone,
+    /// A job under way, this far done (0 to 1): a 3 px line fills under
+    /// the lines in the accent ("Making its copy: 40 %").
+    pub progress: Option<f32>,
+    /// A tap on the lines picks them, as a row ([`OptionList`]): picked,
+    /// they are outlined in the accent, the lead between ‹ and › (or
+    /// `pick_lead`, if it says something).
+    pub picks: bool,
+    /// What the lead says while picked, if not `lead` (the value the
+    /// wheel sets: "Made at 120.0 BPM" while the lead says "Making its
+    /// copy: 40 %").
+    pub pick_lead: String,
+}
+
+/// The ink of an [`OptionNote`]'s line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NoteTone {
+    /// The lead in full ink, the rest dim.
+    #[default]
+    Plain,
+    /// Dim, for a line that only explains.
+    Dim,
+    /// Green: it does what it says.
+    Good,
+    /// Amber: it isn't what you might expect (a gap each pass, Repitch
+    /// for now).
+    Warn,
+    /// Red: it can't play (too fast).
+    Bad,
+    /// The accent: under way.
+    Accent,
 }
 
 const OPTION_H: i32 = 58;
@@ -1699,6 +1738,22 @@ impl OptionList {
 
     fn visible(&self, r: Rect) -> usize {
         (self.body(r).h / OPTION_H).max(0) as usize
+    }
+
+    /// How many things the wheel can pick: the rows, and the note if it
+    /// [`OptionNote::picks`] (index `rows.len()`).
+    pub fn picks(&self) -> usize {
+        self.rows.len() + usize::from(self.note_picks())
+    }
+
+    /// Whether the note is there and picks.
+    fn note_picks(&self) -> bool {
+        self.note.as_ref().is_some_and(|n| n.picks)
+    }
+
+    /// The note is picked (the selection is past the rows).
+    pub fn note_picked(&self) -> bool {
+        self.note_picks() && self.selected == self.rows.len()
     }
 
     /// Button `i`'s rectangle, if there is one: the buttons share the foot
@@ -1984,6 +2039,18 @@ impl Widget for OptionList {
             if open {
                 cx.canvas.stroke_round_rect(boxr, t.round(10), 2, t.accent);
             }
+            if it.faint {
+                // Doesn't apply now: no arrows, the value faint.
+                cx.text(
+                    FontId::Bold,
+                    px,
+                    boxr.inset_xy(8, 0),
+                    Align::Center,
+                    t.text_faint,
+                    &it.value,
+                );
+                continue;
+            }
             if it.fixed {
                 // Can't be changed here: no arrows, the value in amber.
                 let vpx = if cx.measure(FontId::Bold, px, &it.value) > boxr.w - 16 {
@@ -2041,23 +2108,62 @@ impl Widget for OptionList {
             cx.canvas.fill_round_rect(thumb, 2, t.text_dim);
         }
         if let (Some(n), Some(nr)) = (&self.note, self.note_rect(r)) {
-            let (first, second) = nr.take_top(OPTION_NOTE_LINE);
+            let ink = |tone: NoteTone, plain| match tone {
+                NoteTone::Plain => plain,
+                NoteTone::Dim => t.text_dim,
+                NoteTone::Good => t.good,
+                NoteTone::Warn => t.warn,
+                NoteTone::Bad => t.bad,
+                NoteTone::Accent => t.accent,
+            };
+            let picked = self.note_picked();
+            if picked {
+                let boxr = Rect::new(nr.x - 2, nr.y - 4, nr.w, nr.h + 8);
+                cx.canvas.fill_round_rect(boxr, t.round(8), t.raised);
+                cx.canvas.stroke_round_rect(boxr, t.round(8), 2, t.accent);
+            }
+            let (first, second) = nr
+                .inset_xy(if picked { 6 } else { 0 }, 0)
+                .take_top(OPTION_NOTE_LINE);
+            let lead = if picked {
+                let l = if n.pick_lead.is_empty() {
+                    &n.lead
+                } else {
+                    &n.pick_lead
+                };
+                format!("‹ {l} ›")
+            } else {
+                n.lead.clone()
+            };
             cx.text(
                 FontId::Bold,
                 t.size_small,
                 first,
                 Align::Left,
-                if n.warn { t.warn } else { t.text },
-                &n.lead,
+                if picked {
+                    t.accent
+                } else {
+                    ink(n.lead_tone, t.text)
+                },
+                &lead,
             );
             cx.text(
                 FontId::Sans,
                 t.size_small,
                 second,
                 Align::Left,
-                t.text_dim,
+                ink(n.rest_tone, t.text_dim),
                 &n.rest,
             );
+            if let Some(p) = n.progress {
+                let line = Rect::new(nr.x, nr.bottom() + 1, nr.w - 4, 3);
+                cx.canvas.fill_rect(line, t.outline);
+                let w = (line.w as f32 * p.clamp(0.0, 1.0)).round() as i32;
+                if w > 0 {
+                    cx.canvas
+                        .fill_rect(Rect::new(line.x, line.y, w, line.h), t.accent);
+                }
+            }
         }
         for (i, b) in self.buttons.iter().enumerate() {
             let Some(br) = self.button_rect(r, i) else {
@@ -2132,7 +2238,7 @@ impl Widget for OptionList {
             }
             let reach = OptionList::arrow_reach(row, value);
             let name = &it.name;
-            if it.fixed {
+            if it.fixed || it.faint {
                 // No arrows: the whole row picks it.
                 out.push(Target::tap("row", k, name.clone(), row).disabled_if(k == self.selected));
                 continue;
@@ -2144,6 +2250,14 @@ impl Widget for OptionList {
             let more = rest.take_right(reach).0;
             out.push(Target::tap("row-less", k, format!("{name} ‹"), less));
             out.push(Target::tap("row-more", k, format!("{name} ›"), more));
+        }
+        if let (Some(n), Some(nr)) = (&self.note, self.note_rect(r)) {
+            if n.picks {
+                out.push(
+                    Target::tap("note", self.rows.len(), n.lead.clone(), nr)
+                        .disabled_if(self.note_picked()),
+                );
+            }
         }
         for (i, b) in self.buttons.iter().enumerate() {
             if let Some(br) = self.button_rect(r, i) {
@@ -2224,6 +2338,15 @@ impl Widget for OptionList {
         {
             let b = &self.buttons[i];
             return (b.enabled || b.explains).then_some(EventKind::Toggle(i));
+        }
+        if self.note_picks()
+            && self
+                .note_rect(r)
+                .is_some_and(|n| n.inset_xy(0, -6).contains(x, y))
+        {
+            // The note, picked as a row past the last.
+            self.selected = self.rows.len();
+            return Some(EventKind::Select(self.rows.len()));
         }
         let k = (0..self.rows.len()).find(|&k| {
             self.row_rects(r, k)
@@ -2659,14 +2782,16 @@ mod tests {
             })
             .collect();
         let r = Rect::new(0, 0, 250, 14 * 2 + 34 + OPTION_H * 4 + OPTION_BUTTON_H + 8);
-        let mut fit = OptionButton::new("Fit to tempo", false);
+        let mut fit = OptionButton::new("From its length", false);
         o.buttons = vec![fit.clone()];
         assert_eq!(o.visible(r), 4);
         assert!(o.note_rect(r).is_none());
         o.note = Some(OptionNote {
             lead: "Made at 120 BPM:".into(),
             rest: "at 92 a 1.2 s gap each pass".into(),
-            warn: true,
+            lead_tone: NoteTone::Warn,
+            rest_tone: NoteTone::Warn,
+            ..OptionNote::default()
         });
         assert_eq!(o.visible(r), 3, "the note takes a row's room");
         let (n, b) = (o.note_rect(r).unwrap(), o.button_rect(r, 0).unwrap());
@@ -2685,6 +2810,59 @@ mod tests {
             "off, but it says why"
         );
         let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 260, r.h);
+        ui.add("o", o);
+        ui.add_page("p", "o").unwrap();
+        let mut c = SoftCanvas::new(260, r.h);
+        assert!(!ui.paint(&mut c).is_empty());
+    }
+
+    /// A note that picks is picked by a tap, as a row past the last
+    /// (5c: the clip card's made-at tempo); a faint row has no arrows,
+    /// and a tap on its value picks it.
+    #[test]
+    fn a_picking_note_is_picked_as_a_row_and_a_faint_row_steps_nothing() {
+        let mut o = OptionList::new("Clip");
+        o.rows = (0..3)
+            .map(|i| OptionRow::new(&format!("Row {i}"), "1"))
+            .collect();
+        o.rows[1].faint = true;
+        o.rows[1].value = "—".into();
+        o.buttons = vec![OptionButton::new("From its length", true)];
+        o.note = Some(OptionNote {
+            lead: "Made at 120 BPM".into(),
+            rest: "Stretch: the same pitch at 92".into(),
+            rest_tone: NoteTone::Good,
+            progress: Some(0.4),
+            picks: true,
+            ..OptionNote::default()
+        });
+        let r = Rect::new(
+            0,
+            0,
+            250,
+            14 * 2 + 34 + OPTION_H * 4 + OPTION_BUTTON_H + 8 + OPTION_NOTE_H,
+        );
+        assert_eq!(o.picks(), 4);
+        let n = o.note_rect(r).unwrap();
+        assert_eq!(
+            o.touch(1, Touch::Down, n.x + 10, n.y + 4, r),
+            Some(EventKind::Select(3))
+        );
+        assert!(o.note_picked());
+        let (_, value) = o.row_rects(r, 1).unwrap();
+        assert_eq!(o.touch(2, Touch::Down, value.x + 4, value.y + 4, r), None);
+        assert_eq!(
+            o.touch(2, Touch::Up, value.x + 4, value.y + 4, r),
+            Some(EventKind::Select(1)),
+            "a faint row is picked, not stepped"
+        );
+        assert!(!o.note_picked());
+        o.note.as_mut().unwrap().picks = false;
+        assert_eq!(o.picks(), 3);
+        assert_eq!(o.touch(3, Touch::Down, n.x + 10, n.y + 4, r), None);
+        let mut ui = Ui::new(Theme::dark(), Fonts::embedded(), 260, r.h);
+        o.note.as_mut().unwrap().picks = true;
+        o.selected = 3;
         ui.add("o", o);
         ui.add_page("p", "o").unwrap();
         let mut c = SoftCanvas::new(260, r.h);

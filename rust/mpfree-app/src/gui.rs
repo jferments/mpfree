@@ -13032,6 +13032,7 @@ impl Player {
                                 sub: mark.sub,
                                 fixed: mark.fixed,
                                 heading: mark.heading,
+                                ..OptionRow::default()
                             }
                         })
                         .collect();
@@ -13979,7 +13980,8 @@ impl Player {
                 let Some(l) = self.ui.get_mut::<OptionList>(list) else {
                     return;
                 };
-                let last = l.rows.len().saturating_sub(1) as i64;
+                // The rows, and an audio clip's foot past them (5c).
+                let last = l.picks().saturating_sub(1) as i64;
                 let k = (l.selected as i64 + i64::from(d)).clamp(0, last) as usize;
                 l.selected = k;
                 // As a tap on the row: the note editor keeps its row.
@@ -26975,8 +26977,10 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     // Audio clips in the audio tracks' cells (layout spec 4f), at 92 BPM:
     // one playing, two queued (one waiting for its audio), one made at
     // 120, one missing, a once clip ringing past its stop, one not ready.
-    // Then the armed Guitar's Riff on the Clip tab (4j): made at 120, Fit
-    // to tempo; the same while it fits; and Break's Intro, a once clip.
+    // Then the armed Guitar's Riff on the Clip tab (4j): made at 120, on
+    // Off; on Stretch while its copy for 92 is made (phase 5c, board 2's
+    // D); the same with its copy in and its foot picked for the wheel
+    // (board 2's E); and Break's Intro, a once clip.
     match mpfree_time_ui::sample::clips_audio_state() {
         Ok(state) => {
             let guitar = state.audio[1].row;
@@ -26992,9 +26996,38 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
             };
             out.push(("arrange-clips-audio-cells", shown(&state, false)));
             out.push(("arrange-clips-audio-card", shown(&state, true)));
-            let mut fitting = state.clone();
-            fitting.fitting = Some((guitar, 0, 0.4));
-            out.push(("arrange-clips-audio-fitting", shown(&fitting, true)));
+            let mut stretch = state.clone();
+            let riff = |st: &mut time_view::TimeState| {
+                st.tracks[guitar].slots[0]
+                    .as_mut()
+                    .and_then(|c| c.audio.as_mut())
+                    .map(|a| a.tempo = (mpfree_seq::FollowTempo::Stretch, false))
+                    .is_some()
+            };
+            if riff(&mut stretch) {
+                let set = |st: &mut time_view::TimeState, copy| {
+                    if let Some(a) = st.tracks[guitar].slots[0]
+                        .as_mut()
+                        .and_then(|c| c.audio.as_mut())
+                    {
+                        a.copy = copy;
+                    }
+                };
+                use mpfree_audiotracks::copying::CopyState;
+                set(&mut stretch, CopyState::Making(0.4));
+                out.push(("arrange-clips-audio-stretch", shown(&stretch, true)));
+                set(&mut stretch, CopyState::Ready);
+                let mut p = shown(&stretch, true);
+                if let Some(l) = p.ui.get_mut::<OptionList>(time_view::CLIP_CARD) {
+                    l.selected = time_view::AUDIO_MADE_AT;
+                }
+                p.time_page.update(&mut p.ui, &p.time);
+                // What a tap on the lines says (board 2's hint line).
+                if let Some(h) = time_view::made_at_hint(&p.time) {
+                    p.tell(&h);
+                }
+                out.push(("arrange-clips-audio-made-at", p));
+            }
             let mut once = state;
             once.audio_focus = Some(guitar + 1);
             out.push(("arrange-clips-audio-once", shown(&once, true)));

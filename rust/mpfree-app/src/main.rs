@@ -9023,39 +9023,6 @@ fn looper_action(
     }
 }
 
-/// A Fit to tempo ended ([`audiotracks::TrackHost::tend_clip_fit`]): a
-/// fitted clip goes in its cell as one UNDO step, or its copies are
-/// forgotten if the cell changed meanwhile. The hint line.
-fn fit_ended(
-    time: &mut time::TimeHost,
-    tracks: &mut audiotracks::TrackHost,
-    done: audiotracks::ClipFitDone,
-) -> String {
-    match done {
-        audiotracks::ClipFitDone::Fitted {
-            track,
-            slot,
-            id,
-            name,
-            audio,
-            bpm,
-            copies,
-        } => match time.fit_clip(track, slot, id, audio) {
-            Ok(_) => format!(
-                "{name}: fitted to {} · UNDO goes back",
-                audiotracks::bpm_words(bpm)
-            ),
-            Err(e) => {
-                tracks.forget_copies(&copies);
-                format!("Fit to tempo: {e}")
-            }
-        },
-        audiotracks::ClipFitDone::Failed { name } => {
-            format!("Fit to tempo: {name} couldn't be fitted; nothing changed")
-        }
-    }
-}
-
 /// A sound Put in a cell came in ([`audiotracks::TrackHost::tend_cell_sound`]):
 /// its clip goes in its track's first empty cell, as an edit UNDO takes
 /// away, or its take is forgotten if the track has no room now. The hint
@@ -9225,20 +9192,6 @@ fn time_action(
     // the time engine, which keeps the selection.
     // To a cell (audio tracks phase 2): the picked region as an audio
     // clip in its track's first empty cell; the song doesn't change.
-    // Fit to tempo on an audio clip's card (audio tracks phase 2): fitted
-    // copies of its recordings start; the clip plays them once they are
-    // in (the main loop, `fit_ended`).
-    if let TimeAction::FitClip { track, slot } = a {
-        let bpm = time.info().bpm;
-        let said = match time.project().clip(track, slot) {
-            Some(c) => tracks.fit_clip(track, slot, c, bpm),
-            None => Err(format!("cell {} of track {} is empty", slot + 1, track + 1)),
-        };
-        let line = said.unwrap_or_else(|e| format!("Fit to tempo: {e}"));
-        out.note(&format!("audio tracks: {line}"));
-        out.show(gui::ToUi::Tell(line));
-        return Vec::new();
-    }
     if let TimeAction::Audio(AudioAction::ToCell(r)) = a {
         let said = tracks
             .region_clip(r, time.tempo_map(), time.info().meter)
@@ -10804,9 +10757,8 @@ fn player_session(
     // on or not.
     time.set_copy_waits(true);
     let mut needs_rev = 0u64;
-    // A Fit to tempo ended, or a sound Put in a cell came in: its clip
-    // waits while the time engine records.
-    let mut fit_done: Option<audiotracks::ClipFitDone> = None;
+    // A sound Put in a cell came in: its clip waits while the time engine
+    // records.
     let mut cell_done: Option<Result<(usize, mpfree_seq::Clip), String>> = None;
     let st = time_state(&time, &tracks);
     // What the Perform pads' clip windows and scene pads light by, kept
@@ -15582,22 +15534,13 @@ fn player_session(
             time.set_rec_tempos(tempos);
         }
         cut_blocks_under_takes(out, &mut time, &mut tracks);
-        // Fit to tempo on an audio clip's card: once its copies are in,
-        // the clip plays them as one UNDO step, held while the time engine
-        // records (an edit then would go among the take's).
-        if fit_done.is_none() {
-            fit_done = tracks.tend_clip_fit();
-        }
         let recording = matches!(
             time.info().state,
             mpfree_transport::State::Recording | mpfree_transport::State::CountIn
         );
-        if let Some(done) = fit_done.take_if(|_| !recording) {
-            let line = fit_ended(&mut time, &mut tracks, done);
-            out.note(&format!("audio tracks: {line}"));
-            out.show(gui::ToUi::Tell(line));
-        }
-        // Put in a cell: once the sound is in, its clip goes in the cell.
+        // Put in a cell: once the sound is in, its clip goes in the cell,
+        // held while the time engine records (an edit then would go among
+        // the take's).
         if cell_done.is_none() {
             cell_done = tracks.tend_cell_sound(time.info().bpm);
         }
@@ -19248,16 +19191,18 @@ mod tests {
         assert!(time.project().clip(1, 2).is_some());
     }
 
-    /// Audio tracks phase 2, step 2c: Fit to tempo on a clip made at 120
-    /// BPM, in a project at 90, plays it on a fitted copy of its recording
-    /// that fills its length (at 90 the original leaves a gap each pass),
-    /// as one UNDO step; the song keeps playing the original.
+    /// Audio tracks phase 5c, board 2: an audio clip's card shows the
+    /// tempo its recording was made at and where its copy for the tempo
+    /// now stands; Stretch makes the copy, and the card's foot sets the
+    /// tempo it was made at (a region on its recording's tempo keeps 0),
+    /// one take each.
     #[test]
-    fn a_clip_fitted_to_tempo_fills_its_length_and_undo_goes_back() {
+    fn an_audio_clips_card_follows_its_copy_and_sets_the_tempo_it_was_made_at() {
+        use mpfree_audiotracks::copying::CopyState;
         use mpfree_audiotracks::RecordingId;
-        use mpfree_seq::{AudioClip, Clip, Project, RecId, Track};
-        use mpfree_transport::Command;
-        // One bar at 120 (2 s); at 90 a bar is 8/3 s.
+        use mpfree_seq::{AudioClip, Clip, FollowTempo, Project, RecId, Track};
+        use mpfree_time_ui::view::AudioSet;
+        // One bar at 120 (2 s), in a project at 90.
         let made = 2 * RATE as usize;
         let mut p = Project::new();
         p.tracks.push(Track::new_audio("Vocal", 0));
@@ -19288,80 +19233,61 @@ mod tests {
         while tracks.host.tracks.loading() != 0 {
             run_audio(&mut time, &mut tracks, 10, s, 0.0, &mut rest, &mut None);
         }
-        let map = *time.tempo_map();
-        assert!(tracks.host.tracks.place(0, &[], &map));
-        let song_take = tracks.host.tracks.regions(s)[0].take;
         let mut clip = Clip::new("Riff", 3840);
         clip.audio = Some(AudioClip::of(RecId(42), 0, made as i64, 3840, 120.0));
-        assert_eq!(time.put_audio_clip(0, clip.clone()), Ok(0));
-        // Fit to tempo: once the copy is in, the clip plays it.
-        let c = time.project().clip(0, 0).cloned().expect("the clip");
-        assert_eq!(
-            tracks.fit_clip(0, 0, &c, time.info().bpm),
-            Ok("Riff: fitting to 90 BPM…".to_string())
-        );
-        assert!(tracks.fit_clip(0, 0, &c, 90.0).is_err(), "one at a time");
-        let t0 = std::time::Instant::now();
-        let done = loop {
-            run_audio(&mut time, &mut tracks, 1, s, 0.0, &mut rest, &mut None);
-            if let Some(d) = tracks.tend_clip_fit() {
-                break d;
-            }
-            assert!(t0.elapsed().as_secs() < 30, "the fit never came");
-            assert!(tracks.clip_fit_progress().is_some());
-            std::thread::sleep(std::time::Duration::from_millis(1));
+        assert_eq!(time.put_audio_clip(0, clip), Ok(0));
+        let info = |time: &time::TimeHost, tracks: &audiotracks::TrackHost| {
+            let st = time_state(time, tracks);
+            st.tracks[0].slots[0]
+                .as_ref()
+                .and_then(|c| c.audio.clone())
+                .expect("an audio cell")
         };
-        assert!(tracks.clip_fit_progress().is_none());
-        assert_eq!(
-            fit_ended(&mut time, &mut tracks, done),
-            "Riff: fitted to 90 BPM · UNDO goes back"
+        let a = info(&time, &tracks);
+        assert_eq!((a.tempos.clone(), a.copy), (vec![120.0], CopyState::None));
+        // Stretch: its copy for 90 is made, and the card follows it.
+        let set = |row: usize, set| TimeAction::AudioClip {
+            track: 0,
+            slot: 0,
+            row: row as u8,
+            set,
+        };
+        let (tempo, made_at) = (
+            mpfree_time_ui::view::AUDIO_TEMPO,
+            mpfree_time_ui::view::AUDIO_MADE_AT,
         );
-        let a = time
-            .project()
-            .clip(0, 0)
-            .and_then(|c| c.audio.clone())
+        time.act(set(tempo, AudioSet::Follow(FollowTempo::Stretch, false)))
             .unwrap();
-        let fitted = made as i64 * 4 / 3;
-        assert_eq!(a.bpm, 90.0);
-        assert_ne!(a.regions[0].rec, RecId(42), "on the copy");
-        assert!((a.last_frame - fitted).abs() <= 1, "{}", a.last_frame);
-        let copy = tracks
-            .host
-            .tracks
-            .take_of(RecordingId(a.regions[0].rec.0))
-            .and_then(|id| tracks.host.tracks.take(id))
-            .expect("the copy is in");
-        assert!((copy.frames as i64 - fitted).abs() <= 2, "{}", copy.frames);
-        assert_eq!(
-            tracks.host.tracks.regions(s)[0].take,
-            song_take,
-            "the song keeps it"
-        );
-        // Launched at 90, it sounds to the end of its bar.
-        time.act(TimeAction::Transport(Command::PlayStart)).unwrap();
-        let bar = made * 4 / 3;
-        let (mut cell, mut start) = (Vec::new(), None);
-        run_audio(
-            &mut time,
-            &mut tracks,
-            bar / PERIOD + 4,
-            s,
-            0.0,
-            &mut cell,
-            &mut start,
-        );
-        let start = start.expect("its line came");
-        let late = &cell[start + made + 100..start + bar - 200];
-        assert!(late.iter().all(|&v| v.abs() > 0.1), "no gap past 2 s");
-        time.act(TimeAction::Transport(Command::Stop)).unwrap();
-        // UNDO goes back to the clip made at 120.
+        tracks.clip_copies(time.project());
+        let t0 = std::time::Instant::now();
+        while info(&time, &tracks).copy != CopyState::Ready {
+            assert!(t0.elapsed().as_secs() < 30, "the copy never came");
+            run_audio(&mut time, &mut tracks, 1, s, 0.0, &mut rest, &mut None);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // The foot sets the tempo it was made at, every region's; at its
+        // recording's tempo a region keeps 0.
+        time.set_rec_tempos(tracks.tempos_if_changed().expect("the take's tempo"));
+        time.act(set(made_at, AudioSet::MadeAt(100.0))).unwrap();
+        let regions = |time: &time::TimeHost| {
+            let c = time.project().clip(0, 0).cloned().unwrap();
+            let a = c.audio.unwrap();
+            (a.bpm, a.regions[0].bpm, a.regions[0].follow)
+        };
+        assert_eq!(regions(&time), (100.0, 100.0, FollowTempo::Stretch));
+        assert_eq!(info(&time, &tracks).tempos, vec![100.0]);
+        time.act(set(made_at, AudioSet::MadeAt(119.0))).unwrap();
+        assert!(time.act(set(made_at, AudioSet::MadeAt(1000.0))).is_err());
+        assert_eq!(regions(&time), (119.0, 119.0, FollowTempo::Stretch));
+        time.act(set(made_at, AudioSet::MadeAt(120.0))).unwrap();
+        assert_eq!(regions(&time), (120.0, 0.0, FollowTempo::Stretch));
+        time.act(set(made_at, AudioSet::MadeAt(110.0))).unwrap();
+        // A turn of the wheel is one take: UNDO takes it back whole, then
+        // Stretch.
         time.act(TimeAction::Undo).unwrap();
-        let back = time
-            .project()
-            .clip(0, 0)
-            .and_then(|c| c.audio.clone())
-            .unwrap();
-        assert_eq!((back.bpm, back.regions[0].rec), (120.0, RecId(42)));
+        assert_eq!(regions(&time), (120.0, 0.0, FollowTempo::Stretch));
+        time.act(TimeAction::Undo).unwrap();
+        assert_eq!(regions(&time), (120.0, 0.0, FollowTempo::Off));
     }
 
     /// [`an_audio_clip_launched_in_its_cell_plays_from_its_line`], with the

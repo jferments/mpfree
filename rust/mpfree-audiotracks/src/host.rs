@@ -63,7 +63,7 @@ use mpfree_transport::time::TempoMap;
 use mpfree_transport::{Block, Mark, Tick};
 
 use crate::copies::Copy;
-use crate::copying::{Ask, ClipWant, CopyCounts, CopySide, MAX_MAKING};
+use crate::copying::{Ask, ClipWant, CopyCounts, CopySide, CopyState, MAX_MAKING};
 use crate::files::{
     self, DriveProbe, DriveSeen, FileEvent, FileView, Files, Growing, LayerWrite, Name, Problem,
     Said, WriterConfig,
@@ -1145,6 +1145,23 @@ impl AudioHost {
     pub fn copy_memory(&self) -> (usize, usize, usize) {
         let (bytes, n) = self.tracks.copy_bytes();
         (bytes, n, self.copies.busy())
+    }
+
+    /// How far each copy being made has got (0 to 1), for the app to see
+    /// when the clip cards' progress moves. Doesn't allocate.
+    pub fn copy_progress(&self, each: &mut dyn FnMut(f32)) {
+        self.copies.progress(each);
+    }
+
+    /// Where clip `c`'s tempo copies for a steady `bpm` stand, over its
+    /// regions on Stretch (5c: the clip card's foot, the cells' words):
+    /// [`CopyState::None`] if it needs none.
+    pub fn clip_copy_state(&self, c: &crate::clips::ClipPlay, bpm: f64) -> CopyState {
+        let mut st = CopyState::None;
+        self.tracks.clip_copy_keys(c, bpm, &mut |_, k| {
+            st = st.with(self.copies.state(&self.tracks, &k));
+        });
+        st
     }
 
     /// Makes copies on `s` from now on, within its budget, not on the
@@ -2789,6 +2806,10 @@ struct CopyWork {
     job: Option<crate::copies::CopyJob>,
     done: Sender<FromWorker>,
     gen: u32,
+    /// Where it says how far it has got, for the host to read (5c).
+    progress: Arc<crate::copying::Progress>,
+    slot: u8,
+    tag: u32,
 }
 
 impl CopyWork {
@@ -2818,7 +2839,10 @@ impl sched::Work for CopyWork {
             }
             return false;
         }
-        self.job.as_mut().is_none_or(|j| j.run(frames))
+        let done = self.job.as_mut().is_none_or(|j| j.run(frames));
+        let p = self.job.as_ref().map_or(0.0, |j| j.progress());
+        self.progress.set(self.slot, self.tag, p);
+        done
     }
 
     fn progress(&self) -> f32 {
@@ -3192,14 +3216,19 @@ impl Worker {
                 priority,
                 need,
                 gen,
+                progress,
+                slot,
             }) => {
                 let key = spec.key;
                 let s = self.sched.get_or_insert_with(Sched::shared);
                 let work = CopyWork {
+                    tag: crate::copying::Progress::tag(&key),
                     spec: Some(spec),
                     job: None,
                     done: done.clone(),
                     gen,
+                    progress,
+                    slot,
                 };
                 s.submit(sched::Job::new(copy_key(&key), priority, work).needs(need));
                 return None;

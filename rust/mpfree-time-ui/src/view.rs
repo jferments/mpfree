@@ -69,6 +69,7 @@ use crate::widgets::{
     ROWS_ON, ROW_DROP, STRIP_BAR, STRIP_CHIP, TAKE_WORDS,
 };
 use mpfree_arp_ui::make_sheet::{MakeSheet, SheetView, MAKE_SHEET};
+use mpfree_audiotracks::copying::CopyState;
 use mpfree_audiotracks::host::TakeWave;
 use mpfree_audiotracks::{FollowTempo, Input, Monitor};
 use mpfree_play::mpfree_param::clips::{self, Clips};
@@ -84,7 +85,7 @@ use mpfree_transport::time::{Meter, Swing, Tick, MAX_BPM, MIN_BPM, PPQ};
 use mpfree_transport::transport::MAX_COUNT_IN;
 use mpfree_transport::{Command, State, Transport};
 use mpfree_ui::qlink::{QLinkCard, QLinkColumn};
-use mpfree_ui::widgets::{Chip, OptionButton, OptionList, OptionNote, OptionRow};
+use mpfree_ui::widgets::{Chip, NoteTone, OptionButton, OptionList, OptionNote, OptionRow};
 use mpfree_ui::{Color, EventKind, Tone, Ui, UiEvent};
 use std::sync::Arc;
 
@@ -208,22 +209,44 @@ pub const SCENE_CARD_HINT: &str =
 pub const CLIPS_CARD_HINT: &str =
     "Clip: the armed track's playing clip   ·   wheel: pick a row, - / +: change it   ·   SHIFT + ‹ ›: Length and Speed halve or double   ·   COPY + a clip, then an empty slot: a copy";
 
+/// The hint line under the Clips grid with an audio clip's card showing
+/// (layout spec 4j, phase 5c): what each Tempo does.
+pub const AUDIO_CARD_HINT: &str = "Tempo: Off as recorded   ·   Repitch faster and higher, like tape   ·   Stretch the same pitch, from a copy   ·   UNDO goes back";
+
 /// The hint line under the Clips grid with the Clip tab: Convert to
 /// notes' preview while it is open on the focused clip (E1); an audio
-/// clip's card says what Fit to tempo makes at the project's tempo
-/// (layout spec 4j); else [`CLIPS_CARD_HINT`].
+/// clip's card says what each Tempo does (layout spec 4j); else
+/// [`CLIPS_CARD_HINT`].
 pub fn clip_card_hint(st: &TimeState) -> String {
     if let Some(c) = st.converting() {
         return c.line.clone();
     }
     match focused_audio(st) {
-        Some(_) => format!(
-            "Clip: the armed track's playing clip   ·   wheel: pick a row, - / +: change it   ·   \
-             Fit to tempo: a copy that fits {} BPM, same pitch   ·   UNDO goes back",
-            tempo_short(st.transport.bpm)
-        ),
+        Some(_) => AUDIO_CARD_HINT.to_string(),
         None => CLIPS_CARD_HINT.to_string(),
     }
+}
+
+/// What the hint line says with an audio clip's foot picked (phase 5c,
+/// board 2): the wheel sets the tempo it was made at, and what From its
+/// length would make it.
+pub fn made_at_hint(st: &TimeState) -> Option<String> {
+    let (_, _, c) = focused_audio(st)?;
+    let a = c.audio.as_ref()?;
+    if let MadeAt::Several(t) = made_at(a) {
+        return Some(several_why(&c.name, &t));
+    }
+    let from = match from_length(c, a, st.transport.meter) {
+        Ok(bpm) => format!(
+            "From its length: {} long means {} BPM",
+            bars_beats(c.length, st.transport.meter),
+            tempo_short(bpm)
+        ),
+        Err(_) => "From its length: from the clip's length in bars".to_string(),
+    };
+    Some(format!(
+        "wheel or - / +: the tempo it was made at, 0.1 BPM a step (SHIFT 1)   ·   {from}   ·   UNDO goes back"
+    ))
 }
 
 /// The note inspector (piano roll plan 1C.1): while notes are picked in
@@ -566,20 +589,53 @@ pub const CLIP_MELODY: usize = 13;
 
 /// An audio clip's card's rows, top to bottom (layout spec 4j): Speed,
 /// Swing, Quantise, Strength, Program, Bank, Direction and Mutate don't
-/// apply to audio.
-pub const AUDIO_CLIP_ROWS: [&str; 7] = [
-    "Length", "Mode", "Launch", "Follow", "After", "Gain", "Name",
+/// apply to audio. Tempo and Until ready are phase 5's (5c, board 1).
+pub const AUDIO_CLIP_ROWS: [&str; 9] = [
+    "Length",
+    "Tempo",
+    "Until ready",
+    "Mode",
+    "Launch",
+    "Follow",
+    "After",
+    "Gain",
+    "Name",
 ];
+/// The audio card's Tempo row (phase 5c): Off (as recorded), Repitch or
+/// Stretch, for every region at once.
+pub const AUDIO_TEMPO: usize = 1;
+/// The audio card's Until ready row: what Stretch does while its copy is
+/// made, on time or keep pitch; "—" unless Tempo is Stretch.
+pub const AUDIO_UNTIL: usize = 2;
 /// The audio card's Gain row: off to +12 dB, in 0.5 dB steps (SHIFT 0.1).
-pub const AUDIO_GAIN: usize = 5;
+pub const AUDIO_GAIN: usize = 7;
 /// The audio card's Name row: a tap or a turn opens the naming keyboard
 /// (the app's).
-pub const AUDIO_NAME: usize = 6;
+pub const AUDIO_NAME: usize = 8;
+/// The audio card's foot, picked by a tap as a row past Name (phase 5c,
+/// board 2): the wheel and - / + set the tempo it was made at.
+pub const AUDIO_MADE_AT: usize = 9;
+/// The Tempo row's settings, in the order its arrows step them.
+pub const AUDIO_TEMPOS: [mpfree_seq::FollowTempo; 3] = [
+    mpfree_seq::FollowTempo::Off,
+    mpfree_seq::FollowTempo::Repitch,
+    mpfree_seq::FollowTempo::Stretch,
+];
 /// The longest name the naming keyboard takes for a clip.
 pub const MAX_CLIP_NAME: usize = 24;
 /// The note card's row each audio card row steps as: Mode, Launch,
 /// Follow and After are a note clip's settings.
-const AUDIO_AS_NOTES: [usize; 7] = [0, 8, 7, 5, 6, usize::MAX, usize::MAX];
+const AUDIO_AS_NOTES: [usize; 9] = [
+    0,
+    usize::MAX,
+    usize::MAX,
+    8,
+    7,
+    5,
+    6,
+    usize::MAX,
+    usize::MAX,
+];
 /// An audio clip's gain at its most: +12 dB.
 pub const AUDIO_GAIN_MAX_DB: f32 = 12.0;
 /// Below this an audio clip's gain is off.
@@ -602,6 +658,10 @@ pub enum AudioSet {
         region: usize,
         bpm: f64,
     },
+    /// The tempo every region was made at (the card's foot and From its
+    /// length, phase 5c): a tempo MPFree plays. A region whose recording
+    /// was made at it keeps 0, its recording's.
+    MadeAt(f64),
 }
 /// The clip card's Continue row (composing tools, phase 1 step 4): either
 /// arrow opens the note editor on the clip with Continue open.
@@ -793,8 +853,22 @@ pub struct ClipInfo {
 /// audio tracks.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AudioCellInfo {
-    /// The tempo it was made at (BPM): Fit to tempo fits from it.
+    /// The tempo it was made at (BPM), as the clip says: what the card
+    /// shows when [`AudioCellInfo::tempos`] says nothing.
     pub bpm: f64,
+    /// How its regions follow the tempo, and on Stretch whether they keep
+    /// their pitch until their copy is ready (the card's Tempo and Until
+    /// ready, phase 5c): Off, as recorded, to begin with.
+    pub tempo: (mpfree_seq::FollowTempo, bool),
+    /// Its regions' Tempo or Until ready differ: the card says "mixed".
+    pub mixed: bool,
+    /// The tempo each region's audio was made at, in region order: its
+    /// own, else its recording's; 0 where none is known (a take recorded
+    /// across a tempo change). The app sets it.
+    pub tempos: Vec<f64>,
+    /// Where its tempo copies for the tempo now stand, over its regions
+    /// on Stretch (phase 5c). The app sets it.
+    pub copy: CopyState,
     /// Its own gain (the card's Gain row), 0 to 4 (+12 dB).
     pub gain: f32,
     /// Its sound's length in seconds, its first frame to its last: a once
@@ -809,6 +883,13 @@ pub struct AudioCellInfo {
     /// A once clip still sounding past its stop, this far through its
     /// sound (its playhead is drawn dimmed). The app sets it.
     pub ring: Option<f32>,
+}
+
+impl AudioCellInfo {
+    /// Its regions' Tempo and Until ready, or None when they differ.
+    pub fn follow(&self) -> Option<(mpfree_seq::FollowTempo, bool)> {
+        (!self.mixed).then_some(self.tempo)
+    }
 }
 
 /// What the looper says of a loop, for its cells on the Clips grid: the
@@ -1255,9 +1336,6 @@ pub struct TimeState {
     /// time, as (track, slot, ticks it waited), until launched again (the
     /// cell says "not ready"). The app sets it.
     pub not_ready: Vec<(usize, usize, Tick)>,
-    /// Fit to tempo under way on an audio clip's card: its cell, and how
-    /// far it has got, 0 to 1. The app sets it.
-    pub fitting: Option<(usize, usize, f32)>,
     /// The audio track armed last by its own arm, while no note track has
     /// been armed since: the Clip tab shows its clip ([`TimeState::focus`]).
     /// The app sets it.
@@ -1587,6 +1665,8 @@ impl TimeState {
                             audio: c.audio.as_ref().map(|a| AudioCellInfo {
                                 bpm: a.bpm,
                                 gain: a.gain,
+                                tempo: a.follow().unwrap_or_default(),
+                                mixed: a.follow().is_none(),
                                 ..AudioCellInfo::default()
                             }),
                             holds_notes: c.holds == mpfree_seq::Holds::Notes,
@@ -1637,7 +1717,6 @@ impl TimeState {
             audio_waits: AudioWaitCounts::default(),
             audio_late: Vec::new(),
             not_ready: Vec::new(),
-            fitting: None,
             audio_focus: None,
             saved: Vec::new(),
             reloads: Vec::new(),
@@ -1954,13 +2033,6 @@ pub enum TimeAction {
     /// Restore (S6): the clip as it was before its first Mutate, at once,
     /// as an edit UNDO takes back.
     Restore {
-        track: usize,
-        slot: usize,
-    },
-    /// Fit to tempo on an audio clip's card (audio tracks phase 2): the
-    /// clip on fitted copies of its recordings, made at the project's
-    /// tempo, once they are in, as an edit UNDO takes back.
-    FitClip {
         track: usize,
         slot: usize,
     },
@@ -3407,9 +3479,15 @@ fn action_of(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                     _ => None,
                 };
             }
-            if st.clip(track, slot)?.audio.is_some() {
-                return (*b == 0 && fit_refused(st, track, slot).is_none())
-                    .then_some(TimeAction::FitClip { track, slot });
+            if let Some((_, _, c)) = focused_audio(st) {
+                // From its length (phase 5c): one take.
+                let bpm = from_length(c, c.audio.as_ref()?, st.transport.meter).ok()?;
+                return (*b == 0).then_some(TimeAction::AudioClip {
+                    track,
+                    slot,
+                    row: AUDIO_MADE_AT as u8,
+                    set: AudioSet::MadeAt(bpm),
+                });
             }
             match b {
                 0 => Some(TimeAction::SaveState { track, slot }),
@@ -3469,15 +3547,12 @@ fn why_not_of(ev: &UiEvent, st: &TimeState) -> Option<String> {
         (MORPH, EventKind::Tab(0 | 1)) if !st.morph.on => {
             Some("Move the crossfader first: Snap back and Keep work on a morph".to_string())
         }
-        (CLIP_CARD, EventKind::Toggle(0))
-            if st
-                .focus()
-                .and_then(|(t, s)| st.clip(t, s))
-                .is_some_and(|c| c.audio.is_some()) =>
-        {
-            let (track, slot) = st.focus()?;
-            fit_refused(st, track, slot)
+        (CLIP_CARD, EventKind::Toggle(0)) if focused_audio(st).is_some() => {
+            let (_, _, c) = focused_audio(st)?;
+            from_length(c, c.audio.as_ref()?, st.transport.meter).err()
         }
+        // The foot picked: what the wheel does now (board 2).
+        (CLIP_CARD, EventKind::Select(AUDIO_MADE_AT)) => made_at_hint(st),
         (MORPH, EventKind::Tab(3)) | (CLIP_CARD, EventKind::Toggle(1)) => Some(match st.focus() {
             None => "Arm a track with a clip: Reload clip reloads its clip".to_string(),
             Some(_) => {
@@ -4291,7 +4366,7 @@ pub fn card_buttons(st: &TimeState) -> Vec<OptionButton> {
         }
         return b;
     }
-    if let Some(b) = fit_button(st, track, slot) {
+    if let Some(b) = from_length_button(st) {
         return vec![b];
     }
     let mut reload = OptionButton::new("Reload", st.saved.contains(&(track, slot)));
@@ -4517,9 +4592,28 @@ pub fn focused_audio(st: &TimeState) -> Option<(usize, usize, &ClipInfo)> {
     Some((track, slot, c))
 }
 
+/// The Tempo row's word for `f` (phase 5c).
+pub fn tempo_word(f: mpfree_seq::FollowTempo) -> &'static str {
+    match f {
+        mpfree_seq::FollowTempo::Off => "Off",
+        mpfree_seq::FollowTempo::Repitch => "Repitch",
+        mpfree_seq::FollowTempo::Stretch => "Stretch",
+    }
+}
+
+/// The Until ready row's word: what Stretch does while its copy is made.
+pub fn until_word(keep_pitch: bool) -> &'static str {
+    if keep_pitch {
+        "keep pitch"
+    } else {
+        "on time"
+    }
+}
+
 /// An audio clip's card rows (layout spec 4j): a loop's length in bars
-/// and beats or a once clip's time, its mode, launch, follow action and
-/// gain, and its name.
+/// and beats or a once clip's time, its Tempo and Until ready (phase 5c;
+/// Until ready faint, "—", unless Tempo is Stretch), its mode, launch,
+/// follow action and gain, and its name.
 fn audio_rows(c: &ClipInfo, meter: Meter) -> Vec<OptionRow> {
     let Some(a) = &c.audio else {
         return Vec::new();
@@ -4535,24 +4629,150 @@ fn audio_rows(c: &ClipInfo, meter: Meter) -> Vec<OptionRow> {
     } else {
         bars_beats(c.length, meter)
     };
+    let tempo = a.follow().map_or("mixed", |f| tempo_word(f.0));
+    let until = match a.follow() {
+        Some((mpfree_seq::FollowTempo::Stretch, keep)) => until_word(keep),
+        _ => "—",
+    };
     let values = [
         length,
-        shared(1),
-        shared(2),
+        tempo.to_string(),
+        until.to_string(),
         shared(3),
         shared(4),
+        shared(5),
+        shared(6),
         gain_words(a.gain),
         c.name.clone(),
     ];
     AUDIO_CLIP_ROWS
         .iter()
         .zip(values)
-        .map(|(name, value)| OptionRow {
+        .enumerate()
+        .map(|(k, (name, value))| OptionRow {
             name: name.to_string(),
+            faint: k == AUDIO_UNTIL && value == "—",
             value,
             ..OptionRow::default()
         })
         .collect()
+}
+
+/// What an audio clip's regions were made at (phase 5c): one tempo,
+/// several (a comp of takes made at two tempos), or none known.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MadeAt {
+    One(f64),
+    Several(Vec<f64>),
+    Unknown,
+}
+
+/// The tempos an audio clip's regions were made at, each once, in region
+/// order, from [`AudioCellInfo::tempos`] (the clip's own tempo when the
+/// app said nothing). Regions with none known are left out, unless no
+/// region has one.
+pub fn made_at(a: &AudioCellInfo) -> MadeAt {
+    let mut known: Vec<f64> = Vec::new();
+    let all: &[f64] = if a.tempos.is_empty() {
+        std::slice::from_ref(&a.bpm)
+    } else {
+        &a.tempos
+    };
+    for &b in all {
+        if mpfree_transport::time::valid_bpm(b) && !known.iter().any(|k| (k - b).abs() < 0.05) {
+            known.push(b);
+        }
+    }
+    match known.len() {
+        0 => MadeAt::Unknown,
+        1 => MadeAt::One(known[0]),
+        _ => MadeAt::Several(known),
+    }
+}
+
+/// "120 BPM", "120 and 100 BPM", "120, 100 and 90 BPM".
+fn tempos_words(t: &[f64]) -> String {
+    let words: Vec<String> = t.iter().map(|&b| tempo_short(b)).collect();
+    match words.split_last() {
+        Some((last, [])) => format!("{last} BPM"),
+        Some((last, rest)) => format!("{} and {last} BPM", rest.join(", ")),
+        None => String::new(),
+    }
+}
+
+/// Why a comp of takes made at several tempos has no one tempo to set.
+fn several_why(name: &str, t: &[f64]) -> String {
+    format!(
+        "{name}'s regions were made at {}, each its own take's: there is no one tempo to set",
+        tempos_words(t)
+    )
+}
+
+/// How far Repitch moves audio made at `made` at `now`: "4.6 semitones
+/// down" ("4.6 down" when `short`), for several "4.6 and 1.4 semitones
+/// down" or "1.4 up and 4.6 down".
+fn semitones_words(made: &[f64], now: f64, short: bool) -> String {
+    let st: Vec<f64> = made.iter().map(|&m| 12.0 * (now / m).log2()).collect();
+    let way = |x: f64| if x < 0.0 { "down" } else { "up" };
+    let n = |x: f64| format!("{:.1}", x.abs());
+    let unit = if short { "" } else { " semitones" };
+    let same = st.iter().all(|&x| (x < 0.0) == (st[0] < 0.0));
+    if same {
+        let ns: Vec<String> = st.iter().map(|&x| n(x)).collect();
+        let list = match ns.split_last() {
+            Some((last, [])) => last.clone(),
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+            None => String::new(),
+        };
+        format!("{list}{unit} {}", way(st[0]))
+    } else {
+        let parts: Vec<String> = st.iter().map(|&x| format!("{} {}", n(x), way(x))).collect();
+        parts.join(" and ")
+    }
+}
+
+/// Whether audio made at any of `made` would play faster than
+/// `mpfree_audiotracks::MAX_SPEED` at `now`: it is silent then.
+fn too_fast(made: &[f64], now: f64) -> bool {
+    made.iter()
+        .any(|&m| now / m > mpfree_audiotracks::MAX_SPEED)
+}
+
+/// From its length (phase 5c, board 2): the tempo that makes the clip's
+/// sound (its first region's first frame to its last) last its length in
+/// bars, to 0.1 BPM, or why there is none.
+pub fn from_length(c: &ClipInfo, a: &AudioCellInfo, meter: Meter) -> Result<f64, String> {
+    let name = &c.name;
+    if c.settings.once {
+        return Err(format!(
+            "{name} plays once, to the end of its sound: its length is its sound's, so it says nothing of its tempo"
+        ));
+    }
+    let made = made_at(a);
+    if let MadeAt::Several(t) = &made {
+        return Err(several_why(name, t));
+    }
+    if a.secs <= 0.0 {
+        return Err(format!("{name}'s sound has no length to go by"));
+    }
+    let quarters = c.length as f64 / f64::from(PPQ);
+    let bpm = (quarters * 60.0 / a.secs * 10.0).round() / 10.0;
+    let bars = bars_beats(c.length, meter);
+    if !mpfree_transport::time::valid_bpm(bpm) {
+        return Err(format!(
+            "{bars} long would mean {} BPM, past the tempos MPFree plays",
+            tempo_short(bpm)
+        ));
+    }
+    if let MadeAt::One(m) = made {
+        if (m - bpm).abs() < 0.05 {
+            return Err(format!(
+                "{name} was made at {} BPM already: its {bars} fit its sound",
+                tempo_short(m)
+            ));
+        }
+    }
+    Ok(bpm)
 }
 
 /// A loop's length as the audio card says it: "2 bars", "3 beats", "2
@@ -4654,7 +4874,71 @@ fn audio_step(
             }
             set(0, AudioSet::Length(next))
         }
-        1..=4 => settings_step(st, AUDIO_AS_NOTES[index], delta),
+        AUDIO_TEMPO => {
+            use mpfree_seq::FollowTempo as F;
+            let now = a.follow().map(|f| f.0);
+            let at = now.and_then(|f| AUDIO_TEMPOS.iter().position(|&t| t == f));
+            let next = match at {
+                Some(i) => (i as i32 + d).clamp(0, AUDIO_TEMPOS.len() as i32 - 1) as usize,
+                // Mixed: ‹ Off, › Stretch.
+                None if d < 0 => 0,
+                None => AUDIO_TEMPOS.len() - 1,
+            };
+            if Some(next) == at {
+                return Err(if d < 0 {
+                    format!("{}'s Tempo is Off, as recorded: its first", c.name)
+                } else {
+                    format!("{}'s Tempo is Stretch: its last", c.name)
+                });
+            }
+            let to = AUDIO_TEMPOS[next];
+            if to != F::Off && made_at(a) == MadeAt::Unknown {
+                return Err(format!(
+                    "{}'s tempo isn't known, so it can't follow the song's: tap the card's foot to set the tempo it was made at, or From its length",
+                    c.name
+                ));
+            }
+            let keep = to == F::Stretch && a.follow().is_some_and(|f| f.1);
+            set(AUDIO_TEMPO, AudioSet::Follow(to, keep))
+        }
+        AUDIO_UNTIL => {
+            let Some((mpfree_seq::FollowTempo::Stretch, keep)) = a.follow() else {
+                return Err(
+                    "Until ready is what Stretch does while its copy is made: set Tempo to Stretch first"
+                        .into(),
+                );
+            };
+            let to = d > 0;
+            if to == keep {
+                return Err(format!(
+                    "{}'s Until ready is {} already: {}",
+                    c.name,
+                    until_word(keep),
+                    if keep { "its last" } else { "its first" }
+                ));
+            }
+            set(
+                AUDIO_UNTIL,
+                AudioSet::Follow(mpfree_seq::FollowTempo::Stretch, to),
+            )
+        }
+        AUDIO_MADE_AT => {
+            let from = match made_at(a) {
+                MadeAt::Several(t) => return Err(several_why(&c.name, &t)),
+                MadeAt::One(m) => m,
+                MadeAt::Unknown => st.transport.bpm,
+            };
+            let step = if shift { 1.0 } else { 0.1 };
+            let next = (((from / step).round() + f64::from(d)) * step * 10.0).round() / 10.0;
+            if next < MIN_BPM {
+                return Err(format!("MPFree plays from {} BPM", tempo_short(MIN_BPM)));
+            }
+            if next > MAX_BPM {
+                return Err(format!("MPFree plays up to {} BPM", tempo_short(MAX_BPM)));
+            }
+            set(AUDIO_MADE_AT, AudioSet::MadeAt(next))
+        }
+        3..=6 => settings_step(st, AUDIO_AS_NOTES[index], delta),
         AUDIO_GAIN => {
             let step = if shift { 0.1 } else { 0.5 };
             let db = gain_db(a.gain);
@@ -4682,104 +4966,150 @@ fn audio_step(
     }
 }
 
-/// The audio card's foot (layout spec 4j): Fit to tempo, or "Fitting…
-/// 40 %" with its progress while it fits. Faint for a once clip and at
-/// the project's tempo, a tap then saying why. None for a note clip.
-fn fit_button(st: &TimeState, track: usize, slot: usize) -> Option<OptionButton> {
-    st.clip(track, slot)?.audio.as_ref()?;
-    let fitting = st
-        .fitting
-        .filter(|f| (f.0, f.1) == (track, slot))
-        .map(|f| f.2);
-    let label = match fitting {
-        Some(p) => format!("Fitting… {} %", (p * 100.0).round() as u32),
-        None => "Fit to tempo".to_string(),
-    };
-    // Drawn faint only when it can't fit at all; while it fits it is lit,
-    // its fill the progress (a tap says how far it has got).
+/// The audio card's foot button (layout spec 4j, phase 5c): From its
+/// length, faint when it would make nothing (a tap then says why). None
+/// for a note clip.
+fn from_length_button(st: &TimeState) -> Option<OptionButton> {
+    let (_, _, c) = focused_audio(st)?;
+    let a = c.audio.as_ref()?;
     let mut b = OptionButton::new(
-        &label,
-        fitting.is_some() || fit_refused(st, track, slot).is_none(),
+        "From its length",
+        from_length(c, a, st.transport.meter).is_ok(),
     );
     b.explains = true;
-    b.progress = fitting;
     Some(b)
 }
 
-/// Why Fit to tempo does nothing on the clip in cell `slot` of `track`:
-/// a fit under way, a once clip, a clip at the project's tempo. None
-/// when it can fit.
-fn fit_refused(st: &TimeState, track: usize, slot: usize) -> Option<String> {
-    let c = st.clip(track, slot)?;
-    let a = c.audio.as_ref()?;
-    let bpm = st.transport.bpm;
-    if let Some(f) = st.fitting {
-        return Some(if (f.0, f.1) == (track, slot) {
-            format!(
-                "{} is fitting to {} BPM: {} % done",
-                c.name,
-                tempo_short(bpm),
-                (f.2 * 100.0).round() as u32
-            )
-        } else {
-            "Another clip is fitting to tempo: one at a time".to_string()
-        });
-    }
-    if c.settings.once {
-        return Some(format!(
-            "{} plays once, to the end of its sound: it sounds the same at any tempo, so there is nothing to fit",
-            c.name
-        ));
-    }
-    if !off_tempo(c, a, bpm) {
-        return Some(format!(
-            "{} was made at {} BPM, the project's tempo: there is nothing to fit",
-            c.name,
-            tempo_short(a.bpm)
-        ));
-    }
-    None
-}
-
-/// The audio card's two lines over Fit to tempo (layout spec 4j): the
-/// tempo the clip was made at and what that does here. None for a note
-/// clip.
+/// The audio card's two lines over From its length (layout spec 4j,
+/// phase 5c, board 2): the tempo the clip was made at over what its
+/// Tempo does with it at the tempo now, or its copy being made. A tap on
+/// them picks them for the wheel (not for a comp of takes made at
+/// several tempos). None for a note clip.
 pub fn card_note(st: &TimeState) -> Option<OptionNote> {
+    use mpfree_seq::FollowTempo as F;
     let (_, _, c) = focused_audio(st)?;
     let a = c.audio.as_ref()?;
-    let bpm = st.transport.bpm;
-    if c.settings.once {
-        return Some(OptionNote {
-            lead: "Plays to its end".to_string(),
-            rest: "at any tempo".to_string(),
-            warn: false,
-        });
-    }
-    if !off_tempo(c, a, bpm) {
-        return Some(OptionNote {
-            lead: format!("Made at {} BPM,", tempo_short(a.bpm)),
-            rest: "the project's tempo".to_string(),
-            warn: false,
-        });
-    }
-    let gap = pass_gap(c, a, bpm);
-    let rest = if gap > 0.0 {
-        format!("at {} a {gap:.1} s gap each pass", tempo_short(bpm))
-    } else {
-        format!("at {} {:.1} s cut each pass", tempo_short(bpm), -gap)
-    };
-    Some(OptionNote {
-        lead: format!("Made at {} BPM:", tempo_short(a.bpm)),
+    let now = st.transport.bpm;
+    let made = made_at(a);
+    let note = |lead: String, lead_tone, rest: String, rest_tone| OptionNote {
+        lead,
         rest,
-        warn: true,
-    })
+        lead_tone,
+        rest_tone,
+        picks: !matches!(made, MadeAt::Several(_)),
+        pick_lead: match made {
+            MadeAt::One(m) => format!("Made at {m:.1} BPM"),
+            MadeAt::Unknown => "Made at: not known".to_string(),
+            MadeAt::Several(_) => String::new(),
+        },
+        ..OptionNote::default()
+    };
+    let tempos = match &made {
+        MadeAt::Unknown => {
+            return Some(note(
+                "Made at: not known".into(),
+                NoteTone::Warn,
+                "set it, or From its length".into(),
+                NoteTone::Dim,
+            ))
+        }
+        MadeAt::One(m) => vec![*m],
+        MadeAt::Several(t) => t.clone(),
+    };
+    let made_words = format!("Made at {}", tempos_words(&tempos));
+    let follow = a.follow().map(|f| f.0);
+    if c.settings.once && follow == Some(F::Off) {
+        return Some(note(
+            "Plays to its end".into(),
+            NoteTone::Plain,
+            "at any tempo".into(),
+            NoteTone::Dim,
+        ));
+    }
+    if tempos.iter().all(|&m| (m - now).abs() < 0.05) {
+        return Some(note(
+            format!("{made_words},"),
+            NoteTone::Plain,
+            "the project's tempo".into(),
+            NoteTone::Dim,
+        ));
+    }
+    let at = tempo_short(now);
+    if follow != Some(F::Off) && too_fast(&tempos, now) {
+        return Some(note(
+            made_words,
+            NoteTone::Plain,
+            format!("at {at} past 4 times its speed: silent"),
+            NoteTone::Bad,
+        ));
+    }
+    match a.follow() {
+        Some((F::Off, _)) => {
+            let gap = pass_gap(c, tempos[0], now);
+            let rest = if gap > 0.0 {
+                format!("at {at} a {gap:.1} s gap each pass")
+            } else {
+                format!("at {at} {:.1} s cut each pass", -gap)
+            };
+            Some(note(
+                format!("{made_words}:"),
+                NoteTone::Warn,
+                rest,
+                NoteTone::Warn,
+            ))
+        }
+        None => Some(note(
+            made_words,
+            NoteTone::Plain,
+            "its regions' Tempo differs".into(),
+            NoteTone::Dim,
+        )),
+        Some((F::Repitch, _)) => Some(note(
+            made_words,
+            NoteTone::Plain,
+            format!("Repitch: {}", semitones_words(&tempos, now, false)),
+            NoteTone::Good,
+        )),
+        Some((F::Stretch, keep)) => {
+            let meanwhile = if keep {
+                "Waits for its copy".to_string()
+            } else {
+                format!("Repitch for now: {}", semitones_words(&tempos, now, true))
+            };
+            let (lead, progress) = match a.copy {
+                CopyState::Ready | CopyState::None => {
+                    return Some(note(
+                        made_words,
+                        NoteTone::Plain,
+                        format!("Stretch: the same pitch at {at}"),
+                        NoteTone::Good,
+                    ))
+                }
+                CopyState::Making(p) => (
+                    format!("Making its copy: {} %", (p * 100.0).floor() as u32),
+                    Some(p),
+                ),
+                CopyState::Waiting => ("Making its copy: 0 %".to_string(), Some(0.0)),
+                CopyState::Unmade => ("Its copy couldn't be made".to_string(), None),
+            };
+            let tone = if progress.is_some() {
+                NoteTone::Accent
+            } else {
+                NoteTone::Warn
+            };
+            Some(OptionNote {
+                progress,
+                ..note(lead, tone, meanwhile, NoteTone::Warn)
+            })
+        }
+    }
 }
 
-/// The silence a loop made at `a.bpm` leaves each pass at `bpm`, in
+/// The silence a loop made at `made` leaves each pass at `bpm`, in
 /// seconds; under 0 it cuts that much of its sound off.
-fn pass_gap(c: &ClipInfo, a: &AudioCellInfo, bpm: f64) -> f64 {
+fn pass_gap(c: &ClipInfo, made: f64, bpm: f64) -> f64 {
     let quarters = c.length as f64 / f64::from(PPQ);
-    quarters * 60.0 / bpm.max(1.0) - quarters * 60.0 / a.bpm.max(1.0)
+    quarters * 60.0 / bpm.max(1.0) - quarters * 60.0 / made.max(1.0)
 }
 
 /// The note clip card's rows: what a step of row `index` asks for, or
@@ -5836,17 +6166,27 @@ fn audio_word(
         Some(("missing".to_string(), CellAlert::Bad))
     } else if st.not_ready.iter().any(|n| (n.0, n.1) == (track, slot)) {
         Some(("not ready".to_string(), CellAlert::Bad))
-    } else if off_tempo(clip, a, st.transport.bpm) {
-        Some((format!("made at {}", tempo_short(a.bpm)), CellAlert::Warn))
     } else {
-        None
+        off_tempo(clip, a, st.transport.bpm)
+            .map(|m| (format!("made at {}", tempo_short(m)), CellAlert::Warn))
     }
 }
 
-/// An audio loop made at another tempo than `bpm`: each pass leaves a gap
-/// or cuts its sound short. A once clip plays to its end at any tempo.
-fn off_tempo(clip: &ClipInfo, a: &AudioCellInfo, bpm: f64) -> bool {
-    !clip.settings.once && (a.bpm - bpm).abs() >= 0.05
+/// An audio loop on Off (as recorded) made at another tempo than `bpm`:
+/// each pass leaves a gap or cuts its sound short. A once clip plays to
+/// its end at any tempo; a clip following the tempo (phase 5) fits it.
+/// Its one made-at tempo, if so.
+fn off_tempo(clip: &ClipInfo, a: &AudioCellInfo, bpm: f64) -> Option<f64> {
+    if clip.settings.once
+        || a.follow()
+            .is_some_and(|f| f.0 != mpfree_seq::FollowTempo::Off)
+    {
+        return None;
+    }
+    match made_at(a) {
+        MadeAt::One(m) if (m - bpm).abs() >= 0.05 => Some(m),
+        _ => None,
+    }
 }
 
 /// A tempo as a cell says it: "120", "92.5".
@@ -5898,16 +6238,16 @@ pub fn audio_cell_hint(st: &TimeState, track: usize, slot: usize) -> Option<Stri
             length_label(n.2 as f64, t.meter)
         ));
     }
-    if off_tempo(clip, a, t.bpm) {
-        let gap = pass_gap(clip, a, t.bpm);
+    if let Some(m) = off_tempo(clip, a, t.bpm) {
+        let gap = pass_gap(clip, m, t.bpm);
         let what = if gap > 0.0 {
             format!("leaves {:.1} s of silence each pass", gap)
         } else {
             format!("cuts {:.1} s off each pass", -gap)
         };
         return Some(format!(
-            "{name} was made at {} BPM: at {} it {what}. Fit to tempo on the Clip tab fixes it.",
-            tempo_short(a.bpm),
+            "{name} was made at {} BPM: at {} it {what}. Its Tempo on the Clip tab, Repitch or Stretch, keeps it on the bars.",
+            tempo_short(m),
             tempo_short(t.bpm)
         ));
     }
@@ -11418,7 +11758,7 @@ mod tests {
             audio_cell_hint(&st, 2, 0).as_deref(),
             Some(
                 "A was made at 120 BPM: at 92 it leaves 1.2 s of silence each pass. \
-                 Fit to tempo on the Clip tab fixes it."
+                 Its Tempo on the Clip tab, Repitch or Stretch, keeps it on the bars."
             )
         );
         // Faster than it was made, it cuts its sound short.
@@ -11427,9 +11767,18 @@ mod tests {
             audio_cell_hint(&st, 2, 0).as_deref(),
             Some(
                 "A was made at 120 BPM: at 150 it cuts 0.8 s off each pass. \
-                 Fit to tempo on the Clip tab fixes it."
+                 Its Tempo on the Clip tab, Repitch or Stretch, keeps it on the bars."
             )
         );
+        // Following the tempo (phase 5c) it keeps to the bars: no word.
+        set(&mut st, &|c| {
+            c.audio.as_mut().unwrap().tempo = (mpfree_seq::FollowTempo::Repitch, false)
+        });
+        assert_eq!(cell_of(&st, 2, 0).foot, "");
+        assert_eq!(audio_cell_hint(&st, 2, 0), None);
+        set(&mut st, &|c| {
+            c.audio.as_mut().unwrap().tempo = Default::default()
+        });
         // A once clip plays to its end at any tempo: its time, no word.
         set(&mut st, &|c| c.settings.once = true);
         let c = cell_of(&st, 2, 0);
@@ -11486,9 +11835,9 @@ mod tests {
 
     /// Layout spec 4j: an audio clip's card has its own rows, steps a
     /// loop's length by the beat (SHIFT the bar) and its gain by 0.5 dB,
-    /// and its foot says the tempo it was made at over Fit to tempo.
+    /// and its foot says the tempo it was made at over From its length.
     #[test]
-    fn an_audio_clips_card_has_its_own_rows_and_fit_to_tempo() {
+    fn an_audio_clips_card_has_its_own_rows_and_from_its_length() {
         let mut st = state();
         st.tracks[2].audio = true;
         st.tracks[2].slots[0].as_mut().unwrap().audio = Some(AudioCellInfo {
@@ -11504,6 +11853,8 @@ mod tests {
             .collect();
         let want = [
             ("Length", "2 bars"),
+            ("Tempo", "Off"),
+            ("Until ready", "—"),
             ("Mode", "Restart"),
             ("Launch", "project"),
             ("Follow", "off"),
@@ -11541,8 +11892,8 @@ mod tests {
         );
         st.tracks[2].slots[0].as_mut().unwrap().length = 2 * BAR;
         // Mode, Launch, Follow and After step as a note clip's rows.
-        assert_eq!(step(&st, 1, 1, false), card_step(&state(), 8, 1));
-        assert_eq!(step(&st, 3, 1, false), card_step(&state(), 5, 1));
+        assert_eq!(step(&st, 3, 1, false), card_step(&state(), 8, 1));
+        assert_eq!(step(&st, 5, 1, false), card_step(&state(), 5, 1));
         // Gain: 0.5 dB, SHIFT 0.1 dB, up to +12 dB.
         let Ok(TimeAction::AudioClip {
             set: AudioSet::Gain(g),
@@ -11578,52 +11929,206 @@ mod tests {
         set_gain(&mut st, 1.0);
         // Name is the app's.
         assert_eq!(step(&st, AUDIO_NAME, 1, false), Err(String::new()));
-        // At the project's tempo: Fit to tempo faint, a tap says why.
-        let fit = ev(CLIP_CARD, EventKind::Toggle(0));
+        // At the project's tempo: From its length faint, a tap says why.
+        let from = ev(CLIP_CARD, EventKind::Toggle(0));
         let b = &card_buttons(&st)[0];
         assert_eq!(
             (b.label.as_str(), b.enabled, b.explains),
-            ("Fit to tempo", false, true)
+            ("From its length", false, true)
         );
-        assert_eq!(action(&fit, &st), None);
+        assert_eq!(action(&from, &st), None);
         assert_eq!(
-            why_not(&fit, &st).as_deref(),
-            Some("A was made at 120 BPM, the project's tempo: there is nothing to fit")
+            why_not(&from, &st).as_deref(),
+            Some("2 bars long would mean 2.4 BPM, past the tempos MPFree plays")
         );
         let note = card_note(&st).unwrap();
         assert_eq!(
-            (note.lead.as_str(), note.rest.as_str(), note.warn),
-            ("Made at 120 BPM,", "the project's tempo", false)
+            (note.lead.as_str(), note.rest.as_str(), note.lead_tone),
+            ("Made at 120 BPM,", "the project's tempo", NoteTone::Plain)
         );
-        // At 92: the gap each pass, amber, and Fit to tempo fits.
+        assert!(note.picks);
+        // At 92 on Off: the gap each pass, amber (board 2's C).
         st.transport.bpm = 92.0;
         let note = card_note(&st).unwrap();
         assert_eq!(
-            (note.lead.as_str(), note.rest.as_str(), note.warn),
-            ("Made at 120 BPM:", "at 92 a 1.2 s gap each pass", true)
+            (note.lead.as_str(), note.rest.as_str()),
+            ("Made at 120 BPM:", "at 92 a 1.2 s gap each pass")
         );
+        assert_eq!(
+            (note.lead_tone, note.rest_tone),
+            (NoteTone::Warn, NoteTone::Warn)
+        );
+        // From its length: its 2 bars over its sound's 4 s mean 120 BPM;
+        // over 5 s, 96.
+        let set_audio = |st: &mut TimeState, f: &dyn Fn(&mut AudioCellInfo)| {
+            f(st.tracks[2].slots[0]
+                .as_mut()
+                .unwrap()
+                .audio
+                .as_mut()
+                .unwrap())
+        };
+        set_audio(&mut st, &|a| a.secs = 4.0);
+        assert!(why_not(&from, &st).is_some_and(|w| w.contains("made at 120 BPM already")));
+        set_audio(&mut st, &|a| a.secs = 5.0);
         assert!(card_buttons(&st)[0].enabled);
+        let set = |row: usize, set| TimeAction::AudioClip {
+            track: 2,
+            slot: 0,
+            row: row as u8,
+            set,
+        };
         assert_eq!(
-            action(&fit, &st),
-            Some(TimeAction::FitClip { track: 2, slot: 0 })
+            action(&from, &st),
+            Some(set(AUDIO_MADE_AT, AudioSet::MadeAt(96.0)))
         );
-        // Fitting: its progress, and a tap says how far it has got.
-        st.fitting = Some((2, 0, 0.4));
-        let b = &card_buttons(&st)[0];
+        // Tempo: Off, Repitch, Stretch; Until ready only on Stretch.
+        use mpfree_seq::FollowTempo as F;
+        assert!(step(&st, AUDIO_TEMPO, -1, false).is_err());
         assert_eq!(
-            (b.label.as_str(), b.progress, b.enabled),
-            ("Fitting… 40 %", Some(0.4), true)
+            step(&st, AUDIO_TEMPO, 1, false),
+            Ok(set(AUDIO_TEMPO, AudioSet::Follow(F::Repitch, false)))
         );
-        assert_eq!(action(&fit, &st), None);
+        assert!(step(&st, AUDIO_UNTIL, 1, false)
+            .is_err_and(|w| w.contains("set Tempo to Stretch first")));
+        assert!(clip_rows(&st)[AUDIO_UNTIL].faint);
+        // Repitch (board 2's B).
+        set_audio(&mut st, &|a| a.tempo = (F::Repitch, false));
+        assert_eq!(clip_rows(&st)[AUDIO_TEMPO].value, "Repitch");
+        let note = card_note(&st).unwrap();
         assert_eq!(
-            why_not(&fit, &st).as_deref(),
-            Some("A is fitting to 92 BPM: 40 % done")
+            (note.lead.as_str(), note.rest.as_str(), note.rest_tone),
+            (
+                "Made at 120 BPM",
+                "Repitch: 4.6 semitones down",
+                NoteTone::Good
+            )
         );
-        st.fitting = None;
-        // A once clip: its time, not stepped, and nothing to fit.
+        assert_eq!(
+            step(&st, AUDIO_TEMPO, 1, false),
+            Ok(set(AUDIO_TEMPO, AudioSet::Follow(F::Stretch, false)))
+        );
+        // Stretch with its copy in (A), then while it is made (D).
+        set_audio(&mut st, &|a| {
+            a.tempo = (F::Stretch, false);
+            a.copy = CopyState::Ready;
+        });
+        let rows = clip_rows(&st);
+        assert_eq!(
+            (
+                rows[AUDIO_TEMPO].value.as_str(),
+                rows[AUDIO_UNTIL].value.as_str()
+            ),
+            ("Stretch", "on time")
+        );
+        assert!(!rows[AUDIO_UNTIL].faint);
+        assert!(step(&st, AUDIO_TEMPO, 1, false).is_err(), "its last");
+        let note = card_note(&st).unwrap();
+        assert_eq!(
+            (note.lead.as_str(), note.rest.as_str()),
+            ("Made at 120 BPM", "Stretch: the same pitch at 92")
+        );
+        set_audio(&mut st, &|a| a.copy = CopyState::Making(0.4));
+        let note = card_note(&st).unwrap();
+        assert_eq!(
+            (note.lead.as_str(), note.rest.as_str(), note.progress),
+            (
+                "Making its copy: 40 %",
+                "Repitch for now: 4.6 down",
+                Some(0.4)
+            )
+        );
+        assert_eq!(
+            (note.lead_tone, note.rest_tone),
+            (NoteTone::Accent, NoteTone::Warn)
+        );
+        assert_eq!(note.pick_lead, "Made at 120.0 BPM");
+        assert_eq!(
+            step(&st, AUDIO_UNTIL, 1, false),
+            Ok(set(AUDIO_UNTIL, AudioSet::Follow(F::Stretch, true)))
+        );
+        set_audio(&mut st, &|a| a.tempo = (F::Stretch, true));
+        assert_eq!(card_note(&st).unwrap().rest, "Waits for its copy");
+        assert_eq!(clip_rows(&st)[AUDIO_UNTIL].value, "keep pitch");
+        set_audio(&mut st, &|a| a.copy = CopyState::Unmade);
+        let note = card_note(&st).unwrap();
+        assert_eq!(
+            (note.lead.as_str(), note.lead_tone, note.progress),
+            ("Its copy couldn't be made", NoteTone::Warn, None)
+        );
+        // The foot picked: the wheel sets the tempo it was made at, 0.1
+        // BPM a step, SHIFT 1 (board 2's E); the hint line says so.
+        assert_eq!(
+            step(&st, AUDIO_MADE_AT, 1, false),
+            Ok(set(AUDIO_MADE_AT, AudioSet::MadeAt(120.1)))
+        );
+        assert_eq!(
+            step(&st, AUDIO_MADE_AT, -1, true),
+            Ok(set(AUDIO_MADE_AT, AudioSet::MadeAt(119.0)))
+        );
+        let pick = ev(CLIP_CARD, EventKind::Select(AUDIO_MADE_AT));
+        assert!(why_not(&pick, &st).is_some_and(|h| h
+            .starts_with("wheel or - / +: the tempo it was made at")
+            && h.contains("From its length: 2 bars long means 96 BPM")));
+        // Too fast for its tempo: silent, red.
+        set_audio(&mut st, &|a| a.bpm = 22.0);
+        let note = card_note(&st).unwrap();
+        assert_eq!(
+            (note.rest.as_str(), note.rest_tone),
+            ("at 92 past 4 times its speed: silent", NoteTone::Bad)
+        );
+        set_audio(&mut st, &|a| a.bpm = 120.0);
+        // A comp of takes made at two tempos (G): both said, and no one
+        // tempo to set.
+        set_audio(&mut st, &|a| {
+            a.tempos = vec![120.0, 100.0, 120.0];
+            a.copy = CopyState::Ready;
+        });
+        let note = card_note(&st).unwrap();
+        assert_eq!(note.lead, "Made at 120 and 100 BPM");
+        assert!(!note.picks);
+        assert!(step(&st, AUDIO_MADE_AT, 1, false)
+            .is_err_and(|w| w.contains("made at 120 and 100 BPM, each its own take's")));
+        assert!(!card_buttons(&st)[0].enabled);
+        set_audio(&mut st, &|a| a.tempo = (F::Repitch, false));
+        assert_eq!(
+            card_note(&st).unwrap().rest,
+            "Repitch: 4.6 and 1.4 semitones down"
+        );
+        // No known tempo (F): Off, and Repitch and Stretch refused.
+        set_audio(&mut st, &|a| {
+            a.tempos = vec![0.0];
+            a.tempo = (F::Off, false);
+        });
+        let note = card_note(&st).unwrap();
+        assert_eq!(
+            (note.lead.as_str(), note.rest.as_str(), note.lead_tone),
+            (
+                "Made at: not known",
+                "set it, or From its length",
+                NoteTone::Warn
+            )
+        );
+        assert!(note.picks);
+        assert!(step(&st, AUDIO_TEMPO, 1, false).is_err_and(|w| w.contains("isn't known")));
+        assert_eq!(
+            step(&st, AUDIO_MADE_AT, 1, false),
+            Ok(set(AUDIO_MADE_AT, AudioSet::MadeAt(92.1)))
+        );
+        set_audio(&mut st, &|a| a.tempos.clear());
+        // Mixed: the regions' settings differ.
+        set_audio(&mut st, &|a| a.mixed = true);
+        assert_eq!(clip_rows(&st)[AUDIO_TEMPO].value, "mixed");
+        assert_eq!(
+            step(&st, AUDIO_TEMPO, 1, false),
+            Ok(set(AUDIO_TEMPO, AudioSet::Follow(F::Stretch, false)))
+        );
+        set_audio(&mut st, &|a| a.mixed = false);
+        // A once clip: its time, not stepped, and From its length says
+        // nothing of its tempo.
         st.tracks[2].slots[0].as_mut().unwrap().settings.once = true;
-        assert_eq!(clip_rows(&st)[0].value, "3:17");
-        assert_eq!(clip_rows(&st)[1].value, "Once");
+        assert_eq!(clip_rows(&st)[0].value, "0:05");
+        assert_eq!(clip_rows(&st)[3].value, "Once");
         assert!(step(&st, 0, 1, false).is_err());
         let note = card_note(&st).unwrap();
         assert_eq!(

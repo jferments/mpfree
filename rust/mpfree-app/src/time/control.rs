@@ -2116,31 +2116,6 @@ impl TimeControl {
         Ok(slot)
     }
 
-    /// Fit to tempo's end on an audio clip's card (audio tracks phase 2):
-    /// clip `slot` of `track`, if it is still clip `id`, plays `audio`
-    /// (its regions on fitted copies of its recordings, made at the
-    /// project's tempo), as one edit UNDO takes back. Its name, or why
-    /// not: the cell changed meanwhile, or the clip's own refusal. Nothing
-    /// changes on an error.
-    pub fn fit_clip(
-        &mut self,
-        track: usize,
-        slot: usize,
-        id: mpfree_seq::ClipId,
-        audio: mpfree_seq::AudioClip,
-    ) -> Result<String, String> {
-        let c = self
-            .project
-            .clip(track, slot)
-            .filter(|c| c.id == id && c.audio.is_some())
-            .ok_or_else(|| "fit: the clip changed while it fitted".to_string())?;
-        let mut clip = c.clone();
-        clip.audio = Some(audio);
-        let name = clip.name.clone();
-        self.replace(track, slot, clip, Replaced::Fit)?;
-        Ok(name)
-    }
-
     /// An audio clip's card (layout spec 4j): clip `slot` of `track` with
     /// another length, gain or name, as one take (a row turned on joins
     /// it). A length cuts the regions past it, the one across it ending
@@ -2179,6 +2154,7 @@ impl TimeControl {
             AudioSet::Tempo { region, bpm } => {
                 Some(format!("region {}'s tempo {bpm} BPM", region + 1))
             }
+            AudioSet::MadeAt(bpm) => Some(format!("made at {bpm} BPM")),
             _ => None,
         };
         let rate = self.rate;
@@ -2227,6 +2203,25 @@ impl TimeControl {
                     .get_mut(region)
                     .ok_or_else(|| format!("clip: {} has no region {}", clip.name, region + 1))?;
                 r.bpm = bpm;
+            }
+            // The card's foot (phase 5c): every region's, 0 where its
+            // recording was made at it.
+            AudioSet::MadeAt(bpm) => {
+                if !mpfree_transport::time::valid_bpm(bpm) {
+                    return Err(format!(
+                        "clip: {}: MPFree doesn't play at {bpm} BPM",
+                        clip.name
+                    ));
+                }
+                for r in &mut a.regions {
+                    let own = self
+                        .rec_tempos
+                        .iter()
+                        .find(|t| t.0 == r.rec)
+                        .map_or(0.0, |t| t.1);
+                    r.bpm = if own == bpm { 0.0 } else { bpm };
+                }
+                a.bpm = bpm;
             }
         }
         let name = clip.name.clone();
@@ -5349,7 +5344,6 @@ impl TimeControl {
             TimeAction::Audio(a) => Err(format!("audio tracks: {a:?} is not wired yet")),
             // The fitted copies are the audio tracks' to make (the app,
             // `main::time_action`); the clip comes back through `fit_clip`.
-            TimeAction::FitClip { .. } => Err("Fit to tempo goes through the audio tracks".into()),
             TimeAction::AudioClip {
                 track,
                 slot,

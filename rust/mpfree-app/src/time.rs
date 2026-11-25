@@ -1370,20 +1370,6 @@ impl TimeHost {
         mpfree_time_ui::view::pick_cell(self.armed(), cells)
     }
 
-    /// Fit to tempo's end (audio tracks phase 2): clip `slot` of `track`,
-    /// if still clip `id`, plays `audio`, as one edit UNDO takes back
-    /// (see `TimeControl::fit_clip`). Its name, or why not.
-    pub fn fit_clip(
-        &mut self,
-        track: usize,
-        slot: usize,
-        id: mpfree_seq::ClipId,
-        audio: mpfree_seq::AudioClip,
-    ) -> Result<String, String> {
-        let r = self.with(|c| c.fit_clip(track, slot, id, audio));
-        self.sent(r)
-    }
-
     /// A track's MIDI effects, as the chain editor's Notes stage set them
     /// (see `TimeControl::set_note_fx`). False if there is no such note
     /// track.
@@ -16754,7 +16740,8 @@ mod tests {
         /// the name are clip settings, and a row turned is one take.
         #[test]
         fn an_audio_clips_card_sets_its_length_gain_and_name_a_row_a_take() {
-            use mpfree_time_ui::view::AudioSet;
+            use mpfree_time_ui::view::{AudioSet, AUDIO_GAIN, AUDIO_NAME};
+            let (gain, name) = (AUDIO_GAIN as u8, AUDIO_NAME as u8);
             let mut h = host();
             let set = |row, set| TimeAction::AudioClip {
                 track: VOCAL,
@@ -16781,10 +16768,10 @@ mod tests {
             assert_eq!((clip(&h).length, region(&h)), (2 * 3840, first));
             assert_eq!(h.state().done.len(), 1, "the row turned: one take");
             // Gain turned: another take; the name another.
-            h.act(set(5, AudioSet::Gain(2.0))).unwrap();
-            let said = h.act(set(5, AudioSet::Gain(1.5))).unwrap();
+            h.act(set(gain, AudioSet::Gain(2.0))).unwrap();
+            let said = h.act(set(gain, AudioSet::Gain(1.5))).unwrap();
             assert_eq!(said, "clip: Verse · Gain +3.5 dB (UNDO takes it back)");
-            h.act(set(6, AudioSet::Name(" Hook ".into()))).unwrap();
+            h.act(set(name, AudioSet::Name(" Hook ".into()))).unwrap();
             assert_eq!(clip(&h).name, "Hook");
             assert_eq!(h.state().done.len(), 3);
             let st = h.state();
@@ -16794,8 +16781,8 @@ mod tests {
             );
             // Refused: an empty name, a gain out of range, a once clip's
             // length; nothing changes.
-            assert!(h.act(set(6, AudioSet::Name("  ".into()))).is_err());
-            assert!(h.act(set(5, AudioSet::Gain(5.0))).is_err());
+            assert!(h.act(set(name, AudioSet::Name("  ".into()))).is_err());
+            assert!(h.act(set(gain, AudioSet::Gain(5.0))).is_err());
             let mut s = clip(&h).settings();
             s.once = true;
             h.act(TimeAction::ClipSettings {
