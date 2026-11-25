@@ -19,3 +19,7 @@ mpfree-stretch = { path = "../mpfree-stretch" }
 mpfree-stream = { path = "../mpfree-stream" }
 mpfree-status = { path = "../mpfree-status" }
 libc = "0.2"
+
+[dev-dependencies]
+# A model stick for the render file's tests (cuts, failures, a full stick).
+mpfree-stream = { path = "../mpfree-stream", features = ["testkit"] }

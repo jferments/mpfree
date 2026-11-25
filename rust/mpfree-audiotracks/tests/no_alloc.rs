@@ -9,8 +9,8 @@
 //! sizes from 1 to 4096; takes played from their files, by the tracks
 //! alone and in the host; and Stretch's copies made and played through
 //! the host (phase 5b), and a clip switching copies at tempo points
-//! (5d.2); and the tracks' revisions and the check of what a render read
-//! (6.0.2).
+//! (5d.2); the tracks' revisions and the check of what a render read
+//! (6.0.2); and a render made and committed through the host (6.0.3).
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -1455,4 +1455,91 @@ fn revisions_and_what_changed_never_allocate() {
         frame += period as u64;
     }
     assert!(!reads.is_empty());
+}
+
+/// Phase 6.0.3: a render through the host hardly allocates on the audio
+/// thread (the worker's channel now and then): asked for, its source read
+/// out of memory, written on the scheduler (stepped off the watch, as its
+/// own thread would), its take loaded and the step committed.
+#[test]
+fn a_render_through_the_host_hardly_allocates() {
+    use mpfree_audiotracks::files::WriterConfig;
+    use mpfree_audiotracks::host::{AudioHost, RenderOutcome};
+    use mpfree_audiotracks::render::{Purpose, RenderDesc};
+    use mpfree_stretch::sched::{Config, Sched};
+    const RATE: u32 = 22_050;
+    const BAR: u64 = 22_050; // 240 BPM
+    const P: usize = 256;
+    let dir = std::env::temp_dir().join(format!("mpfree-na-render-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let s = Sched::manual(Config::default());
+    let mut h = AudioHost::new(RATE, 40);
+    h.copies_on(s.clone());
+    assert!(h.record_to(dir.clone(), WriterConfig::default()).is_ok());
+    let mut t = Transport::new(RATE, 240.0).unwrap();
+    let mut b = Block::new();
+    let input: Vec<f32> = (0..2 * P)
+        .map(|j| ((j * 31) % 97) as f32 / 97.0 - 0.5)
+        .collect();
+    let mut out = vec![0.0f32; 2 * P];
+    h.command(A::Arm(0, true));
+    t.command(100, T::Record);
+    t.command(100 + 2 * BAR, T::Stop);
+    let mut frame = 0u64;
+    let mut run = |h: &mut AudioHost, watched: bool| -> usize {
+        t.process(P as u32, &mut b);
+        let map = *t.tempo_map();
+        CALLS.with(|c| c.set(0));
+        watch(watched);
+        h.period(&b, &map, &input, &mut out);
+        watch(false);
+        frame += P as u64;
+        CALLS.with(Cell::get)
+    };
+    for _ in 0..(3 * BAR).div_ceil(P as u64) {
+        run(&mut h, false);
+    }
+    h.command(A::Arm(0, false));
+    // Until the take has stopped.
+    let t0 = std::time::Instant::now();
+    while h.tracks.takes().any(|k| k.recording) {
+        assert!(t0.elapsed() < std::time::Duration::from_secs(60));
+        run(&mut h, false);
+        std::thread::sleep(std::time::Duration::from_micros(200));
+    }
+    let k = h.tracks.takes().next().unwrap();
+    let (rec, frames, old) = (k.rec, k.frames as u64, k.id);
+    let desc = RenderDesc::frames(rec, frames, 0, frames, Purpose::Recording);
+    let mut calls = 0;
+    CALLS.with(|c| c.set(0));
+    watch(true);
+    let started = h.render(desc, 0);
+    watch(false);
+    calls += CALLS.with(Cell::get);
+    assert!(started.is_ok());
+    let outcome = loop {
+        assert!(
+            t0.elapsed() < std::time::Duration::from_secs(60),
+            "no outcome"
+        );
+        calls += run(&mut h, true);
+        CALLS.with(|c| c.set(0));
+        watch(true);
+        let o = h.render_outcome();
+        watch(false);
+        calls += CALLS.with(Cell::get);
+        if let Some(o) = o {
+            break o;
+        }
+        s.step();
+        std::thread::sleep(std::time::Duration::from_micros(200));
+    };
+    assert!(
+        matches!(outcome, RenderOutcome::Committed { old: o, .. } if o == old),
+        "{outcome:?}"
+    );
+    calls += run(&mut h, true);
+    drop(h);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(calls <= 4, "{calls} allocations on the audio thread");
 }

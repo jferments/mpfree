@@ -607,3 +607,428 @@ fn what_a_render_read_holds_until_it_changes_and_says_what_changed() {
         assert_eq!(d.changed_words("Vocal"), words);
     }
 }
+
+// ---------------------------------------------------------------- 6.0.3
+
+use mpfree_audiotracks::files::{recover_into, render_file_name, RenderFile};
+use mpfree_audiotracks::host::{RenderFailure, RenderOutcome, RenderRefused};
+use mpfree_audiotracks::save::{TakeFile, TrackFile};
+use mpfree_audiotracks::{Input, Monitor, Region};
+use mpfree_stretch::sched::{Config, Sched};
+
+/// A take of 1.5 bars of a 441 Hz tone at 240 BPM, mono, as a project
+/// opened it.
+fn tone_take(frames: usize) -> TakeFile {
+    TakeFile {
+        id: 0,
+        rec: REC,
+        track: 0,
+        group: 1,
+        pass: 0,
+        bpm: 240.0,
+        varied: false,
+        anchor: 0.0,
+        frames,
+        channels: 1,
+        file: String::new(),
+        path: None,
+        audio: (0..frames)
+            .map(|g| {
+                (0.5 * (std::f64::consts::TAU * 441.0 * g as f64 / f64::from(RATE)).sin()) as f32
+            })
+            .collect(),
+        prov: None,
+    }
+}
+
+/// A host with the tone on track 0 playing from bar 1, files on in
+/// `work`, its renders on a scheduler the test steps.
+struct Rr {
+    t: Transport,
+    h: AudioHost,
+    s: Sched,
+    b: Block,
+    frame: u64,
+    work: std::path::PathBuf,
+}
+
+const FRAMES: usize = 33_075;
+
+impl Rr {
+    fn new(name: &str) -> Rr {
+        Rr::with(name, true)
+    }
+
+    /// With takes recording to files in its work folder, or not.
+    fn with(name: &str, files: bool) -> Rr {
+        let work =
+            std::env::temp_dir().join(format!("mpfree-render-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work).unwrap();
+        let s = Sched::manual(Config::default());
+        let mut h = AudioHost::new(RATE, 20);
+        h.copies_on(s.clone());
+        if files {
+            assert!(h.record_to(work.clone(), Default::default()).is_ok());
+        }
+        assert!(h.tracks.load_take(tone_take(FRAMES)).is_ok());
+        let region = Region::of(0, 5_760, 0, (0, 0.0), 240.0);
+        assert!(h.tracks.load_track(&TrackFile {
+            index: 0,
+            id: 9,
+            input: Input::Left,
+            monitor: Monitor::Auto,
+            from: String::new(),
+            regions: vec![region],
+        }));
+        let mut r = Rr {
+            t: Transport::new(RATE, 240.0).unwrap(),
+            h,
+            s,
+            b: Block::new(),
+            frame: 0,
+            work,
+        };
+        r.h.set_track_id(0, 9);
+        r.until(|r| r.h.tracks.loading() == 0);
+        r
+    }
+
+    fn period(&mut self) -> Vec<f32> {
+        let (inp, mut mix) = ([0.0f32; 2 * P], [0.0f32; 2 * P]);
+        self.t.process(P as u32, &mut self.b);
+        let map = *self.t.tempo_map();
+        self.h.period(&self.b, &map, &inp, &mut mix);
+        self.frame += P as u64;
+        mix.to_vec()
+    }
+
+    /// Periods, the scheduler stepped after each, until `done`.
+    #[track_caller]
+    fn until(&mut self, mut done: impl FnMut(&mut Rr) -> bool) {
+        let t0 = Instant::now();
+        while !done(self) {
+            assert!(t0.elapsed() < Duration::from_secs(60), "timed out");
+            self.period();
+            self.s.step();
+            std::thread::sleep(Duration::from_micros(200));
+        }
+    }
+
+    /// The song from bar 1 for `frames`.
+    fn play(&mut self, frames: u64) -> Vec<f32> {
+        self.t.command(self.frame, T::Locate(0));
+        self.t.command(self.frame, T::PlayStart);
+        let mut out = Vec::new();
+        while (out.len() as u64) < 2 * frames {
+            out.extend(self.period());
+        }
+        self.t.command(self.frame, T::Stop);
+        self.period();
+        out
+    }
+
+    /// The outcome, once the render ends.
+    fn outcome(&mut self) -> RenderOutcome {
+        let mut got = None;
+        self.until(|r| {
+            got = r.h.render_outcome();
+            got.is_some()
+        });
+        got.unwrap()
+    }
+
+    fn names(&self) -> Vec<String> {
+        let mut n: Vec<String> = std::fs::read_dir(&self.work)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect();
+        n.sort();
+        n
+    }
+
+    fn whole(&self) -> RenderDesc {
+        RenderDesc::frames(REC, FRAMES as u64, 0, FRAMES as u64, Purpose::Recording)
+    }
+}
+
+/// A WAV's float samples.
+fn samples_of(path: &std::path::Path) -> Vec<f32> {
+    let b = std::fs::read(path).unwrap();
+    b[44..]
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
+#[test]
+fn a_render_of_a_recording_commits_one_step_that_plays_the_same() {
+    let mut r = Rr::new("commit");
+    let before = r.play(2 * u64::from(RATE));
+    assert!(r.h.render(r.whole(), 1_764_100_000).is_ok());
+    assert!(r.h.rendering());
+    let RenderOutcome::Committed { old, new, rec } = r.outcome() else {
+        panic!("not committed");
+    };
+    assert_eq!(old, 0);
+    assert!(!r.h.rendering());
+    // The step is in from the next period, as every command is.
+    r.period();
+    // Its file, whole and durable, and no .part.
+    let name = render_file_name(rec);
+    assert_eq!(r.names(), vec![name.clone()]);
+    let mut source = vec![0.0; FRAMES];
+    assert_eq!(r.h.tracks.read_take(old, 0, &mut source), Some(FRAMES));
+    assert_eq!(samples_of(&r.work.join(&name)), source, "sample for sample");
+    let mut made = vec![0.0; FRAMES];
+    assert_eq!(r.h.tracks.read_take(new, 0, &mut made), Some(FRAMES));
+    assert_eq!(made, source);
+    // The song plays it, and sounds the same.
+    assert!(r.h.tracks.regions(0).iter().all(|g| g.take == new));
+    assert_eq!(r.play(2 * u64::from(RATE)), before);
+    // Saved with where it came from.
+    assert!(r.h.save());
+    let mut saved = None;
+    r.until(|r| {
+        saved = r.h.take_saved();
+        saved.is_some()
+    });
+    let saved = saved.unwrap();
+    let k = saved.takes.iter().find(|k| k.id == new).unwrap();
+    assert_eq!(k.file, name);
+    let p = k.prov.as_ref().expect("its provenance");
+    assert_eq!(p.sources().collect::<Vec<_>>(), vec![(REC, FRAMES as u64)]);
+    assert!(p.matches(&r.whole()));
+    assert_eq!(p.at, 1_764_100_000);
+    assert!(saved.needs_provenance());
+    // One UNDO takes it back.
+    r.h.command(A::Undo);
+    r.period();
+    assert!(r.h.tracks.regions(0).iter().all(|g| g.take == old));
+}
+
+#[test]
+fn a_render_whose_reads_change_under_it_commits_nothing_and_keeps_its_file() {
+    let mut r = Rr::new("changed");
+    let mut d = r.whole();
+    d.reads.push(Read {
+        dep: Dep::Track(9),
+        rev: r.h.tracks.track_rev(0).unwrap(),
+    });
+    assert!(r.h.render(d, 0).is_ok());
+    // Until its job has begun its file.
+    r.until(|r| r.names().iter().any(|n| n.ends_with(".part")));
+    r.h.command(A::SetGain {
+        track: 0,
+        at: 960,
+        gain: 0.5,
+    });
+    assert_eq!(r.outcome(), RenderOutcome::Changed(Dep::Track(9)));
+    assert!(
+        r.h.tracks.regions(0).iter().all(|g| g.take == 0),
+        "nothing committed"
+    );
+    let names = r.names();
+    assert_eq!(names.len(), 1, "{names:?}");
+    assert!(
+        names[0].starts_with("render_") && names[0].ends_with(".wav"),
+        "kept: {names:?}"
+    );
+}
+
+#[test]
+fn cancel_or_a_project_opening_commits_nothing_and_leaves_no_file() {
+    let mut r = Rr::new("cancel");
+    assert!(r.h.render(r.whole(), 0).is_ok());
+    r.until(|r| r.names().iter().any(|n| n.ends_with(".part")));
+    r.h.cancel_render();
+    assert_eq!(r.h.render_outcome(), Some(RenderOutcome::Cancelled));
+    assert!(!r.h.rendering());
+    r.until(|r| r.names().is_empty());
+    assert!(r.h.tracks.regions(0).iter().all(|g| g.take == 0));
+    for _ in 0..20 {
+        r.period();
+        r.s.step();
+    }
+    assert!(r.names().is_empty(), "nothing comes later");
+    assert_eq!(r.h.render_outcome(), None);
+
+    // A project opening.
+    let mut r = Rr::new("opening");
+    assert!(r.h.render(r.whole(), 0).is_ok());
+    r.until(|r| r.names().iter().any(|n| n.ends_with(".part")));
+    assert!(r.h.clear());
+    assert_eq!(r.h.render_outcome(), Some(RenderOutcome::Cancelled));
+    r.until(|r| r.names().is_empty());
+    for _ in 0..20 {
+        r.period();
+        r.s.step();
+    }
+    assert!(r.names().is_empty());
+}
+
+#[test]
+fn a_render_with_nowhere_to_write_fails_and_commits_nothing() {
+    let mut r = Rr::with("nowhere", false);
+    assert!(r.h.render(r.whole(), 0).is_ok());
+    assert_eq!(
+        r.outcome(),
+        RenderOutcome::Failed(RenderFailure::NoWorkFolder)
+    );
+    assert!(!r.h.rendering());
+    r.period();
+    assert!(r.h.tracks.regions(0).iter().all(|g| g.take == 0));
+    assert_eq!(r.h.tracks.takes().count(), 1, "no take made");
+}
+
+#[test]
+fn a_render_is_refused_before_it_starts_when_it_cant_be_made_here() {
+    let mut r = Rr::new("refused");
+    let whole = r.whole();
+    let part = RenderDesc::frames(REC, FRAMES as u64, 0, 100, Purpose::Recording);
+    let elsewhere = RenderDesc::frames(
+        RecordingId(7),
+        FRAMES as u64,
+        0,
+        FRAMES as u64,
+        Purpose::Recording,
+    );
+    let mut clip = r.whole();
+    clip.reads.push(Read {
+        dep: Dep::Clip(1),
+        rev: 0,
+    });
+    let mut unknown = r.whole();
+    unknown.reads.push(Read {
+        dep: Dep::Track(4),
+        rev: 0,
+    });
+    let mut stale = r.whole();
+    stale.reads.push(Read {
+        dep: Dep::Track(9),
+        rev: 1,
+    });
+    for (d, why) in [
+        (bounce(), RenderRefused::NotOnWorker),
+        (part, RenderRefused::Part),
+        (elsewhere, RenderRefused::NotHere),
+        (clip, RenderRefused::Reads),
+        (unknown, RenderRefused::Reads),
+        (stale, RenderRefused::Changed(Dep::Track(9))),
+        (
+            RenderDesc::frames(REC, FRAMES as u64, 0, FRAMES as u64 + 1, Purpose::Recording),
+            RenderRefused::Bad("the frames are not all in the recording"),
+        ),
+        (
+            RenderDesc::frames(
+                REC,
+                FRAMES as u64 + 1,
+                0,
+                FRAMES as u64 + 1,
+                Purpose::Recording,
+            ),
+            RenderRefused::Changed(Dep::Recording(REC)),
+        ),
+    ] {
+        assert_eq!(r.h.render(d, 0), Err(why));
+        assert!(!r.h.rendering());
+    }
+    assert!(r.h.render(whole.clone(), 0).is_ok());
+    assert_eq!(r.h.render(whole, 0), Err(RenderRefused::Busy));
+    assert!(matches!(r.outcome(), RenderOutcome::Committed { .. }));
+}
+
+#[test]
+fn a_render_file_is_whole_or_not_there_whatever_the_stick_does() {
+    use mpfree_stream::testkit::{Cut, Damage, Names, SharedStick};
+    let dir = std::path::Path::new("/work");
+    let audio: Vec<f32> = (0..3_000).map(|i| (i as f32 * 0.01).sin()).collect();
+    let write = |stick: SharedStick| -> std::io::Result<()> {
+        let mut f = RenderFile::begin(stick, dir, REC, 1_500, 2, RATE)?;
+        for piece in audio.chunks(700) {
+            f.write(piece)?;
+        }
+        f.finish().map(|_| ())
+    };
+    // Whole: how many operations it takes.
+    let stick = SharedStick::new();
+    write(stick.clone()).unwrap();
+    let ops = stick.with(|m| m.ops);
+    let whole = stick.with(|m| m.bytes(&dir.join(render_file_name(REC))).unwrap().to_vec());
+    assert_eq!(whole.len(), 44 + 4 * audio.len());
+    // The power going after each operation: what comes back is the whole
+    // render under its name, or no such name.
+    for k in 0..=ops {
+        for names in [Names::Lost, Names::Landed, Names::LastOnly] {
+            let stick = SharedStick::new();
+            stick.with(|m| m.cut_after = Some(k));
+            let _ = write(stick.clone());
+            let back = stick.with(|m| m.cut(Cut::Torn(1), names, Damage::default()));
+            if let Some(b) = back.bytes(&dir.join(render_file_name(REC))) {
+                assert_eq!(b, &whole[..], "cut after {k}, {names:?}");
+            }
+        }
+    }
+    // A full stick, or any failed operation: an error, and no .part.
+    for k in 1..=ops {
+        let stick = SharedStick::new();
+        stick.with(|m| {
+            m.fail.insert(k);
+        });
+        let out = write(stick.clone());
+        let left = stick.with(|m| m.names());
+        let named = left.iter().any(|p| p.ends_with(render_file_name(REC)));
+        assert!(out.is_err() || named, "op {k}");
+        if out.is_err() {
+            assert!(
+                !left.iter().any(|p| p.to_string_lossy().ends_with(".part")),
+                "op {k}: {left:?}"
+            );
+        }
+    }
+    let stick = SharedStick::new();
+    stick.with(|m| m.capacity = Some(4_096));
+    let e = write(stick.clone()).unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::StorageFull);
+    assert!(stick.with(|m| m.names()).is_empty());
+}
+
+#[test]
+fn the_next_start_removes_what_was_never_whole_and_keeps_renders() {
+    let work = std::env::temp_dir().join(format!("mpfree-render-start-{}", std::process::id()));
+    let keep = work.with_extension("keep");
+    let _ = std::fs::remove_dir_all(&work);
+    let _ = std::fs::remove_dir_all(&keep);
+    std::fs::create_dir_all(&work).unwrap();
+    let render = render_file_name(REC);
+    std::fs::write(work.join(format!(".{render}.part")), b"cut off").unwrap();
+    std::fs::write(work.join(".take_1.wav.part"), b"cut off").unwrap();
+    std::fs::write(
+        work.join(&render),
+        mpfree_audiotracks::save::wav(&[0.1, 0.2], 1, RATE),
+    )
+    .unwrap();
+    let found = recover_into(&work, &keep).unwrap();
+    assert!(
+        std::fs::read_dir(&work).unwrap().next().is_none(),
+        "nothing left in the work folder"
+    );
+    assert!(keep.join(&render).exists());
+    assert!(
+        found
+            .lines
+            .iter()
+            .any(|l| l == "audio tracks: 2 files cut off before they were whole were removed"),
+        "{:?}",
+        found.lines
+    );
+    assert!(
+        found
+            .lines
+            .iter()
+            .any(|l| l == "audio tracks: 1 render not saved in a project was kept in Recordings"),
+        "{:?}",
+        found.lines
+    );
+}

@@ -2,7 +2,7 @@
 
 Phase 6.0 of the audio tracks rethink: the foundation every tool of phase 6 builds on before it renders anything (Slip, Reverse and Flatten in 6.1, Overdub a take clip in 6.2, Bounce in 6.3, Freeze in 6.4, Render in place in 6.5). The plan is the rethink's phase 6 doc (mpfree-claude `notes/audio-tracks/08-phase-6-plan-the-missing-tools.md`, "6.0 The foundation"); its build steps are note 21 there. Nothing here changes what a musician sees: the first tool to use it is 6.1's.
 
-**Status:** 6.0.1 and 6.0.2 built, as one pull request (the description, its fingerprint, provenance and the kinds of audio, saved with the `audio-provenance` gate; the revisions of what a render reads, and the check of whether they still hold). 6.0.3 (one way to finish a render, as render jobs) and 6.0.4 (the routing check) are not built yet.
+**Status:** 6.0.1 and 6.0.2 built, as one pull request (the description, its fingerprint, provenance and the kinds of audio, saved with the `audio-provenance` gate; the revisions of what a render reads, and the check of whether they still hold). 6.0.3 built (one way to finish a render, as a job on the scheduler: a recording's frames, with no mixer, so far). 6.0.4 (the routing check) is not built yet.
 
 ## One render description (6.0.1, as built)
 
@@ -72,13 +72,34 @@ A description's `reads` are its snapshot: each thing it read with its revision t
 
 `AudioHost::rev(dep, slot)` answers for the three the audio tracks hold. `track_rev`, `rec_rev`, `rev` and `changed` are cheap and allocate nothing, so they can run on the audio thread. `Dep::changed_words(name)` says what changed in a musician's words ("Vocal was edited while it rendered", "another project opened while it rendered"), for the log and, from 6.1 on, the line a tool shows when it commits nothing (drawn on its board first).
 
+## One way to finish a render (6.0.3, as built)
+
+`AudioHost::render(desc, at)` (`host/rendering.rs`) takes a description the worker can make and runs the plan's seven steps. What 6.0.3 renders is a whole recording's frames as they are (`Source::Recording`, `Range::Frames` over all of it, `Runs::Worker`): no mixer and no tool yet. It is the base 6.1's Consolidate, Reverse and Commit stretch build on, each adding what it does to the frames and its region edits to the same step.
+
+| Step | As built |
+| --- | --- |
+| 1. Prepare and reserve | Refused at once, with nothing changed, when another render is under way, there is no worker, `check()` fails, it needs the live engine (`NotOnWorker`), it is part of a recording (`Part`, 6.1), it reads a clip, a loop, the routes or a track the host has no number for (`Reads`; the app gives the numbers with `set_track_id`), its recording isn't here, still records, or plays from its file (`OnFile`, a later step), or what it read has changed already. Else a lasting id is drawn for what it makes. |
+| 2. Snapshot | The description's `reads` with their revisions (6.0.2). |
+| 3. Render | The worker makes a zeroed buffer; the audio thread reads the source out of memory into it at the save's speed, a piece a period; a job on the stretch scheduler (`RenderWork`, kind "audio tracks render", keyed by the host and the new recording, `Prepared`) writes it a piece a step into `.render_ID.wav.part` in the work folder (`files::RenderFile`, on any `Fs`). Progress: `render_progress()`. |
+| 4. Check | `RenderFile::finish` refuses a file short of its samples. What it read is checked when the job ends and again once its take is in. |
+| 5. Make durable | The `.part` synced, renamed `render_ID.wav`, the folder synced. |
+| 6. Commit | The take loads with its provenance (`ToWorker::Known`, `ToWorker::Prov`), then one `Command::Swap { old, new, ratio: 1.0 }` plays it wherever the source played: one step in the tracks' history, which UNDO takes back in one press. `render_outcome()` says `Committed`. |
+| 7. Release | The buffers, the description, names and paths go to the worker to drop (`Leftovers`); the audio thread frees nothing. The source take stays, as the undo step names it. |
+
+**What commits nothing.** What it read changing under it (`RenderOutcome::Changed(dep)`, the dep to say in words), or nothing playing its source any more by the time its take is in (`NothingPlaysIt`): its file is whole by then and stays, a recording no lane plays, kept in Recordings at the next start. No take place or memory for it when its job ends (`NoRoom`): its file goes. Cancel (`cancel_render`), a project opening or New (`clear`), a full stick (`Full`), any failed write (`Write`), no work folder (`NoWorkFolder`), the scheduler refusing it (`NoMemory`): nothing committed and no file left, except once its take is coming in, when its file stays as above. A result for a render since cancelled, or for an older generation, removes its file (only a `render_*.wav` in the work folder is ever removed). A `RenderFile` dropped before it is whole removes its `.part`.
+
+**A crash.** It leaves at most a `.part`, or a whole `render_ID.wav` whose commit never came. At the next start `files::recover_into` removes every hidden `.part` in the work folder (takes', layers' and renders' alike), saying how many in the log, and keeps each `render_*.wav` in Recordings like a take no project named, saying how many.
+
+The audio thread's side allocates nothing: `tests/no_alloc.rs` `a_render_through_the_host_hardly_allocates` counts only the worker channel's blocks now and then.
+
 ## Tests
 
 - `mpfree-audiotracks/tests/render.rs`: `a_render_descriptions_fingerprint_is_fixed_and_every_part_changes_it` (the pinned value; the reads' order and how it runs leave it; each of 26 changes gives a new one), `a_description_is_checked_before_anything_is_rendered` (each refusal, each purpose's kind), `provenance_goes_on_a_take_line_and_comes_back` (the words, through a part and back to the same text, the gate, every read's word, a freeze, each wrong word refused with its reason, a newer format kept and not matched), `a_take_opened_with_provenance_keeps_it_through_a_save` (through two hosts, and let go of when a project opens).
 - `tests/render.rs` `what_a_render_read_holds_until_it_changes_and_says_what_changed` (a recording has no revision while it records; another track's edit leaves the reads holding; a gain on track 1 breaks only track 1's, UNDO holds again, REDO breaks it; a split; the project's generation after a clear; the host's answers; the words), and `tests/no_alloc.rs` `revisions_and_what_changed_never_allocate` (every track's revision, a recording's and the check, each period while recording and after).
 - The app's `project.rs` `audio_following_the_tempo_needs_audio_tempo_and_phase_4_refuses_it`: a take with provenance makes the project need `audio-provenance`, and a build without it refuses the project.
+- 6.0.3, `tests/render.rs`, on a host with a tone take playing on track 0 and its renders on a scheduler the test steps: `a_render_of_a_recording_commits_one_step_that_plays_the_same` (the file sample for sample its source, no `.part`, the song sounds the same, saved with its provenance, one UNDO takes it back), `a_render_whose_reads_change_under_it_commits_nothing_and_keeps_its_file`, `cancel_or_a_project_opening_commits_nothing_and_leaves_no_file`, `a_render_with_nowhere_to_write_fails_and_commits_nothing`, `a_render_is_refused_before_it_starts_when_it_cant_be_made_here` (each refusal, and Busy), `a_render_file_is_whole_or_not_there_whatever_the_stick_does` (`mpfree-stream`'s model stick: the power cut after every operation with each way names land, every operation failing, a full stick), `the_next_start_removes_what_was_never_whole_and_keeps_renders`; and `tests/no_alloc.rs` `a_render_through_the_host_hardly_allocates`.
 
 ## Not built yet
 
-- **6.0.3, one way to finish a render:** reserve, snapshot, render into a hidden `.part` in the work folder on the scheduler, check, make durable, commit one step in the tracks' history, release; nothing committed over a project changed under it; at start every hidden `.part` in the work folder goes.
+- **Renders past a whole recording:** part of one, several, a clip, a loop, through the mixer (6.1 to 6.3), and a source playing from its file.
 - **6.0.4, the routing check:** `Mixer::stand_in`, beside `capture_for`, says whether a render can stand in for its source with the mix unchanged (sends, sidechains, buses, latency).
