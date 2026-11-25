@@ -3630,17 +3630,23 @@ impl Looper {
             self.stats.refused += 1;
             return false;
         };
+        // A free cell's loop made a song loop (Make song) played itself
+        // until now: the track takes it over here, with no gap. It played
+        // on to the next period's first frame from its own origin, so runs
+        // from that origin go straight on, and one a hair off crossfades.
+        let next = self.now + self.outs.frames() as u64;
+        let seed = (self.free_tracked & (1 << n) != 0).then_some((next, l.origin as f64));
+        self.free_tracked &= !(1 << n);
         let t = self.on_track[n].get_or_insert_with(|| {
             // The track fades it: it is on, unmuted and not soloed.
             l.on = true;
             l.cue = None;
             l.muted = false;
             l.solo = false;
-            OnTrack::default()
+            let mut t = OnTrack::default();
+            t.last = seed;
+            t
         });
-        // A free loop on a track made a song loop (Make song) played itself
-        // until now: the track takes it over here, with no gap.
-        self.free_tracked &= !(1 << n);
         if !t.tell(runs) {
             self.stats.refused += 1;
             return false;
@@ -5549,6 +5555,12 @@ impl Looper {
             if p.loops & (1 << k) != 0 {
                 l.change_clock(Clock::Free, -p.shift);
                 l.clock_gen = ft.gen;
+                // On a track as a song loop: its cell is a free cell again
+                // from this period, so it launches itself from here, with
+                // no period run as a free loop on the song's runs told.
+                if self.on_track[k].take().is_some() {
+                    self.free_tracked |= 1 << k;
+                }
             }
         }
         Ok(())

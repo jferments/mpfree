@@ -15874,7 +15874,7 @@ fn player_session(
         out.loop_start(looper.tend_snap(&mut time, tracks.host.tracks.has_regions()));
         // Make song: the song started on the free loops' bar line (or its
         // tempo set), or its UNDO.
-        let (said, song_tempo) = looper.tend_song(&mut time, export.running(), loops_on);
+        let (said, song_tempo) = looper.tend_song(&mut time, export.running());
         out.loop_start(said);
         // Loops on audio tracks (Dev's switch, phase 4b): the track
         // player plans where each track's loops sound from what the
