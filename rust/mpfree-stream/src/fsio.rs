@@ -37,6 +37,10 @@ pub trait Fs {
     /// The names of the files in `dir`.
     fn list(&mut self, dir: &Path) -> io::Result<Vec<String>>;
     fn exists(&mut self, path: &Path) -> bool;
+    /// Let go of the file at `path` if it is held open: its drive went
+    /// (the SD card taken out), so nothing more is done with it. Touches
+    /// nothing on any drive.
+    fn let_go(&mut self, _path: &Path) {}
 }
 
 /// The real file system.
@@ -242,5 +246,9 @@ impl Fs for StdFs {
 
     fn exists(&mut self, path: &Path) -> bool {
         path.is_file()
+    }
+
+    fn let_go(&mut self, path: &Path) {
+        self.open.remove(path);
     }
 }
