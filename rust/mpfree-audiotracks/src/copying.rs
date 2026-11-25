@@ -6,7 +6,8 @@
 //! 1. **What is wanted.** Every few periods, and at the next after a
 //!    command (it may have edited a region) or a copy coming back, once
 //!    the tempo map has held for half a second (a tempo being turned asks
-//!    for nothing): the keys of every song region on Stretch (over one
+//!    for nothing; the map that comes with the tracks, as a project or a
+//!    set's next song opens, counts as held at once, 5d.3): the keys of every song region on Stretch (over one
 //!    steady tempo, or following the map where it changes over the
 //!    region, 5d.1, the map and its place going with the want to the
 //!    worker: [`Over`]) and of the clips' regions on Stretch the app lists
@@ -254,6 +255,9 @@ pub(crate) struct CopySide {
     /// What all derived audio used at the last look: once it is less,
     /// copies that found no room are asked for again.
     used_at_look: u64,
+    /// The takes still copying in at the last period: one done may have
+    /// copies to make, so it is looked at again (5d.3).
+    loading: usize,
 }
 
 impl CopySide {
@@ -274,6 +278,7 @@ impl CopySide {
             periods: 0,
             relook: false,
             used_at_look: 0,
+            loading: 0,
         }
     }
 
@@ -383,10 +388,22 @@ impl CopySide {
         self.periods += 1;
         if self.map.as_ref() == Some(map) {
             self.held_for += frames as u64;
+        } else if self.map.is_none() {
+            // The map that came with the tracks (a project or a set's song
+            // opening, or the first): nobody is turning it, so it counts
+            // as held, and the copies are asked for at once (5d.3).
+            self.map = Some(*map);
+            self.held_for = u64::from(tracks.rate()) / 2;
+            self.relook = true;
         } else {
             self.map = Some(*map);
             self.held_for = 0;
         }
+        let loading = tracks.loading();
+        if loading < self.loading {
+            self.relook = true;
+        }
+        self.loading = loading;
         let steady = self.held_for >= u64::from(tracks.rate()) / 2;
         if steady && (self.relook || self.periods.is_multiple_of(WANT_EVERY)) {
             self.relook = false;

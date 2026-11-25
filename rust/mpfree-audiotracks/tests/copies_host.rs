@@ -161,11 +161,6 @@ impl Rig {
 #[test]
 fn a_song_regions_copy_is_read_made_on_the_scheduler_and_played() {
     let mut r = Rig::new(90.0, vec![stretch_region()]);
-    // Nothing is asked for until the tempo has held for half a second.
-    for _ in 0..RATE as u64 / 2 / P - 2 {
-        r.period();
-    }
-    assert!(r.s.is_empty() && r.h.copy_memory().2 == 0);
     r.run_until(true, |r| r.copies() == 1);
     let c = r.h.copy_counts();
     assert_eq!(
@@ -289,11 +284,14 @@ fn play(w: &ClipWant) -> ClipPlay<'_> {
 
 #[test]
 fn where_a_clips_copy_stands_goes_from_waiting_through_making_to_ready() {
-    let mut r = Rig::new(90.0, vec![]);
+    let mut r = Rig::new(100.0, vec![]);
     let w = clip_of(FollowTempo::Stretch);
     r.h.clip_copies(vec![w]);
-    // Once its take is in, and until the tempo has held long enough to
-    // ask for it (half a second), it waits its turn.
+    // The tempo turned to 90 as its take copies in: once the take is in,
+    // and until the tempo has held long enough to ask for its copy (half a
+    // second), it waits its turn.
+    r.period();
+    assert!(r.t.command(r.frame, T::SetTempo(90.0)));
     r.run_until(false, |r| {
         r.h.clip_copy_state(&play(&w), 90.0) != CopyState::None
     });
@@ -636,4 +634,28 @@ fn a_listed_clip_gets_its_copies_for_each_tempo_point_in_the_next_eight_bars() {
             .collect();
     tempos.sort_by(f64::total_cmp);
     assert_eq!(tempos, vec![90.0, 100.0, 110.0]);
+}
+
+#[test]
+fn an_opened_projects_copies_are_asked_at_once_and_a_tempo_turned_waits_half_a_second() {
+    // The map that comes with the tracks (a project or a set's next song
+    // opening) is nobody turning it: its copies are asked for at once
+    // (5d.3), while the takes still copy in.
+    let mut r = Rig::new(90.0, vec![stretch_region(), later_region()]);
+    let t0 = r.frame;
+    r.run_until(false, |r| !r.s.is_empty());
+    assert!(
+        r.frame - t0 < u64::from(RATE) / 4,
+        "{} frames",
+        r.frame - t0
+    );
+    r.run_until(true, |r| r.copies() == 2);
+    // A tempo turned asks for nothing until it has held for half a
+    // second.
+    assert!(r.t.command(r.frame, T::SetTempo(100.0)));
+    for _ in 0..RATE as u64 / 2 / P - 2 {
+        r.period();
+    }
+    assert!(r.s.is_empty() && r.h.copy_memory().2 == 0);
+    r.run_until(true, |r| r.copies() == 4);
 }
