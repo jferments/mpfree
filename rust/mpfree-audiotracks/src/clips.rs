@@ -978,7 +978,9 @@ impl crate::Reader<'_> {
             rate,
         );
         let at = base + r.start as f64;
-        self.source(owner, since, r, at, ends, reach, map, rate, run, decide)
+        self.source(
+            owner, since, r, at, ends, reach, map, rate, run, decide, false,
+        )
     }
 
     /// The frames take `id` has, if it is here.

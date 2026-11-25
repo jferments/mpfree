@@ -184,7 +184,7 @@ Pick the region and tap **Tempo**. A small card opens over the lanes with the re
 
 | Row | What it does |
 |---|---|
-| **Tempo** | **Off**: as recorded. **Repitch**: on its bars, faster and higher (or slower and lower), like tape. **Stretch**: on its bars at its own pitch, from a copy of its audio made for the song's tempo there. Repitch and Stretch need the tempo it was made at (the third row). |
+| **Tempo** | **Off**: as recorded. **Repitch**: on its bars, faster and higher (or slower and lower), like tape. **Stretch**: on its bars at its own pitch, from a copy of its audio made for the song's tempo there; where the tempo changes under the region (a tempo point or a ramp), its copy follows the change, so it keeps its pitch right through it. Repitch and Stretch need the tempo it was made at (the third row). |
 | **Until ready** | Only with **Stretch** (otherwise "—"): **on time** plays it Repitch while its copy is made; **keep pitch** never plays it off pitch: through a tempo change it plays on in its own pitch, off the bars, and rejoins them once its copy is ready. |
 | **Made at** | The tempo its audio was made at: its take's, or "not known" (amber), for instance a take recorded while the tempo changed. |
 

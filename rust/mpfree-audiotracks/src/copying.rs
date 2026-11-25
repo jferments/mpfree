@@ -6,8 +6,10 @@
 //! 1. **What is wanted.** Every few periods, and at the next after a
 //!    command (it may have edited a region) or a copy coming back, once
 //!    the tempo map has held for half a second (a tempo being turned asks
-//!    for nothing): the keys of every song region on Stretch over one
-//!    steady tempo and of the clips' regions on Stretch the app lists
+//!    for nothing): the keys of every song region on Stretch (over one
+//!    steady tempo, or following the map where it changes over the
+//!    region, 5d.1, the map and its place going with the want to the
+//!    worker: [`Over`]) and of the clips' regions on Stretch the app lists
 //!    ([`ClipWant`], at the tempo at the playhead), most urgent first:
 //!    song regions from the playhead to two bars on and the clips the app
 //!    says play, and the copies the regions drifting on Keep pitch wait
@@ -35,7 +37,8 @@
 //!    dropped, never played.
 //!
 //! Not yet: copies of a take on its file (it plays Repitch; streaming
-//! stays off on the MPC for now), and ramps and steps (5d).
+//! stays off on the MPC for now), and a clip's copy across a planned tempo
+//! point (5d.2).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -45,7 +48,7 @@ use mpfree_stretch::sched::Priority;
 use mpfree_transport::time::{TempoMap, Tick, PPQ};
 
 use crate::clips::{ClipPlay, ClipRegion, MAX_CLIP_REGIONS};
-use crate::copies::{CopyKey, CopySpec};
+use crate::copies::{CopyKey, CopySpec, Over};
 use crate::{AudioTracks, FollowTempo, RecordingId, MAX_TRACKS};
 
 /// Copies wanted at once, at most: past it the least urgent are left
@@ -84,6 +87,9 @@ pub(crate) struct Want {
     pub take: u16,
     pub channels: u8,
     pub priority: Priority,
+    /// For a song region over a tempo change, the map and place its copy
+    /// follows (5d.1).
+    pub over: Option<Over>,
 }
 
 /// What the copies have done, for the debug lines and tests.
@@ -185,7 +191,10 @@ impl CopyState {
     }
 }
 
-/// What the host tells its worker about copies.
+/// What the host tells its worker about copies. Sent from the audio
+/// thread, so [`Ask::Make`] isn't boxed, though a copy over a tempo change
+/// carries the song's map (5d.1).
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Ask {
     /// A zeroed buffer of this many samples, for `key`'s source.
     Buffer { n: usize, key: CopyKey, gen: u32 },
@@ -443,6 +452,7 @@ impl CopySide {
                         take,
                         channels,
                         priority: c.priority,
+                        over: None,
                     };
                     push(out, w);
                 });
@@ -463,6 +473,7 @@ impl CopySide {
                 take,
                 channels,
                 priority: Priority::Protect,
+                over: None,
             };
             push(&mut out, w);
         });
@@ -474,10 +485,15 @@ impl CopySide {
                 let Some(key) = tracks.song_copy_key(r, map) else {
                     continue;
                 };
+                let (s, e) = (r.start as f64, r.end as f64);
+                let over = (key.shape != 0).then_some(Over {
+                    map: *map,
+                    at: s,
+                    len: e - s,
+                });
                 let Some(info) = tracks.take(r.take) else {
                     continue;
                 };
-                let (s, e) = (r.start as f64, r.end as f64);
                 let priority = if s <= now + 2.0 * bar && e > now {
                     Priority::Protect
                 } else if s <= now + 8.0 * bar {
@@ -490,6 +506,7 @@ impl CopySide {
                     take: r.take,
                     channels: info.channels as u8,
                     priority,
+                    over,
                 };
                 push(&mut out, w);
             }
@@ -694,6 +711,7 @@ impl CopySide {
                 key,
                 channels: want.channels,
                 audio,
+                over: want.over,
             },
             priority: want.priority,
             need,

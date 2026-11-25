@@ -25,7 +25,7 @@ use mpfree_audiotracks::{
     ClipRegion, Command as A, FollowTempo, Input, Monitor, RecordingId, Region, MAX_CLIP_REGIONS,
 };
 use mpfree_stretch::sched::{Config, Priority, Sched};
-use mpfree_transport::time::PPQ;
+use mpfree_transport::time::{Segment, TempoMap, PPQ};
 use mpfree_transport::{Block, Command as T, Transport};
 
 const RATE: u32 = 22_050;
@@ -550,4 +550,42 @@ fn a_region_on_keep_pitch_drifts_through_a_tempo_change_until_its_copy_is_made_t
         (st.drifted as f64 - drift).abs() <= 2.0 * P as f64 + 64.0,
         "drifted to bar 2's line: {st:?}, {drift}"
     );
+}
+
+#[test]
+fn a_song_region_over_a_ramp_gets_the_copy_that_follows_it_and_keeps_its_pitch() {
+    // 120 ramping to 140 over the region's two bars (5d.1).
+    let mut r = Rig::new(120.0, vec![stretch_region()]);
+    let map = TempoMap::new(&[
+        Segment {
+            start: 0,
+            bpm: 120.0,
+        },
+        Segment {
+            start: 2 * BAR,
+            bpm: 140.0,
+        },
+    ])
+    .unwrap()
+    .ramp(0)
+    .unwrap();
+    assert!(r.t.set_tempo_map(map).is_ok());
+    r.run_until(true, |r| r.copies() == 1);
+    let key =
+        r.h.tracks
+            .song_copy_key(&r.h.tracks.regions(0)[0], &map)
+            .unwrap();
+    assert_ne!(key.shape, 0);
+    assert!(r.h.tracks.has_copy(&key), "the copy that follows the ramp");
+    let at = r.frame;
+    assert!(r.t.command(at, T::PlayStart));
+    let end = at + map.frames_between(0.0, (2 * BAR) as f64, RATE) as u64;
+    r.run_until(false, |r| r.frame >= end);
+    let half = (at + end) / 2;
+    for (a, b) in [(at + 1_000, half), (half, end - 500)] {
+        let hz = r.hz(a, b);
+        assert!((hz - 441.0).abs() <= 1.5, "{a}..{b}: {hz} Hz");
+    }
+    let st = r.h.tracks.stats();
+    assert!(st.copied > 0 && st.for_now == 0, "{st:?}");
 }

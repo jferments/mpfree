@@ -1508,7 +1508,9 @@ impl Reader<'_> {
     /// Ends `ends`, its copy covering `reach` of its recording after its
     /// start. None (its recording) unless it is on Stretch and its copy was
     /// here when it was first heard; [`copies::DRIFT`] and up while it
-    /// drifts from the bars on Keep pitch.
+    /// drifts from the bars on Keep pitch. A song region's copy (`song`)
+    /// follows the map where the tempo changes over it (5d.1); a clip's is
+    /// for one steady tempo.
     #[allow(clippy::too_many_arguments)]
     fn source(
         &mut self,
@@ -1522,6 +1524,7 @@ impl Reader<'_> {
         rate: u32,
         run: &copies::RunAt,
         decide: bool,
+        song: bool,
     ) -> Option<usize> {
         if r.follow != FollowTempo::Stretch {
             return None;
@@ -1532,8 +1535,11 @@ impl Reader<'_> {
             .filter(|k| k.live && !k.loading && !k.recording)?;
         let ticks = (r.end - r.start) as f64;
         let bpm = copies::steady(map, at, ticks);
-        let key =
-            bpm.and_then(|bpm| copies::CopyKey::of(r, tk.rec, tk.frames, bpm, rate, ends, reach));
+        let key = match bpm {
+            Some(bpm) => copies::CopyKey::of(r, tk.rec, tk.frames, bpm, rate, ends, reach),
+            None if song => copies::CopyKey::over(r, tk.rec, tk.frames, map, at, rate, reach),
+            None => None,
+        };
         let id = copies::instance(owner, at, since, r);
         let keep = r.keep_pitch.then(|| copies::Keep {
             tempo: bpm.map_or(0, f64::to_bits),
@@ -3591,23 +3597,15 @@ impl AudioTracks {
     }
 
     /// The copy key of song region `r` along `map`: None unless it is on
-    /// Stretch over one steady tempo, its take finished and here.
+    /// Stretch, its take finished and here. Over a steady tempo, or where
+    /// the tempo steps or ramps over it, following the map (5d.1).
     pub fn song_copy_key(&self, r: &Region, map: &TempoMap) -> Option<copies::CopyKey> {
         let tk = self
             .takes
             .get(r.take as usize)
             .filter(|k| k.live && !k.loading && !k.recording)?;
-        let bpm = copies::steady(map, r.start as f64, (r.end - r.start) as f64)?;
         let reach = r.src_len(0, self.rate);
-        copies::CopyKey::of(
-            r,
-            tk.rec,
-            tk.frames,
-            bpm,
-            self.rate,
-            copies::Ends::Edges,
-            reach,
-        )
+        copies::CopyKey::song(r, tk.rec, tk.frames, map, r.start as f64, self.rate, reach)
     }
 
     /// The copy keys of clip `c`'s regions on Stretch at a steady `bpm`,
@@ -4690,6 +4688,7 @@ impl AudioTracks {
                 rate,
                 &run,
                 decide,
+                true,
             )
         };
         let dst = &mut buf[2 * off..2 * (off + len)];
