@@ -50294,19 +50294,42 @@ mod tests {
     /// each list sends (`--nocapture` prints the table).
     #[test]
     fn every_sample_screen_plays_back_the_same_from_its_display_list() {
+        use std::hash::{Hash, Hasher};
         let _alone = all_screens();
+        // A frame's pixels, hashed.
+        let px = |c: &SoftCanvas| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            c.px.hash(&mut h);
+            h.finish()
+        };
         std::thread::Builder::new()
             .stack_size(SCREENS_STACK)
-            .spawn(|| {
-                let direct = sample_screens(Fonts::embedded);
+            .spawn(move || {
+                // Each screen painted straight first, its two frames kept as
+                // hashes, so one set of screens is held at a time, as in
+                // every_sample_screen_draws: two sets at once outgrew the
+                // 32-bit address space of the ARMv7 job, which runs this
+                // under qemu (3.6 GB at most natively, against 2.0 GB).
+                let mut direct = Vec::new();
+                for (name, mut a) in sample_screens(Fonts::embedded) {
+                    let mut straight = SoftCanvas::new(SCREEN.0, SCREEN.1);
+                    a.ui.paint(&mut straight);
+                    let first = px(&straight);
+                    // The next frame, a tick later, as the screen loop paints it.
+                    a.tick(0.033);
+                    a.ui.paint(&mut straight);
+                    direct.push((name, first, px(&straight)));
+                }
                 let recorded = sample_screens(Fonts::embedded);
+                assert_eq!(direct.len(), recorded.len());
                 let mut sent = 0usize;
                 eprintln!(
                     "screen                     ops  masks  new items  KiB sent  next frame KiB"
                 );
-                for ((name, mut a), (_, mut b)) in direct.into_iter().zip(recorded) {
-                    let mut straight = SoftCanvas::new(SCREEN.0, SCREEN.1);
-                    a.ui.paint(&mut straight);
+                for ((name, straight, straight_next), (named, mut b)) in
+                    direct.into_iter().zip(recorded)
+                {
+                    assert_eq!(name, named);
                     let mut rec = mpfree_ui::record::Recorder::new(SCREEN.0, SCREEN.1);
                     let mut copy = mpfree_ui::record::Store::new(usize::MAX);
                     let mut wire = Vec::new();
@@ -50326,18 +50349,18 @@ mod tests {
                     let mut played = SoftCanvas::new(SCREEN.0, SCREEN.1);
                     send(&mut rec, &mut played);
                     assert!(
-                        straight.px == played.px,
+                        px(&played) == straight,
                         "{name}: the played-back picture differs"
                     );
-                    // The next frame, a tick later, as the screen loop paints it.
-                    a.tick(0.033);
                     b.tick(0.033);
-                    a.ui.paint(&mut straight);
                     rec.begin_frame();
                     b.ui.paint(&mut rec);
                     let next = rec.stats();
                     send(&mut rec, &mut played);
-                    assert!(straight.px == played.px, "{name}: the next frame differs");
+                    assert!(
+                        px(&played) == straight_next,
+                        "{name}: the next frame differs"
+                    );
                     sent += first.sent_bytes();
                     eprintln!(
                         "{name:<26} {:>4} {:>6} {:>10} {:>9.1} {:>15.1}",
