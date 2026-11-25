@@ -235,11 +235,14 @@ else:
 save(st)
 """
 # umount DIR. While FAKE_BUSY (a file holding a count) is over 0, it is refused as busy (a file held open).
+# umount -l DIR (lazily) only once the card is gone (its /dev/mmcblk1 nodes taken away): it goes from every
+# path at once, with whatever is mounted inside it, held or not, as the kernel's MNT_DETACH does.
 FAKE_UMOUNT = MOUNT_MODEL + r"""
-assert sys.argv[1] != "-l", "never lazily"
+lazy = sys.argv[1] == "-l"
+assert not lazy or not os.path.exists(root + "/dev/mmcblk1"), "lazily only once the card is gone"
 where = sys.argv[-1]
 busy = os.environ.get("FAKE_BUSY")
-if busy and os.path.exists(busy):
+if busy and os.path.exists(busy) and not lazy:
     left = int(open(busy).read())
     if left > 0:
         open(busy, "w").write(str(left - 1))
@@ -250,7 +253,15 @@ m = at(st, "system", where[len(root):])
 if m is None:
     print("umount: not mounted", file=sys.stderr)
     sys.exit(32)
-if not detach(st, m):
+def drop(m):
+    for c in list(inside(st, m)):
+        if c in st["mounts"]:
+            drop(c)
+    if m in st["mounts"]:
+        detach(st, m)
+if lazy:
+    drop(m)
+elif not detach(st, m):
     print(f"umount: {where[len(root):]}: target is busy.", file=sys.stderr)
     sys.exit(32)
 save(st)
@@ -738,6 +749,68 @@ class WriteWindowTests(unittest.TestCase):
                                                    "computer before the next save.")
         self.assertNotIn(MPF, self.mounts())
         self.assertNotIn(MNT, self.mounts())
+        # Taken away at once (lazily), never waited for: there is nothing left to write to.
+        self.assertEqual(self.calls("umount: ")[-2:], ["-l " + MPF, "-l " + MNT])
+        self.assertEqual(self.calls("systemctl: ") + self.calls("poweroff: "), [])
+
+    def test_a_card_taken_out_under_a_held_file_stops_nothing(self):
+        """S2b's B2c: the pad player recording on the card when it is pulled. The old close waited LETGO s, then
+        stopped whatever still held a file there (the pad player) and shut the MPC down if that wasn't enough.
+        Now the card's mounts go at once, lazily, and nothing is stopped: the holder gets errors on its files and
+        lets go itself."""
+        busy = os.path.join(self.tmp, "busy")
+        self.letgo = 2
+        self.make_bin()
+        os.makedirs(self.root + PROC + "/fd")
+        write(self.root + PROC + "/comm", "mpfree\n")
+        os.symlink(MPF + "/.work/audiotracks/take_7.wav", self.root + PROC + "/fd/9")
+        self.start(FAKE_BUSY=busy)
+        self.wait_state("open")
+        write(busy, "1000")   # never let go by a plain unmount
+        self.kernel.take_out()
+        code, out = self.finish()
+        self.assertEqual(code, 0, out + self.notes())
+        self.assertEqual(self.status()["state"], "closed")
+        self.assertNotIn("stopping process", self.notes())
+        self.assertIn("unmounted /run/mpfree-sd/MPFree lazily: the card was taken out", self.notes())
+        self.assertEqual(self.calls("systemctl: ") + self.calls("poweroff: "), [])
+        for m in (MNT, MPF, PRIV):
+            self.assertNotIn(m, self.mounts())
+        self.assertEqual(self.service_card_mounts(), {}, "gone from a service's own namespace too")
+        self.assertEqual(self.kernel.unbound, [SD], "the controller switched off again")
+        self.assertEqual(int(open(busy).read()), 1000, "no plain unmount was waited on")
+
+    def test_a_card_taken_out_while_it_is_being_closed_stops_nothing(self):
+        """Taken out during the close's wait for a held file to be let go: its mounts then go lazily, as if it had
+        been taken out while open, and the holder is never stopped."""
+        busy = os.path.join(self.tmp, "busy")
+        self.letgo = 30
+        self.make_bin()
+        os.makedirs(self.root + PROC + "/fd")
+        write(self.root + PROC + "/comm", "mpfree\n")
+        os.symlink(MPF + "/.work/audiotracks/take_7.wav", self.root + PROC + "/fd/9")
+        self.start(FAKE_BUSY=busy)
+        self.wait_state("open")
+        write(busy, "1000")
+        write(os.path.join(self.root, "run/mpfree-app/sd-card-write.close"), "")
+        end = time.monotonic() + 20
+        while MPF not in self.calls("umount: ") and time.monotonic() < end:
+            time.sleep(0.02)
+        self.assertIn(MPF, self.calls("umount: "), "the close is waiting on the held file")
+        self.kernel.take_out()
+        code, out = self.finish(seconds=20)
+        self.assertEqual(code, 0, out + self.notes())
+        self.assertEqual(self.status(), {"state": "closed", "message": "The card was taken out while it was being "
+                                                                      "closed: check it on a computer before the "
+                                                                      "next save."})
+        self.assertIn("the card was taken out while it was being closed", self.notes())
+        self.assertNotIn("stopping process", self.notes())
+        self.assertEqual(self.calls("umount: ")[-2:], ["-l " + MPF, "-l " + MNT])
+        self.assertEqual(self.calls("systemctl: ") + self.calls("poweroff: "), [])
+        for m in (MNT, MPF, PRIV):
+            self.assertNotIn(m, self.mounts())
+        self.assertEqual(self.service_card_mounts(), {})
+        self.assertEqual(self.kernel.unbound, [SD])
 
     def test_a_stop_from_the_system_closes_it(self):
         self.start()
@@ -931,8 +1004,24 @@ class StaticTests(unittest.TestCase):
         self.assertIn('elif [ -n "$repair" ]; then\n  need="${need:+$need; }its check found problems', code)
         for word in ("mkfs", "mke2fs", "mkfs.vfat", "mkfs.exfat", "fsck.vfat", "blkdiscard", "hdparm", "sfdisk",
                      "sgdisk", "parted", "wipefs", "tune2fs", "e2fsck", "debugfs", "truncate", "fallocate",
-                     "fatlabel", "exfatlabel", "dosfslabel", "blockdev", "chown", "chmod", "rm -r", "umount -l"):
+                     "fatlabel", "exfatlabel", "dosfslabel", "blockdev", "chown", "chmod", "rm -r"):
             self.assertNotRegex(code, rf"(^|[\s;|&(]){re.escape(word)}(\s|$)", word)
+        # Lazily unmounted only once the card is gone: one umount -l, in let_go, which stops nothing and is
+        # reached only through gone_now (the card's disk no longer there) or the wait seeing the card go.
+        self.assertEqual(len(re.findall(r"(?:^|[\s;|&(])umount -l\s", code)), 1)
+        start = code.index("\nlet_go() {\n")
+        let_go = code[start:code.index("\n}\n", start)]
+        self.assertIn('if umount -l "$R$m" 2>/dev/null; then', let_go)
+        for word in ("kill", "holders", "poweroff", "systemctl", "unmount_one", "LETGO", "sync"):
+            self.assertNotIn(word, let_go)
+        self.assertEqual(re.findall(r"(?m)^\s*gone=\S*", code), ["gone=''", "  gone=yes", "  gone=yes"])
+        self.assertIn('\n  [ -n "$gone" ] && return 0\n  [ -e "$R/sys/block/$card" ] && return 1\n'
+                      '  say "the card was taken out while it was being closed"\n  gone=yes\n}\n', code)
+        self.assertIn('if [ "$why" = out ]; then\n  say "the card was taken out while it was open for writing"\n'
+                      '  gone=yes\n  close_window\n', code)
+        self.assertEqual(re.findall(r"(?m)^.*\blet_go\b.*$", code),
+                         ["let_go() {"] + ["  gone_now && { let_go; return 0; }"] +
+                         ["    gone_now && { let_go; return 0; }"] * 3)
         # One read-write mount, at the private place, made read-only there before the whole card is bound
         # read-only; the private mount unmounted; only then MPFree/ bound onto itself and made writable.
         mounts = [m.strip() for m in re.findall(r"(?:^|[\s;|&(])u?mount\s[^\n]*", code)
