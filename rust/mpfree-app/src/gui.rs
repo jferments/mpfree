@@ -832,6 +832,8 @@ enum TypeTo {
     ClipName(usize, usize),
     /// A layout of yours and its directions' names (XY Setup's name).
     XyNames(usize),
+    /// Customise's theme name (its Rename).
+    ThemeName,
     /// The style Make a style keeps (composing step 6): its sheet's Name.
     StyleName,
 }
@@ -849,6 +851,7 @@ impl TypeTo {
                 | TypeTo::PatchName(_)
                 | TypeTo::ClipName(..)
                 | TypeTo::XyNames(_)
+                | TypeTo::ThemeName
                 | TypeTo::StyleName
         )
     }
@@ -1517,6 +1520,13 @@ pub enum ToUi {
     /// The themes folder's theme files, read at start: the file name
     /// (what `Settings::theme` holds when one is picked) and the theme.
     ThemeFiles(Vec<(String, Theme)>),
+    /// A theme file Customise saved (new, or written again).
+    ThemeFile(String, Box<Theme>),
+    /// Customise's copy of a theme on the whole screen, or (None) the
+    /// theme in use back.
+    LiveTheme(Option<Box<Theme>>),
+    /// Customise's Rename: the text keyboard, with the theme's name now.
+    NameTheme(String),
     /// Theme safety nets at start, added to the Debug page's counts: theme
     /// files left out (no one could read their text, or they aren't text),
     /// lines of theme files that used the base theme's value (a mistake,
@@ -2014,6 +2024,10 @@ pub enum FromUi {
     MenuStep(usize, i32),
     /// Prefs: a tab of the sidebar picked.
     PrefsTab(usize),
+    /// Prefs › Themes: the New theme tile (true) or Customise › (false).
+    NewTheme(bool),
+    /// Customise's Rename: the name typed.
+    ThemeName(String),
     /// Prefs: choice `k` of row `i` picked (a button of a choice, a tile,
     /// a step of a slider, a theme).
     MenuChoose(usize, usize),
@@ -10048,7 +10062,7 @@ impl Player {
                 View::System => "Read when the page opens   ·   MENU: back to Prefs   ·   a tab: leave".to_string(),
                 View::SystemStatus => "Tap a system: its problems   ·   Wheel or - / +: the systems   ·   push: open a card   ·   \
                                        MENU or the status chip: close".to_string(),
-                View::Prefs => self.prefs_hint().to_string(),
+                View::Prefs => self.prefs_hint(),
                 View::Options if self.menu_editing => OPTIONS_EDIT_HINT.to_string(),
                 View::Options => OPTIONS_HINT.to_string(),
                 View::Mixer => mpfree_mixer_ui::io_hint(&self.ui)
@@ -10195,6 +10209,29 @@ impl Player {
         }
     }
 
+    /// A theme by what `Settings::theme` holds: built in, or a theme file.
+    fn theme_named(&self, name: &str) -> Option<Theme> {
+        Theme::builtin(name).or_else(|| {
+            self.theme_files
+                .iter()
+                .find(|(f, _)| f == name)
+                .map(|(_, t)| t.clone())
+        })
+    }
+
+    /// Draws everything in `t` from now on.
+    fn show_theme(&mut self, t: Theme) {
+        // A plugin's skin: MPFree's pop-ups over it follow too.
+        let moved = self
+            .ui
+            .get_mut::<skin_page::SkinWidget>(skin_page::SKIN)
+            .map(|w| w.set_theme(&t));
+        if let Some(moved) = moved {
+            self.report_skin_colours(moved);
+        }
+        self.ui.set_theme(t);
+    }
+
     fn set_settings(&mut self, s: Settings) {
         let resumed = self.settings.console_paused && !s.console_paused;
         let retab = self.settings.debug_mode != s.debug_mode;
@@ -10202,22 +10239,8 @@ impl Player {
         // from --theme is neither built in nor in the themes folder, and the
         // screen keeps it.)
         if self.settings.theme != s.theme {
-            let file = || {
-                self.theme_files
-                    .iter()
-                    .find(|(f, _)| *f == s.theme)
-                    .map(|(_, t)| t.clone())
-            };
-            if let Some(t) = Theme::builtin(&s.theme).or_else(file) {
-                // A plugin's skin: MPFree's pop-ups over it follow too.
-                let moved = self
-                    .ui
-                    .get_mut::<skin_page::SkinWidget>(skin_page::SKIN)
-                    .map(|w| w.set_theme(&t));
-                if let Some(moved) = moved {
-                    self.report_skin_colours(moved);
-                }
-                self.ui.set_theme(t);
+            if let Some(t) = self.theme_named(&s.theme) {
+                self.show_theme(t);
                 // The theme asked for shows now: the status board's "Your
                 // theme couldn't be used" ends, if it was going.
                 self.end_problem(&mpfree_status::kinds::THEME_NOT_FOUND);
@@ -11810,6 +11833,7 @@ impl Player {
             | TypeTo::PatchName(_)
             | TypeTo::ClipName(..)
             | TypeTo::XyNames(_)
+            | TypeTo::ThemeName
             | TypeTo::StyleName => None,
         }
     }
@@ -11836,6 +11860,10 @@ impl Player {
             let (_, name) = names.into_iter().next()?;
             self.patch_named(i, &name);
             return None;
+        }
+        if to == Some(TypeTo::ThemeName) {
+            let (_, name) = names.into_iter().next()?;
+            return Some(FromUi::ThemeName(name));
         }
         if let Some(TypeTo::XyNames(layout)) = to {
             let named = |key: &str| {
@@ -12975,6 +13003,36 @@ impl Player {
                 }
                 self.theme_files = t;
             }
+            ToUi::ThemeFile(file, theme) => {
+                match self.theme_files.iter_mut().find(|(f, _)| *f == file) {
+                    Some(entry) => entry.1 = *theme,
+                    None => self.theme_files.push((file, *theme)),
+                }
+                let files = self.theme_files.clone();
+                if let Some(p) = self
+                    .ui
+                    .get_mut::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET)
+                {
+                    p.files = files;
+                }
+            }
+            ToUi::LiveTheme(Some(t)) => self.show_theme(*t),
+            ToUi::LiveTheme(None) => {
+                let name = self.settings.theme.clone();
+                if let Some(t) = self.theme_named(&name) {
+                    self.show_theme(t);
+                }
+            }
+            ToUi::NameTheme(name) => self.open_textpad(
+                vec![mpfree_ui::textpad::TextAsk {
+                    key: "theme".to_string(),
+                    label: "Theme".to_string(),
+                    title: "Name your theme".to_string(),
+                    value: name,
+                    max_len: crate::app::THEME_NAME_MAX,
+                }],
+                TypeTo::ThemeName,
+            ),
             ToUi::ThemeFallbacks {
                 left_out,
                 lines_fell_back,
@@ -17225,6 +17283,8 @@ impl Player {
                 | FromUi::Tab(_)
                 | FromUi::MenuSelect(_)
                 | FromUi::PrefsTab(_)
+                | FromUi::NewTheme(_)
+                | FromUi::ThemeName(_)
                 | FromUi::GuideButton(_)
                 | FromUi::HelpButton(_)
                 | FromUi::UndoReady(_)
@@ -17595,29 +17655,34 @@ impl Player {
         }
     }
 
-    /// Prefs' hint line: the themes', or a tab's with the wheel's push on
-    /// a setting or not.
-    fn prefs_hint(&self) -> &'static str {
-        let themes = self
+    /// Prefs' hint line: the tab's own (Customise's), the themes', or a
+    /// tab's with the wheel's push on a setting or not.
+    fn prefs_hint(&self) -> String {
+        let page = self
             .ui
-            .get::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET)
-            .is_some_and(|p| p.view.gallery.is_some());
-        if themes {
+            .get::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET);
+        if let Some(own) = page.and_then(|p| p.view.hint.clone()) {
+            return own;
+        }
+        if page.is_some_and(|p| p.view.gallery.is_some()) {
             PREFS_THEMES_HINT
         } else if self.menu_editing {
             PREFS_EDIT_HINT
         } else {
             PREFS_HINT
         }
+        .to_string()
     }
 
     /// What a touch on Prefs asks of the app.
     fn prefs_event(kind: EventKind) -> Option<FromUi> {
-        use crate::prefs_page::{BACK, GO_BACK, KEEP};
+        use crate::prefs_page::{BACK, CUSTOMISE, GO_BACK, KEEP, NEW_THEME};
         match kind {
             EventKind::Tab(BACK) => Some(FromUi::OptionsButton),
             EventKind::Tab(KEEP) => Some(FromUi::HelpButton(0)),
             EventKind::Tab(GO_BACK) => Some(FromUi::HelpButton(1)),
+            EventKind::Tab(NEW_THEME) => Some(FromUi::NewTheme(true)),
+            EventKind::Tab(CUSTOMISE) => Some(FromUi::NewTheme(false)),
             EventKind::Tab(i) => Some(FromUi::PrefsTab(i)),
             EventKind::Cell { row, col } => Some(FromUi::MenuChoose(row, col)),
             EventKind::Step { index, delta } => Some(FromUi::MenuStep(index, delta)),
@@ -21924,6 +21989,9 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             Effect::Guide(g) => p.apply(ToUi::Guide(g)),
             Effect::Status(s) => p.apply(ToUi::Status(s)),
             Effect::Settings(s) => p.apply(ToUi::Settings(s)),
+            Effect::LiveTheme(t) => p.apply(ToUi::LiveTheme(t)),
+            Effect::NameTheme(n) => p.apply(ToUi::NameTheme(n)),
+            Effect::SaveTheme { file, theme, .. } => p.apply(ToUi::ThemeFile(file, theme)),
             Effect::Arp(v) => p.apply(ToUi::Arp(Box::new(v))),
             Effect::SixteenLevels => p.apply(ToUi::SixteenLevels),
             Effect::LevelsWheel(d) => p.apply(ToUi::LevelsWheel(d)),
@@ -25213,6 +25281,32 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     apply_effects(&mut look, fx);
     out.push(("prefs-appearance", look));
+    // Prefs' Customise: a copy of the theme in use, its second accent
+    // turned;
+    // then with Words tapped, its hue, colour and light on the knobs.
+    for (name, words) in [("prefs-customise", false), ("prefs-customise-colour", true)] {
+        let mut p = sample_player(fonts());
+        let mut c = crate::app::App::new(44_100, false);
+        let mut fx = c.open_tab(View::Prefs);
+        fx.extend(c.pick_prefs_tab(crate::app::PrefsTab::Customise.index()));
+        let row = |c: &mut crate::app::App, t| c.row_of(crate::app::Item::Theme(t));
+        if words {
+            if let Some(i) = row(&mut c, crate::app::ThemeItem::Colours) {
+                fx.extend(c.choose(i, 4));
+            }
+            if let Some(i) = row(&mut c, crate::app::ThemeItem::Dial(2)) {
+                fx.extend(c.select(i));
+            }
+        } else if let Some(i) = row(&mut c, crate::app::ThemeItem::Dial(1)) {
+            // The second accent turned: one change, Save lit.
+            fx.extend(c.select(i));
+            for _ in 0..6 {
+                fx.extend(c.step_item(i, 1));
+            }
+        }
+        apply_effects(&mut p, fx);
+        out.push((name, p));
+    }
     // The guide from Prefs ("Find the buttons again"), PLAY pressed when it
     // asks for MENU.
     let mut guide = sample_player(fonts());
