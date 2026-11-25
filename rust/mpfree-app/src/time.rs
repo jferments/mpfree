@@ -563,6 +563,8 @@ pub trait Pads {
     /// A clip's parameter lock (`Some`) or its end (`None`) on a kit
     /// pad's sound (`Owner::Pad`) or an instrument (`Owner::Inst`),
     /// `offset` frames into the period, before the note it plays with.
+    /// A move lane's value comes here as a lock does, and its end as an
+    /// unlock (Continue's playing lanes, composing tools S3).
     /// True when it was taken; otherwise it goes on to the mixer's mod
     /// engine, which plays the strips' and inserts' locks and counts the
     /// rest. By default nothing is taken.
@@ -4938,6 +4940,9 @@ mod tests {
         /// A live pad plays these notes above its number (a chord of an
         /// instrument's pad map, step 5c); empty: its number alone.
         chord: Vec<u8>,
+        /// Takes the instrument's locks too (`Owner::Inst`), into `locks`,
+        /// as the app's own instruments do; else they go on to the mixer.
+        insts: bool,
     }
 
     impl Pads for Fake {
@@ -4970,7 +4975,8 @@ mod tests {
             offset: u32,
         ) -> bool {
             use mpfree_play::mpfree_param::Owner;
-            if !matches!(addr.owner, Owner::Pad(..)) {
+            let inst = self.insts && matches!(addr.owner, Owner::Inst(_));
+            if !matches!(addr.owner, Owner::Pad(..)) && !inst {
                 return false;
             }
             let at = self.frame + u64::from(offset);
@@ -12056,6 +12062,77 @@ mod tests {
         assert!(h.state().edit.is_none());
     }
 
+    /// Continue's lane (composing tools S3): On and Remove on the note
+    /// editor are one take each of the clip's moves, which UNDO and REDO
+    /// take back and do again; off, the lane keeps its points.
+    #[test]
+    fn continues_lane_turns_off_and_comes_out_through_the_take_history() {
+        use mpfree_seq::mpfree_moves::{By, Kind, Map, Target};
+        use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_time_ui::editor::EditAction as E;
+        let mut h = TimeHost::new(RATE, 120.0).unwrap();
+        let addr = RelAddr::new(OnTrack::Inst, 7);
+        let target = Target::Track(addr);
+        let mut c = Clip::new("Line", 3840);
+        c.holds = mpfree_seq::Holds::Notes;
+        c.add_note(mpfree_seq::Note::new(0, 240, 60, 100)).unwrap();
+        let points = [(0.0, 0.7, Kind::Step), (900.0, 0.0, Kind::End)];
+        c.moves
+            .put(target, Map::linear(0.0, 1.0), &points, 3840)
+            .unwrap();
+        c.moves.set_by(
+            target,
+            By::Continue {
+                on: true,
+                base: 0.5,
+            },
+        );
+        h.control.project.tracks[0].slots[0] = Some(c.clone());
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        let moves = |h: &TimeHost| h.control.project.clip(0, 0).unwrap().moves.clone();
+        let lane = |h: &TimeHost, on| {
+            let rev = h.state().edit.unwrap().rev;
+            TimeAction::Edit(E::SoundLane { rev, addr, on })
+        };
+        let off = lane(&h, Some(false));
+        let said = h.act(off).unwrap();
+        assert!(said.contains("off"), "{said}");
+        assert_eq!(
+            moves(&h).by(target),
+            Some(By::Continue {
+                on: false,
+                base: 0.5
+            })
+        );
+        assert_eq!(
+            moves(&h).lane(target).unwrap().points,
+            c.moves.lane(target).unwrap().points
+        );
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(moves(&h), c.moves);
+        h.act(TimeAction::Redo).unwrap();
+        assert_eq!(
+            moves(&h).by(target),
+            Some(By::Continue {
+                on: false,
+                base: 0.5
+            })
+        );
+        h.act(TimeAction::Undo).unwrap();
+        h.take_changed();
+        let out = lane(&h, None);
+        let said = h.act(out).unwrap();
+        assert!(said.contains("UNDO"), "{said}");
+        assert!(moves(&h).lane(target).is_none());
+        assert_eq!(
+            h.control.project.clip(0, 0).unwrap().notes,
+            c.notes,
+            "no note changes"
+        );
+        h.act(TimeAction::Undo).unwrap();
+        assert_eq!(moves(&h), c.moves, "UNDO puts it back whole");
+    }
+
     /// A tap on a note carries the clip's revision: after something else
     /// changed the clip (here a step tapped on Steps), a tap made on the
     /// old picture is refused and erases nothing; the picks follow their
@@ -17760,6 +17837,7 @@ mod tests {
         let parts = Parts {
             kinds: vec![Some(InstrumentKind::Bass)],
             lanes: Lanes::default(),
+            sound: None,
         };
         let said = h.act(TimeAction::Continue(ContinueAction::Parts(Arc::new(parts))));
         assert_eq!(said.unwrap(), "");
@@ -17833,6 +17911,169 @@ mod tests {
         h.act(TimeAction::Edit(E::Open)).unwrap();
         assert!(continuing(&h).is_none_or(|c| !c.heard && c.made.is_none()));
         assert_eq!(h.project().clip(0, 0).unwrap(), &riff);
+    }
+
+    /// Continue moves your sound (composing tools S3): with the synth's
+    /// cutoff in reach, a try comes with Continue's lane on that knob;
+    /// the Sound row moves it further at Bold and takes it off at Off,
+    /// from the same try (no new one); kept, the lane is in the clip.
+    #[test]
+    fn continues_sound_row_moves_the_knob_on_the_same_try() {
+        use mpfree_compose::{InstrumentKind, Knob, Lanes};
+        use mpfree_seq::mpfree_moves::{By, Kind, Target};
+        use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_time_ui::continuing::Parts;
+        use mpfree_time_ui::editor::{compose::SOUND_ROW, EditAction as E, ToolAct, CONTINUE_ROW};
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        let knob = |id, name, min, max, log, value| Knob {
+            id,
+            name,
+            group: "Filter",
+            min,
+            max,
+            log,
+            value,
+        };
+        let knobs = [
+            knob(7, "Cutoff", 20.0, 20_000.0, true, 800.0),
+            knob(8, "Resonance", 0.0, 1.0, false, 0.2),
+        ];
+        let safe = mpfree_compose::safe_controls(&knobs);
+        assert!(safe.brightness.is_some());
+        let parts = Parts {
+            kinds: vec![Some(InstrumentKind::Bass)],
+            lanes: Lanes::default(),
+            sound: Some((0, safe)),
+        };
+        h.act(TimeAction::Continue(ContinueAction::Parts(Arc::new(parts))))
+            .unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        h.act(TimeAction::Edit(E::Row {
+            row: CONTINUE_ROW,
+            delta: 1,
+        }))
+        .unwrap();
+        until(&mut h, &mut pads, |h| {
+            continuing(h).is_some_and(|c| c.heard)
+        });
+        let target = Target::Track(RelAddr::new(OnTrack::Inst, 7));
+        // The cutoff's highest point on the shown try, and its lane's By.
+        let shown = |h: &TimeHost| {
+            let c = continuing(h).unwrap();
+            let clip = c.clip.clone().unwrap();
+            let top = clip.moves.lane(target).map(|l| {
+                let most = l
+                    .points
+                    .iter()
+                    .filter(|p| p.kind != Kind::End)
+                    .map(|p| l.map.value(p.u))
+                    .fold(0.0f32, f32::max);
+                (l.by, most)
+            });
+            (c.sound, c.tries.len(), top, clip.notes.clone())
+        };
+        let (level, tries, subtle, notes) = shown(&h);
+        assert_eq!(level, Some(mpfree_compose::SoundLevel::Subtle));
+        let Some((by, subtle_top)) = subtle else {
+            panic!("a lane on the cutoff");
+        };
+        assert_eq!(
+            by,
+            By::Continue {
+                on: true,
+                base: 800.0
+            }
+        );
+        assert!(subtle_top > 800.0, "it opens the filter: {subtle_top}");
+        // Bold: further, the same notes, no new try.
+        let said = h
+            .act(TimeAction::Edit(E::Row {
+                row: SOUND_ROW,
+                delta: 1,
+            }))
+            .unwrap();
+        assert!(said.contains("sound"), "{said}");
+        let (level, again, bold, bold_notes) = shown(&h);
+        assert_eq!(level, Some(mpfree_compose::SoundLevel::Bold));
+        assert_eq!((again, &bold_notes), (tries, &notes), "the same try");
+        let (_, bold_top) = bold.unwrap();
+        assert!(bold_top > subtle_top, "{bold_top} > {subtle_top}");
+        // Off: the notes alone, and the hint names no sound.
+        h.act(TimeAction::Edit(E::Row {
+            row: SOUND_ROW,
+            delta: -2,
+        }))
+        .unwrap();
+        let (level, again, off, off_notes) = shown(&h);
+        assert_eq!(level, None);
+        assert_eq!((again, &off_notes, off), (tries, &notes, None));
+        // Subtle again, then kept: the lane is in the clip.
+        h.act(TimeAction::Edit(E::Row {
+            row: SOUND_ROW,
+            delta: 1,
+        }))
+        .unwrap();
+        until(&mut h, &mut pads, |h| {
+            continuing(h).is_some_and(|c| c.heard)
+        });
+        h.act(TimeAction::Edit(E::Tool(ToolAct::Done))).unwrap();
+        let kept = h.project().clip(0, 0).unwrap();
+        assert_eq!(
+            kept.moves.by(target),
+            Some(By::Continue {
+                on: true,
+                base: 800.0
+            })
+        );
+        h.act(TimeAction::Undo).unwrap();
+        assert!(h.project().clip(0, 0).unwrap().moves.is_empty());
+    }
+
+    /// Continue's lane on the instrument's knob is heard (composing tools
+    /// S3): each of its values reaches the instrument on its frame as a
+    /// lock does, never the mixer, where an instrument's knob isn't; and
+    /// a lane that is off plays nothing.
+    #[test]
+    fn continues_lane_reaches_the_instrument_as_its_locks_do() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::mpfree_moves::{By, Kind, Map, Target};
+        let rel = RelAddr::new(OnTrack::Inst, 7);
+        let heard = |on: bool| {
+            let mut h = riff_host();
+            let c = h.control.project.tracks[0].slots[0].as_mut().unwrap();
+            let target = Target::Track(rel);
+            let gesture = [(0.0, 0.3, Kind::Step), (1920.0, 0.8, Kind::Step)];
+            c.moves
+                .put(target, Map::linear(0.0, 1.0), &gesture, 3840)
+                .unwrap();
+            c.moves.set_by(target, By::Continue { on, base: 0.3 });
+            h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+            h.command(Command::Play);
+            let mut pads = Fake {
+                insts: true,
+                ..Fake::default()
+            };
+            let mut to_mixer = 0;
+            while pads.frame < BAR - 1000 {
+                h.period(PERIOD, &mut pads);
+                to_mixer += h.lanes().iter().filter(|l| l.1 == rel.on(0)).count();
+                pads.frame += u64::from(PERIOD);
+            }
+            let values: Vec<Option<f32>> = pads
+                .locks
+                .iter()
+                .filter(|l| l.2 == rel.on(0))
+                .map(|l| l.3)
+                .collect();
+            (values, to_mixer)
+        };
+        let (values, to_mixer) = heard(true);
+        // (Its value where play starts comes first, chased.)
+        assert!(values.ends_with(&[Some(0.3), Some(0.8)]), "{values:?}");
+        assert_eq!(to_mixer, 0, "none went to the mixer");
+        let (values, _) = heard(false);
+        assert_eq!(values, [], "off plays nothing");
     }
 
     /// Apart (Arrange 2.6b), Continue goes through the editing side's

@@ -12,7 +12,9 @@
 
 use std::sync::Arc;
 
-use mpfree_compose::{Aim, Continued, InstrumentKind, Lanes, Settings, State};
+use mpfree_compose::{
+    Aim, Continued, InstrumentKind, Lanes, SafeControls, Settings, SoundLevel, State,
+};
 use mpfree_seq::Clip;
 use mpfree_transport::time::Tick;
 
@@ -46,6 +48,11 @@ pub struct Parts {
     /// out), and the time engine reads it from the clip.
     pub kinds: Vec<Option<InstrumentKind>>,
     pub lanes: Lanes,
+    /// The knobs a sound move may turn (composing tools S3) on the track
+    /// whose instrument the Synth tab shows, with that track: its safe
+    /// controls, from the instrument's knobs as they are set now. None
+    /// while the Synth tab shows no track's instrument.
+    pub sound: Option<(usize, SafeControls)>,
 }
 
 /// Continue, or Try again: a new result for clip `slot` of `track` with
@@ -181,6 +188,9 @@ pub struct Continuing {
     /// clip changed, a setting is in the way, Keep was refused.
     pub words: Option<String>,
     pub settings: Settings,
+    /// The Sound row's level, while the shown result moves a knob with it
+    /// (S3); None when it moves none (Off, or no knob it may turn).
+    pub sound: Option<SoundLevel>,
     /// The last 8 results, oldest first, for the tries list.
     pub tries: Vec<Try>,
 }

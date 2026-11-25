@@ -319,6 +319,27 @@ impl SafeControls {
     }
 }
 
+/// How far a lane of Continue's takes knob `name` from `base` at most
+/// (`far` the value farthest from it), in a musician's words, as
+/// [`safe_controls`] picks the knobs by name: "up to +0.5 oct" on a
+/// Cutoff, "up to 1.6× as long" on a Release, else the share of the
+/// knob's travel (`min` to `max`, `log` for even steps in pitch or
+/// time), "up to +15 %".
+pub fn reach_words(name: &str, base: f32, far: f32, min: f32, max: f32, log: bool) -> String {
+    if name == "Cutoff" && base > 0.0 && far > 0.0 {
+        return format!("up to {:+.1} oct", (far / base).log2());
+    }
+    if name == "Release" && base > 0.0 && far > 0.0 {
+        let r = far / base;
+        return match r >= 1.0 {
+            true => format!("up to {r:.1}× as long"),
+            false => format!("down to {r:.1}× as long"),
+        };
+    }
+    let pct = (unit(far, min, max, log) - unit(base, min, max, log)) * 100.0;
+    format!("up to {pct:+.0} %")
+}
+
 /// A cutoff this far up its travel has no room to open: the tone knob is
 /// used, or none.
 const OPEN: f32 = 0.9;
@@ -398,6 +419,31 @@ pub fn safe_controls(knobs: &[Knob]) -> SafeControls {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn reach_words_say_how_far_in_the_knobs_own_terms() {
+        assert_eq!(
+            reach_words("Cutoff", 1000.0, 1414.2, 20.0, 20_000.0, true),
+            "up to +0.5 oct"
+        );
+        assert_eq!(
+            reach_words("Cutoff", 1000.0, 707.1, 20.0, 20_000.0, true),
+            "up to -0.5 oct"
+        );
+        assert_eq!(
+            reach_words("Release", 200.0, 320.0, 1.0, 5000.0, true),
+            "up to 1.6× as long"
+        );
+        assert_eq!(
+            reach_words("Release", 200.0, 140.0, 1.0, 5000.0, true),
+            "down to 0.7× as long"
+        );
+        assert_eq!(
+            reach_words("Tone", 0.5, 0.65, 0.0, 1.0, false),
+            "up to +15 %"
+        );
+    }
+
     use super::*;
     use crate::perform::tests::{line, shaping, sketch, BAR};
     use crate::style::{GROOVE, MINIMAL};

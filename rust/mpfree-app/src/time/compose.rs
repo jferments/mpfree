@@ -34,12 +34,20 @@
 //!   in while recording.
 //!
 //! What gave way is counted for the status line ([`ComposeCounts`]).
+//!
+//! S3: each result comes with its sound moves at Subtle and at Bold, and
+//! the clip as heard carries Continue's own lane for them at the Sound
+//! row's level ([`super::sound`]), on the knobs the screen named for the
+//! track when it asked. A change of the Sound row rebuilds the heard clip
+//! from the result as made ([`Composing::set_level`]): no new try, the
+//! change landing on the next bar line as a step through the tries does.
 
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::Arc;
 
 use mpfree_compose::{
-    Arrival, Ask, ContinueJob, Continued, Done, Making, Preview, Refusal, Settings, State,
+    Arrival, Ask, ContinueJob, Continued, Done, Making, Preview, Refusal, SafeControls, Settings,
+    SoundLevel, SoundMove, State,
 };
 use mpfree_seq::{Clip, Project};
 use mpfree_time_ui::continuing::{Again, Continuing, Scope, Try};
@@ -99,10 +107,19 @@ impl ComposeCounts {
 /// is heard with it.
 struct Made {
     /// Its own number, never reused: what the play view plays is named by
-    /// it, as results come and go from the last 8.
+    /// it, as results come and go from the last 8. A new one when the
+    /// Sound row changes what is heard.
     id: u32,
     made: Arc<Continued>,
+    /// The clip as heard: `plain` with Continue's lanes at the level.
     clip: Arc<Clip>,
+    /// The clip with the result in and no sound moves of its own.
+    plain: Arc<Clip>,
+    /// Its sound moves at Subtle and Bold (`Done::sound`), the knobs they
+    /// may turn, and the knobs that have a lane at the level.
+    sound: [Vec<SoundMove>; 2],
+    safe: SafeControls,
+    moved: Vec<u16>,
     new_from: Tick,
     bars: u8,
     /// The style it was made in.
@@ -186,8 +203,11 @@ pub(super) struct Composing {
     made: Vec<Made>,
     next_id: u32,
     /// The ask a result is being made for, by request number, with the
-    /// clip as it was asked on (for the clip as heard).
-    waiting: Option<(u32, Ask, Clip)>,
+    /// clip as it was asked on (for the clip as heard) and the knobs its
+    /// sound moves may turn.
+    waiting: Option<(u32, Ask, Clip, SafeControls)>,
+    /// The Sound row (S3): how much the sound of each result heard moves.
+    level: SoundLevel,
     /// The last ask's settings, for the screens.
     settings: Option<Settings>,
     /// Asks so far: each one's seed.
@@ -216,6 +236,7 @@ impl Composing {
             made: Vec::new(),
             next_id: 0,
             waiting: None,
+            level: SoundLevel::default(),
             settings: None,
             seeds: 0,
             in_view: None,
@@ -362,6 +383,7 @@ impl Composing {
         mut ask: Ask,
         scope: &Scope,
         locked: &[u16],
+        safe: SafeControls,
     ) -> Result<u32, String> {
         let b = mpfree_compose::Binding::of(project, ask.track, ask.slot)
             .ok_or_else(|| "continue: the clip has gone".to_string())?;
@@ -389,7 +411,7 @@ impl Composing {
         }
         self.counts.asked += 1;
         self.settings = Some(ask.settings);
-        self.waiting = Some((n, ask, clip));
+        self.waiting = Some((n, ask, clip, safe));
         self.words = None;
         Ok(n)
     }
@@ -422,12 +444,13 @@ impl Composing {
         }
         for (n, done) in got {
             let waiting = self.waiting.take_if(|(m, ..)| *m == n);
-            let (Some(done), Some((_, ask, clip))) = (done, waiting) else {
+            let (Some(done), Some((_, ask, clip, safe))) = (done, waiting) else {
                 self.counts.late += 1;
                 continue;
             };
             self.counts.left_out += done.left_out as u64;
             changed = true;
+            let sound = done.sound;
             match done.result {
                 Err(r) => {
                     self.counts.refused += 1;
@@ -457,16 +480,23 @@ impl Composing {
                                 self.made.remove(0);
                             }
                             self.next_id = self.next_id.wrapping_add(1);
-                            self.made.push(Made {
+                            let new_from = made.to - Tick::from(bars) * bar;
+                            let mut m = Made {
                                 id: self.next_id,
-                                new_from: made.to - Tick::from(bars) * bar,
+                                new_from,
                                 made: Arc::new(made),
-                                clip: Arc::new(heard),
+                                clip: Arc::new(heard.clone()),
+                                plain: Arc::new(heard),
+                                sound,
+                                safe,
+                                moved: Vec::new(),
                                 bars,
                                 style: ask.settings.style.name,
                                 seed: ask.settings.seed,
                                 again: again_of(&ask.how),
-                            });
+                            };
+                            sound_in(&mut m, self.level, project, ask.track);
+                            self.made.push(m);
                             log.push(format!(
                                 "continue: {} ready",
                                 more_bars(bars, &self.made.last().expect("pushed").clip.name)
@@ -577,6 +607,30 @@ impl Composing {
         self.preview.step(back)
     }
 
+    /// The Sound row set to `level` (S3): each result's clip as heard is
+    /// made again from the result as made, with Continue's lanes at it;
+    /// no new try. True when what the shown result plays changed (it
+    /// gets a new number, so the play view takes it on its next line).
+    pub(super) fn set_level(&mut self, level: SoundLevel, project: &Project) -> bool {
+        if level == self.level {
+            return false;
+        }
+        self.level = level;
+        let Some((track, _)) = self.bound() else {
+            return false;
+        };
+        let shown = self.shown().map(|m| m.id);
+        for m in &mut self.made {
+            let was = m.clip.clone();
+            sound_in(m, level, project, track);
+            if m.clip != was {
+                self.next_id = self.next_id.wrapping_add(1);
+                m.id = self.next_id;
+            }
+        }
+        self.shown().map(|m| m.id) != shown
+    }
+
     /// Keep, first half: the clip to write and its bars, if the result
     /// still fits the project. The preview is then committing; say how it
     /// went with [`Composing::kept`].
@@ -681,6 +735,7 @@ impl Composing {
             line: self.line.map(|l| l.line),
             words,
             settings: self.settings.unwrap_or_default(),
+            sound: shown.filter(|m| !m.moved.is_empty()).map(|_| self.level),
             tries: self
                 .made
                 .iter()
@@ -692,6 +747,26 @@ impl Composing {
                 .collect(),
         }))
     }
+}
+
+/// Result `m`'s clip as heard at `level`: its plain clip with Continue's
+/// lanes for the moves at that level (none at Off), on the knobs the
+/// clip of `track` may take a lane on ([`mpfree_seq::Clip::inst_refuses`]
+/// for the instrument the track plays).
+fn sound_in(m: &mut Made, level: SoundLevel, project: &Project, track: usize) {
+    let moves = Done::sound_at(&m.sound, level);
+    if moves.is_empty() || (m.safe.brightness.is_none() && m.safe.length.is_none()) {
+        m.clip = m.plain.clone();
+        m.moved.clear();
+        return;
+    }
+    let plays = project.tracks.get(track).and_then(|t| t.plays.get());
+    let mut clip = (*m.plain).clone();
+    let plain = &m.plain;
+    m.moved = mpfree_compose::put_sound(&mut clip, moves, &m.safe, m.new_from, |id| {
+        plain.inst_refuses(id, plays).is_none()
+    });
+    m.clip = Arc::new(clip);
 }
 
 /// What a try made of part of the one before it is, for the tries list.

@@ -23,6 +23,7 @@ use crate::read::{read, row_parts, ToRead};
 use crate::request::{continue_clip_how, Continued, Making, OnClip, Refused};
 use crate::row::{Row, ToHear};
 use crate::settings::Settings;
+use crate::sound::{SoundLevel, SoundMove};
 
 /// The drums each pad of a drum track plays, as the kit names them: only
 /// the pads that are drums. A pad not here isn't read for the groove.
@@ -115,6 +116,21 @@ pub struct Done {
     pub result: Result<(Proposal, Continued), Refused>,
     /// Clips the reading left out (gone, or past its budget).
     pub left_out: usize,
+    /// The result's sound moves at Subtle and at Bold (S3,
+    /// [`crate::sound_on`]), made here so the Sound row never makes a new
+    /// try. Empty with no result, on drums, or with no phrase plan.
+    pub sound: [Vec<SoundMove>; 2],
+}
+
+impl Done {
+    /// The sound moves at `level`: none at Off.
+    pub fn sound_at(sound: &[Vec<SoundMove>; 2], level: SoundLevel) -> &[SoundMove] {
+        match level {
+            SoundLevel::Off => &[],
+            SoundLevel::Subtle => &sound[0],
+            SoundLevel::Bold => &sound[1],
+        }
+    }
 }
 
 impl ContinueJob {
@@ -174,7 +190,17 @@ impl ContinueJob {
             row: self.row.as_ref(),
         };
         let (result, left_out) = continue_clip_how(&on, &a.settings, a.kind, &a.how);
-        Done { result, left_out }
+        let length = self.project.clip(a.track, a.slot).map_or(1, |c| c.length);
+        let sound = match &result {
+            Ok((_, made)) => [SoundLevel::Subtle, SoundLevel::Bold]
+                .map(|l| crate::sound_on(made, &a.settings, length, a.meter, a.bpm, l)),
+            Err(_) => Default::default(),
+        };
+        Done {
+            result,
+            left_out,
+            sound,
+        }
     }
 }
 

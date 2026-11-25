@@ -286,6 +286,7 @@ impl Moves {
                     target: lane.target,
                     map: lane.map,
                     points,
+                    by: lane.by,
                 });
             }
         }
