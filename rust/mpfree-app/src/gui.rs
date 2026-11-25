@@ -9834,6 +9834,8 @@ impl Player {
                 View::Arrange if self.time_page.clip_card => time_view::clip_card_hint(&self.time),
                 // Add a part is faint while Rec song is on: this says why.
                 View::Arrange if self.time.song_rec => time_view::REC_SONG_CLIPS_HINT.to_string(),
+                // Perform: nothing on the grid drags (the touch review).
+                View::Arrange if self.time.perform => time_view::PERFORM_CLIPS_HINT.to_string(),
                 View::Arrange => CLIPS_HINT.to_string(),
                 // A first pass waits on its Length: Read as and Discard
                 // float at this line's end.
