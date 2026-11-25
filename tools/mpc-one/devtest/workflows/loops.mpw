@@ -1,5 +1,5 @@
-title Loops: a loop recorded on Play and layered, the Looper tab's tools, loops launched from Arrange
-covers looper, rec-arm, loop-tracks, looper-deck, loop-cell
+title Loops: a loop recorded on Play and layered on its audio track, the Looper tab's tools, loops launched from Arrange
+covers looper, rec-arm, loops-on-tracks, looper-deck, loop-cell
 # The looper records what the pads play (Input: Pads), so it needs no
 # cable. On the MPC this window also shows what recording and playing
 # loops cost (the report's "looper" rows).
@@ -16,7 +16,7 @@ button REC
 expect looper: Record during the first pass: it ends on the next bar line
 wait 2
 expect looper: loop of 2 bars
-expect time: Loop 1 on Loops A, row 1, playing
+expect time: Loop 1 on Audio 1 (a new audio track), row 1, playing
 mark overdub
 button OVERDUB
 expect looper: overdub on (layer 2)
@@ -36,18 +36,19 @@ tap leditor reverse Reverse
 wait 2
 tap leditor reverse Reverse on
 expect looper: edit Reverse
-tap ldeck loop-mute Loop 1 speaker
-expect looper: loop 1 muted
+# A loop's speaker is its track's mute.
+tap ldeck loop-mute Audio 1 · row 1 speaker
+expect track mute: Audio 1 muted
 wait 2
-tap ldeck loop-mute Loop 1 speaker
-expect looper: loop 1 unmuted
+tap ldeck loop-mute Audio 1 · row 1 speaker
+expect track mute: Audio 1 plays
 # A second loop from its ring: it records two bars from the next bar line.
 tap ldeck ring Loop 2 ring: record
 pad 5 100
 wait 4
 tap ldeck ring Loop 2 ring: close and play
 wait 2
-expect time: Loop 2 on Loops B, row 1, playing
+expect time: Loop 2 on Audio 2 (a new audio track), row 1, playing
 button-down SHIFT
 button REC
 button-up SHIFT
@@ -56,16 +57,18 @@ wait 1
 mark arrange
 tap header tab Arrange
 tap clips pager Tracks after
-tap clips slot Loops A slot 1
+tap clips scene Scene 2
+expect time: scene 2
 wait 4
-expect looper: loop 1 off from bar
+tap clips slot Audio 1 slot 1
+expect time: clips: Launch { track: 8, slot: 0 }
+wait 4
 tap clips stop-all Stop all
 expect time: stop all
 wait 4
 tap clips scene Scene 1
 expect time: scene 1
 wait 4
-expect looper: loop 3 on from bar
 button STOP
 button STOP
 expect STOP: all sounds stopped

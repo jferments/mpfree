@@ -250,30 +250,26 @@ pub fn input_words(lane: &AudioLane) -> String {
 }
 /// What Tab reports for "+ Track" (the lane after the last): well clear
 /// of the panel's, so a step past the panel's last is still nothing. The
-/// app opens the chooser ([`SongLanes::adding`]), or with SHIFT adds a
-/// Loop track at once (layout spec 4c).
+/// app opens the chooser ([`SongLanes::adding`]), or with SHIFT adds an
+/// audio track at once (layout spec 4c, board 1 of phase 4).
 pub const ADD_TRACK: usize = 0x100;
-/// The chooser's Note track and Loop track, as Tab reports them; its
-/// Audio track is [`ADD_AUDIO`]. A touch anywhere else while it is open
-/// reports [`ADD_CLOSE`].
+/// The chooser's Note track, as Tab reports it; its Audio track is
+/// [`ADD_AUDIO`]. A touch anywhere else while it is open reports
+/// [`ADD_CLOSE`]. [`ADD_LOOP`] was its Loop track's, before loops played
+/// on audio tracks (phase 4e.5): nothing reports it now.
 pub const ADD_NOTE: usize = 0x101;
 pub const ADD_LOOP: usize = 0x102;
 pub const ADD_CLOSE: usize = 0x103;
 /// The chooser's rows, top to bottom, with what each reports.
-pub const ADD_KINDS: [(&str, usize); 3] = [
-    ("Note track", ADD_NOTE),
-    ("Audio track", ADD_AUDIO),
-    ("Loop track", ADD_LOOP),
-];
+pub const ADD_KINDS: [(&str, usize); 2] = [("Note track", ADD_NOTE), ("Audio track", ADD_AUDIO)];
 /// The line under each row's name, as drawn on the approved screens.
-pub const ADD_ABOUT: [&str; 3] = [
+pub const ADD_ABOUT: [&str; 2] = [
     "Plays a kit or an instrument; records notes",
-    "Records sound from an input; its own mixer strip",
-    "Loops in the Clips grid (they join audio tracks later)",
+    "Records sound from an input: loops in its cells, takes on the song. Its own mixer channel",
 ];
-/// The hint line while the "+ Track" chooser is open.
+/// The hint line while the "+ Track" chooser is open (board 1 of phase 4).
 pub const ADD_HINT: &str =
-    "Pick the kind of track to add: Note, Audio or Loop   ·   it goes at the end of the track list   ·   UNDO takes it away   ·   tap anywhere else: nothing is added";
+    "Pick the kind of track to add: Note or Audio   ·   SHIFT + \"+ Track\": an audio track at once   ·   it goes at the end of the list   ·   UNDO takes it away";
 /// What Tab reports for the view chip's List: the song list.
 pub const LIST: usize = 0x310;
 /// What Tab reports for the view chip's Clips: the grid.
@@ -804,11 +800,17 @@ const CHOOSER_PAD: i32 = 12;
 const CHOOSER_GAP: i32 = 8;
 const CHOOSER_HEAD: i32 = 16;
 /// The chooser card's height.
-pub const CHOOSER_H: i32 =
-    CHOOSER_PAD + CHOOSER_HEAD + CHOOSER_GAP + 3 * CHOOSER_ROW + 2 * CHOOSER_GAP + CHOOSER_PAD;
+pub const CHOOSER_H: i32 = CHOOSER_PAD
+    + CHOOSER_HEAD
+    + CHOOSER_GAP
+    + KINDS as i32 * CHOOSER_ROW
+    + (KINDS as i32 - 1) * CHOOSER_GAP
+    + CHOOSER_PAD;
+/// The chooser's rows: a kind of track each ([`ADD_KINDS`]).
+pub const KINDS: usize = ADD_KINDS.len();
 
 /// The chooser's rows for a card whose top left corner is `(x, y)`.
-pub fn chooser_rows(x: i32, y: i32) -> [Rect; 3] {
+pub fn chooser_rows(x: i32, y: i32) -> [Rect; KINDS] {
     let row = |k: i32| {
         Rect::new(
             x + CHOOSER_PAD,
@@ -817,7 +819,7 @@ pub fn chooser_rows(x: i32, y: i32) -> [Rect; 3] {
             CHOOSER_ROW,
         )
     };
-    [row(0), row(1), row(2)]
+    std::array::from_fn(|k| row(k as i32))
 }
 /// The track panel's size at most, its rows' height and its labels'
 /// width.
@@ -1013,7 +1015,7 @@ enum Lane {
 /// screens): a raised card titled "ADD A TRACK" round `rows`, each row a
 /// kind of track ([`ADD_KINDS`]) with a line on what it is
 /// ([`ADD_ABOUT`]). The Clips grid draws the same under its "+ Track".
-pub fn paint_chooser(cx: &mut PaintCx, rows: &[Rect; 3]) {
+pub fn paint_chooser(cx: &mut PaintCx, rows: &[Rect; KINDS]) {
     let t = cx.theme.clone();
     let card = Rect::new(
         rows[0].x - CHOOSER_PAD,
@@ -1524,7 +1526,7 @@ impl SongLanes {
     /// The "+ Track" chooser's rows ([`ADD_KINDS`]), while it is open
     /// and "+ Track" shows: the card beside it, right of the names,
     /// level with it where it fits (as drawn), kept inside the view.
-    pub fn chooser_rects(&self, r: Rect) -> Option<[Rect; 3]> {
+    pub fn chooser_rects(&self, r: Rect) -> Option<[Rect; KINDS]> {
         if !self.adding {
             return None;
         }
@@ -5628,7 +5630,7 @@ mod tests {
         let rows = s.chooser_rects(r).unwrap();
         assert!(rows[0].x > b.right(), "right of the names");
         assert!(
-            rows[0].y < b.bottom() && rows[2].bottom() > b.y,
+            rows[0].y < b.bottom() && rows[KINDS - 1].bottom() > b.y,
             "level with it"
         );
         for (k, row) in rows.iter().enumerate() {
@@ -5644,7 +5646,7 @@ mod tests {
         );
         assert_eq!(s.touch(3, Touch::Up, vocal.x + 4, vocal.y + 4, r), None);
         let targets = s.targets(r);
-        assert_eq!(targets.len(), 4, "the rows and the rest");
+        assert_eq!(targets.len(), KINDS + 1, "the rows and the rest");
         // With "+ Track" at the foot of the lanes, the card stays inside
         // the view.
         put_audio(
@@ -5655,7 +5657,7 @@ mod tests {
         let b = s.add_track_rect(r).unwrap();
         let rows = s.chooser_rects(r).unwrap();
         assert!(rows[0].x > b.right(), "beside it still");
-        assert!(rows[2].bottom() < r.bottom() - 8, "inside the view");
+        assert!(rows[KINDS - 1].bottom() < r.bottom() - 8, "inside the view");
         assert!(rows[0].y - 36 >= r.y, "its title too");
     }
 
@@ -5686,7 +5688,7 @@ mod tests {
         s.adding = true;
         let rows = s.chooser_rects(r).expect("its chooser");
         assert!(rows[0].x > b.right(), "beside it");
-        assert!(rows[2].bottom() < r.bottom(), "inside the view");
+        assert!(rows[KINDS - 1].bottom() < r.bottom(), "inside the view");
     }
 
     fn take(id: u16, name: &str, start: Tick, end: Tick, used: Vec<(Tick, Tick)>) -> TakeLane {

@@ -1134,13 +1134,29 @@ impl Desk<'_> {
                 out.show(throw_strips(mix, time));
                 out.show(knobs);
             }
-            app::Effect::TrackMute { track, wait } => {
+            app::Effect::TrackMute {
+                track,
+                wait,
+                solo,
+                on,
+            } => {
+                let now = time
+                    .project()
+                    .tracks
+                    .get(track)
+                    .map(|t| if solo { t.solo } else { t.mute });
                 let say = time::Say::Note {
                     ok: "perform: ",
-                    err: "perform: track mute: ",
+                    err: if solo {
+                        "perform: track solo: "
+                    } else {
+                        "perform: track mute: "
+                    },
                 };
-                if let Some(r) = time.mute_or_solo_then(track, wait, false, say.clone()) {
-                    let _ = crate::time_said(out, say, r);
+                if on.is_none() || now != on {
+                    if let Some(r) = time.mute_or_solo_then(track, wait, solo, say.clone()) {
+                        let _ = crate::time_said(out, say, r);
+                    }
                 }
             }
             // The audio loop's own, named one by one as above.
@@ -1794,6 +1810,8 @@ pub fn perform_pad_on(
             fx.push(app::Effect::TrackMute {
                 track: usize::from(t),
                 wait: app.mute_waits(),
+                solo: false,
+                on: None,
             });
             String::new()
         }
@@ -1867,6 +1885,24 @@ pub fn perform_pad_on(
                 format!("loop keys: Loop {}'s key", n + 1)
             }
         }
+        // A loop on an audio track (phase 4e.5): its mute and solo are its
+        // track's, as its card's M and S are, and at once, as a loop key's
+        // mute always was (layout spec 4a, the pads as loop keys).
+        PadAction::LoopMute(n) if loop_track(time, looper, n).is_some() => {
+            let (t, name) = loop_track(time, looper, n).unwrap_or_default();
+            let solo = app.shift_held();
+            fx.push(app::Effect::TrackMute {
+                track: t,
+                wait: false,
+                solo,
+                on: None,
+            });
+            format!(
+                "loop keys: Loop {}'s track, {name}: {}",
+                n + 1,
+                if solo { "solo" } else { "mute" }
+            )
+        }
         PadAction::LoopMute(n) if app.shift_held() => {
             let n = usize::from(n);
             let s = looper.loop_status(n);
@@ -1905,6 +1941,14 @@ pub fn perform_pad_on(
         }
     };
     (fx, line)
+}
+
+/// The project track loop `n` (a loop key's) plays on, and its name, when
+/// it is in an audio track's cell (phase 4e.5).
+fn loop_track(time: &time::TimeHost, looper: &looping::LoopHost, n: u8) -> Option<(usize, String)> {
+    let t = looper.slot_track(usize::from(n))?;
+    let track = time.project().tracks.get(t).filter(|x| x.is_audio())?;
+    Some((t, track.name.clone()))
 }
 
 /// A Perform pad let go (`action`, what it pressed): a held throw lets
@@ -2374,12 +2418,12 @@ fn rec_effects(
     fx
 }
 
-/// The loop's Record or Overdub from REC with a Loop cell armed on the
-/// grid (loop-tracks.md part 4): Record makes a new loop in an empty one
-/// (a song loop, whatever Sync says), from the track's input (Resample:
-/// the other loops as heard), or says
-/// why it can't; Overdub layers the loop playing on that Loop track. A
-/// first pass or an overdub under way takes them as the looper does.
+/// The loop's Record or Overdub from REC with a loop cell armed on the
+/// grid (an audio track's, phase 4e.5): Record makes a new loop in an
+/// empty one (a song loop, whatever Sync says) from the track's input, or
+/// says why it can't; Overdub layers the loop that track plays
+/// ([`loop_playing_on`]). A first pass or an overdub under way takes them
+/// as the looper does.
 /// With no cell, `with_notes` (SHIFT + Arm: the notes armed too) makes
 /// the picked empty loop's Record a song loop whatever Sync says, so it
 /// keeps time with the clip recorded beside it.
@@ -2423,7 +2467,7 @@ fn loop_take(
             }
             Err(why) => vec![app::Effect::Tell(why)],
         },
-        Command::Overdub => match time.loop_on(t) {
+        Command::Overdub => match loop_playing_on(time, looper, t) {
             Some(n) => vec![
                 app::Effect::Looper(LoopAction::Select(n)),
                 app::Effect::Looper(LoopAction::Command(Command::Overdub)),
@@ -2435,6 +2479,14 @@ fn loop_take(
         },
         _ => plain,
     }
+}
+
+/// The loop audio track `t` plays (phase 4e.5): its launched cell's, when
+/// that is a loop cell and the looper holds its loop.
+fn loop_playing_on(time: &time::TimeHost, looper: &looping::LoopHost, t: usize) -> Option<usize> {
+    let slot = time.state().launch(t)?.slot;
+    let id = time.project().clip(t, slot)?.loop_id()?;
+    looper.slot_of(id.0)
 }
 
 /// REC with the notes and the loop armed (SHIFT + Arm) and the picked

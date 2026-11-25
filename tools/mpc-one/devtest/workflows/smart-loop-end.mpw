@@ -45,7 +45,7 @@ pad-up 1
 wait 1
 expect smart loop end offers the end you played
 expect looper: Loop 1 is 2 bars at
-expect time: Loop 1 on Loops A, row 1, playing
+expect time: Loop 1 on Audio 1 (a new audio track), row 1, playing
 # Snap lands on the loop's next downbeat, with the tempo; Use my tap goes
 # back; UNDO then has nothing left, and SHIFT + UNDO snaps again.
 tap leditor chip-act Snap

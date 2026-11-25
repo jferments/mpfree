@@ -6,7 +6,7 @@ checked: 2026-11-24 dad871b0
 
 # Recording audio tracks
 
-**Audio tracks** record what comes into the MPC's INPUTS (a vocal, a guitar, a synth) onto the song's timeline, next to your clips. Record a part a few times, then keep the best bits of each. Use them when a part is too long or too free to loop: a verse, a solo, a whole take of a song.
+**Audio tracks** record what comes into the MPC's INPUTS (a vocal, a guitar, a synth) onto the song's timeline, next to your clips. Record a part a few times, then keep the best bits of each. Use them when a part is too long or too free to loop: a verse, a solo, a whole take of a song. An audio track is also where your **loops** live: each loop sits in one of its cells and plays through its channel (see [Loops on audio tracks](looping.md#loops-on-audio-tracks)).
 
 An audio track is a track of your project like any other: it sits in the track list with your other tracks, and **Mute** and **Solo** work on it as on any track. On the Arrange tab's **Song** view its lane sits in its place among your tracks, and that is where you record and edit it; the **Clips** grid shows it as a column too, whose cells hold **audio clips** you launch like any clip. An audio track plays its launched clip, and otherwise, when the song plays (song mode on), its song; with neither it stays silent, though an armed track still lets you hear its input.
 
@@ -33,11 +33,24 @@ On the left of each audio lane are:
 - the track's **name**, and its **input** (**L** to begin with);
 - a thin **level bar** along the bottom, showing what the track plays and, while it is armed, the input it records. It turns red near full scale.
 
-Every audio track has a lane, in its place in the track list. To add another, tap **+ Track** after the last lane and pick **Audio track** (a project can have 8). **SHIFT + + Track** still adds a Loop track at once. When there are more lanes than fit, drag up or down on the names to scroll.
+Every audio track has a lane, in its place in the track list. To add another, tap **+ Track** after the last lane and pick **Audio track** (a project can have 8), or hold **SHIFT** and tap **+ Track** to add one at once. When there are more lanes than fit, drag up or down on the names to scroll.
 
 ## In the Clips grid
 
-On the Clips grid an audio track is a column like the others, with a wave mark and its input (**In L**) under its name. Tap its name to arm it, as for any track. **+ Track** on the grid opens the same choice of Note track, Audio track or Loop track.
+On the Clips grid an audio track is a column like the others, with a wave mark and its input (**In L**) under its name. Tap its name to arm it, as for any track. **+ Track** on the grid opens the same choice: **Note track** (plays a kit or an instrument and records notes) or **Audio track** (records sound from an input: loops in its cells, takes on the song, with its own mixer channel). **SHIFT + + Track** adds an audio track at once, and **UNDO** takes a new track away.
+
+An audio track's cells hold **audio clips** of your takes (below) and **loops** you record into them (see [Loops on audio tracks](looping.md#loops-on-audio-tracks)). A loop cell shows **⟳** and the loop's name, where a clip shows a small wave.
+
+### The input list
+
+Tap the input under an audio track's name on the Clips grid (or the input chip on its lane in the Song view) to open its **input list**. One input serves the track's loops and its takes alike:
+
+- **Line**: **L**, **R**, **L+R (mono)** or **Stereo**, from the INPUTS.
+- **Pads**: the instrument the pads play, after its effects and fader, with its clips ("Pads · Kit 1, with its clips").
+- **Mix ›** a strip: a track or a submix, after its fader, as the Mix tab names it.
+- **Mix › Master**: all you hear but this track, before the master's own effects.
+
+An input the mixer can't give this track is dim, and the line under its group says why ("Vocal plays into Master through Bus A: pick another input, or take Vocal's send off Bus A"): a track can't record itself. Tap an input to pick it; the list closes when you tap elsewhere or change page. A loop takes the input its track has when its first pass starts, and each overdub the input it has then.
 
 {{shot: arrange-clips-audio | The Clips grid with two audio tracks, Vocal and Guitar (armed), and + Track's choice of a kind of track open.}}
 
@@ -66,7 +79,7 @@ An empty audio cell is drawn dashed; a tap on it says how to fill it.
 
 A clip set to play **once** shows its playhead dimmed while its sound rings on after its track stopped, so the grid never looks silent while you hear it. In Perform the cell's foot gives its length ("2 bars"), or a once clip's time ("3:17 once").
 
-**Moving and copying.** Drag an audio clip to another row or another audio track; **SHIFT** as you lift makes a copy, which plays the same recordings. An audio clip can't go on a note or Loop track (nor a clip of notes on an audio track): the hint line says why. **COPY** + a clip and an empty audio cell works too.
+**Moving and copying.** Drag an audio clip to another row or another audio track; **SHIFT** as you lift makes a copy, which plays the same recordings. An audio clip can't go on a note track (nor a clip of notes on an audio track): the hint line says why. **COPY** + a clip and an empty audio cell works too.
 
 ### Audio clips in the song
 
@@ -78,7 +91,7 @@ With **Rec song** on, an audio clip you launch goes into the song as a block on 
 - A block and a region never overlap on a lane. Where Rec song puts a block over recorded regions, the block replaces them, and **UNDO** brings them back.
 - Dragging a block over a region, or making it longer over one, is refused, and the hint line says why ("Riff can't go over the region at bar 9: a block and a region never overlap on a lane"). While you drag, its outline turns red where it can't go.
 - Recording over a block cuts the block where the take starts and ends. So does swiping a take lane, dragging a region or bringing a sound in over it. **UNDO** takes back the recording and the cut together.
-- Drag a block to another audio track's lane to play it through that track. An audio clip's block can't go on a note or Loop track's lane, nor a clip of notes on an audio track's.
+- Drag a block to another audio track's lane to play it through that track. An audio clip's block can't go on a note track's lane, nor a clip of notes on an audio track's. A loop's block stays on its own track's lane (see [Loops in the song](looping.md#loops-in-the-song)).
 
 ### The Clip tab for an audio clip
 
@@ -120,7 +133,7 @@ An audio track can also record a sound from inside mpfree: a synth, a kit, a sub
 {{shot: arrange-song-panel-mix | The vocal's track panel recording FM, the synth the pads play, after its effects.}}
 
 1. Open the track panel and tap **Mix** in the **Input** row. A row more appears.
-2. **From** names what the track records. Tap **‹** or **›** to step through the synths and kits that are playing (each named for what it is, such as **FM · Pads** or **Poly · Track 2**), then **Drums**, **Synth** and the **Loop** track, each submix, and **Master**.
+2. **From** names what the track records. Tap **‹** or **›** to step through the synths and kits that are playing (each named for what it is, such as **FM · Pads** or **Poly · Track 2**), then **Drums**, **Synth**, each submix, and **Master**.
 3. **Effects**: **After** (the default) records the sound with its effects, **Before** without them. Either way the channel's fader doesn't change the recording.
 4. Arm the track and record as usual: **REC**, then **PLAY**, and play.
 

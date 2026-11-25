@@ -992,7 +992,7 @@ impl Widget for LoopRow {
             let p = self.parts_of(r, i);
             // A small card picks anywhere but its ring.
             let pick = if small { p.card } else { p.name };
-            out.push(Target::tap("loop", i, ch.name.clone(), pick));
+            out.push(Target::tap("loop", i, ch.who().to_string(), pick));
             let does = match ch.state {
                 RingState::Empty => "record",
                 RingState::Waiting(_) => "cancel",
@@ -1006,20 +1006,20 @@ impl Widget for LoopRow {
             out.push(Target::tap(
                 "ring",
                 i,
-                format!("{} ring: {does}", ch.name),
+                format!("{} ring: {does}", ch.who()),
                 p.ring,
             ));
             if ch.state.has_sound() && !small {
                 out.push(Target::tap(
                     "loop-mute",
                     i,
-                    format!("{} speaker", ch.name),
+                    format!("{} speaker", ch.who()),
                     p.mute,
                 ));
                 out.push(Target::tap(
                     "loop-solo",
                     i,
-                    format!("{} solo{}", ch.name, if ch.solo { " (on)" } else { "" }),
+                    format!("{} solo{}", ch.who(), if ch.solo { " (on)" } else { "" }),
                     p.solo,
                 ));
             }

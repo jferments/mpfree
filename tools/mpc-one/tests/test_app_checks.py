@@ -140,43 +140,48 @@ class JudgeTests(unittest.TestCase):
         got = dict((what, ok) for ok, what in self.judge("rec-arm", w))
         self.assertTrue(got["REC then went to the loop"])
 
-    def test_loop_tracks_need_the_landing_and_both_launches(self):
-        w = checks.Window(lines("time: Loop 1 on Loops A, row 1, playing", "looper: loop 1 off from bar 4",
-                                "looper: loop 1 on from bar 6"))
-        self.assertTrue(all(ok for ok, _ in self.judge("loop-tracks", w)))
-        # Another loop's line, or one on a later Loop track, is not this one.
-        w = checks.Window(lines("time: Loop 2 on Loops B, row 1, playing", "looper: loop 1 off"))
-        got = dict((what, ok) for ok, what in self.judge("loop-tracks", w))
-        self.assertFalse(got["the loop landed on Loops A"])
-        self.assertFalse(got["row 2 stopped it on its bar line"], "off at once is not on the bar line")
-        self.assertFalse(got["its cell brought it back on a bar line"])
+    def test_loops_on_tracks_need_the_landing_and_both_launches(self):
+        w = checks.Window(lines("time: Loop 1 on Audio 1 (a new audio track), row 1, playing", "time: scene 2",
+                                "time: clips: Launch { track: 8, slot: 0 }"))
+        self.assertTrue(all(ok for ok, _ in self.judge("loops-on-tracks", w)))
+        # Another loop's line, one on a track that was there, another row's launch: not this one.
+        w = checks.Window(lines("time: Loop 2 on Audio 1 (a new audio track), row 1, playing",
+                                "time: Loop 1 on Audio 1, row 1, playing", "time: scene 3",
+                                "time: clips: Launch { track: 8, slot: 1 }"))
+        got = dict((what, ok) for ok, what in self.judge("loops-on-tracks", w))
+        self.assertFalse(got["the loop landed on a new audio track"])
+        self.assertFalse(got["row 2's scene was launched"])
+        self.assertFalse(got["its cell was launched again"])
 
     def test_loop_cell_needs_the_track_the_arm_and_the_landing(self):
-        w = checks.Window(lines("time: Loops B added, a Loop track: tap a cell of it to record a loop there",
-                                "time: loop cell: Loops B row 2 armed, the next loop recorded lands there",
-                                "time: Loop 2 on Loops B, row 2, playing"))
+        w = checks.Window(lines("time: Audio 2 added, an audio track: arm it and REC records it in song mode "
+                                "(UNDO takes it away)",
+                                "Audio 2 records Pads \u00b7 Kit 1, after its fader",
+                                "time: loop cell: Audio 2 row 2 armed, the next loop recorded lands there",
+                                "time: Loop 2 on Audio 2, row 2, playing"))
         self.assertTrue(all(ok for ok, _ in self.judge("loop-cell", w)))
-        # A loop landing in row 1 (no cell armed) is not this one.
+        # A note track added, a loop landing in row 1 (no cell armed) on a new track: not this one.
         w = checks.Window(lines("time: Track 9 added and armed (UNDO takes it away)",
-                                "time: Loop 1 on Loops A, row 1, playing"))
+                                "time: Loop 1 on Audio 1 (a new audio track), row 1, playing"))
         got = dict((what, ok) for ok, what in self.judge("loop-cell", w))
-        self.assertFalse(got["SHIFT + + Track made a Loop track"])
+        self.assertFalse(got["SHIFT + + Track added an audio track"])
+        self.assertFalse(got["its input is the pads"])
         self.assertFalse(got["its row 2 cell armed"])
         self.assertFalse(got["the loop landed in it"])
 
     def test_loop_copy_needs_the_copy_all_in_and_its_launch(self):
-        w = checks.Window(lines("clips: Loop 1 copies into Loop 3 on Loops B / 3: launch it to hear it",
+        w = checks.Window(lines("clips: Loop 1 copies into Loop 3 on Audio 2 / 3: launch it to hear it",
                                 "looper: loop 3 is a copy of loop 1, 2 layers",
-                                "looper: loop 3 on from bar 9"))
+                                "time: clips: Launch { track: 9, slot: 2 }"))
         self.assertTrue(all(ok for ok, _ in self.judge("loop-copy", w)))
-        # A copy into another row of its own track, a copy that stopped, a launch at once: not this.
-        w = checks.Window(lines("clips: a copy of Loop 1 in Loops A / 3 (UNDO takes it back)",
+        # A copy into another row of its own track, a copy that stopped, another row launched: not this.
+        w = checks.Window(lines("clips: a copy of Loop 1 in Audio 1 / 3 (UNDO takes it back)",
                                 "Loop 3 has 1 of Loop 1's 2 layers: the copy stopped",
-                                "looper: loop 3 on"))
+                                "time: clips: Launch { track: 9, slot: 0 }"))
         got = dict((what, ok) for ok, what in self.judge("loop-copy", w))
         self.assertFalse(got["the cell took a copy"])
         self.assertFalse(got["the copy's layers all went in"])
-        self.assertFalse(got["the copy came in on a bar line"])
+        self.assertFalse(got["the copy's cell was launched"])
 
     def test_live_erase_needs_the_erase_line(self):
         w = checks.Window(lines("rec: ready, PLAY adds to Track 1", "ERASE: pad 1's notes come out of the armed "

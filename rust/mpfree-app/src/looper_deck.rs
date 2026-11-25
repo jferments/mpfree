@@ -165,11 +165,26 @@ pub struct Channel {
     /// It holds a layer not yet on the stick (audio tracks phase 4c.3):
     /// a dot at its ring's top right.
     pub unsaved: bool,
+    /// What the screen's targets call it when its name is not its own
+    /// (every slot with no loop says "Free"): "Loop 3". Empty: its name.
+    pub label: String,
+}
+
+impl Channel {
+    /// Its name for the screen's targets: unique on the deck.
+    pub fn who(&self) -> &str {
+        if self.label.is_empty() {
+            &self.name
+        } else {
+            &self.label
+        }
+    }
 }
 
 impl Default for Channel {
     fn default() -> Self {
         Channel {
+            label: String::new(),
             name: String::new(),
             length: String::new(),
             colour: Color::rgb(0x6EA8FE),
@@ -1083,9 +1098,15 @@ impl Widget for LoopDeck {
                 0,
                 match &self.head.input_next {
                     Some(next) => format!(
-                        "Records from: this take {}, the next take {next}",
+                        "{}: this take {}, the next take {next}",
+                        if self.head.into {
+                            "Records into"
+                        } else {
+                            "Records from"
+                        },
                         self.head.input.0
                     ),
+                    None if self.head.into => format!("Records into: {}", self.head.input.0),
                     None => format!("Records from: {}", self.head.input.0),
                 },
                 LoopDeck::input_rect(r),
@@ -1093,7 +1114,7 @@ impl Widget for LoopDeck {
         ];
         for (i, ch) in self.channels.iter().enumerate() {
             let p = LoopDeck::parts(r, i, n);
-            out.push(Target::tap("loop", i, ch.name.clone(), p.name));
+            out.push(Target::tap("loop", i, ch.who().to_string(), p.name));
             let does = match ch.state {
                 RingState::Empty => "record",
                 RingState::Waiting(_) => "cancel",
@@ -1108,26 +1129,26 @@ impl Widget for LoopDeck {
             out.push(Target::tap(
                 "ring",
                 i,
-                format!("{} ring: {does}", ch.name),
+                format!("{} ring: {does}", ch.who()),
                 p.ring,
             ));
             if ch.state.has_sound() {
                 out.push(Target::tap(
                     "loop-mute",
                     i,
-                    format!("{} speaker", ch.name),
+                    format!("{} speaker", ch.who()),
                     p.mute,
                 ));
                 out.push(Target::tap(
                     "loop-solo",
                     i,
-                    format!("{} solo{}", ch.name, if ch.solo { " (on)" } else { "" }),
+                    format!("{} solo{}", ch.who(), if ch.solo { " (on)" } else { "" }),
                     p.solo,
                 ));
                 out.push(Target::drag(
                     "loop-level",
                     i,
-                    format!("{} level {}", ch.name, level_text(ch.level)),
+                    format!("{} level {}", ch.who(), level_text(ch.level)),
                     p.level_hit,
                 ));
             }

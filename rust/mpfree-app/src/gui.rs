@@ -20062,8 +20062,8 @@ impl Player {
                         TimeAction::Audio(AudioAction::Move { region, to, .. }) => {
                             TimeAction::Audio(AudioAction::Move { region, to, fine })
                         }
-                        // SHIFT + "+ Track": a Loop track.
-                        TimeAction::AddTrack if fine && plus => TimeAction::AddLoopTrack,
+                        // SHIFT + "+ Track": an audio track (board 1).
+                        TimeAction::AddTrack if fine && plus => TimeAction::AddAudioTrack,
                         // SHIFT + a tap on a block adds it to what is
                         // picked, or takes it out; SHIFT as a box lifts adds
                         // its blocks; several dragged with SHIFT are copied

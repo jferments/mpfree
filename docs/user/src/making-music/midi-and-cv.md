@@ -403,7 +403,7 @@ A pad, key or button on your controller can do what a tap on the Clips grid does
 - **Capture scene**, on the title line in Perform: the control keeps the clips playing now as a new row, as a tap does (see [Make and Perform](playing-live.md#make-and-perform)). SHIFT and a tap learns it even while it is faint.
 - **A track's name**: the control arms the track, as a tap on its name does (pressed again, it lets go).
 
-Launches land where a tap's would: on the next **Launch** line (the Record tab's, or the clip's own). While MIDI Learn waits, the line under the screen says what for, then what the control launches; SHIFT and the same tap again cancels. SHIFT and a drag still copies a clip or a row, and SHIFT + **+ Track** still adds a Loop track.
+Launches land where a tap's would: on the next **Launch** line (the Record tab's, or the clip's own). While MIDI Learn waits, the line under the screen says what for, then what the control launches; SHIFT and the same tap again cancels. SHIFT and a drag still copies a clip or a row, and SHIFT + **+ Track** still adds an audio track.
 
 The Learn section lists them by where they are: **Launch Bass · row 2**, **Scene 3 · Verse**, **Arm Bass**, **Stop all**. They're kept with the song (**Project**); set **Kept in** to **Rig** to keep a grid controller's layout in every project.
 
