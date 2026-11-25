@@ -306,6 +306,18 @@ The player hears the loop late (the output buffer) and their playing reaches the
 
 On the MPC One the latency is not measured yet. The playback buffer is 384 frames and the capture buffer was 256 frames while Akai's service ran; the converters add an unknown amount. It will be measured with a cable from an output to an input, and that needs the owner's go (see below).
 
+## The code
+
+The engine is `rust/mpfree-looper/src`. Until the refactor's R3 (25 Nov) it was nearly all in one file of 11,000 lines; it is now split by job, as pure moves (the same tests before and after, and the bench's instruction counts unchanged). What is `pub` in each part is re-exported at the crate's root, so the API is the same.
+
+- `lib.rs`: the crate's docs, its parts, the constants, and `rem_ticks`'s and the memory's unit tests.
+- `command.rs`: what the looper is told (`Command`, `Edit`, `LayerCommand`, `After`, `Starts`, `Overdubs`, `Bounce` and `Print`). `status.rs`: what it tells (`Status`, `Stats`, `Memory`, `Phase`, `LayerInfo`, `History` and `LayerView`).
+- `clock.rs`: `Clock`, the free clock (`FreeClock`), `place` and `rem_ticks`. `free_time.rs`: the looper's side of the free loops (`FreeTime`, `FreeRun`) and Make song's plan (`SongPlan`). `smart.rs`: smart loop end's types (`SmartEnd`, `Snap`, `SnapPlan`, `Shift`).
+- `store.rs`: the shared memory (`Store`), its sizes (`bytes_for`) and reading a layer through its view (`layer_frame`).
+- `looper.rs`: `Looper`, its construction and controls; the rest of its methods by job in `looper/`: `apply.rs` (commands), `period.rs` (`process`), `files.rs` (save, open, print, bounce), `layers.rs` (layers, history, sent away and back), `smart_end.rs`, `free.rs` (free loops and Make song), `capture.rs` and `copy.rs` (layers between loops).
+- `loops.rs`: one loop (`Loop`, its slots, steps and shapes); its methods by job in `loops/`: `commands.rs`, `layers.rs`, `edit.rs`, `jobs.rs` (prints, fits, opening, copies in), `undo.rs` (merge, Fade old, Undo and Redo), `start.rs`, `first_pass.rs`, `overdub.rs` and `play.rs` (a loop's part of a run of frames).
+- The engine's older parts keep their own files: `view.rs`, `save.rs`, `heard.rs`, `print.rs`, `reading.rs`, `ends.rs`, `find.rs`, `hits.rs`, `close.rs`, `on_track.rs` and `outs.rs`.
+
 ## The API
 
 ```rust
