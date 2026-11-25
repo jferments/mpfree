@@ -8,9 +8,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mpfree_status::kinds::{
-    CARD_REMOVED, NOT_SAVED_YET, RECORDING_AT_RISK, RECORDING_MAY_STOP, RECORDING_STOPPED,
-    STICK_FELL_BEHIND, STICK_MISSING, STICK_NEARLY_FULL, STREAMING_AT_LIMIT, TAKE_DAMAGED,
-    TAKE_RECOVERED,
+    CARD_MISSING, CARD_NEARLY_FULL, CARD_REMOVED, NOT_SAVED_YET, RECORDING_AT_RISK,
+    RECORDING_MAY_STOP, RECORDING_STOPPED, STICK_FELL_BEHIND, STICK_MISSING, STICK_NEARLY_FULL,
+    STREAMING_AT_LIMIT, TAKE_DAMAGED, TAKE_RECOVERED,
 };
 use mpfree_status::{Board, Kind, Op, Report, Subject, System, Window};
 use mpfree_stream::coord::Admission;
@@ -276,6 +276,7 @@ fn streaming_drive_card_and_after_a_cut() {
     // The stick: room under the line, hovering, back; armed takes raise
     // the line; read-only.
     let d = |free, armed| Drive {
+        card: false,
         writable: true,
         free,
         armed_bytes_per_s: armed,
@@ -361,6 +362,7 @@ fn the_board_names_the_cause_not_its_echoes() {
     w.take(TAKE, &v, &mut |r| reports.push(r));
     w.drive(
         &Drive {
+            card: false,
             writable: false,
             free: 0,
             armed_bytes_per_s: 0,
@@ -382,6 +384,7 @@ fn the_board_names_the_cause_not_its_echoes() {
     // The partition is back; the take is still at risk, then saves.
     w.drive(
         &Drive {
+            card: false,
             writable: true,
             free: NEARLY_FULL_BYTES * 4,
             armed_bytes_per_s: 0,
@@ -396,5 +399,44 @@ fn the_board_names_the_cause_not_its_echoes() {
         ops,
         vec![ended(&STICK_MISSING), ended(&RECORDING_AT_RISK)],
         "Not saved yet never began: at risk stood for it"
+    );
+}
+
+/// Takes recording on the SD card (S2b, phase B2b): the card's own
+/// problems, never the stick's; a move from one drive to the other ends the
+/// first one's, and so does the watch stopping.
+#[test]
+fn the_card_says_its_own_problems_and_a_move_ends_the_other_drives() {
+    let mut w = Watch::new();
+    let mut got = Vec::new();
+    let stick = |writable, free| Drive {
+        card: false,
+        writable,
+        free,
+        armed_bytes_per_s: 0,
+    };
+    let card = |writable, free| Drive {
+        card: true,
+        ..stick(writable, free)
+    };
+    // The stick nearly full, then takes move to the card, which is too.
+    w.drive(&stick(true, NEARLY_FULL_BYTES - 1), &mut |r| got.push(r));
+    w.drive(&card(true, NEARLY_FULL_BYTES - 1), &mut |r| got.push(r));
+    // The card taken out.
+    w.drive(&card(false, 0), &mut |r| got.push(r));
+    // The takes move back to the stick: the card's go.
+    w.drive_gone(&mut |r| got.push(r));
+    w.drive(&stick(true, NEARLY_FULL_BYTES * 4), &mut |r| got.push(r));
+    let ops: Vec<(&str, Op)> = got.iter().map(|r| (r.kind.id, r.op)).collect();
+    assert_eq!(
+        ops,
+        vec![
+            began(&STICK_NEARLY_FULL),
+            ended(&STICK_NEARLY_FULL),
+            began(&CARD_NEARLY_FULL),
+            began(&CARD_MISSING),
+            ended(&CARD_NEARLY_FULL),
+            ended(&CARD_MISSING),
+        ]
     );
 }

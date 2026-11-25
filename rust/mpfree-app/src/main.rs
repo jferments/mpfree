@@ -175,6 +175,8 @@ mod screen_picture;
 mod script;
 // The SD card's windows, the pad player's side, for the Browser's "SD card" place.
 mod sd_card;
+// Recording to the SD card's MPFree folder when it opens for saving (S2b, B2b; switched off until B2c).
+mod card_takes;
 mod set_checks;
 mod set_play;
 mod setup;
@@ -2934,20 +2936,86 @@ fn input_choices(
         .filter(|(_, s)| loop_track || *s != StripId::Track(mixing::LOOP))
         .map(|(name, s)| named(s, name))
         .collect();
-    let pads = looper.pads_play().and_then(|(i, s)| {
-        let s = s?;
-        let name = match i {
-            looping::Instrument::Kit(k) => format!("Kit {}", k + 1),
-            _ => named(s, mix.strip_name(s)).name,
-        };
-        Some(InputSource {
-            name,
-            ..named(s, String::new())
-        })
-    });
+    let pads = pads_source(project, looper, mix);
     tracks.input_choices(t, &sources, pads, channel, |from| {
         mix.capture_refusal(from, channel)
     })
+}
+
+/// The pads' instrument as an audio track's input list offers it: its
+/// strip, named for its kit ("Kit 1") or the note track that owns it.
+/// None before the pads were first told, or while they play MIDI out.
+fn pads_source(
+    project: &mpfree_seq::Project,
+    looper: &looping::LoopHost,
+    mix: &mixing::MixHost,
+) -> Option<audiotracks::InputSource> {
+    let (i, s) = looper.pads_play()?;
+    let s = s?;
+    let owner = (0..project.tracks.len()).find(|&q| {
+        !project.tracks[q].is_audio()
+            && mix.instrument_strip(looping::Instrument::Own(q), &[]) == Some(s)
+    });
+    let name = match (i, owner) {
+        (looping::Instrument::Kit(k), _) => format!("Kit {}", k + 1),
+        (_, Some(q)) => project.tracks[q].name.clone(),
+        (_, None) => mix.strip_name(s),
+    };
+    Some(audiotracks::InputSource {
+        strip: s,
+        name,
+        owner,
+    })
+}
+
+/// Where the looper's next recording goes, with loops on audio tracks
+/// (phase 4e.5): the armed loop cell's track, else the picked loop's track
+/// (its overdubs), else the armed audio track (where a loop recorded with
+/// no cell lands first, 4e.4). The looper records that track's input.
+fn loop_target(time: &time::TimeHost, looper: &looping::LoopHost) -> Option<usize> {
+    let project = time.project();
+    let audio = |t: usize| project.tracks.get(t).is_some_and(|x| x.is_audio());
+    time.loop_cell()
+        .map(|(t, _)| t)
+        .filter(|&t| audio(t))
+        .or_else(|| looper.slot_track(looper.picked()).filter(|&t| audio(t)))
+        .or_else(|| time.audio_armed().filter(|&t| audio(t)))
+}
+
+/// The looper follows the track its next recording goes to
+/// ([`loop_target`], phase 4e.5), looked at each period: it records that
+/// track's input, told when it records another sound. A track made for a
+/// loop takes the loop's own input ([`audiotracks::TrackHost::records_as`]),
+/// so a source the looper was told already ([`looping::LoopHost::chosen`])
+/// that is that sound is left as it is: a new one
+/// would start What you played again under smart loop end and Capture
+/// for nothing. Told only on a change; allocates nothing otherwise. A take
+/// keeps its source to its end (`LoopHost::settle`).
+fn follow_loop_target(
+    time: &time::TimeHost,
+    tracks: &audiotracks::TrackHost,
+    looper: &looping::LoopHost,
+    mix: &mixing::MixHost,
+    app: &mut app::App,
+) -> Vec<app::Effect> {
+    use looping::{LoopSource, TrackFrom};
+    use mpfree_fx::CapturePoint::AfterFader;
+    let Some(input) = loop_target(time, looper).and_then(|t| tracks.loop_input(t, mix)) else {
+        return Vec::new();
+    };
+    let same = match (looper.chosen(), input.from) {
+        (LoopSource::Track(t), _) => t == input,
+        (LoopSource::Pads, TrackFrom::Mix(s, AfterFader)) => {
+            looper.pads_play().and_then(|p| p.1) == Some(s)
+        }
+        (LoopSource::Line, TrackFrom::Line(mpfree_audiotracks::Input::Stereo)) => true,
+        (LoopSource::Mix(m), TrackFrom::Mix(s, AfterFader)) => m == s,
+        _ => false,
+    };
+    if same {
+        return Vec::new();
+    }
+    app.loop_track_input(input)
 }
 
 /// A looper line for the log as the screen says it: without "looper: ",
@@ -8827,6 +8895,40 @@ fn looper_action(
             out.note(&looper.select_for_cell(n));
             Vec::new()
         }
+        // A loop on an audio track (phase 4e.5): its mute and solo are its
+        // track's, from the Looper tab, a learned control or a loop key, as
+        // its card's M and S are.
+        looping::LoopAction::ToggleMute(n)
+            if looper.slot_track(n.unwrap_or(looper.picked())).is_some() =>
+        {
+            let track = looper
+                .slot_track(n.unwrap_or(looper.picked()))
+                .unwrap_or_default();
+            vec![app::Effect::TrackMute {
+                track,
+                wait: false,
+                solo: false,
+                on: None,
+            }]
+        }
+        looping::LoopAction::Mute(n, on) if looper.slot_track(n).is_some() => {
+            let track = looper.slot_track(n).unwrap_or_default();
+            vec![app::Effect::TrackMute {
+                track,
+                wait: false,
+                solo: false,
+                on: Some(on),
+            }]
+        }
+        looping::LoopAction::ToggleSolo(n) if looper.slot_track(n).is_some() => {
+            let track = looper.slot_track(n).unwrap_or_default();
+            vec![app::Effect::TrackMute {
+                track,
+                wait: false,
+                solo: true,
+                on: None,
+            }]
+        }
         looping::LoopAction::ToggleMute(n) => {
             out.note(&looper.toggle_mute(n));
             Vec::new()
@@ -10638,12 +10740,7 @@ fn player_session(
         app.settings.audio_streams = tracks.streams();
         out.show(gui::ToUi::Settings(app.settings.clone()));
     }
-    // Loops on audio tracks (Dev's switch, phase 4b): for this start.
-    if app.settings.loops_on_tracks {
-        app.settings.loops_on = true;
-        out.say("looper: loops play on audio tracks (Dev, MENU: Loops on audio tracks)");
-        out.show(gui::ToUi::Settings(app.settings.clone()));
-    }
+    // Loops play on audio tracks (phase 4e.5: for everyone).
     let loops_on = app.settings.loops_on;
     time.set_loops_on(loops_on);
     // Layers as recordings (phase 4c.2) come with the same switch.
@@ -11710,6 +11807,9 @@ fn player_session(
                     if let Some(mut t) = o.time.take() {
                         // The metronome is the system's: it stays as it is.
                         (t.metronome, t.click_gain) = (time.metronome, time.click_gain);
+                        // Loops play on audio tracks in it too (4e.5): an
+                        // opened project's engine starts with them off.
+                        t.set_loops_on(loops_on);
                         // Its editing side runs where the last one's did.
                         if time.apart() {
                             *t = time_apart(out, *t);
@@ -16381,6 +16481,7 @@ fn player_session(
         // for it, else the armed audio track's, another's or a new audio
         // track's, 4e.4); its cells follow it.
         if let Some(now) = looper.grid_now() {
+            let before = time.project().tracks.len();
             let lines = if loops_on {
                 let room = tracks.free_slot().is_some();
                 time.loops_are_on(&now, &looper.loop_ids(), room)
@@ -16389,8 +16490,17 @@ fn player_session(
             };
             if loops_on && !lines.is_empty() {
                 looper.look_again();
-                // A new audio track for a loop takes its engine track now.
+                // A new audio track for a loop takes its engine track now,
+                // and records what the loop recorded (4e.5).
                 tracks.sync(time.project(), time.silenced(), true);
+                let pads = pads_source(time.project(), &looper, &mix);
+                for p in before..time.project().tracks.len() {
+                    match tracks.records_as(p, looper.takes_from().0, pads.clone()) {
+                        Ok(line) if !line.is_empty() => out.note(&format!("audio: {line}")),
+                        Ok(_) => {}
+                        Err(why) => out.note(&format!("audio: track {}: {why}", p + 1)),
+                    }
+                }
             }
             for line in lines {
                 out.note(&format!("time: {line}"));
@@ -16413,6 +16523,9 @@ fn player_session(
                 out.show(gui::ToUi::OneUndo(next));
             }
             fx.extend(one_undo.tend(out, &mut time, &mut tracks, &mut looper));
+            // The looper records the input of the track its next recording
+            // goes to (4e.5).
+            fx.extend(follow_loop_target(&time, &tracks, &looper, &mix, &mut app));
         } else {
             fx.extend(one_undo.tend_back(out, &mut tracks, &mut looper));
         }

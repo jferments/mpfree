@@ -211,6 +211,24 @@ pub static STICK_MISSING: Kind = Kind {
     ],
 };
 
+/// The SD card the takes record on (the SD card plan's S2b, phase B2b)
+/// is gone or can only be read: takes since then are only in memory, so
+/// the takes at risk and not saved are its echoes. Project saves go to the
+/// stick, so a save isn't one.
+pub static CARD_MISSING: Kind = Kind {
+    id: "storage/card-missing",
+    system: System::Storage,
+    level: Level::Fail,
+    shape: Shape::Stays,
+    short: "Card missing",
+    title: "MPFree can't write to the SD card",
+    what: "The SD card stopped taking takes (it came out, or the system closed it), so takes since then are only in memory.",
+    to_try: "Save the project now: it goes to the stick with every take. Then put the card back in.",
+    action: None,
+    manual: "mpfree-cant-write-to-the-sd-card",
+    hides: &[&RECORDING_AT_RISK, &NOT_SAVED_YET, &CARD_NEARLY_FULL],
+};
+
 /// A take is At risk (`TakeState::AtRisk`): writes, syncs or records keep
 /// failing, or the stick is full or gone, so a cut now loses everything
 /// after its last committed frame. It still plays from capture memory.
@@ -385,6 +403,22 @@ pub static STICK_NEARLY_FULL: Kind = Kind {
     to_try: "Remove takes, samples or projects you don't need, or copy them to a computer.",
     action: None,
     manual: "the-stick-is-nearly-full",
+    hides: &[],
+};
+
+/// Under 1 GB, or under 10 minutes of what is armed, left on the SD card
+/// the takes record on (S2b, phase B2b).
+pub static CARD_NEARLY_FULL: Kind = Kind {
+    id: "storage/card-nearly-full",
+    system: System::Storage,
+    level: Level::Warn,
+    shape: Shape::Lasts,
+    short: "Card nearly full",
+    title: "The SD card is nearly full",
+    what: "Less than 1 GB, or less than 10 minutes of recording, is left on the SD card.",
+    to_try: "Remove takes you don't need from the card's MPFree folder, or put in a card with more room.",
+    action: None,
+    manual: "the-sd-card-is-nearly-full",
     hides: &[],
 };
 
@@ -717,6 +751,7 @@ pub static ALL: &[&Kind] = &[
     &MEMORY_LOW,
     &NOT_ENOUGH_MEMORY,
     &STICK_MISSING,
+    &CARD_MISSING,
     &RECORDING_AT_RISK,
     &RECORDING_STOPPED,
     &CARD_REMOVED,
@@ -728,6 +763,7 @@ pub static ALL: &[&Kind] = &[
     &NOT_SAVED_YET,
     &STREAMING_AT_LIMIT,
     &STICK_NEARLY_FULL,
+    &CARD_NEARLY_FULL,
     &TAKE_DAMAGED,
     &TAKE_RECOVERED,
     &NO_SESSION,
@@ -883,6 +919,7 @@ mod tests {
             &NOT_SAVED_YET,
             &STREAMING_AT_LIMIT,
             &STICK_NEARLY_FULL,
+            &CARD_NEARLY_FULL,
             &CLOCK_STOPPED,
             &MPC_HOT,
             &PROCESSOR_SLOWED,
@@ -897,6 +934,7 @@ mod tests {
             &RECORDING_STOPPED,
             &STICK_FELL_BEHIND,
             &CARD_REMOVED,
+            &CARD_MISSING,
             &PLUGIN_STOPPED,
             &STICK_ERRORS,
             &STICK_FILES_ERROR,

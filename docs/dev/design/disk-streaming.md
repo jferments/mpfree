@@ -550,6 +550,7 @@ Phase 3 of [System status](status.md): this layer's problems are entries in the 
 | Kind | Level, shape | Fed | Why this level |
 |---|---|---|---|
 | Stick missing | red, stays | `Watch::drive`: the data partition gone or read-only | nothing can be saved or recorded; it hides the saves, takes and room that fail because of it |
+| Card missing | red, stays | `Watch::drive` with `Drive::card`: the SD card the takes record on gone or read-only (S2b) | takes since then are only in memory; it hides the takes at risk and not saved, and the card's room |
 | Recording at risk | red, lasts | `Watch::take`: state At risk | a cut now loses everything since the last commit; it hides Not saved yet |
 | Recording stopped | red, happens (once per take) | `Watch::take`: state Stopped | capture memory filled: the take stopped where the musician didn't stop it |
 | Card removed | red, happens | `Watch::card_lost`: sources `Coordinator::lost` gave | sounds stopped mid-song (one report for the lot) |
@@ -558,9 +559,10 @@ Phase 3 of [System status](status.md): this layer's problems are entries in the 
 | Not saved yet | yellow, lasts | `Watch::take`: unsaved past twice the interval, not at risk | the stick is slow but saving works |
 | Streaming at limit | yellow, lasts | `Watch::admission`: not even the least safe read-ahead fits | MPFree says so rather than quietly read less far ahead |
 | Stick nearly full | yellow, lasts | `Watch::drive`: under 1 GB, or under 10 minutes of what is armed | nothing lost yet; ends only once the room is a tenth over the line, so it doesn't come and go |
+| Card nearly full | yellow, lasts | `Watch::drive` with `Drive::card`: the same line, on the SD card the takes record on (S2b) | as Stick nearly full |
 | Take damaged | yellow, until seen | `Watch::checked`: a whole-take check failed | the audio is kept for the musician to judge |
 | Take recovered | note, happens | `Watch::found`: recovery finished a take (`Finished`, `CutOff`) | worth listing for the session; never colours anything |
 
-The words name the stick, or "the stick or SD card" where streaming can be from either. Writer and coordinator counts (late rounds, the interval lengthened, stale and short reads, FLAC failures) stay on the Dev pages.
+The words name the stick, or "the stick or SD card" where streaming can be from either; the drive the takes record to is named as it is (the card's kinds, since S2b's B2). `Watch::drive` ends the other drive's two as it says one drive's, and the drive watch keeps one `Watch` as the takes move between drives, so a move ends the last drive's problems. Writer and coordinator counts (late rounds, the interval lengthened, stale and short reads, FLAC failures) stay on the Dev pages.
 
 **Who feeds the watch.** The app doesn't stream or record through this layer yet, so nothing reports these kinds until the audio tracks' phase 3 connects it: each take's view every round on the recording thread, admission and the player's counters on the coordinator's tick, `lost()` as it drains them, recovery's findings and whole-take checks as they finish, and the stick's room from `statvfs` every few seconds off the screen thread (`ST_RDONLY` or a failed call is not writable; free is `f_bavail` x `f_frsize`), because a failing stick can make that call wait. Each kind's entry in the manual's "When something goes wrong" comes with the status page's phase 2.

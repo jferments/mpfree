@@ -31,7 +31,8 @@ expect muted on the next bar
 expect plays on the next bar
 button SHIFT + MAIN
 mark night-market-save
-tap record row-more Tempo ›
+# The tempo a step up: TAP TEMPO held, the wheel turned.
+wheel TAP TEMPO + 1
 button SHIFT + BROWSE
 wait 1
 expect project: saved Night Market
@@ -63,7 +64,8 @@ expect muted on the next bar
 expect plays on the next bar
 button SHIFT + MAIN
 mark glass-garden-save
-tap record row-more Tempo ›
+# The tempo a step up: TAP TEMPO held, the wheel turned.
+wheel TAP TEMPO + 1
 button SHIFT + BROWSE
 wait 1
 expect project: saved Glass Garden
@@ -95,7 +97,8 @@ expect muted on the next bar
 expect plays on the next bar
 button SHIFT + MAIN
 mark tidal-suite-save
-tap record row-more Tempo ›
+# The tempo a step up: TAP TEMPO held, the wheel turned.
+wheel TAP TEMPO + 1
 button SHIFT + BROWSE
 wait 1
 expect project: saved Tidal Suite

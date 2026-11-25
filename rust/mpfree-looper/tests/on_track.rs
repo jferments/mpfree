@@ -516,6 +516,133 @@ fn an_overdub_punches_out_where_the_track_stops_playing_it_and_keeps_its_layer()
     }
 }
 
+/// STOP with a loop on a track (audio tracks phase 4e.5): stopped, the
+/// track tells it nothing, yet an overdub waiting for PLAY that is punched
+/// out still goes, leaving no layer and nothing heard, as it does off a
+/// track.
+#[test]
+fn stopped_and_told_nothing_an_overdub_punched_out_before_play_leaves_no_layer() {
+    for period in PERIODS {
+        let mut r = Rig::new(period);
+        let stop = r.frame + 1_000;
+        assert!(r.t.command(stop, T::Stop));
+        r.run(stop + 2_000, Some(()), &[]);
+        assert!(r.l.command(L::Overdub));
+        r.run(stop + 6_000, Some(()), &[]);
+        let s = r.l.loop_status(0).unwrap();
+        assert_eq!(
+            (s.phase, s.layers),
+            (Phase::Overdubbing, 2),
+            "period {period}: waits for PLAY"
+        );
+        // A loop recording isn't listened to, waiting or not.
+        assert!(!r.l.listen(0, None), "period {period}");
+        assert!(r.l.command(L::Overdub));
+        r.run(stop + 10_000, Some(()), &[]);
+        let s = r.l.loop_status(0).unwrap();
+        assert_eq!(
+            (s.phase, s.layers),
+            (Phase::Playing, 1),
+            "period {period}: let go, no layer left"
+        );
+        assert!(
+            r.own[stop as usize + 2_000..].iter().all(|&v| v == 0.0),
+            "period {period}"
+        );
+        // After PLAY it plays from the track's place, frame for frame as
+        // a loop that never had the overdub does (the silent periods
+        // moved its place, but the first run told puts it back).
+        let mut q = Rig::new(period);
+        assert!(q.t.command(stop, T::Stop));
+        q.run(stop + 10_000, Some(()), &[]);
+        let play = stop + 10_000 + 500;
+        let told = [Told {
+            from: play,
+            to: play + 2 * BAR,
+            origin: r.origin(),
+        }];
+        for x in [&mut r, &mut q] {
+            assert!(x.t.command(play, T::Play));
+            x.run(play + 2 * BAR, Some(()), &told);
+        }
+        let (a, b) = (&r.own[play as usize..], &q.own[play as usize..]);
+        assert!(a.iter().any(|&v| v.abs() > 0.1), "period {period}: heard");
+        for (i, (x, y)) in a.iter().zip(b).enumerate() {
+            assert!((x - y).abs() < 1e-6, "period {period} frame {i}: {x} {y}");
+        }
+    }
+}
+
+/// A Clear with the song stopped and the loop on a track (audio tracks
+/// phase 4e.5): told nothing, its fade still runs out and the loop
+/// empties, as off a track, so REC after it records a new loop, not an
+/// overdub.
+#[test]
+fn stopped_and_told_nothing_a_clear_still_empties_the_loop() {
+    for period in PERIODS {
+        let mut r = Rig::new(period);
+        let stop = r.frame + 1_000;
+        assert!(r.t.command(stop, T::Stop));
+        r.run(stop + 2_000, Some(()), &[]);
+        assert!(r.l.command(L::Clear));
+        r.run(stop + 4_000 + 2 * FADE as u64, Some(()), &[]);
+        let s = r.l.loop_status(0).unwrap();
+        assert_eq!((s.phase, s.layers), (Phase::Empty, 0), "period {period}");
+    }
+}
+
+/// A Clear with the song playing and the loop on a track that isn't
+/// playing it (audio tracks phase 4e.5, its cell stopped): told nothing,
+/// its fade still runs out and the loop empties, so its cells empty too.
+#[test]
+fn playing_and_told_nothing_a_clear_still_empties_the_loop() {
+    for period in PERIODS {
+        let mut r = Rig::new(period);
+        r.run(r.frame + 2_000, Some(()), &[]);
+        assert!(r.l.command(L::Clear));
+        r.run(r.frame + 2_000 + 2 * FADE as u64, Some(()), &[]);
+        let s = r.l.loop_status(0).unwrap();
+        assert_eq!((s.phase, s.layers), (Phase::Empty, 0), "period {period}");
+    }
+}
+
+/// A whole loop copied onto a track that isn't playing it (audio tracks
+/// phase 4e.5, a loop cell dropped with SHIFT on another track): the
+/// track tells it nothing until its cell is launched, yet every layer
+/// joins, the second as the first.
+#[test]
+fn a_copy_onto_a_track_not_playing_it_takes_every_layer() {
+    for period in [128usize, 1000] {
+        let mut r = Rig::new(period);
+        assert!(r.l.command(L::Overdub));
+        r.run(r.frame + BAR, None, &[]);
+        assert!(r.l.command(L::Overdub));
+        r.run(r.frame + BAR / 2, None, &[]);
+        assert_eq!(r.l.loop_status(0).unwrap().layers, 2, "period {period}");
+        let ids: Vec<u8> = (0..2)
+            .map(|k| r.l.loop_layer_info(0, k).unwrap().id)
+            .collect();
+        let input = vec![0.0f32; 2 * period];
+        for (k, id) in ids.into_iter().enumerate() {
+            assert!(r.l.copy_layer(0, id, 1, true), "period {period}");
+            let mut n = 0;
+            while r.l.loop_status(1).map_or(0, |s| s.layers) <= k && n < 2_000 {
+                assert!(r.l.play(1, &[]));
+                assert!(r.t.process(period as u32, &mut r.b));
+                r.l.process_each(&r.b, &input);
+                r.frame += period as u64;
+                n += 1;
+            }
+            assert_eq!(
+                r.l.loop_status(1).unwrap().layers,
+                k + 1,
+                "period {period}: layer {} joined",
+                k + 1
+            );
+        }
+    }
+}
+
 /// Listen playing a loop on a track (audio tracks phase 4e.2): with the
 /// song stopped, what it plays is in Listen's own buffer for the track,
 /// and the looper's mix leaves it out; off the track, Listen is in the mix

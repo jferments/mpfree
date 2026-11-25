@@ -10218,6 +10218,41 @@ impl Loop {
         waiting: bool,
         outs: &mut LoopOuts,
     ) {
+        // The transport stopped with nothing told and something that
+        // finishes only on frames (the first pass's tail when STOP closed
+        // it, an overdub waiting for PLAY, a Clear's fade, a merge, a fit,
+        // a swap, a mix change): the period runs silently, as it does off a
+        // track, so the first pass finishes writing, an overdub punched out
+        // before it began goes, leaving no layer, and a cleared loop
+        // empties. Stopped, its place doesn't move; the looper never fades a
+        // loop on a track (its track does), so the gain it had comes back.
+        let moving = self.first_open
+            || self.od_open
+            || self.clearing
+            || self.swapping
+            || self.mixing
+            || self.merging
+            || self.fitting;
+        if !r.playing && told.runs().is_empty() && moving {
+            let gain = self.gain;
+            let mut gone = [[0f32; 2]; RUN];
+            self.run(
+                store,
+                stats,
+                me,
+                r,
+                print,
+                waiting,
+                &mut gone[..r.ticks.len()],
+            );
+            if matches!(self.phase, Phase::Playing | Phase::Overdubbing)
+                && !self.clearing
+                && !self.swapping
+            {
+                self.gain = gain;
+            }
+            return;
+        }
         let frames = r.ticks.len();
         let end = off + frames;
         let mut ticks = [0.0f64; RUN];
@@ -10254,6 +10289,18 @@ impl Loop {
                     self.gain = 1.0;
                 }
             }
+            // A layer still copying into a loop that has sound (a whole
+            // loop's second layer and on, phase 4e.5): it joins on its
+            // frame in a gap too, nothing of it heard, so a copy onto a
+            // track that isn't playing it yet finishes.
+            if a < b
+                && self.phase != Phase::Empty
+                && self.adding
+                && self.ad_done == self.ad_frames
+                && self.ad_at < r.f + (b - off) as u64
+            {
+                self.finish_add();
+            }
             let tail = self.phase == Phase::Overdubbing || self.od_open;
             let gap = t
                 .last
@@ -10280,6 +10327,34 @@ impl Loop {
                 let mut gone = [[0f32; 2]; RUN];
                 self.run(store, stats, me, &cut, print, waiting, &mut gone[..m]);
                 t.last = Some((f + m as u64, origin));
+            } else if a < b
+                && self.phase != Phase::Empty
+                && (self.clearing || self.swapping || self.mixing || self.merging || self.fitting)
+            {
+                // A Clear's fade, a swap, a mix change, a merge or a fit
+                // with the song playing and its track not playing it (a
+                // loop cell stopped, phase 4e.5): nothing of it is heard
+                // in a gap, so it runs on silently and finishes, as when
+                // stopped. Its place in the gap isn't kept: the next run
+                // is a jump. The gain it had comes back, as there.
+                let (j, m) = (a - off, b - a);
+                let cut = Run {
+                    from: r.from + j,
+                    ticks: &r.ticks[j..j + m],
+                    input: &r.input[2 * j..2 * (j + m)],
+                    f: r.f + j as u64,
+                    playing: r.playing,
+                    first: None,
+                };
+                let gain = self.gain;
+                let mut gone = [[0f32; 2]; RUN];
+                self.run(store, stats, me, &cut, print, waiting, &mut gone[..m]);
+                if matches!(self.phase, Phase::Playing | Phase::Overdubbing)
+                    && !self.clearing
+                    && !self.swapping
+                {
+                    self.gain = gain;
+                }
             }
             // The run itself.
             let (a, b) = (from.max(off), to.min(end));

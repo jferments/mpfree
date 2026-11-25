@@ -85,7 +85,7 @@ The Pads tab's **Effects** row opens the chain editor on the pad picked, in the 
 
 ## MIDI effects: a track's Notes
 
-A track that plays notes (not a Loop track) can change its notes before they reach its sound: make each note a chord, keep notes in a scale, move them, set how hard they play, make them all as long, echo them, loosen them up, let some through only by chance, strum a chord, hold notes after you let go, or move notes at random; and, for a track that plays a synth on MIDI out, fit its controllers into a range or smooth their steps. These are its **MIDI effects**, and with the track's arp they are its **Notes**. They work on the pads, a keyboard and the track's clips, and on what the track sends out of MIDI.
+A track that plays notes (not an audio track) can change its notes before they reach its sound: make each note a chord, keep notes in a scale, move them, set how hard they play, make them all as long, echo them, loosen them up, let some through only by chance, strum a chord, hold notes after you let go, or move notes at random; and, for a track that plays a synth on MIDI out, fit its controllers into a range or smooth their steps. These are its **MIDI effects**, and with the track's arp they are its **Notes**. They work on the pads, a keyboard and the track's clips, and on what the track sends out of MIDI.
 
 {{shot: chain-notes | A track's chain: NOTES above SOUND, with Scale, Chord, the arp and Humanize (off) in order. Chord's page shows its shapes, what goes in and what comes out on a keyboard, and its settings; the Q-Links turn Chord, Voicing, Inversion and Velocity.}}
 
@@ -124,7 +124,7 @@ Tap a MIDI effect's row for its page. Its choices are along the top as buttons (
 - **CC scale** and **CC smooth** leave the notes alone and work only on what goes out of MIDI out: while the track plays its own sound, their page's line says they send nothing. On the 5-pin MIDI Out, a gliding controller sends at most one message every 4 ms, so the notes and the clock keep their room. When the song starts, or the track's port changes, each controller goes straight to its value.
 - On a drum track the MIDI effects see pads, not notes: **Transpose** by 1 plays the next pad, a pad moved off the kit doesn't play, and **Randomize**'s Pitch plays other pads at random. Velocity, Note length, Echo, Humanize, Chance, Strum and Latch work the same on any track.
 
-Touch a MIDI effect's setting and the **Modulate** row under the page works on it, as it does for a sound's knob: tap a macro number to put it on that macro, **Learn** to put it on the next Q-Link you turn, or **+ LFO** to sweep it (a choice, such as Chord's shape, takes a macro but not an LFO). A step can lock it, and while you record, a Q-Link turn of it records with the clip and plays back with it. What these do is heard from the next note; a note already playing keeps what it started as. Until you touch a setting, the row says which settings the Q-Links turn. Returns, submixes, the master and Loop tracks have no Notes.
+Touch a MIDI effect's setting and the **Modulate** row under the page works on it, as it does for a sound's knob: tap a macro number to put it on that macro, **Learn** to put it on the next Q-Link you turn, or **+ LFO** to sweep it (a choice, such as Chord's shape, takes a macro but not an LFO). A step can lock it, and while you record, a Q-Link turn of it records with the clip and plays back with it. What these do is heard from the next note; a note already playing keeps what it started as. Until you touch a setting, the row says which settings the Q-Links turn. Returns, submixes, the master and audio tracks have no Notes.
 
 ## The effects
 
@@ -489,7 +489,7 @@ Hold a finger still on a macro's card for half a second to open the **macros pan
 
 Some effects are in place when MPFree starts, and the Play page's Q-Links and touch controls play them:
 
-- **A DJ filter** on the Drums and Loop tracks: the **Filter** Q-Link on the Play page.
+- **A DJ filter** on the Drums track: the **Filter** Q-Link on the Play page. The loops have one of their own, the Loop group's **Filter** on Play's loop row (see [Your first loop](../getting-started/first-loop.md#the-loops-on-the-play-page)).
 - **A dotted-eighth delay** on send return A: the **Delay send** Q-Link.
 - **Perform FX** on the master: the throws and the XY pad (see [Playing live](playing-live.md#throws)).
 

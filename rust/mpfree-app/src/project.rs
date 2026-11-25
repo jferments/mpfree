@@ -847,6 +847,9 @@ pub fn track_kits_text(
 /// musician, and nothing is opened, so the project already open stays as
 /// it is. Things a build can't make (an effect, an instrument) are left
 /// out with a line saying so.
+/// Why a project with a Loop track doesn't open (phase 4e.5).
+pub const LOOP_TRACKS_REFUSED: &str = "it has Loop tracks, which this MPFree has made audio tracks";
+
 pub fn opening(
     snap: &Snapshot,
     rate: u32,
@@ -871,6 +874,12 @@ pub fn opening(
         None => None,
         Some(text) => {
             let mut p = mpfree_seq::save::from_text(text).map_err(|e| cant(CLIPS, e))?;
+            // Loops play on audio tracks (phase 4e.5): a project with a
+            // Loop track is refused, nothing of it sent anywhere. Old
+            // projects aren't converted.
+            if p.tracks.iter().any(|t| t.is_loops()) {
+                return Err(LOOP_TRACKS_REFUSED.to_string());
+            }
             if !since_4b {
                 let old = old_strip_targets(&mut p);
                 if old != OldStripTargets::default() {
@@ -4465,6 +4474,20 @@ mod tests {
             "{:?}",
             o.notes
         );
+    }
+
+    /// Phase 4e.5: loops play on audio tracks, so a project saved with a
+    /// Loop track is refused when opened, saying why; one with none opens.
+    #[test]
+    fn a_project_with_a_loop_track_is_refused() {
+        use mpfree_seq::Track;
+        let none = &crate::plugins::Plugins::none();
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        c.clips.tracks.push(Track::new("Track 1", 0));
+        assert!(opening(&snapshot(&c, Vec::new()), 44_100, "fine", none).is_ok());
+        c.clips.tracks.push(Track::new_loops("Loops A", 1));
+        let why = opening(&snapshot(&c, Vec::new()), 44_100, "old", none).expect_err("refused");
+        assert_eq!(why, LOOP_TRACKS_REFUSED);
     }
 
     /// Arrange 1.1: clips get lasting ids as a project opens, and keep
