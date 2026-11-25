@@ -1213,6 +1213,15 @@ impl TrackHost {
         self.loops.moving(ids);
     }
 
+    /// After [`TrackHost::plan_loops`]: Listen is heard through the
+    /// project track in place `place` this period (`LoopHost::listen_track`;
+    /// None: through none), its frames given as `LISTEN`'s by the source
+    /// [`TrackHost::period_with_loops`] reads (phase 4e.2).
+    pub fn loop_listen(&mut self, place: Option<usize>) {
+        let s = place.and_then(|p| (0..MAX_TRACKS).find(|&s| self.place(s) == Some(p)));
+        self.loops.listen(s);
+    }
+
     /// A new lasting id for a loop (phase 4b: `mpfree_seq::LoopId`), from
     /// the audio tracks' id maker: never 0, never given twice.
     pub fn fresh_loop_id(&mut self) -> u128 {

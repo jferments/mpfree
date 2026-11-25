@@ -175,6 +175,12 @@ impl OnTracks {
     /// After the looper's period: loop `id`'s sound in it, for its track
     /// (None: no slot holds it, or it isn't on a track).
     pub fn out<'a>(&self, looper: &'a Looper, id: u128) -> Option<&'a [f32]> {
+        // Listen playing a loop on a track: its frames, for that track
+        // (phase 4e.2).
+        if id == mpfree_audiotracks::LISTEN {
+            let outs = looper.outs();
+            return outs.listen().filter(|l| outs.on_track(l.0)).map(|l| l.1);
+        }
         let n = self.slot_of(LoopId(id))?;
         let outs = looper.outs();
         outs.on_track(n).then(|| outs.loop_out(n))
@@ -939,6 +945,125 @@ mod tests {
             assert_eq!(other[steady], plain[steady], "{armed:?}");
             assert!(added.iter().all(|&a| a == 0.0));
         }
+    }
+
+    /// Phase 4e.2, Listen through the track, as main.rs runs it: a loop
+    /// cell playing on Audio 1, the song stopped, and Listen on the loop.
+    /// What it plays is heard in Audio 1, through the track, and not on
+    /// the Loop strip; Listen stopped, it fades out and both are silent.
+    /// Without the track told, nothing is heard: the looper leaves a loop
+    /// on a track out of the Loop strip, Listen too.
+    #[test]
+    fn listen_on_a_loop_cell_is_heard_through_its_track_not_the_loop_strip() {
+        use crate::audiotracks::TrackHost;
+        use crate::looping::LoopHost;
+        use mpfree_looper::Command;
+        use mpfree_play::{AudioAnswer, AudioPlays};
+        use mpfree_transport::time::PPQ;
+        use mpfree_transport::{Block, Command as T, Transport};
+
+        const RATE: u32 = 44_100;
+        // One run: Loop 1 recorded and playing in its cell on Audio 1, then
+        // the song stopped and Listen on it for `listen` periods, then
+        // stopped. The peaks of the Loop strip and Audio 1 in each part.
+        let run = |tell: bool| {
+            let mut h = LoopHost::new(RATE, 20);
+            let mut t = Transport::new(RATE, 120.0).unwrap();
+            let mut b = Block::new();
+            let mut tracks = TrackHost::new(RATE, 10);
+            let mut p = Project::new();
+            let mut a = Track::new_audio("Audio 1", 0);
+            p.give_track_id(&mut a);
+            let audio_id = a.id;
+            p.tracks.push(a);
+            tracks.sync(&p, 0, true);
+            let slot = tracks.slots.slot_of(audio_id).expect("an engine track");
+            h.command(Command::SetBars(Some(1)));
+            h.command(Command::Record);
+            t.command(0, T::Play);
+            let mut f = 0u64;
+            while h.looper.status().phase != Phase::Playing {
+                assert!(t.process(PERIOD as u32, &mut b));
+                let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                for i in 0..PERIOD {
+                    let g = (f + i as u64) as f64;
+                    l[i] = 0.3 * (g * 441.0 * std::f64::consts::TAU / RATE as f64).sin() as f32;
+                    r[i] = -l[i];
+                }
+                h.take_pads(&l, &r);
+                h.run(&b, &mut [0.0; PERIOD], &mut [0.0; PERIOD]);
+                f += PERIOD as u64;
+            }
+            h.give_loop_id(|| tracks.fresh_loop_id());
+            let id = h.on_tracks.id(0).expect("a loop with sound gets an id");
+            p.tracks[0].slots[0] = Some(Clip::new_audio_loop(id, "Loop 1", i64::from(4 * PPQ)));
+            p.give_clip_ids();
+            let c = p.tracks[0].slots[0].as_ref().unwrap();
+            let mut playing = AudioAnswer::default();
+            playing.start = AudioPlays::Loop {
+                id,
+                origin: h.looper.loop_status(0).unwrap().origin as f64,
+                len: c.length,
+                clip: c.id,
+                stamp: 1,
+            };
+            let mut period =
+                |h: &mut LoopHost, tracks: &mut TrackHost, ans: AudioAnswer<'static>| {
+                    if matches!(ans.start, AudioPlays::Nothing) {
+                        // Stopped: the arranger answers nothing.
+                        t.command(0, T::Stop);
+                    }
+                    assert!(t.process(PERIOD as u32, &mut b));
+                    h.take_pads(&[0.0; PERIOD], &[0.0; PERIOD]);
+                    tracks.sync(&p, 0, false);
+                    tracks.plan_loops(&b, &|_| ans);
+                    h.give_loop_id(|| tracks.fresh_loop_id());
+                    h.tell_tracks(&p, tracks.loop_player());
+                    let (mut l, mut r) = ([0.0; PERIOD], [0.0; PERIOD]);
+                    h.run(&b, &mut l, &mut r);
+                    if tell {
+                        tracks.loop_listen(h.listen_track());
+                    }
+                    let map = *t.tempo_map();
+                    let src = |i: u128| h.track_loop(i);
+                    tracks.period_with_loops(&b, &map, false, h.input(), &|_| ans, &src);
+                    let strip = l.iter().chain(&r).fold(0.0f32, |m, v| m.max(v.abs()));
+                    let out = tracks.host.tracks.track_out(slot, PERIOD);
+                    (strip, out.iter().fold(0.0f32, |m, v| m.max(v.abs())))
+                };
+            for _ in 0..2 * LOOK_EVERY as usize + 200 {
+                period(&mut h, &mut tracks, playing);
+            }
+            assert!(h.looper.on_track(0));
+            let quiet = AudioAnswer::default();
+            for _ in 0..20 {
+                period(&mut h, &mut tracks, quiet);
+            }
+            let said = h.listen(Some(None));
+            assert!(said.starts_with("Listen: Loop 1 plays"), "{said}");
+            let mut on = (0.0f32, 0.0f32);
+            for _ in 0..200 {
+                let (s, a) = period(&mut h, &mut tracks, quiet);
+                on = (on.0.max(s), on.1.max(a));
+            }
+            assert!(h.listen_track().is_some());
+            h.listen(None);
+            for _ in 0..10 {
+                period(&mut h, &mut tracks, quiet);
+            }
+            let mut after = (0.0f32, 0.0f32);
+            for _ in 0..20 {
+                let (s, a) = period(&mut h, &mut tracks, quiet);
+                after = (after.0.max(s), after.1.max(a));
+            }
+            (on, after)
+        };
+        let ((strip, track), after) = run(true);
+        assert_eq!(strip, 0.0, "not on the Loop strip");
+        assert!(track > 0.1, "through Audio 1: {track}");
+        assert_eq!(after, (0.0, 0.0), "stopped");
+        let ((strip, track), _) = run(false);
+        assert_eq!((strip, track), (0.0, 0.0), "untold: nowhere");
     }
 
     /// Making a loop cell, as main.rs runs it with Dev's switch on: an

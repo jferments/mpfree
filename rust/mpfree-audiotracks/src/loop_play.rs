@@ -34,6 +34,12 @@
 //!   loop cell) opens at full gain, not over a fade: it carries on where
 //!   it is heard, so there is no dip.
 //!
+//! - **Listen** (phase 4e.2): the looper playing one loop alone while the
+//!   song is stopped is heard through the loop's track. After the plan,
+//!   [`LoopPlayer::listen`] names the track, and its mix adds what the
+//!   looper's Listen played ([`LISTEN`], asked of the same source) on
+//!   every frame at full gain: the looper fades Listen in and out itself.
+//!
 //! Everything happens on a frame and is the same for any period size, and
 //! nothing allocates once made.
 
@@ -55,6 +61,10 @@ pub const MOVING: usize = 8;
 pub const MAX_LOOP_RUNS: usize = LOOP_VOICES * (MAX_CHANGES + 2);
 
 const PERIOD: usize = MAX_PERIOD as usize;
+
+/// The id [`LoopPlayer::mix_into`] asks its source for what the looper's
+/// Listen played (phase 4e.2); never a loop's (ids are counted up from 1).
+pub const LISTEN: u128 = u128::MAX;
 
 /// Where a loop sounds on a track in the period: loop `id`, at the place
 /// the song position has counted from `origin` (the song tick its pass 0
@@ -133,6 +143,8 @@ pub struct LoopPlayer {
     dropped: u64,
     /// The loops heard off any track now ([`LoopPlayer::moving`]; 0: none).
     moving: [u128; MOVING],
+    /// The track Listen is heard through this period ([`LoopPlayer::listen`]).
+    listen: Option<usize>,
 }
 
 impl Default for LoopPlayer {
@@ -152,7 +164,16 @@ impl LoopPlayer {
             stolen: 0,
             dropped: 0,
             moving: [0; MOVING],
+            listen: None,
         }
+    }
+
+    /// After [`LoopPlayer::plan`]: Listen (the looper playing one loop
+    /// alone while the song is stopped) is heard through track `t` this
+    /// period, at full gain on every frame; None: through none. The next
+    /// plan forgets it.
+    pub fn listen(&mut self, t: Option<usize>) {
+        self.listen = t.filter(|&t| t < MAX_TRACKS);
     }
 
     /// Before [`LoopPlayer::plan`]: the loops heard off any track now, by
@@ -172,6 +193,7 @@ impl LoopPlayer {
     pub fn plan(&mut self, block: &Block, answers: &[Answer]) {
         let n = (block.frames as usize).min(PERIOD);
         self.frames = n;
+        self.listen = None;
         // Only the period's frames of each voice: the rest is never read
         // (the whole buffer would be 256 KiB to clear each period).
         for g in self.gains.chunks_exact_mut(PERIOD) {
@@ -236,11 +258,20 @@ impl LoopPlayer {
     /// period's frames): each run's frames from its loop's buffer, which
     /// `src` gives by the loop's id (the looper's slot buffer, interleaved,
     /// a frame of it for each of the period's; None plays nothing), times
-    /// its gain on that frame.
+    /// its gain on that frame. Through the track Listen is heard on, also
+    /// what `src` gives for [`LISTEN`], as it is.
     pub fn mix_into<'a>(&self, t: usize, src: impl Fn(u128) -> Option<&'a [f32]>, dst: &mut [f32]) {
         let Some(lane) = self.lanes.get(t) else {
             return;
         };
+        if self.listen == Some(t) {
+            if let Some(s) = src(LISTEN) {
+                let b = (2 * self.frames).min(s.len()).min(dst.len());
+                for (d, v) in dst[..b].iter_mut().zip(&s[..b]) {
+                    *d += v;
+                }
+            }
+        }
         for r in &lane.runs[..lane.n] {
             let Some(s) = src(r.id) else {
                 continue;

@@ -459,3 +459,53 @@ fn an_overdub_punches_out_where_the_track_stops_playing_it_and_keeps_its_layer()
         assert!(doubled > 5_000 && single > 5_000, "{doubled} {single}");
     }
 }
+
+/// Listen playing a loop on a track (audio tracks phase 4e.2): with the
+/// song stopped, what it plays is in Listen's own buffer for the track,
+/// and the looper's mix leaves it out; off the track, Listen is in the mix
+/// again.
+#[test]
+fn listen_on_a_loop_on_a_track_is_for_its_track_not_the_loopers_mix() {
+    let mut r = Rig::new(128);
+    let o = r.origin();
+    assert!(r.l.play(
+        0,
+        &[PlayRun {
+            from: 0,
+            to: 128,
+            origin: o
+        }]
+    ));
+    let at = r.frame;
+    assert!(r.t.command(at, T::Stop));
+    let (mut mix, input) = (vec![0.0f32; 256], vec![0.0f32; 256]);
+    // Stopped: the track tells it no runs; Listen plays it alone.
+    let mut period = |r: &mut Rig| {
+        assert!(r.l.play(0, &[]));
+        assert!(r.t.process(128, &mut r.b));
+        mix.fill(0.0);
+        r.l.process(&r.b, &input, &mut mix);
+        r.frame += 128;
+        mix.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+    };
+    period(&mut r);
+    assert!(r.l.listen(0, None));
+    let mut heard = 0.0f32;
+    for _ in 0..40 {
+        assert_eq!(period(&mut r), 0.0, "not in the looper's mix");
+        let outs = r.l.outs();
+        let (k, frames) = outs.listen().expect("Listen played");
+        assert!(k == 0 && outs.on_track(0));
+        heard = frames.iter().fold(heard, |m, v| m.max(v.abs()));
+    }
+    assert!(heard > 0.1, "Listen's own buffer has it: {heard}");
+    // Off the track, Listen is the looper's again.
+    r.l.leave_track(0);
+    let back = (0..4).map(|_| {
+        assert!(r.t.process(128, &mut r.b));
+        mix.fill(0.0);
+        r.l.process(&r.b, &input, &mut mix);
+        mix.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+    });
+    assert!(back.fold(0.0f32, f32::max) > 0.1, "in the mix again");
+}

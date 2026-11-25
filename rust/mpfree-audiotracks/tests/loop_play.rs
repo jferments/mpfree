@@ -485,3 +485,35 @@ fn a_loop_back_inside_its_own_fade_reopens_its_voice_from_where_it_was() {
         assert!((share(c + FADE as u64 - 20) - 1.0).abs() < 1e-6);
     }
 }
+
+/// Listen (phase 4e.2): after the plan, the track named hears what its
+/// source gives for `LISTEN`, as it is, on every frame of the period; no
+/// other track does, the next plan forgets it, and a track past the last
+/// is none.
+#[test]
+fn listen_is_mixed_into_the_track_named_as_it_is_until_the_next_plan() {
+    use mpfree_audiotracks::LISTEN;
+    let mut t = Transport::new(RATE, 240.0).unwrap();
+    let mut b = Block::new();
+    assert!(t.process(64, &mut b), "stopped");
+    let mut lp = LoopPlayer::new();
+    let buf: Vec<f32> = (0..64)
+        .flat_map(|i| [i as f32 / 64.0, -(i as f32) / 64.0])
+        .collect();
+    let src = |id: u128| (id == LISTEN).then_some(&buf[..]);
+    let mix = |lp: &LoopPlayer, t: usize| {
+        let mut d = vec![0.25f32; 128];
+        lp.mix_into(t, src, &mut d);
+        d
+    };
+    lp.plan(&b, &[]);
+    lp.listen(Some(2));
+    let want: Vec<f32> = buf.iter().map(|v| 0.25 + v).collect();
+    assert_eq!(mix(&lp, 2), want);
+    assert!(mix(&lp, 1).iter().all(|&v| v == 0.25), "not another track");
+    assert!(lp.runs(2).is_empty(), "no run of a loop's");
+    lp.plan(&b, &[]);
+    assert!(mix(&lp, 2).iter().all(|&v| v == 0.25), "forgotten");
+    lp.listen(Some(10_000));
+    assert!((0..20).all(|t| mix(&lp, t).iter().all(|&v| v == 0.25)));
+}
