@@ -102,6 +102,18 @@ pub enum MixAction {
         slot: usize,
         id: u16,
     },
+    /// The level under a strip's fader was tapped (let go on it): the
+    /// app opens the number pad on the strip's level, `db` now, and sends
+    /// the number typed back as a [`MixAction::Set`] of [`mx::VOLUME`].
+    /// Nothing changes until Enter. (The tap used to put the fader at
+    /// 0 dB at once, a jump of 20 dB or more from a finger that missed M
+    /// or S by a few pixels; SHIFT + the push still does that, on
+    /// purpose.)
+    TypeLevel {
+        strip: StripId,
+        db: f32,
+        name: String,
+    },
 }
 
 /// The Mix tab's three looks of the same strips (layout spec section
@@ -641,6 +653,9 @@ enum Grab {
         /// "Nothing picked"): a tap opens the sidechain list.
         line: bool,
     },
+    /// The level under a fader: let go on it, the number pad opens
+    /// ([`MixAction::TypeLevel`]); slid off first, nothing.
+    Level { id: StripId, at: Rect },
     /// A curve on the EQ look, the dot under the finger if any: a tap
     /// picks the EQ (and the band), a tap again opens it; a dot that moves
     /// past the lift follows the finger.
@@ -794,7 +809,7 @@ impl MixerView {
                 Grab::Fader { id, .. } => (id, vec![mx::VOLUME]),
                 Grab::Pan { id, .. } => (id, vec![mx::PAN]),
                 Grab::Send { id, r, .. } => (id, vec![mx::send(r)]),
-                Grab::Fx { .. } => continue,
+                Grab::Fx { .. } | Grab::Level { .. } => continue,
                 Grab::Eq {
                     id,
                     slot,
@@ -1269,7 +1284,7 @@ impl MixerView {
             return;
         }
         if p.value.contains(x, y) {
-            self.set(id, mx::VOLUME, 0.0);
+            self.grabs.push((finger, Grab::Level { id, at: p.value }));
             return;
         }
         if p.buttons.contains(x, y) && id != StripId::Master {
@@ -1567,7 +1582,7 @@ impl MixerView {
                 }
                 self.eq_drag(id, slot, dot, x, y, r);
             }
-            Grab::Eq { .. } => {}
+            Grab::Eq { .. } | Grab::Level { .. } => {}
             Grab::Fx {
                 id,
                 from,
@@ -1645,6 +1660,19 @@ impl MixerView {
             return;
         };
         let (_, g) = self.grabs.remove(gi);
+        if let Grab::Level { id, at } = g {
+            let s = self
+                .state
+                .strip(id)
+                .filter(|_| !cancel && at.contains(x, y));
+            if let Some((db, name)) = s.map(|s| (s.volume_db, s.name.clone())) {
+                self.push(MixAction::TypeLevel {
+                    strip: id,
+                    db,
+                    name,
+                });
+            }
+        }
         if let Grab::Pan {
             id, moved: false, ..
         } = g
@@ -2091,14 +2119,26 @@ impl MixerView {
         );
         // Fader and meter.
         self.paint_fader(cx, s, p.fader, master);
+        let level = db_text(s.volume_db);
         cx.text(
             FontId::Bold,
             t.size_small,
             p.value,
             Align::Center,
             ink,
-            &db_text(s.volume_db),
+            &level,
         );
+        // A dotted line under the level, as under every number that can
+        // be typed: a tap opens the number pad.
+        let w = cx
+            .measure(FontId::Bold, t.size_small, &level)
+            .min(p.value.w);
+        let (x0, y) = (p.value.x + (p.value.w - w) / 2, p.value.bottom() - 3);
+        let mut x = x0;
+        while x + 4 <= x0 + w {
+            cx.canvas.fill_rect(Rect::new(x, y, 4, 2), t.text_dim);
+            x += 8;
+        }
         // Mute, solo, arm; the master shows its limiting.
         if master {
             let red = self.state.safety.reduction_db;
@@ -3830,7 +3870,7 @@ impl Widget for MixerView {
             out.push(Target::tap(
                 "value",
                 k,
-                format!("{name} level (to 0 dB)"),
+                format!("{name} level (type it)"),
                 p.value,
             ));
             if s.id != StripId::Master {
@@ -4132,7 +4172,7 @@ mod tests {
     }
 
     #[test]
-    fn taps_mute_solo_centre_reset_and_open_inserts() {
+    fn taps_mute_solo_type_a_level_centre_pan_and_open_inserts() {
         let mut ui = ui(state(12));
         let p = strip_parts(&ui, 0);
         let b = buttons(p.buttons, 2);
@@ -4164,10 +4204,10 @@ mod tests {
                     id: mx::SOLO,
                     value: 1.0
                 },
-                MixAction::Set {
+                MixAction::TypeLevel {
                     strip: t0,
-                    id: mx::VOLUME,
-                    value: 0.0
+                    db: 0.0,
+                    name: default_name(t0),
                 },
                 MixAction::Set {
                     strip: t0,
@@ -4195,6 +4235,49 @@ mod tests {
             }],
             "a second tap unmutes"
         );
+    }
+
+    /// The level under a fader never changes it on a tap (the touch
+    /// usability review, 25 Nov 2026: it sat 6 px above M and S and put
+    /// the fader at 0 dB, so a finger reaching for M could jump the level
+    /// by 20 dB or more). A tap let go on it asks for a number instead;
+    /// slid off it first, or cancelled, nothing; a finger that goes down
+    /// on it and lifts on M neither mutes nor asks.
+    #[test]
+    fn a_tap_on_the_level_asks_for_a_number_and_never_moves_the_fader() {
+        let mut st = state(12);
+        st.strips[1].volume_db = -20.0;
+        let mut ui = ui(st);
+        let p = strip_parts(&ui, 1);
+        let t1 = StripId::Track(1);
+        let (x, y) = mid(p.value);
+        ui.touch(9, Touch::Down, x, y);
+        assert_eq!(crate::take_actions(&mut ui), vec![], "nothing on the press");
+        ui.touch(9, Touch::Up, x + 3, y + 2);
+        assert_eq!(
+            crate::take_actions(&mut ui),
+            vec![MixAction::TypeLevel {
+                strip: t1,
+                db: -20.0,
+                name: default_name(t1),
+            }]
+        );
+        // Slid off onto M before letting go, or cancelled: nothing.
+        let m = mid(buttons(p.buttons, 2)[0]);
+        ui.touch(9, Touch::Down, x, y);
+        ui.touch(9, Touch::Move, m.0, m.1);
+        ui.touch(9, Touch::Up, m.0, m.1);
+        ui.touch(9, Touch::Down, x, y);
+        ui.touch(9, Touch::Cancel, x, y);
+        assert_eq!(crate::take_actions(&mut ui), vec![]);
+        // The target says what a tap does.
+        let label = ui
+            .targets()
+            .into_iter()
+            .find(|t| t.target.id == "value" && t.target.index == 1)
+            .map(|t| t.target.label)
+            .unwrap();
+        assert_eq!(label, format!("{} level (type it)", default_name(t1)));
     }
 
     #[test]

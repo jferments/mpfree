@@ -831,6 +831,9 @@ enum TypeTo {
     XyNames(usize),
     /// The style Make a style keeps (composing step 6): its sheet's Name.
     StyleName,
+    /// A mixer strip's level, from a tap on the number under its fader
+    /// ([`mpfree_mixer_ui::MixAction::TypeLevel`]).
+    MixLevel(mpfree_fx::StripId),
 }
 
 impl TypeTo {
@@ -11771,6 +11774,11 @@ impl Player {
                 self.add_cc_lane(v.round() as u16);
                 None
             }
+            TypeTo::MixLevel(strip) => Some(FromUi::Mixer(mpfree_mixer_ui::MixAction::Set {
+                strip,
+                id: mpfree_fx::ids::mixer::VOLUME,
+                value: v as f32,
+            })),
             TypeTo::SampleName
             | TypeTo::PortName
             | TypeTo::SceneName(_)
@@ -11927,6 +11935,24 @@ impl Player {
             ));
         }
         Ok(png)
+    }
+
+    /// The number pad for a mixer strip's level (a tap on the number under
+    /// its fader): silent (-80 dB, "off") to +6 dB, to 0.1 dB.
+    fn type_level(&mut self, strip: mpfree_fx::StripId, db: f32, name: &str) {
+        let (min, max) = (mpfree_fx::SILENT_DB, mpfree_mixer_ui::qlinks::MAX_DB);
+        self.open_numpad(
+            mpfree_ui::numpad::NumberAsk {
+                key: "level".to_string(),
+                title: format!("{name} level"),
+                unit: "dB".to_string(),
+                value: f64::from((db.clamp(min, max) * 10.0).round() / 10.0),
+                min: f64::from(min),
+                max: f64::from(max),
+                decimals: 1,
+            },
+            TypeTo::MixLevel(strip),
+        );
     }
 
     /// The number pad for the tempo (a long press on Play's BPM).
@@ -19341,9 +19367,17 @@ impl Player {
                 Some(FromUi::QLink { knob: index, delta })
             }
             (mpfree_mixer_ui::MIXER, _) => {
-                let mut acts = mpfree_mixer_ui::take_actions(&mut self.ui)
-                    .into_iter()
-                    .map(FromUi::Mixer);
+                // The level under a fader asks for a number: the screen's.
+                let mut acts = Vec::new();
+                for a in mpfree_mixer_ui::take_actions(&mut self.ui) {
+                    match a {
+                        mpfree_mixer_ui::MixAction::TypeLevel { strip, db, name } => {
+                            self.type_level(strip, db, &name);
+                        }
+                        a => acts.push(FromUi::Mixer(a)),
+                    }
+                }
+                let mut acts = acts.into_iter();
                 let first = acts.next();
                 self.outbox.extend(acts);
                 let looked = first
