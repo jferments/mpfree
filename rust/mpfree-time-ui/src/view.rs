@@ -47,8 +47,8 @@ use crate::editor::{
     ToolBar, ToolKind, ADD, AIM_MENU, CHORD_MAJOR, CHORD_MENU, CHORD_MINOR, CLIP_END, CONTINUE_BAR,
     CONTINUE_NOTE, EDIT_BUTTON, ERASE_SWEEP, FIELDS, GHOST_MOST, GHOST_TAP, HELD_FINE, HELD_FIRST,
     HELD_RESET, HELD_TURN, LOCK_LANES, MENU, PADS_WRITE, PEN, PRESSURE_END, PRESSURE_LANE,
-    ROOT_MENU, SCALE_MENU, SHOW_MENU, SHOW_NONE, SNAP_AUTO_T, START_HANDLE, STEP_FALLBACK,
-    TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
+    ROOT_MENU, SCALE_MENU, SHOW_MENU, SHOW_NONE, SNAP_AUTO_T, SOUND_LANE, SOUND_OFF, SOUND_ON,
+    START_HANDLE, STEP_FALLBACK, TOOL_BUTTONS, TOOL_CANCEL, TOOL_DONE, TOOL_OPTION,
 };
 use crate::list::{
     ListRow, SongListView, LIST_ADD, LIST_CLIPS, LIST_LINK, LIST_LINK_CLOSE, LIST_LINK_FROM_LIST,
@@ -2941,6 +2941,21 @@ fn action_of(ev: &UiEvent, st: &TimeState) -> Option<TimeAction> {
                             .map(|&(t, v)| (t as Tick, v.clamp(0, 127) as u8))
                             .collect(),
                         end: end as Tick,
+                    }
+                }
+                // On or Remove on Continue's lane (composing tools S3):
+                // which lane, and what to do with it.
+                EventKind::Values { index, ref set } if index == SOUND_LANE => {
+                    let &(k, op) = set.first()?;
+                    let e = st.edit.as_ref()?;
+                    EditAction::SoundLane {
+                        rev,
+                        addr: crate::editor::SoundLane::of(&e.clip).get(k)?.addr,
+                        on: match op {
+                            SOUND_ON => Some(true),
+                            SOUND_OFF => Some(false),
+                            _ => None,
+                        },
                     }
                 }
                 // A lock lane (plan 3A.2): each note the stroke set, with
@@ -7098,6 +7113,8 @@ pub fn note_grid(e: &EditInfo, st: &TimeState) -> NoteGrid {
     g.shortest = mpfree_seq::notes::shortest_steps(c, steps) as Tick * steps.size();
     g.longest = steps.max_steps() as Tick * steps.size();
     g.lock_settings = e.locks.clone();
+    // Continue's lanes (composing tools S3): each a lane of its own.
+    g.sound_lanes = Arc::new(crate::editor::SoundLane::of(c));
     g.length = c.length;
     g.bar = e.bar;
     g.pads = pads(c);
@@ -7248,7 +7265,14 @@ pub fn continue_hint(c: Option<&Continuing>, bar: Tick) -> String {
         (State::Preparing, _, _) => format!("{which} plays on while the next is made"),
         (_, false, Some(l)) => format!("{which} comes in at {}", at(l)),
         (_, true, Some(l)) => format!("{which}: the next comes in at {}", at(l)),
-        (_, true, None) => format!("{which} plays in place of the clip: Done keeps it"),
+        // S3: ", sound Subtle" while the try moves a knob.
+        (_, true, None) => match c.sound {
+            Some(l) => format!(
+                "{which} plays in place of the clip, sound {}: Done keeps it",
+                l.name()
+            ),
+            None => format!("{which} plays in place of the clip: Done keeps it"),
+        },
         _ => format!("{which} is ready: press PLAY to hear it, Done keeps it"),
     }
 }

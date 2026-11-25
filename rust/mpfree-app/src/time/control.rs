@@ -7792,7 +7792,16 @@ impl TimeControl {
                     self.compile()?;
                 }
                 let playing = self.compose.in_view.is_some();
-                self.compose.ask(&self.project, ask, &scope, &locked)?;
+                // The knobs a sound move may turn (S3), as the screen
+                // named them for this track.
+                let safe = self
+                    .compose_parts
+                    .sound
+                    .filter(|&(t, _)| t == track)
+                    .map(|(_, s)| s)
+                    .unwrap_or_default();
+                self.compose
+                    .ask(&self.project, ask, &scope, &locked, safe)?;
                 self.changed = true;
                 let more = more_bars(settings.bars.max(1), &name);
                 if let Some(again) = scope.again() {
@@ -7921,6 +7930,9 @@ impl TimeControl {
     ) -> Result<String, String> {
         let r = match &c {
             Compose::Ask(asking) => {
+                // The Sound row goes with the ask (S3): the try is heard
+                // at it.
+                self.compose.set_level(asking.sound, &self.project);
                 let ask = ContinueAsk {
                     track,
                     slot,
@@ -7933,12 +7945,14 @@ impl TimeControl {
                 self.compose_from_editor = true;
                 self.continue_action(ContinueAction::Ask(Box::new(ask)))
             }
+            Compose::Sound(level) => self.continue_sound(*level),
             Compose::Keep => self.continue_action(ContinueAction::Keep),
             Compose::Back if !self.compose.active() => Ok("continue: closed".into()),
             Compose::Back => self.continue_action(ContinueAction::Back),
         };
         let close = match &c {
             Compose::Ask(_) => r.is_err() && !self.compose.active(),
+            Compose::Sound(_) => false,
             Compose::Keep | Compose::Back => r.is_ok(),
         };
         if close {
@@ -7951,10 +7965,32 @@ impl TimeControl {
             self.edit_follow();
         }
         self.changed = true;
-        match said {
-            "" => r,
-            said => r.map(|_| format!("{said}: the next try is on its way")),
+        match (said, &c) {
+            ("", _) => r,
+            // "continue: sound bold, heard from 5.1".
+            (said, Compose::Sound(_)) => {
+                r.map(|w| match w.strip_prefix("continue: the sound changed") {
+                    Some(when) => format!("{said}{when}"),
+                    None => said.to_string(),
+                })
+            }
+            (said, _) => r.map(|_| format!("{said}: the next try is on its way")),
         }
+    }
+
+    /// The Sound row set to `level` (composing tools S3): the tries heard
+    /// again with their sound moves at it, no new try; the shown one comes
+    /// in on the next bar line while its clip plays, as a step through
+    /// the tries does.
+    fn continue_sound(&mut self, level: mpfree_compose::SoundLevel) -> Result<String, String> {
+        if !self.compose.set_level(level, &self.project) {
+            return Ok(String::new());
+        }
+        self.changed = true;
+        if self.continue_due(self.block.frames) {
+            self.compile()?;
+        }
+        Ok(self.continue_when("continue: the sound changed"))
     }
 
     /// The kind of instrument clip `slot` of `track` is carried on for:

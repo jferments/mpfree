@@ -247,6 +247,34 @@ impl Point {
     }
 }
 
+/// Who made a lane (composing tools S3).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum By {
+    /// Your own moves: recorded, captured or drawn.
+    #[default]
+    Hand,
+    /// Continue's sound moves: the sound following the phrase, written
+    /// against the knob at `base` (its value when the try was made).
+    /// Heard only while `on` (the clip compiles without it when off); a
+    /// move of your own on the knob makes it yours ([`Moves::take_over`]).
+    Continue { on: bool, base: f32 },
+}
+
+impl By {
+    /// Continue's, on or off.
+    pub fn is_continue(self) -> bool {
+        matches!(self, By::Continue { .. })
+    }
+
+    /// Whether the lane plays: yours always, Continue's while on.
+    pub fn plays(self) -> bool {
+        match self {
+            By::Hand => true,
+            By::Continue { on, .. } => on,
+        }
+    }
+}
+
 /// A parameter's moves in a clip: points in tick order, at most one per
 /// tick.
 #[derive(Clone, Debug, PartialEq)]
@@ -254,6 +282,7 @@ pub struct Lane {
     pub target: Target,
     pub map: Map,
     pub points: Vec<Point>,
+    pub by: By,
 }
 
 impl Lane {
@@ -262,6 +291,7 @@ impl Lane {
             target,
             map,
             points: Vec::new(),
+            by: By::Hand,
         }
     }
 
@@ -407,6 +437,53 @@ impl Moves {
     pub fn remove(&mut self, target: Target) -> Option<Lane> {
         let i = self.lanes.iter().position(|l| l.target == target)?;
         Some(self.lanes.remove(i))
+    }
+
+    /// A move of your own about to go on `target`'s lane: when the lane is
+    /// Continue's it becomes yours (S3: your moves win), keeping its points
+    /// if it was on and losing them if it was off (you weren't hearing
+    /// them). The lane as it was, for [`Moves::put_back`] to undo it with;
+    /// None when the lane was yours or there is none. Not real-time: it
+    /// clones the lane.
+    pub fn take_over(&mut self, target: Target) -> Option<Lane> {
+        let lane = self.lane_mut(target)?;
+        let By::Continue { on, .. } = lane.by else {
+            return None;
+        };
+        let was = lane.clone();
+        lane.by = By::Hand;
+        if !on {
+            lane.points.clear();
+        }
+        Some(was)
+    }
+
+    /// `lane` back in place of the lane for its target (or as a new lane
+    /// if it has gone), as it was: what [`Moves::take_over`] handed over.
+    pub fn put_back(&mut self, lane: Lane) -> Result<(), MovesError> {
+        match self.lanes.iter().position(|l| l.target == lane.target) {
+            Some(k) => self.lanes[k] = lane,
+            None if self.lanes.len() >= MAX_LANES => return Err(MovesError::Full),
+            None => self.lanes.push(lane),
+        }
+        Ok(())
+    }
+
+    /// Who made the lane for `target`, if there is one.
+    pub fn by(&self, target: Target) -> Option<By> {
+        self.lane(target).map(|l| l.by)
+    }
+
+    /// Marks the lane for `target` as made by `by`. False when there is no
+    /// such lane.
+    pub fn set_by(&mut self, target: Target, by: By) -> bool {
+        match self.lane_mut(target) {
+            Some(l) => {
+                l.by = by;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Makes the lane for `target` (if new) with room for `points` more

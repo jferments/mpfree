@@ -489,6 +489,14 @@ pub enum EditAction {
         addr: RelAddr,
         set: Vec<(usize, f32)>,
     },
+    /// On or Remove on Continue's lane of `addr` (composing tools S3,
+    /// board B), on the picture of revision `rev`: `on` turns it on or
+    /// off, None takes it out of the clip. One take; UNDO puts it back.
+    SoundLane {
+        rev: u64,
+        addr: RelAddr,
+        on: Option<bool>,
+    },
     /// ERASE + a tap on a lock lane (plan 3A.2): the locks of `addr`
     /// where these notes play it come off ([`notes::unlock_notes`]). One
     /// take; the picks stay.
@@ -915,6 +923,7 @@ impl EditAction {
             | EditAction::Pressure { rev, .. }
             | EditAction::Lock { rev, .. }
             | EditAction::Unlock { rev, .. }
+            | EditAction::SoundLane { rev, .. }
             | EditAction::Drop { rev, .. }
             | EditAction::Held {
                 rev, first: true, ..
@@ -2091,6 +2100,46 @@ impl Editor {
                     ..Done::default()
                 };
             }
+            // On or Remove on Continue's lane (composing tools S3): one
+            // take of the clip's moves. No note changes; the picks stay.
+            EditAction::SoundLane { addr, on, .. } => {
+                use mpfree_seq::mpfree_moves::{By, Target};
+                let target = Target::Track(addr);
+                let mut after = clip.moves.clone();
+                let line = match (on, after.by(target)) {
+                    (Some(on), Some(By::Continue { base, .. })) => {
+                        after.set_by(target, By::Continue { on, base });
+                        match on {
+                            true => "edit: Continue's lane on: it moves your knob again",
+                            false => "edit: Continue's lane off: your knob plays as it is set",
+                        }
+                    }
+                    (None, Some(By::Continue { .. })) => {
+                        after.remove(target);
+                        "edit: Continue's lane taken out (UNDO puts it back)"
+                    }
+                    _ => "edit: no lane of Continue's there",
+                };
+                if after == clip.moves {
+                    return Done {
+                        line: line.into(),
+                        ..Done::default()
+                    };
+                }
+                let edit = Edit {
+                    moves: Some(Box::new(mpfree_seq::steps::MovesEdit {
+                        before: clip.moves.clone(),
+                        after,
+                    })),
+                    ..Edit::default()
+                };
+                return Done {
+                    edit,
+                    line: line.into(),
+                    kept,
+                    ..Done::default()
+                };
+            }
             EditAction::Unlock {
                 addr, notes: of, ..
             } => {
@@ -2627,6 +2676,7 @@ impl Editor {
                 settings: self.continuing.settings(tool.q, &self.styles),
                 scope: Scope::All,
                 locked: Vec::new(),
+                sound: self.continuing.sound,
             }))),
             ..Done::default()
         }
@@ -2646,6 +2696,7 @@ impl Editor {
                 settings: ed.continuing.settings(ed.continuing.q, &ed.styles),
                 scope,
                 locked: ed.continue_picks.locked.clone(),
+                sound: ed.continuing.sound,
             }))),
             ..Done::default()
         };
@@ -2658,6 +2709,15 @@ impl Editor {
                     return Some(Done::default());
                 }
                 let said = self.continuing.said(row, &self.styles);
+                // The Sound row (S3): what is heard of the tries made
+                // changes, and nothing new is made.
+                if row == compose::SOUND_ROW {
+                    return Some(Done {
+                        line: format!("continue: {said}"),
+                        compose: Some(Compose::Sound(self.continuing.sound)),
+                        ..Done::default()
+                    });
+                }
                 ask(self, format!("continue: {said}"))
             }
             EditAction::PickRow(row) if row < rows => {
@@ -3364,6 +3424,99 @@ impl LockSetting {
     }
 }
 
+/// A tap on On or Remove on a lane of Continue's (composing tools S3):
+/// `Values`' index; its `set` is (the lane's place in
+/// [`NoteGrid::sound_lanes`], [`SOUND_ON`], [`SOUND_OFF`] or
+/// [`SOUND_REMOVE`]).
+pub const SOUND_LANE: usize = 1 << 26;
+
+/// Continue's lane's chip: wide enough for "Brightness · Continue".
+const CONTINUE_CHIP_W: i32 = 172;
+pub const SOUND_ON: i32 = 1;
+pub const SOUND_OFF: i32 = 0;
+pub const SOUND_REMOVE: i32 = -1;
+
+/// A lane of Continue's on the clip (composing tools S3): the sound
+/// following the phrase on one knob, as the roll's lane shows it, read
+/// from the clip's moves (`By::Continue`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundLane {
+    pub addr: RelAddr,
+    /// The knob's name, "Cutoff".
+    pub name: String,
+    /// How far it goes, "up to +0.5 oct" ([`mpfree_compose::reach_words`]).
+    pub reach: String,
+    /// It plays (On lit); off, the clip plays without it.
+    pub on: bool,
+    /// Each stretch the knob is moved: from and to (clip ticks), and how
+    /// far from where the knob was when the try was made, -1 to 1 of the
+    /// farthest the lane goes.
+    pub holds: Vec<(Tick, Tick, f32)>,
+}
+
+impl SoundLane {
+    /// Continue's lanes on `clip`, in the order they were made: those on
+    /// the track's instrument, named as the clip's instrument tag names
+    /// its controls ("Control 7" when it doesn't).
+    pub fn of(clip: &Clip) -> Vec<SoundLane> {
+        use mpfree_seq::mpfree_moves::{By, Kind, Target};
+        use mpfree_seq::mpfree_param::OnTrack;
+        let mut out = Vec::new();
+        for lane in clip.moves.lanes() {
+            let (By::Continue { on, base }, Target::Track(addr)) = (lane.by, lane.target) else {
+                continue;
+            };
+            if addr.on != OnTrack::Inst {
+                continue;
+            }
+            let name = clip
+                .made_for
+                .as_ref()
+                .and_then(|m| m.param_name(addr.param))
+                .map_or_else(|| format!("Control {}", addr.param), str::to_string);
+            let base_u = lane.map.unit(base);
+            let far = lane
+                .points
+                .iter()
+                .filter(|p| p.kind != Kind::End)
+                .map(|p| p.u)
+                .max_by(|a, b| (a - base_u).abs().total_cmp(&(b - base_u).abs()));
+            let span = far.map_or(0.0, |u| (u - base_u).abs());
+            let mut holds = Vec::new();
+            for (i, p) in lane.points.iter().enumerate() {
+                if p.kind == Kind::End {
+                    continue;
+                }
+                let to = lane
+                    .points
+                    .get(i + 1)
+                    .map_or(clip.length, |q| Tick::from(q.tick));
+                let rel = if span > 0.0 {
+                    ((p.u - base_u) / span).clamp(-1.0, 1.0)
+                } else {
+                    0.0
+                };
+                holds.push((Tick::from(p.tick), to, rel));
+            }
+            let m = lane.map;
+            let reach = match far {
+                Some(u) => {
+                    mpfree_compose::reach_words(&name, base, m.value(u), m.min, m.max, m.log)
+                }
+                None => String::new(),
+            };
+            out.push(SoundLane {
+                addr,
+                name,
+                reach,
+                on,
+                holds,
+            });
+        }
+        out
+    }
+}
+
 /// How wide each column of the Pressure lane is, in pixels: the line is
 /// drawn and set column by column.
 const PRESSURE_COL: i32 = 4;
@@ -3377,6 +3530,8 @@ pub enum LaneKind {
     Pressure,
     /// One of the [`NoteGrid::lock_settings`].
     Lock(RelAddr),
+    /// One of Continue's lanes ([`NoteGrid::sound_lanes`], S3).
+    Sound(RelAddr),
 }
 
 impl LaneKind {
@@ -3395,6 +3550,7 @@ impl LaneKind {
             LaneKind::Value(f) => f.name(),
             LaneKind::Pressure => "Pressure",
             LaneKind::Lock(_) => "Lock",
+            LaneKind::Sound(_) => "Continue",
         }
     }
 }
@@ -3911,6 +4067,9 @@ pub struct NoteGrid {
     pub longest: Tick,
     /// The settings a lock lane can show (the app's, plan 3A.2).
     pub lock_settings: Arc<Vec<LockSetting>>,
+    /// Continue's lanes on the clip (composing tools S3), after the lock
+    /// lanes on the chip.
+    pub sound_lanes: Arc<Vec<SoundLane>>,
     /// The notes' pad pressure, each [`NoteBox::touch`] a run of it, timed
     /// in clip ticks from its note's start (as `Clip::touch`).
     pub touch: Vec<TouchPoint>,
@@ -4263,6 +4422,7 @@ impl Default for NoteGrid {
             shortest: STEP_FALLBACK,
             longest: mpfree_seq::MAX_CLIP_TICKS,
             lock_settings: Arc::default(),
+            sound_lanes: Arc::default(),
             touch: Vec::new(),
             lane: LaneShow::default(),
             fine: false,
@@ -4377,6 +4537,7 @@ impl NoteGrid {
             && self.locks == other.locks
             && self.lock_step == other.lock_step
             && self.lock_settings == other.lock_settings
+            && self.sound_lanes == other.sound_lanes
             && self.touch == other.touch
             && self.lane == other.lane
             && (self.scale, &self.scale_name, self.fold)
@@ -4490,8 +4651,14 @@ impl NoteGrid {
     pub fn lane_kind(&self) -> LaneKind {
         match self.lane.kind {
             LaneKind::Lock(a) if self.lock_index(a).is_none() => LaneKind::Value(Field::Velocity),
+            LaneKind::Sound(a) if self.sound_index(a).is_none() => LaneKind::Value(Field::Velocity),
             k => k,
         }
+    }
+
+    /// Continue's lane on `addr`: its place in [`NoteGrid::sound_lanes`].
+    fn sound_index(&self, addr: RelAddr) -> Option<usize> {
+        self.sound_lanes.iter().position(|s| s.addr == addr)
     }
 
     /// Lock lane `addr`'s place in [`NoteGrid::lock_settings`].
@@ -4506,16 +4673,22 @@ impl NoteGrid {
                 || kind.name().to_string(),
                 |k| self.lock_settings[k].name.clone(),
             ),
+            // "Cutoff · Continue" (board B).
+            LaneKind::Sound(a) => self.sound_index(a).map_or_else(
+                || kind.name().to_string(),
+                |k| format!("{} · Continue", self.sound_lanes[k].name),
+            ),
             k => k.name().to_string(),
         }
     }
 
     /// The lanes the chip steps through: Vel, Chance, Repeats and
-    /// Pressure, then each lock lane.
+    /// Pressure, then each lock lane, then each of Continue's.
     fn lane_kinds(&self) -> Vec<LaneKind> {
         LaneKind::ALL
             .into_iter()
             .chain(self.lock_settings.iter().map(|s| LaneKind::Lock(s.addr)))
+            .chain(self.sound_lanes.iter().map(|s| LaneKind::Sound(s.addr)))
             .collect()
     }
 
@@ -4766,9 +4939,16 @@ impl NoteGrid {
             keys,
             roll,
             vel: Rect::new(roll.x, vel.y, roll.w, vel.h),
-            chip: match roll_lens {
-                true => Rect::new(keys.x, vel.y, keys.w - 6, chip_h),
-                false => none,
+            // Continue's lane names itself in full ("Cutoff · Continue",
+            // board B): its chip runs on over the lane's top left, where
+            // nothing is drawn by hand.
+            chip: match (
+                roll_lens,
+                open && matches!(self.lane_kind(), LaneKind::Sound(_)),
+            ) {
+                (true, true) => Rect::new(keys.x, vel.y, CONTINUE_CHIP_W, chip_h.min(24)),
+                (true, false) => Rect::new(keys.x, vel.y, keys.w - 6, chip_h),
+                (false, _) => none,
             },
             fold: match open {
                 true => Rect::new(keys.x, vel.y + 30, keys.w - 6, (vel.h - 30).clamp(0, 24)),
@@ -6512,6 +6692,118 @@ impl NoteGrid {
         );
     }
 
+    /// On and Remove on Continue's lane (board B): at its top right.
+    fn sound_buttons(&self, g: &Geo) -> Option<(Rect, Rect)> {
+        if g.vel.is_empty() || self.lane.folded {
+            return None;
+        }
+        let LaneKind::Sound(_) = self.lane_kind() else {
+            return None;
+        };
+        let body = lane_body(g);
+        let remove = Rect::new(body.right() - 66, body.y + 1, 62, 20);
+        let on = Rect::new(remove.x - 58, body.y + 1, 52, 20);
+        Some((on, remove))
+    }
+
+    /// Continue's lane on `addr` (composing tools S3, board B): a bar
+    /// for each stretch the knob is moved, up or down from a line where
+    /// your knob is ("your knob"), faint while the lane is off; what it
+    /// does in words at its top, and On and Remove.
+    fn paint_sound_lane(&self, cx: &mut PaintCx, g: &Geo, addr: RelAddr) {
+        let t = cx.theme.clone();
+        let body = lane_body(g);
+        let Some(s) = self.sound_index(addr).and_then(|k| self.sound_lanes.get(k)) else {
+            return;
+        };
+        // The bars under the words and buttons.
+        let bars_r = Rect::new(body.x, body.y + 22, body.w, (body.h - 22).max(8));
+        // From your knob's line at the foot while every move goes up (a
+        // cutoff opening, a note ringing on), from the middle when some
+        // go down.
+        let down = s.holds.iter().any(|h| h.2 < 0.0);
+        let mut lane = Lane::new(if down { -100 } else { 0 }, 100, 1);
+        lane.style = LaneStyle::Centred;
+        let mut bars = Vec::new();
+        for &(from, to, rel) in &s.holds {
+            let (x0, x1) = (self.x_of(g, from), self.x_of(g, to));
+            if x1 < g.roll.x || x0 >= g.roll.right() {
+                continue;
+            }
+            let x = x0.max(g.roll.x);
+            bars.push(Bar {
+                x,
+                w: (x1.min(g.roll.right()) - x).max(2),
+                value: (rel * 100.0).round() as i32,
+                picked: false,
+                dim: !s.on,
+                label: String::new(),
+            });
+        }
+        lane.set_bars(bars);
+        // Green, so Continue's never look like your locks (board B).
+        lane.paint(cx, bars_r, t.good);
+        // Your knob: a dashed line across where the bars stand, named at
+        // its left.
+        let mid = (lane.y_of(0, bars_r) - 1).min(bars_r.bottom() - 1);
+        let mut x = g.roll.x;
+        while x < g.roll.right() {
+            cx.canvas
+                .fill_rect(Rect::new(x, mid, 4.min(g.roll.right() - x), 1), t.text_dim);
+            x += 8;
+        }
+        cx.text(
+            FontId::Sans,
+            t.size_small - 3.0,
+            Rect::new(g.roll.x + 40, mid - 13, 80, 12),
+            Align::Left,
+            t.text_dim,
+            "your knob",
+        );
+        let Some((on, remove)) = self.sound_buttons(g) else {
+            return;
+        };
+        let words = match s.on {
+            true if s.reach.is_empty() => "Continue's · plays under your locks".to_string(),
+            true => format!(
+                "Continue's · {} over your knob · plays under your locks",
+                s.reach
+            ),
+            false => "Continue's · off: your knob plays as it is set".to_string(),
+        };
+        cx.text(
+            FontId::Sans,
+            t.size_small - 2.0,
+            Rect::new(body.x + 4, on.y, on.x - body.x - 16, on.h),
+            Align::Right,
+            t.text_dim,
+            &words,
+        );
+        let (fill, ink) = match s.on {
+            true => (t.good, t.ink_on(t.good)),
+            false => (t.raised, t.ink_on(t.raised)),
+        };
+        cx.canvas.fill_round_rect(on, t.round(6), fill);
+        cx.text(
+            FontId::Bold,
+            t.size_small - 2.0,
+            on,
+            Align::Center,
+            ink,
+            "On",
+        );
+        cx.canvas.fill_round_rect(remove, t.round(6), t.raised);
+        let ink = t.ink_on(t.raised);
+        cx.text(
+            FontId::Sans,
+            t.size_small - 2.0,
+            remove,
+            Align::Center,
+            ink,
+            "Remove",
+        );
+    }
+
     fn paint_lane(&self, cx: &mut PaintCx, g: &Geo) {
         let t = cx.theme.clone();
         let kind = self.stroke.as_ref().map_or(self.lane_kind(), |s| s.kind);
@@ -6519,6 +6811,8 @@ impl NoteGrid {
             LaneKind::Value(Field::Velocity) => "Vel".to_string(),
             k => self.lane_name(k),
         };
+        // The lane first: Continue's chip runs on over it.
+        cx.canvas.fill_round_rect(g.vel, 6, t.surface);
         if !g.chip.is_empty() {
             // Folded, a caret up after the name says a tap opens it.
             let ink = t.ink_on(t.raised);
@@ -6544,7 +6838,6 @@ impl NoteGrid {
             let (x, y) = (g.fold.x + g.fold.w / 2, g.fold.y + g.fold.h / 2);
             paint_caret(cx, x, y, false, t.text_dim);
         }
-        cx.canvas.fill_round_rect(g.vel, 6, t.surface);
         if self.lane.folded {
             return;
         }
@@ -6553,6 +6846,10 @@ impl NoteGrid {
             cx.canvas.fill_round_rect(grip, 1, t.text_faint);
         }
         let body = lane_body(g);
+        if let LaneKind::Sound(a) = kind {
+            self.paint_sound_lane(cx, g, a);
+            return;
+        }
         let (lane, bar_notes) = match (&self.stroke, kind) {
             (Some(st), _) => (st.lane.clone(), st.notes.clone()),
             (None, LaneKind::Pressure) => (self.pressure_lane(g).0, Vec::new()),
@@ -6561,12 +6858,13 @@ impl NoteGrid {
                 .lock_index(a)
                 .map(|k| self.lock_lane(g, k))
                 .unwrap_or_default(),
+            (None, LaneKind::Sound(_)) => Default::default(),
         };
         lane.paint(cx, body, self.color);
         let empty = match kind {
             LaneKind::Pressure => "Pick notes to draw their pressure",
             LaneKind::Lock(_) => "No notes in view use this setting",
-            LaneKind::Value(_) => "",
+            LaneKind::Value(_) | LaneKind::Sound(_) => "",
         };
         if lane.bars.is_empty() && !empty.is_empty() {
             cx.text(
@@ -7483,6 +7781,22 @@ impl Widget for NoteGrid {
                     Rect::new(a.x, body.bottom() - 8, end - a.x, 6)
                 });
             }
+            // Continue's lane is drawn by Continue, not a finger: its On
+            // and Remove instead (board B).
+            if let LaneKind::Sound(a) = kind {
+                foot = None;
+                if let (false, Some(k), Some((on, remove))) =
+                    (tool, self.sound_index(a), self.sound_buttons(&g))
+                {
+                    out.push(Target::tap("sound-on", k, "Continue's lane on or off", on));
+                    out.push(Target::tap(
+                        "sound-remove",
+                        k,
+                        "remove Continue's lane",
+                        remove,
+                    ));
+                }
+            }
             if let (false, Some(foot)) = (tool, foot) {
                 out.push(
                     Target::drag("lane", 0, self.lane_name(kind), foot).towards(0, 10 - body.h),
@@ -7772,6 +8086,7 @@ impl Widget for NoteGrid {
                         .collect();
                     return (!set.is_empty()).then_some(EventKind::Values { index, set });
                 }
+                LaneKind::Sound(_) => return None,
             };
             let set: Vec<(usize, i32)> = changed
                 .into_iter()
@@ -9053,6 +9368,26 @@ impl NoteGrid {
                 k => k,
             };
             let (mut lane, notes, cols) = match kind {
+                // Continue's lane draws nothing by hand: its On and
+                // Remove act as a finger comes down (board B).
+                LaneKind::Sound(a) => {
+                    let k = self.sound_index(a)?;
+                    let (on, remove) = self.sound_buttons(g)?;
+                    let op = if remove.contains(x, y) {
+                        SOUND_REMOVE
+                    } else if on.contains(x, y) {
+                        match self.sound_lanes.get(k)?.on {
+                            true => SOUND_OFF,
+                            false => SOUND_ON,
+                        }
+                    } else {
+                        return None;
+                    };
+                    return Some(EventKind::Values {
+                        index: SOUND_LANE,
+                        set: vec![(k, op)],
+                    });
+                }
                 LaneKind::Value(field) => {
                     let (lane, notes) = self.lane_of(g, field);
                     (lane, notes, Vec::new())
@@ -11925,6 +12260,166 @@ mod tests {
         g.lane.kind = LaneKind::Lock(addr);
         g.lock_settings = Arc::default();
         assert_eq!(g.lane_kind(), LaneKind::Value(Field::Velocity));
+    }
+
+    /// A clip whose Continue made a lane on the instrument's control 7:
+    /// up to 0.7 from 0.5 over the first note, ended at the second.
+    fn sound_clip() -> (Clip, mpfree_seq::mpfree_moves::Target) {
+        use mpfree_seq::mpfree_moves::{By, Kind, Map, Target};
+        let target = Target::Track(RelAddr::new(OnTrack::Inst, 7));
+        let mut c = clip(&[(0, 240, 60), (960, 240, 62)]);
+        let len = c.length as u32;
+        let points = [(0.0, 0.7, Kind::Step), (900.0, 0.0, Kind::End)];
+        c.moves
+            .put(target, Map::linear(0.0, 1.0), &points, len)
+            .unwrap();
+        c.moves.set_by(
+            target,
+            By::Continue {
+                on: true,
+                base: 0.5,
+            },
+        );
+        (c, target)
+    }
+
+    /// Continue's lane (composing tools S3, board B): a lane of its own
+    /// after the lock lanes, named for its knob, a bar where it moves the
+    /// knob up from your knob's line; no stroke draws on it, its On and
+    /// Remove send which lane and what to do.
+    #[test]
+    fn continues_lane_shows_its_moves_and_sends_on_and_remove() {
+        let (c, _) = sound_clip();
+        let mut g = grid();
+        g.sound_lanes = Arc::new(SoundLane::of(&c));
+        let s = &g.sound_lanes[0];
+        assert_eq!((s.name.as_str(), s.on), ("Control 7", true));
+        assert_eq!(s.holds, [(0, 900, 1.0)], "up, as far as it goes");
+        let addr = s.addr;
+        // The chip comes to it after Pressure.
+        g.lane.kind = LaneKind::Pressure;
+        let chip = mid(g.geo(R).chip);
+        g.touch(1, Touch::Down, chip.0, chip.1, R);
+        g.touch(1, Touch::Up, chip.0, chip.1, R);
+        assert_eq!(g.lane.kind, LaneKind::Sound(addr));
+        assert_eq!(g.lane_name(g.lane.kind), "Control 7 · Continue");
+        let ids: Vec<&str> = g.targets(R).iter().map(|t| t.id).collect();
+        assert!(
+            ids.contains(&"sound-on") && ids.contains(&"sound-remove"),
+            "{ids:?}"
+        );
+        assert!(!ids.contains(&"lane"), "nothing to draw by hand: {ids:?}");
+        // A drag along the body draws nothing.
+        let geo = g.geo(R);
+        let body = lane_body(&geo);
+        g.touch(2, Touch::Down, body.x + 20, body.bottom() - 2, R);
+        g.touch(2, Touch::Move, body.x + 60, body.y + 30, R);
+        assert_eq!(g.touch(2, Touch::Up, body.x + 60, body.y + 30, R), None);
+        // On (lit) turns it off; Remove takes it out.
+        let (on, remove) = g.sound_buttons(&geo).unwrap();
+        let tap = |g: &mut NoteGrid, f, r: Rect| {
+            let (x, y) = mid(r);
+            let down = g.touch(f, Touch::Down, x, y, R);
+            g.touch(f, Touch::Up, x, y, R).or(down)
+        };
+        let values = |op| {
+            Some(EventKind::Values {
+                index: SOUND_LANE,
+                set: vec![(0, op)],
+            })
+        };
+        assert_eq!(tap(&mut g, 3, on), values(SOUND_OFF));
+        assert_eq!(tap(&mut g, 4, remove), values(SOUND_REMOVE));
+        // Off, On turns it back on.
+        Arc::make_mut(&mut g.sound_lanes)[0].on = false;
+        assert_eq!(tap(&mut g, 5, on), values(SOUND_ON));
+        // Gone from the clip: the lane shows Velocity.
+        g.sound_lanes = Arc::default();
+        assert_eq!(g.lane_kind(), LaneKind::Value(Field::Velocity));
+    }
+
+    /// On and Remove are one take each of the clip's moves: off keeps the
+    /// lane's points and plays your knob as it is set; Remove takes the
+    /// lane out; UNDO (the inverse) puts each back whole.
+    #[test]
+    fn continues_lane_turns_off_and_comes_out_in_one_take_each() {
+        use mpfree_seq::mpfree_moves::By;
+        let (mut c, target) = sound_clip();
+        let mpfree_seq::mpfree_moves::Target::Track(addr) = target else {
+            unreachable!()
+        };
+        let was = c.clone();
+        let mut ed = Editor::new(0, 0, &c);
+        let off = run(
+            &mut ed,
+            &mut c,
+            EditAction::SoundLane {
+                rev: 0,
+                addr,
+                on: Some(false),
+            },
+        );
+        assert_eq!(
+            c.moves.by(target),
+            Some(By::Continue {
+                on: false,
+                base: 0.5
+            })
+        );
+        assert_eq!(
+            c.moves.lane(target).unwrap().points,
+            was.moves.lane(target).unwrap().points
+        );
+        assert!(off.line.contains("off"), "{}", off.line);
+        assert!(
+            off.edit.add.is_empty() && off.edit.erase.is_empty(),
+            "no note changes"
+        );
+        // Off again: nothing to do, no take.
+        let again = ed.act(
+            EditAction::SoundLane {
+                rev: 0,
+                addr,
+                on: Some(false),
+            },
+            &c,
+        );
+        assert!(again.edit.is_empty());
+        let on = run(
+            &mut ed,
+            &mut c,
+            EditAction::SoundLane {
+                rev: 0,
+                addr,
+                on: Some(true),
+            },
+        );
+        assert_eq!(c.moves, was.moves);
+        assert!(on.line.contains("on"), "{}", on.line);
+        let gone = run(
+            &mut ed,
+            &mut c,
+            EditAction::SoundLane {
+                rev: 0,
+                addr,
+                on: None,
+            },
+        );
+        assert!(c.moves.lane(target).is_none());
+        assert!(gone.line.contains("UNDO"), "{}", gone.line);
+        c.apply(&gone.edit.inverse()).unwrap();
+        assert_eq!(c.moves, was.moves, "UNDO puts it back whole");
+        // A lane of your own on the knob is not Continue's: left be.
+        c.moves.set_by(target, By::Hand);
+        let mine = ed.act(
+            EditAction::SoundLane {
+                rev: 0,
+                addr,
+                on: None,
+            },
+            &c,
+        );
+        assert!(mine.edit.is_empty() && c.moves.lane(target).is_some());
     }
 
     /// A setting either side of 0 draws from the middle: its lane runs

@@ -583,6 +583,12 @@ impl ClipView {
         }
         let was = self.moves.lane(target).map_or(0, lane_hash);
         let put = self.moves.put(target, map, points, len).is_ok();
+        // A lane of Continue's here was playing (one that is off isn't in
+        // the view): yours now, with its points, as `take_over` makes it.
+        if put {
+            self.moves
+                .set_by(target, mpfree_seq::mpfree_moves::By::Hand);
+        }
         let now = self.moves.lane(target).map_or(0, lane_hash);
         self.stamp = self.stamp.wrapping_sub(was).wrapping_add(now);
         put
@@ -1492,7 +1498,8 @@ fn clip_view(
 /// `clip` compiled, named `slot`, on a track whose swing is `track_swing`
 /// and that plays `plays`: its instrument locks and move lanes made for
 /// another instrument are left out (step sequencer refactor F1,
-/// `mpfree_seq::inst`).
+/// `mpfree_seq::inst`), and so is a lane of Continue's that is off
+/// (composing tools S3).
 pub(crate) fn view_of(
     clip: &Clip,
     track_swing: Option<Swing>,
@@ -1502,10 +1509,13 @@ pub(crate) fn view_of(
     start: Tick,
 ) -> ClipView {
     let silent = clip.inst_silent(plays).is_some();
-    let moves = if silent {
+    let quiet = |lane: &mpfree_seq::mpfree_moves::Lane| {
+        !lane.by.plays() || (silent && !clip.lane_plays(lane, plays))
+    };
+    let moves = if clip.moves.lanes().iter().any(quiet) {
         let mut m = clip.moves.clone();
         for lane in clip.moves.lanes() {
-            if !clip.lane_plays(lane, plays) {
+            if quiet(lane) {
                 m.remove(lane.target);
             }
         }
@@ -2500,6 +2510,40 @@ mod tests {
             ..Edit::default()
         };
         assert!(!InPlace::fits(&length, 0, 0));
+    }
+
+    /// Continue's lane (composing tools S3) plays while it is on and not
+    /// while it is off; a lane of yours on another knob plays either way.
+    #[test]
+    fn continues_lane_plays_only_while_on() {
+        use mpfree_seq::mpfree_moves::By;
+        let mut clip = project().tracks[0].slots[2].clone().unwrap();
+        let cut = Target::Track(RelAddr::new(mpfree_param::OnTrack::Inst, 3));
+        let res = Target::Track(RelAddr::new(mpfree_param::OnTrack::Inst, 4));
+        let map = Map::linear(0.0, 1.0);
+        let gesture = [(0.0, 0.2, Kind::Step), (100.0, 0.7, Kind::Step)];
+        clip.moves.put(cut, map, &gesture, 960).unwrap();
+        clip.moves.put(res, map, &gesture, 960).unwrap();
+        let lanes = |c: &Clip| -> Vec<Target> {
+            let v = view_of(c, None, None, 2, 0, 0);
+            v.moves.lanes().iter().map(|l| l.target).collect()
+        };
+        clip.moves.set_by(
+            cut,
+            By::Continue {
+                on: true,
+                base: 0.5,
+            },
+        );
+        assert_eq!(lanes(&clip), [cut, res]);
+        clip.moves.set_by(
+            cut,
+            By::Continue {
+                on: false,
+                base: 0.5,
+            },
+        );
+        assert_eq!(lanes(&clip), [res]);
     }
 
     #[test]
