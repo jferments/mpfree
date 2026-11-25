@@ -1002,7 +1002,7 @@ fn takes_on_the_card_open_again_when_the_card_comes_back() {
 #[test]
 fn a_take_on_the_card_carries_on_on_the_stick_when_the_card_goes() {
     use mpfree_stream::rec::Hole;
-    use mpfree_stream::storage::Lease;
+    use mpfree_stream::storage::{CardMark, Lease};
     let card = scratch("carry-card");
     let stick = scratch("carry-stick");
     let mut mem = Rig::sized(None, None, 30);
@@ -1011,6 +1011,11 @@ fn a_take_on_the_card_carries_on_on_the_stick_when_the_card_goes() {
 
     let mut r = Rig::sized(None, Some(small()), 30);
     let lease = Lease::new(&card);
+    let mark = CardMark {
+        id: *b"card-marker-id-1",
+        serial: 0x5EC0_1A2B,
+    };
+    assert!(lease.set_mark(mark));
     r.h.own_device(lease.clone());
     assert!(r.h.record_to(card.clone(), quick()).is_ok());
     r.h.command(A::Arm(0, true));
@@ -1068,6 +1073,11 @@ fn a_take_on_the_card_carries_on_on_the_stick_when_the_card_goes() {
     let hole = Hole::decode(&std::fs::read(&holes[0]).unwrap()).expect("a hole record");
     assert!(hole.frames > 0);
     assert_eq!(hole.from.parent(), Some(card.as_path()));
+    assert_eq!(
+        (hole.card, hole.serial),
+        (mark.id, mark.serial),
+        "which card"
+    );
     let saved = r.save();
     let path = saved.takes[0].path.as_ref().expect("its file holds it all");
     assert!(path.starts_with(&stick));

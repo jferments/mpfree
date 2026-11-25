@@ -14387,6 +14387,13 @@ impl Player {
                 Do::Tell(line) => self.tell(line),
                 Do::Ask => self.sd_card.open(),
                 Do::RecordTo(dir) => self.outbox.push(FromUi::AudioFiles(dir)),
+                // The opening the takes record on says which card it is
+                // (the audio tracks hold the same lease).
+                Do::Mark(mark) => {
+                    if let Some(l) = &self.card_lease {
+                        l.set_mark(mark);
+                    }
+                }
                 Do::Found(found) => {
                     let first = self.status_watch.add_found_takes(found.found);
                     for mut r in found.reports {
@@ -14838,9 +14845,11 @@ impl Player {
                     // and this opening the one their takes there read on.
                     let lease = self.card_lease(&card.mount);
                     self.outbox.push(FromUi::AudioDrive(lease));
-                    let dos = self
-                        .card_takes
-                        .opened(card.write.as_deref(), card.read_only.as_deref());
+                    let dos = self.card_takes.opened(
+                        card.write.as_deref(),
+                        card.read_only.as_deref(),
+                        card.serial,
+                    );
                     self.card_do(dos);
                     (
                         Some(card.mount.clone()),
@@ -42274,7 +42283,7 @@ mod tests {
         )
         .unwrap();
         let open = format!(
-            "state=open\nmessage=The SD card is open; its MPFree folder can be written.\nask=00dd\ncard=mmcblk1\nfs=exfat\nsectors=124735488\nmount={}\nwrite={}\n",
+            "state=open\nmessage=The SD card is open; its MPFree folder can be written.\nask=00dd\ncard=mmcblk1\nfs=exfat\nsectors=124735488\nmount={}\nwrite={}\nserial=5EC01A2B\n",
             card.display(),
             mpfree.display()
         );
@@ -42356,6 +42365,18 @@ mod tests {
         assert!(std::sync::Arc::ptr_eq(&leases[0], &leases[1]));
         let lease = leases[0].clone();
         assert!(lease.valid());
+        // Which card it is (B2c): marked in MPFree/, its serial from the
+        // window, told to the opening the takes record on.
+        let id = mpfree_stream::storage::read_marker(&mpfree)
+            .unwrap()
+            .expect("the card is marked");
+        assert_eq!(
+            lease.mark(),
+            Some(mpfree_stream::storage::CardMark {
+                id,
+                serial: 0x5EC0_1A2B
+            })
+        );
         assert!(
             !dir.join("run/sd-card-write.request").exists(),
             "taken over, not asked again"

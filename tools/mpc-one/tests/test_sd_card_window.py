@@ -43,6 +43,10 @@ REFUSED = "[  812.40] Trying to write to read-only block-device mmcblk1p1\n"
 ASK = "5f0c1d2e3a4b59687766554433221100"
 
 
+# The exFAT cards' volume serial number (bytes 100-103), as the windows say it.
+EXFAT_SERIAL = 0x5EC01A2B
+
+
 def boot_sector(kind, flags=0):
     """The first sector of a filesystem, as FAT and exFAT write it (the names at 3, 54 and 82), the rest noise,
     but for the byte that holds the in-use mark (FAT32 65, FAT16 37, exFAT's VolumeFlags 106-107): `flags`."""
@@ -55,6 +59,7 @@ def boot_sector(kind, flags=0):
         s[37] = flags
     elif kind == "exfat":
         s[3:11] = b"EXFAT   "
+        s[100:104] = EXFAT_SERIAL.to_bytes(4, "little")
         s[106:108] = flags.to_bytes(2, "little")
     elif kind == "ntfs":
         s[3:11] = b"NTFS    "
@@ -378,13 +383,15 @@ class WindowTests(unittest.TestCase):
             self.assertTrue(self.calls("umount: ")[-1].endswith(MNT), self.calls("umount: "))
 
     def assert_read_only(self, dev="/dev/mmcblk1p1"):
-        """The card was read only as one sector of its filesystem, and mounted read-only; the in-use mark was
-        read from the sector's copy in RAM."""
+        """The card was read only as one sector of its filesystem, and mounted read-only; the in-use mark (and
+        exFAT's volume serial) were read from the sector's copy in RAM."""
         reads = self.calls("dd: ")
         self.assertEqual([r for r in reads if "/dev/" in r], [f"if={self.root}{dev} bs=512 count=1"])
         sector = f"if={self.root}/run/mpfree-setup/sd-card-sector bs=1 skip="
-        self.assertEqual(len([r for r in reads if r.startswith(sector) and r.endswith(" count=1")]), 1, reads)
-        self.assertEqual(len(reads), 2, reads)
+        copies = [r for r in reads if "/dev/" not in r]
+        self.assertTrue(all(r.startswith(sector) and r.endswith(" count=1") for r in copies), reads)
+        skips = sorted(int(r[len(sector):].split()[0]) for r in copies)
+        self.assertIn(skips, ([37], [65], [100, 101, 102, 103, 106]), reads)
         for call in self.calls("mount: "):
             fs = call.split()[1]
             self.assertIn(fs, NAMES, call)
@@ -424,7 +431,11 @@ class WindowTests(unittest.TestCase):
                 self.setUp()
                 self.kernel = FakeSdKernel(self.root, card=card, parts=parts)
                 self.start()
-                self.assertEqual(self.wait_state("open")["fs"], fs)
+                st = self.wait_state("open")
+                self.assertEqual(st["fs"], fs)
+                # exFAT's volume serial, as a computer shows it: with MPFree/'s marker it tells cards apart.
+                self.assertEqual(st.get("serial"), "5EC01A2B" if card == "exfat" else None)
+                self.assertNotIn("5EC01A2B", self.notes(), "never in the notes")
                 self.assertIn(f"{kind} on {dev}, read-only", self.notes())
                 code, out = self.close_card()
                 self.assertEqual(code, 0, out + self.notes())
