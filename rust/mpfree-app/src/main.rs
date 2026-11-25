@@ -55,6 +55,11 @@
 //!                      mpfree-gpu-bench, which times them on the MPC's GPU);
 //!                      with --theme all, once per built-in theme, in
 //!                      DIR/THEME/NAME.mpdl (for the contrast check)
+//!   --touch-targets DIR
+//!                      host only: writes each sample page's controls, where
+//!                      they answer a finger and what they declare about
+//!                      touch, new NAME.touch.tsv files in DIR (for the touch
+//!                      audit, tests/touch_audit.rs)
 //!
 //! `--sound-cores shared|core3|two|three` (play and app) picks where the
 //! sound runs for this run, in place of Prefs' saved "Sound cores" (shared
@@ -275,6 +280,9 @@ struct Options {
     /// `--contact-sheet DIR`: every sample screen in `--theme` beside the
     /// theme it starts from, with a page to look at them ([`contact_sheet`]).
     contact_sheet: Option<PathBuf>,
+    /// `--touch-targets DIR`: every sample page's controls as the touch
+    /// audit reads them ([`touch_targets`]).
+    touch_targets: Option<PathBuf>,
     font: Option<PathBuf>,
     bold_font: Option<PathBuf>,
     mono_font: Option<PathBuf>,
@@ -346,6 +354,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         display_lists: None,
         check_theme: None,
         contact_sheet: None,
+        touch_targets: None,
         font: None,
         bold_font: None,
         mono_font: None,
@@ -396,6 +405,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
             "--display-lists" => o.display_lists = Some(PathBuf::from(value()?)),
             "--check-theme" => o.check_theme = Some(PathBuf::from(value()?)),
             "--contact-sheet" => o.contact_sheet = Some(PathBuf::from(value()?)),
+            "--touch-targets" => o.touch_targets = Some(PathBuf::from(value()?)),
             "--font" => o.font = Some(PathBuf::from(value()?)),
             "--bold-font" => o.bold_font = Some(PathBuf::from(value()?)),
             "--mono-font" => o.mono_font = Some(PathBuf::from(value()?)),
@@ -421,6 +431,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
         && o.display_lists.is_none()
         && o.check_theme.is_none()
         && o.contact_sheet.is_none()
+        && o.touch_targets.is_none()
         && o.command.is_empty()
     {
         return Err(
@@ -17534,6 +17545,88 @@ fn display_lists(o: &Options) -> Result<(), String> {
     Ok(())
 }
 
+/// Each sample page's controls as the touch audit reads them
+/// (tests/touch_audit.rs, layout spec 1a), one new NAME.touch.tsv file per
+/// page in DIR: a `# page NAME W H` line, a `# slot WIDGET X Y W H` line per
+/// widget in slot order, then a header and one line per control the page
+/// shows (`Ui::targets`: a control under a later widget is left out): where
+/// it answers a finger, where it is drawn, its gesture and whether it is
+/// enabled, and what it declares about touch (`mpfree_ui::touch`), with the
+/// class that declaration needs. The page is drawn once first, as on the
+/// screen. No devices are opened; it writes only new files.
+fn touch_targets(o: &Options) -> Result<(), String> {
+    let dir = o.touch_targets.as_ref().unwrap();
+    fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let fonts = || {
+        Fonts::with_files(
+            o.font.as_deref(),
+            o.bold_font.as_deref(),
+            o.mono_font.as_deref(),
+        )
+    };
+    fonts()?;
+    let theme = load_theme(o)?;
+    let clean = |s: &str| s.replace(['\t', '\n'], " ");
+    let mut pages = 0;
+    for (name, mut p) in gui::sample_screens(|| fonts().unwrap_or_else(|_| Fonts::embedded())) {
+        p.ui.set_theme(theme.clone());
+        let (w, h) = p.ui.size();
+        let mut canvas = SoftCanvas::new(w, h);
+        p.ui.paint(&mut canvas);
+        let mut text = format!("# page {name} {w} {h}\n");
+        for (widget, r) in p.ui.slots() {
+            text.push_str(&format!(
+                "# slot {widget} {} {} {} {}\n",
+                r.x, r.y, r.w, r.h
+            ));
+        }
+        text.push_str(
+            "widget\tid\tindex\tgesture\tenabled\tclass\tneeded\tcontext\tconsequence\t\
+             timing\tcommit\tmovement\tobject\tx\ty\tw\th\tdrawn\tlabel\n",
+        );
+        for pt in p.ui.targets() {
+            let t = &pt.target;
+            let r = t.rect;
+            let drawn = t
+                .drawn
+                .map(|d| format!("{},{},{},{}", d.x, d.y, d.w, d.h))
+                .unwrap_or_else(|| "-".to_string());
+            text.push_str(&format!(
+                "{}\t{}\t{}\t{:?}\t{}\t{}\t{}\t{:?}\t{:?}\t{:?}\t{:?}\t{:?}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                pt.widget,
+                t.id,
+                t.index,
+                t.gesture,
+                t.enabled,
+                t.class.name(),
+                t.needed_class().name(),
+                t.context,
+                t.consequence,
+                t.timing,
+                t.commit,
+                t.movement,
+                t.object.as_deref().map(clean).unwrap_or_else(|| "-".to_string()),
+                r.x,
+                r.y,
+                r.w,
+                r.h,
+                drawn,
+                clean(&t.label),
+            ));
+        }
+        let path = dir.join(format!("{name}.touch.tsv"));
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .and_then(|mut f| f.write_all(text.as_bytes()))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        pages += 1;
+    }
+    println!("touch targets written: {pages} pages in {}", dir.display());
+    Ok(())
+}
+
 /// The runs of text under 3:1 on page `p` drawn in theme `t` (the
 /// contrast check's measure, `mpfree_ui::lint`).
 fn unreadable_runs(p: &mut gui::Player, t: &Theme) -> Result<Vec<mpfree_ui::lint::Run>, String> {
@@ -17820,6 +17913,9 @@ fn main() {
         }
         if o.contact_sheet.is_some() {
             return gui::on_screens_stack(|| contact_sheet(&o));
+        }
+        if o.touch_targets.is_some() {
+            return gui::on_screens_stack(|| touch_targets(&o));
         }
         match o.command.as_str() {
             "inventory" => inventory(&o),
