@@ -790,6 +790,7 @@ impl Desk<'_> {
                 looping::LoopAction::Side(side, keep),
             )),
             gui::FromUi::LoopAb(on) => fx.push(app::Effect::Looper(looping::LoopAction::Ab(on))),
+            gui::FromUi::LoopMove(a) => fx.push(app::Effect::Looper(looping::LoopAction::Move(a))),
             gui::FromUi::LoopMakeSong => {
                 fx.push(app::Effect::Looper(looping::LoopAction::MakeSong))
             }

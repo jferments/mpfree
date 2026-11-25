@@ -17,12 +17,11 @@ use crate::loop_row::{LayerChip, LoopRow, LOOP_ROW};
 use crate::looper_deck::{CaptureButton, Channel, DeckHead, LoopDeck, RingState, DECK};
 use crate::looper_tab::{
     level_frac, level_text, AskButtons, Chip, ChipAct, ChipKind, Ctl, DropSpot, DropTo, EmptyLook,
-    HistoryList, LayerDrag, LayerRow, LoopEditor, PointLook, PointPane, SmartChip, Strip, ASK,
-    BAR_CHOICES, EDITOR, LOOP_COLOURS, QLINKS, SEND_SHOW, SPEED_CHOICES,
+    HistoryList, LayerDrag, LayerRow, LoopEditor, Pick, PointLook, PointPane, SmartChip, Strip,
+    ASK, BAR_CHOICES, EDITOR, LOOP_COLOURS, QLINKS, SEND_SHOW, SPEED_CHOICES,
 };
 use crate::looping::{
-    bars_words_n, LoopSource, LoopWave, LooperView, Side, POINT_END_FROM_MS, POINT_MS,
-    POINT_START_FROM_MS,
+    bars_words_n, hand_moved, Edge, LoopSource, LoopWave, LooperView, Side, POINT_MS,
 };
 use mpfree_looper::{
     After, Clock, Command, Edit, History, LayerCommand, LayerInfo, Overdubs, Phase, Shift, Snap,
@@ -280,6 +279,9 @@ pub enum LoopTurn {
     FadeOld(f32),
     /// The picked loop's seam fade, in frames.
     Seam(u32),
+    /// Move start / Move end while the loop point view shows: Q1 the
+    /// start, Q2 the end, a step a detent (later above 0).
+    Move(Edge, i32),
 }
 
 /// The Q-Link banks on the Looper tab, in Q-LINK's order.
@@ -920,6 +922,15 @@ impl LooperPage {
         if ticks == 0 || k > 3 {
             return None;
         }
+        // The loop point view shows: Q1 moves the start, Q2 the end, by
+        // its step; Q3 and Q4 move nothing.
+        if Self::point_showing(ui) {
+            return match k {
+                0 => Some(LoopTurn::Move(Edge::Start, ticks)),
+                1 => Some(LoopTurn::Move(Edge::End, ticks)),
+                _ => None,
+            };
+        }
         let d = ticks as f32 * if fine { 0.1 } else { 0.5 };
         let step_db = |level: f32| {
             let db = (20.0 * level.max(1e-6).log10()).max(-60.0);
@@ -1001,7 +1012,28 @@ impl LooperPage {
         }
     }
 
+    /// Whether the loop point view shows (the Q-Links move its start and
+    /// end, and the hint line says so).
+    pub fn point_showing(ui: &Ui) -> bool {
+        ui.get::<LoopEditor>(EDITOR)
+            .is_some_and(|e| e.shown_point().is_some())
+    }
+
     fn refresh_qlinks(&mut self, ui: &mut Ui, v: &LooperView) {
+        if let Some(look) = ui
+            .get::<LoopEditor>(EDITOR)
+            .and_then(|e| e.shown_point())
+            .cloned()
+        {
+            let cards = point_qlinks(v, &look);
+            if let Some(q) = ui.get_mut::<QLinkColumn>(QLINKS) {
+                if q.cards != cards || q.title != "Loop point" {
+                    q.cards = cards;
+                    q.title = "Loop point".to_string();
+                }
+            }
+            return;
+        }
         let loop_card = |n: usize| {
             let l = &v.loops[n];
             let name = format!("Loop {}", n + 1);
@@ -2008,6 +2040,35 @@ fn bpm_of(ticks: i64, frames: i64, rate: u32) -> f64 {
 
 /// A difference in ms with its sign, as the loop point view says it:
 /// "−48 ms", "+80 ms".
+/// The Q-Links while the loop point view shows: Q1 the start and Q2 the
+/// end, each where your move (or else the loop) has it, from your press
+/// or your tap, its ring where it is across its window; Q3 and Q4 move
+/// nothing.
+fn point_qlinks(v: &LooperView, look: &PointLook) -> [QLinkCard; 4] {
+    let s = &v.status;
+    let at = v
+        .smart
+        .moving
+        .map(|m| m.to)
+        .or(s.moved)
+        .unwrap_or(Shift::NONE);
+    let card = |name: &str, f: i64, pane: &PointPane| {
+        let pos = pane.moving.as_ref().map_or(pane.edge.0, |m| m.0);
+        QLinkCard::new(
+            name,
+            "Loop point",
+            &signed_ms(f, v.rate),
+            pos.clamp(0.0, 1.0),
+        )
+    };
+    [
+        card("Start", at.start, &look.start),
+        card("End", at.end, &look.end),
+        QLinkCard::default(),
+        QLinkCard::default(),
+    ]
+}
+
 fn signed_ms(frames: i64, rate: u32) -> String {
     let ms = ms_of(frames, rate);
     match frames.signum() {
@@ -2027,6 +2088,25 @@ pub(crate) fn smart_chip(v: &LooperView) -> Option<SmartChip> {
         return None;
     }
     let ms = |f: i64| ms_of(f, v.rate);
+    // Moved by hand: how far, with Use my tap.
+    if let Some(m) = s.moved.filter(|_| hand_moved(s)) {
+        let way = |f: i64| if f < 0 { "earlier" } else { "later" };
+        let words = match (m.start != 0, m.end != 0) {
+            (false, _) => format!("Moved {} ms {}", ms(m.end), way(m.end)),
+            (true, false) => format!("Start moved {} ms {}", ms(m.start), way(m.start)),
+            (true, true) => format!(
+                "Moved: start {} ms {}, end {} ms {}",
+                ms(m.start),
+                way(m.start),
+                ms(m.end),
+                way(m.end)
+            ),
+        };
+        return Some(SmartChip {
+            words,
+            action: ("Use my tap".to_string(), ChipAct::Side(Side::Tap), false),
+        });
+    }
     if let Some(o) = s.offer {
         let mut parts = Vec::new();
         match o.end.signum() {
@@ -2076,9 +2156,11 @@ pub(crate) fn smart_chip(v: &LooperView) -> Option<SmartChip> {
 /// The loop point view for the picked loop, while its chip shows and the
 /// looper has read the audio round its start and end
 /// ([`crate::looping::SmartView::point`]): the start's window from 100 ms
-/// before your press, the end's from 200 ms before your tap, each 300 ms,
-/// with where the loop is, your press or tap and what was found; what the
-/// other side would make of it; the choice, A/B, and Read as.
+/// before your press, the end's from 200 ms before your tap, each 300 ms
+/// (or round the loop's edge, or a move, when that is out of view), with
+/// where the loop is, your press or tap, what was found, the hits heard
+/// and a move set up; what the other side (or the move) would make of it;
+/// the choice, A/B, Read as, and Move start / Move end's step.
 pub(crate) fn point_look(v: &LooperView) -> Option<PointLook> {
     smart_chip(v)?;
     let s = &v.status;
@@ -2086,17 +2168,23 @@ pub(crate) fn point_look(v: &LooperView) -> Option<PointLook> {
     // (Not moved is None: the loop is on your press and your tap.)
     let moved = s.moved.unwrap_or(Shift::NONE);
     let rate = v.rate;
-    let ms = |f: i64| f as f64 * 1000.0 / f64::from(rate.max(1));
-    let tap_side = s.offer.is_some();
-    let snap_side = !tap_side && !moved.is_none();
+    let hand = hand_moved(s);
+    let tap_side = s.offer.is_some() && !hand;
+    let snap_side = !tap_side && !moved.is_none() && !hand;
     // Loop memory was full as the pass closed: nothing after the tap was
     // kept, so the end can move earlier, not later.
     let short = s.bounds.is_some_and(|b| b.short);
-    let offer = s.offer.unwrap_or(Shift::NONE);
+    let offer = if hand {
+        Shift::NONE
+    } else {
+        s.offer.unwrap_or(Shift::NONE)
+    };
     let frames = s.frames as i64;
     let bars = bars_of(s.ticks, v.bar_ticks) as u32;
     let bpm_now = bpm_of(s.ticks, frames, rate);
-    let now = if tap_side || !snap_side {
+    let now = if hand {
+        "moved by hand"
+    } else if tap_side || !snap_side {
         "your tap"
     } else if moved.end != 0 {
         "snapped"
@@ -2104,12 +2192,32 @@ pub(crate) fn point_look(v: &LooperView) -> Option<PointLook> {
         "on your first hit"
     };
     let now = format!("Now: {now}, {} at {bpm_now:.2} BPM", bars_words_n(bars));
+    let width = (POINT_MS * f64::from(rate) / 1000.0).round() as i64;
+    let moving = v.smart.moving;
+    let to = moving.map(|m| m.to);
     // The start: where it is and where it was found, from your press.
-    let at_start = |f: i64| ((ms(f) - POINT_START_FROM_MS) / POINT_MS) as f32;
-    let found_start = moved.start + offer.start;
+    let at = |from: i64, f: i64| ((f - from) as f64 / width.max(1) as f64) as f32;
+    let at_start = |f: i64| at(audio.from[0], f);
+    let at_end = |f: i64| at(audio.from[1], f);
+    let hits = |k: usize| -> Vec<f32> {
+        audio.hits[k][..usize::from(audio.n_hits[k])]
+            .iter()
+            .map(|&h| at(audio.from[k], h))
+            .collect()
+    };
+    let found_start = if hand {
+        s.found.map_or(0, |f| f.start)
+    } else {
+        moved.start + offer.start
+    };
     let start = PointPane {
         title: "Start".to_string(),
         note: match (found_start != 0, snap_side) {
+            _ if hand && moved.start != 0 => format!(
+                "moved by hand, {} ms {} REC",
+                ms_of(moved.start, rate),
+                if moved.start < 0 { "before" } else { "after" }
+            ),
             (false, _) => "the start stays on REC".to_string(),
             (true, false) => format!(
                 "your first hit came {} ms after REC",
@@ -2130,18 +2238,43 @@ pub(crate) fn point_look(v: &LooperView) -> Option<PointLook> {
                 signed_ms(found_start, rate),
             )
         }),
+        span: (audio.from[0], width),
+        hits: hits(0),
+        // A move set up; else, moved by hand, where you put it.
+        moving: to
+            .map(|t| t.start)
+            .or((hand && moved.start != 0).then_some(moved.start))
+            .filter(|&f| to.is_none() || f != moved.start)
+            .map(|f| (at_start(f), signed_ms(f, rate))),
     };
     // The end, from your tap.
-    let at_end = |f: i64| ((ms(f) - POINT_END_FROM_MS) / POINT_MS) as f32;
-    let found_end = moved.end + offer.end;
+    let found_end = if hand {
+        s.found.map_or(0, |f| f.end)
+    } else {
+        moved.end + offer.end
+    };
     let way = if found_end < 0 { "before" } else { "after" };
     // A/B on the seam: whose end runs into the start this time round
     // (the looper plays the other side's from half way, every other
-    // time round): true, the snap's.
-    let ab_snaps = s.ab.filter(|_| v.smart.ab).map(|other| other != snap_side);
+    // time round): true, the other side's.
+    let ab_other = s.ab.filter(|_| v.smart.ab);
+    let ab_snaps = ab_other
+        .filter(|_| moving.is_none())
+        .map(|other| other != snap_side);
     let end = PointPane {
         title: "End".to_string(),
         note: match (ab_snaps, found_end != 0, snap_side) {
+            _ if moving.is_some() && ab_other == Some(true) => {
+                "now: your move's end, into the start".to_string()
+            }
+            _ if moving.is_some() && ab_other == Some(false) => {
+                "now: the loop's own end, into the start".to_string()
+            }
+            _ if hand && moved.end != 0 => format!(
+                "moved by hand, {} ms {} your tap",
+                ms_of(moved.end, rate),
+                if moved.end < 0 { "before" } else { "after" }
+            ),
             (Some(true), ..) => "now: the snap's end, into the start".to_string(),
             (Some(false), ..) => "now: your tap, into the start".to_string(),
             (None, false, _) => "on your tap".to_string(),
@@ -2163,14 +2296,53 @@ pub(crate) fn point_look(v: &LooperView) -> Option<PointLook> {
                 signed_ms(found_end, rate),
             )
         }),
+        span: (audio.from[1], width),
+        hits: hits(1),
+        moving: to
+            .map(|t| t.end)
+            .or((hand && moved.end != 0).then_some(moved.end))
+            .filter(|&f| to.is_none() || f != moved.end)
+            .map(|f| (at_end(f), signed_ms(f, rate))),
     };
     let back = if moved.end != 0 {
         "Use my tap"
     } else {
         "Use my press"
     };
-    let (line, pick) = if v.smart.ab {
-        let (now, other) = if snap_side {
+    let side = |label: &str, side: Side, keep: bool| (label.to_string(), Pick::Side(side, keep));
+    let (line, pick) = if let Some(m) = moving {
+        let mut pick = Vec::new();
+        let line = match m.makes {
+            Ok(bpm) if v.smart.ab => {
+                pick.push(("Move".to_string(), Pick::Move));
+                format!(
+                    "A/B: each time round, the end runs into the start as the loop has it, \
+                     then as your move would. The tempo stays {bpm_now:.2} BPM until you Move \
+                     (then {bpm:.2})."
+                )
+            }
+            Ok(bpm) => {
+                pick.push(("Move".to_string(), Pick::Move));
+                format!(
+                    "Your move makes it {} at {bpm:.2} BPM, from the loop's next downbeat.",
+                    bars_words_n(bars)
+                )
+            }
+            Err(why) => format!("Your move can't be made: {why}."),
+        };
+        pick.push(("Cancel".to_string(), Pick::Cancel));
+        (line, pick)
+    } else if v.smart.ab {
+        let (now, other) = if hand {
+            (
+                "your move has it",
+                if s.found.is_some() {
+                    "Snap would"
+                } else {
+                    "your tap would"
+                },
+            )
+        } else if snap_side {
             ("the snap has it", "your tap would")
         } else {
             ("your tap has it", "Snap would")
@@ -2180,9 +2352,29 @@ pub(crate) fn point_look(v: &LooperView) -> Option<PointLook> {
                 "A/B: each time round, the end runs into the start as {now}, then as {other}. \
                  The tempo stays {bpm_now:.2} BPM."
             ),
+            if hand {
+                vec![
+                    side("Keep it", Side::Snap, true),
+                    side("Use my tap", Side::Tap, false),
+                ]
+            } else {
+                vec![
+                    side("Keep the snap", Side::Snap, true),
+                    side("Keep my tap", Side::Tap, true),
+                ]
+            },
+        )
+    } else if hand {
+        let bpm = bpm_of(s.ticks, frames - moved.longer(), rate);
+        (
+            format!(
+                "Use my tap puts it back on REC and your tap: {} at {bpm:.2} BPM, from the \
+                 loop's next downbeat.",
+                bars_words_n(bars)
+            ),
             vec![
-                ("Keep the snap".to_string(), Side::Snap, true),
-                ("Keep my tap".to_string(), Side::Tap, true),
+                side("Use my tap", Side::Tap, false),
+                side("Keep it", Side::Snap, true),
             ],
         )
     } else if short && !snap_side {
@@ -2192,11 +2384,11 @@ pub(crate) fn point_look(v: &LooperView) -> Option<PointLook> {
                 .to_string(),
             if tap_side {
                 vec![
-                    ("Snap".to_string(), Side::Snap, false),
-                    ("Keep my tap".to_string(), Side::Tap, true),
+                    side("Snap", Side::Snap, false),
+                    side("Keep my tap", Side::Tap, true),
                 ]
             } else {
-                vec![("Keep my tap".to_string(), Side::Tap, true)]
+                vec![side("Keep my tap", Side::Tap, true)]
             },
         )
     } else if tap_side {
@@ -2208,8 +2400,8 @@ pub(crate) fn point_look(v: &LooperView) -> Option<PointLook> {
                 bars_words_n(bars)
             ),
             vec![
-                ("Snap".to_string(), Side::Snap, false),
-                ("Keep my tap".to_string(), Side::Tap, true),
+                side("Snap", Side::Snap, false),
+                side("Keep my tap", Side::Tap, true),
             ],
         )
     } else if snap_side {
@@ -2221,27 +2413,29 @@ pub(crate) fn point_look(v: &LooperView) -> Option<PointLook> {
                 bars_words_n(bars)
             ),
             vec![
-                (back.to_string(), Side::Tap, false),
-                ("Keep the snap".to_string(), Side::Snap, true),
+                side(back, Side::Tap, false),
+                side("Keep the snap", Side::Snap, true),
             ],
         )
     } else {
         (
             "Nothing to snap: the loop is on REC and your tap. Read as keeps its length \
-             and changes the tempo."
+             and changes the tempo; or move its start or end yourself."
                 .to_string(),
-            vec![("Keep my tap".to_string(), Side::Tap, true)],
+            vec![side("Keep my tap", Side::Tap, true)],
         )
     };
+    let two_sides = tap_side || snap_side || hand || moving.is_some_and(|m| m.makes.is_ok());
     Some(PointLook {
         now,
         start,
         end,
         line,
         pick,
-        ab: (tap_side || snap_side).then_some(v.smart.ab),
+        ab: two_sides.then_some(v.smart.ab),
         read_as: read_as_choices(v, bars),
         bars_now: bars,
+        step: v.smart.move_step,
     })
 }
 
@@ -2608,6 +2802,7 @@ mod tests {
             start: 0,
             end: -2117,
         });
+        v.status.found = v.status.moved;
         let c = smart_chip(&v).unwrap();
         assert_eq!(c.words, "Snapped 48 ms earlier");
         assert_eq!(
@@ -2618,6 +2813,7 @@ mod tests {
             start: 3528,
             end: 0,
         });
+        v.status.found = v.status.moved;
         let c = smart_chip(&v).unwrap();
         assert_eq!(c.words, "Started on your first hit, 80 ms after REC");
         assert_eq!(c.action.0, "Use my press");
@@ -2648,10 +2844,11 @@ mod tests {
     fn the_loop_point_view_shows_both_sides_and_what_the_other_makes_of_the_loop() {
         let mut v = found_late();
         assert_eq!(point_look(&v), None, "no audio read yet");
-        v.smart.point = Some(crate::looping::LoopPoint {
-            start: [10; crate::looping::POINT_BARS],
-            end: [20; crate::looping::POINT_BARS],
-        });
+        v.smart.point = Some(crate::looping::LoopPoint::new(
+            [10; crate::looping::POINT_BARS],
+            [20; crate::looping::POINT_BARS],
+            44_100,
+        ));
         let p = point_look(&v).unwrap();
         assert_eq!(p.now, "Now: your tap, 4 bars at 92.00 BPM");
         assert!(
@@ -2660,8 +2857,11 @@ mod tests {
             "{}",
             p.line
         );
-        assert_eq!(p.pick[0], ("Snap".into(), Side::Snap, false));
-        assert_eq!(p.pick[1], ("Keep my tap".into(), Side::Tap, true));
+        assert_eq!(p.pick[0], ("Snap".into(), Pick::Side(Side::Snap, false)));
+        assert_eq!(
+            p.pick[1],
+            ("Keep my tap".into(), Pick::Side(Side::Tap, true))
+        );
         assert_eq!(p.ab, Some(false));
         // The tap two thirds across the end's window, the end found 48
         // ms before it, the shade after the loop's end (the tap).
@@ -2691,6 +2891,7 @@ mod tests {
             start: 0,
             end: -2117,
         });
+        v.status.found = v.status.moved;
         let p = point_look(&v).unwrap();
         assert!(p.now.starts_with("Now: snapped, "), "{}", p.now);
         assert!(
@@ -2699,7 +2900,10 @@ mod tests {
             "{}",
             p.line
         );
-        assert_eq!(p.pick[1], ("Keep the snap".into(), Side::Snap, true));
+        assert_eq!(
+            p.pick[1],
+            ("Keep the snap".into(), Pick::Side(Side::Snap, true))
+        );
         assert_eq!(p.end.found.unwrap().1, "snapped");
         // A/B on the seam, from the snap: keep one; the End's note says
         // whose end runs into the start this time round.
@@ -2739,14 +2943,120 @@ mod tests {
         // A close call alone: nothing to snap, no A/B, Read as.
         let mut v = two_loops();
         v.smart.close_call = Some(8);
-        v.smart.point = Some(crate::looping::LoopPoint {
-            start: [0; crate::looping::POINT_BARS],
-            end: [0; crate::looping::POINT_BARS],
-        });
+        v.smart.point = Some(crate::looping::LoopPoint::new(
+            [0; crate::looping::POINT_BARS],
+            [0; crate::looping::POINT_BARS],
+            44_100,
+        ));
         let p = point_look(&v).unwrap();
         assert_eq!(p.ab, None);
-        assert_eq!(p.pick, vec![("Keep my tap".into(), Side::Tap, true)]);
+        assert_eq!(
+            p.pick,
+            vec![("Keep my tap".into(), Pick::Side(Side::Tap, true))]
+        );
         assert!(p.read_as.iter().any(|r| r.1 == 8));
+    }
+
+    /// Move start / Move end in the loop point view: a move set up says
+    /// what it makes, with Move and Cancel, and marks your move on its
+    /// window; during A/B, whose end comes next; one that can't be made
+    /// says why, with Cancel alone. Kept, the loop is moved by hand: the
+    /// chip says how far with Use my tap, and the view offers Use my tap
+    /// and Keep it.
+    #[test]
+    fn a_move_in_the_loop_point_view_says_what_it_makes_and_a_kept_one_is_by_hand() {
+        use crate::looping::Moving;
+        let mut v = found_late();
+        v.smart.point = Some(crate::looping::LoopPoint::new(
+            [10; crate::looping::POINT_BARS],
+            [20; crate::looping::POINT_BARS],
+            44_100,
+        ));
+        // 65 ms before your tap.
+        let to = Shift {
+            start: 0,
+            end: -2_867,
+        };
+        v.smart.moving = Some(Moving {
+            to,
+            makes: Ok(92.58),
+        });
+        let p = point_look(&v).unwrap();
+        assert_eq!(
+            p.line,
+            "Your move makes it 4 bars at 92.58 BPM, from the loop's next downbeat."
+        );
+        assert_eq!(
+            p.pick,
+            vec![("Move".into(), Pick::Move), ("Cancel".into(), Pick::Cancel)]
+        );
+        let (f, gap) = p.end.moving.clone().expect("your move on the end");
+        assert_eq!(gap, "\u{2212}65 ms");
+        assert!((f - (2.0 / 3.0 - 65.0 / 300.0)).abs() < 2e-3, "{f}");
+        assert_eq!(p.start.moving, None, "the start stays");
+        assert!(p.end.found.is_some(), "what was found stays drawn");
+        // A/B: the loop as it is, then your move.
+        v.smart.ab = true;
+        v.status.ab = Some(true);
+        let p = point_look(&v).unwrap();
+        assert_eq!(
+            p.line,
+            "A/B: each time round, the end runs into the start as the loop has it, then as \
+             your move would. The tempo stays 92.00 BPM until you Move (then 92.58)."
+        );
+        assert_eq!(p.end.note, "now: your move's end, into the start");
+        v.status.ab = Some(false);
+        assert_eq!(
+            point_look(&v).unwrap().end.note,
+            "now: the loop's own end, into the start"
+        );
+        // One that can't be made.
+        v.smart.ab = false;
+        v.status.ab = None;
+        v.smart.moving = Some(Moving {
+            to,
+            makes: Err("too fast"),
+        });
+        let p = point_look(&v).unwrap();
+        assert_eq!(p.line, "Your move can't be made: too fast.");
+        assert_eq!(p.pick, vec![("Cancel".into(), Pick::Cancel)]);
+        // Kept: moved by hand, 17 ms past what was found.
+        v.smart.moving = None;
+        v.status.found = v.status.offer;
+        v.status.moved = Some(to);
+        v.status.offer = Some(Shift { start: 0, end: 750 });
+        let c = smart_chip(&v).unwrap();
+        assert_eq!(c.words, "Moved 65 ms earlier");
+        assert_eq!(
+            c.action,
+            ("Use my tap".into(), ChipAct::Side(Side::Tap), false)
+        );
+        let p = point_look(&v).unwrap();
+        assert!(
+            p.now.starts_with("Now: moved by hand, 4 bars at "),
+            "{}",
+            p.now
+        );
+        assert_eq!(p.end.note, "moved by hand, 65 ms before your tap");
+        assert_eq!(p.end.moving.unwrap().1, "\u{2212}65 ms");
+        assert_eq!(
+            p.end.found.unwrap().2,
+            "\u{2212}48 ms",
+            "still what was found"
+        );
+        assert!(
+            p.line
+                .starts_with("Use my tap puts it back on REC and your tap: 4 bars at "),
+            "{}",
+            p.line
+        );
+        assert_eq!(
+            p.pick,
+            vec![
+                ("Use my tap".into(), Pick::Side(Side::Tap, false)),
+                ("Keep it".into(), Pick::Side(Side::Snap, true)),
+            ]
+        );
     }
 
     /// Loop memory full as the pass closed: the line says the end can
@@ -2754,10 +3064,11 @@ mod tests {
     /// "nothing to snap"; a snap made says the way back as before.
     #[test]
     fn the_loop_point_view_says_when_loop_memory_was_full() {
-        let point = crate::looping::LoopPoint {
-            start: [10; crate::looping::POINT_BARS],
-            end: [20; crate::looping::POINT_BARS],
-        };
+        let point = crate::looping::LoopPoint::new(
+            [10; crate::looping::POINT_BARS],
+            [20; crate::looping::POINT_BARS],
+            44_100,
+        );
         let short = |v: &mut LooperView| {
             let end = 8_192 + v.status.frames as i64;
             v.status.bounds = Some(mpfree_looper::Bounds {
@@ -2779,8 +3090,8 @@ mod tests {
         assert_eq!(
             p.pick,
             vec![
-                ("Snap".into(), Side::Snap, false),
-                ("Keep my tap".into(), Side::Tap, true),
+                ("Snap".into(), Pick::Side(Side::Snap, false)),
+                ("Keep my tap".into(), Pick::Side(Side::Tap, true)),
             ]
         );
         // A close call alone: nothing to snap.
@@ -2790,7 +3101,10 @@ mod tests {
         short(&mut v);
         let p = point_look(&v).unwrap();
         assert_eq!(p.line, full);
-        assert_eq!(p.pick, vec![("Keep my tap".into(), Side::Tap, true)]);
+        assert_eq!(
+            p.pick,
+            vec![("Keep my tap".into(), Pick::Side(Side::Tap, true))]
+        );
         // Snapped: the way back, as with room to spare; A/B as it was.
         let mut v = found_late();
         v.smart.point = Some(point);
@@ -2800,6 +3114,7 @@ mod tests {
             start: 0,
             end: -2117,
         });
+        v.status.found = v.status.moved;
         let p = point_look(&v).unwrap();
         assert!(p.line.starts_with("Use my tap puts it back"), "{}", p.line);
         v.smart.ab = true;
@@ -2826,10 +3141,11 @@ mod tests {
     fn the_point_view_closes_when_there_is_nothing_left_in_it() {
         let (mut ui, mut page) = page();
         let mut v = found_late();
-        v.smart.point = Some(crate::looping::LoopPoint {
-            start: [10; crate::looping::POINT_BARS],
-            end: [20; crate::looping::POINT_BARS],
-        });
+        v.smart.point = Some(crate::looping::LoopPoint::new(
+            [10; crate::looping::POINT_BARS],
+            [20; crate::looping::POINT_BARS],
+            44_100,
+        ));
         page.update(&mut ui, &v, &Settings::default());
         let e = ui.get_mut::<LoopEditor>(EDITOR).unwrap();
         assert!(e.chip.is_some() && e.point.is_some());

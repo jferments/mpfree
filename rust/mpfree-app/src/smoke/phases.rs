@@ -2444,6 +2444,222 @@ mod looper {
         });
     }
 
+    /// The moves set up in the loop point view (Move start / Move end,
+    /// the looper refactor's R2), and their tempo.
+    fn moving(s: &mut Session) -> Option<crate::looping::Moving> {
+        let bpm = s.time.info().bpm;
+        s.looper.view(bpm).smart.moving
+    }
+
+    /// Opens the loop point view of a loop closed late, with its chip's
+    /// words.
+    fn open_point(s: &mut Session) {
+        s.run_for(0.1);
+        let chip = smart_editor(s).chip.clone().expect("the chip");
+        s.press("leditor", "chip", &chip.words);
+        s.run_for(0.1);
+        assert!(smart_editor(s).point.is_some(), "the view is open");
+    }
+
+    /// Move start / Move end, the whole way through: in the loop point
+    /// view, Hit and the end's ◀ put the end on the hit played again,
+    /// 1 ms and ▶ nudge it a millisecond later, and nothing changes yet.
+    /// A/B swaps the loop as it is with the move each time round, with no
+    /// snap and no tempo change. Move lands it on the loop's next downbeat
+    /// with the tempo, logs it as a labelled example, and the chip says
+    /// it was moved by hand; UNDO takes it back.
+    #[test]
+    fn move_end_steps_to_a_hit_plays_against_the_loop_and_lands_on_move() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let (by, tap, tap_bpm, _) = closed_late(&mut s);
+            open_point(&mut s);
+            assert_eq!(moving(&mut s), None);
+            let ms = |f: i64| f as f64 * 1000.0 / f64::from(crate::RATE);
+            let start = status(&s).moved.map_or(0, |m| m.start);
+            s.press("leditor", "point-step", "Step: Hit");
+            s.press("leditor", "point-nudge", "Move the end earlier");
+            s.run_for(0.1);
+            let hit = moving(&mut s).expect("a move set up").to;
+            assert_eq!(hit.start, start, "the start stays");
+            assert!(
+                ms(hit.end - by.end).abs() < 3.0,
+                "the end on the hit: {:.1} ms from your tap, found {:.1} ms",
+                ms(hit.end),
+                ms(by.end)
+            );
+            s.press("leditor", "point-step", "Step: 1 ms");
+            s.press("leditor", "point-nudge", "Move the end later");
+            s.run_for(0.1);
+            let m = moving(&mut s).expect("still set up");
+            let to = m.to;
+            assert_eq!(to.end, hit.end + i64::from(crate::RATE / 1000));
+            assert_eq!(status(&s).moved, None, "nothing changed yet");
+            let look = smart_editor(&s).point.clone().expect("the view's look");
+            let bpm = m.makes.expect("it can be made");
+            assert!(bpm > tap_bpm, "shorter, so faster: {bpm} after {tap_bpm}");
+            assert_eq!(
+                look.line,
+                format!("Your move makes it 1 bar at {bpm:.2} BPM, from the loop's next downbeat.")
+            );
+            let picks: Vec<&str> = look.pick.iter().map(|p| p.0.as_str()).collect();
+            assert_eq!(picks, ["Move", "Cancel"]);
+            assert!(look.end.moving.is_some(), "your move on the end's window");
+            // A/B: the loop as it is, then the move, in turn; no snap.
+            s.press("leditor", "point-ab", "A/B");
+            let mut sides = Vec::new();
+            let end = s.t() + 5.0;
+            while s.t() < end {
+                s.run_periods(8);
+                let st = status(&s);
+                assert_eq!(st.moved, None, "no snap");
+                assert_eq!(s.time.info().bpm, tap_bpm, "the tempo stays");
+                let side = st.ab.expect("A/B runs");
+                if sides.last() != Some(&side) {
+                    sides.push(side);
+                }
+            }
+            assert!(sides.len() >= 3, "each side in turn: {sides:?}");
+            assert_eq!(moving(&mut s).map(|m| m.to), Some(to), "still set up");
+            // Move: on the next downbeat, with the tempo.
+            s.press("leditor", "point-pick", "Move");
+            until_moved(&mut s, Some(to));
+            assert_eq!(status(&s).ab, None, "A/B stopped");
+            assert_eq!(status(&s).frames as i64, tap as i64 + to.longer());
+            s.run_for(0.1);
+            assert!((s.time.info().bpm - bpm).abs() < 1e-6);
+            assert_eq!(s.app.settings.bpm, s.time.info().bpm);
+            let said = s.said();
+            let line = said
+                .iter()
+                .find(|l| l.contains("Loop 1 moved by hand: "))
+                .unwrap_or_else(|| panic!("{said:?}"));
+            assert!(line.contains("(it found the start "), "{line}");
+            assert!(line.ends_with("; a labelled example)"), "{line}");
+            assert_eq!(moving(&mut s), None);
+            let chip = smart_editor(&s).chip.clone().expect("the chip");
+            assert_eq!(
+                chip.words,
+                format!("Moved {} ms earlier", ms(-to.end).round())
+            );
+            assert_eq!(chip.action.0, "Use my tap");
+            // UNDO: back on your tap, with its tempo.
+            s.button("UNDO");
+            until_moved(&mut s, None);
+            assert_eq!(status(&s).frames, tap);
+            assert!((s.time.info().bpm - tap_bpm).abs() < 1e-9);
+            assert_eq!(s.looper.snaps_refused, 0);
+        });
+    }
+
+    /// Move start / Move end's other ways: 1/16 moves the start a
+    /// sixteenth note later and two back stop where the kept audio
+    /// begins; a tap on the end's window puts the end in it; Cancel puts
+    /// the move away with nothing changed, and the view offers Snap again.
+    #[test]
+    fn a_move_steps_by_sixteenths_follows_a_finger_and_cancel_puts_it_away() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let (by, tap, tap_bpm, _) = closed_late(&mut s);
+            open_point(&mut s);
+            let st = status(&s);
+            let b = st.bounds.expect("bounds");
+            let start = st.moved.map_or(0, |m| m.start);
+            let sixteenth = (st.frames as i64 + 8) / 16;
+            assert_eq!(
+                smart_editor(&s).point.as_ref().unwrap().step,
+                crate::looping::MoveStep::Sixteenth,
+                "1/16 to begin with"
+            );
+            s.press("leditor", "point-nudge", "Move the start later");
+            s.run_for(0.1);
+            let m = moving(&mut s).expect("a move").to;
+            assert_eq!((m.start, m.end), (start + sixteenth, 0));
+            s.press("leditor", "point-nudge", "Move the start earlier");
+            s.press("leditor", "point-nudge", "Move the start earlier");
+            s.run_for(0.1);
+            let m = moving(&mut s).expect("a move").to;
+            assert_eq!(m.start, (start - sixteenth).max(-b.captured.0));
+            // A finger on the end's window: the end in the window.
+            let span = smart_editor(&s).point.as_ref().unwrap().end.span;
+            s.press("leditor", "point-window", "Move the end here");
+            s.run_for(0.1);
+            let m = moving(&mut s).expect("a move").to;
+            assert!(
+                (span.0..span.0 + span.1).contains(&m.end),
+                "{} in {span:?}",
+                m.end
+            );
+            // Cancel: nothing changed, Snap on offer again.
+            s.press("leditor", "point-pick", "Cancel");
+            s.run_for(0.2);
+            assert_eq!(moving(&mut s), None);
+            let st = status(&s);
+            assert_eq!((st.moved, st.frames, st.offer), (None, tap, Some(by)));
+            assert_eq!(s.time.info().bpm, tap_bpm);
+            assert!(s.said().iter().any(|l| l.contains("the move put away")));
+            let look = smart_editor(&s).point.clone().expect("still open");
+            assert_eq!(look.pick[0].0, "Snap");
+        });
+    }
+
+    /// While the loop point view shows, Q1 moves the start and Q2 the end,
+    /// a step a detent (the card's Q-Link option, the looper refactor's
+    /// R2); Q3 and Q4 move nothing; the column and the hint line say so,
+    /// and closing the view gives the Q-Links back to their bank.
+    #[test]
+    fn q1_and_q2_move_the_start_and_end_while_the_loop_point_view_shows() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            let (_, _, _, _) = closed_late(&mut s);
+            open_point(&mut s);
+            let column = |s: &Session| {
+                let q = s
+                    .screen
+                    .ui
+                    .get::<mpfree_ui::qlink::QLinkColumn>(crate::looper_tab::QLINKS)
+                    .expect("the Q-Links");
+                (q.title.clone(), q.cards.clone())
+            };
+            let (title, cards) = column(&s);
+            assert_eq!(title, "Loop point");
+            assert_eq!(
+                (cards[0].name.as_str(), cards[1].name.as_str()),
+                ("Start", "End")
+            );
+            assert!(cards[2].is_free() && cards[3].is_free());
+            assert!(
+                s.hint()
+                    .starts_with("Q1: move the start   ·   Q2: move the end"),
+                "{}",
+                s.hint()
+            );
+            let st = status(&s);
+            let start = st.moved.map_or(0, |m| m.start);
+            let sixteenth = (st.frames as i64 + 8) / 16;
+            // 1 ms: Q2 three detents earlier.
+            s.press("leditor", "point-step", "Step: 1 ms");
+            s.qlink(1, -3).run_for(0.1);
+            let m = moving(&mut s).expect("a move").to;
+            assert_eq!(m.end, -3 * i64::from(crate::RATE / 1000));
+            assert_eq!(column(&s).1[1].value, "\u{2212}3 ms");
+            // 1/16: Q1 one detent later.
+            s.press("leditor", "point-step", "Step: 1/16");
+            s.qlink(0, 1).run_for(0.1);
+            let m2 = moving(&mut s).expect("a move").to;
+            assert_eq!((m2.start, m2.end), (start + sixteenth, m.end));
+            // Q3 and Q4 move nothing.
+            s.qlink(2, 5).qlink(3, -5).run_for(0.1);
+            assert_eq!(moving(&mut s).map(|m| m.to), Some(m2));
+            assert_eq!(status(&s).moved, st.moved, "nothing changed yet");
+            // Closed: the bank again.
+            s.press("leditor", "point-close", "");
+            s.run_for(0.1);
+            assert_eq!(column(&s).0, "Loops 1-4");
+            assert!(s.hint().starts_with("Tap a ring"), "{}", s.hint());
+        });
+    }
+
     /// Smart loop end step 2's screens: a snap over recorded audio asks on
     /// the hint line, with Snap anyway and Not now at its end; Not now
     /// takes them away and nothing changes.
