@@ -169,6 +169,9 @@ struct FileSide {
     /// Loop layers' files read back, not taken yet
     /// ([`AudioHost::layer_read_back`]).
     layers_read: Vec<(RecordingId, Result<Vec<f32>, String>)>,
+    /// Loop layers' files begun and not yet written or dropped: the takes'
+    /// folder doesn't change under them ([`AudioHost::record_to`]).
+    layers_open: Vec<RecordingId>,
 }
 
 /// Frames of a take a save or a fit reads for each frame that plays.
@@ -588,6 +591,7 @@ impl AudioHost {
                 layer_spare: (0..LAYER_SPARE).map(|_| vec![0.0; CHUNK]).collect(),
                 layers_done: Vec::with_capacity(LAYERS_DONE),
                 layers_read: Vec::with_capacity(LAYERS_DONE),
+                layers_open: Vec::with_capacity(LAYERS_DONE),
             },
             watch: Watch::new(),
             problems_lost: 0,
@@ -756,14 +760,35 @@ impl AudioHost {
 
     /// Record every take to a file of its own in `dir` (made if missing;
     /// the library's work folder for the audio tracks), from the next
-    /// armed track on (see [`crate::files`]). Call it once, at start,
-    /// after anything a cut-off run left there is recovered
-    /// ([`crate::files::recover_into`]). Does not allocate (the message
-    /// carries `dir`). Refused, with `dir` given back to try again later,
-    /// while a track records or a take is still being written, or with no
-    /// worker.
+    /// armed track on (see [`crate::files`]), after anything a cut-off run
+    /// left there is recovered ([`crate::files::recover_into`]). At start,
+    /// and again to move to another folder (the SD card's, when it opens):
+    /// an armed track's files made for its next take go, and are made
+    /// again in `dir`. Takes already saved stay where they are. Does not
+    /// allocate (the message carries `dir`). Refused, with `dir` given back
+    /// to try again later, while a track records, a take is still being
+    /// written (to the folder before: copied out, or Recording or Saving
+    /// as the writer last said) or a loop layer's file is, while a save
+    /// runs, or with no worker.
     pub fn record_to(&mut self, dir: PathBuf, cfg: WriterConfig) -> Result<(), PathBuf> {
-        if self.tx.is_none() || !self.tracks.files(true) {
+        if self.tx.is_none() {
+            return Err(dir);
+        }
+        if self.tracks.records_to_files() {
+            // Another folder: nothing may be in flight in the one before,
+            // as its writer closes. The armed tracks' files go first
+            // (their Disarm reaches the worker before the new folder) and
+            // are made again there below.
+            if !self.files.layers_open.is_empty()
+                || self.saving.is_some()
+                || !self.files_finished()
+                || !self.tracks.files(false)
+            {
+                return Err(dir);
+            }
+            self.send_asks();
+        }
+        if !self.tracks.files(true) {
             return Err(dir);
         }
         self.send(ToWorker::Files { dir, cfg });
@@ -817,8 +842,12 @@ impl AudioHost {
     /// ([`AudioHost::layer_end`]). False if it can't be written now
     /// ([`AudioHost::layer_files`]). Does not allocate.
     pub fn layer_begin(&mut self, rec: RecordingId, frames: usize, channels: usize) -> bool {
-        if !self.layer_files() {
+        if !self.layer_files() || self.files.layers_open.len() >= LAYERS_DONE {
             return false;
+        }
+        // Begun again, the worker replaces the write: one answer comes.
+        if !self.files.layers_open.contains(&rec) {
+            self.files.layers_open.push(rec);
         }
         self.send(ToWorker::LayerBegin {
             rec,
@@ -853,7 +882,14 @@ impl AudioHost {
     /// Stop writing recording `rec`'s file (its layer went): nothing of it
     /// is kept.
     pub fn layer_drop(&mut self, rec: RecordingId) {
+        self.layer_closed(rec);
         self.send(ToWorker::LayerDrop(rec));
+    }
+
+    fn layer_closed(&mut self, rec: RecordingId) {
+        if let Some(i) = self.files.layers_open.iter().position(|r| *r == rec) {
+            self.files.layers_open.swap_remove(i);
+        }
     }
 
     /// What came of a loop layer's file, oldest first: whole in the work
@@ -1629,6 +1665,7 @@ impl AudioHost {
                 FromWorker::Spare(buf) => self.files.spare.push(buf),
                 FromWorker::LayerSpare(buf) => self.files.layer_spare.push(buf),
                 FromWorker::LayerWritten { rec, why } => {
+                    self.layer_closed(rec);
                     if self.files.layers_done.len() < LAYERS_DONE {
                         self.files.layers_done.push((rec, why));
                     }
@@ -2008,11 +2045,9 @@ impl AudioHost {
         }
     }
 
-    /// Recording to files: the tracks' requests to the worker, and the
-    /// takes recording copied out to it, at most [`COPY_SAMPLES`] samples
-    /// a period, a buffer at a time. A take copied out in full once it has
-    /// stopped is finished, and can be forgotten again.
-    fn tend_files(&mut self) {
+    /// The tracks' requests about files, to the worker in order (each
+    /// take starting to record gets its copying out).
+    fn send_asks(&mut self) {
         while let Some(io) = self.tracks.take_io() {
             match io {
                 Io::Arm {
@@ -2074,6 +2109,14 @@ impl AudioHost {
                 Io::Close { take, gen } => self.send(ToWorker::Close { take, gen }),
             }
         }
+    }
+
+    /// Recording to files: the tracks' requests to the worker, and the
+    /// takes recording copied out to it, at most [`COPY_SAMPLES`] samples
+    /// a period, a buffer at a time. A take copied out in full once it has
+    /// stopped is finished, and can be forgotten again.
+    fn tend_files(&mut self) {
+        self.send_asks();
         let mut budget = COPY_SAMPLES;
         let mut i = 0;
         while i < self.files.outs.len() {
@@ -2222,6 +2265,26 @@ impl AudioHost {
                     v.state,
                     files::TakeState::Recording | files::TakeState::Saving
                 )
+            })
+    }
+
+    /// Whether the writer has done what it can with every take: none
+    /// being copied out, and none it made a file for still Recording or
+    /// Saving (a take since deleted isn't heard of again, so its last
+    /// word doesn't count). A take At risk or Stopped after its stop may
+    /// never finish (its drive full or gone: the writer retries for
+    /// ever), so it doesn't hold recording in the folder before: it is
+    /// left there as a recording for the next start's recovery, played
+    /// and saved from what it committed there and what is in memory.
+    fn files_finished(&self) -> bool {
+        self.files.outs.is_empty()
+            && self.files.views.iter().enumerate().all(|(id, v)| {
+                v.is_none_or(|(rec, v)| {
+                    !matches!(
+                        v.state,
+                        files::TakeState::Recording | files::TakeState::Saving
+                    ) || self.tracks.take(id as u16).is_none_or(|t| t.rec != rec)
+                })
             })
     }
 
