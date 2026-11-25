@@ -24,7 +24,9 @@ use mpfree_status::{
     kinds, Action, Board, ChipLook, Kind, Level, ProblemState, ProblemView, Shape, Subject, System,
     Window,
 };
-use mpfree_ui::status_page::{Card, StatusView, SystemRow};
+use mpfree_stretch::budget::Cache;
+use mpfree_time_ui::view::AudioCopies;
+use mpfree_ui::status_page::{Card, MadeAudio, MadeShare, StatusView, SystemRow};
 use mpfree_ui::widgets::Chip;
 use mpfree_ui::Tone;
 
@@ -40,6 +42,9 @@ pub const LAYOUT: &str = "col(header:60, systemstatus:*, hint:26)";
 /// The chip's widest text: it is always this wide (Jay, 18 Nov 08:17Z,
 /// "one fixed size chip").
 pub const CHIP_ROOM: &str = "CPU 100 %  RAM 100 %";
+
+/// The hint line on Memory, where Clear copies is (5c.4, board 6).
+pub const MEMORY_HINT: &str = "Tap a system: its problems   ·   Wheel or - / +: the systems   ·   Clear copies: frees the made audio, made again when needed   ·   MENU or the status chip: close";
 
 /// How long a red problem waits before its title can go on the hint line
 /// again.
@@ -109,6 +114,31 @@ pub struct Readings {
     /// (track_costs.rs), largest first: whose, its words on the screen
     /// ("Track 3 · Drums") and its share of the period, %.
     pub tracks: Option<Vec<(crate::track_costs::Who, String, f64)>>,
+    /// The audio MPFree made, for Memory's card (5c.4).
+    pub made: Option<Made>,
+}
+
+/// The audio MPFree derives, as the one budget and its caches say it
+/// (the audio tracks rethink 5c.4, board 6): read on the screen thread.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Made {
+    /// The bytes all of it may use together.
+    pub total: u64,
+    /// Each cache's copies held and on their way, in bytes, in
+    /// [`Cache::ALL`]'s order (the budget's `share`).
+    pub shares: [(u64, u64); 4],
+    /// The audio tracks' tempo copies: how many, playing, under way and
+    /// whose.
+    pub tracks: AudioCopies,
+    /// The sampler's Warps: copies kept, and copies on their way.
+    pub warps: (usize, usize),
+}
+
+impl Made {
+    /// What all of it uses now.
+    pub fn used(&self) -> u64 {
+        self.shares.iter().map(|&(h, m)| h + m).sum()
+    }
 }
 
 /// Where the page is: the system picked and the Now | This session switch.
@@ -257,6 +287,93 @@ fn bytes(b: u64) -> String {
     }
 }
 
+/// Bytes in plain words, a megabyte at least: "85 MB", "1 MB".
+fn mb_up(b: u64) -> String {
+    if b >= 1_000_000_000 {
+        bytes(b)
+    } else {
+        format!("{} MB", b.div_ceil(1_000_000))
+    }
+}
+
+/// "1 copy", "12 copies".
+fn count(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {many}")
+    }
+}
+
+/// Memory's Audio MPFree made card (layout spec 2a; the audio tracks
+/// rethink 5c.4, board 6): the one budget, a share for each cache with
+/// its size and count, then what is being made now and whose.
+pub fn made_audio(m: &Made) -> MadeAudio {
+    let total = m.total.max(1);
+    let held = |c: Cache| m.shares[c as usize].0;
+    let share = |name: &str, b: u64, note: String, tone: Tone| MadeShare {
+        name: name.to_string(),
+        size: mb_up(b),
+        note,
+        part: (b as f64 / total as f64) as f32,
+        tone,
+    };
+    let t = &m.tracks;
+    let tracks = match t.held {
+        0 => "none".to_string(),
+        n => format!("{} · {} playing", count(n, "copy", "copies"), t.playing),
+    };
+    let warps = match m.warps.0 {
+        0 => "none".to_string(),
+        n => count(n, "region", "regions"),
+    };
+    let mut shares = vec![
+        share(
+            "Audio tracks: tempo copies",
+            held(Cache::Tracks),
+            tracks,
+            Tone::Accent,
+        ),
+        share("Sampler: Warps", held(Cache::Warps), warps, Tone::Good),
+        share(
+            "Looper: tempo copies",
+            held(Cache::Looper),
+            if held(Cache::Looper) == 0 {
+                "none".to_string()
+            } else {
+                String::new()
+            },
+            Tone::Accent2,
+        ),
+    ];
+    if held(Cache::Reverse) > 0 {
+        shares.push(share(
+            "Reverse copies",
+            held(Cache::Reverse),
+            String::new(),
+            Tone::Dim,
+        ));
+    }
+    // What is being made now: every cache's, and whose.
+    let making: u64 = m.shares.iter().map(|s| s.1).sum();
+    let jobs = t.making + m.warps.1;
+    let mut whose = t.whose.clone();
+    if m.warps.1 > 0 {
+        whose.push(count(m.warps.1, "pad", "pads"));
+    }
+    let now = match jobs {
+        0 => "nothing".to_string(),
+        n if whose.is_empty() => count(n, "job", "jobs"),
+        n => format!("{}: {}", count(n, "job", "jobs"), whose.join(", ")),
+    };
+    shares.push(share("Being made now", making, now, Tone::Warn));
+    MadeAudio {
+        used: mb_up(m.used()),
+        of: format!("of {}", mb_up(m.total)),
+        shares,
+    }
+}
+
 /// A system's own words when nothing is wrong with it.
 fn all_good_line(system: System, r: &Readings, board: &Board) -> String {
     match system {
@@ -267,11 +384,18 @@ fn all_good_line(system: System, r: &Readings, board: &Board) -> String {
             Some(p) => format!("CPU {p:.0} %"),
             None => "Starting".to_string(),
         },
-        System::Memory => match (r.ram_pct, r.free) {
-            (Some(p), Some(f)) => format!("{p:.0} % used · {} free", bytes(f)),
-            (Some(p), None) => format!("{p:.0} % used"),
-            _ => "Working".to_string(),
-        },
+        System::Memory => {
+            let line = match (r.ram_pct, r.free) {
+                (Some(p), Some(f)) => format!("{p:.0} % used · {} free", bytes(f)),
+                (Some(p), None) => format!("{p:.0} % used"),
+                _ => "Working".to_string(),
+            };
+            // The audio MPFree made, once there is some (5c.4).
+            match r.made.as_ref().map(Made::used).filter(|&u| u > 0) {
+                Some(u) => format!("{line} · copies {}", mb_up(u)),
+                None => line,
+            }
+        }
         System::Storage => match r.stick {
             Some(s) => format!("{} free on the {}", bytes(s.free), drive_name(r)),
             None => "Working".to_string(),
@@ -427,6 +551,11 @@ pub fn view(
         })
         .collect();
     let numbers = numbers(place.picked, r);
+    let made = r
+        .made
+        .as_ref()
+        .filter(|_| place.picked == System::Memory)
+        .map(made_audio);
     StatusView {
         head,
         head_tone,
@@ -437,6 +566,7 @@ pub fn view(
         now_only: window == Window::Now,
         cards,
         numbers,
+        made,
     }
 }
 
@@ -610,6 +740,7 @@ mod tests {
             heat: None,
             engines: None,
             tracks: None,
+            made: None,
         };
         let v = view(&b, &Watch::default(), &r, &mut place, t);
         assert_eq!(v.head, "The sound dropped out");
@@ -966,5 +1097,82 @@ mod tests {
             .is_some());
         assert_eq!(h.line(&kinds::PORT_MISSING, false, t), None, "yellow never");
         assert_eq!(h.line(&kinds::NO_SESSION, true, t), None, "an echo never");
+    }
+
+    /// The audio tracks rethink 5c.4 (board 6): Memory's line adds what
+    /// the copies use; its card has the one budget, a share for each cache
+    /// with its count, what is being made now and whose; another system
+    /// has no card.
+    #[test]
+    fn memory_says_what_the_copies_use_and_its_card_has_each_share() {
+        let t = Instant::now();
+        let mut shares = [(0, 0); 4];
+        shares[Cache::Tracks as usize] = (54_000_000, 6_000_000);
+        shares[Cache::Warps as usize] = (22_000_000, 3_000_000);
+        let made = Made {
+            total: 200_000_000,
+            shares,
+            tracks: AudioCopies {
+                held: 12,
+                playing: 3,
+                making: 1,
+                whose: vec!["Vocal".into()],
+            },
+            warps: (9, 1),
+        };
+        let r = Readings {
+            ram_pct: Some(41.0),
+            free: Some(1_100_000_000),
+            made: Some(made.clone()),
+            ..Readings::default()
+        };
+        let mut place = Place {
+            picked: System::Memory,
+            ..Place::default()
+        };
+        let v = view(&Board::new(), &Watch::default(), &r, &mut place, t);
+        assert_eq!(v.systems[1].line, "41 % used · 1.1 GB free · copies 85 MB");
+        let m = v.made.expect("Memory's card");
+        assert_eq!((m.used.as_str(), m.of.as_str()), ("85 MB", "of 200 MB"));
+        let lines: Vec<(&str, &str, &str)> = m
+            .shares
+            .iter()
+            .map(|s| (s.name.as_str(), s.size.as_str(), s.note.as_str()))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                (
+                    "Audio tracks: tempo copies",
+                    "54 MB",
+                    "12 copies · 3 playing"
+                ),
+                ("Sampler: Warps", "22 MB", "9 regions"),
+                ("Looper: tempo copies", "0 MB", "none"),
+                ("Being made now", "9 MB", "2 jobs: Vocal, 1 pad"),
+            ]
+        );
+        assert!((m.shares[0].part - 0.27).abs() < 1e-6);
+        // Nothing made: no words on Memory's line, each share none.
+        let empty = Made {
+            total: 200_000_000,
+            ..Made::default()
+        };
+        let r = Readings {
+            made: Some(empty.clone()),
+            ..r
+        };
+        let v = view(&Board::new(), &Watch::default(), &r, &mut place, t);
+        assert_eq!(v.systems[1].line, "41 % used · 1.1 GB free");
+        let notes: Vec<String> = made_audio(&empty)
+            .shares
+            .into_iter()
+            .map(|s| s.note)
+            .collect();
+        assert_eq!(notes, ["none", "none", "none", "nothing"]);
+        // Another system: no card.
+        place.picked = System::Sound;
+        let v = view(&Board::new(), &Watch::default(), &r, &mut place, t);
+        assert!(v.made.is_none());
     }
 }

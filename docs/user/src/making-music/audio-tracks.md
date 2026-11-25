@@ -84,7 +84,7 @@ An empty audio cell is drawn dashed; a tap on it says how to fill it.
 
 {{shot: arrange-clips-audio-copies | Audio clips at 92 BPM following the tempo: Hook vox playing Repitch until its copy is made, Riff rejoining the bars at bar 17, Outro's copy 40 % made, Amen waiting for its copy, Intro not ready, Pad wash too fast.}}
 
-A clip on **Stretch** that plays its copy, or any clip at its own tempo, shows its wave and no word. If a copy couldn't be made (there was no room for it), the clip plays Repitch; its cell has no word, and a tap on it says so.
+A clip on **Stretch** that plays its copy, or any clip at its own tempo, shows its wave and no word. If a copy couldn't be made (there was no room for it), the clip plays Repitch; its cell has no word, and a tap on it says so. How much room the copies take, and **Clear copies** to free what isn't playing, are on System status' Memory ([When something goes wrong](../reference/when-something-goes-wrong.md#the-system-status-page)).
 
 A clip set to play **once** shows its playhead dimmed while its sound rings on after its track stopped, so the grid never looks silent while you hear it. In Perform the cell's foot gives its length ("2 bars"), or a once clip's time ("3:17 once").
 
