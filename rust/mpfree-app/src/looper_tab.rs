@@ -27,7 +27,7 @@
 //! trim it.
 
 use crate::looper_deck::{LoopDeck, DECK};
-use crate::looping::{LoopWave, Side, SongButton, POINT_BARS};
+use crate::looping::{Edge, LoopWave, MoveAct, MoveStep, Side, SongButton, POINT_BARS};
 use mpfree_looper::{LayerCommand, Snap};
 use mpfree_ui::draw::speaker_on;
 use mpfree_ui::{
@@ -206,6 +206,9 @@ pub enum LoopAct {
     Side(Side, bool),
     /// The loop point view's A/B, on or off.
     Ab(bool),
+    /// The loop point view's Move start / Move end: a finger or a hit on
+    /// a window, a step, the step's size, Move or Cancel.
+    Move(MoveAct),
     /// The loop point view opened (true) or closed: the chip's words, ×.
     PointView(bool),
     /// The hint line's Snap anyway (true) or Not now ([`AskButtons`]).
@@ -234,6 +237,18 @@ pub struct SmartChip {
     pub action: (String, ChipAct, bool),
 }
 
+/// What a button under the loop point view's windows does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Pick {
+    /// Snap, Use my tap, Keep my tap or Keep the snap: that side, and
+    /// whether the chip is put away there.
+    Side(Side, bool),
+    /// Move: the move set up lands on the loop's next downbeat.
+    Move,
+    /// Cancel: the move set up is put away.
+    Cancel,
+}
+
 /// One side of the loop point view: the start's or the end's window.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PointPane {
@@ -251,6 +266,15 @@ pub struct PointPane {
     /// Where smart loop end found or put it (the accent), its label, and
     /// how far that is from you ("−48 ms"), when it isn't you.
     pub found: Option<(f32, String, String)>,
+    /// Where the window begins and how long it is, in frames from your
+    /// press (the start's) or your tap (the end's): a finger on it puts
+    /// the edge there (Move start / Move end).
+    pub span: (i64, i64),
+    /// The hits heard in it, 0 to 1 across: a tap by one puts the edge
+    /// on it.
+    pub hits: Vec<f32>,
+    /// A move set up there: where, and how far that is from you.
+    pub moving: Option<(f32, String)>,
 }
 
 /// The loop point view, in the lanes' place: the start and the end side
@@ -264,17 +288,50 @@ pub struct PointLook {
     pub end: PointPane,
     /// "Snap makes it 1 bar at 97.87 BPM, from the loop's next downbeat."
     pub line: String,
-    /// The buttons, the first filled: label, side, and whether the chip
-    /// is put away there (Snap and Keep my tap; Use my tap and Keep the
-    /// snap; Keep the snap and Keep my tap during A/B; Keep my tap alone
-    /// when nothing was found).
-    pub pick: Vec<(String, Side, bool)>,
+    /// The buttons, the first filled: label and what it does (Snap and
+    /// Keep my tap; Use my tap and Keep the snap; Keep the snap and Keep
+    /// my tap during A/B; Keep my tap alone when nothing was found; Move
+    /// and Cancel while a move is set up).
+    pub pick: Vec<(String, Pick)>,
+    /// Move start / Move end's step, lit.
+    pub step: MoveStep,
     /// A/B, on or off; None when there aren't two sides to swap.
     pub ab: Option<bool>,
     /// Read as: each choice's words and bars, the loop's bars now among
     /// them.
     pub read_as: Vec<(String, u32)>,
     pub bars_now: u32,
+}
+
+/// The loop point view's title rows: the title, ◀ ▶ and the note.
+const TITLE_H: i32 = 30;
+/// Where a window's ◀ ▶ start, after its title.
+const NUDGE_X: i32 = 52;
+/// A finger this near a hit on a loop point window puts the edge on it.
+const HIT_REACH: i32 = 10;
+
+/// A place across a loop point window, 0 to 1 over its peaks (as
+/// [`point_pane`] draws them), at screen `x`.
+fn point_frac(win: Rect, x: i32) -> f32 {
+    let step = ((win.w - 26) / POINT_BARS as i32).max(1);
+    let span = (step * POINT_BARS as i32).max(1);
+    (x - (win.x + 13)) as f32 / span as f32
+}
+
+/// Where a finger at `x` on a loop point window puts the edge, in frames
+/// from your press or tap: on a hit within reach, else where it is.
+fn point_to(win: Rect, pane: &PointPane, x: i32) -> i64 {
+    let step = ((win.w - 26) / POINT_BARS as i32).max(1);
+    let span = (step * POINT_BARS as i32).max(1) as f32;
+    let at = |f: f32| (f * span) as i32 + win.x + 13;
+    let f = pane
+        .hits
+        .iter()
+        .copied()
+        .filter(|&h| (at(h) - x).abs() <= HIT_REACH)
+        .min_by_key(|&h| (at(h) - x).abs())
+        .unwrap_or_else(|| point_frac(win, x).clamp(0.0, 1.0));
+    pane.span.0 + (f64::from(f) * pane.span.1 as f64).round() as i64
 }
 
 /// A finger held on a layer's lane moves this far before the lane lifts
@@ -759,6 +816,12 @@ pub struct PointParts {
     pub head: Rect,
     /// ×: close the view.
     pub close: Rect,
+    /// "STEP" and Move start / Move end's step sizes ([`MoveStep::ALL`]).
+    pub step_label: Rect,
+    pub steps: Vec<Rect>,
+    /// Each window's ◀ and ▶: a step earlier and later (the start's,
+    /// then the end's).
+    pub nudge: [[Rect; 2]; 2],
     /// The start's and the end's titles and notes.
     pub titles: (Rect, Rect),
     /// The start's and the end's windows.
@@ -888,6 +951,9 @@ pub struct LoopEditor {
     nudging: Option<(u64, i32, i32)>,
     /// A finger on What you played's window (moving or resizing it).
     window_drag: Option<WindowDrag>,
+    /// A finger on a loop point window (Move start / Move end): which
+    /// edge it moves.
+    point_drag: Option<(u64, Edge)>,
     /// A finger on the Feedback knob: where it went down and the value
     /// then.
     feedback: Option<(u64, i32, f32)>,
@@ -946,6 +1012,7 @@ impl Default for LoopEditor {
             trimming: None,
             nudging: None,
             window_drag: None,
+            point_drag: None,
             feedback: None,
             history: None,
             history_top: None,
@@ -1161,6 +1228,12 @@ impl LoopEditor {
         }
     }
 
+    /// The loop point view, while it shows (as [`LoopEditor::point_shown`]):
+    /// the Q-Links move its start and end then.
+    pub fn shown_point(&self) -> Option<&PointLook> {
+        self.point_shown()
+    }
+
     /// The loop point view, while it shows in the lanes' place: open, with
     /// something in it, and none of Records from, Send or the undo
     /// history over it.
@@ -1176,12 +1249,19 @@ impl LoopEditor {
         let reads = look.read_as.len();
         let head = Rect::new(a.x + 16, a.y + 8, a.w - 32, 36);
         let close = Rect::new(head.right() - 36, head.y, 36, 36);
+        let seg_w = 60;
+        let n_steps = MoveStep::ALL.len() as i32;
+        let steps_x = close.x - 16 - n_steps * seg_w - 4;
+        let steps = (0..n_steps)
+            .map(|i| Rect::new(steps_x + i * seg_w, head.y + 4, seg_w, 28))
+            .collect();
+        let step_label = Rect::new(steps_x - 12 - 38, head.y, 38, head.h);
         let pane_w = (head.w - 16) / 2;
         let titles_y = head.bottom() + 6;
         // What isn't the windows: the head, the titles, the line, the
         // buttons and the gaps between them.
-        let win_h = (a.h - 8 - 36 - 6 - 17 - 4 - 6 - 22 - 6 - 44 - 10).clamp(40, 112);
-        let win_y = titles_y + 17 + 4;
+        let win_h = (a.h - 8 - 36 - 6 - TITLE_H - 4 - 6 - 22 - 6 - 44 - 10).clamp(40, 112);
+        let win_y = titles_y + TITLE_H + 4;
         let start = Rect::new(head.x, win_y, pane_w, win_h);
         let end = Rect::new(head.right() - pane_w, win_y, pane_w, win_h);
         let line = Rect::new(head.x, start.bottom() + 6, head.w, 22);
@@ -1204,12 +1284,21 @@ impl LoopEditor {
         let read_as = (0..reads as i32)
             .map(|i| Rect::new(well_x + 4 + i * (w + 4), row_y + 4, w, 36))
             .collect();
+        let nudge = |x: i32| {
+            [
+                Rect::new(x + NUDGE_X, titles_y, 40, TITLE_H),
+                Rect::new(x + NUDGE_X + 44, titles_y, 40, TITLE_H),
+            ]
+        };
         PointParts {
             head,
             close,
+            step_label,
+            steps,
+            nudge: [nudge(start.x), nudge(end.x)],
             titles: (
-                Rect::new(start.x, titles_y, pane_w, 17),
-                Rect::new(end.x, titles_y, pane_w, 17),
+                Rect::new(start.x, titles_y, pane_w, TITLE_H),
+                Rect::new(end.x, titles_y, pane_w, TITLE_H),
             ),
             start,
             end,
@@ -1687,6 +1776,29 @@ impl LoopEditor {
 // ------------------------------------------------------------- painting
 
 /// A button: raised (or lit), its label centred, faint when it can't work.
+/// A small triangle pointing left (`left`) or right, centred in `b`: a
+/// loop point window's ◀ and ▶ (the UI font has neither).
+fn step_icon(cx: &mut PaintCx, b: Rect, left: bool, c: Color) {
+    let h = 12.0f32;
+    let w = h * 0.8;
+    let x = b.x as f32 + (b.w as f32 - w) / 2.0;
+    let y = b.y as f32 + b.h as f32 / 2.0;
+    let mut s = Shape::new(b);
+    let rows = (h * 2.0) as i32;
+    for i in 0..=rows {
+        let f = i as f32 / rows as f32;
+        let yy = y - h / 2.0 + f * h;
+        let len = (w * (1.0 - (2.0 * f - 1.0).abs())).max(0.5);
+        let (a, z) = if left {
+            (x + w - len, x + w)
+        } else {
+            (x, x + len)
+        };
+        s.segment((a, yy), (z, yy), 1.2);
+    }
+    s.draw(cx.canvas, c);
+}
+
 /// A play triangle, `h` pixels tall, its left edge at `x` and centred on
 /// `y` (the UI font has no ▶).
 pub(crate) fn play_icon(cx: &mut PaintCx, x: f32, y: f32, h: f32, c: Color) {
@@ -1850,10 +1962,11 @@ fn point_pane(cx: &mut PaintCx, pane: &PointPane, title: Rect, win: Rect) {
         &pane.title,
     );
     let lit_ink = t.text.mix(t.accent, 0.25);
+    let note_x = title.x + NUDGE_X + 88 + 12;
     cx.text(
         FontId::Sans,
         13.0,
-        Rect::new(title.x + tw + 16, title.y, title.w - tw - 16, title.h),
+        Rect::new(note_x, title.y, title.right() - note_x, title.h),
         Align::Right,
         if pane.found.is_some() {
             lit_ink
@@ -1943,6 +2056,30 @@ fn point_pane(cx: &mut PaintCx, pane: &PointPane, title: Rect, win: Rect) {
     }
     let left = pane.found.as_ref().is_some_and(|(f, _, _)| at(*f) > xy);
     label(cx, xy, win.y + 6, left, you_ink, &pane.you.1);
+    // The hits heard: short marks along the foot, a tap puts the edge on
+    // one.
+    let hit_ink = t.text.mix(t.accent, 0.5);
+    for &h in &pane.hits {
+        let x = at(h);
+        cx.canvas
+            .fill_round_rect(Rect::new(x - 2, win.bottom() - 9, 4, 7), 2, hit_ink);
+    }
+    // A move set up: a solid line with a grip, "your move" over it and
+    // how far from you under it.
+    if let Some((f, gap)) = &pane.moving {
+        let x = at(*f);
+        cx.canvas
+            .fill_rect(Rect::new(x - 1, win.y, 3, win.h), t.text);
+        cx.canvas
+            .fill_round_rect(Rect::new(x - 6, win.y + win.h / 2 - 12, 13, 24), 4, t.text);
+        for k in [-4, 0, 4] {
+            cx.canvas
+                .fill_rect(Rect::new(x - 3, win.y + win.h / 2 + k - 1, 7, 1), t.bg);
+        }
+        let left = x > win.x + win.w / 2;
+        label(cx, x, win.y + 24, left, t.text, "your move");
+        label(cx, x, win.bottom() - 42, left, t.text, gap);
+    }
     cx.canvas.set_clip(old);
 }
 
@@ -2149,13 +2286,28 @@ impl LoopEditor {
             Rect::new(
                 pp.head.x + lw + 14,
                 pp.head.y,
-                pp.close.x - 12 - (pp.head.x + lw + 14),
+                pp.step_label.x - 12 - (pp.head.x + lw + 14),
                 pp.head.h,
             ),
             Align::Left,
             t.text_dim,
             &look.now,
         );
+        cx.text(
+            FontId::Bold,
+            11.5,
+            pp.step_label,
+            Align::Right,
+            t.text_dim,
+            "STEP",
+        );
+        let steps: Vec<(Rect, &str, bool)> = pp
+            .steps
+            .iter()
+            .zip(MoveStep::ALL)
+            .map(|(r, st)| (*r, st.label(), st == look.step))
+            .collect();
+        segments(cx, &steps);
         cx.canvas.fill_round_rect(pp.close, 8, t.raised);
         cx.text(FontId::Sans, 18.0, pp.close, Align::Center, t.text, "×");
         for (pane, title, win) in [
@@ -2163,6 +2315,12 @@ impl LoopEditor {
             (&look.end, pp.titles.1, pp.end),
         ] {
             point_pane(cx, pane, title, win);
+        }
+        for [earlier, later] in pp.nudge {
+            button(cx, earlier, "", true, false, 14.0);
+            step_icon(cx, earlier, true, t.text);
+            button(cx, later, "", true, false, 14.0);
+            step_icon(cx, later, false, t.text);
         }
         cx.text(
             FontId::Sans,
@@ -2172,7 +2330,7 @@ impl LoopEditor {
             t.text_dim,
             &look.line,
         );
-        for (i, (b, (label, _, _))) in pp.pick.iter().zip(&look.pick).enumerate() {
+        for (i, (b, (label, _))) in pp.pick.iter().zip(&look.pick).enumerate() {
             // The first is what the view is for, filled; alone (nothing
             // to snap to), it isn't.
             button(cx, *b, label, true, i == 0 && look.ab.is_some(), 15.0);
@@ -3062,9 +3220,33 @@ impl Widget for LoopEditor {
                 "Close the loop point view",
                 pp.close,
             ));
-            for (i, (b, (label, _, _))) in pp.pick.iter().zip(&look.pick).enumerate() {
+            for (i, (b, (label, _))) in pp.pick.iter().zip(&look.pick).enumerate() {
                 out.push(Target::tap("point-pick", i, label.clone(), *b));
             }
+            for (i, (b, st)) in pp.steps.iter().zip(MoveStep::ALL).enumerate() {
+                out.push(Target::tap(
+                    "point-step",
+                    i,
+                    format!("Step: {}", st.label()),
+                    *b,
+                ));
+            }
+            let nudges = [
+                "Move the start earlier",
+                "Move the start later",
+                "Move the end earlier",
+                "Move the end later",
+            ];
+            for (i, b) in pp.nudge.iter().flatten().enumerate() {
+                out.push(Target::tap("point-nudge", i, nudges[i], *b));
+            }
+            out.push(Target::tap(
+                "point-window",
+                0,
+                "Move the start here",
+                pp.start,
+            ));
+            out.push(Target::tap("point-window", 1, "Move the end here", pp.end));
             if let Some(b) = pp.ab {
                 out.push(Target::tap("point-ab", 0, "A/B", b));
             }
@@ -3343,9 +3525,35 @@ impl Widget for LoopEditor {
                         return Some(EventKind::Tab(5));
                     }
                     if let Some(i) = pp.pick.iter().position(|b| b.contains(x, y)) {
-                        let (_, side, keep) = look.pick[i].clone();
-                        self.acts.push(LoopAct::Side(side, keep));
+                        self.acts.push(match look.pick[i].1 {
+                            Pick::Side(side, keep) => LoopAct::Side(side, keep),
+                            Pick::Move => LoopAct::Move(MoveAct::Keep),
+                            Pick::Cancel => LoopAct::Move(MoveAct::Cancel),
+                        });
                         return Some(EventKind::Select(i));
+                    }
+                    if let Some(i) = pp.steps.iter().position(|b| b.contains(x, y)) {
+                        self.acts
+                            .push(LoopAct::Move(MoveAct::Scale(MoveStep::ALL[i])));
+                        return Some(EventKind::Tab(9));
+                    }
+                    for (k, edge) in [Edge::Start, Edge::End].into_iter().enumerate() {
+                        for (j, d) in [-1i8, 1].into_iter().enumerate() {
+                            if pp.nudge[k][j].contains(x, y) {
+                                self.acts.push(LoopAct::Move(MoveAct::Step(edge, d)));
+                                return Some(EventKind::Tab(10));
+                            }
+                        }
+                        let (win, pane) = match edge {
+                            Edge::Start => (pp.start, &look.start),
+                            Edge::End => (pp.end, &look.end),
+                        };
+                        if win.contains(x, y) {
+                            let f = point_to(win, pane, x);
+                            self.acts.push(LoopAct::Move(MoveAct::To(edge, f)));
+                            self.point_drag = Some((finger, edge));
+                            return Some(EventKind::Tab(11));
+                        }
                     }
                     if let (Some(b), Some(on)) = (pp.ab, look.ab) {
                         if b.contains(x, y) {
@@ -3456,6 +3664,18 @@ impl Widget for LoopEditor {
                 self.window_drag = Some(WindowDrag { now, ..d });
                 Some(EventKind::Value(now.1 as f32))
             }
+            Touch::Move if self.point_drag.is_some_and(|d| d.0 == finger) => {
+                let (_, edge) = self.point_drag?;
+                let look = self.point_shown()?.clone();
+                let pp = LoopEditor::point_parts(p.point, &look);
+                let (win, pane) = match edge {
+                    Edge::Start => (pp.start, &look.start),
+                    Edge::End => (pp.end, &look.end),
+                };
+                let f = point_to(win, pane, x);
+                self.acts.push(LoopAct::Move(MoveAct::To(edge, f)));
+                Some(EventKind::Tab(11))
+            }
             Touch::Move if self.trimming.is_some_and(|t| t.0 == finger) => {
                 let (f, is_end, from, to) = self.trimming?;
                 let ticks = self.trim_ticks.filter(|&t| t > 0)?;
@@ -3525,6 +3745,10 @@ impl Widget for LoopEditor {
             Touch::Up | Touch::Cancel => {
                 if self.feedback.is_some_and(|f| f.0 == finger) {
                     self.feedback = None;
+                    return None;
+                }
+                if self.point_drag.is_some_and(|d| d.0 == finger) {
+                    self.point_drag = None;
                     return None;
                 }
                 if let Some(d) = self.window_drag.filter(|d| d.finger == finger) {
@@ -3798,6 +4022,9 @@ mod tests {
             edge: (2.0 / 3.0, false),
             you: (2.0 / 3.0, "your tap".into()),
             found,
+            span: (-13_230, 13_230),
+            hits: vec![0.5],
+            moving: None,
         };
         LoopEditor {
             chip: Some(SmartChip {
@@ -3813,8 +4040,8 @@ mod tests {
                 ),
                 line: "Snap makes it 4 bars at 92.43 BPM, from the loop's next downbeat.".into(),
                 pick: vec![
-                    ("Snap".into(), Side::Snap, false),
-                    ("Keep my tap".into(), Side::Tap, true),
+                    ("Snap".into(), Pick::Side(Side::Snap, false)),
+                    ("Keep my tap".into(), Pick::Side(Side::Tap, true)),
                 ],
                 ab: Some(false),
                 read_as: vec![
@@ -3823,6 +4050,7 @@ mod tests {
                     ("8 bars".into(), 8),
                 ],
                 bars_now: 4,
+                step: MoveStep::Sixteenth,
             }),
             ..editor(3)
         }
@@ -3987,15 +4215,100 @@ mod tests {
             assert!(b.bottom() <= r.bottom(), "{b:?}");
         }
         assert!(pp.start.right() < pp.end.x && pp.end.right() <= r.right() - 16);
-        assert_eq!(pp.start.h, 112);
+        // The titles hold ◀ ▶ (Move start / Move end), so the windows are
+        // 108 px; STEP's choices sit in the head, left of ×.
+        assert_eq!(pp.start.h, 108);
+        let mut head = pp.steps.clone();
+        head.push(pp.close);
+        for w in head.windows(2) {
+            assert!(w[0].right() <= w[1].x, "{:?} then {:?}", w[0], w[1]);
+        }
+        assert!(pp.steps.iter().all(|b| pp.head.contains(b.x, b.y)));
+        for (k, win) in [pp.start, pp.end].into_iter().enumerate() {
+            let [a, b] = pp.nudge[k];
+            assert!(
+                a.right() <= b.x && b.right() < win.x + win.w / 2,
+                "{a:?} {b:?}"
+            );
+            assert!(a.y >= pp.head.bottom() && a.bottom() <= win.y, "{a:?}");
+        }
         // Nothing found: one button and no A/B, Read as moves up.
         let alone = PointLook {
-            pick: vec![("Keep my tap".into(), Side::Tap, true)],
+            pick: vec![("Keep my tap".into(), Pick::Side(Side::Tap, true))],
             ab: None,
             ..look
         };
         let pa = LoopEditor::point_parts(r, &alone);
         assert!(pa.ab.is_none() && pa.read_as[0].x < pp.read_as[0].x);
+    }
+
+    /// Move start / Move end's touches (the looper refactor's R2): STEP's
+    /// choices pick the step, ◀ ▶ move each edge a step, a finger on a
+    /// window puts that edge there (on a hit within reach) and follows a
+    /// drag, and while a move is set up the row is Move and Cancel.
+    #[test]
+    fn the_loop_point_views_steps_arrows_and_windows_move_an_edge() {
+        let mut ui = page_of(EDITOR, smart_editor());
+        assert_eq!(
+            tap_target(&mut ui, "chip", 0),
+            vec![LoopAct::PointView(true)]
+        );
+        for (i, st) in MoveStep::ALL.into_iter().enumerate() {
+            assert_eq!(
+                tap_target(&mut ui, "point-step", i),
+                vec![LoopAct::Move(MoveAct::Scale(st))]
+            );
+        }
+        let nudges = [
+            (Edge::Start, -1),
+            (Edge::Start, 1),
+            (Edge::End, -1),
+            (Edge::End, 1),
+        ];
+        for (i, (edge, d)) in nudges.into_iter().enumerate() {
+            assert_eq!(
+                tap_target(&mut ui, "point-nudge", i),
+                vec![LoopAct::Move(MoveAct::Step(edge, d))]
+            );
+        }
+        // The middle of the end's window is by its hit, half way across
+        // its 13 230 frames: the end goes on the hit.
+        assert_eq!(
+            tap_target(&mut ui, "point-window", 1),
+            vec![LoopAct::Move(MoveAct::To(Edge::End, -6_615))]
+        );
+        // A finger on the start's window at its first peak, then 40 px
+        // on: the start follows it, nowhere near the hit.
+        let w = target(&ui, "point-window", 0).unwrap().rect;
+        let y = w.y + w.h / 2;
+        ui.touch(1, Touch::Down, w.x + 13, y);
+        ui.touch(1, Touch::Move, w.x + 53, y);
+        ui.touch(1, Touch::Up, w.x + 53, y);
+        let got = acts(&mut ui);
+        let to: Vec<i64> = got
+            .iter()
+            .map(|a| match a {
+                LoopAct::Move(MoveAct::To(Edge::Start, f)) => *f,
+                a => panic!("{a:?}"),
+            })
+            .collect();
+        assert_eq!(to.len(), 2, "{got:?}");
+        assert_eq!(to[0], -13_230);
+        assert!(to[0] < to[1] && to[1] < -6_615 - 1_000, "{to:?}");
+        // A move set up: Move keeps it, Cancel puts it away.
+        let look = ui.get_mut::<LoopEditor>(EDITOR).unwrap();
+        look.point.as_mut().unwrap().pick =
+            vec![("Move".into(), Pick::Move), ("Cancel".into(), Pick::Cancel)];
+        ui.paint(&mut SoftCanvas::new(W, H));
+        assert_eq!(target(&ui, "point-pick", 0).unwrap().label, "Move");
+        assert_eq!(
+            tap_target(&mut ui, "point-pick", 0),
+            vec![LoopAct::Move(MoveAct::Keep)]
+        );
+        assert_eq!(
+            tap_target(&mut ui, "point-pick", 1),
+            vec![LoopAct::Move(MoveAct::Cancel)]
+        );
     }
 
     #[test]

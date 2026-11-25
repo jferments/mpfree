@@ -540,6 +540,8 @@ pub enum LoopAction {
     PointView(bool),
     /// A footswitch's Snap or Use my tap ([`LoopHost::choose`]).
     Choose(Side),
+    /// The loop point view's Move start / Move end ([`LoopHost::move_act`]).
+    Move(MoveAct),
 }
 
 /// The loop point view's windows: how many slices each draws.
@@ -560,6 +562,33 @@ pub const POINT_END_FROM_MS: f64 = -200.0;
 pub struct LoopPoint {
     pub start: [u8; POINT_BARS],
     pub end: [u8; POINT_BARS],
+    /// Where each window begins, in frames from your press (the start's)
+    /// and your tap (the end's): [`POINT_START_FROM_MS`] and
+    /// [`POINT_END_FROM_MS`], unless the loop's edge, or a move, is out of
+    /// that view, when the window is round it.
+    pub from: [i64; 2],
+    /// The hits heard in each window, in frames from your press and your
+    /// tap, earliest first; `n_hits` of each are used.
+    pub hits: [[i64; POINT_HITS]; 2],
+    pub n_hits: [u8; 2],
+}
+
+/// The most hits a loop point window shows.
+pub const POINT_HITS: usize = 16;
+
+impl LoopPoint {
+    /// Windows where they always are ([`POINT_START_FROM_MS`],
+    /// [`POINT_END_FROM_MS`]) at `rate`, with these peaks and no hits.
+    pub fn new(start: [u8; POINT_BARS], end: [u8; POINT_BARS], rate: u32) -> LoopPoint {
+        let ms = |m: f64| (m * f64::from(rate) / 1000.0).round() as i64;
+        LoopPoint {
+            start,
+            end,
+            from: [ms(POINT_START_FROM_MS), ms(POINT_END_FROM_MS)],
+            hits: [[0; POINT_HITS]; 2],
+            n_hits: [0; 2],
+        }
+    }
 }
 
 /// Smart loop end on the picked loop, besides what its [`Status`] says
@@ -586,6 +615,10 @@ pub struct SmartView {
     pub ab: bool,
     /// The loop point view's audio, while the view is open.
     pub point: Option<LoopPoint>,
+    /// A move set up in the loop point view (Move start / Move end).
+    pub moving: Option<Moving>,
+    /// The step Move start / Move end goes by.
+    pub move_step: MoveStep,
 }
 
 /// Make song's button on a free loop's header ([`LoopHost::make_song`]).
@@ -662,6 +695,65 @@ fn loops_words(m: u32) -> String {
 pub enum Side {
     Tap,
     Snap,
+}
+
+/// Move start / Move end: which of the loop's edges.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edge {
+    Start,
+    End,
+}
+
+/// How far one step of Move start / Move end goes ([`MoveAct::Step`]): a
+/// sixteenth note at the loop's tempo, a millisecond, or to the next hit heard
+/// in the window. Kept for the session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MoveStep {
+    #[default]
+    Sixteenth,
+    Ms,
+    Hit,
+}
+
+impl MoveStep {
+    pub const ALL: [MoveStep; 3] = [MoveStep::Sixteenth, MoveStep::Ms, MoveStep::Hit];
+
+    /// As the loop point view names it.
+    pub fn label(self) -> &'static str {
+        match self {
+            MoveStep::Sixteenth => "1/16",
+            MoveStep::Ms => "1 ms",
+            MoveStep::Hit => "Hit",
+        }
+    }
+}
+
+/// The loop point view's Move start / Move end ([`LoopHost::move_act`]):
+/// a move is set up first (drawn, and heard with A/B), then kept with
+/// Move, which lands it as a snap does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MoveAct {
+    /// Put an edge here, in frames from your press (the start) or your
+    /// tap (the end): a finger on the window, or a hit tapped.
+    To(Edge, i64),
+    /// One step earlier (-1) or later (+1), by [`MoveStep`].
+    Step(Edge, i8),
+    /// The step's size.
+    Scale(MoveStep),
+    /// Move: the loop goes there on its next downbeat, with the tempo.
+    Keep,
+    /// The move put away; the loop stays as it is.
+    Cancel,
+}
+
+/// A move set up in the loop point view, not yet kept
+/// ([`SmartView::moving`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Moving {
+    /// Where the start and the end would go, from your press and tap.
+    pub to: Shift,
+    /// The tempo it would make (its bars kept), or why it can't be made.
+    pub makes: Result<f64, &'static str>,
 }
 
 /// What the line input counted since it was opened.
@@ -1700,9 +1792,14 @@ pub struct LoopHost {
     /// The loop point view is open: the picked loop's audio round its
     /// start and end is read for it ([`LoopHost::set_point_open`]).
     point_open: bool,
-    /// That audio, for the loop, its version and where smart loop end
-    /// left it, until one changes.
-    point: Option<(usize, u64, Shift, LoopPoint)>,
+    /// That audio, for the loop, its version, where smart loop end left
+    /// it and the move set up, until one changes.
+    point: Option<(usize, u64, Shift, Option<Shift>, LoopPoint)>,
+    /// A move set up in the loop point view: the loop, its version, and
+    /// where the start and end would go ([`LoopHost::move_act`]).
+    moving: Option<(usize, u64, Shift)>,
+    /// The step Move start / Move end goes by.
+    move_step: MoveStep,
     /// Where it is read into: a window at the fastest rate, allocated
     /// once.
     point_buf: Vec<[f32; 2]>,
@@ -2308,6 +2405,8 @@ impl LoopHost {
             close_call: None,
             point_open: false,
             point: None,
+            moving: None,
+            move_step: MoveStep::default(),
             point_buf: vec![[0.0; 2]; point_frames(rate)],
             snaps_refused: 0,
             readings_overruled: 0,
@@ -3118,6 +3217,7 @@ impl LoopHost {
             }
             (Command::AbSeam(true), _) => "A/B on the seam".to_string(),
             (Command::AbSeam(false), _) => "A/B off".to_string(),
+            (Command::AbMove(_), _) => "A/B against your move".to_string(),
         };
         if !self.looper.command(c) {
             return format!("looper: {what}: NOT done, the command queue is full");
@@ -5152,6 +5252,7 @@ impl LoopHost {
         self.snap_ask = None;
         self.ab_stop();
         self.side_want = None;
+        self.moving = None;
         self.snap_want = Some((n, s, false));
         format!(
             "looper: {}: Loop {} changes on its next downbeat, with the tempo",
@@ -5170,6 +5271,7 @@ impl LoopHost {
         let n = self.looper.selected();
         self.snap_ask = None;
         self.ab_stop();
+        self.moving = None;
         self.side_want = Some((n, side, keep));
         let what = match (side, keep) {
             (Side::Snap, false) => "Snap",
@@ -5223,6 +5325,21 @@ impl LoopHost {
             self.ab_stop();
             return format!("looper: A/B off: Loop {} stays as it is", n + 1);
         }
+        // A move set up: A/B plays it against the loop as it is.
+        let s = self.looper.loop_status(n);
+        if let Some((s, to)) = s.and_then(|s| self.moving_now(n, &s).map(|to| (s, to))) {
+            self.snap_ask = None;
+            self.side_want = None;
+            if !self.looper.command(Command::AbMove(to)) {
+                return "looper: A/B: NOT done, the command queue is full".to_string();
+            }
+            self.ab = Some((n, s.version));
+            return format!(
+                "looper: A/B: each time round, Loop {}'s last beat runs into its downbeat as \
+                 your move has it, then as it is; the tempo stays",
+                n + 1
+            );
+        }
         let (Some(now), Some(s)) = (self.side_of(n), self.looper.loop_status(n)) else {
             return format!(
                 "looper: Loop {}: A/B needs your tap and a snap to swap between",
@@ -5269,6 +5386,10 @@ impl LoopHost {
     /// in another way, or nothing was found).
     fn side_of(&self, n: usize) -> Option<Side> {
         let s = self.looper.loop_status(n)?;
+        // Moved by hand: away from your tap, as a snap is.
+        if hand_moved(&s) {
+            return Some(Side::Snap);
+        }
         match (s.offer, s.moved) {
             (Some(_), _) => Some(Side::Tap),
             (None, Some(m)) if !m.is_none() => Some(Side::Snap),
@@ -5287,6 +5408,8 @@ impl LoopHost {
         let s = self.looper.loop_status(n)?;
         let h = self.looper.loop_history(n)?;
         Some(match side {
+            // From a move by hand, back to REC and your tap at once.
+            Side::Tap if hand_moved(&s) => Snap::To(Shift::NONE),
             Side::Snap if matches!(h.redo().first(), Some(Step::Snap(_))) => Snap::Redo,
             Side::Snap => Snap::Found,
             Side::Tap if matches!(h.done().last(), Some(Step::Snap(_))) => Snap::Undo,
@@ -5320,7 +5443,144 @@ impl LoopHost {
             point: self
                 .point
                 .filter(|p| self.point_open && p.0 == n)
-                .map(|p| p.3),
+                .map(|p| p.4),
+            moving: self.moving_now(n, s).map(|to| Moving {
+                to,
+                makes: self.looper.snap_plan(n, Snap::To(to), 0).map(|p| p.bpm),
+            }),
+            move_step: self.move_step,
+        }
+    }
+
+    /// The move set up on loop `n` (status `s`), while the loop is still
+    /// as it was then.
+    fn moving_now(&self, n: usize, s: &Status) -> Option<Shift> {
+        self.moving
+            .filter(|m| m.0 == n && m.1 == s.version)
+            .map(|m| m.2)
+    }
+
+    /// The loop point view's Move start / Move end on the picked loop
+    /// (while its first pass is alone, as kept: [`Status::bounds`]). A
+    /// move is set up first, from where the loop is: a finger or a hit
+    /// puts an edge somewhere ([`MoveAct::To`]), a step moves it by a
+    /// sixteenth note at the loop's tempo, a millisecond or to the next hit
+    /// heard ([`MoveAct::Step`], [`MoveAct::Scale`]); A/B, while on, plays
+    /// it against the loop as it is ([`Command::AbMove`]). Move keeps it:
+    /// a snap ([`Snap::To`]) on the loop's next downbeat, the tempo with
+    /// it, logged with what smart loop end found as a labelled example.
+    /// Cancel puts it away. The line for the log, when there is one.
+    pub fn move_act(&mut self, a: MoveAct) -> Option<String> {
+        let n = self.looper.selected();
+        if let MoveAct::Scale(st) = a {
+            self.move_step = st;
+            return None;
+        }
+        let s = self.looper.loop_status(n)?;
+        let Some(b) = s.bounds else {
+            self.moving = None;
+            return Some(format!(
+                "looper: Loop {}: its start and end can't move: it has changed since it closed",
+                n + 1
+            ));
+        };
+        let now = s.moved.unwrap_or(Shift::NONE);
+        let base = self.moving_now(n, &s).unwrap_or(now);
+        let to = match a {
+            MoveAct::Scale(_) => return None,
+            MoveAct::Cancel => {
+                self.moving = None;
+                if self.ab.is_some() {
+                    self.ab_stop();
+                }
+                return Some(format!(
+                    "looper: Loop {}: the move put away; the loop stays as it is",
+                    n + 1
+                ));
+            }
+            MoveAct::Keep => {
+                let Some(to) = self.moving_now(n, &s) else {
+                    return Some(format!("looper: Loop {}: no move to keep", n + 1));
+                };
+                self.moving = None;
+                let line = self.snap_on(n, Snap::To(to));
+                return Some(format!("{line}; {}", self.move_example(n, &s, to)));
+            }
+            MoveAct::To(edge, f) => with_edge(base, edge, f),
+            MoveAct::Step(edge, d) => {
+                let at = match edge {
+                    Edge::Start => base.start,
+                    Edge::End => base.end,
+                };
+                let f = match self.move_step {
+                    MoveStep::Hit => self.next_hit(n, edge, at, d)?,
+                    MoveStep::Ms => at + i64::from(d) * i64::from(self.rate / 1000),
+                    MoveStep::Sixteenth => {
+                        let ticks = i128::from(s.ticks.max(1));
+                        let q = i128::from(mpfree_transport::time::PPQ) * s.frames as i128;
+                        let sixteenth = ((q + 2 * ticks) / (4 * ticks)) as i64;
+                        at + i64::from(d) * sixteenth.max(1)
+                    }
+                };
+                with_edge(base, edge, f)
+            }
+        };
+        // Within what the first pass kept, and a sliver of loop at least.
+        let shortest = i64::from(self.rate / 50);
+        let (press, tap) = b.captured;
+        let start = to
+            .start
+            .clamp(-press, (tap + to.end - press - shortest).max(-press));
+        let end = to.end.clamp(
+            (press + start - tap + shortest).min(b.kept - tap),
+            b.kept - tap,
+        );
+        let to = Shift { start, end };
+        self.moving = (to != now).then_some((n, s.version, to));
+        if self.ab.is_some() {
+            let _ = self.looper.command(Command::AbMove(to));
+        }
+        None
+    }
+
+    /// A kept move as a labelled example for smart loop end's corpora:
+    /// where you put the start and the end, from your press and tap, and
+    /// what it had found.
+    fn move_example(&self, n: usize, s: &Status, to: Shift) -> String {
+        let r = self.rate;
+        let from = |f: i64, you: &str| match f.signum() {
+            0 => format!("on {you}"),
+            -1 => format!("{:.0} ms before {you}", ms(f, r)),
+            _ => format!("{:.0} ms after {you}", ms(f, r)),
+        };
+        let found = match s.found {
+            Some(f) => format!(
+                "it found the start {} and the end {}",
+                from(f.start, "REC"),
+                from(f.end, "your tap")
+            ),
+            None => "it found nothing".to_string(),
+        };
+        format!(
+            "Loop {} moved by hand: the start {}, the end {} ({found}; a labelled example)",
+            n + 1,
+            from(to.start, "REC"),
+            from(to.end, "your tap")
+        )
+    }
+
+    /// The next hit heard (Move start / Move end's Hit step) after `at`
+    /// (`d` above 0) or before it, in that edge's window, more than 2 ms
+    /// away. None if there is none in view.
+    fn next_hit(&self, n: usize, edge: Edge, at: i64, d: i8) -> Option<i64> {
+        let p = self.point.filter(|p| p.0 == n)?.4;
+        let k = usize::from(edge == Edge::End);
+        let hits = &p.hits[k][..usize::from(p.n_hits[k])];
+        let gap = i64::from(self.rate / 500);
+        if d > 0 {
+            hits.iter().copied().find(|&h| h > at + gap)
+        } else {
+            hits.iter().rev().copied().find(|&h| h < at - gap)
         }
     }
 
@@ -5329,9 +5589,10 @@ impl LoopHost {
     fn read_point(&mut self, n: usize, s: &Status) {
         // (Not moved is None.)
         let moved = s.moved.unwrap_or(Shift::NONE);
+        let moving = self.moving_now(n, s);
         if self
             .point
-            .is_some_and(|p| p.0 == n && p.1 == s.version && p.2 == moved)
+            .is_some_and(|p| p.0 == n && p.1 == s.version && p.2 == moved && p.3 == moving)
         {
             return;
         }
@@ -5343,16 +5604,36 @@ impl LoopHost {
         let ms = |m: f64| (m * f64::from(self.rate) / 1000.0).round() as i64;
         let press = start as i64 - moved.start;
         let tap = (start + len) as i64 - moved.end;
+        // Each window where it always is, unless the edge (or the move)
+        // is out of it: then round that.
+        let edge = moving.unwrap_or(moved);
+        let width = frames as i64;
+        let place = |from: i64, e: i64| {
+            if e < from + width / 10 || e > from + width * 9 / 10 {
+                e - width / 2
+            } else {
+                from
+            }
+        };
+        let from = [
+            place(ms(POINT_START_FROM_MS), edge.start),
+            place(ms(POINT_END_FROM_MS), edge.end),
+        ];
         let mut point = LoopPoint {
             start: [0; POINT_BARS],
             end: [0; POINT_BARS],
+            from,
+            hits: [[0; POINT_HITS]; 2],
+            n_hits: [0; 2],
         };
-        self.looper
-            .read_kept(n, press + ms(POINT_START_FROM_MS), buf);
+        let silent = self.rate / 30;
+        self.looper.read_kept(n, press + from[0], buf);
         peaks_into(buf, &mut point.start);
-        self.looper.read_kept(n, tap + ms(POINT_END_FROM_MS), buf);
+        point.n_hits[0] = hits_into(buf, from[0], silent, &mut point.hits[0]);
+        self.looper.read_kept(n, tap + from[1], buf);
         peaks_into(buf, &mut point.end);
-        self.point = Some((n, s.version, moved, point));
+        point.n_hits[1] = hits_into(buf, from[1], silent, &mut point.hits[1]);
+        self.point = Some((n, s.version, moved, moving, point));
     }
 
     /// Whether snap `s` is an Undo or a Redo of Read as, before it lands.
@@ -5869,6 +6150,7 @@ impl LoopHost {
         let read = |s: Option<&Step>| matches!(s, Some(Step::Bars(_)));
         let what = match p.snap {
             Snap::Found => format!("snapped {moves}"),
+            Snap::To(_) => format!("moved by hand {moves}"),
             Snap::Tap => "back to your tap".to_string(),
             Snap::Press => "back to your press".to_string(),
             Snap::Bars(_) => "read again".to_string(),
@@ -6083,10 +6365,73 @@ fn peaks_into(audio: &[[f32; 2]], out: &mut [u8]) {
     }
 }
 
+/// The hits in a loop point window's `audio` (Move start / Move end's
+/// Hit step and the window's marks), into `out`, as frames from where
+/// the window begins plus `from`; how many. A hit is a block of 64 frames
+/// whose peak is above -34 dB and four times (12 dB) the loudest of the
+/// four blocks before it, at least `apart` frames after the last one; it
+/// is placed on the first frame in its block at half that peak.
+fn hits_into(audio: &[[f32; 2]], from: i64, apart: u32, out: &mut [i64]) -> u8 {
+    const BLOCK: usize = 64;
+    let peak = |b: &[[f32; 2]]| {
+        b.iter()
+            .fold(0.0f32, |m, x| m.max(x[0].abs()).max(x[1].abs()))
+    };
+    let mut before = [0.0f32; 4];
+    let mut n = 0;
+    let mut last: Option<usize> = None;
+    for (k, b) in audio.chunks(BLOCK).enumerate() {
+        let p = peak(b);
+        let loudest = before.iter().fold(0.0f32, |m, &x| m.max(x));
+        let far = last.is_none_or(|l| k * BLOCK >= l + apart as usize);
+        if p > 0.02 && p > 4.0 * loudest && far && n < out.len() {
+            let i = b
+                .iter()
+                .position(|x| x[0].abs().max(x[1].abs()) >= 0.5 * p)
+                .unwrap_or(0);
+            out[n] = from + (k * BLOCK + i) as i64;
+            n += 1;
+            last = Some(k * BLOCK + i);
+        }
+        before.rotate_left(1);
+        before[3] = p;
+    }
+    n as u8
+}
+
+/// Whether a loop was moved by hand (Move start / Move end, [`Snap::To`])
+/// and is there still: moved, but not to what smart loop end found, nor
+/// to it with one edge put back (Use my tap or Use my press after a snap).
+pub fn hand_moved(s: &Status) -> bool {
+    let Some(m) = s.moved.filter(|m| !m.is_none()) else {
+        return false;
+    };
+    !s.found.is_some_and(|f| {
+        m == f
+            || m == Shift {
+                start: f.start,
+                end: 0,
+            }
+            || m == Shift {
+                start: 0,
+                end: f.end,
+            }
+    })
+}
+
+/// `base` with `edge` put on `f`.
+fn with_edge(base: Shift, edge: Edge, f: i64) -> Shift {
+    match edge {
+        Edge::Start => Shift { start: f, ..base },
+        Edge::End => Shift { end: f, ..base },
+    }
+}
+
 /// A snap as the log names it; `read`: an Undo or Redo is of Read as.
 fn snap_name(s: Snap, read: bool) -> String {
     match s {
         Snap::Found => "Snap".to_string(),
+        Snap::To(_) => "Move".to_string(),
         Snap::Tap => "Use my tap".to_string(),
         Snap::Press => "Use my press".to_string(),
         Snap::Bars(b) => format!("Read as {}", bars_words_n(b)),
@@ -6141,6 +6486,7 @@ pub fn length_ask_button(r: &Reading) -> String {
 pub fn ask_button(s: Snap) -> &'static str {
     match s {
         Snap::Found | Snap::Tap | Snap::Press => "Snap anyway",
+        Snap::To(_) => "Move anyway",
         Snap::Bars(_) | Snap::Undo | Snap::Redo => "Do it anyway",
     }
 }
@@ -6149,6 +6495,7 @@ pub fn ask_button(s: Snap) -> &'static str {
 fn snap_verb(s: Snap, read: bool) -> String {
     match s {
         Snap::Found => "snap".to_string(),
+        Snap::To(_) => "move it".to_string(),
         Snap::Tap => "go back to your tap".to_string(),
         Snap::Press => "go back to your press".to_string(),
         Snap::Bars(b) => format!("read it as {}", bars_words_n(b)),
@@ -6564,6 +6911,68 @@ mod tests {
             words.as_deref(),
             Some("Kept your tap: loop memory was full, so nothing after it was kept.")
         );
+    }
+
+    /// Move start / Move end's hits: each onset once, on the first frame
+    /// at half its peak; not one quieter than -34 dB, not a swell that
+    /// isn't four times what came before, and not one sooner than `apart`
+    /// after the last.
+    #[test]
+    fn the_hits_in_a_loop_point_window_are_each_onset_once() {
+        let mut audio = vec![[0.0f32; 2]; 4_000];
+        let mut hit = |at: usize, peak: f32| {
+            for (i, f) in audio[at..at + 300].iter_mut().enumerate() {
+                let v = peak * (1.0 - i as f32 / 300.0);
+                *f = [v, -v];
+            }
+        };
+        hit(200, 0.5);
+        // 20 frames into the block it lands in.
+        hit(64 * 21 + 20, 0.6);
+        // Too soon after that one (apart is 1000 frames).
+        hit(2_000, 0.9);
+        // Too quiet to count.
+        hit(3_600, 0.015);
+        let mut out = [0i64; POINT_HITS];
+        let n = hits_into(&audio, -500, 1_000, &mut out);
+        assert_eq!(&out[..usize::from(n)], &[-500 + 200, -500 + 1_364]);
+        // A full window: as many as fit.
+        let mut one = [0i64; 1];
+        assert_eq!(hits_into(&audio, 0, 100, &mut one), 1);
+        assert_eq!(one, [200]);
+    }
+
+    /// A loop moved by hand is one moved somewhere smart loop end didn't
+    /// put it: not on what it found, nor on that with your tap or your
+    /// press put back (Use my tap, Use my press after a snap).
+    #[test]
+    fn a_hand_move_is_any_move_but_what_was_found() {
+        let found = Shift {
+            start: 800,
+            end: -2_100,
+        };
+        let empty = LoopHost::new(44_100, 2).looper.status();
+        let st = |moved: Option<Shift>, found: Option<Shift>| Status {
+            moved,
+            found,
+            ..empty
+        };
+        assert!(!hand_moved(&st(None, Some(found))));
+        assert!(!hand_moved(&st(Some(Shift::NONE), Some(found))));
+        assert!(!hand_moved(&st(Some(found), Some(found))));
+        assert!(!hand_moved(&st(
+            Some(with_edge(found, Edge::End, 0)),
+            Some(found)
+        )));
+        assert!(!hand_moved(&st(
+            Some(with_edge(found, Edge::Start, 0)),
+            Some(found)
+        )));
+        assert!(hand_moved(&st(
+            Some(with_edge(found, Edge::End, -2_900)),
+            Some(found)
+        )));
+        assert!(hand_moved(&st(Some(found), None)));
     }
 
     /// Length's bars are final (the looper refactor's Finding C): 1 bar

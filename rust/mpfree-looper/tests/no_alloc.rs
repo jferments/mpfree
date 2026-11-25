@@ -25,7 +25,7 @@ use std::cell::Cell;
 
 use mpfree_looper::{
     After, Clock, Command as L, Edit as E, LayerCommand as Lc, Looper, NoteStart, Overdubs, Phase,
-    SmartEnd, Snap, SnapPlan, Starts, MAX_LOOPS,
+    Shift, SmartEnd, Snap, SnapPlan, Starts, MAX_LOOPS,
 };
 use mpfree_transport::{Block, Command as T, Transport};
 
@@ -1117,9 +1117,10 @@ fn a_free_pass_by_ear_never_allocates() {
 }
 
 /// Smart loop end's snaps: Suggest offers the downbeat played before a
-/// late tap, and a snap to it, its Undo and Redo, Use my tap, and Read as
-/// 4 bars and its Undo, each worked out, given and landed at odd period
-/// sizes, allocate nothing.
+/// late tap, and a snap to it, its Undo and Redo, Use my tap, a move of
+/// your own (Move start / Move end), and Read as 4 bars and its Undo,
+/// each worked out, given and landed at odd period sizes, allocate
+/// nothing; nor does A/B against a move, moved again while it runs.
 #[test]
 fn snaps_never_allocate() {
     const RATE: u32 = 22_050;
@@ -1140,10 +1141,15 @@ fn snaps_never_allocate() {
         Snap::Undo,
         Snap::Redo,
         Snap::Tap,
+        Snap::To(Shift {
+            start: 100,
+            end: -300,
+        }),
         Snap::Bars(4),
         Snap::Undo,
     ]
     .into_iter();
+    let mut ab_moves = 0;
     let _ = l.command(L::TempoFromLoop(true));
     let _ = l.command(L::SetBars(None));
     let _ = l.command(L::SetSmartEnd(SmartEnd::Suggest));
@@ -1202,6 +1208,12 @@ fn snaps_never_allocate() {
         }
         // The next snap once the last has landed and the offer is in.
         let st = l.status();
+        // A/B against a move as soon as the offer is in, moved again.
+        if st.offer.is_some() && ab_moves < 2 {
+            let end = -200 - 100 * ab_moves;
+            let _ = l.command(L::AbMove(Shift { start: 0, end }));
+            ab_moves += 1;
+        }
         if snap.is_none() && st.snapping.is_none() && (st.offer.is_some() || st.moved.is_some()) {
             if let Some(s) = want.next() {
                 snap = Some(l.snap_plan(0, s, t.frame()).expect("a snap"));
@@ -1212,9 +1224,10 @@ fn snaps_never_allocate() {
     assert_eq!(calls(), 0, "allocated while snapping");
     assert!(read > 0, "the kept audio was read");
     assert_eq!(
-        landed, 6,
-        "Snap, Undo, Redo, Use my tap, Read as and its Undo landed"
+        landed, 7,
+        "Snap, Undo, Redo, Use my tap, a move, Read as and its Undo landed"
     );
+    assert_eq!(ab_moves, 2);
 }
 
 /// A loop on an audio track (`Looper::play`): told where it sounds each

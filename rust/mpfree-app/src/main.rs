@@ -8735,6 +8735,14 @@ fn looper_action(
             out.note(&line);
             vec![app::Effect::Tell(line)]
         }
+        looping::LoopAction::Move(a) => looper
+            .move_act(a)
+            .map(|line| {
+                out.note(&line);
+                app::Effect::Tell(line)
+            })
+            .into_iter()
+            .collect(),
         looping::LoopAction::CaptureSpan(end, bars) => {
             out.note(&looper.set_capture_span(end, bars));
             Vec::new()

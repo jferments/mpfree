@@ -284,6 +284,12 @@ pub enum Command {
     /// with no other side, while busy or overdubbing, at another speed,
     /// with a print playing, or in a loop shorter than three beats.
     AbSeam(bool),
+    /// A/B on the seam against a move of your own (Move start / Move
+    /// end, [`Snap::To`]): as [`Command::AbSeam`]`(true)`, but the other
+    /// side is the start and end here, from your press and tap. While it
+    /// runs, another `AbMove` changes the other side from the next half
+    /// way; `AbSeam(false)` ends it as for the snap's.
+    AbMove(Shift),
     /// A note played on song frame `frame` (a pad hit, which the host
     /// sees before the looper hears it): starts a loop armed to start
     /// when you play ([`Starts::Play`]) that isn't listening by ear
@@ -1157,6 +1163,11 @@ pub enum Snap {
     /// Read as: read the loop as this many bars of the song's meter. Its
     /// length and its sound stay; the tempo changes so they fit it.
     Bars(u32),
+    /// Move start / Move end: put the start and the end here, in frames
+    /// from your press and your closing tap (as [`Status::offer`] and
+    /// [`Status::moved`] count them), within what the first pass kept.
+    /// It lands as a snap does: the bars stay and the tempo follows.
+    To(Shift),
     /// Undo the last step, a snap ([`Step::Snap`], [`Step::Bars`]).
     Undo,
     /// Redo the next step, a snap.
@@ -1423,6 +1434,10 @@ pub struct Status {
     /// How far the loop's start and end are from your press and tap
     /// (Auto, or a snap): [`Snap::Press`] and [`Snap::Tap`] put them back. Lasts as [`Status::offer`] does.
     pub moved: Option<Shift>,
+    /// What smart loop end found, from your press and tap (not from where
+    /// the loop is, as [`Status::offer`] is): a loop moved but not there
+    /// was moved by hand ([`Snap::To`]). Lasts as [`Status::offer`] does.
+    pub found: Option<Shift>,
     /// A snap given to land on this frame ([`Looper::snap_at`]).
     pub snapping: Option<u64>,
     /// The first pass closed on bars Length didn't say, because Length's
@@ -2367,6 +2382,9 @@ struct Loop {
     /// own, but the first pass's last beat (and first, when the start
     /// moves) is the other side's.
     ab_views: [View; MAX_LAYERS],
+    /// A move's A/B asked for another side while it ran
+    /// ([`Command::AbMove`]): made at the next half way.
+    ab_next: Option<Shift>,
 
     /// The first pass's writer is still at work (it runs `latency` frames
     /// behind).
@@ -2749,6 +2767,7 @@ impl Loop {
         ab_last: 0.0,
         ab_version: 0,
         ab_views: [View::EMPTY; MAX_LAYERS],
+        ab_next: None,
         first_open: false,
         tail: false,
         short: false,
@@ -3764,6 +3783,7 @@ impl Looper {
                 .and_then(|(f, m)| f.map(|f| f - m))
                 .filter(|o| !o.is_none()),
             moved: l.smart_now().map(|(_, m)| m).filter(|m| !m.is_none()),
+            found: l.smart_now().and_then(|(f, _)| f),
             snapping: l.snap.map(|p| p.at),
             asks: l.asks,
             ab: l.ab_on.then_some(l.ab_other),
@@ -5126,7 +5146,7 @@ impl Looper {
         let ticks = l.snap_ticks(s, span.meter.bar_ticks())?;
         let len = l.len as i64 + by.longer();
         let fits = match s {
-            Snap::Found | Snap::Tap | Snap::Press => l.shifted(by).is_some(),
+            Snap::Found | Snap::Tap | Snap::Press | Snap::To(_) => l.shifted(by).is_some(),
             Snap::Bars(_) | Snap::Undo | Snap::Redo => true,
         };
         if !fits && l.short && by.end > 0 {
@@ -7487,6 +7507,7 @@ impl Loop {
                 | Command::FreePlay
                 | Command::UseReading
                 | Command::AbSeam(_)
+                | Command::AbMove(_)
                 | Command::Played(_)
                 | Command::StartsByEar(_)
                 | Command::TempoFromLoop(_)
@@ -7609,7 +7630,16 @@ impl Loop {
             Command::UseReading => stats.refused += 1,
             Command::AbSeam(true) if self.ab_on => self.ab_off = false,
             Command::AbSeam(true) => {
-                if !self.ab_start() {
+                if !self.ab_start(None) {
+                    stats.refused += 1;
+                }
+            }
+            Command::AbMove(to) if self.ab_on => {
+                self.ab_next = Some(to);
+                self.ab_off = false;
+            }
+            Command::AbMove(to) => {
+                if !self.ab_start(Some(to)) {
                     stats.refused += 1;
                 }
             }
@@ -7768,20 +7798,40 @@ impl Loop {
     /// it kept, its start moved and its length changed by `by` (an
     /// [`Edit::Move`] and an [`Edit::Resize`] at once). None if it can't
     /// be made.
-    /// A/B on the seam ([`Command::AbSeam`]) starts: the other side's
-    /// seam made, played from the next half way. False if it can't.
-    fn ab_start(&mut self) -> bool {
-        let Some((found, moved)) = self.smart_now() else {
+    /// A/B on the seam ([`Command::AbSeam`], [`Command::AbMove`]) starts:
+    /// the other side's seam made, played from the next half way (or, for
+    /// a move while it runs, from the next half way on). False if it
+    /// can't.
+    fn ab_start(&mut self, to: Option<Shift>) -> bool {
+        let Some(seam) = self.ab_seam(to) else {
             return false;
         };
+        self.ab_views = self.views;
+        self.ab_views[0] = seam;
+        self.ab_on = true;
+        self.ab_other = false;
+        self.ab_off = false;
+        self.ab_next = None;
+        self.ab_last = self.pos;
+        self.ab_version = self.version;
+        true
+    }
+
+    /// The other side's seam for A/B ([`Loop::ab_start`]): its first
+    /// layer's view, the loop's own but for its last beat (and its first,
+    /// when the start moves). None if it can't be made.
+    fn ab_seam(&self, to: Option<Shift>) -> Option<View> {
+        let (found, moved) = self.smart_now()?;
         if self.od_open || self.busy() || self.speed != 0 || self.rate != 0 || self.print_on > 0.0 {
-            return false;
+            return None;
         }
-        // The other side: the snap from your tap (what Snap would make);
-        // from the snap, your tap, or your press if only the start moved
-        // (what Use my tap or Use my press would).
-        let by = match found {
-            Some(f) if f != moved => f - moved,
+        // The other side: a move of your own; else the snap from your tap
+        // (what Snap would make); from the snap, your tap, or your press
+        // if only the start moved (what Use my tap or Use my press would).
+        let by = match (to, found) {
+            (Some(t), _) if t != moved => t - moved,
+            (Some(_), _) => return None,
+            (None, Some(f)) if f != moved => f - moved,
             _ if moved.end != 0 => Shift {
                 start: 0,
                 end: -moved.end,
@@ -7790,18 +7840,16 @@ impl Loop {
                 start: -moved.start,
                 end: 0,
             },
-            _ => return false,
+            _ => return None,
         };
-        let Some(other) = self.shifted(by) else {
-            return false;
-        };
+        let other = self.shifted(by)?;
         // A beat (a quarter) of the loop, in frames.
         let ticks = i128::from(self.len_ticks.max(1));
         let beat = ((i128::from(PPQ) * self.len as i128 + ticks / 2) / ticks) as usize;
         let (v, w) = (self.views[0], other.views[0]);
         let (len, wl) = (v.len(), w.len());
         if beat == 0 || 3 * beat > len || 3 * beat > wl {
-            return false;
+            return None;
         }
         let seam = || {
             let end = w.cut(wl - beat, wl)?;
@@ -7811,17 +7859,7 @@ impl Loop {
                 w.cut(0, beat)?.then(&v.cut(beat, len - beat)?)?.then(&end)
             }
         };
-        let Some(seam) = seam().filter(|s| s.len() == len) else {
-            return false;
-        };
-        self.ab_views = self.views;
-        self.ab_views[0] = seam;
-        self.ab_on = true;
-        self.ab_other = false;
-        self.ab_off = false;
-        self.ab_last = self.pos;
-        self.ab_version = self.version;
-        true
+        seam().filter(|s| s.len() == len)
     }
 
     /// A/B on the seam, each frame while it runs: from half way round
@@ -7844,6 +7882,17 @@ impl Loop {
             || (self.busy() && self.snap.is_none());
         if changed || (crossed && self.ab_off) {
             self.ab_end();
+        } else if let Some(to) = self.ab_next.filter(|_| crossed) {
+            // A move's new other side, from half way, where both play the
+            // same: it plays next.
+            self.ab_next = None;
+            match self.ab_seam(Some(to)) {
+                Some(seam) => {
+                    self.ab_views[0] = seam;
+                    self.ab_other = true;
+                }
+                None => self.ab_end(),
+            }
         } else if crossed {
             self.ab_other = !self.ab_other;
         }
@@ -7853,6 +7902,7 @@ impl Loop {
         self.ab_on = false;
         self.ab_other = false;
         self.ab_off = false;
+        self.ab_next = None;
     }
 
     fn shifted(&self, by: Shift) -> Option<Shape> {
@@ -8938,10 +8988,11 @@ impl Loop {
         };
         match s {
             Snap::Bars(_) => Ok(Shift::NONE),
-            Snap::Found | Snap::Tap | Snap::Press => {
+            Snap::Found | Snap::Tap | Snap::Press | Snap::To(_) => {
                 let (found, moved) = self.smart_now().ok_or("the loop has changed since")?;
                 let to = match s {
                     Snap::Found => found.ok_or("smart loop end found nothing to change")?,
+                    Snap::To(to) => to,
                     Snap::Tap => Shift {
                         start: moved.start,
                         end: 0,
@@ -8954,7 +9005,7 @@ impl Loop {
                 let by = to - moved;
                 if by.is_none() {
                     return Err(match s {
-                        Snap::Found => "the loop is already there",
+                        Snap::Found | Snap::To(_) => "the loop is already there",
                         Snap::Tap => "the loop already ends on your tap",
                         _ => "the loop already starts on your press",
                     });
@@ -8985,7 +9036,7 @@ impl Loop {
             },
             Snap::Undo => kept(&self.done[..self.n_done]).ok_or("the last step isn't a snap"),
             Snap::Redo => kept(&self.undone[..self.n_undone]).ok_or("the next step isn't a snap"),
-            Snap::Found | Snap::Tap | Snap::Press => Ok(self.len_ticks),
+            Snap::Found | Snap::Tap | Snap::Press | Snap::To(_) => Ok(self.len_ticks),
         }
     }
 
@@ -9005,7 +9056,7 @@ impl Loop {
         let landed = ready
             && self.snap_by(p.snap) == Ok(p.by)
             && match p.snap {
-                Snap::Found | Snap::Tap | Snap::Press => self.make_shift(stats, p.by),
+                Snap::Found | Snap::Tap | Snap::Press | Snap::To(_) => self.make_shift(stats, p.by),
                 Snap::Bars(b) => self.make_bars(stats, b, p.ticks),
                 Snap::Undo => {
                     self.undo();
