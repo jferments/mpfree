@@ -80,7 +80,7 @@
 
 use mpfree_seq::arrange::Arrangement;
 use mpfree_seq::mpfree_context::chord::ChordTimeline;
-use mpfree_seq::mpfree_moves::{Kind, Map, Point, Target};
+use mpfree_seq::mpfree_moves::{Kind, Lane, Map, Point, Target};
 use mpfree_seq::steps::{Edit, MovesEdit};
 use mpfree_seq::{
     take_out_each, touch_room, Clip, ClipId, ClipSettings, DestId, Lock, ModelError, Note, Project,
@@ -123,6 +123,10 @@ pub struct MovePut {
     /// What the lane had: (from, to, points) over clip ticks `from..to`,
     /// for undo (`Moves::restore`).
     pub saved: Vec<(u32, u32, Vec<Point>)>,
+    /// The lane as it was when it was Continue's (composing tools S3):
+    /// the move made it yours (`Moves::take_over`), and undo puts it back
+    /// whole after the points.
+    pub was: Option<Box<Lane>>,
 }
 
 /// What a Song view edit did ([`Takes::song_edit`]), for the undo list.
@@ -1831,6 +1835,9 @@ impl Takes {
                 for (from, to, old) in put.saved.iter().rev() {
                     let _ = c.moves.restore(put.target, put.map, *from, *to, old);
                 }
+                if let Some(was) = &put.was {
+                    let _ = c.moves.put_back((**was).clone());
+                }
             }
         }
         // The lanes first: the length then checks them.
@@ -2016,6 +2023,7 @@ impl Takes {
                     put.len,
                 ) {
                     put.saved = again.saved;
+                    put.was = again.was;
                 }
             }
         }
@@ -2275,7 +2283,8 @@ impl Takes {
     }
 }
 
-/// Write a gesture into clip `c`'s lane, keeping what it replaces.
+/// Write a gesture into clip `c`'s lane, keeping what it replaces. A lane
+/// of Continue's there becomes yours first (`Moves::take_over`).
 fn write_move(
     c: &mut Clip,
     track: usize,
@@ -2289,11 +2298,19 @@ fn write_move(
         return Err(ModelError::BadSlot);
     }
     let mut saved = Vec::new();
-    c.moves
+    let was = c.moves.take_over(target);
+    let put = c
+        .moves
         .put_saving(target, map, points, len, |from, to, old| {
             saved.push((from, to, old.to_vec()))
-        })
-        .map_err(|_| ModelError::BadMoves)?;
+        });
+    if put.is_err() {
+        // Nothing went in: the lane stays Continue's.
+        if let Some(l) = was {
+            let _ = c.moves.put_back(l);
+        }
+        return Err(ModelError::BadMoves);
+    }
     Ok(MovePut {
         track,
         slot,
@@ -2302,6 +2319,7 @@ fn write_move(
         points: points.to_vec(),
         len,
         saved,
+        was: was.map(Box::new),
     })
 }
 

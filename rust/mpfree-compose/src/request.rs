@@ -98,19 +98,33 @@ pub fn sound_of(
     made: &Continued,
     level: crate::sound::SoundLevel,
 ) -> Vec<crate::sound::SoundMove> {
+    sound_on(made, req.settings, req.length, req.meter, req.bpm, level)
+}
+
+/// [`sound_of`] from what a job keeps of its request: the settings, the
+/// clip's length (in its ticks), the meter and the tempo.
+pub fn sound_on(
+    made: &Continued,
+    settings: &Settings,
+    length: Tick,
+    meter: Meter,
+    bpm: f64,
+    level: crate::sound::SoundLevel,
+) -> Vec<crate::sound::SoundMove> {
     let Some(sk) = made.sketch.as_ref() else {
         return Vec::new();
     };
+    let bar = meter.bar_ticks().max(1);
     crate::sound::sound_moves(
         &made.part,
         &made.events,
-        &req.settings.style,
+        &settings.style,
         &crate::perform::Shaping {
             sketch: sk,
-            yours: your_bars(req),
-            meter: req.meter,
-            bpm: req.bpm,
-            keep_accents: req.settings.keeps.accents,
+            yours: ((length.max(1) + bar - 1) / bar) as usize,
+            meter,
+            bpm,
+            keep_accents: settings.keeps.accents,
         },
         level,
     )

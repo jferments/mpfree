@@ -451,3 +451,50 @@ fn a_stop_ends_every_gesture_and_stopped_moves_are_not_kept() {
     let p = r.log.phrase();
     assert!(p.iter().all(|g| g.points.last().unwrap().2 == Kind::End));
 }
+
+/// Continue's lane (composing tools S3): a gesture of yours on it makes
+/// it yours, keeping its points while it played and losing them while it
+/// was off; `put_back` gives Continue's back whole, and `set_by` names a
+/// lane only where there is one.
+#[test]
+fn a_gesture_takes_continues_lane_over_and_put_back_undoes_it() {
+    let mut m = Moves::new();
+    let points = [(0.0, 50.0, Kind::Step), (960.0, 0.0, Kind::End)];
+    m.put(cutoff(), lin(), &points, BAR).unwrap();
+    assert_eq!(m.by(cutoff()), Some(By::Hand), "a new lane is yours");
+    assert!(
+        m.take_over(cutoff()).is_none(),
+        "yours: nothing to take over"
+    );
+    let continues = By::Continue {
+        on: true,
+        base: 0.0,
+    };
+    assert!(m.set_by(cutoff(), continues));
+    assert!(!m.set_by(dj(), continues), "no lane there");
+    let was = m.clone();
+    let lane = m.take_over(cutoff()).expect("Continue's");
+    assert_eq!(lane.by, continues);
+    assert_eq!(m.by(cutoff()), Some(By::Hand));
+    assert_eq!(
+        m.lane(cutoff()).unwrap().points,
+        was.lane(cutoff()).unwrap().points
+    );
+    m.put_back(lane).unwrap();
+    assert_eq!(m, was);
+    // Off, you weren't hearing it: yours starts empty.
+    m.set_by(
+        cutoff(),
+        By::Continue {
+            on: false,
+            base: 0.0,
+        },
+    );
+    let off = m.clone();
+    let lane = m.take_over(cutoff()).unwrap();
+    assert!(m.lane(cutoff()).unwrap().points.is_empty());
+    // Gone meanwhile: put back as a new lane.
+    m.remove(cutoff());
+    m.put_back(lane).unwrap();
+    assert_eq!(m, off);
+}
