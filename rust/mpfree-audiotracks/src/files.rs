@@ -24,7 +24,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -1084,9 +1084,16 @@ pub struct DriveSeen {
     writable: AtomicU8,
     free: AtomicU64,
     total: AtomicU64,
+    /// The drive watched is the SD card (S2b, phase B2b).
+    card: AtomicBool,
 }
 
 impl DriveSeen {
+    /// Whether the drive watched is the SD card, not the stick.
+    pub fn on_card(&self) -> bool {
+        self.card.load(Ordering::Relaxed)
+    }
+
     /// A look's answer: None when the drive didn't answer.
     pub fn set(&self, room: Option<Room>) {
         match room {
@@ -1127,24 +1134,33 @@ pub const DRIVE_EVERY: Duration = Duration::from_secs(3);
 /// its own, until `stop`'s sender goes: Stick missing (it didn't answer,
 /// or is read-only) and Stick nearly full (under 1 GB free, or ten
 /// minutes of what `armed` says the armed takes record, a second), each to
-/// `report` as it begins and ends. False from `report`: the host is gone.
-/// Each look also goes in `seen`, for the page's stick meter.
+/// `report` as it begins and ends; Card missing and Card nearly full
+/// instead when the drive is the SD card (`card`). A folder sent on
+/// `moved` (the takes record somewhere else now, and whether it is on the
+/// card) is looked at from then on, at once, by the same watch, so the
+/// last drive's problems end as the new one's begin. It stops once
+/// `moved`'s sender goes, or `report` says false (the host is gone). Each
+/// look also goes in `seen`, for the page's meter.
 pub fn watch_drive(
     dir: PathBuf,
+    card: bool,
     probe: DriveProbe,
     armed: Arc<AtomicU64>,
     seen: Arc<DriveSeen>,
-    stop: std::sync::mpsc::Receiver<()>,
+    moved: std::sync::mpsc::Receiver<(PathBuf, bool)>,
     report: impl Fn(Problem) -> bool + Send + 'static,
 ) -> io::Result<()> {
     std::thread::Builder::new()
         .name("mpfree-at-drive".into())
         .spawn(move || {
             let mut watch = Watch::new();
+            let (mut dir, mut card) = (dir, card);
             loop {
+                seen.card.store(card, Ordering::Relaxed);
                 let room = probe(&dir);
                 seen.set(room);
                 let d = Drive {
+                    card,
                     writable: room.is_some_and(|r| r.writable),
                     free: room.map_or(0, |r| r.free),
                     armed_bytes_per_s: armed.load(Ordering::Relaxed),
@@ -1154,9 +1170,10 @@ pub fn watch_drive(
                 if !live {
                     return;
                 }
-                match stop.recv_timeout(DRIVE_EVERY) {
+                match moved.recv_timeout(DRIVE_EVERY) {
+                    Ok((d, c)) => (dir, card) = (d, c),
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                    _ => return,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
                 }
             }
         })

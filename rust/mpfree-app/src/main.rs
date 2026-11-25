@@ -175,6 +175,8 @@ mod screen_picture;
 mod script;
 // The SD card's windows, the pad player's side, for the Browser's "SD card" place.
 mod sd_card;
+// Recording to the SD card's MPFree folder when it opens for saving (S2b, B2b; switched off until B2c).
+mod card_takes;
 mod set_checks;
 mod set_play;
 mod setup;

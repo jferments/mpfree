@@ -317,6 +317,67 @@ fn the_drive_going_and_coming_back_is_told_to_system_status() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// S2b, phase B2b: takes recording on the SD card (a folder given a drive
+/// of its own) are watched as the card: its going is Card missing, never
+/// Stick missing, and the meter knows it is the card. Moving back to the
+/// stick ends the card's problem, as the same watch follows the takes.
+#[test]
+fn the_cards_problems_are_the_cards_and_a_move_back_ends_them() {
+    use mpfree_audiotracks::files::{Problem, Room};
+    use mpfree_status::{kinds, Report};
+    fn probe(dir: &Path) -> Option<Room> {
+        dir.exists().then_some(Room {
+            writable: true,
+            free: 1 << 40,
+            total: 1 << 41,
+        })
+    }
+    let stick = scratch("drive-stick");
+    let card = scratch("drive-card");
+    let work = card.join("MPFree/.work/audiotracks");
+    std::fs::create_dir_all(&work).unwrap();
+    let mut r = Rig::new(&stick);
+    let seen = r.h.drive_seen();
+    r.run_until(|r| r.frame > 10 * P && stick.exists());
+    r.h.watch_drive(probe);
+    r.run_until(|_| seen.get().is_some());
+    assert!(!seen.on_card());
+    // The card opens: a drive of its own, and the takes record there.
+    r.h.own_device(mpfree_stream::storage::Lease::new(&card));
+    assert!(r.h.record_to(work.clone(), quick()).is_ok());
+    r.run_until(|_| seen.on_card());
+    // The card is taken out.
+    std::fs::remove_dir_all(&card).unwrap();
+    let mut got = Vec::new();
+    r.run_until(|r| {
+        got.extend(std::iter::from_fn(|| r.h.take_problem()));
+        !got.is_empty()
+    });
+    assert_eq!(
+        got,
+        [Problem {
+            report: Report::began(&kinds::CARD_MISSING),
+            track: None,
+        }]
+    );
+    // Back to the stick: the card's problem ends, and nothing of the
+    // stick's begins.
+    assert!(r.h.record_to(stick.clone(), quick()).is_ok());
+    let mut back = Vec::new();
+    r.run_until(|r| {
+        back.extend(std::iter::from_fn(|| r.h.take_problem()));
+        !back.is_empty() && !seen.on_card()
+    });
+    assert_eq!(
+        back,
+        [Problem {
+            report: Report::ended(&kinds::CARD_MISSING),
+            track: None,
+        }]
+    );
+    let _ = std::fs::remove_dir_all(&stick);
+}
+
 #[test]
 fn a_take_cut_off_is_recovered_at_the_next_start_up_to_its_last_checkpoint() {
     let dir = scratch("cut");
