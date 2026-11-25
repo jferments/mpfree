@@ -466,6 +466,16 @@ impl Files {
         self.layer_files.push((name, path));
     }
 
+    /// Where loop layer file `name` this run wrote is now: in the work
+    /// folder, or in the project's `samples/` once a save holds a copy
+    /// (phase 4d.4, for UNDO to bring the layer back from it).
+    pub fn layer_path(&self, name: &str) -> Option<&Path> {
+        self.layer_files
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, p)| p.as_path())
+    }
+
     /// What System status is to hear of the takes since last asked.
     pub fn take_problems(&mut self) -> Vec<Problem> {
         std::mem::take(&mut self.problems)
@@ -915,16 +925,17 @@ impl Files {
         // folder too (phase 4c.3); the rest stay for the next save, or
         // the next start's recovery.
         // Only a file directly in the work folder is removed.
-        self.layer_files.retain(|(name, path)| {
-            let there = dir.join(name);
+        // The copy is where it is from now on (UNDO may read it back).
+        for (name, path) in &mut self.layer_files {
+            let there = dir.join(&*name);
             let held = std::fs::symlink_metadata(&there).is_ok_and(|m| m.is_file());
             let in_work = work.as_deref().is_some_and(|w| path.parent() == Some(w));
             if !held || *path == there || !in_work {
-                return true;
+                continue;
             }
-            let _ = std::fs::remove_file(path);
-            false
-        });
+            let _ = std::fs::remove_file(&*path);
+            *path = there;
+        }
     }
 }
 

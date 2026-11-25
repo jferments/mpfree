@@ -586,6 +586,12 @@ const HELD_TOLD: &str = " · the wheel turns it while you hold";
 use mpfree_ui::WHEEL_FINGER;
 /// What the wheel does on the pages with its outline ([`outlined`]).
 const WHEEL_HINT: &str = "Wheel: control to control   ·   push: press it";
+/// Prefs' hint lines (layout spec 5): on a tab's settings, with the
+/// wheel's push on one, and on the themes.
+pub const PREFS_HINT: &str = "Wheel: pick a setting   ·   push the wheel, then turn: change it   ·   - / +: change it   ·   SHIFT + wheel: next tab   ·   MENU: close";
+pub const PREFS_EDIT_HINT: &str =
+    "Wheel: change it   ·   push the wheel: set it   ·   - / +: change it   ·   SHIFT + wheel: next tab   ·   MENU: close";
+pub const PREFS_THEMES_HINT: &str = "Wheel, - / + or a tap: try a theme   ·   push the wheel: keep it   ·   SHIFT + wheel: next tab   ·   MENU: close";
 const OPTIONS_EDIT_HINT: &str = "Wheel: change it   ·   push the wheel: set it   ·   - / + or the arrows: change it   ·   Back or MENU: close";
 const GUIDE_HINT: &str = "STOP: skip this button   ·   The pads still play while the guide is open";
 const LOADING_HINT: &str = "Tap the screen for the console";
@@ -1999,6 +2005,13 @@ pub enum FromUi {
     Tab(usize),
     MenuSelect(usize),
     MenuStep(usize, i32),
+    /// Prefs: a tab of the sidebar picked.
+    PrefsTab(usize),
+    /// Prefs: choice `k` of row `i` picked (a button of a choice, a tile,
+    /// a step of a slider, a theme).
+    MenuChoose(usize, usize),
+    /// Prefs: row `i`'s slider or knob moved, 0 to 1000.
+    MenuValue(usize, i32),
     GuideButton(usize),
     /// A button under Prefs' help: Keep (0) or Go back (1) while "Keep
     /// this theme?" asks.
@@ -2612,6 +2625,9 @@ pub struct Player {
     settings: Settings,
     /// The themes folder's themes, for Prefs > Appearance.
     theme_files: Vec<(String, Theme)>,
+    /// Prefs' System tab keeps the rows it was given (previews and tests)
+    /// instead of reading this computer's.
+    prefs_fixed_info: bool,
     /// Theme files left out at start, their lines that used the base's
     /// value, and starts with the default theme in place of the one asked
     /// for ([`ToUi::ThemeFallbacks`]).
@@ -3255,6 +3271,10 @@ impl Player {
         options.back = Some("Back".to_string());
         ui.add("options", options);
         ui.add("help", Card::new("About this setting"));
+        ui.add(
+            crate::prefs_page::WIDGET,
+            crate::prefs_page::PrefsPage::default(),
+        );
         ui.add(NUMPAD, mpfree_ui::numpad::NumPad::default());
         ui.add(TEXTPAD, mpfree_ui::textpad::TextPad::default());
         ui.add(crate::power::CARD, crate::power::PowerCard::default());
@@ -3327,7 +3347,8 @@ impl Player {
         let debug = DebugPages::add(&mut ui).expect("debug layouts");
         ui.add_page("Console", SYSLOG_LAYOUT)
             .expect("console layout");
-        ui.add_page("Prefs", OPTIONS_LAYOUT).expect("prefs layout");
+        ui.add_page("Prefs", crate::prefs_page::LAYOUT)
+            .expect("prefs layout");
         ui.add_page("Options", OPTIONS_LAYOUT)
             .expect("options layout");
         ui.add_page("Guide", GUIDE_LAYOUT).expect("guide layout");
@@ -3512,6 +3533,7 @@ impl Player {
             status,
             settings: Settings::default(),
             theme_files: Vec::new(),
+            prefs_fixed_info: false,
             theme_fallbacks: (0, 0, 0),
             session: ("Starting".to_string(), Tone::Dim),
             console_from_lines: timed,
@@ -9940,8 +9962,9 @@ impl Player {
                 View::System => "Read when the page opens   ·   MENU: back to Prefs   ·   a tab: leave".to_string(),
                 View::SystemStatus => "Tap a system: its problems   ·   Wheel or - / +: the systems   ·   push: open a card   ·   \
                                        MENU or the status chip: close".to_string(),
-                View::Prefs | View::Options if self.menu_editing => OPTIONS_EDIT_HINT.to_string(),
-                View::Prefs | View::Options => OPTIONS_HINT.to_string(),
+                View::Prefs => self.prefs_hint().to_string(),
+                View::Options if self.menu_editing => OPTIONS_EDIT_HINT.to_string(),
+                View::Options => OPTIONS_HINT.to_string(),
                 View::Mixer => mpfree_mixer_ui::io_hint(&self.ui)
                     .unwrap_or_else(|| mpfree_mixer_ui::hint(&self.ui).to_string()),
                 View::Chain => mpfree_chain_ui::chain_hint(&self.ui).to_string(),
@@ -12711,6 +12734,7 @@ impl Player {
                 self.ready = true;
                 self.show_view(v);
             }
+            ToUi::Menu(m) if m.prefs.is_some() => self.set_prefs(m),
             ToUi::Menu(m) => {
                 if let Some(o) = self.ui.get_mut::<OptionList>("options") {
                     if o.title != m.title {
@@ -12821,7 +12845,15 @@ impl Player {
                 self.refresh_qlinks();
             }
             ToUi::Settings(s) => self.set_settings(s),
-            ToUi::ThemeFiles(t) => self.theme_files = t,
+            ToUi::ThemeFiles(t) => {
+                if let Some(p) = self
+                    .ui
+                    .get_mut::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET)
+                {
+                    p.files = t.clone();
+                }
+                self.theme_files = t;
+            }
             ToUi::ThemeFallbacks {
                 left_out,
                 lines_fell_back,
@@ -17041,6 +17073,7 @@ impl Player {
                 | FromUi::LevelDb(_)
                 | FromUi::Tab(_)
                 | FromUi::MenuSelect(_)
+                | FromUi::PrefsTab(_)
                 | FromUi::GuideButton(_)
                 | FromUi::HelpButton(_)
                 | FromUi::UndoReady(_)
@@ -17316,6 +17349,131 @@ impl Player {
             if h.folder_icon.is_some() && h.folder_icon != Some(browsing) {
                 h.folder_icon = Some(browsing);
             }
+        }
+    }
+
+    /// Prefs' page (layout spec 5): the app's tabs and settings, with what
+    /// only the screen reads: System info, read as the System tab opens,
+    /// and the status board's words on System status.
+    fn set_prefs(&mut self, m: crate::app::MenuView) {
+        let Some(mut view) = m.prefs else {
+            return;
+        };
+        let (title, line, tone) = self.prefs_status();
+        for row in &mut view.rows {
+            if let Some(crate::prefs_page::Control::Status {
+                title: t,
+                line: l,
+                tone: o,
+                ..
+            }) = &mut row.control
+            {
+                *t = title.clone();
+                *l = line.clone();
+                *o = tone;
+            }
+        }
+        let wants_info = view.cards.iter().any(|c| c.info);
+        let opened = wants_info
+            && self
+                .ui
+                .get::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET)
+                .is_some_and(|p| !p.view.cards.iter().any(|c| c.info) || p.info.is_empty());
+        if opened && !self.prefs_fixed_info {
+            self.set_prefs_info(crate::sysinfo::read(std::path::Path::new("/")));
+        }
+        let editing = view.editing;
+        if let Some(p) = self
+            .ui
+            .get_mut::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET)
+        {
+            p.view = *view;
+        }
+        self.menu_editing = editing;
+        self.refresh_hint();
+    }
+
+    /// Prefs' System tab's list: the rows of System info that say what
+    /// MPFree is and runs on (the page behind All the details has every
+    /// row).
+    pub fn set_prefs_info(&mut self, info: crate::sysinfo::SystemInfo) {
+        let rows: Vec<(String, String)> = info
+            .software
+            .into_iter()
+            .filter(|(k, _)| k != "Root file system" && k != "Host name")
+            .chain(
+                info.hardware
+                    .into_iter()
+                    .filter(|(k, _)| !k.starts_with("Sound card")),
+            )
+            .collect();
+        if let Some(p) = self
+            .ui
+            .get_mut::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET)
+        {
+            p.info = rows;
+        }
+    }
+
+    /// System status's line on Prefs' System tab, from the status board as
+    /// the chip shows it.
+    fn prefs_status(&self) -> (String, String, Tone) {
+        use mpfree_status::Level;
+        let chip = self.status_board.chip();
+        let s = |n: usize| if n == 1 { "" } else { "s" };
+        match chip.level {
+            None => (
+                "All good".to_string(),
+                "Nothing needs you".to_string(),
+                Tone::Good,
+            ),
+            Some(_) if chip.ring => (
+                format!("{} problem{} ended", chip.unseen, s(chip.unseen)),
+                "Not seen yet: System status says what happened".to_string(),
+                Tone::Warn,
+            ),
+            Some(level) => (
+                format!("{} problem{} now", chip.now, s(chip.now)),
+                "System status says what to try".to_string(),
+                if level == Level::Fail {
+                    Tone::Bad
+                } else {
+                    Tone::Warn
+                },
+            ),
+        }
+    }
+
+    /// Prefs' hint line: the themes', or a tab's with the wheel's push on
+    /// a setting or not.
+    fn prefs_hint(&self) -> &'static str {
+        let themes = self
+            .ui
+            .get::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET)
+            .is_some_and(|p| p.view.gallery.is_some());
+        if themes {
+            PREFS_THEMES_HINT
+        } else if self.menu_editing {
+            PREFS_EDIT_HINT
+        } else {
+            PREFS_HINT
+        }
+    }
+
+    /// What a touch on Prefs asks of the app.
+    fn prefs_event(kind: EventKind) -> Option<FromUi> {
+        use crate::prefs_page::{BACK, GO_BACK, KEEP};
+        match kind {
+            EventKind::Tab(BACK) => Some(FromUi::OptionsButton),
+            EventKind::Tab(KEEP) => Some(FromUi::HelpButton(0)),
+            EventKind::Tab(GO_BACK) => Some(FromUi::HelpButton(1)),
+            EventKind::Tab(i) => Some(FromUi::PrefsTab(i)),
+            EventKind::Cell { row, col } => Some(FromUi::MenuChoose(row, col)),
+            EventKind::Step { index, delta } => Some(FromUi::MenuStep(index, delta)),
+            EventKind::Values { index, set } => {
+                set.first().map(|&(_, v)| FromUi::MenuValue(index, v))
+            }
+            _ => None,
         }
     }
 
@@ -19182,6 +19340,7 @@ impl Player {
             }
             ("options", EventKind::Select(i)) => Some(FromUi::MenuSelect(i)),
             ("options", EventKind::Step { index, delta }) => Some(FromUi::MenuStep(index, delta)),
+            (crate::prefs_page::WIDGET, kind) => Self::prefs_event(kind),
             ("guide", EventKind::Tab(i)) => Some(FromUi::GuideButton(i)),
             ("help", EventKind::Tab(i)) => Some(FromUi::HelpButton(i)),
             ("header", EventKind::Select(i)) if Some(i) == self.arp_chip => Some(FromUi::ArpChip),
@@ -24711,29 +24870,37 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
         out.push((name, p));
     }
-    // Prefs' touch screen section.
+    // Prefs' Playing tab with the wheel on Touch lab (Touch screen card).
     let mut touch = sample_player(fonts());
     let mut t = crate::app::App::new(44_100, false);
-    t.map.menu = Some(MENU);
-    t.button(mpfree_controller::mpc_one::button::SHIFT, true, 0.0);
-    let mut fx = t.button(MENU, true, 0.0);
-    t.button(MENU, false, 0.0);
-    t.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
-    fx.extend(t.step_item(usize::MAX, 1));
-    for e in fx {
-        match e {
-            crate::app::Effect::Menu(m) => touch.apply(ToUi::Menu(m)),
-            crate::app::Effect::Show(v) => touch.apply(ToUi::Show(v)),
-            _ => {}
-        }
+    let mut fx = t.open_tab(View::Prefs);
+    if let Some(i) = t.prefs_go_to(crate::app::Item::TouchLab) {
+        fx.extend(t.select(i));
     }
+    apply_effects(&mut touch, fx);
     out.push(("prefs-touch", touch));
-    // Prefs' backup and Akai kits section (Jay, 17 Nov 18:12Z), on a stick
-    // whose first start made a backup and left Akai's kits out, with them
-    // asked for at the next start.
+    // Prefs' Sound and Projects tabs, as a new stick has them.
+    for (name, item) in [
+        ("prefs-sound", crate::app::Item::Buffer),
+        ("prefs-projects", crate::app::Item::Export),
+    ] {
+        let mut p = sample_player(fonts());
+        let mut t = crate::app::App::new(44_100, false);
+        let mut fx = t.open_tab(View::Prefs);
+        if let Some(i) = t.prefs_go_to(item) {
+            fx.extend(t.select(i));
+        }
+        apply_effects(&mut p, fx);
+        out.push((name, p));
+    }
+    // Prefs' System tab (Jay, 17 Nov 18:12Z: Backup and Akai kits), on a
+    // stick whose first start made a backup and left Akai's kits out, with
+    // them asked for at the next start; System info's rows fixed (the
+    // host's own would differ).
     let mut setup = sample_player(fonts());
+    setup.prefs_fixed_info = true;
+    setup.set_prefs_info(crate::sysinfo::sample());
     let mut t = crate::app::App::new(44_100, false);
-    t.map.menu = Some(MENU);
     let choice = |left_out, done, next_start| crate::setup::Choice {
         left_out,
         done,
@@ -24744,23 +24911,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         akai: choice(false, false, true),
         backup_made: Some("17 Nov 2026".into()),
     }));
-    t.button(mpfree_controller::mpc_one::button::SHIFT, true, 0.0);
-    let mut fx = t.button(MENU, true, 0.0);
-    t.button(MENU, false, 0.0);
-    t.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
-    if let Some(i) = t.row_of(crate::app::Item::SetupSection) {
-        fx.extend(t.step_item(i, 1));
-    }
-    if let Some(i) = t.row_of(crate::app::Item::SetupAkaiKits) {
+    let mut fx = t.open_tab(View::Prefs);
+    if let Some(i) = t.prefs_go_to(crate::app::Item::SetupAkaiKits) {
         fx.extend(t.select(i));
     }
-    for e in fx {
-        match e {
-            crate::app::Effect::Menu(m) => setup.apply(ToUi::Menu(m)),
-            crate::app::Effect::Show(v) => setup.apply(ToUi::Show(v)),
-            _ => {}
-        }
-    }
+    apply_effects(&mut setup, fx);
     out.push(("prefs-setup", setup));
     // The number pad, typing Play's tempo (a long press on its BPM).
     let mut typing = sample_player(fonts());
@@ -24832,13 +24987,15 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     undo.tick(UNDO_HOLD);
     undo.apply(ToUi::Rows(crate::app::RowKey::Pick(-1)));
     out.push(("undo-history", undo));
-    // Prefs with the Appearance row selected, stepped to Console.
+    // Prefs' Appearance tab, Console tapped: the gallery with "Keep this
+    // theme?" in the In use card.
     let mut look = sample_player(fonts());
     let mut l = crate::app::App::new(44_100, false);
     let mut fx = l.open_tab(View::Prefs);
-    let at = l.row_of(crate::app::Item::Appearance).unwrap_or(0);
-    for _ in 0..3 {
-        fx.extend(l.step_item(at, 1));
+    if let Some(i) = l.prefs_go_to(crate::app::Item::Appearance) {
+        let console = l.theme_choices().position(|t| t.0 == "console");
+        let console = console.unwrap_or(3);
+        fx.extend(l.choose(i, console));
     }
     apply_effects(&mut look, fx);
     out.push(("prefs-appearance", look));
@@ -24848,7 +25005,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut g = crate::app::App::new(44_100, false);
     let mut fx = g.start();
     fx.extend(g.open_tab(View::Prefs));
-    fx.extend(g.step_item(g.row_of(crate::app::Item::FindButtons).unwrap_or(0), 1));
+    let at = g.prefs_go_to(crate::app::Item::FindButtons).unwrap_or(0);
+    fx.extend(g.step_item(at, 1));
     fx.extend(g.button(button_play(), true, 0.0));
     apply_effects(&mut guide, fx);
     out.push(("guide", guide));
@@ -24857,7 +25015,8 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     let mut m = sample_app();
     (m.map.rec, m.map.overdub) = (None, None);
     let mut fx = m.open_tab(View::Prefs);
-    fx.extend(m.step_item(m.row_of(crate::app::Item::MapControls).unwrap_or(0), 1));
+    let at = m.prefs_go_to(crate::app::Item::MapControls).unwrap_or(0);
+    fx.extend(m.step_item(at, 1));
     fx.extend(m.map_row(0));
     fx.extend(m.button(73, true, 0.0));
     fx.extend(m.button(73, false, 0.0));
@@ -37195,7 +37354,11 @@ mod tests {
         let clips = p.ui.rect_of(time_view::CLIPS).unwrap();
         assert!(clips.w > 780 && clips.h > 500, "{clips:?}");
         p.apply(ToUi::Show(View::Prefs));
-        assert!(p.ui.rect_of("options").unwrap().h > 600);
+        assert_eq!(
+            p.ui.rect_of(crate::prefs_page::WIDGET),
+            Some(mpfree_ui::Rect::new(12, 84, 1256, 666)),
+            "the slot prefs_page's tests lay out in"
+        );
         let c = Console::new(Fonts::embedded(), "touch", None);
         assert!(c.ui.rect_of("log").unwrap().h > 600);
     }
@@ -37209,8 +37372,8 @@ mod tests {
         let mut fx = app.button(1, true, 0.0);
         app.button(1, false, 0.0);
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
-        // Prefs' last row opens the touch screen section; its last row, + on it, opens the lab.
-        fx.extend(app.step_item(usize::MAX, 1));
+        // Prefs opens on Playing, whose last row is Touch lab (the Touch
+        // screen card's last): + on it opens the lab.
         fx.extend(app.step_item(usize::MAX, 1));
         assert!(fx.contains(&crate::app::Effect::TouchLab), "{fx:?}");
         for e in fx {
@@ -37253,8 +37416,8 @@ mod tests {
         let mut fx = app.button(1, true, 0.0);
         app.button(1, false, 0.0);
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
-        // In the touch screen section, Calibrate touch is the row before the Touch lab.
-        fx.extend(app.step_item(usize::MAX, 1));
+        // On Playing's Touch screen card, Calibrate touch is the row before
+        // the Touch lab, the tab's last.
         fx.extend(app.step_item(app_rows(&app) - 2, 1));
         assert_eq!(
             fx.last(),

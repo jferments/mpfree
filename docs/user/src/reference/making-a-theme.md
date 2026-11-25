@@ -22,11 +22,11 @@ A theme changes colours, corners, glow, the pattern behind the panels and the st
    ```
 
 3. Copy it into the folder `files/themes/` on the MPFREE-DATA part of your MPFree stick.
-4. Start MPFree. Press **SHIFT + MENU** to open Prefs, pick **Appearance** and press **+** until it says **Sunrise**. The screen changes at once, and the right panel asks **Keep Sunrise?** Press **Keep**, or push the data wheel. If you do nothing for 15 seconds, MPFree goes back to the theme you had, so a theme you can't read never sticks.
+4. Start MPFree. Press **SHIFT + MENU** to open Prefs, tap **Appearance** on the left, then tap the **Sunrise** tile. The screen changes at once, and the **In use** card asks **Keep Sunrise?** Tap **Keep**, or push the data wheel. If you do nothing for 15 seconds, MPFree goes back to the theme you had, so a theme you can't read never sticks.
 
-That's Synthwave with an orange accent. MPFree remembers your pick at the next start. Theme files come after the built-in themes on the Appearance row, in name order, up to 32 of them.
+That's Synthwave with an orange accent. MPFree remembers your pick at the next start. Theme files come after the built-in themes on the Appearance tab, in name order, up to 32 of them.
 
-{{shot: prefs-appearance | Prefs, with Appearance picked.}}
+{{shot: prefs-appearance | Prefs, Appearance: a theme tried, and asking whether to keep it.}}
 
 ## How a theme file reads
 
@@ -116,7 +116,7 @@ Text sizes, spacing and the font aren't theme settings. A theme file written bef
 
 MPFree reads every theme file when it starts. When a line has a mistake, such as a misspelt colour, the theme still shows up on the Appearance row: that one setting stays as the `base` theme has it, and everything else in the file is used.
 
-Pick your theme on **Prefs > Appearance** and the right panel lists what MPFree couldn't use, with the line number:
+Pick your theme on **Prefs > Appearance** and the **In use** card lists what MPFree couldn't use, with the line number:
 
 ```text
 Sunrise: 1 problem
@@ -129,7 +129,7 @@ Fix the line, copy the file to the stick again, and start MPFree again.
 
 ### A theme no one could read
 
-MPFree won't use a theme whose words can't be read, because then you couldn't read Prefs to pick another theme either. If `text` or `text_dim` is too close to `bg`, to `surface` or to `raised` (under 3:1 contrast, the point where words stop being readable), the file is left out of the Appearance row. The Appearance panel names it and says why, and so does the log:
+MPFree won't use a theme whose words can't be read, because then you couldn't read Prefs to pick another theme either. If `text` or `text_dim` is too close to `bg`, to `surface` or to `raised` (under 3:1 contrast, the point where words stop being readable), the file is left out of the Appearance tab. The **In use** card names it and says why, and so does the log:
 
 ```text
 themes: fog.theme left out: nothing could be read: text on panels (surface) 1.0:1, under the 3:1 every theme must reach

@@ -785,9 +785,9 @@ CHECKS = (
     Check(
         "touch", "Touch: Touch lab, Calibrate touch, two fingers and a real drag",
         "the real panel's jitter and report rate, which the smoke tests' exact taps do not have", "hands",
-        ["1. SHIFT + MENU for Prefs, the last row Touch screen, +, then Touch lab, +. Follow its 9 steps",
+        ["1. SHIFT + MENU for Prefs, tap Playing, then Touch lab's Open (the Touch screen card). Follow its 9 steps",
          "   (about 3 minutes) and tap Exit.",
-         "2. Calibrate touch, one row up: tap each corner's target. It only reports.",
+         "2. Calibrate touch's Start, one row up: tap each corner's target. It only reports.",
          "3. Press MAIN for Play, press PLAY, and hold Delay throw and Reverb wash with two fingers. STOP.",
          "4. On Arrange (with no clip yet, light the kick on Play's Beats view first), drag the kick's clip to",
          "   an empty slot, then drag it again and hold SHIFT as you lift (a copy). UNDO twice."],

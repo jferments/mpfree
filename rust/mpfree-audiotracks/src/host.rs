@@ -166,6 +166,9 @@ struct FileSide {
     /// what came of each file, not taken yet ([`AudioHost::layer_written`]).
     layer_spare: Vec<Vec<f32>>,
     layers_done: Vec<(RecordingId, Option<String>)>,
+    /// Loop layers' files read back, not taken yet
+    /// ([`AudioHost::layer_read_back`]).
+    layers_read: Vec<(RecordingId, Result<Vec<f32>, String>)>,
 }
 
 /// Frames of a take a save or a fit reads for each frame that plays.
@@ -300,6 +303,9 @@ enum ToWorker {
     LayerEnd(RecordingId),
     /// Stop writing it: its part file goes.
     LayerDrop(RecordingId),
+    /// Read a loop layer's file this run wrote back, for UNDO (phase
+    /// 4d.4): its audio comes back whole.
+    LayerRead(RecordingId),
     /// Write a sound brought in, or a stretched copy, as recording
     /// `rec`'s take file in the work folder, for the tracks of generation
     /// `gen` (the audio is dropped once written, or comes back).
@@ -357,6 +363,12 @@ enum FromWorker {
     LayerWritten {
         rec: RecordingId,
         why: Option<String>,
+    },
+    /// A loop layer's file read back (phase 4d.4): its audio,
+    /// interleaved stereo, or why not.
+    LayerRead {
+        rec: RecordingId,
+        audio: Result<Vec<f32>, String>,
     },
     Files(Said),
     /// A take started with no file: why.
@@ -575,6 +587,7 @@ impl AudioHost {
                 problems: Vec::with_capacity(PROBLEMS),
                 layer_spare: (0..LAYER_SPARE).map(|_| vec![0.0; CHUNK]).collect(),
                 layers_done: Vec::with_capacity(LAYERS_DONE),
+                layers_read: Vec::with_capacity(LAYERS_DONE),
             },
             watch: Watch::new(),
             problems_lost: 0,
@@ -850,6 +863,29 @@ impl AudioHost {
             None
         } else {
             Some(self.files.layers_done.remove(0))
+        }
+    }
+
+    /// Read loop layer recording `rec`'s file back, as this run wrote it
+    /// (phase 4d.4: UNDO brings the layer back from it): its audio comes
+    /// back whole ([`AudioHost::layer_read_back`]). False with no worker.
+    /// Allocates the message: between periods.
+    pub fn layer_read(&mut self, rec: RecordingId) -> bool {
+        if self.tx.is_none() {
+            return false;
+        }
+        self.send(ToWorker::LayerRead(rec));
+        true
+    }
+
+    /// A layer's file read back ([`AudioHost::layer_read`]), oldest first:
+    /// its audio, interleaved stereo, or why not. Give the audio back
+    /// with [`AudioHost::drop_audio`] once done with it.
+    pub fn layer_read_back(&mut self) -> Option<(RecordingId, Result<Vec<f32>, String>)> {
+        if self.files.layers_read.is_empty() {
+            None
+        } else {
+            Some(self.files.layers_read.remove(0))
         }
     }
 
@@ -1595,6 +1631,13 @@ impl AudioHost {
                 FromWorker::LayerWritten { rec, why } => {
                     if self.files.layers_done.len() < LAYERS_DONE {
                         self.files.layers_done.push((rec, why));
+                    }
+                }
+                FromWorker::LayerRead { rec, audio } => {
+                    if self.files.layers_read.len() < LAYERS_DONE {
+                        self.files.layers_read.push((rec, audio));
+                    } else if let Ok(a) = audio {
+                        self.drop_audio(a);
                     }
                 }
                 FromWorker::Files(said) => self.heard(said),
@@ -2695,6 +2738,21 @@ impl Worker {
             ToWorker::DropPlayer(p) => {
                 drop(p);
                 return None;
+            }
+            ToWorker::LayerRead(rec) => {
+                let name = files::layer_file_name(rec);
+                let audio = match files.layer_path(&name) {
+                    None => Err(format!("{name} isn't a file this run wrote")),
+                    Some(path) => std::fs::read(path)
+                        .map_err(|e| e.to_string())
+                        .and_then(|b| crate::save::from_wav(&b))
+                        .and_then(|(audio, channels, _)| match channels {
+                            2 => Ok(audio),
+                            n => Err(format!("{n} channels, not 2")),
+                        })
+                        .map_err(|why| format!("{name}: {why}")),
+                };
+                FromWorker::LayerRead { rec, audio }
             }
             ToWorker::Files { dir, cfg } => {
                 let gate = self

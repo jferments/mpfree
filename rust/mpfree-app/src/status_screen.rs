@@ -819,7 +819,7 @@ mod tests {
                 ("Top speed".to_string(), "1608 MHz".to_string()),
             ]
         );
-        // Slowed, and running hot (once its line is measured): the meter
+        // Slowed, and running hot: the meter
         // turns yellow, and the numbers say how far the speed came down.
         heat.top_mhz = Some(1200);
         heat.clock_mhz = Some(1200);

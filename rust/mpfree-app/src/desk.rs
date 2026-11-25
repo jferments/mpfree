@@ -179,7 +179,7 @@ pub struct Desk<'a> {
     pub card: u32,
     /// The one history across the engines, for UNDO with Dev's "Loops on
     /// audio tracks" on (audio tracks phase 4d.1).
-    pub undo: &'a crate::one_undo::OneUndo,
+    pub undo: &'a mut crate::one_undo::OneUndo,
 }
 
 impl Desk<'_> {
@@ -417,6 +417,9 @@ impl Desk<'_> {
             gui::FromUi::Tab(k) => fx.extend(app.tab(k)),
             gui::FromUi::MenuSelect(k) => fx.extend(app.select(k)),
             gui::FromUi::MenuStep(k, d) => fx.extend(app.step_item(k, d)),
+            gui::FromUi::PrefsTab(i) => fx.extend(app.pick_prefs_tab(i)),
+            gui::FromUi::MenuChoose(i, k) => fx.extend(app.choose(i, k)),
+            gui::FromUi::MenuValue(i, v) => fx.extend(app.set_value(i, v)),
             gui::FromUi::GuideButton(k) => fx.extend(app.guide_button(k)),
             gui::FromUi::HelpButton(k) => fx.extend(app.help_button(k)),
             gui::FromUi::KitTuning { kit, delta } => fx.extend(app.step_kit_tuning(kit, delta)),

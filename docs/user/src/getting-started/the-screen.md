@@ -118,7 +118,7 @@ Some things are not tabs. They open over the page you are on, and close the same
 
 ## Lists of settings
 
-Options, Prefs, the settings beside the Sample tab's wave and on the Pads tab, the Synth tab's tiles and Arrange's Record settings all work the same way:
+Options, the settings beside the Sample tab's wave and on the Pads tab, the Synth tab's tiles and Arrange's Record settings all work the same way (Prefs too, though its settings are on cards with buttons, sliders and switches rather than arrows: see [Prefs](../reference/prefs.md)):
 
 1. **Pick a row:** turn the data wheel, or tap the row.
 2. **Change it:** press **–** or **+**, or tap the arrows at either end of its value.
@@ -176,7 +176,7 @@ Hold **UNDO** for a moment for the page's **undo history**: every step, oldest a
 - **Drag** to move a knob, a fader or the XY pad, or to scroll a list.
 - **Hold** a throw or the XY pad to play it for as long as you hold.
 
-If taps land in the wrong place, calibrate the screen from Prefs (**Calibrate touch**).
+If taps land in the wrong place, calibrate the screen from Prefs (the **Playing** tab, **Calibrate touch**).
 
 > [!MPC]
 > There is no Main mode with tracks and programs on screen, and the Play page has no pads on screen: you play the real ones, and the screen uses the room for the loops, the pattern and performance tools. Prefs is not a menu item: it opens with **SHIFT + MENU**. Every page shows what the Q-Links do in the column beside them, so there is no Q-Link Edit mode.

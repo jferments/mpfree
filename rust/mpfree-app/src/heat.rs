@@ -25,10 +25,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// The temperature over which the MPC is running hot, °C. It is measured
-/// on the MPC (the plan: never guessed), so until it is, MPC running hot
-/// stays off.
-pub const RUNNING_HOT_C: Option<f32> = None;
+/// The temperature over which the MPC is running hot, °C, measured on the
+/// MPC (the plan: never guessed). With every core busy until it settled
+/// (`mpfree-disktest --heat`, the disk streaming rounds D3 and D4 of 24 and
+/// 25 Nov 2026) Jay's MPC settled at 65.4 and 67.7 °C (70.8 at the most)
+/// at 1608 MHz throughout; the line is a few degrees over that, Jay's pick
+/// of 25 Nov, so a heavy project never sets it off.
+pub const RUNNING_HOT_C: Option<f32> = Some(73.0);
 
 /// What one read found. A part the MPC doesn't have is None.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
