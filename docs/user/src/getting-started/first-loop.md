@@ -43,7 +43,7 @@ The speaker beside a ring silences the whole loop without losing it, and **S** p
 The looper can record the **INPUTS** on the back of the MPC instead: a synth, a guitar pedal, a turntable.
 
 1. Plug your instrument into the INPUTS and set **REC VOL** so it's loud but not distorting.
-2. Turn the line input on: press **SHIFT + MENU** to open Prefs, pick **Line input** and switch it **On**, then press **MENU** to close Prefs. (The Looper tab's options, **MENU** there, have the same switch.)
+2. Turn the line input on: press **SHIFT + MENU** to open Prefs, tap the **Sound** tab and switch **Line input** on, then press **MENU** to close Prefs. (The Looper tab's options, **MENU** there, have the same switch.)
 3. The loop's heading now says it records from the line input. Record as before.
 
 The **Looper** tab (**SHIFT + SAMPLER**) is where a loop is shaped: the same eight rings across the top, and the picked loop laid out underneath with a lane per layer, its level and pan, and its recording settings. Press **SHIFT + SAMPLER** again there and the pads play the loops instead of the kit. See [Recording loops](../making-music/looping.md).

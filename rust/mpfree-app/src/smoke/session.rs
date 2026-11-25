@@ -639,7 +639,7 @@ impl Session {
                 level_db: &mut self.level_db,
                 max_db: MAX_DB,
                 card: 0,
-                undo: &self.one_undo,
+                undo: &mut self.one_undo,
             },
             &mut self.out,
         )

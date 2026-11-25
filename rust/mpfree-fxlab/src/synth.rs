@@ -483,7 +483,7 @@ pub fn kit_tour(kit: usize, rate: u32) -> Stereo {
 /// Drum kit `kit` as the pads play it: through its master effects (the
 /// preset's `fx.N` lines, as `mpfree_instruments::Sound`) where it has
 /// them, else the plain kit.
-fn kit_node(kit: usize, rate: u32) -> Box<dyn Node> {
+pub(crate) fn kit_node(kit: usize, rate: u32) -> Box<dyn Node> {
     let p = &Drums::presets()[kit];
     let mut d = Drums::new(rate);
     d.load_preset(p);
@@ -498,7 +498,7 @@ fn kit_node(kit: usize, rate: u32) -> Box<dyn Node> {
 }
 
 /// Drum kit `kit`'s first pad's note.
-fn kit_base(kit: usize, rate: u32) -> u8 {
+pub(crate) fn kit_base(kit: usize, rate: u32) -> u8 {
     let mut d = Drums::new(rate);
     d.load_preset(&Drums::presets()[kit]);
     d.param(drum_params::BASE_NOTE) as u8

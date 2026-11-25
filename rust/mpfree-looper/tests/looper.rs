@@ -2613,6 +2613,195 @@ fn redo_is_forgotten_and_older_steps_retire_in_every_loop() {
     assert_ne!(clear, TransactionId::NONE);
 }
 
+/// A loop of three layers whose second was deleted, synced and sent away
+/// when a fourth needed the memory (audio tracks phase 4d.4), the fourth
+/// undone and its Redo forgotten, so the Delete is next and waits for its
+/// layer: the rig, the deleted layer's number, its slot, its size and its
+/// audio as it was.
+fn a_deleted_layer_away() -> (Rig, u64, usize, usize, Vec<f32>) {
+    use mpfree_transport::TransactionId;
+    // Four seconds: a first pass with what it keeps and two overdubs, and
+    // not a third.
+    let mut r = Rig::new(4, 128);
+    let z = dc(0.0);
+    let wait = |r: &mut Rig| r.run(r.frame + 4 * FADE as u64, &z);
+    record_one_bar(&mut r, &dc(0.25));
+    r.overdub(BAR as u64, &noise);
+    r.overdub(2_000, &dc(0.05));
+    let deleted = r.l.layer_info(1).unwrap();
+    let size = r.l.raw_of(0, deleted.born, 0, &mut []).unwrap();
+    let mut raw = vec![0.0; 2 * size];
+    r.l.raw_of(0, deleted.born, 0, &mut raw).unwrap();
+    r.layer(deleted.id, Lc::Delete);
+    wait(&mut r);
+    assert_eq!(r.l.status().layers, 2);
+    // Unsynced, nothing may go; synced, it goes when a new layer needs
+    // the memory, and no step is let go.
+    r.l.set_synced(0, deleted.born);
+    assert!(!r.l.is_away(0, deleted.born));
+    r.overdub(2_000, &dc(0.02));
+    assert_eq!(r.l.status().layers, 3, "the overdub had room");
+    assert!(r.l.is_away(0, deleted.born));
+    let (mut done, mut redo) = (Vec::new(), Vec::new());
+    assert_eq!(r.l.loop_steps(0, &mut done, &mut redo), TransactionId::NONE);
+    assert_eq!(done.len(), 4, "two overdubs, the delete and the new one");
+    let slot = (0..MAX_LAYERS)
+        .find(|&k| r.l.holds_layer(0, k, deleted.born))
+        .expect("still held: its file is its audio");
+    // The new overdub undone and its Redo forgotten (a new step would):
+    // the Delete is next, and waits for its layer.
+    r.cmd(L::Undo);
+    wait(&mut r);
+    r.cmd(L::ForgetRedo);
+    wait(&mut r);
+    assert_eq!(r.l.away_for(0, false), Some((0, slot, deleted.born)));
+    (r, deleted.born, slot, size, raw)
+}
+
+/// A layer only history holds, once synced to its file, leaves memory
+/// when a new layer needs it, rather than a step being let go (audio
+/// tracks phase 4d.4); Undo that would bring it back waits until it is
+/// brought back from its file, and then it is exactly as it was.
+#[test]
+fn a_synced_layer_only_undo_needs_leaves_memory_and_comes_back_exactly() {
+    let (mut r, born, slot, size, raw) = a_deleted_layer_away();
+    let z = dc(0.0);
+    let wait = |r: &mut Rig| r.run(r.frame + 4 * FADE as u64, &z);
+    let refused = r.l.stats().refused;
+    r.cmd(L::Undo);
+    wait(&mut r);
+    assert_eq!(r.l.stats().refused, refused + 1);
+    assert_eq!(r.l.status().layers, 2, "nothing changed");
+    // Brought back from its file, a piece at a time.
+    assert_eq!(r.l.begin_back(0, slot), Ok(size));
+    assert_eq!(
+        r.l.begin_back(0, slot),
+        Err("another layer is being brought back")
+    );
+    let mut pieces = raw.chunks(2_000).peekable();
+    while let Some(p) = pieces.next() {
+        assert!(r.l.bringing_back());
+        assert_eq!(r.l.put_back(p), pieces.peek().is_none());
+    }
+    assert!(!r.l.bringing_back());
+    assert!(!r.l.is_away(0, born));
+    assert_eq!(r.l.away_for(0, false), None);
+    r.cmd(L::Undo);
+    wait(&mut r);
+    assert_eq!(r.l.status().layers, 3, "the deleted layer is back");
+    let mut again = vec![0.0; 2 * size];
+    assert_eq!(r.l.raw_of(0, born, 0, &mut again), Some(size));
+    assert_eq!(again, raw, "exactly as it was");
+}
+
+/// With no room, a layer coming back sends another synced layer only
+/// history holds away first: here the overdub Undo took back, kept for
+/// Redo, which Redo then brings back in turn, sending the deleted layer
+/// away again (phase 4d.4). With nothing that may go, it is refused.
+#[test]
+fn a_layer_coming_back_makes_room_from_redos_side_and_redo_brings_that_back() {
+    let (mut r, born, slot, size, raw) = a_deleted_layer_away();
+    let z = dc(0.0);
+    let wait = |r: &mut Rig| r.run(r.frame + 4 * FADE as u64, &z);
+    // The overdub the helper undid was forgotten: record another and
+    // undo it, so Redo keeps it.
+    r.overdub(2_000, &dc(0.02));
+    assert!(r.l.is_away(0, born), "the deleted layer stays away");
+    let top = r.l.layer_info(2).unwrap();
+    let mut top_raw = vec![0.0; 2 * size];
+    assert_eq!(r.l.raw_of(0, top.born, 0, &mut top_raw), Some(size));
+    r.cmd(L::Undo);
+    wait(&mut r);
+    assert_eq!(r.l.status().layers, 2);
+    // Not synced, the overdub kept for Redo can't go: no room.
+    assert_eq!(
+        r.l.begin_back(0, slot),
+        Err("there is no room in the loops' memory")
+    );
+    assert!(!r.l.bringing_back());
+    assert!(r.l.is_away(0, born));
+    // Synced, it goes to make room.
+    r.l.set_synced(0, top.born);
+    assert_eq!(r.l.begin_back(0, slot), Ok(size));
+    assert!(r.l.is_away(0, top.born));
+    assert!(r.l.put_back(&raw));
+    r.cmd(L::Undo);
+    wait(&mut r);
+    assert_eq!(r.l.status().layers, 3, "the deleted layer is back");
+    // Redo deletes it again, needing nothing; Redo of the overdub waits
+    // for it, and bringing it back sends the deleted layer away again.
+    r.cmd(L::Redo);
+    wait(&mut r);
+    assert_eq!(r.l.status().layers, 2);
+    let (lp, top_slot, top_born) = r.l.away_for(0, true).expect("Redo needs the overdub");
+    assert_eq!((lp, top_born), (0, top.born));
+    assert_eq!(r.l.begin_back(0, top_slot), Ok(size));
+    assert!(r.l.is_away(0, born));
+    assert!(r.l.put_back(&top_raw));
+    r.cmd(L::Redo);
+    wait(&mut r);
+    assert_eq!(r.l.status().layers, 3, "the overdub is back on top");
+    let mut again = vec![0.0; 2 * size];
+    assert_eq!(r.l.raw_of(0, top.born, 0, &mut again), Some(size));
+    assert_eq!(again, top_raw, "exactly as it was");
+}
+
+/// A layer away goes with its loop when it is cleared and kept for Undo,
+/// and comes back with it, still away; it is gone once the kept loop is
+/// forgotten. One being brought back whose step is let go is called off,
+/// and nothing it would have written lands anywhere (phase 4d.4).
+#[test]
+fn a_layer_away_follows_its_loop_and_its_step() {
+    let (mut r, born, slot, size, raw) = a_deleted_layer_away();
+    let z = dc(0.0);
+    let wait = |r: &mut Rig| r.run(r.frame + 4 * FADE as u64, &z);
+    // Cleared and kept for Undo: still held, still away.
+    r.cmd(L::Clear);
+    wait(&mut r);
+    assert_eq!(r.l.status().layers, 0);
+    assert!(r.l.holds_layer(0, slot, born), "the kept loop names it");
+    // Back with its loop, away still, and its Delete still waits for it.
+    r.cmd(L::Undo);
+    wait(&mut r);
+    assert_eq!(r.l.status().layers, 2);
+    assert!(r.l.is_away(0, born));
+    assert_eq!(r.l.away_for(0, false), Some((0, slot, born)));
+    // Its step let go while it comes back: called off, its blocks gone
+    // back, the layer gone for good.
+    let (mut done, mut redo) = (Vec::new(), Vec::new());
+    r.l.loop_steps(0, &mut done, &mut redo);
+    let delete = done.last().expect("the delete").txn;
+    let used = r.l.memory().used;
+    assert_eq!(r.l.begin_back(0, slot), Ok(size));
+    assert!(r.l.memory().used > used);
+    assert!(!r.l.put_back(&raw[..2_000]));
+    r.cmd(L::RetireThrough(delete));
+    wait(&mut r);
+    assert!(!r.l.bringing_back());
+    assert_eq!(r.l.memory().used, used, "its blocks went back");
+    assert!(!r.l.holds_layer(0, slot, born));
+    assert!(!r.l.is_away(0, born));
+    assert!(!r.l.put_back(&raw[2_000..]), "nothing to put back into");
+    // The loop plays on as it was.
+    assert_eq!(r.l.status().layers, 2);
+    // Away again and cleared, then a new loop recorded: the kept loop is
+    // forgotten, and the layer away with it.
+    let (mut r, born, slot, _, _) = a_deleted_layer_away();
+    r.cmd(L::Clear);
+    wait(&mut r);
+    assert!(r.l.holds_layer(0, slot, born));
+    r.cmd(L::Record);
+    let until = r.frame + 3 * BAR as u64;
+    r.run(until, &dc(0.1));
+    assert_eq!(
+        (r.l.status().phase, r.l.status().layers),
+        (Phase::Playing, 1)
+    );
+    assert!(!r.l.holds_layer(0, slot, born));
+    assert!(!r.l.is_away(0, born));
+    assert_eq!(r.l.away_for(0, false), None);
+}
+
 /// A clear during an overdub (a loop key held to clear started one on its
 /// press): the overdub is undone first, so UNDO brings the loop back as it
 /// was before it, and Redo brings what the overdub recorded.

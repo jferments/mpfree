@@ -84,7 +84,7 @@ The creator's two boxes under **On the first start** are both ticked to begin wi
 - **Back up my MPC** (10 to 20 minutes, about 8 GB on the stick). Without it there is no way back for your MPC on the stick yet. Akai's kits are then read straight from the MPC instead, in about 10 minutes.
 - **Bring in Akai's drum kits and samples** (about 10 minutes). Leave it off if MPFree's own kits are all you want.
 
-With both off, MPFree is ready to play about a minute after the MPC restarts. You can do either later, from MPFree: **SHIFT + MENU** (Prefs), then **Backup and Akai kits** ([Prefs](../reference/prefs.md#backup-and-akai-kits)). It happens at the next start, with the stick in.
+With both off, MPFree is ready to play about a minute after the MPC restarts. You can do either later, from MPFree: **SHIFT + MENU** (Prefs), then the **System** tab's **Backup and Akai kits** card ([Prefs](../reference/prefs.md#backup-and-akai-kits)). It happens at the next start, with the stick in.
 
 > [!NOTE]
 > Reading Akai's kits straight from the MPC, without a backup, is new and hasn't been checked on an MPC yet. Until it has, leave **Back up my MPC** ticked if you want Akai's kits.

@@ -35,8 +35,10 @@ pub mod mapper;
 mod pad_layers;
 mod pad_map_panel;
 mod pads_focus;
+mod prefs_tabs;
 mod route_synths;
 pub mod saved;
+pub use prefs_tabs::PrefsTab;
 pub mod step_pads;
 mod synth_pads;
 mod synth_pick;
@@ -939,15 +941,6 @@ pub const THEMES_FOLDER: &str = "themes";
 /// optional keyboard map `NAME.kbm`), offered on the Synth tab.
 pub const TUNINGS_FOLDER: &str = "tunings";
 
-/// Which part of Prefs is on screen.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PrefsSection {
-    Main,
-    Touch,
-    /// The backup of the MPC and Akai's kits (setup.rs), for the next start.
-    Setup,
-}
-
 /// One row of a menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Item {
@@ -960,18 +953,12 @@ pub enum Item {
     QuickAdvance,
     Buffer,
     FindButtons,
-    /// Prefs: opens the touch screen section.
-    TouchSection,
-    /// Prefs: opens the backup and Akai kits section (Jay, 17 Nov 18:12Z).
-    SetupSection,
     /// That section: a new backup of the MPC at the next start.
     SetupBackup,
     /// That section: Akai's kits and samples at the next start.
     SetupAkaiKits,
     /// Prefs: the theme in use; the arrows step through [`THEMES`].
     Appearance,
-    /// The touch screen section: back to the other Prefs.
-    PrefsBack,
     CalibrateTouch,
     TouchLab,
     /// Play's MENU (live shows C1): the patch list, where a song with no
@@ -1045,11 +1032,8 @@ fn opens_something(item: Item) -> bool {
     matches!(
         item,
         Item::FindButtons
-            | Item::TouchSection
-            | Item::SetupSection
             | Item::SetupBackup
             | Item::SetupAkaiKits
-            | Item::PrefsBack
             | Item::CalibrateTouch
             | Item::TouchLab
             | Item::Patches
@@ -1128,6 +1112,9 @@ pub struct MenuView {
     /// Buttons under the help ("Keep" and "Go back" while a theme is on
     /// trial); a tap is `FromUi::HelpButton`.
     pub help_buttons: Vec<String>,
+    /// Prefs as its own page draws it (layout spec 5): its tabs and cards.
+    /// None for a page's options, which are the rows above.
+    pub prefs: Option<Box<crate::prefs_page::PrefsView>>,
 }
 
 /// One menu row's marks beyond its name and value
@@ -1793,7 +1780,8 @@ pub struct App {
     beat_zero: f64,
     tap_light: bool,
     /// The part of Prefs on screen: the main rows or one of its sections.
-    prefs_section: PrefsSection,
+    /// The Prefs tab showing (prefs_tabs.rs): Prefs opens on it again.
+    prefs_tab: PrefsTab,
     /// The arp options show the Modifier's section.
     mod_section: bool,
     /// The first-start setup's state for Prefs > Backup and Akai kits;
@@ -2094,48 +2082,6 @@ pub struct App {
     arp_seen: u64,
 }
 
-/// Prefs' main rows. The touch screen settings sit in their own section,
-/// opened by the last row; Line input, System info and Appearance (the
-/// theme) go just before it.
-const PREFS_ROWS: &[Item] = &[
-    Item::Curve,
-    Item::LatchMode,
-    Item::PedalLatch,
-    Item::QuickAdvance,
-    Item::Buffer,
-    Item::FindButtons,
-    Item::DebugMode,
-    Item::SoundCores,
-    Item::LoopMemory,
-    Item::AudioMemory,
-    Item::MapControls,
-    Item::LineInput,
-    // Layout spec 4c: the line input's latency, shared by the looper and
-    // the audio tracks.
-    Item::LoopLatency,
-    Item::SendsMidi,
-    Item::SystemInfo,
-    // System status (layout spec 2a), as the status chip opens it.
-    Item::SystemStatus,
-    Item::Appearance,
-    Item::AtStart,
-    Item::Export,
-    Item::ExportFile,
-    Item::ExportRate,
-    // Just before Touch screen, which stays last (Jay, 17 Nov 18:12Z).
-    Item::SetupSection,
-    Item::TouchSection,
-];
-/// Prefs' backup and Akai kits section.
-const PREFS_SETUP_ROWS: &[Item] = &[Item::PrefsBack, Item::SetupBackup, Item::SetupAkaiKits];
-/// Prefs' touch screen section.
-const PREFS_TOUCH_ROWS: &[Item] = &[
-    Item::PrefsBack,
-    Item::ScreenVelocity,
-    Item::CalibrateTouch,
-    Item::TouchLab,
-];
-
 impl App {
     pub fn new(sample_rate: u32, timed: bool) -> App {
         let settings = Settings::default();
@@ -2278,7 +2224,7 @@ impl App {
             keys_held: [false; 128],
             mapper: mapper::Mapper::default(),
             swallowed: [false; 128],
-            prefs_section: PrefsSection::Main,
+            prefs_tab: PrefsTab::Playing,
             mod_section: false,
             setup: None,
             menu_editing: false,
@@ -3906,10 +3852,9 @@ impl App {
             if self.repeat_held {
                 // NOTE REPEAT + MENU opens and closes the Arp panel.
                 fx.extend(self.toggle_panel());
-            } else if !shift && self.view == View::Prefs && self.prefs_section != PrefsSection::Main
-            {
-                // MENU in a Prefs section: back to the main rows.
-                fx.extend(self.leave_prefs_section());
+            } else if !shift && self.view == View::Prefs {
+                // MENU in Prefs closes it, as its ‹ Back does.
+                fx.extend(self.toggle(View::Prefs));
             } else if !shift && self.on_tunings_page() {
                 // MENU on the Tunings page: back to the options it opened
                 // from.
@@ -4435,6 +4380,12 @@ impl App {
             // In a menu the wheel moves between rows and - / + change the
             // value, so menus work without touch; SHIFT + wheel also changes
             // the value, in case - and + are not known yet.
+            // Prefs: SHIFT + wheel goes to the next tab or the one before;
+            // on Appearance the wheel tries the theme after or before.
+            View::Prefs if self.shift => self.step_prefs_tab(delta),
+            View::Prefs if self.prefs_tab == PrefsTab::Themes => {
+                self.step_item(self.selected, delta.signum())
+            }
             _ if self.in_menu() && (self.shift || self.menu_editing) => {
                 self.step_item(self.selected, delta.signum())
             }
@@ -4634,7 +4585,6 @@ impl App {
         self.tunings_page = false;
         if self.in_menu() {
             self.selected = 0;
-            self.prefs_section = PrefsSection::Main;
             self.mod_section = false;
             fx.push(self.menu_view());
         }
@@ -4788,7 +4738,6 @@ impl App {
     pub fn options_button(&mut self) -> Vec<Effect> {
         match self.view {
             View::Options if self.tunings_page => self.leave_tunings_page(),
-            View::Prefs if self.prefs_section != PrefsSection::Main => self.leave_prefs_section(),
             View::Options if self.mod_section => self.leave_mod_section(),
             View::Prefs => self.toggle(View::Prefs),
             View::System => self.show(View::Prefs),
@@ -4806,8 +4755,15 @@ impl App {
             } else {
                 self.back
             };
+            // Closing Prefs while "Keep this theme?" asks: the old theme,
+            // as leaving it any other way.
+            let mut fx = Vec::new();
+            if v == View::Prefs && self.theme_trial.is_some() {
+                fx = self.end_theme_trial(false);
+            }
+            self.menu_editing = false;
             self.view = back;
-            let mut fx = vec![Effect::Show(back)];
+            fx.push(Effect::Show(back));
             fx.extend(self.after_view_change());
             fx
         } else {
@@ -5200,9 +5156,7 @@ impl App {
             return &tunings_page::TUNINGS_ROWS[..self.tunings_rows().len()];
         }
         match (self.view, self.back) {
-            (View::Prefs, _) if self.prefs_section == PrefsSection::Touch => PREFS_TOUCH_ROWS,
-            (View::Prefs, _) if self.prefs_section == PrefsSection::Setup => PREFS_SETUP_ROWS,
-            (View::Prefs, _) => PREFS_ROWS,
+            (View::Prefs, _) => self.prefs_tab.rows(),
             (_, View::Looper) => &[
                 Item::LoopSource,
                 Item::LineInput,
@@ -5299,8 +5253,6 @@ impl App {
                 ),
             ),
             Item::FindButtons => ("Find the buttons again", "Start".to_string()),
-            Item::TouchSection => ("Touch screen", "Open".to_string()),
-            Item::SetupSection => ("Backup and Akai kits", "Open".to_string()),
             Item::SetupBackup => ("Backup of your MPC", self.setup_backup_text()),
             Item::SetupAkaiKits => ("Akai's kits and samples", self.setup_akai_text()),
             Item::Appearance => (
@@ -5311,7 +5263,6 @@ impl App {
                     .unwrap_or("Theme file")
                     .to_string(),
             ),
-            Item::PrefsBack => ("Back to Prefs", "Back".to_string()),
             Item::CalibrateTouch => ("Calibrate touch", "Start".to_string()),
             Item::TouchLab => ("Touch lab", "Open".to_string()),
             Item::Patches => ("Patches", "Open".to_string()),
@@ -5533,15 +5484,6 @@ impl App {
                 "once. The layout and the font stay the same. It",
                 "is kept for the next start.",
             ],
-            Item::TouchSection => vec![
-                "The touch screen's settings: screen pad",
-                "velocity, Calibrate touch and the Touch lab.",
-            ],
-            Item::SetupSection => vec![
-                "A backup of your MPC, and Akai's drum kits",
-                "and samples, if they were left out of the",
-                "first start: each at the next start.",
-            ],
             Item::SetupBackup => vec![
                 "A full copy of your MPC, kept on the stick,",
                 "so you can always go back. Push or + makes a",
@@ -5556,7 +5498,6 @@ impl App {
                 "takes it back. Without a backup they are read",
                 "from the MPC itself, which is never changed.",
             ],
-            Item::PrefsBack => vec!["Back to the other Prefs. MENU does the same."],
             Item::CalibrateTouch => vec![
                 "Tap a target in each corner to check that",
                 "touches land where you touch. This version",
@@ -5797,13 +5738,7 @@ impl App {
         let items = self.items();
         let selected = self.selected.min(items.len() - 1);
         let title = match (self.view, self.back) {
-            (View::Prefs, _) if self.prefs_section == PrefsSection::Touch => {
-                "Prefs · Touch screen".to_string()
-            }
-            (View::Prefs, _) if self.prefs_section == PrefsSection::Setup => {
-                "Prefs · Backup and Akai kits".to_string()
-            }
-            (View::Prefs, _) => "Prefs".to_string(),
+            (View::Prefs, _) => format!("Prefs · {}", self.prefs_tab.name()),
             (_, View::Arp) if self.mod_section => "Arp options · Modifier".to_string(),
             (_, View::Arp) => "Arp options".to_string(),
             (_, View::Debug) => "MIDI log options".to_string(),
@@ -5866,6 +5801,7 @@ impl App {
             },
             help,
             help_buttons,
+            prefs: (self.view == View::Prefs).then(|| Box::new(self.prefs_view())),
         })
     }
 
@@ -5877,18 +5813,6 @@ impl App {
             Item::Tunings(k) => self.tunings_item_mark(usize::from(k)),
             _ => RowMark::default(),
         }
-    }
-
-    /// From a Prefs section back to Prefs' main rows, on the row that opened it.
-    fn leave_prefs_section(&mut self) -> Vec<Effect> {
-        let opener = match self.prefs_section {
-            PrefsSection::Setup => Item::SetupSection,
-            _ => Item::TouchSection,
-        };
-        self.prefs_section = PrefsSection::Main;
-        self.menu_editing = false;
-        self.selected = PREFS_ROWS.iter().position(|&i| i == opener).unwrap_or(0);
-        vec![self.menu_view()]
     }
 
     /// The first-start setup's state, for Prefs > Backup and Akai kits
@@ -6053,6 +5977,11 @@ impl App {
             // "Keep this theme?": the push keeps it.
             return self.end_theme_trial(true);
         }
+        if items[i] == Item::Appearance {
+            // The themes: the wheel tries them, so the push has nothing to
+            // open.
+            return Vec::new();
+        }
         if opens_something(items[i]) {
             return self.step_item(i, 1);
         }
@@ -6145,16 +6074,6 @@ impl App {
                 self.open_guide(GuideStep::ALL.to_vec());
                 return vec![self.guide_view(), Effect::Show(View::Guide)];
             }
-            Item::TouchSection => {
-                self.prefs_section = PrefsSection::Touch;
-                self.selected = 1;
-                return vec![self.menu_view()];
-            }
-            Item::SetupSection => {
-                self.prefs_section = PrefsSection::Setup;
-                self.selected = 1;
-                return vec![self.menu_view()];
-            }
             Item::SetupBackup => return self.setup_step(true, delta),
             Item::SetupAkaiKits => return self.setup_step(false, delta),
             Item::Appearance => {
@@ -6184,7 +6103,6 @@ impl App {
                     }
                 }
             }
-            Item::PrefsBack => return self.leave_prefs_section(),
             Item::CalibrateTouch => return vec![Effect::CalibrateTouch],
             Item::TouchLab => return vec![Effect::TouchLab],
             Item::Patches => {
@@ -7443,6 +7361,11 @@ mod tests {
         app.row_of(item).expect("row shown")
     }
 
+    /// Prefs' tab with `item` opened, and the item's row there.
+    fn go(app: &mut App, item: Item) -> usize {
+        app.prefs_go_to(item).expect("row shown")
+    }
+
     /// The Show view (live shows B1): the wheel and - / + arm the song
     /// after or before, the wheel's push is Go, MENU has the view's own
     /// rows, which go back to it and tell the screen, and the learned
@@ -7509,7 +7432,7 @@ mod tests {
         app.button(button::SHIFT, true, 0.0);
         press(&mut app, MENU);
         app.button(button::SHIFT, false, 0.0);
-        let at = row(&app, Item::Appearance);
+        let at = go(&mut app, Item::Appearance);
         let value = |fx: &[Effect]| match fx.last() {
             Some(Effect::Menu(m)) => m.rows[at].1.clone(),
             _ => panic!("{fx:?}"),
@@ -7633,28 +7556,28 @@ mod tests {
         app.button(button::SHIFT, true, 0.0);
         press(&mut app, MENU);
         app.button(button::SHIFT, false, 0.0);
-        let at = row(&app, Item::Appearance);
+        let at = go(&mut app, Item::LatchMode);
         let menu = |fx: &[Effect]| match fx.last() {
             Some(Effect::Menu(m)) => m.clone(),
             _ => panic!("{fx:?}"),
         };
-        // The wheel walks the rows to Appearance.
+        // The wheel walks the rows to Latch keeps pads.
         let fx = app.select(0);
         assert!(!menu(&fx).editing);
         let fx = app.wheel(at as i32);
         assert_eq!((menu(&fx).selected, menu(&fx).editing), (at, false));
-        // Push: the row opens, and the wheel now changes the theme.
+        // Push: the row opens, and the wheel now changes the setting.
         let fx = press(&mut app, PUSH);
         assert_eq!((menu(&fx).selected, menu(&fx).editing), (at, true));
+        let before = menu(&fx).rows[at].1.clone();
         let fx = app.wheel(1);
-        assert_eq!(menu(&fx).rows[at].1, "Slate");
+        assert_ne!(menu(&fx).rows[at].1, before);
         assert_eq!(menu(&fx).selected, at, "the row stays picked");
-        let fx = app.wheel(1);
-        assert_eq!(menu(&fx).rows[at].1, "Light");
+        let picked = menu(&fx).rows[at].1.clone();
         // Push again: set, and the wheel moves between rows again.
         let fx = press(&mut app, PUSH);
         assert!(!menu(&fx).editing);
-        assert_eq!(app.settings.theme, "light");
+        assert_eq!(app.item_text(Item::LatchMode).1, picked);
         let fx = app.wheel(-1);
         assert_eq!((menu(&fx).selected, menu(&fx).editing), (at - 1, false));
         // A tap on a row, or leaving Prefs, closes an open row.
@@ -7670,7 +7593,8 @@ mod tests {
         app.button(button::SHIFT, true, 0.0);
         press(&mut app, MENU);
         app.button(button::SHIFT, false, 0.0);
-        app.select(row(&app, Item::SystemInfo));
+        let info = go(&mut app, Item::SystemInfo);
+        app.select(info);
         let fx = press(&mut app, PUSH);
         assert!(fx.contains(&Effect::Show(View::System)), "{fx:?}");
         // Off the menus, on Play, the push presses the outlined control.
@@ -7689,7 +7613,7 @@ mod tests {
         app.button(button::SHIFT, true, 0.0);
         press(&mut app, MENU);
         app.button(button::SHIFT, false, 0.0);
-        let at = row(&app, Item::Appearance);
+        let at = go(&mut app, Item::Appearance);
         let menu = |fx: &[Effect]| match fx.iter().rev().find(|e| matches!(e, Effect::Menu(_))) {
             Some(Effect::Menu(m)) => m.clone(),
             _ => panic!("{fx:?}"),
@@ -7787,7 +7711,7 @@ mod tests {
         app.button(button::SHIFT, true, 0.0);
         press(&mut app, MENU);
         app.button(button::SHIFT, false, 0.0);
-        let at = row(&app, Item::Appearance);
+        let at = go(&mut app, Item::Appearance);
         let help = |fx: &[Effect]| match fx.iter().rev().find(|e| matches!(e, Effect::Menu(_))) {
             Some(Effect::Menu(m)) => m.help.clone(),
             _ => panic!("{fx:?}"),
@@ -7820,7 +7744,8 @@ mod tests {
         );
         assert!(lines.iter().any(|l| l.ends_with("#FF2E97)")), "{lines:?}");
         // Another row's help doesn't list them.
-        assert!(!help(&app.select(0)).iter().any(|l| l == "Left out:"));
+        let curve = go(&mut app, Item::Curve);
+        assert!(!help(&app.select(curve)).iter().any(|l| l == "Left out:"));
         assert_eq!(wrap_line("a bb ccc", 4), ["a bb", "ccc"]);
     }
 
@@ -7832,7 +7757,7 @@ mod tests {
         app.button(button::SHIFT, true, 0.0);
         press(&mut app, MENU);
         app.button(button::SHIFT, false, 0.0);
-        let at = row(&app, Item::Appearance);
+        let at = go(&mut app, Item::Appearance);
         let value = |fx: &[Effect]| match fx.last() {
             Some(Effect::Menu(m)) => m.rows[at].1.clone(),
             _ => panic!("{fx:?}"),
@@ -7874,10 +7799,10 @@ mod tests {
         app.button(button::SHIFT, true, 0.0);
         press(&mut app, MENU);
         app.button(button::SHIFT, false, 0.0);
-        // Right after Show developer tools; Touch screen stays the last row.
-        let at = row(&app, Item::SoundCores);
-        assert_eq!(at, row(&app, Item::DebugMode) + 1);
-        assert_eq!(app.items().last(), Some(&Item::TouchSection));
+        // On the Sound tab's Audio card, after Audio buffer.
+        let at = go(&mut app, Item::SoundCores);
+        assert_eq!(app.prefs_tab, PrefsTab::Sound);
+        assert_eq!(at, row(&app, Item::Buffer) + 1);
         let value = |fx: &[Effect]| match fx.last() {
             Some(Effect::Menu(m)) => m.rows[at].clone(),
             _ => panic!("{fx:?}"),
@@ -8002,8 +7927,8 @@ mod tests {
         app.button(button::SHIFT, true, 0.0);
         press(&mut app, MENU);
         app.button(button::SHIFT, false, 0.0);
-        let at = row(&app, Item::LoopMemory);
-        assert_eq!(at, row(&app, Item::SoundCores) + 1);
+        let at = go(&mut app, Item::LoopMemory);
+        assert_eq!(app.prefs_tab, PrefsTab::Sound);
         let value = |fx: &[Effect]| match fx.last() {
             Some(Effect::Menu(m)) => m.rows[at].1.clone(),
             _ => panic!("{fx:?}"),
@@ -8051,7 +7976,7 @@ mod tests {
     }
 
     /// Prefs "Send MIDI and CV out" (layout spec 5, Jay's card of 16 Nov
-    /// 23:16Z): after Line input latency, off until turned on, and it says
+    /// 23:16Z): the Sound tab's last card, off until turned on, and it says
     /// what it does when it changes.
     #[test]
     fn prefs_send_midi_and_cv_out_is_off_until_turned_on() {
@@ -8060,9 +7985,9 @@ mod tests {
         app.button(button::SHIFT, true, 0.0);
         press(&mut app, MENU);
         app.button(button::SHIFT, false, 0.0);
-        let at = row(&app, Item::SendsMidi);
-        assert_eq!(at, row(&app, Item::LoopLatency) + 1);
-        assert_eq!(at + 1, row(&app, Item::SystemInfo));
+        let at = go(&mut app, Item::SendsMidi);
+        assert_eq!(app.prefs_tab, PrefsTab::Sound);
+        assert_eq!(app.items().last(), Some(&Item::SendsMidi), "the last card");
         assert!(!app.settings.sends_midi);
         assert_eq!(app.item_text(Item::SendsMidi).0, "Send MIDI and CV out");
         assert_eq!(app.item_text(Item::SendsMidi).1, "Off");
@@ -8076,8 +8001,8 @@ mod tests {
         assert!(!app.settings.sends_midi);
     }
 
-    /// Layout spec 4c: Prefs "Line input latency", after Line input and
-    /// before System info, is the looper's "Latency to make up for": one
+    /// Layout spec 4c: Prefs "Line input latency", under Line input on the
+    /// Sound tab, is the looper's "Latency to make up for": one
     /// setting, which the audio tracks follow too.
     #[test]
     fn prefs_line_input_latency_is_the_loopers_latency() {
@@ -8086,9 +8011,8 @@ mod tests {
         app.button(button::SHIFT, true, 0.0);
         press(&mut app, MENU);
         app.button(button::SHIFT, false, 0.0);
-        let at = row(&app, Item::LoopLatency);
+        let at = go(&mut app, Item::LoopLatency);
         assert_eq!(at, row(&app, Item::LineInput) + 1);
-        assert!(at < row(&app, Item::SystemInfo));
         assert_eq!(app.item_text(Item::LoopLatency).0, "Line input latency");
         let before = app.settings.loop_latency;
         let fx = app.step_item(at, 1);
@@ -8176,9 +8100,8 @@ mod tests {
         app.button(button::SHIFT, true, 0.0);
         press(&mut app, MENU);
         app.button(button::SHIFT, false, 0.0);
-        let at = row(&app, Item::AudioMemory);
+        let at = go(&mut app, Item::AudioMemory);
         assert_eq!(at, row(&app, Item::LoopMemory) + 1);
-        assert!(at < row(&app, Item::SystemInfo), "before System info");
         let value = |fx: &[Effect]| match fx.last() {
             Some(Effect::Menu(m)) => m.rows[at].1.clone(),
             _ => panic!("{fx:?}"),
@@ -8224,28 +8147,40 @@ mod tests {
         assert_eq!(names, mpfree_ui::theme::BUILTIN);
     }
 
+    /// Prefs' Playing tab has the touch screen's settings on a card of
+    /// their own (layout spec 5), where the section had them.
     #[test]
-    fn prefs_keeps_touch_settings_in_their_own_section() {
+    fn prefs_keeps_touch_settings_on_the_playing_tabs_touch_screen_card() {
         let mut app = App::new(44_100, false);
         app.map.menu = Some(MENU);
-        let open_prefs = |app: &mut App| {
-            app.button(button::SHIFT, true, 0.0);
-            press(app, MENU);
-            app.button(button::SHIFT, false, 0.0);
+        app.button(button::SHIFT, true, 0.0);
+        press(&mut app, MENU);
+        app.button(button::SHIFT, false, 0.0);
+        assert_eq!(
+            app.prefs_tab,
+            PrefsTab::Playing,
+            "a new stick opens on Playing"
+        );
+        let touch = |fx: &Effect| match fx {
+            Effect::Menu(m) => m.prefs.as_ref().and_then(|p| {
+                let card = p.cards.iter().find(|c| c.title == "Touch screen")?;
+                Some(
+                    card.rows
+                        .iter()
+                        .map(|&r| p.rows[r].name.clone())
+                        .collect::<Vec<_>>(),
+                )
+            }),
+            _ => None,
         };
-        open_prefs(&mut app);
-        assert!(
-            !app.items().contains(&Item::TouchLab) && !app.items().contains(&Item::ScreenVelocity)
+        assert_eq!(
+            touch(&app.menu_view()),
+            Some(vec![
+                "Screen pad velocity".to_string(),
+                "Calibrate touch".to_string(),
+                "Touch lab".to_string()
+            ])
         );
-        assert_eq!(app.items().last(), Some(&Item::TouchSection));
-        // + on "Touch screen" opens the section on its first setting.
-        let fx = app.step_item(row(&app, Item::TouchSection), 1);
-        assert!(
-            matches!(&fx[..], [Effect::Menu(m)] if m.title == "Prefs · Touch screen" && m.selected == 1
-                         && m.rows[1].0 == "Screen pad velocity"),
-            "{fx:?}"
-        );
-        assert_eq!(app.items(), PREFS_TOUCH_ROWS);
         // Its rows work as before.
         app.step_item(row(&app, Item::ScreenVelocity), 1);
         assert_eq!(app.settings.screen_velocity, 110);
@@ -8257,28 +8192,139 @@ mod tests {
             app.step_item(row(&app, Item::CalibrateTouch), 1),
             vec![Effect::CalibrateTouch]
         );
-        // MENU goes back to the main rows, on the row that opened the section.
-        let fx = press(&mut app, MENU);
-        assert!(
-            matches!(&fx[..], [Effect::Menu(m)] if m.title == "Prefs" && m.rows[m.selected].0 == "Touch screen"),
-            "{fx:?}"
-        );
-        assert_eq!(app.view(), View::Prefs);
-        // So does its Back row.
-        app.step_item(row(&app, Item::TouchSection), 1);
-        app.step_item(row(&app, Item::PrefsBack), 1);
-        assert_eq!(app.items(), PREFS_ROWS);
-        // Prefs opens on its main rows every time.
-        app.step_item(row(&app, Item::TouchSection), 1);
-        open_prefs(&mut app);
-        assert_eq!(app.view(), View::Play);
-        open_prefs(&mut app);
-        assert_eq!(app.items(), PREFS_ROWS);
     }
 
-    /// Prefs > Backup and Akai kits (Jay, 17 Nov 18:12Z): just before
-    /// Touch screen; each row asks for its step at the next start, or takes
-    /// the ask back.
+    /// Prefs' tabs (layout spec 5): SHIFT + the wheel or a tap on the
+    /// sidebar picks one, stopping at the ends; the wheel alone walks the
+    /// tab's rows; MENU closes Prefs, which opens again on the tab last
+    /// used.
+    #[test]
+    fn prefs_tabs_follow_shift_and_the_wheel_and_prefs_opens_on_the_last_one() {
+        let mut app = App::new(44_100, false);
+        app.map.menu = Some(MENU);
+        let open = |app: &mut App| {
+            app.button(button::SHIFT, true, 0.0);
+            let fx = press(app, MENU);
+            app.button(button::SHIFT, false, 0.0);
+            fx
+        };
+        let tab = |fx: &[Effect]| match fx.iter().rev().find(|e| matches!(e, Effect::Menu(_))) {
+            Some(Effect::Menu(m)) => (m.title.clone(), m.prefs.as_ref().map(|p| p.tab)),
+            _ => panic!("{fx:?}"),
+        };
+        assert_eq!(
+            tab(&open(&mut app)),
+            ("Prefs · Playing".to_string(), Some(0))
+        );
+        app.button(button::SHIFT, true, 0.0);
+        assert_eq!(tab(&app.wheel(1)), ("Prefs · Sound".to_string(), Some(1)));
+        assert_eq!(tab(&app.wheel(3)).1, Some(2), "a tab a click");
+        assert_eq!(tab(&app.wheel(-1)).1, Some(1));
+        assert_eq!(tab(&app.wheel(-1)).1, Some(0));
+        assert!(app.wheel(-1).is_empty(), "it stops at the first");
+        app.button(button::SHIFT, false, 0.0);
+        // The wheel alone moves between the tab's rows.
+        let fx = app.wheel(1);
+        assert!(
+            matches!(fx.last(), Some(Effect::Menu(m)) if m.selected == 1 && m.title == "Prefs · Playing"),
+            "{fx:?}"
+        );
+        // A tap on the sidebar, the wheel back on the tab's first row.
+        let fx = app.pick_prefs_tab(4);
+        assert!(
+            matches!(fx.last(), Some(Effect::Menu(m)) if m.title == "Prefs · System" && m.selected == 0),
+            "{fx:?}"
+        );
+        assert!(app.pick_prefs_tab(4).is_empty(), "the tab showing");
+        assert!(app.pick_prefs_tab(5).is_empty(), "no such tab");
+        // MENU closes Prefs, and it opens again on System.
+        assert!(press(&mut app, MENU).contains(&Effect::Show(View::Play)));
+        assert_eq!(app.view(), View::Play);
+        assert!(app.pick_prefs_tab(0).is_empty(), "Prefs closed");
+        assert_eq!(tab(&open(&mut app)).1, Some(4));
+    }
+
+    /// The Appearance tab: a tap on a theme tries it, the wheel alone steps
+    /// through them, and leaving the tab while "Keep this theme?" asks puts
+    /// the old theme back, as closing Prefs does.
+    #[test]
+    fn leaving_the_appearance_tab_puts_the_old_theme_back() {
+        let mut app = App::new(44_100, false);
+        app.open_tab(View::Prefs);
+        let at = go(&mut app, Item::Appearance);
+        let light = app.theme_choices().position(|t| t.0 == "light").unwrap();
+        let fx = app.choose(at, light);
+        assert_eq!(app.settings.theme, "light");
+        let trial = |fx: &[Effect]| match fx.iter().rev().find(|e| matches!(e, Effect::Menu(_))) {
+            Some(Effect::Menu(m)) => m
+                .prefs
+                .as_ref()
+                .and_then(|p| p.gallery.as_ref())
+                .and_then(|g| g.trial.clone()),
+            _ => panic!("{fx:?}"),
+        };
+        assert_eq!(trial(&fx).map(|t| t.0), Some("Keep Light?".to_string()));
+        assert!(
+            app.choose(at, light)
+                .iter()
+                .all(|e| matches!(e, Effect::Menu(_))),
+            "in use"
+        );
+        // The wheel alone steps through the themes, still back to Default.
+        app.wheel(-1);
+        assert_eq!(app.settings.theme, "slate");
+        let fx = app.pick_prefs_tab(0);
+        assert_eq!(app.settings.theme, "default");
+        assert!(fx.contains(&Effect::Note(
+            "theme: back to Default (Slate not kept)".into()
+        )));
+        // With no theme on trial, the push on the tab does nothing.
+        go(&mut app, Item::Appearance);
+        assert!(app.wheel_push().is_empty());
+    }
+
+    /// A tap on a choice or a tile sets it at once, telling the rest of the
+    /// app once; the slider and the knob set their values.
+    #[test]
+    fn prefs_choices_sliders_and_knobs_set_their_settings() {
+        let mut app = App::new(44_100, false);
+        app.open_tab(View::Prefs);
+        let latch = go(&mut app, Item::LatchMode);
+        let fx = app.choose(latch, 2);
+        assert_eq!(app.settings.latch_mode, LatchMode::Add);
+        let count = |fx: &[Effect], f: fn(&Effect) -> bool| fx.iter().filter(|e| f(e)).count();
+        assert_eq!(count(&fx, |e| matches!(e, Effect::Settings(_))), 1);
+        assert_eq!(count(&fx, |e| matches!(e, Effect::Menu(_))), 1);
+        assert_eq!(
+            app.choose(latch, 2),
+            vec![app.menu_view()],
+            "already chosen"
+        );
+        app.choose(latch, 0);
+        assert_eq!(app.settings.latch_mode, LatchMode::Replace);
+        // Screen pad velocity's slider: 10 to 127.
+        let screen = go(&mut app, Item::ScreenVelocity);
+        app.set_value(screen, 1000);
+        assert_eq!(app.settings.screen_velocity, 127);
+        app.set_value(screen, 0);
+        assert_eq!(app.settings.screen_velocity, 10);
+        assert!(
+            app.set_value(screen, 0).is_empty(),
+            "no change, nothing said"
+        );
+        // Line input latency's knob, in 16-frame steps, tells the looper.
+        let latency = go(&mut app, Item::LoopLatency);
+        let fx = app.set_value(latency, 500);
+        assert_eq!(app.settings.loop_latency, 1024);
+        assert!(fx.iter().any(|e| matches!(e, Effect::Looper(_))), "{fx:?}");
+        // Off Prefs, nothing.
+        app.open_tab(View::Play);
+        assert!(app.choose(0, 1).is_empty());
+        assert!(app.set_value(0, 10).is_empty());
+    }
+
+    /// Prefs > System > Backup and Akai kits (Jay, 17 Nov 18:12Z): each
+    /// row asks for its step at the next start, or takes the ask back.
     #[test]
     fn prefs_offers_the_backup_and_akais_kits_for_the_next_start() {
         use crate::setup::{Choice, PrefsState};
@@ -8287,22 +8333,19 @@ mod tests {
         app.button(button::SHIFT, true, 0.0);
         press(&mut app, MENU);
         app.button(button::SHIFT, false, 0.0);
-        let rows = app.items();
-        assert_eq!(
-            rows[rows.len() - 2],
-            Item::SetupSection,
-            "just before Touch screen"
-        );
-        assert_eq!(rows.last(), Some(&Item::TouchSection), "which stays last");
-        let fx = app.step_item(row(&app, Item::SetupSection), 1);
+        let backup = go(&mut app, Item::SetupBackup);
+        let akai = row(&app, Item::SetupAkaiKits);
+        assert_eq!(app.prefs_tab, PrefsTab::System);
+        assert_eq!(akai, backup + 1, "one card");
+        let fx = app.select(backup);
         assert!(
-            matches!(&fx[..], [Effect::Menu(m)] if m.title == "Prefs · Backup and Akai kits" && m.selected == 1
-                         && m.rows[1] == ("Backup of your MPC".to_string(), "Not on this stick".to_string())
-                         && m.rows[2] == ("Akai's kits and samples".to_string(), "Not on this stick".to_string())),
+            matches!(&fx[..], [Effect::Menu(m)] if m.title == "Prefs · System" && m.selected == backup
+                         && m.rows[backup] == ("Backup of your MPC".to_string(), "Not on this stick".to_string())
+                         && m.rows[akai] == ("Akai's kits and samples".to_string(), "Not on this stick".to_string())),
             "{fx:?}"
         );
         // Without a creator's stick it says so and changes nothing.
-        assert!(matches!(&app.step_item(1, 1)[..], [Effect::Tell(_)]));
+        assert!(matches!(&app.step_item(backup, 1)[..], [Effect::Tell(_)]));
         // Both left out at the first start.
         let left = Choice {
             left_out: true,
@@ -8317,14 +8360,14 @@ mod tests {
         assert_eq!(app.item_text(Item::SetupBackup).1, "Left out");
         assert_eq!(app.item_text(Item::SetupAkaiKits).1, "Left out");
         assert_eq!(
-            app.step_item(row(&app, Item::SetupAkaiKits), 1),
+            app.step_item(akai, 1),
             vec![Effect::SetupNextStart {
                 backup: false,
                 want: true
             }]
         );
         assert_eq!(
-            app.step_item(row(&app, Item::SetupBackup), -1),
+            app.step_item(backup, -1),
             vec![],
             "- takes back only what was asked"
         );
@@ -8340,11 +8383,11 @@ mod tests {
             backup_made: None,
         }));
         assert!(
-            matches!(&fx[..], [Effect::Menu(m)] if m.rows[2].1 == "At the next start"),
+            matches!(&fx[..], [Effect::Menu(m)] if m.rows[akai].1 == "At the next start"),
             "{fx:?}"
         );
         assert_eq!(
-            app.step_item(row(&app, Item::SetupAkaiKits), 1),
+            app.step_item(akai, 1),
             vec![Effect::SetupNextStart {
                 backup: false,
                 want: false
@@ -8363,12 +8406,9 @@ mod tests {
         }));
         assert_eq!(app.item_text(Item::SetupBackup).1, "Made 17 Nov 2026");
         assert_eq!(app.item_text(Item::SetupAkaiKits).1, "In BROWSE");
-        assert!(matches!(
-            &app.step_item(row(&app, Item::SetupAkaiKits), 1)[..],
-            [Effect::Tell(_)]
-        ));
+        assert!(matches!(&app.step_item(akai, 1)[..], [Effect::Tell(_)]));
         assert_eq!(
-            app.step_item(row(&app, Item::SetupBackup), 1),
+            app.step_item(backup, 1),
             vec![Effect::SetupNextStart {
                 backup: true,
                 want: true
@@ -8387,12 +8427,6 @@ mod tests {
         assert_eq!(
             app.item_text(Item::SetupBackup).1,
             "New one at the next start"
-        );
-        // MENU goes back to the main rows, on the row that opened the section.
-        let fx = press(&mut app, MENU);
-        assert!(
-            matches!(&fx[..], [Effect::Menu(m)] if m.title == "Prefs" && m.rows[m.selected].0 == "Backup and Akai kits"),
-            "{fx:?}"
         );
     }
 
@@ -10590,7 +10624,7 @@ mod tests {
         assert_eq!(app.settings.curve, Curve::Soft);
         assert!(fx.contains(&Effect::Settings(app.settings.clone())));
         // The audio buffer restarts the sound only when it changes.
-        let buffer = row(&app, Item::Buffer);
+        let buffer = go(&mut app, Item::Buffer);
         assert_eq!(
             app.step_item(buffer, 1)
                 .iter()
@@ -10646,11 +10680,7 @@ mod tests {
         assert_eq!(names[8], mpfree_ui::widgets::DEV_TAB);
         assert_eq!(app.tab(8), vec![]);
         app.open_tab(View::Prefs);
-        let row = app
-            .items()
-            .iter()
-            .position(|&i| i == Item::MapControls)
-            .unwrap();
+        let row = go(&mut app, Item::MapControls);
         let fx = app.step_item(row, 1);
         assert!(app.settings.debug_mode);
         assert_eq!(app.view(), View::Map);
@@ -10898,7 +10928,8 @@ mod tests {
         let mut app = ready();
         app.map = ButtonMap::default();
         app.open_tab(View::Prefs);
-        let fx = app.step_item(row(&app, Item::FindButtons), 1);
+        let find = go(&mut app, Item::FindButtons);
+        let fx = app.step_item(find, 1);
         assert_eq!(app.view(), View::Guide);
         assert!(fx
             .iter()
@@ -10924,7 +10955,8 @@ mod tests {
                                              && n.contains("- = not found") && n.contains("UNDO = not found"))));
         // The guide again from Prefs, every button.
         app.open_tab(View::Prefs);
-        let fx = app.step_item(row(&app, Item::FindButtons), 1);
+        let find = go(&mut app, Item::FindButtons);
+        let fx = app.step_item(find, 1);
         assert_eq!(app.view(), View::Guide);
         assert!(fx.contains(&Effect::Show(View::Guide)));
         assert_eq!(app.guide_steps.len(), 9);
@@ -13150,15 +13182,15 @@ mod tests {
         assert_eq!(app.map.browse, Some(button::BROWSE));
         assert_eq!(app.map.main, Some(button::MAIN));
         assert_eq!(app.map.data_push, Some(button::DATA_PUSH));
-        for section in [PrefsSection::Main, PrefsSection::Setup, PrefsSection::Touch] {
+        for tab in PrefsTab::ALL {
             app.open_tab(View::Prefs);
-            app.prefs_section = section;
+            app.prefs_tab = tab;
             assert!(press(&mut app, button::BROWSE).contains(&Effect::Show(View::Browser)));
-            assert_eq!(app.view(), View::Browser, "{section:?}");
+            assert_eq!(app.view(), View::Browser, "{tab:?}");
             app.open_tab(View::Prefs);
-            app.prefs_section = section;
+            app.prefs_tab = tab;
             assert!(click(&mut app, button::MAIN).contains(&Effect::Show(View::Play)));
-            assert_eq!(app.view(), View::Play, "{section:?}");
+            assert_eq!(app.view(), View::Play, "{tab:?}");
         }
         app.map.learn(mapper::Job::Sampler, Some(65));
         app.open_tab(View::Prefs);
