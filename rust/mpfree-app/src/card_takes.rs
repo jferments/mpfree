@@ -35,9 +35,9 @@
 //! tracks move to the new folder only with nothing in flight there
 //! (`AudioHost::record_to`), trying again each period meanwhile.
 //!
-//! Switched off ([`RECORD_ON_CARD`]) until B2c: a card taken out while a
-//! take records on it must first leave the pad player running and the
-//! take going on on the stick.
+//! Switched on ([`RECORD_ON_CARD`]) at the end of B2c, once a card taken
+//! out while a take records on it leaves the pad player running and the
+//! take going on on the stick, and Eject card closes it safely.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -60,12 +60,16 @@ pub const KEEP: &str = "Recordings";
 pub const TRIES: u32 = 5;
 /// The first wait before asking again; each next one is twice as long.
 pub const FIRST_WAIT: Duration = Duration::from_secs(30);
-/// Whether takes record on the card at all. Off until S2b's B2c (the
-/// owner's review, 2026-11-25): today the write window stops whatever
-/// still holds a file on a card taken out, which would be the pad player,
-/// and a take cut off there has nowhere to go on. Off, the card is never
-/// asked for here and takes stay on the stick.
-pub const RECORD_ON_CARD: bool = false;
+/// Whether takes record on the card at all. Off through S2b's B2b (the
+/// owner's review, 2026-11-25: the write window then stopped whatever
+/// still held a file on a card taken out, which would be the pad player,
+/// and a take cut off there had nowhere to go on); on since B2c, which
+/// fixed both: the window lets go of a pulled card (B2c1), the take
+/// carries on on the stick (B2c2) and is made whole there when the same
+/// card is back (B2c7), and Eject card closes it once nothing holds it
+/// (B2c8). Off, the card is never asked for here and takes stay on the
+/// stick.
+pub const RECORD_ON_CARD: bool = true;
 
 /// What the screen is to do.
 #[derive(Debug)]
@@ -627,7 +631,7 @@ mod tests {
         assert!(c.tick(t0 + Duration::from_secs(3600)).is_empty());
     }
 
-    /// Switched off (B2b lands so, until B2c): the card is never asked
+    /// Switched off (as B2b landed, until B2c): the card is never asked
     /// for, a card the Browser opens takes nothing, and it isn't held.
     #[test]
     fn switched_off_the_card_takes_nothing() {

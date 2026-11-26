@@ -43159,7 +43159,7 @@ mod tests {
         assert_eq!(asks(&mut p), 0, "not once the page is gone");
     }
 
-    /// S2b phase B2b, switched on here as B2c will: once the stick's own
+    /// S2b phase B2b, switched on as since B2c: once the stick's own
     /// recovery is done, the card is asked for; opened for saving (here a
     /// write window open from before, taken over), its work folder is
     /// looked at and the audio tracks record into `MPFree/.work/audiotracks`
@@ -43194,7 +43194,8 @@ mod tests {
         );
         std::fs::write(dir.join("run/sd-card-write-status"), &open).unwrap();
         let mut p = browser_samples(Fonts::embedded()).unwrap();
-        p.card_takes = crate::card_takes::CardTakes::new(true);
+        // As every start makes it since B2c (RECORD_ON_CARD).
+        p.card_takes = crate::card_takes::CardTakes::default();
         // A library of its own, on disk (the stick's data partition).
         std::fs::create_dir_all(dir.join("data")).unwrap();
         let lib = mpfree_library::Library::at(&dir.join("data")).unwrap();
