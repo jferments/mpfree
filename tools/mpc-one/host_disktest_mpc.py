@@ -282,11 +282,12 @@ exec "$R/run/mpfree-disktest/mpfree-disktest" --sd-card --card-wait 120
 """
 # The same, with a repair in the MPC first if the card is marked or doesn't check clean (--repair-card).
 RUN_SD_REPAIR = RUN_SD.replace("--card-wait 120\n", "--card-wait 120 --repair-card\n")
-# Read-only: both SD card windows' own logs and last statuses, after the SD card test.
+# Read-only: both SD card windows' own logs and last statuses, after the SD card test. A status's serial= line
+# (the card's volume serial, the SD card plan's B2c) is left out: it never goes into the round's results.
 WINDOW_LOGS = r"""R=''
 for f in sd-card-log.txt sd-card-status sd-card-write-log.txt sd-card-write-status; do
   echo "--- /run/mpfree-setup/$f"
-  if [ -f "$R/run/mpfree-setup/$f" ]; then tail -n 200 "$R/run/mpfree-setup/$f"; else echo "(none)"; fi
+  if [ -f "$R/run/mpfree-setup/$f" ]; then tail -n 200 "$R/run/mpfree-setup/$f" | grep -v '^serial='; else echo "(none)"; fi
 done
 """
 # Read-only: the kernel's four writeback settings, before and after the recorder's run.
