@@ -158,7 +158,9 @@ The screen side is `rust/mpfree-app/src/status_screen.rs`; the page's widget is 
 - **Buttons:** Silence all notes is STOP's second press (`App::status_action`); Show what's missing opens the browser, whose status line names what was left out; Open the last project opens it at once when the safe start's new project is unchanged (`Player::open_last_now`, which ends `project/crash-restart`), else opens the browser, where opening a project asks about changes first.
 - **The red hint line:** when a red problem starts showing and isn't hidden by its cause, its title goes on the hint line in red for 4 s, "The sound dropped out. Tap the status chip to see why.", once per kind a minute (`Hinted`); not while the page shows. Yellow never goes there. The safe start after a crash puts its own words there instead, in red ("The last run crashed, so Old was not opened. BROWSE opens it."), since they name the project and where the unsaved work is. The told line has a colour now (`Player::told`). The hint line is a `Label::on_bg()`: on the page's own background its red (and yellow and green) is kept readable with `Theme::readable`, since some themes' red doesn't read on their background (Slate's and AbleTown's grey). A card's count badge draws its number in `Theme::ink_on` its fill.
 
-Golden screens: `system-status` (a dropout now, Juno-X missing, voices given up 30 s ago), `system-status-good` and `status-red-hint` (Play with the red hint line).
+- **Audio MPFree made** (the audio tracks rethink 5c.4, board 6): on Memory, under its numbers, the one budget for derived audio with a share for each cache and **Clear copies** (`StatusView::made`, `status_screen::made_audio`, `Readings::made`); Memory's line adds "copies 85 MB". The design: [tempo-follow.md, "Audio MPFree made, on System status"](tempo-follow.md#audio-mpfree-made-on-system-status).
+
+Golden screens: `system-status` (a dropout now, Juno-X missing, voices given up 30 s ago), `system-status-good`, `system-status-memory` (Memory with the audio MPFree made) and `status-red-hint` (Play with the red hint line).
 
 ## The Dev > Status page
 

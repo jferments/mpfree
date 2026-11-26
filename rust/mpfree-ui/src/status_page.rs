@@ -16,6 +16,9 @@
 //!   numbers.
 //! - **Now | This session**, at the top right.
 //! - **Save a report**, at the foot of the cards panel on every system.
+//! - **Audio MPFree made** (the audio tracks rethink 5c.4, board 6): on
+//!   Memory, under its numbers, the one budget for derived audio, a bar
+//!   of its shares, a line for each and Clear copies ([`MadeAudio`]).
 
 use crate::geom::Rect;
 use crate::text::{Align, FontId};
@@ -32,6 +35,8 @@ pub const CARD: usize = 200;
 pub const BUTTON: usize = 300;
 /// `Tab(SAVE_REPORT)`: Save a report, at the foot of the cards panel.
 pub const SAVE_REPORT: usize = 400;
+/// `Tab(CLEAR_COPIES)`: Clear copies, on Memory's Audio MPFree made card.
+pub const CLEAR_COPIES: usize = 500;
 
 /// The head's height, and a system row's.
 const HEAD_H: i32 = 76;
@@ -40,6 +45,12 @@ const ROW_H: i32 = 60;
 const SYSTEMS_W: i32 = 440;
 /// A folded card's height.
 const FOLDED_H: i32 = 52;
+/// The Audio MPFree made card: its bar's top, a share's line, Clear
+/// copies' size.
+const MADE_BAR_Y: i32 = 80;
+const MADE_LINE: i32 = 30;
+const CLEAR_W: i32 = 200;
+const CLEAR_H: i32 = 48;
 
 /// One system's row.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -71,6 +82,35 @@ pub struct Card {
     pub button: Option<String>,
 }
 
+/// One share of the budget for derived audio, a line on the card.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MadeShare {
+    /// "Audio tracks: tempo copies".
+    pub name: String,
+    /// "48 MB".
+    pub size: String,
+    /// "12 copies · 3 playing".
+    pub note: String,
+    /// Its part of the whole budget, 0 to 1: its length on the bar.
+    pub part: f32,
+    pub tone: Tone,
+}
+
+/// Audio MPFree made (layout spec 2a; the audio tracks rethink 5c.4,
+/// board 6): the one budget for the audio MPFree derives, drawn on Memory
+/// under its numbers, with Clear copies.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MadeAudio {
+    /// "85 MB".
+    pub used: String,
+    /// "of 200 MB".
+    pub of: String,
+    pub shares: Vec<MadeShare>,
+}
+
+/// What Clear copies does, beside its button.
+pub const CLEAR_COPIES_WORDS: &str = "Throws away every copy that isn't playing or about to. Each is made again when it's next needed, and no recording is lost. Not an UNDO step.";
+
 /// What the page shows.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StatusView {
@@ -90,6 +130,8 @@ pub struct StatusView {
     pub cards: Vec<Card>,
     /// The picked system's own numbers.
     pub numbers: Vec<(String, String)>,
+    /// Memory's Audio MPFree made card, under its numbers.
+    pub made: Option<MadeAudio>,
 }
 
 /// The page.
@@ -101,6 +143,8 @@ pub struct StatusPage {
     /// Where each card and its button were last drawn (a card's height
     /// depends on its words), for touches and targets.
     drawn: RefCell<Vec<(Rect, Option<Rect>)>>,
+    /// Where Clear copies was last drawn (none: no card, or no room).
+    clear_drawn: RefCell<Option<Rect>>,
 }
 
 impl StatusPage {
@@ -186,6 +230,125 @@ impl StatusPage {
             y += h + 8;
         }
         out
+    }
+}
+
+impl StatusPage {
+    /// The Audio MPFree made card from `y` down, as tall as it needs
+    /// with a line for each share; without them if only that fits; None
+    /// if neither fits above `bottom`. Also gives whether the lines fit.
+    fn made_rect(area: Rect, y: i32, bottom: i32, shares: usize) -> Option<(Rect, bool)> {
+        let full = MADE_BAR_Y + 32 + MADE_LINE * shares as i32 + 16 + CLEAR_H + 36;
+        let short = MADE_BAR_Y + 34 + CLEAR_H + 18;
+        [(full, true), (short, false)]
+            .into_iter()
+            .find(|&(h, _)| y + h <= bottom)
+            .map(|(h, lines)| (Rect::new(area.x, y, area.w, h), lines))
+    }
+
+    /// Clear copies on the card.
+    fn clear_rect(card: Rect) -> Rect {
+        Rect::new(card.x + 18, card.bottom() - 18 - CLEAR_H, CLEAR_W, CLEAR_H)
+    }
+
+    fn paint_made(&self, cx: &mut PaintCx, card: Rect, lines: bool, m: &MadeAudio) {
+        let t = cx.theme.clone();
+        cx.canvas.fill_round_rect(card, t.round(10), t.raised);
+        cx.canvas.stroke_round_rect(card, t.round(10), 1, t.outline);
+        let (x, w) = (card.x + 18, card.w - 36);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            Rect::new(x, card.y + 12, w, 22),
+            Align::Left,
+            t.text_dim,
+            "AUDIO MPFREE MADE · TEMPO COPIES AND WARPS",
+        );
+        let used = Rect::new(x, card.y + 38, w, 34);
+        cx.text(
+            FontId::Bold,
+            t.size_title,
+            used,
+            Align::Left,
+            t.text,
+            &m.used,
+        );
+        let gap = cx.measure(FontId::Bold, t.size_title, &m.used) + 10;
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            Rect::new(x + gap, used.y + 4, w - gap, used.h),
+            Align::Left,
+            t.text_dim,
+            &m.of,
+        );
+        // The bar: each share's part of the whole budget, in turn.
+        let bar = Rect::new(x, card.y + MADE_BAR_Y, w, 18);
+        cx.canvas.fill_round_rect(bar, 6, t.surface);
+        let mut at = bar.x;
+        for sh in &m.shares {
+            let len = (bar.w as f32 * sh.part.clamp(0.0, 1.0)).round() as i32;
+            let len = len.min(bar.right() - at);
+            if len > 0 {
+                cx.canvas
+                    .fill_rect(Rect::new(at, bar.y, len, bar.h), t.tone(sh.tone));
+                at += len;
+            }
+        }
+        if lines {
+            for (i, sh) in m.shares.iter().enumerate() {
+                let y = card.y + MADE_BAR_Y + 32 + i as i32 * MADE_LINE;
+                let swatch = Rect::new(x, y + 7, 12, 12);
+                cx.canvas.fill_round_rect(swatch, 3, t.tone(sh.tone));
+                let line = |left: i32, width: i32| Rect::new(left, y, width, 26);
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    line(x + 22, 260),
+                    Align::Left,
+                    t.text,
+                    &sh.name,
+                );
+                cx.text(
+                    FontId::Bold,
+                    t.size_small,
+                    line(x + 282, 80),
+                    Align::Right,
+                    t.text,
+                    &sh.size,
+                );
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    line(x + 374, w - 374),
+                    Align::Left,
+                    t.text_dim,
+                    &sh.note,
+                );
+            }
+        }
+        let clear = Self::clear_rect(card);
+        cx.canvas.fill_round_rect(clear, t.round(8), t.surface);
+        cx.canvas.stroke_round_rect(clear, t.round(8), 1, t.accent);
+        cx.text(
+            FontId::Bold,
+            t.size_small,
+            clear,
+            Align::Center,
+            t.button_ink(true),
+            "Clear copies",
+        );
+        let words_x = clear.right() + 18;
+        let words_w = card.right() - 18 - words_x;
+        for (k, l) in wrap(cx, CLEAR_COPIES_WORDS, words_w)
+            .iter()
+            .take(2)
+            .enumerate()
+        {
+            let lr = Rect::new(words_x, clear.y + 1 + k as i32 * 22, words_w, 22);
+            cx.text(FontId::Sans, t.size_small, lr, Align::Left, t.text_dim, l);
+        }
+        *self.clear_drawn.borrow_mut() = Some(clear);
     }
 }
 
@@ -447,6 +610,15 @@ impl Widget for StatusPage {
             );
             y += 28;
         }
+        // Memory's Audio MPFree made card, under its numbers.
+        *self.clear_drawn.borrow_mut() = None;
+        if let Some(m) = &v.made {
+            if let Some((card, lines)) =
+                Self::made_rect(inner, y + 8, inner.bottom(), m.shares.len())
+            {
+                self.paint_made(cx, card, lines, m);
+            }
+        }
     }
 
     fn touch(&mut self, _f: u64, phase: Touch, x: i32, y: i32, r: Rect) -> Option<EventKind> {
@@ -462,6 +634,9 @@ impl Widget for StatusPage {
         }
         if Self::report_rect(r).contains(x, y) {
             return Some(EventKind::Tab(SAVE_REPORT));
+        }
+        if self.clear_drawn.borrow().is_some_and(|c| c.contains(x, y)) {
+            return Some(EventKind::Tab(CLEAR_COPIES));
         }
         if let Some(i) =
             (0..self.view.systems.len()).find(|&i| Self::system_rect(r, i).contains(x, y))
@@ -503,6 +678,15 @@ impl Widget for StatusPage {
                 Self::report_rect(r),
             ),
         ];
+        if let Some(c) = *self.clear_drawn.borrow() {
+            // A rare option with a minor consequence (copies are made
+            // again as they're needed, and those playing or waited for are
+            // kept): Secondary, 48 px (layout spec 1a).
+            out.push(
+                Target::tap("clear-copies", CLEAR_COPIES, "Clear copies", c)
+                    .class(crate::touch::Class::Secondary),
+            );
+        }
         for (i, s) in self.view.systems.iter().enumerate() {
             out.push(
                 Target::tap("system", i, s.name.clone(), Self::system_rect(r, i))
@@ -613,6 +797,7 @@ mod tests {
                 "system" => EventKind::Select(t.index),
                 "card-button" => EventKind::Tab(BUTTON + t.index),
                 "save-report" => EventKind::Tab(SAVE_REPORT),
+                "clear-copies" => EventKind::Tab(CLEAR_COPIES),
                 _ => EventKind::Tab(CARD + t.index),
             };
             assert_eq!(e, Some(want), "{}", t.id);
@@ -638,5 +823,67 @@ mod tests {
         v.picked = 3;
         p.set(v);
         assert_eq!(p.opened, None, "another system picked");
+    }
+
+    /// 5c.4: Memory's Audio MPFree made card sits under its numbers with
+    /// a line for each share, loses the lines before Clear copies when
+    /// room is short, and Clear copies answers a tap.
+    #[test]
+    fn memorys_made_audio_card_sits_under_its_numbers_and_clear_copies_answers() {
+        let mut p = page();
+        let mut v = p.view.clone();
+        v.cards.clear();
+        v.numbers = vec![
+            ("RAM in use".into(), "41 %".into()),
+            ("Free".into(), "1.1 GB".into()),
+        ];
+        v.made = Some(MadeAudio {
+            used: "85 MB".into(),
+            of: "of 200 MB".into(),
+            shares: (0..4)
+                .map(|i| MadeShare {
+                    name: format!("Share {i}"),
+                    size: "20 MB".into(),
+                    note: "2 copies".into(),
+                    part: 0.1,
+                    tone: Tone::Accent,
+                })
+                .collect(),
+        });
+        p.set(v);
+        drawn(&p);
+        let clear = p
+            .targets(AREA)
+            .into_iter()
+            .find(|t| t.id == "clear-copies")
+            .expect("Clear copies");
+        let inner = StatusPage::cards_inner(AREA);
+        // Under the "Nothing wrong here" line and the two numbers.
+        assert!(clear.rect.y > inner.y + 44 + 2 * 28, "{:?}", clear.rect);
+        assert!(clear.rect.bottom() <= inner.bottom());
+        // Secondary and 48 px (layout spec 1a).
+        assert_eq!(clear.needed_class(), crate::touch::Class::Secondary);
+        assert!(clear.short_side() >= 48);
+        let (x, y) = (clear.rect.x + 10, clear.rect.y + 10);
+        assert_eq!(
+            p.touch(1, Touch::Up, x, y, AREA),
+            Some(EventKind::Tab(CLEAR_COPIES))
+        );
+        // Room for it all, for the button alone, for nothing.
+        let (full, lines) = StatusPage::made_rect(inner, inner.y, inner.bottom(), 4).unwrap();
+        assert!(lines && full.h == 332, "{full:?}");
+        let (short, lines) =
+            StatusPage::made_rect(inner, inner.bottom() - 200, inner.bottom(), 4).unwrap();
+        assert!(!lines && short.h < 200, "{short:?}");
+        assert_eq!(
+            StatusPage::made_rect(inner, inner.bottom() - 100, inner.bottom(), 4),
+            None
+        );
+        // Another system: no card, no button.
+        let mut v = p.view.clone();
+        v.made = None;
+        p.set(v);
+        drawn(&p);
+        assert!(p.targets(AREA).iter().all(|t| t.id != "clear-copies"));
     }
 }

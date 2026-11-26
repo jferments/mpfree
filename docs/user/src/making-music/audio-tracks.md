@@ -84,7 +84,7 @@ An empty audio cell is drawn dashed; a tap on it says how to fill it.
 
 {{shot: arrange-clips-audio-copies | Audio clips at 92 BPM following the tempo: Hook vox playing Repitch until its copy is made, Riff rejoining the bars at bar 17, Outro's copy 40 % made, Amen waiting for its copy, Intro not ready, Pad wash too fast.}}
 
-A clip on **Stretch** that plays its copy, or any clip at its own tempo, shows its wave and no word. If a copy couldn't be made (there was no room for it), the clip plays Repitch; its cell has no word, and a tap on it says so.
+A clip on **Stretch** that plays its copy, or any clip at its own tempo, shows its wave and no word. If a copy couldn't be made (there was no room for it), the clip plays Repitch; its cell has no word, and a tap on it says so. How much room the copies take, and **Clear copies** to free what isn't playing, are on System status' Memory ([When something goes wrong](../reference/when-something-goes-wrong.md#the-system-status-page)).
 
 A clip set to play **once** shows its playhead dimmed while its sound rings on after its track stopped, so the grid never looks silent while you hear it. In Perform the cell's foot gives its length ("2 bars"), or a once clip's time ("3:17 once").
 
@@ -111,7 +111,7 @@ Arm an audio track (its name on the grid, or its arm dot on the Song view) and t
 | Row | What it does |
 |---|---|
 | **Length** | A loop's length in bars and beats. **-** and **+** step a beat, **SHIFT** a bar. Shorter, the clip stops its sound there; longer again, what was cut comes back, and past its sound it is silent. A once clip shows its time (3:17) and doesn't step. |
-| **Tempo** | What the clip does when the song plays at another tempo than its audio was made at. **Off**: as recorded, each pass at its own speed from its start (so it can leave a gap or cut its end). **Repitch**: on its bars, faster and higher (or slower and lower), like tape. **Stretch**: on its bars at its own pitch, from a copy of its audio made for that tempo. If nothing says what tempo its audio was made at, it stays **Off** until you set it (below). |
+| **Tempo** | What the clip does when the song plays at another tempo than its audio was made at. **Off**: as recorded, each pass at its own speed from its start (so it can leave a gap or cut its end). **Repitch**: on its bars, faster and higher (or slower and lower), like tape. **Stretch**: on its bars at its own pitch, from a copy of its audio made for that tempo. Every new clip starts on **Off**: it follows the tempo only when you set it here. If nothing says what tempo its audio was made at, it stays **Off** until you set that too (below). |
 | **Until ready** | Only with **Stretch** (otherwise "—"): what the clip does while its copy for a new tempo is still being made. **on time** (the default) plays it **Repitch** meanwhile, on the bars, and it comes back to its own pitch at the start of its next pass. **keep pitch** never plays it off pitch: a launch waits for its copy, for 2 launch lines at most, then is cancelled; a clip already playing when the tempo changes plays on in pitch and rejoins the bars on the next bar line once its copy is ready. |
 | **Mode** | **Restart**, **Legato** or **Once**: as for a clip of notes. A once clip plays its sound to the end. |
 | **Launch**, **Follow**, **After** | As for a clip of notes. |

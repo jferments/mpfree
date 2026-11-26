@@ -2018,6 +2018,26 @@ impl SamplePage {
             .map_or_else(Default::default, WaveTab::grain_part)
     }
 
+    /// The Warps' copies kept, and the ones on their way: System status'
+    /// Memory card (the audio tracks rethink 5c.4).
+    pub fn copy_counts(&self) -> (usize, usize) {
+        (self.warps.len(), self.stretching.len())
+    }
+
+    /// The one budget for derived audio the page's copies count in: its
+    /// stretch scheduler's (the process's).
+    pub fn copy_budget(&self) -> std::sync::Arc<mpfree_stretch::budget::Budget> {
+        self.jobs.stretch().budget()
+    }
+
+    /// Clear copies (System status' Memory, 5c.4): lets go of the Warps'
+    /// copies no kit's view or voice holds. Each is made again when a view
+    /// next needs it; no sound is touched, and it is no UNDO step. How
+    /// many went.
+    pub fn clear_copies(&mut self) -> usize {
+        self.warps.clear_unheld()
+    }
+
     /// What the sounds hold in memory: every kit's sounds (a sound two
     /// kits share counted once), the stretched copies, the input buffer.
     pub fn memory(&self) -> SampleMemory {

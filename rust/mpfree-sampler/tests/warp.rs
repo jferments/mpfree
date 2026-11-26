@@ -629,3 +629,34 @@ fn a_copy_waited_on_goes_ahead_and_one_asked_again_or_shown_is_raised() {
         .collect();
     assert_eq!(made, vec![kb, ka]);
 }
+
+/// The audio tracks rethink 5c.4: Clear copies lets go of the copies no
+/// view or voice holds, keeps the one a kit's view plays, and says what
+/// the cache holds then; a copy let go is made again when asked for.
+#[test]
+fn clear_copies_keeps_the_copies_a_view_holds_and_lets_the_rest_go() {
+    use mpfree_stretch::budget::{Budget, Cache};
+    use std::sync::Arc;
+    let s = sine(1.0, 220.0);
+    let p = project(&s, warped_pad(&s, 100.0, WarpMethod::Stretch));
+    let budget = Arc::new(Budget::default());
+    let mut warps = Warps::new(100.0);
+    warps.join(budget.clone());
+    make_copies(&p, &mut warps);
+    warps.set_tempo(110.0);
+    make_copies(&p, &mut warps);
+    assert_eq!(warps.len(), 2);
+    // The kit's view at 110 holds its copy; nothing holds the one for 100.
+    let e = engine_at(&p, &mut warps);
+    assert_eq!(warps.clear_unheld(), 1);
+    assert_eq!(warps.len(), 1);
+    let at_110 = warps.wanted(&p)[0];
+    assert!(warps.peek(&at_110).is_some(), "the view plays it");
+    assert_eq!(budget.share(Cache::Warps).0, warps.bytes() as u64);
+    // The view gone, it goes too, and is made again when asked for.
+    drop(e);
+    assert_eq!(warps.clear_unheld(), 1);
+    assert!(warps.is_empty());
+    assert_eq!(budget.share(Cache::Warps).0, 0);
+    assert_eq!(make_copies(&p, &mut warps), 1);
+}

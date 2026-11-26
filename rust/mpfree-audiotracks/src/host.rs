@@ -1122,11 +1122,13 @@ impl AudioHost {
         }
     }
 
-    /// Clear copies: lets every copy go that nothing plays now (System
-    /// status's Memory, 5c). No recording is touched, it is no undo step,
-    /// and each is made again when it is next wanted. How many went.
+    /// Clear copies (System status's Memory, 5c.4): lets every copy go
+    /// that isn't playing or about to play ([`AudioHost::copy_soon`]). No
+    /// recording is touched, it is no undo step, and each is made again
+    /// when it is next wanted. How many went. Real-time safe.
     pub fn clear_copies(&mut self) -> usize {
-        let n = self.tracks.clear_copies();
+        let copies = &self.copies;
+        let n = self.tracks.clear_copies_but(&|k| copies.soon(k));
         self.copies.cleared();
         while let Some(d) = self.tracks.take_dropped_copy() {
             self.send(ToWorker::DropCopy(d));
@@ -1138,6 +1140,25 @@ impl AudioHost {
     /// What the copies have done.
     pub fn copy_counts(&self) -> CopyCounts {
         self.copies.counts
+    }
+
+    /// Whether the copy with `key` is about to play: wanted now for a
+    /// launch waiting for it, a region drifting on Keep pitch, or a song
+    /// region playing or within 2 bars. Clear copies keeps it.
+    pub fn copy_soon(&self, key: &crate::copies::CopyKey) -> bool {
+        self.copies.soon(key)
+    }
+
+    /// How many of the copies held a region plays now (System status's
+    /// "12 copies · 3 playing", 5c.4).
+    pub fn copies_playing(&self) -> usize {
+        self.tracks.copies().filter(|c| c.playing).count()
+    }
+
+    /// The recordings of the copies being read or made, one call each
+    /// (System status names whose they are).
+    pub fn copies_making(&self, f: &mut dyn FnMut(RecordingId)) {
+        self.copies.making_recs(f);
     }
 
     /// Memory the copies hold, how many there are, and how many are being

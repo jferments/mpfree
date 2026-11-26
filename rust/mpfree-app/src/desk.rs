@@ -840,6 +840,7 @@ impl Desk<'_> {
             | gui::FromUi::SaveBrowserLists(_)
             | gui::FromUi::ScreenPicture(_)
             | gui::FromUi::SaveReport(_)
+            | gui::FromUi::ClearCopies { .. }
             | gui::FromUi::PluginsChanged
             | gui::FromUi::SampleView(_)
             | gui::FromUi::SampleInput(_)

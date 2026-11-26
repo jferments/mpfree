@@ -81,6 +81,7 @@ pub mod robust;
 pub mod room;
 pub mod sampler;
 pub mod signals;
+pub mod stretching;
 pub mod synth;
 pub mod wav;
 pub mod wobble;
