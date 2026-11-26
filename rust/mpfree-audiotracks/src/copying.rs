@@ -46,7 +46,7 @@ use mpfree_transport::time::{TempoMap, Tick, PPQ};
 
 use crate::clips::{ClipPlay, ClipRegion, MAX_CLIP_REGIONS};
 use crate::copies::{CopyKey, CopySpec};
-use crate::{AudioTracks, FollowTempo, MAX_TRACKS};
+use crate::{AudioTracks, FollowTempo, RecordingId, MAX_TRACKS};
 
 /// Copies wanted at once, at most: past it the least urgent are left
 /// out (counted).
@@ -293,6 +293,26 @@ impl CopySide {
         match self.reading.take() {
             Some(Reading::Reading { audio, .. }) => Some(audio),
             _ => None,
+        }
+    }
+
+    /// Whether the copy with `key` is about to play: wanted now for a
+    /// launch waiting for it, a region drifting on Keep pitch, or a song
+    /// region playing or within 2 bars ([`Priority::Protect`] or more
+    /// urgent). Clear copies keeps it (5c.4).
+    pub(crate) fn soon(&self, key: &CopyKey) -> bool {
+        self.wanted
+            .iter()
+            .any(|w| w.key == *key && w.priority <= Priority::Protect)
+    }
+
+    /// The recordings of the copies being read or made, one call each.
+    pub(crate) fn making_recs(&self, f: &mut dyn FnMut(RecordingId)) {
+        if let Some(Reading::Sizing(w) | Reading::Reading { want: w, .. }) = &self.reading {
+            f(w.key.rec);
+        }
+        for (k, _, _) in &self.making {
+            f(k.rec);
         }
     }
 

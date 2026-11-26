@@ -356,6 +356,27 @@ impl Warps {
         self.report();
     }
 
+    /// How many copies are kept.
+    pub fn len(&self) -> usize {
+        self.copies.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.copies.is_empty()
+    }
+
+    /// Clear copies (System status's Memory, the audio tracks rethink
+    /// 5c.4): lets go of every copy nothing plays or is about to play,
+    /// the ones no voice or engine view holds (a kit's view holds the
+    /// copies its pads play). Each is made again when a view next needs
+    /// it. How many went.
+    pub fn clear_unheld(&mut self) -> usize {
+        let before = self.copies.len();
+        self.copies.retain(|c| Arc::strong_count(&c.data) > 1);
+        self.report();
+        before - self.copies.len()
+    }
+
     /// Forgets every copy (a new project). One something still plays is
     /// counted until it goes.
     pub fn clear(&mut self) {

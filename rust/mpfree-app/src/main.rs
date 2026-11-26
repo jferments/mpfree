@@ -11764,6 +11764,14 @@ fn player_session(
                 }
                 // Each take to a file of its own from now on (phase 3a),
                 // and where a project save put them.
+                // System status's Clear copies (Memory, 5c.4): the tracks'
+                // tempo copies not playing or about to go; the screen let
+                // go of the Warps'. No recording is touched, no UNDO step.
+                gui::FromUi::ClearCopies { warps } => {
+                    let line = audiotracks::cleared_line(tracks.clear_copies(), warps);
+                    out.note(&format!("memory: {line}"));
+                    out.show(gui::ToUi::Tell(line));
+                }
                 gui::FromUi::AudioFiles(dir) => tracks.record_to(dir),
                 // The SD card: a drive of its own (S2b, phase B2).
                 gui::FromUi::AudioDrive(lease) => tracks.own_drive(lease),

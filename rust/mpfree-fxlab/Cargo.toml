@@ -16,6 +16,9 @@ mpfree-sampler-ui = { path = "../mpfree-sampler-ui" }
 # (readers.rs); the testkit plays a file as a stem plays.
 mpfree-stream = { path = "../mpfree-stream", features = ["testkit"] }
 mpfree-stretch = { path = "../mpfree-stretch" }
+# The stretch corpus's measures: onsets and pitch (stretching.rs, the
+# audio tracks rethink's 5c.5).
+mpfree-analysis = { path = "../mpfree-analysis" }
 # An audio track's region following the tempo, measured as a pitched read
 # (readers.rs, the audio tracks rethink's phase 5a).
 mpfree-audiotracks = { path = "../mpfree-audiotracks" }

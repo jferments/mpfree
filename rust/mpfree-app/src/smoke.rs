@@ -412,8 +412,18 @@ mod tests {
             };
             let mut p = make();
             let mut fresh = make;
-            sweep("system-status", &mut p, &mut fresh)
+            let mut rows = sweep("system-status", &mut p, &mut fresh);
+            // Memory, with the audio MPFree made and Clear copies (5c.4).
+            let memory = || gui::sample_status_memory(Fonts::embedded());
+            let mut p = memory();
+            let mut fresh = memory;
+            rows.extend(sweep("system-status-memory", &mut p, &mut fresh));
+            rows
         });
+        assert!(
+            rows.iter().any(|r| r.target.id == "clear-copies"),
+            "Clear copies swept"
+        );
         let ours: Vec<&Row> = rows
             .iter()
             .filter(|r| r.widget == crate::status_screen::WIDGET)

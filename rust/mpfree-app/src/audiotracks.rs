@@ -474,6 +474,17 @@ struct CopyWaiting {
     told: Option<bool>,
 }
 
+/// What Clear copies says (System status' Memory, 5c.4): how many of the
+/// audio tracks' tempo copies and the sampler's Warps went.
+pub fn cleared_line(tracks: usize, warps: usize) -> String {
+    let n = tracks + warps;
+    match n {
+        0 => "Nothing to clear: every copy is playing or about to".to_string(),
+        1 => "1 copy cleared: it is made again when it's next needed".to_string(),
+        n => format!("{n} copies cleared: each is made again when it's next needed"),
+    }
+}
+
 pub struct TrackHost {
     pub host: AudioHost,
     rate: u32,
@@ -2317,6 +2328,7 @@ impl TrackHost {
         let (_, held, busy) = self.host.copy_memory();
         h.add(held as u64);
         h.add(busy as u64);
+        h.add(self.host.copies_playing() as u64);
         self.host.copy_progress(&mut |p| h.add((p * 100.0) as u64));
         for t in 0..MAX_TRACKS {
             if let Some((clip, f)) = tr.ringing(t, self.frame_now) {
@@ -2406,6 +2418,23 @@ impl TrackHost {
                 m.capacity as f64 / per_sec,
             )
         });
+        // The tempo copies, for System status' Memory (phase 5c.4).
+        let (_, held, making) = self.host.copy_memory();
+        let mut whose: Vec<String> = Vec::new();
+        self.host.copies_making(&mut |rec| {
+            if let Some(t) = tr.take_of(rec).and_then(|id| tr.take(id)) {
+                let name = self.who(t.track);
+                if !whose.contains(&name) {
+                    whose.push(name);
+                }
+            }
+        });
+        st.audio_copies = mpfree_time_ui::view::AudioCopies {
+            held,
+            playing: self.host.copies_playing(),
+            making,
+            whose,
+        };
         let s = tr.stats();
         st.audio_counts = [
             ("refused", s.refused),
@@ -2844,6 +2873,13 @@ impl TrackHost {
         clip.check()
             .map_err(|_| format!("{place} can't be a clip: it is longer than a clip holds"))?;
         Ok((track, clip, place))
+    }
+
+    /// Clear copies (System status' Memory, 5c.4): the tempo copies that
+    /// aren't playing or about to go, to be made again when next wanted.
+    /// How many went.
+    pub fn clear_copies(&mut self) -> usize {
+        self.host.clear_copies()
     }
 
     /// A recording no clip will name (a sound Put in a cell whose cell
@@ -4382,6 +4418,70 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].key.rec, k.rec);
         assert_eq!(f64::from_bits(v[0].key.tempo), 90.0);
+    }
+
+    /// System status' Memory (5c.4): the time state says how many tempo
+    /// copies the tracks hold, play and are making, and whose; Clear
+    /// copies lets go of a clip's copy nothing plays or is about to play,
+    /// and says so; it is made again.
+    #[test]
+    fn system_status_hears_of_the_tracks_copies_and_clear_copies_lets_a_clips_go() {
+        let mut r = Rig::with(1);
+        r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), false)
+            .unwrap();
+        r.periods(CHECK_EVERY as usize);
+        r.live = true;
+        r.command(T::Record);
+        while r.t.position() < 3840 {
+            r.period();
+        }
+        r.command(T::Stop);
+        r.live = false;
+        r.periods(20);
+        let k = r.h.host.tracks.takes().next().expect("a take");
+        let mut audio = mpfree_seq::AudioClip::of(RecId(k.rec.0), 0, k.frames as i64, 3840, 120.0);
+        audio.regions[0].follow = mpfree_seq::FollowTempo::Stretch;
+        let mut riff = mpfree_seq::Clip::new("Riff", 3840);
+        riff.audio = Some(audio);
+        let guitar = r.h.place(0).unwrap();
+        r.project.put_new_clip(guitar, 0, riff).unwrap();
+        r.h.clip_copies(&r.project);
+        r.command(T::TempoNow(90.0));
+        assert_eq!(r.state().audio_copies, Default::default(), "none yet");
+        let (t0, mut whose) = (Instant::now(), None);
+        while r.h.host.copy_memory().1 == 0 {
+            assert!(t0.elapsed() < Duration::from_secs(30));
+            let c = r.state().audio_copies;
+            if c.making > 0 {
+                whose = Some(c.whose);
+            }
+            r.period();
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        assert_eq!(
+            whose,
+            Some(vec!["Audio 1".to_string()]),
+            "whose, while made"
+        );
+        let c = r.state().audio_copies;
+        assert_eq!((c.held, c.playing, c.making), (1, 0, 0));
+        // The clip is only listed, not cued: its copy goes.
+        assert_eq!(r.h.clear_copies(), 1);
+        assert_eq!(r.state().audio_copies.held, 0);
+        assert_eq!(
+            cleared_line(1, 2),
+            "3 copies cleared: each is made again when it's next needed"
+        );
+        assert_eq!(
+            cleared_line(0, 0),
+            "Nothing to clear: every copy is playing or about to"
+        );
+        let t0 = Instant::now();
+        while r.h.host.copy_memory().1 == 0 {
+            assert!(t0.elapsed() < Duration::from_secs(30), "made again");
+            r.period();
+            std::thread::sleep(Duration::from_micros(200));
+        }
     }
 
     /// A launch waiting for its tempo copy (phase 5b.4): the host makes it

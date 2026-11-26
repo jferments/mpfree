@@ -64,6 +64,16 @@ fn stretch_region() -> Region {
     }
 }
 
+/// The take's second bar, 8 bars on: wanted, but not about to play
+/// (Prepared).
+fn later_region() -> Region {
+    let half = tone_take().frames as i64 / 2;
+    Region {
+        follow: FollowTempo::Stretch,
+        ..Region::of(8 * BAR, 9 * BAR, 0, (half, 0.0), 120.0)
+    }
+}
+
 struct Rig {
     t: Transport,
     h: AudioHost,
@@ -447,7 +457,8 @@ fn the_tracks_emptied_drop_what_was_under_way_and_clear_copies_lets_them_go() {
     }
     assert_eq!(r.copies(), 0);
     assert_eq!(r.h.copy_counts().made, 0);
-    // A new project's region on Stretch gets its own.
+    // A new project's region on Stretch gets its own; 8 bars on, so it
+    // isn't about to play.
     assert!(r.h.tracks.load_take(tone_take()).is_ok());
     let track = TrackFile {
         index: 0,
@@ -455,12 +466,12 @@ fn the_tracks_emptied_drop_what_was_under_way_and_clear_copies_lets_them_go() {
         input: Input::Left,
         monitor: Monitor::Auto,
         from: String::new(),
-        regions: vec![stretch_region()],
+        regions: vec![later_region()],
     };
     assert!(r.h.tracks.load_track(&track));
     r.run_until(true, |r| r.copies() == 1);
-    // Clear copies: it goes (nothing plays), no recording is touched, and
-    // it is made again.
+    // Clear copies: it goes (nothing plays it, nor is about to), no
+    // recording is touched, and it is made again.
     assert_eq!(r.h.clear_copies(), 1);
     assert_eq!(r.copies(), 0);
     let mut back = vec![0.0f32; tone_take().frames];
@@ -468,6 +479,39 @@ fn the_tracks_emptied_drop_what_was_under_way_and_clear_copies_lets_them_go() {
     assert_eq!(back, tone_take().audio);
     r.run_until(true, |r| r.copies() == 1);
     assert_eq!(r.h.copy_counts().made, 2);
+}
+
+/// Clear copies (5c.4) keeps a copy playing or about to play and lets
+/// the rest go, to be made again; the host says how many copies it holds,
+/// how many play, and whose recordings are under way.
+#[test]
+fn clear_copies_keeps_a_copy_playing_or_about_to_and_lets_the_rest_go() {
+    let mut r = Rig::new(90.0, vec![stretch_region(), later_region()]);
+    r.run_until(false, |r| r.h.copy_memory().2 > 0);
+    let mut whose = Vec::new();
+    r.h.copies_making(&mut |rec| whose.push(rec));
+    assert!(
+        !whose.is_empty() && whose.iter().all(|&rec| rec == REC),
+        "{whose:?}"
+    );
+    r.run_until(true, |r| r.copies() == 2);
+    assert_eq!(r.h.copies_playing(), 0, "stopped");
+    // Stopped at bar 1: the first region starts at the playhead, about to
+    // play, and stays; the second, 8 bars on, goes.
+    assert_eq!(r.h.clear_copies(), 1);
+    assert_eq!(r.copies(), 1);
+    r.run_until(true, |r| r.copies() == 2);
+    // Playing, the first plays its copy and stays.
+    let at = r.frame;
+    assert!(r.t.command(at, T::PlayStart));
+    r.run_until(true, |r| r.h.copies_playing() == 1);
+    assert_eq!(r.h.clear_copies(), 1);
+    assert_eq!(r.copies(), 1);
+    assert_eq!(r.h.copies_playing(), 1);
+    // Nothing is lost: the take reads as it was recorded.
+    let mut back = vec![0.0f32; tone_take().frames];
+    assert_eq!(r.h.tracks.read_take(0, 0, &mut back), Some(back.len()));
+    assert_eq!(back, tone_take().audio);
 }
 
 #[test]

@@ -1229,9 +1229,12 @@ fn copies_made_and_played(keep_pitch: bool) {
     let gone = h.clear_copies();
     watch(false);
     let cleared = CALLS.with(Cell::get);
-    assert_eq!(gone, 4);
-    // Nothing of its own; sending the four to the worker may take a block
-    // of the channel (one in 31 sends), as the period may.
+    // The old tempo's two and the clip's new one go; the region's copy
+    // for the tempo now, stopped inside it, is about to play and stays
+    // (5c.4).
+    assert_eq!(gone, 3);
+    // Nothing of its own; sending the three to the worker may take a
+    // block of the channel (one in 31 sends), as the period may.
     assert!(cleared <= 1, "{cleared} allocations clearing the copies");
     // None in practice; the channel to the worker may take a block now
     // and then.
