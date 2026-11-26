@@ -166,11 +166,13 @@ impl std::fmt::Debug for Hold {
 }
 
 /// How the scheduler runs.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Config {
     /// Run first on the worker's own thread. The app puts it where the
     /// sampler's sound lane runs: off the sound's cores, at idle priority.
-    pub on_start: fn(),
+    /// (A closure, so a sampler job service's own scheduler can run its
+    /// sound lane's start: `mpfree_sampler::jobs::Jobs::new`.)
+    pub on_start: Arc<dyn Fn() + Send + Sync>,
     /// Promises a job's `need` bytes until it ends, if they fit beside the
     /// floor and every other promise standing; Err says why, in a
     /// musician's words. The promise ends when its [`Hold`] drops.
@@ -195,7 +197,7 @@ impl Default for Config {
     /// about 10 ms and at most [`MAX_FRAMES`] frames.
     fn default() -> Config {
         Config {
-            on_start: || {},
+            on_start: Arc::new(|| {}),
             promise: |_| Ok(Hold::none()),
             step: Duration::from_millis(10),
             max_frames: MAX_FRAMES,
@@ -242,6 +244,8 @@ impl Entry {
 struct Busy {
     key: Key,
     priority: Priority,
+    /// The memory it was promised.
+    need: u64,
     /// Told to stop: `Some(true)` replaced, `Some(false)` cancelled.
     stop: Option<bool>,
 }
@@ -472,6 +476,24 @@ impl Sched {
         self.len() == 0
     }
 
+    /// Jobs not started yet.
+    pub fn waiting(&self) -> usize {
+        let s = self.inner().lock();
+        s.jobs.iter().filter(|e| e.hold.is_none()).count()
+    }
+
+    /// The memory the jobs started and not ended were promised.
+    pub fn reserved(&self) -> u64 {
+        let s = self.inner().lock();
+        let started: u64 = s
+            .jobs
+            .iter()
+            .filter(|e| e.hold.is_some())
+            .map(|e| e.job.need)
+            .sum();
+        started + s.busy.as_ref().map_or(0, |b| b.need)
+    }
+
     /// What the scheduler has done so far.
     pub fn counts(&self) -> Counts {
         self.inner().lock().counts
@@ -611,6 +633,7 @@ fn pick(shared: &Shared, s: &mut State) -> Picked {
     s.busy = Some(Busy {
         key: e.job.key,
         priority: e.job.priority,
+        need: e.job.need,
         stop: None,
     });
     Picked::Run(e)
@@ -771,6 +794,21 @@ mod tests {
         s.run_all();
         assert!(drain(&rx).ends_with(&[("long", "finished")]));
         assert_eq!(s.counts().done, 2);
+    }
+
+    #[test]
+    fn waiting_counts_the_jobs_not_started_and_reserved_what_the_started_hold() {
+        let s = manual();
+        let (tx, _rx) = channel();
+        let job =
+            |id, need| Job::new(key(id), Priority::Prepared, fake("j", 100_000, &tx)).needs(need);
+        s.submit(job(1, 100));
+        s.submit(job(2, 50));
+        assert_eq!((s.len(), s.waiting(), s.reserved()), (2, 2, 0));
+        s.step();
+        assert_eq!((s.len(), s.waiting(), s.reserved()), (2, 1, 100));
+        s.cancel(key(1));
+        assert_eq!((s.len(), s.waiting(), s.reserved()), (1, 1, 0));
     }
 
     #[test]

@@ -39152,6 +39152,71 @@ mod tests {
         assert_eq!(refused(&p), 1);
     }
 
+    /// The audio tracks rethink 5b.3: a stretched copy refused for want of
+    /// room in the one budget for derived audio (the tracks' copies hold
+    /// it all) leaves the pad repitching, said once, and is asked for
+    /// again once the budget has room, without a tempo turn.
+    #[test]
+    fn a_stretched_copy_with_no_room_in_the_budget_is_asked_again_once_there_is() {
+        use mpfree_sampler_ui::warp_tool::Row;
+        use mpfree_sampler_ui::wave_tab::REGION as LIST;
+        use mpfree_stretch::budget::Cache;
+        let pad = mpfree_sampler_ui::sample::PAD;
+        let mut p = sample_sampler(Fonts::embedded());
+        let budget = p.sample.jobs().stretch().budget();
+        budget.set_total(10 << 20);
+        budget.set_held(Cache::Tracks, 10 << 20);
+        warp_page(&mut p);
+        p.on_event(UiEvent {
+            widget: LIST.into(),
+            kind: EventKind::Step {
+                index: Row::Warp.index(),
+                delta: 1,
+            },
+        });
+        let said = |p: &Player| {
+            events_log(p)
+                .iter()
+                .filter(|l| {
+                    l.starts_with(
+                        "sample: not stretched for now, the pad repitches until there is room (no room for more copies",
+                    )
+                })
+                .count()
+        };
+        let mut copy = None;
+        let mut room = false;
+        let t = Instant::now();
+        while copy.is_none() {
+            assert!(
+                t.elapsed() < Duration::from_secs(30),
+                "{:?}",
+                events_log(&p)
+            );
+            let (sent, _) = views(p.take_actions());
+            copy = sent
+                .first()
+                .and_then(|s| s.view.as_ref()?.layer(pad, 0)?.stretched_frames());
+            for s in sent {
+                p.apply(ToUi::SampleViewBack(s));
+            }
+            if !room && said(&p) == 1 {
+                // Refused and said: the tracks let their copies go.
+                assert!(copy.is_none());
+                room = true;
+                budget.set_held(Cache::Tracks, 0);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+            p.tick(0.033);
+        }
+        assert!(room, "made only once there was room");
+        assert_eq!(said(&p), 1, "{:?}", events_log(&p));
+        assert!(
+            t.elapsed() < crate::views::RETRY,
+            "asked again as room came, not on the retry"
+        );
+    }
+
     /// Item 6 of the 14 Nov review: a sound, or a project's sound, that
     /// would leave less than the memory MPFree keeps free isn't loaded,
     /// and the screen says so in place of the hint.

@@ -41,6 +41,11 @@ use crate::sched::Priority;
 /// The budget to start with: 200 MiB for all derived audio together.
 pub const DEFAULT_TOTAL: u64 = 200 << 20;
 
+/// How a refusal for want of room in the budget starts
+/// ([`Budget::check`]), so a client can tell it from the memory check's
+/// and ask again once room comes back.
+pub const NO_ROOM: &str = "no room for more copies";
+
 /// A cache of derived audio, each with its share of the one budget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Cache {
@@ -177,7 +182,7 @@ impl Budget {
             return Ok(());
         }
         Err(format!(
-            "no room for more copies: {} MB of the {} MB they may use is used",
+            "{NO_ROOM}: {} MB of the {} MB they may use is used",
             mb(used),
             mb(limit)
         ))
