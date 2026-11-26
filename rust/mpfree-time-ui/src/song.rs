@@ -4175,12 +4175,17 @@ impl Widget for SongLanes {
             for (k, (row, v)) in p.rows.iter().zip(p.values).enumerate() {
                 let i = REGION_ROW + k;
                 let name = REGION_ROWS[k];
-                out.push(Target::tap(
-                    "card-row",
-                    i,
-                    name,
-                    Rect::new(row.x, row.y, v.x - row.x, row.h),
-                ));
+                // The row picked already: a tap picks nothing new (as an
+                // option list's picked row).
+                out.push(
+                    Target::tap(
+                        "card-row",
+                        i,
+                        name,
+                        Rect::new(row.x, row.y, v.x - row.x, row.h),
+                    )
+                    .disabled_if(k == c.row),
+                );
                 out.push(Target::tap(
                     "card-less",
                     i,
@@ -5918,6 +5923,14 @@ mod tests {
                 "card-close"
             ]
         );
+        // The row picked already (Tempo, as the card opens) picks nothing
+        // new: it is off, the others on.
+        let rows: Vec<bool> = t
+            .iter()
+            .filter(|t| t.id == "card-row")
+            .map(|t| t.enabled)
+            .collect();
+        assert_eq!(rows, [false, true, true]);
         // Painted, with the tag on the region on Stretch.
         let mut ui = mpfree_ui::Ui::new(
             mpfree_ui::Theme::dark(),
