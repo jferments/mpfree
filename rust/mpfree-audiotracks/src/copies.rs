@@ -536,9 +536,17 @@ impl Copies {
 
     /// Lets every copy go that no region plays now. How many went.
     pub fn clear(&mut self) -> usize {
+        self.clear_but(&|_| false)
+    }
+
+    /// Lets every copy go that no region plays now and `keep` doesn't
+    /// keep (Clear copies keeps what is about to play, 5c.4). How many
+    /// went.
+    pub fn clear_but(&mut self, keep: &dyn Fn(&CopyKey) -> bool) -> usize {
         let mut n = 0;
         for i in 0..MAX_COPIES {
-            if self.held[i].is_some() && !self.playing(i) {
+            let kept = self.held[i].as_ref().is_some_and(|h| keep(&h.copy.key));
+            if self.held[i].is_some() && !kept && !self.playing(i) {
                 self.drop_slot(i);
                 n += 1;
             }

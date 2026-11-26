@@ -3559,6 +3559,11 @@ impl AudioTracks {
         self.copies.clear()
     }
 
+    /// As [`AudioTracks::clear_copies`], keeping what `keep` keeps.
+    pub fn clear_copies_but(&mut self, keep: &dyn Fn(&copies::CopyKey) -> bool) -> usize {
+        self.copies.clear_but(keep)
+    }
+
     /// A copy's audio let go, for the host to drop off the audio thread.
     pub fn take_dropped_copy(&mut self) -> Option<std::sync::Arc<[f32]>> {
         self.copies.take_dropped()

@@ -1074,13 +1074,22 @@ fn loops_through_the_track_player_never_allocate() {
     }
 }
 
-/// Phase 5b.2, Stretch's copies: the host's period hardly allocates (the
-/// worker's channel now and then) while it waits for the tempo to hold,
-/// works out what is wanted, reads a song region's and a clip's sources,
-/// takes their copies in, plays from one, plays Repitch to the region's
-/// end after a tempo change while the new copies are made, and lets them
-/// go at Clear copies, which doesn't allocate either. The scheduler,
-/// stepped between periods, isn't watched: it has its own thread.
+/// Phase 5b.2, Stretch's copies: the host's period doesn't allocate while
+/// it waits for the tempo to hold, works out what is wanted, reads a song
+/// region's and a clip's sources, takes their copies in, plays from one,
+/// plays Repitch to the region's end after a tempo change while the new
+/// copies are made, and lets them go at Clear copies, which doesn't
+/// allocate either. The scheduler, stepped between periods, isn't
+/// watched: it has its own thread.
+///
+/// Every message to and from the worker is one an event sends (a copy's
+/// buffer asked for, its source sent to be made, the buffer and the copy
+/// coming back, a copy dropped), so however slow the worker is, they all
+/// fit in each channel's first block (31 messages), which `copies_on`'s
+/// message took before the watch. (Before `CopySide::read` was fixed,
+/// with 5c.5, a copy's buffer was asked for again every period the worker
+/// was late, so under load the channels took a block now and then and
+/// this test failed.)
 #[test]
 fn the_host_period_hardly_allocates_while_copies_are_made_and_played() {
     copies_made_and_played(false);
@@ -1229,11 +1238,11 @@ fn copies_made_and_played(keep_pitch: bool) {
     let gone = h.clear_copies();
     watch(false);
     let cleared = CALLS.with(Cell::get);
-    assert_eq!(gone, 4);
-    // Nothing of its own; sending the four to the worker may take a block
-    // of the channel (one in 31 sends), as the period may.
-    assert!(cleared <= 1, "{cleared} allocations clearing the copies");
-    // None in practice; the channel to the worker may take a block now
-    // and then.
-    assert!(calls <= 4, "{calls} allocations in the host's period");
+    // The old tempo's two and the clip's new one go; the region's copy
+    // for the tempo now, stopped inside it, is about to play and stays
+    // (5c.4).
+    assert_eq!(gone, 3);
+    // None, the three sent to the worker included (see above).
+    assert_eq!(cleared, 0, "allocations clearing the copies");
+    assert_eq!(calls, 0, "allocations in the host's period");
 }

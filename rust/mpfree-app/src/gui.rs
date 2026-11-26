@@ -2353,6 +2353,13 @@ pub enum FromUi {
     /// System status's Save a report: the report's words, to save in the
     /// data folder (`files/reports/`).
     SaveReport(String),
+    /// System status's Clear copies (Memory, the audio tracks rethink
+    /// 5c.4): the audio tracks let go of their tempo copies that aren't
+    /// playing or about to; `warps` is how many of the sampler's Warps the
+    /// screen let go of already, for the line that says so.
+    ClearCopies {
+        warps: usize,
+    },
     /// A touch on the chain editor, or a Q-Link turned while its knobs
     /// show (`modpanels::ChainHost::action`).
     Chain(ChainAction),
@@ -2985,6 +2992,9 @@ pub struct Player {
     /// by engine ([`crate::memory::promised`]; the screen previews pin it,
     /// since the other screens' jobs run in the same process).
     memory_promised: fn() -> u64,
+    /// System status' Audio MPFree made, fixed for a sample screen (the
+    /// process's budget is every screen's and test's at once).
+    made_fixed: Option<crate::status_screen::Made>,
     /// Every problem reported this session (System status; phase 0 shows it
     /// on Dev > Status only), and its clock: made with the Player and moved
     /// on by [`Player::tick`], so tests drive it.
@@ -3704,6 +3714,7 @@ impl Player {
             debug,
             engines: None,
             memory_promised: crate::memory::promised,
+            made_fixed: None,
             status_board: mpfree_status::Board::new(),
             status_clock: now,
             status_start: now,
@@ -10187,6 +10198,9 @@ impl Player {
                 View::Console => "The system log, as it comes   ·   MENU: pause or clear   ·   SHIFT + ERASE + TAP TEMPO: back"
                     .to_string(),
                 View::System => "Read when the page opens   ·   MENU: back to Prefs   ·   a tab: leave".to_string(),
+                View::SystemStatus if self.status_place.picked == mpfree_status::System::Memory => {
+                    crate::status_screen::MEMORY_HINT.to_string()
+                }
                 View::SystemStatus => "Tap a system: its problems   ·   Wheel or - / +: the systems   ·   push: open a card   ·   \
                                        MENU or the status chip: close".to_string(),
                 View::Prefs => self.prefs_hint(),
@@ -11138,8 +11152,15 @@ impl Player {
     /// A touch on System status: a system picked, the switch, a card's
     /// button (its job goes to the app).
     fn status_page_event(&mut self, kind: EventKind) -> Option<FromUi> {
-        use mpfree_ui::status_page::{BUTTON, CARD, NOW, SAVE_REPORT, SESSION};
+        use mpfree_ui::status_page::{BUTTON, CARD, CLEAR_COPIES, NOW, SAVE_REPORT, SESSION};
         match kind {
+            // Clear copies (Memory, 5c.4): the Warps here, the audio
+            // tracks' on the loop, which says how many went.
+            EventKind::Tab(CLEAR_COPIES) => {
+                let warps = self.sample.clear_copies();
+                self.fill_system_status();
+                return Some(FromUi::ClearCopies { warps });
+            }
             // Save a report: its words go to the store (files/reports/).
             EventKind::Tab(SAVE_REPORT) => {
                 let saved = std::time::SystemTime::now()
@@ -11170,6 +11191,8 @@ impl Player {
             _ => return None,
         }
         self.fill_system_status();
+        // Memory's hint says what Clear copies does (5c.4).
+        self.refresh_hint();
         None
     }
 
@@ -11206,6 +11229,8 @@ impl Player {
             crate::app::StatusKey::Step(d) => {
                 self.status_place.step(d);
                 self.fill_system_status();
+                // Memory's hint says what Clear copies does (5c.4).
+                self.refresh_hint();
             }
             // The next folded card opens; after the last, they fold again.
             crate::app::StatusKey::Open => {
@@ -11339,6 +11364,24 @@ impl Player {
             heat: self.heat,
             engines: self.engines.as_deref().and_then(crate::engines::shares),
             tracks: self.engines.as_deref().and_then(|e| self.status_tracks(e)),
+            made: Some(self.made_audio()),
+        }
+    }
+
+    /// The audio MPFree made, for System status' Memory card (5c.4): the
+    /// one budget's shares (the stretch scheduler's, the process's), the
+    /// audio tracks' copies as the loop last said them, and the Warps'.
+    fn made_audio(&self) -> crate::status_screen::Made {
+        use mpfree_stretch::budget::Cache;
+        if let Some(m) = &self.made_fixed {
+            return m.clone();
+        }
+        let b = self.sample.copy_budget();
+        crate::status_screen::Made {
+            total: b.total(),
+            shares: Cache::ALL.map(|c| b.share(c)),
+            tracks: self.time.audio_copies.clone(),
+            warps: self.sample.copy_counts(),
         }
     }
 
@@ -23071,6 +23114,41 @@ fn sample_app() -> crate::app::App {
     app
 }
 
+/// System status with Memory picked and the audio MPFree made (the audio
+/// tracks rethink 5c.4, board 6): the one budget, its shares, Clear
+/// copies.
+pub fn sample_status_memory(fonts: Fonts) -> Player {
+    let mut p = sample_player(fonts);
+    p.set_ram(41.0);
+    p.set_free(1_100_000_000);
+    sample_stick(&mut p);
+    p.made_fixed = Some(sample_made());
+    p.apply(ToUi::Show(View::SystemStatus));
+    p.status_page_event(EventKind::Select(mpfree_status::System::Memory.index()));
+    p
+}
+
+/// Board 6's audio MPFree made: 85 MB of the budget, the tracks' twelve
+/// copies (three playing), nine Warps, two jobs under way. The looper
+/// makes no tempo copies before phase 5d, so its share is none.
+fn sample_made() -> crate::status_screen::Made {
+    use mpfree_stretch::budget::{Cache, DEFAULT_TOTAL};
+    let mut shares = [(0, 0); 4];
+    shares[Cache::Tracks as usize] = (54_000_000, 6_000_000);
+    shares[Cache::Warps as usize] = (22_000_000, 3_000_000);
+    crate::status_screen::Made {
+        total: DEFAULT_TOTAL,
+        shares,
+        tracks: mpfree_time_ui::view::AudioCopies {
+            held: 12,
+            playing: 3,
+            making: 1,
+            whose: vec!["Vocal".to_string()],
+        },
+        warps: (9, 1),
+    }
+}
+
 /// The mixer's Tracks view over the real mixer with tracks 1 and 2 playing
 /// their own instruments (Poly, FM): a chord each for a few periods, the
 /// costs fixed so the picture is the same on every run.
@@ -25873,6 +25951,9 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     sample_stick(&mut good);
     good.apply(ToUi::Show(View::SystemStatus));
     out.push(("system-status-good", good));
+    // Memory picked, with the audio MPFree made (the audio tracks
+    // rethink 5c.4, board 6): the one budget, its shares, Clear copies.
+    out.push(("system-status-memory", sample_status_memory(fonts())));
     // Prefs > System info, with fixed rows (the host's own would differ).
     let mut system = sample_player(fonts());
     system.apply(ToUi::Show(View::System));
@@ -40451,6 +40532,16 @@ mod tests {
             .unwrap()
             .view;
         assert_eq!(v.picked, 1, "Memory");
+        // Memory has the audio MPFree made, with Clear copies (5c.4): its
+        // hint says what it does, and a tap lets go of the Warps nothing
+        // holds and asks the loop to clear the tracks'.
+        assert!(v.made.is_some());
+        let hint = p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert_eq!(hint, crate::status_screen::MEMORY_HINT);
+        assert_eq!(
+            p.status_page_event(EventKind::Tab(mpfree_ui::status_page::CLEAR_COPIES)),
+            Some(FromUi::ClearCopies { warps: 0 })
+        );
         // A card's button: Silence all notes reaches the app.
         p.status_place.actions = vec![Some(mpfree_status::Action::SilenceNotes)];
         assert_eq!(

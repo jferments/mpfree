@@ -1490,6 +1490,19 @@ impl TakeRow {
     }
 }
 
+/// The audio tracks' tempo copies, for System status' Memory card (the
+/// audio tracks rethink, phase 5c.4): how many are held, how many a
+/// region plays now, how many are being read or made, and the tracks
+/// whose recordings those are, by name, once each. What they take is the
+/// one budget's to say. The app sets it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AudioCopies {
+    pub held: usize,
+    pub playing: usize,
+    pub making: usize,
+    pub whose: Vec<String>,
+}
+
 /// Everything the time engine's screens show.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TimeState {
@@ -1665,6 +1678,9 @@ pub struct TimeState {
     /// The audio tracks' memory: seconds free and seconds in all, for the
     /// Song view's legend. The app sets it.
     pub audio_free: Option<(f64, f64)>,
+    /// The audio tracks' tempo copies, for System status (phase 5c.4).
+    /// The app sets it.
+    pub audio_copies: AudioCopies,
     /// Audio tracks counters to show while they are not zero, such as
     /// ("dropped", 2) or ("read errors", 1): the engine's `Stats` and the
     /// streaming counts. Fallbacks and losses are always shown. The app
@@ -2035,6 +2051,7 @@ impl TimeState {
             waves: Vec::new(),
             region: None,
             audio_free: None,
+            audio_copies: AudioCopies::default(),
             audio_counts: Vec::new(),
             audio_panel: None,
             audio_takes: None,

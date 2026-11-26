@@ -149,7 +149,7 @@ pub const CASES: [Case; 6] = [
     },
 ];
 
-fn frames(secs: f64, rate: u32) -> usize {
+pub(crate) fn frames(secs: f64, rate: u32) -> usize {
     (secs * f64::from(rate)).round() as usize
 }
 
@@ -173,7 +173,7 @@ fn rms(s: &Stereo) -> f64 {
 }
 
 /// `s` with its peak at [`PEAK_DB`].
-fn to_peak(s: Stereo) -> Stereo {
+pub(crate) fn to_peak(s: Stereo) -> Stereo {
     let p = peak(&s).max(1e-9);
     scale(s, db_to_amp(PEAK_DB) / p)
 }
@@ -203,13 +203,13 @@ fn tone(hz: f64, n: usize, rate: u32, seed: u64) -> Vec<f64> {
 
 /// `node` playing `notes` (note, velocity, start s, length s) for the
 /// sound's length.
-fn played(mut node: Box<dyn Node>, notes: &[(u8, u8, f64, f64)], rate: u32) -> Stereo {
+pub(crate) fn played(mut node: Box<dyn Node>, notes: &[(u8, u8, f64, f64)], rate: u32) -> Stereo {
     let score = synth::score(rate, notes);
     synth::render(node.as_mut(), rate, frames(SOUND_SECS, rate), &score)
 }
 
 /// A factory preset of `engine` by name (its first if the name is gone).
-fn preset(engine: Synth, name: &str) -> usize {
+pub(crate) fn preset(engine: Synth, name: &str) -> usize {
     engine.presets().iter().position(|p| p == name).unwrap_or(0)
 }
 
