@@ -19,6 +19,8 @@
 37365	Audio tracks: 6 playing comped takes, 2 recording
 37397	Audio tracks: 6 playing comped takes, 2 recording to files
 37350	Audio tracks: 8 playing comped takes
+604952	Audio tracks: 8 playing comped takes, repitched to 0.9x
+784594	Audio tracks: 8 playing comped takes, repitched to 1.3x
 26545	Audio tracks: 8 tracks of 2-bar clips launched every bar
 26025	Auto wah
 21314	Auto-pan
