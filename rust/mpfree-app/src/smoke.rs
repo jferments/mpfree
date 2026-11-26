@@ -13,7 +13,9 @@
 //! The workflows in `smoke/workflows.rs` go further: they drive the screen
 //! and the app together (with the mixer, the time engine and the chain
 //! editor behind them, as `player_session` wires them) through what a
-//! musician does, and check the result.
+//! musician does, and check the result. The touch audit's live probes in
+//! `smoke/touch_probe.rs` touch each kind of control in the ways that must
+//! not commit (layout spec 1a) and compare it with how it declares it acts.
 
 use crate::gui::{self, FromUi, Player};
 use mpfree_ui::{Fonts, Gesture, PageTarget, SoftCanvas, Touch};
@@ -26,6 +28,7 @@ mod scripts;
 mod session;
 mod song_workflows;
 pub use crate::demo_songs as songs;
+pub mod touch_probe;
 pub mod walk;
 mod workflows;
 

@@ -1,0 +1,963 @@
+# Today's breaks of the layout spec's touch rules (section 1a), by kind of
+# control (widget/id), each at its worst across the sample screens:
+#     size KIND SHORT_SIDE CLASS_NEEDED # REASON
+#     overlap KIND KIND # REASON          (two controls of one widget)
+#     gap KIND KIND GAP NEEDED # REASON   (dead space between neighbours, px)
+# Checked by tests/touch_audit.rs: a line may only get better. Write it with
+#     MPFREE_TOUCH_BLESS=1 cargo test -p mpfree-app --test touch_audit
+gap add-part/add-back add-part/add-keep 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap add-part/add-row-less add-part/add-row-more 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap add-part/add-step add-part/add-try-again 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap arp-phrase-maker/maker-row-less arp-phrase-maker/maker-row-more 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap browser/back browser/row 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap browser/button browser/pad-map 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap browser/button browser/row 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap browser/button browser/star 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap browser/pad-map browser/pad-map-bank 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap browser/plugins-button browser/plugins-row 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap browser/plugins-row browser/plugins-view 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap browser/row browser/star 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap browser/sets-back browser/sets-row 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/add chain/slot 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/add chain/slot-on 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/add-follower chain/add-lfo 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/add-lfo chain/eq-remove 23 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/add-lfo chain/learn 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/eq-add chain/eq-chip 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/eq-listen chain/eq-on 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/eq-listen chain/eq-remove 6 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/eq-listen chain/eq-type 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/eq-on chain/eq-type 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/eq-quality chain/eq-remove 4 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/eq-remove chain/learn 23 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/mode-list chain/mode-next 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/move-down chain/move-up 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/move-down chain/remove 6 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/note chain/note-on 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/note chain/notes-add 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/note-on chain/notes-add 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/plays-on chain/sound-down 7 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/plays-on chain/sound-up 7 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/slot chain/slot-on 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/slot chain/sound-up 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/slot-on chain/sound-down 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/slot-on chain/sound-up 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chain/sound-down chain/sound-up 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chords-card/chords-row-less chords-card/chords-row-more 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chords-card/chords-row-less chords-card/tab 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap chords-card/chords-row-more chords-card/tab 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap clip-card/row clip-card/row-less 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap clip-card/row clip-card/tab 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap clip-card/row-less clip-card/tab 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap clip-card/row-more clip-card/tab 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap clips/chord-close clips/chord-root 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap clips/scene clips/slot 6 12 # the Clips grid; the Perform clip grid (touch plan A8) redraws it for Perform
+gap clips/scene clips/stop-all 6 12 # the Clips grid; the Perform clip grid (touch plan A8) redraws it for Perform
+gap clips/scene-after clips/scene-name 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap clips/scene-before clips/scene-name 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap clips/scene-cell clips/scene-delete 18 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap clips/scene-delete clips/scene-foot 10 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap clips/scene-less clips/scene-mutes-now 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap clips/scene-less clips/scene-row 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap clips/scene-less clips/scene-tempo-now 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap clips/scene-more clips/scene-mutes-now 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap clips/scene-more clips/scene-tempo-now 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap clips/slot clips/track 6 8 # the Clips grid; the Perform clip grid (touch plan A8) redraws it for Perform
+gap clips/stop-all clips/track 6 8 # the Clips grid; the Perform clip grid (touch plan A8) redraws it for Perform
+gap edit-options/row edit-options/row-less 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap lask/ask-no lqlinks/knob-card 7 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap lask/ask-yes lqlinks/knob-card 7 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap ldeck/loop ldeck/loop-level 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap ldeck/loop ldeck/pads-keys 1 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap ldeck/loop ldeck/records-from 1 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap ldeck/loop ldeck/ring 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap ldeck/loop-mute ldeck/loop-solo 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/chip leditor/chip-act 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/chip leditor/nudge 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/chip-act leditor/nudge 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/clear leditor/nudge 7 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/clear leditor/point-close 13 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/clear leditor/point-step 17 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/clear leditor/send 8 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/clear leditor/trim-end 6 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/free-loops leditor/nudge 7 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/history leditor/redo 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/history leditor/undo 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/layer leditor/layer-delete 16 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/layer leditor/nudge 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/layer leditor/trim-end 3 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/layer leditor/trim-start 3 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/layer-listen leditor/layer-mute 2 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/layer-listen leditor/layer-solo 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/listen leditor/nudge 7 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/make-song leditor/nudge 7 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/nudge leditor/send 7 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap leditor/point-nudge leditor/point-window 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap make-phrase/sheet-row-less make-phrase/sheet-row-more 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap make-style/style-plan-less make-style/style-plan-more 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap midimon/monitor-clear midimon/monitor-hold 6 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap midimon/monitor-clear midimon/monitor-source 8 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap mixer/add-insert mixer/insert 3 8 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+gap mixer/add-insert mixer/strip-name 6 8 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+gap mixer/eq mixer/eq-add 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap mixer/fader mixer/value 6 8 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+gap mixer/field mixer/row 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap mixer/fx mixer/fx-add 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap mixer/insert mixer/strip-name 6 8 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+gap mixer/learn-again mixer/learn-remove 8 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap mixer/learn-kept mixer/learn-takeover 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap mixer/learn-mode mixer/learn-range 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap mixer/learn-mode mixer/learn-takeover 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap mixer/monitor-clear mixer/monitor-hold 6 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap mixer/monitor-clear mixer/monitor-kind 8 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap mixer/monitor-clear mixer/monitor-save 6 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap mixer/mute mixer/output 6 8 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+gap mixer/mute mixer/solo 4 12 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+gap mixer/mute mixer/value 6 12 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+gap mixer/output mixer/solo 6 8 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+gap mixer/port-clock mixer/port-nudge 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap mixer/routing-swap mixer/routing-tile 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap mixer/send mixer/send-pre 0 8 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+gap mixer/solo mixer/value 6 8 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+gap morph/row-down morph/row-up 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/aim-pick notes/lane-edge 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/button notes/lane 11 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/button notes/list-row 20 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/button notes/tracker-row 20 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/chord-chip notes/scale-chip 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/continue-bar notes/continue-note 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/continue-bar notes/follow 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/continue-bar notes/pads-write 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/continue-bar notes/show-chip 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/continue-bar notes/sound-chip 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/continue-note notes/lane-edge 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/end notes/follow 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/fit notes/overview 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/fold-chip notes/scale-chip 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/follow notes/ruler 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/follow notes/sound-chip 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/handle notes/note 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/handle notes/note-mark 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/keys notes/lane-chip 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/keys notes/note 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/keys notes/roll 2 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/lane notes/lane-fold 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/lane-chip notes/lane-edge 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/lane-chip notes/lane-fold 2 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/lane-edge notes/note 1 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/note notes/ruler 1 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/overview notes/ruler 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/overview notes/show-chip 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/pads-write notes/ruler 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/pads-write notes/show-chip 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/pads-write notes/sound-chip 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/roll notes/ruler 2 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/ruler notes/show-chip 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/ruler notes/sound-chip 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/sound-on notes/sound-remove 6 24 # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
+gap notes/tool-aim notes/tool-option 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap options/back options/row 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap options/row options/row-less 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap options/row options/row-more 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap pad-map/add-layer pad-map/layer 14 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap pad-map/add-layer pad-map/row 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap patch-edit/add-zone patch-edit/zone 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap patch-edit/add-zone patch-edit/zone-high 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap patch-edit/add-zone patch-edit/zone-low 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap patch-edit/close patch-edit/delete 8 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap patch-edit/copy patch-edit/delete 8 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap patch-edit/learn-high patch-edit/remove 8 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap patch-edit/zone patch-edit/zone-high 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap patch-edit/zone patch-edit/zone-low 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap patch-edit/zone-high patch-edit/zone-low 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap play-loop/arm play-loop/loop 5 8 # the Play page (touch plan A6)
+gap play-loop/capture play-loop/loop 4 8 # the Play page (touch plan A6)
+gap play-loop/group-knob play-loop/group-switch 6 8 # the Play page (touch plan A6)
+gap play-loop/layer-mute play-loop/loop 5 8 # the Play page (touch plan A6)
+gap play-loop/loop play-loop/loop-mute 2 8 # the Play page (touch plan A6)
+gap play-loop/loop play-loop/pads-keys 4 8 # the Play page (touch plan A6)
+gap play-loop/loop play-loop/ring 2 8 # the Play page (touch plan A6)
+gap play-loop/loop-mute play-loop/loop-solo 6 8 # the Play page (touch plan A6)
+gap play-loop/loop-mute play-loop/ring 6 8 # the Play page (touch plan A6)
+gap play-loop/loop-solo play-loop/ring 6 8 # the Play page (touch plan A6)
+gap play-transport/rec play-transport/tempo 3 8 # the Play page (touch plan A6)
+gap prf-list/row prf-list/row-less 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap qlinks/knob-card xy-banner/cancel 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap qlinks/knob-card xy-banner/done 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap record/row record/row-less 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap record/row record/tab 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap record/row-less record/tab 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap record/row-more record/tab 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap smp-auto-list/row smp-auto-list/row-less 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap smp-play-keys/zone smp-play-keys/zone-low 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap smp-play-slices/marker smp-play-slices/wave 3 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap smp-recorder/less smp-recorder/more 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap smp-region/button smp-region/choice 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap smp-region/button smp-region/less 12 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap smp-region/button smp-region/more 9 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap smp-region/button smp-region/switch 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap smp-region/less smp-region/pad 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap smp-region/less smp-region/value 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap smp-region/more smp-region/pad 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap smp-region/more smp-region/switch 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap smp-region/more smp-region/value 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap smp-wave/marker smp-wave/wave 3 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song-list/grip song-list/step 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song-list/scene-after song-list/scene-name 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song-list/scene-before song-list/scene-name 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song-list/scene-cell song-list/scene-delete 18 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song-list/scene-delete song-list/scene-foot 10 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song-list/scene-less song-list/scene-mutes-now 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song-list/scene-less song-list/scene-row 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song-list/scene-less song-list/scene-tempo-now 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song-list/scene-less song-list/step 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song-list/scene-more song-list/scene-mutes-now 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song-list/scene-more song-list/scene-tempo-now 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song-list/times-less song-list/times-more 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/arm song/audio-header 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/block song/block-end 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/block song/block-start 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/block song/button 22 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/block song/region 2 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/block-start song/region 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/chord song/tempo-lane 3 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/chord-close song/chord-root 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-arm song/panel-input 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-close song/panel-takes 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-effects song/panel-pan-more 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-effects song/panel-strip 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-from-less song/panel-input 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-from-less song/panel-level-less 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-from-more song/panel-mix 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-from-more song/panel-pan-less 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-input song/panel-level-less 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-input song/panel-level-more 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-input song/panel-mix 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-input song/panel-mute 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-input song/panel-solo 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-mix song/panel-pan-less 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-mix song/panel-solo 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-monitor song/panel-pan-more 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-monitor song/panel-strip 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/panel-monitor song/panel-takes 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/region song/region-button 22 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/ruler song/section 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/ruler song/tempo-lane 2 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/section-grip song/tempo-lane 2 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap song/tempo-lane song/tempo-point 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap step-inspector/bank step-inspector/join 2 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap step-inspector/clear step-inspector/copy 10 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap step-inspector/close step-inspector/join 2 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap step-inspector/off step-inspector/on 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap steps-continue/less steps-continue/more 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap steps/arm steps/head 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap steps/head steps/length 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap steps/head steps/mute 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap steps/head steps/note 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap steps/head steps/step 2 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap steps/lane-rows steps/lock-lane-off 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap steps/lane-rows steps/note 2 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap steps/length steps/step 2 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap steps/lock steps/step 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap steps/lock-lane-off steps/mute 2 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap steps/lock-lane-off steps/note 2 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap steps/mute steps/step 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap steps/note steps/step 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap steps/row-depth steps/row-off 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap steps/step steps/value 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap synth-tiles/step-less synth-tiles/step-more 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap transport/play transport/rec 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap transport/play transport/stop 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap ttest/area ttest/mode 6 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap ttune/row ttune/row-minus 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap ttune/row-minus ttune/row-plus 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap xy-setup/add xy-setup/set 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap xy-setup/delete xy-setup/done 10 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap xy-setup/delete xy-setup/save 10 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap xy/xy xy/xy-chip 4 8 # the Play page (touch plan A6)
+overlap browser/row browser/star # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap clips/add-close clips/add-kind # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap clips/chord-button clips/chord-dismiss # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap clips/chord-close clips/chord-dismiss # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap clips/chord-dismiss clips/chord-kind # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap clips/chord-dismiss clips/chord-root # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap ldeck/loop-level ldeck/ring # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap leditor/layer leditor/layer-delete # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap notes/aim-pick notes/continue-note # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap notes/aim-pick notes/lane-edge # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap notes/handle notes/note # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap notes/handle notes/note-mark # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap notes/lane-chip notes/lane-edge # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
+overlap notes/lane-edge notes/sound-on # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
+overlap notes/lane-edge notes/sound-remove # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
+overlap notes/note notes/note-mark # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap pad-map/base pad-map/row # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap pad-map/layer pad-map/row # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap patch-edit/zone patch-edit/zone-high # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap patch-edit/zone patch-edit/zone-low # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap patch-list/edit patch-list/patch # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap play-loop/arm play-loop/loop # the Play page (touch plan A6)
+overlap play-loop/layer-mute play-loop/loop # the Play page (touch plan A6)
+overlap play-loop/loop play-loop/ring # the Play page (touch plan A6)
+overlap smp-bar/layer-chip smp-bar/name # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap smp-keep/keep smp-keep/keep-recall # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap smp-play-env/point smp-play-env/point # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap smp-play-keys/zone smp-play-keys/zone # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap smp-play-keys/zone smp-play-keys/zone-low # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap smp-wave/marker smp-wave/marker # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap song/add-close song/add-kind # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
+overlap song/block song/block-end # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap song/block song/block-start # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap song/chord-button song/chord-dismiss # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap song/chord-close song/chord-dismiss # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap song/chord-dismiss song/chord-kind # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap song/chord-dismiss song/chord-root # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap song/section song/section # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap song/section song/section-grip # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap song/section song/tempo-lane # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap song/section song/tempo-point # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap steps/arm steps/mute # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap steps/arm steps/note # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size add-part/add-back 42 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size add-part/add-close 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size add-part/add-keep 42 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size add-part/add-part-kind 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size add-part/add-row-less 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size add-part/add-row-more 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size add-part/add-step 42 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size add-part/add-try-again 42 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-actions/button 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-list/row 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-mini/faster 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-mini/latch 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-mini/open 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-mini/slower 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-mod/modifier 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-modes/segment 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-patterns/group 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-patterns/row 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-answer/answer-capture 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-answer/answer-mode 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-answer/answer-now 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-answer/answers-for 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-answer/plays-when 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-answer/records 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-kinds/kind 50 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-list/new-idea 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-list/phrase 50 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-maker/maker-back 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-maker/maker-close 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-maker/maker-keep 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-maker/maker-row-less 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-maker/maker-row-more 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-maker/maker-step 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-maker/maker-try-again 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-plays/follow 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-plays/more-like-this 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-plays/move 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-plays/plays-when 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-plays/records 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-phrase-plays/slider 42 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-qlinks/slider 43 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-steps/step 59 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size arp-ws-tools/button 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/back 56 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/button 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/filter 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/pad-map 54 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/pad-map-bank 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/place 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/plugins-button 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/plugins-filter 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/plugins-row 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/plugins-search 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/plugins-sort 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/plugins-view 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/row 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/search 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/sets-back 56 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/sets-button 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/sets-row 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/sets-value 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/sort 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size browser/star 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/add 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/add-follower 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/add-lfo 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/back 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/choice 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/choice-less 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/choice-more 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/eq-add 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/eq-band 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/eq-chip 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/eq-listen 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/eq-on 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/eq-quality 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/eq-remove 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/eq-type 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/knob 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/learn 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/macro 37 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/mode-list 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/mode-next 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/move-down 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/move-up 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/note 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/note-on 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/notes-add 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/notes-chip 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/notes-chip-next 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/notes-chip-prev 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/notes-minus 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/notes-plus 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/notes-seg 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/plays-on 58 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/presets-open 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/remove 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/rows 22 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/sidechain-off 60 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/slot 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/slot-on 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/sound-down 24 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/sound-up 24 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/strip 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/strips-back 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/strips-group 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/toggle 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chain/xy 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chords-card/chords-fit 42 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chords-card/chords-row-less 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chords-card/chords-row-more 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chords-card/chords-tick 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size chords-card/tab 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clip-card/button 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clip-card/row 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clip-card/row-less 39 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clip-card/row-more 39 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clip-card/tab 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/add-kind 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/add-part 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/add-track 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/back-to-song 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/bank 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/capture-scene 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/chord 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/chord-button 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/chord-close 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/chord-kind 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/chord-root 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/edit 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/pager 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/rec-song 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/scene 48 performance # in Perform; the Perform clip grid (touch plan A8) makes it 96 px
+size clips/scene-after 42 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/scene-before 42 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/scene-cell 50 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/scene-delete 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/scene-done 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/scene-foot 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/scene-less 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/scene-more 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/scene-mutes-now 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/scene-name 42 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/scene-row 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/scene-tempo-now 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/show-view 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size clips/stop-all 44 critical # the Perform clip grid (touch plan A8) makes it Critical size, set apart
+size clips/track 44 normal # the Clips grid; the Perform clip grid (touch plan A8) redraws it for Perform
+size clips/view 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size controls/row 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size dtabs/segment 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size edit-clips-card/button 54 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size edit-clips/row 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size edit-options/button 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size edit-options/row 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size edit-options/row-less 39 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size edit-options/row-more 39 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size guide/button 54 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size header/chip 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size header/folder-icon 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size header/tab 44 normal # spec 1a lets the tabs answer over the whole 60 px top bar; today they answer over 44 px of it
+size help/link 62 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size kits-card/button 54 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size kits/row 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size lanes-card/button 54 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size lanes/row 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size lask/ask-no 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size lask/ask-yes 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size ldeck/loop 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size ldeck/loop-level 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size ldeck/loop-mute 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size ldeck/loop-solo 37 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size ldeck/pads-keys 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size ldeck/records-from 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/bars 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/capture 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/chip 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/chip-act 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/clear 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/double 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/feedback 50 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/free-loops 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/half 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/history 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/history-step 56 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/layer 61 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/layer-delete 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/layer-listen 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/layer-mute 61 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/layer-solo 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/listen 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/make-song 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/merge 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/nudge 18 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/overdubs 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/point-ab 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/point-close 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/point-nudge 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/point-pick 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/point-step 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/read-as 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/redo 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/reverse 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/send 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/source 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/speed 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/starts 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/sync 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/then 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/trim-end 10 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/trim-start 10 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size leditor/undo 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size levels-panel/button 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size levels-panel/kind 54 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size macros/back 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size macros/bank 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size macros/knob 60 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size macros/morph 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size macros/save 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size macros/snap 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size macros/target 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size make-phrase/sheet-back 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size make-phrase/sheet-close 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size make-phrase/sheet-keep 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size make-phrase/sheet-row-less 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size make-phrase/sheet-row-more 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size make-style/style-back 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size make-style/style-close 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size make-style/style-keep 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size make-style/style-name 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size make-style/style-plan-less 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size make-style/style-plan-more 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mapcard/button 54 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size midimon/monitor-clear 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size midimon/monitor-hold 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size midimon/monitor-light 18 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size midimon/monitor-port 18 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size midimon/monitor-source 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size midimon/monitor-way 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/add-insert 21 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+size mixer/eq 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/eq-add 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/eq-name 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/field 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/fx 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/fx-add 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/fx-name 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/insert 21 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+size mixer/io-monitor 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/io-name 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/io-output 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/io-section 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/io-source 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-again 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-back 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-clip 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-clip-track 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-clips 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-follow 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-kept 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-loop 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-looper 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-looper-pick 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-mode 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-play 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-play-pick 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-range 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-remove 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-row 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-show 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-show-pick 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-takeover 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/learn-transport 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/look 28 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+size mixer/monitor-clear 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/monitor-hold 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/monitor-kind 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/monitor-light 18 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/monitor-port 18 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/monitor-save 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/monitor-view 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/monitor-way 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/mute 36 performance # 44 x 36 today; the Perform mixer (touch plan A7) makes Perform's MUTE 85 px
+size mixer/next 36 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+size mixer/output 30 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+size mixer/pan 26 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+size mixer/port-all-notes-off 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/port-back 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/port-clock 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/port-delay 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/port-divide 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/port-ignore 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/port-input 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/port-name 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/port-nudge 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/port-profile 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/port-test-note 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/prev 36 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+size mixer/routing-main 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/routing-square 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/routing-swap 22 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/row 56 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size mixer/send 17 normal # 2 mm tall today; moves to a Sends look (touch review, section 2)
+size mixer/send-pre 17 normal # 2 mm tall today; moves to a Sends look (touch review, section 2)
+size mixer/solo 36 performance # 44 x 36 today; the Perform mixer (touch plan A7) makes Perform's SOLO 85 px
+size mixer/strip-name 30 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+size mixer/value 22 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+size mixer/view 36 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+size morph/button 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size morph/crossfader 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size morph/row-down 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size morph/row-up 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/add-part 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/aim-pick 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/button 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/chord-chip 26 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/chord-pick 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/continue-bar 22 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/continue-note 10 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/end 22 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/fit 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/fold-chip 26 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/follow 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/ghost-note 20 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/handle 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/lane 6 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/lane-chip 24 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/lane-edge 10 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/lane-fold 24 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/list-row 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/note 4 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/note-mark 20 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/overview 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/pads-write 26 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/roll 12 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/ruler 22 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/scale-chip 26 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/scale-pick 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/scale-root 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/show-chip 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/show-none 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/show-pick 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/sound-chip 26 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/sound-on 20 normal # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
+size notes/sound-remove 20 normal # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
+size notes/tool-aim 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/tool-cancel 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/tool-done 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/tool-option 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/tracker-row 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size options/back 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size options/row 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size options/row-less 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size options/row-more 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size pad-map/add-layer 42 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size pad-map/base 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size pad-map/done 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size pad-map/layer 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size pad-map/row 50 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size patch-edit/add-zone 24 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size patch-edit/back 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size patch-edit/close 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size patch-edit/copy 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size patch-edit/delete 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size patch-edit/learn-high 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size patch-edit/learn-low 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size patch-edit/name 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size patch-edit/remove 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size patch-edit/row 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size patch-edit/switch 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size patch-edit/zone 24 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size patch-edit/zone-high 14 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size patch-edit/zone-low 14 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size patch-list/close 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size patch-list/edit 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size patch-list/new 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size play-loop/arm 39 normal # the Play page (touch plan A6)
+size play-loop/capture 24 normal # the Play page (touch plan A6)
+size play-loop/group-knob 60 normal # the Play page (touch plan A6)
+size play-loop/group-switch 34 normal # the Play page (touch plan A6)
+size play-loop/layer-mute 39 normal # the Play page (touch plan A6)
+size play-loop/loop 24 normal # the Play page (touch plan A6)
+size play-loop/loop-mute 30 normal # the Play page (touch plan A6)
+size play-loop/loop-solo 30 normal # the Play page (touch plan A6)
+size play-loop/pads-keys 24 normal # the Play page (touch plan A6)
+size play-loop/ring 48 normal # the Play page (touch plan A6)
+size play-transport/keys 52 normal # the Play page (touch plan A6)
+size play-transport/pads 52 normal # the Play page (touch plan A6)
+size play-transport/rec 52 normal # the Play page (touch plan A6)
+size play-transport/view 44 normal # the Play page (touch plan A6)
+size prefs/back 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prefs/button 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prefs/choice 61 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prefs/keep 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prefs/slider 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prefs/stepper 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prefs/steps 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prefs/swatch 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prefs/switch 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prefs/tab 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prf-acts/button 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prf-bar/button 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prf-buttons/button 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prf-list/row 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prf-list/row-less 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prf-list/row-more 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prf-map/bank 50 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prf-page/chip 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prf-pick-a/chip 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prf-pick-b/chip 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prf-type/chip 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size rec-list/close 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size rec-list/switch 56 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size record/row 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size record/row-less 39 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size record/row-more 39 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size record/tab 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size show/back 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size show/cancel 56 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size show/click 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size show/go 56 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size show/lens 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size show/song 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-auto-list/row 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-auto-list/row-less 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-auto-list/row-more 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-bar/layer-chip 22 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-bar/name 60 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-bar/track-kit 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-keep/keep 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-keep/keep-recall 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-overview/overview 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-pads-bar/button 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-pads-bar/kit 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-pads-buttons/button 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-pads-kits/add 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-pads-kits/perform 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-pads-kits/track 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-pads-list/button 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-pads-list/choice 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-pads-list/less 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-pads-list/more 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-pads-map/bank 50 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-pads-put/button 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-pads-sounds/row 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-bar/back 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-bar/name 60 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-env/point 18 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-filter/button 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-keys/zone 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-keys/zone-low 14 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-keys/zone-root 14 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-layers/layer 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-layers/layer-high 16 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-layers/layer-low 16 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-list/button 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-list/choice 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-list/knob 60 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-list/less 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-list/more 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-list/switch 27 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-moves/done 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-moves/jump 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-moves/knob 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-scenes/button 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-scenes/slider 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-sections/chip 56 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-slices/marker 24 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-types/done 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-play-types/slope 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-recall-list/button 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-recall-list/choice 35 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-recall-list/less 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-recall-list/more 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-recorder/less 56 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-recorder/more 56 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-recorder/rec 56 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-region/button 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-region/choice 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-region/knob 56 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-region/less 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-region/more 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-region/pad 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-region/switch 27 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-region/value 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-send/button 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-sound/choice 38 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-tools/tool 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size smp-wave/marker 24 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/add 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/button 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/grip 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/link 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/link-choice 62 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/loop 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/report-done 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/report-undo 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/scene-after 42 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/scene-before 42 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/scene-cell 50 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/scene-delete 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/scene-done 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/scene-foot 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/scene-less 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/scene-more 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/scene-mutes-now 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/scene-name 42 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/scene-row 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/scene-tempo-now 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/step 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/times-less 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/times-more 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song-list/view 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/add-kind 52 normal # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
+size song/add-track 24 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/arm 22 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/audio-header 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/block 21 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/block-end 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/block-start 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/button 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/chord 22 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/chord-button 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/chord-close 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/chord-kind 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/chord-root 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/panel-arm 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/panel-close 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/panel-effects 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/panel-from-less 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/panel-from-more 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/panel-input 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/panel-level-less 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/panel-level-more 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/panel-mix 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/panel-monitor 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/panel-mute 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/panel-pan-less 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/panel-pan-more 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/panel-solo 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/panel-strip 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/panel-takes 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/rec-song 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/region 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/region-button 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/report-done 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/report-undo 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/ruler 26 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/section 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/section-button 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/section-grip 26 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/tempo-button 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/tempo-lane 24 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/tempo-point 19 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/view 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/zoom 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size step-inspector/bank 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size step-inspector/clear 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size step-inspector/close 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size step-inspector/copy 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size step-inspector/join 58 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size step-inspector/off 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size step-inspector/on 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size step-inspector/unlock 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size step-size-card/button 54 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size step-size/row 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps-continue-bars/bar 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps-continue/button 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps-continue/less 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps-continue/more 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps-continue/row 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/arm 39 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/head 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/lane-rows 35 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/length 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/lock 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/lock-lane-off 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/mute 39 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/note 39 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/row-depth 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/row-off 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/rows-add 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/step 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size steps/value 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-pads-head/layout 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-pads-head/play 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-pick/all-banks 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-pick/bank-only 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-pick/cancel 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-pick/keep 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-pick/layer 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-pick/side 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-presets/row 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-tiles/choice 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-tiles/choice-less 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-tiles/choice-more 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-tiles/knob 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-tiles/step-less 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-tiles/step-more 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-tiles/toggle 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-title/gear 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-title/name 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size synth-title/tab 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size systemstatus/card 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size systemstatus/save-report 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size systemstatus/switch 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size systemstatus/system 60 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size takes/button 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size touchlab/button 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size transport/chip 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size transport/mode 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size transport/play 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size transport/rec 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size transport/stop 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size transport/undo 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size ttest/mode 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size ttune/action 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size ttune/row 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size ttune/row-minus 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size ttune/row-plus 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-banner/cancel 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-banner/done 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-bar/xy-bar 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-list/browser 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-list/choice 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-list/close 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-list/new 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-list/yours 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-setup/add 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-setup/curve 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-setup/delete 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-setup/dir-name 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-setup/done 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-setup/foot 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-setup/from 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-setup/name 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-setup/plus 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-setup/row 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-setup/save 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-setup/set 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy-setup/take-off 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size xy/xy 56 normal # the Play page (touch plan A6)
+size xy/xy-chip 32 normal # the Play page (touch plan A6)
