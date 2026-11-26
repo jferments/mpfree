@@ -60,6 +60,64 @@ pub fn of(bytes: &[u8]) -> u32 {
     update(0, bytes)
 }
 
+/// `crc` followed on by `len` zero bytes, as [`update`] would give for
+/// them, in a few dozen steps however long the run: the bytes are never
+/// made. (Feeding zeros is linear in the register, so it is a 32 x 32
+/// matrix over GF(2), squared up to the run's length, as zlib combines
+/// checksums.)
+pub fn zeros(crc: u32, mut len: u64) -> u32 {
+    fn times(mat: &[u32; 32], mut v: u32) -> u32 {
+        let mut sum = 0;
+        let mut i = 0;
+        while v != 0 {
+            if v & 1 != 0 {
+                sum ^= mat[i];
+            }
+            v >>= 1;
+            i += 1;
+        }
+        sum
+    }
+    fn square(mat: &[u32; 32]) -> [u32; 32] {
+        let mut sq = [0u32; 32];
+        for (n, s) in sq.iter_mut().enumerate() {
+            *s = times(mat, mat[n]);
+        }
+        sq
+    }
+    if len == 0 {
+        return crc;
+    }
+    // One zero bit: bit 0 shifts out through the polynomial, the rest down.
+    let mut odd = [0u32; 32];
+    odd[0] = POLY;
+    for (n, o) in odd.iter_mut().enumerate().skip(1) {
+        *o = 1 << (n - 1);
+    }
+    let mut even = square(&odd); // two bits
+    odd = square(&even); // four bits
+    let mut c = !crc;
+    loop {
+        even = square(&odd); // eight bits (a byte) the first time
+        if len & 1 != 0 {
+            c = times(&even, c);
+        }
+        len >>= 1;
+        if len == 0 {
+            break;
+        }
+        odd = square(&even);
+        if len & 1 != 0 {
+            c = times(&odd, c);
+        }
+        len >>= 1;
+        if len == 0 {
+            break;
+        }
+    }
+    !c
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,6 +128,30 @@ mod tests {
         assert_eq!(of(b"123456789"), 0xE306_9283);
         assert_eq!(of(&[0u8; 32]), 0x8A91_36AA);
         assert_eq!(of(&[0xFFu8; 32]), 0x62A8_AB43);
+    }
+
+    #[test]
+    fn zeros_match_feeding_them() {
+        for start in [0u32, 1, 0xE306_9283, 0xFFFF_FFFF] {
+            for len in [0u64, 1, 2, 3, 7, 8, 9, 63, 64, 65, 4096, 65_536, 100_003] {
+                assert_eq!(
+                    zeros(start, len),
+                    update(start, &vec![0u8; len as usize]),
+                    "start {start:#x}, {len} zeros"
+                );
+            }
+        }
+        assert_eq!(zeros(0, 32), 0x8A91_36AA);
+        // A run longer than memory would hold, in pieces.
+        let big = 3 * (1u64 << 32) + 12_345;
+        let mut c = 0;
+        let mut left = big;
+        while left > 0 {
+            let n = left.min(1 << 31);
+            c = zeros(c, n);
+            left -= n;
+        }
+        assert_eq!(zeros(0, big), c);
     }
 
     #[test]

@@ -49,7 +49,7 @@
 //! then can allocate a block of the channel, as in the looper's host. A
 //! period with nothing under way sends nothing.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::Duration;
@@ -243,6 +243,10 @@ enum ToWorker {
         dir: PathBuf,
         cfg: WriterConfig,
     },
+    /// The drive takes record on went: every take in flight there carries
+    /// on in `dir`, and takes record there from now on
+    /// ([`crate::files::Files::carry_on`]).
+    CarryOn(PathBuf),
     /// The tracks' requests about the files ([`crate::Io`]), with what the
     /// worker needs to act on them.
     Arm {
@@ -553,6 +557,12 @@ pub struct AudioHost {
     watch: Watch,
     /// Reports for System status that found no room (taken too slowly).
     pub problems_lost: u64,
+    /// The card last opened at each folder ([`AudioHost::own_device`]),
+    /// and the one the takes' folder is on, if it is on one: once that one
+    /// goes, takes in flight carry on where they are told to record next
+    /// ([`AudioHost::record_to`]).
+    cards: Vec<Arc<dyn CardHandle>>,
+    work_card: Option<Arc<dyn CardHandle>>,
 }
 
 /// Why [`AudioHost::import`] could not take a sound.
@@ -609,6 +619,8 @@ impl AudioHost {
             },
             watch: Watch::new(),
             problems_lost: 0,
+            cards: Vec::new(),
+            work_card: None,
             fits: 0,
             fits_failed: 0,
             fit_copy: false,
@@ -793,9 +805,22 @@ impl AudioHost {
     /// written (to the folder before: copied out, or Recording or Saving
     /// as the writer last said) or a loop layer's file is, while a save
     /// runs, or with no worker.
+    ///
+    /// But once the SD card the takes record on has gone (taken out, or
+    /// closed: its opening revoked, the SD card plan's B2c), nothing waits:
+    /// every take in flight there, recording or not, carries on in `dir`
+    /// with the same writer (`cfg` is not used), what it committed on the
+    /// card left there ([`crate::files::Files::carry_on`]), and plays from
+    /// its file in `dir` once it is there ([`FileEvent::CarriedOn`]).
     pub fn record_to(&mut self, dir: PathBuf, cfg: WriterConfig) -> Result<(), PathBuf> {
         if self.tx.is_none() {
             return Err(dir);
+        }
+        let gone = self.work_card.as_ref().is_some_and(|c| !c.valid());
+        if self.tracks.records_to_files() && gone {
+            self.work_card = self.card_for(&dir);
+            self.send(ToWorker::CarryOn(dir));
+            return Ok(());
         }
         if self.tracks.records_to_files() {
             // Another folder: nothing may be in flight in the one before,
@@ -814,8 +839,18 @@ impl AudioHost {
         if !self.tracks.files(true) {
             return Err(dir);
         }
+        self.work_card = self.card_for(&dir);
         self.send(ToWorker::Files { dir, cfg });
         Ok(())
+    }
+
+    /// The card opening that holds `dir`, if one does and still holds.
+    /// Does not allocate.
+    fn card_for(&self, dir: &Path) -> Option<Arc<dyn CardHandle>> {
+        self.cards
+            .iter()
+            .find(|c| c.valid() && dir.starts_with(c.root()))
+            .cloned()
     }
 
     /// Track `track`'s name for its next takes' files (see
@@ -985,7 +1020,9 @@ impl AudioHost {
     /// while `card` holds, and those that went with an earlier opening
     /// open again. The same opening given again changes nothing.
     /// Allocates the message: between periods.
-    pub fn own_device(&self, card: Arc<dyn CardHandle>) {
+    pub fn own_device(&mut self, card: Arc<dyn CardHandle>) {
+        self.cards.retain(|c| c.root() != card.root());
+        self.cards.push(Arc::clone(&card));
         self.send(ToWorker::Device(card));
     }
 
@@ -1890,8 +1927,12 @@ impl AudioHost {
                 let ours = self.tracks.take(take).is_some_and(|t| t.rec == rec);
                 if growing {
                     // A recording's file as it is written: its memory goes
-                    // back as the file holds it.
-                    if ours && self.tracks.file_frames(take) == Some(0) {
+                    // back as the file holds it. One already on a file
+                    // that went (its card): it carried on in another
+                    // folder, and plays from its file there from now on.
+                    if ours && self.tracks.file_gen(take).is_some_and(|g| g != gen) {
+                        self.tracks.command(Command::Refile { take, rec, gen });
+                    } else if ours && self.tracks.file_frames(take) == Some(0) {
                         self.tracks.command(Command::OnFile {
                             take,
                             rec,
@@ -2039,6 +2080,13 @@ impl AudioHost {
     /// What the worker said about a file.
     fn heard(&mut self, said: Said) {
         match said {
+            Said::CarriedOn { rec, hole } => {
+                if let Some(t) = self.tracks.take_of(rec).and_then(|id| self.tracks.take(id)) {
+                    let hole_s = hole as f32 / self.tracks.rate() as f32;
+                    let track = t.track;
+                    self.event(FileEvent::CarriedOn { track, hole_s });
+                }
+            }
             Said::Ready(rec) => {
                 for a in self.files.armed.iter_mut().flatten() {
                     if a.0 == rec {
@@ -2921,6 +2969,18 @@ impl Worker {
                 self.cards.push(card);
                 return None;
             }
+            ToWorker::CarryOn(dir) => match files.carry_on(dir) {
+                Ok(_) => {
+                    if let Some(st) = &self.stream {
+                        if let Some(d) = files.work_dir() {
+                            self.work_gate = Some(st.gate_for(d));
+                        }
+                    }
+                    self.look_at_drive(done);
+                    return None;
+                }
+                Err(e) => FromWorker::FilesFailed(e.to_string()),
+            },
             ToWorker::Files { dir, cfg } => {
                 let gate = self
                     .stream
