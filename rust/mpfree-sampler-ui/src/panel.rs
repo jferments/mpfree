@@ -628,8 +628,10 @@ impl Panel {
 }
 
 /// What a finger on a panel is doing: dragging the knob of `row` (from
-/// `from`, the last step's place), or resting on a typed value, whose
-/// number pad opens when it lifts (`from` unused).
+/// `from`, the last step's place), dragging a slider (`from`: how far
+/// right of the handle the finger landed, so the handle follows the finger
+/// from there and landing moves nothing, layout spec 1a), or resting on a
+/// typed value, whose number pad opens when it lifts (`from` unused).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Drag {
     pub finger: u64,
@@ -660,7 +662,7 @@ pub fn touch(
                         .place(r, controls)
                         .into_iter()
                         .find(|p| p.row == row)?;
-                    return Some(EventKind::Value(p.slide_at(x)));
+                    return Some(EventKind::Value(p.slide_at(x - d.from)));
                 }
                 _ => return None,
             };
@@ -737,17 +739,17 @@ pub fn touch(
             }
         }
         Look::Toggle(_) => Some(EventKind::Step { index: k, delta: 1 }),
-        Look::Slider { .. } => {
+        Look::Slider { pos } => {
             if !p.control.contains(x, y) {
                 return Some(EventKind::Select(k));
             }
             *drag = Some(Drag {
                 finger,
                 row: k,
-                from: x,
+                from: x - p.handle_x(*pos),
                 typing: false,
             });
-            Some(EventKind::Value(p.slide_at(x)))
+            Some(EventKind::Select(k))
         }
         Look::Button(_) | Look::Primary(_) => {
             if p.control.contains(x, y) {
@@ -1219,5 +1221,36 @@ pub fn paint(
             };
             cx.canvas.stroke_round_rect(ring, t.round(12), 1, t.accent);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A slider follows the finger from where it lands (layout spec 1a):
+    /// landing anywhere on it moves nothing, and a drag moves the handle
+    /// as far as the finger goes.
+    #[test]
+    fn a_slider_follows_the_finger_from_where_it_lands() {
+        let panel = Panel {
+            sections: vec![Section::new("Scenes", 1, vec![vec![Item::new(0)]])],
+        };
+        let controls = vec![Control::new(Look::Slider { pos: 0.5 })];
+        let r = Rect::new(0, 0, 400, 200);
+        let p = panel.place(r, &controls).remove(0);
+        let (x0, x1) = p.slide();
+        let y = p.control.y + p.control.h / 2;
+        let mut drag = None;
+        let mut touch = |phase, x| touch(&panel, &controls, &[], &mut drag, (1, phase, x, y), r);
+        // Landing near the left end: no jump, only the row picked.
+        assert_eq!(touch(Touch::Down, x0 + 2), Some(EventKind::Select(0)));
+        let quarter = (x1 - x0) / 4;
+        let Some(EventKind::Value(v)) = touch(Touch::Move, x0 + 2 + quarter) else {
+            panic!("a value");
+        };
+        assert!((v - 0.75).abs() < 0.01, "{v}");
+        assert_eq!(touch(Touch::Move, x1 + 400), Some(EventKind::Value(1.0)));
+        assert_eq!(touch(Touch::Up, x1), None);
     }
 }

@@ -306,8 +306,10 @@ pub struct LoopDeck {
     /// and its card while the finger is over the deck.
     pub drag: Option<LayerDrag>,
     press: Option<RingPress>,
-    /// A finger on a level bar: its loop.
-    levelling: Option<(u64, usize)>,
+    /// A finger on a level bar: its loop, where it landed (y) and the
+    /// level's place on the bar then. The level follows the finger from
+    /// there (layout spec 1a): landing moves nothing.
+    levelling: Option<(u64, usize, i32, f32)>,
     drawn: RefCell<Option<Drawn>>,
     acts: Vec<LoopAct>,
 }
@@ -424,12 +426,6 @@ impl LoopDeck {
                     .is_some_and(|d| d.lit.contains(&DropTo::Loop(i))),
             })
             .collect()
-    }
-
-    /// The level a finger at height `y` on level bar `p` points to.
-    fn level_at(p: &ChannelParts, y: i32) -> f32 {
-        let f = (p.level.bottom() - y) as f32 / p.level.h.max(1) as f32;
-        level_of_frac(f)
     }
 }
 
@@ -1223,11 +1219,9 @@ impl Widget for LoopDeck {
                     return Some(EventKind::Toggle(i));
                 }
                 if state.has_sound() && p.level_hit.contains(x, y) {
-                    self.levelling = Some((finger, i));
-                    let level = LoopDeck::level_at(&p, y);
-                    self.channels[i].level = level;
-                    self.acts.push(LoopAct::Level(i, level));
-                    return Some(EventKind::Value(level));
+                    let at = level_frac(self.channels[i].level);
+                    self.levelling = Some((finger, i, y, at));
+                    return None;
                 }
                 if p.ring.inset(-4).contains(x, y) {
                     // On the press: a punch is where it was played.
@@ -1250,10 +1244,10 @@ impl Widget for LoopDeck {
                 None
             }
             Touch::Move => {
-                if let Some((f, i)) = self.levelling.filter(|l| l.0 == finger) {
+                if let Some((_, i, from, at)) = self.levelling.filter(|l| l.0 == finger) {
                     let p = LoopDeck::parts(r, i, n);
-                    let level = LoopDeck::level_at(&p, y);
-                    let _ = f;
+                    let f = at + (from - y) as f32 / p.level.h.max(1) as f32;
+                    let level = level_of_frac(f.clamp(0.0, 1.0));
                     if (level - self.channels.get(i)?.level).abs() < 1e-4 {
                         return None;
                     }
@@ -1379,13 +1373,19 @@ mod tests {
         d.touch(1, Touch::Down, p.name.x + 30, p.name.y + 10, r);
         d.touch(2, Touch::Down, p.mute.x + 20, p.mute.y + 10, r);
         assert_eq!(d.take(), vec![LoopAct::Pick(0), LoopAct::Mute(0)]);
+        // The level follows the finger from where it lands: landing at the
+        // top of the bar moves nothing, a drag down a quarter of the bar
+        // turns it down, and one past the bottom to silence.
         let x = p.level_hit.x + 10;
-        d.touch(3, Touch::Down, x, p.level.y, r);
-        d.touch(3, Touch::Move, x, p.level.bottom(), r);
+        let start = d.channels[0].level;
+        assert_eq!(d.touch(3, Touch::Down, x, p.level.y, r), None);
+        assert!(d.take().is_empty(), "landing moves nothing");
+        d.touch(3, Touch::Move, x, p.level.y + p.level.h / 4, r);
+        d.touch(3, Touch::Move, x, p.level.bottom() + p.level.h, r);
         d.touch(3, Touch::Up, x, p.level.bottom(), r);
         let acts = d.take();
         assert!(
-            matches!(acts.first(), Some(LoopAct::Level(0, l)) if *l > 1.9),
+            matches!(acts.first(), Some(LoopAct::Level(0, l)) if *l < start && *l > 0.0),
             "{acts:?}"
         );
         assert!(

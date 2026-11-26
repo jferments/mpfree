@@ -9395,9 +9395,12 @@ impl TimePage {
             params: m.params,
             reload: focus.is_some_and(|f| st.saved.contains(&f)),
             reload_waiting: focus.is_some_and(|f| st.reload_waiting(f)),
+            ..MorphBar::default()
         };
         if ui.get::<MorphBar>(MORPH).is_some_and(|b| *b != bar) {
             if let Some(b) = ui.get_mut::<MorphBar>(MORPH) {
+                let mut bar = bar;
+                bar.sliding.keep(&mut b.sliding);
                 *b = bar;
             }
         }

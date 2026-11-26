@@ -1374,8 +1374,9 @@ pub struct StepGrid {
     swipe: Option<Swipe>,
     /// A finger on a lock's cell: a tap until it moves, then it turns.
     drag: Option<LockDrag>,
-    /// A finger on a mod row's depth bar, and its row, until it lifts.
-    depth_drag: Option<(u64, usize)>,
+    /// A finger on a mod row's depth bar, its row, where it landed (x)
+    /// and the depth then, until it lifts.
+    depth_drag: Option<(u64, usize, i32, f32)>,
     /// A finger drawing on a Velocity or Chance lane (refactor D3).
     stroke: Option<ValueStroke>,
     /// The last stroke's changes, for the app to take on
@@ -2881,11 +2882,12 @@ fn paint_rows(cx: &mut PaintCx, open: &LaneRows, rg: &RowsGeom) {
     );
 }
 
-/// A finger at `x` on a mod row's depth bar: its depth, -1 to 1 from the
-/// middle, in hundredths (as the chain editor's).
-fn depth_at(bar: Rect, x: i32) -> f32 {
-    let t = (x - bar.x) as f32 / bar.w.max(1) as f32;
-    ((t * 2.0 - 1.0).clamp(-1.0, 1.0) * 100.0).round() / 100.0
+/// A mod row's depth after a finger moved `dx` along its bar from where
+/// it landed with the depth at `d0`: -1 to 1 from the middle, the bar's
+/// width the whole range, in hundredths (as the chain editor's).
+fn depth_moved(bar: Rect, d0: f32, dx: i32) -> f32 {
+    let d = d0 + 2.0 * dx as f32 / bar.w.max(1) as f32;
+    (d.clamp(-1.0, 1.0) * 100.0).round() / 100.0
 }
 
 impl Widget for StepGrid {
@@ -3554,8 +3556,9 @@ impl StepGrid {
     }
 
     /// A finger on the mod rows while they're open: a row's × takes it
-    /// off, its bar sets its depth (and follows the finger), + LFO adds
-    /// one; a finger anywhere else closes them and does nothing more.
+    /// off, a drag along its bar sets its depth (from where the finger
+    /// lands, so landing moves nothing: layout spec 1a), + LFO adds one; a
+    /// finger anywhere else closes them and does nothing more.
     fn rows_touch(
         &mut self,
         rg: &RowsGeom,
@@ -3564,17 +3567,16 @@ impl StepGrid {
         x: i32,
         y: i32,
     ) -> Option<EventKind> {
-        let depth = |k: usize, bar: Rect| EventKind::Step {
-            index: LANE_ROWS + k,
-            delta: (depth_at(bar.inset_xy(4, 0), x) * 100.0).round() as i32,
-        };
-        if let Some((finger, k)) = self.depth_drag.filter(|(finger, _)| *finger == f) {
+        if let Some((_, k, x0, d0)) = self.depth_drag.filter(|d| d.0 == f) {
             if matches!(phase, Touch::Up | Touch::Cancel) {
                 self.depth_drag = None;
                 return None;
             }
-            let _ = finger;
-            return rg.rows.get(k).map(|(_, bar, _)| depth(k, *bar));
+            let (_, bar, _) = rg.rows.get(k)?;
+            return Some(EventKind::Step {
+                index: LANE_ROWS + k,
+                delta: (depth_moved(bar.inset_xy(4, 0), d0, x - x0) * 100.0).round() as i32,
+            });
         }
         if phase != Touch::Down {
             return None;
@@ -3587,8 +3589,13 @@ impl StepGrid {
                 return Some(EventKind::Toggle(LANE_ROWS + k));
             }
             if bar.contains(x, y) {
-                self.depth_drag = Some((f, k));
-                return Some(depth(k, *bar));
+                let d0 = self
+                    .rows_open
+                    .as_ref()
+                    .and_then(|o| o.rows.get(k))
+                    .map_or(0.0, |r| r.1);
+                self.depth_drag = Some((f, k, x, d0));
+                return None;
             }
         }
         let can_add = self.rows_open.as_ref().is_some_and(|o| o.can_add);

@@ -3036,11 +3036,14 @@ mod tests {
         ui.touch(1, Touch::Down, kx as i32, ky as i32);
         ui.touch(1, Touch::Move, kx as i32, ky as i32 - 30);
         ui.touch(1, Touch::Up, kx as i32, ky as i32 - 30);
-        tap(
-            &mut ui,
-            l.slider.x + l.slider.w / 2,
-            l.slider.y + l.slider.h / 2,
-        );
+        // The morph's slider follows the finger from where it lands: a
+        // drag a quarter of the way along moves it a quarter.
+        let morph0 = ui.get::<MacrosView>(crate::MACROS_W).unwrap().state().morph;
+        let (sx, sy) = (l.slider.x + l.slider.w / 2, l.slider.y + l.slider.h / 2);
+        let quarter = l.slider.inset_xy(18, 0).w / 4;
+        ui.touch(2, Touch::Down, sx, sy);
+        ui.touch(2, Touch::Move, sx + quarter, sy);
+        ui.touch(2, Touch::Up, sx + quarter, sy);
         tap(&mut ui, l.save[1].x + 4, l.save[1].y + 4);
         tap(&mut ui, l.banks[1].x + 4, l.banks[1].y + 4);
         let acts = crate::take_macro_actions(&mut ui);
@@ -3050,7 +3053,10 @@ mod tests {
         );
         // Lifting the finger lets the knob go.
         assert_eq!(acts[1], MacroAction::Release(1));
-        assert!(matches!(acts[2], MacroAction::Morph(p) if (p - 0.5).abs() < 0.05));
+        assert!(
+            matches!(acts[2], MacroAction::Morph(p) if (p - morph0 - 0.25).abs() < 0.02),
+            "{acts:?}"
+        );
         assert_eq!(acts[3], MacroAction::Capture(1));
         assert_eq!(acts[4], MacroAction::Bank(1));
         // Back closes the panel; a target row opens its editor.

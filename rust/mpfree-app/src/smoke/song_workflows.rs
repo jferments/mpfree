@@ -1394,9 +1394,9 @@ mod tests {
             // Across to B: Bloom's.
             slide(s, fader.target.rect.w);
             assert!(level(s).abs() < 0.5, "at Bloom: {}", level(s));
-            // Half way: in between.
-            // The finger down on the middle of the track (and kept there).
-            slide(s, 1);
+            // Half way: in between. The crossfader follows the finger from
+            // where it lands (layout spec 1a), so half the track back from B.
+            slide(s, -fader.target.rect.w / 2);
             let mid = level(s);
             assert!(mid < -0.5 && mid > -17.5, "half way: {mid}");
         });
