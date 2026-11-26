@@ -1736,6 +1736,21 @@ impl OptionList {
         ))
     }
 
+    /// Where a note that [`OptionNote::picks`] answers: its whole room
+    /// over the buttons, from 8 px under the last row in view (spec 1a's
+    /// dead gap). A row of the list's selection, as its rows are: Dense,
+    /// with the wheel to pick it.
+    fn note_hit(&self, r: Rect) -> Option<Rect> {
+        let n = self.note_rect(r)?.inset_xy(0, -6);
+        let under = (0..self.rows.len())
+            .filter_map(|k| self.row_rects(r, k))
+            .map(|(row, _)| row.bottom() + 8)
+            .max()
+            .unwrap_or(n.y);
+        let top = n.y.max(under);
+        Some(Rect::new(n.x, top, n.w, n.bottom() - top))
+    }
+
     fn visible(&self, r: Rect) -> usize {
         (self.body(r).h / OPTION_H).max(0) as usize
     }
@@ -2251,10 +2266,11 @@ impl Widget for OptionList {
             out.push(Target::tap("row-less", k, format!("{name} ‹"), less));
             out.push(Target::tap("row-more", k, format!("{name} ›"), more));
         }
-        if let (Some(n), Some(nr)) = (&self.note, self.note_rect(r)) {
+        if let (Some(n), Some(nr)) = (&self.note, self.note_hit(r)) {
             if n.picks {
                 out.push(
                     Target::tap("note", self.rows.len(), n.lead.clone(), nr)
+                        .class(crate::touch::Class::Dense)
                         .disabled_if(self.note_picked()),
                 );
             }
@@ -2339,11 +2355,7 @@ impl Widget for OptionList {
             let b = &self.buttons[i];
             return (b.enabled || b.explains).then_some(EventKind::Toggle(i));
         }
-        if self.note_picks()
-            && self
-                .note_rect(r)
-                .is_some_and(|n| n.inset_xy(0, -6).contains(x, y))
-        {
+        if self.note_picks() && self.note_hit(r).is_some_and(|n| n.contains(x, y)) {
             // The note, picked as a row past the last.
             self.selected = self.rows.len();
             return Some(EventKind::Select(self.rows.len()));
@@ -2844,6 +2856,14 @@ mod tests {
         );
         assert_eq!(o.picks(), 4);
         let n = o.note_rect(r).unwrap();
+        // It answers over its room, Dense (a row of the list's selection),
+        // 8 px under the last row (spec 1a).
+        let t = o.targets(r).into_iter().find(|t| t.id == "note").unwrap();
+        assert_eq!(t.needed_class(), crate::touch::Class::Dense);
+        assert!(t.short_side() >= 44, "{:?}", t.rect);
+        let (last, _) = o.row_rects(r, 2).unwrap();
+        assert!(t.rect.y - last.bottom() >= 8, "{:?} {last:?}", t.rect);
+        assert!(t.rect.contains(n.x, n.y) && t.rect.contains(n.right() - 1, n.bottom() - 1));
         assert_eq!(
             o.touch(1, Touch::Down, n.x + 10, n.y + 4, r),
             Some(EventKind::Select(3))
