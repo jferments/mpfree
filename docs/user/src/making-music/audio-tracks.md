@@ -67,15 +67,24 @@ An empty audio cell is drawn dashed; a tap on it says how to fill it.
 
 {{shot: arrange-clips-audio-cells | Audio clips at 92 BPM: Hook vox playing, Ad libs and Outro waiting to start, Riff made at 120, Solo missing its audio, Intro still ringing past its stop, and Amen not ready.}}
 
-**What a cell says.** Each audio cell shows the clip's name and a small wave of one pass. Playing, the wave lights up to the playhead. Under the name, in the wave's place while the clip is stopped or waiting, a word says what matters, and a tap on the cell says it in full on the hint line:
+**What a cell says.** Each audio cell shows the clip's name and a small wave of one pass. Playing, the wave lights up to the playhead. Under the name, in the wave's place while the clip is stopped or waiting (and while it plays, for the words about its tempo), a word says what matters, and a tap on the cell says it in full on the hint line:
 
 | Word | What it means |
 |---|---|
 | **from 17.1** (amber) | Launched: it starts at bar 17. |
 | **waits 18.1** (amber) | Its audio is still loading from the drive, so it starts a little later, on bar 18, in time with the bar. |
-| **made at 120** (amber) | It was made at 120 BPM and the project plays at another tempo, so each pass leaves a gap or cuts its end off. **Fit to tempo** on the Clip tab fixes it (below). |
-| **not ready** (red) | Its audio couldn't be loaded in time, so the launch was cancelled. Tap it to try again. |
+| **made at 120** (amber) | It was made at 120 BPM, its **Tempo** is **Off**, and the project plays at another tempo, so each pass leaves a gap or cuts its end off. **Repitch** or **Stretch** on the Clip tab keeps it on the bars (below). |
+| **not ready** (red) | Its audio couldn't be loaded in time, or on **Stretch** with **Until ready** set to **keep pitch** its copy wasn't made in time, so the launch was cancelled. Tap it to try again. |
 | **missing** (red) | A recording it plays wasn't found when the project opened. It can't play. |
+| **copy 40 %** (blue, a line filling along its foot) | On **Stretch**, its copy for the tempo now is being made (0 % while it waits its turn behind others). |
+| **waits copy** (amber) | Launched on **Stretch**, it moved to a later line to wait for its copy. On **on time** it starts there anyway, on Repitch if the copy still isn't ready; on **keep pitch** it is cancelled rather than start out of pitch. |
+| **repitch now** (amber) | Playing on **Stretch** before its copy was ready, so this pass plays faster and higher (or slower and lower), like tape. Its own pitch comes back at the start of its next pass once the copy is ready. |
+| **rejoins 9.1** (amber) | On **keep pitch**, the tempo changed while it played: it plays on in its own pitch, off the bars, and comes back onto them at bar 9 once its new copy is ready (it says **copy 40 %** until then). |
+| **too fast** (red) | It would play more than 4 times its speed at this tempo, so it's silent. Check the tempo it was made at on the Clip tab. |
+
+{{shot: arrange-clips-audio-copies | Audio clips at 92 BPM following the tempo: Hook vox playing Repitch until its copy is made, Riff rejoining the bars at bar 17, Outro's copy 40 % made, Amen waiting for its copy, Intro not ready, Pad wash too fast.}}
+
+A clip on **Stretch** that plays its copy, or any clip at its own tempo, shows its wave and no word. If a copy couldn't be made (there was no room for it), the clip plays Repitch; its cell has no word, and a tap on it says so.
 
 A clip set to play **once** shows its playhead dimmed while its sound rings on after its track stopped, so the grid never looks silent while you hear it. In Perform the cell's foot gives its length ("2 bars"), or a once clip's time ("3:17 once").
 
@@ -97,11 +106,13 @@ With **Rec song** on, an audio clip you launch goes into the song as a block on 
 
 Arm an audio track (its name on the grid, or its arm dot on the Song view) and the Record panel's **Clip** tab shows its playing clip, else its first, until you arm a note track again.
 
-{{shot: arrange-clips-audio-card | The Clip tab for Riff, made at 120 BPM in a project at 92: its rows, the gap it leaves each pass, and Fit to tempo.}}
+{{shot: arrange-clips-audio-card | The Clip tab for Riff, made at 120 BPM in a project at 92, on Off: its rows, the gap it leaves each pass, and From its length.}}
 
 | Row | What it does |
 |---|---|
 | **Length** | A loop's length in bars and beats. **-** and **+** step a beat, **SHIFT** a bar. Shorter, the clip stops its sound there; longer again, what was cut comes back, and past its sound it is silent. A once clip shows its time (3:17) and doesn't step. |
+| **Tempo** | What the clip does when the song plays at another tempo than its audio was made at. **Off**: as recorded, each pass at its own speed from its start (so it can leave a gap or cut its end). **Repitch**: on its bars, faster and higher (or slower and lower), like tape. **Stretch**: on its bars at its own pitch, from a copy of its audio made for that tempo. If nothing says what tempo its audio was made at, it stays **Off** until you set it (below). |
+| **Until ready** | Only with **Stretch** (otherwise "—"): what the clip does while its copy for a new tempo is still being made. **on time** (the default) plays it **Repitch** meanwhile, on the bars, and it comes back to its own pitch at the start of its next pass. **keep pitch** never plays it off pitch: a launch waits for its copy, for 2 launch lines at most, then is cancelled; a clip already playing when the tempo changes plays on in pitch and rejoins the bars on the next bar line once its copy is ready. |
 | **Mode** | **Restart**, **Legato** or **Once**: as for a clip of notes. A once clip plays its sound to the end. |
 | **Launch**, **Follow**, **After** | As for a clip of notes. |
 | **Gain** | The clip's own level, from off to +12 dB, in 0.5 dB steps (**SHIFT**: 0.1 dB), on top of each region's gain. |
@@ -109,7 +120,20 @@ Arm an audio track (its name on the grid, or its arm dot on the Song view) and t
 
 Each row you turn is one step **UNDO** takes back.
 
-**Fit to tempo.** Under the rows, two lines say the tempo the clip was made at and what that means at the project's tempo ("Made at 120 BPM: at 92 a 1.2 s gap each pass"). **Fit to tempo** makes a copy of its audio stretched to the project's tempo, keeping the pitch, and the clip plays the copy. It takes a moment ("Fitting… 40 %") and you can keep working; then it is one step **UNDO** takes back, to the clip as it was. The song keeps the original recordings. The button is grey when the clip is already at the project's tempo, and for a once clip, which plays to its end at any tempo; a tap then says why.
+**The tempo it was made at.** Under the rows, two lines say the tempo the clip's audio was made at and what its **Tempo** does with it at the tempo now:
+
+- "Made at 120 BPM" over "Stretch: the same pitch at 92" or "Repitch: 4.6 semitones down" (green).
+- On **Off**, "Made at 120 BPM:" over "at 92 a 1.2 s gap each pass" (amber).
+- While its copy is being made, "Making its copy: 40 %" over "Repitch for now: 4.6 down" (on time) or "Waits for its copy" (keep pitch), with a line filling under them. You can keep working; it is made in the background.
+- "Made at 120 and 100 BPM" for a clip made of two takes recorded at different tempos: each part keeps its own, so both play on their beats.
+- "Made at: not known" (amber) when nothing says, such as a take recorded while the tempo changed.
+- Faster than 4 times its own speed, a clip on **Repitch** or **Stretch** is silent, and the lines say so in red.
+
+{{shot: arrange-clips-audio-stretch | Riff on Stretch at 92 BPM while its copy is made: Repitch for now, 4.6 semitones down.}}
+
+**Setting it.** Tap the two lines to pick them: the wheel then sets the tempo the audio was made at, 0.1 BPM a step (**SHIFT**: 1), and **-** and **+** do the same. **From its length**, the button under them, works it out from the clip's length in bars instead: a 2-bar loop whose sound lasts 4 seconds was made at 120 BPM. Either is one step **UNDO** takes back. From its length is grey for a once clip, for a clip made of takes at two tempos, and when the clip's length already fits its sound; a tap then says why.
+
+{{shot: arrange-clips-audio-made-at | The two lines picked: the wheel sets the tempo Riff was made at.}}
 
 ## The track panel
 
@@ -143,7 +167,7 @@ If the sound you picked goes away (its channel is taken out of the mix), the tra
 
 ## Editing regions
 
-Tap a region to pick it. The buttons along the bottom become **Split**, **Erase**, **Fades**, **Gain**, **Takes** and **To a cell** for that region; tap empty space to go back to the song's own buttons. (**To a cell** makes the region an audio clip: see [Audio clips](#audio-clips).)
+Tap a region to pick it. The buttons along the bottom become **Split**, **Erase**, **Fades**, **Gain**, **Tempo**, **Takes** and **To a cell** for that region; tap empty space to go back to the song's own buttons. (**To a cell** makes the region an audio clip: see [Audio clips](#audio-clips). **Tempo** is below: [A region's tempo](#a-regions-tempo).)
 
 - **Split** cuts the region at the playhead, so put the playhead inside it first. Nothing you hear changes: a fade the cut goes through carries on across it, each part showing its share of the slope.
 - **Erase** takes the region out.
@@ -151,6 +175,24 @@ Tap a region to pick it. The buttons along the bottom become **Split**, **Erase*
 - **Gain** and **Fades** are on the Q-Links. While a region is picked, the four knobs turn the track's **Level** (Q1) and **Pan** (Q2), which are its mixer strip's, and the region's **Gain** (Q3) and **Fades** (Q4, the fade in and the fade out together). Hold **SHIFT** for fine steps. A fade shows as a slope on the region. On a part cut from a longer region (by **Split**, a punch in, or moving the song's bars), the fades you set are its own, at its own ends.
 - **UNDO** takes back the last region change, and **SHIFT + UNDO** redoes what UNDO took back, as long as region changes are what you did last. After anything else (To a cell, a clip changed) UNDO takes that back first.
 - **Moving a section, + Bar and Delete bars** on the Song view move the regions with the song (see [Audio in the song](arranging.md#audio-in-the-song)). **UNDO** takes such an edit back with the song, after any region changes made since, and **SHIFT + UNDO** puts it back.
+
+### A region's tempo
+
+A region on the song plays as it was recorded: if you change the song's tempo, a region longer than a beat or two drifts off the bars. Like an audio clip (see [The Clip tab for an audio clip](#the-clip-tab-for-an-audio-clip)), a region can follow the tempo instead, each region with its own setting.
+
+Pick the region and tap **Tempo**. A small card opens over the lanes with the region's name, take and bars, and three rows:
+
+| Row | What it does |
+|---|---|
+| **Tempo** | **Off**: as recorded. **Repitch**: on its bars, faster and higher (or slower and lower), like tape. **Stretch**: on its bars at its own pitch, from a copy of its audio made for the song's tempo there. Repitch and Stretch need the tempo it was made at (the third row). |
+| **Until ready** | Only with **Stretch** (otherwise "—"): **on time** plays it Repitch while its copy is made; **keep pitch** never plays it off pitch: through a tempo change it plays on in its own pitch, off the bars, and rejoins them once its copy is ready. |
+| **Made at** | The tempo its audio was made at: its take's, or "not known" (amber), for instance a take recorded while the tempo changed. |
+
+Under the rows a line says what it does at the song's tempo there ("Stretch: the same pitch at 92", "Repitch: 4.6 semitones down", "Off: off the bars at 92", or "Making its copy: 40 %" while its copy is made). The wheel picks a row, and **-** and **+** change it (**SHIFT**: **Made at** a whole BPM); you can also tap a row's **‹** and **›**. **From its length** sets **Made at** from the region's length in whole bars: a region 4.1 bars long at 120 BPM was made at 117.1, so it fills exactly 4 bars. Each change is one step **UNDO** takes back. Tap **Tempo** again, or anywhere off the card, to close it.
+
+{{shot: arrange-song-region-tempo | The vocal's take 2 at 92 BPM: made at 120, on Stretch, its card open. The guitar's recording on Repitch carries its tag.}}
+
+A region on **Repitch** or **Stretch** carries a small tag after its name. **Split**, **Takes** and **To a cell** keep a region's setting: a part comped from another take keeps the setting of what it plays over, at its own take's tempo.
 
 ## Comping with take lanes
 

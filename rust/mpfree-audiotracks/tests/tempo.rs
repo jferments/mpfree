@@ -531,3 +531,48 @@ fn a_take_recorded_across_a_tempo_change_has_no_one_tempo_and_plays_off() {
     assert_eq!(r.follow, FollowTempo::Repitch);
     assert_eq!(r.per_tick(RATE), None, "so it plays Off");
 }
+
+#[test]
+fn a_split_and_a_comp_keep_a_regions_tempo_setting_the_comp_at_its_takes_tempo() {
+    use FollowTempo::Stretch;
+    let s = Region {
+        keep_pitch: true,
+        ..region(0, 0, 4 * BAR, 0, Stretch, 120.0)
+    };
+    let takes = vec![clicks(0, 0, 120.0, 16), clicks(1, 0, 100.0, 16)];
+    let mut r = Rig::new(120.0, takes, vec![s]);
+    let shape = |r: &Rig| -> Vec<(i64, u16, FollowTempo, bool, f64)> {
+        r.a.regions(0)
+            .iter()
+            .map(|g| (g.start, g.take, g.follow, g.keep_pitch, g.bpm))
+            .collect()
+    };
+    assert!(r.a.command(A::Split {
+        track: 0,
+        at: 2 * BAR
+    }));
+    r.run(START + 512);
+    assert_eq!(
+        shape(&r),
+        [
+            (0, 0, Stretch, true, 120.0),
+            (2 * BAR, 0, Stretch, true, 120.0)
+        ]
+    );
+    // Takes: the comp plays take 1 on its own tempo, with the setting of
+    // what it plays over.
+    assert!(r.a.command(A::Comp {
+        take: 1,
+        from: BAR,
+        to: 3 * BAR
+    }));
+    r.run(START + 1024);
+    assert_eq!(
+        shape(&r),
+        [
+            (0, 0, Stretch, true, 120.0),
+            (BAR, 1, Stretch, true, 100.0),
+            (3 * BAR, 0, Stretch, true, 120.0)
+        ]
+    );
+}

@@ -37,6 +37,7 @@
 //! Not yet: copies of a take on its file (it plays Repitch; streaming
 //! stays off on the MPC for now), and ramps and steps (5d).
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use mpfree_stretch::budget::{Budget, Cache};
@@ -105,16 +106,98 @@ pub struct CopyCounts {
     pub too_many: u64,
 }
 
+/// How far each copy with the scheduler has got, a slot for each of the
+/// [`MAX_MAKING`] at most: the scheduler's worker writes it after each
+/// step, the host reads it without a lock (for the clip card's "Making
+/// its copy: 40 %", 5c). Each slot holds the copy's tag (the low 32 bits
+/// of its key's id, never 0) over its progress's bits, so a slot taken
+/// over by another copy is never read as this one's.
+pub(crate) struct Progress([AtomicU64; MAX_MAKING]);
+
+impl Progress {
+    pub(crate) fn new() -> Progress {
+        Progress(std::array::from_fn(|_| AtomicU64::new(0)))
+    }
+
+    /// The tag slot entries carry for `key`.
+    pub(crate) fn tag(key: &CopyKey) -> u32 {
+        (key.id() as u32).max(1)
+    }
+
+    /// Slot `slot` now says `key`'s copy is `p` done (0 to 1).
+    pub(crate) fn set(&self, slot: u8, tag: u32, p: f32) {
+        if let Some(a) = self.0.get(usize::from(slot)) {
+            a.store(
+                (u64::from(tag) << 32) | u64::from(p.clamp(0.0, 1.0).to_bits()),
+                Ordering::Relaxed,
+            );
+        }
+    }
+
+    /// How far the copy tagged `tag` in slot `slot` has got: 0 until its
+    /// worker has said.
+    fn get(&self, slot: u8, tag: u32) -> f32 {
+        let v = self
+            .0
+            .get(usize::from(slot))
+            .map_or(0, |a| a.load(Ordering::Relaxed));
+        if (v >> 32) as u32 == tag {
+            f32::from_bits(v as u32)
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Where an audio clip's tempo copies for a tempo stand (5c: the clip
+/// card's foot, the cells' words), over its regions on Stretch.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum CopyState {
+    /// It needs none: no region on Stretch, at its own tempo, or past the
+    /// speeds a copy is made at.
+    #[default]
+    None,
+    /// Every copy it needs is in.
+    Ready,
+    /// One is being made, the least done this far (0 to 1).
+    Making(f32),
+    /// One waits its turn to be made.
+    Waiting,
+    /// One couldn't be made: no room in the budget for derived audio, its
+    /// take on its file, or the stretch refused it. It is asked for again
+    /// when what is wanted changes or room comes back.
+    Unmade,
+}
+
+impl CopyState {
+    /// Two regions' states as the clip's: the furthest from ready wins
+    /// (couldn't be made, then waiting, then the least made).
+    pub fn with(self, other: CopyState) -> CopyState {
+        use CopyState::*;
+        match (self, other) {
+            (None, x) | (x, None) => x,
+            (Unmade, _) | (_, Unmade) => Unmade,
+            (Waiting, _) | (_, Waiting) => Waiting,
+            (Making(a), Making(b)) => Making(a.min(b)),
+            (Making(a), Ready) | (Ready, Making(a)) => Making(a),
+            (Ready, Ready) => Ready,
+        }
+    }
+}
+
 /// What the host tells its worker about copies.
 pub(crate) enum Ask {
     /// A zeroed buffer of this many samples, for `key`'s source.
     Buffer { n: usize, key: CopyKey, gen: u32 },
-    /// Make this copy on the scheduler, holding about `need` bytes.
+    /// Make this copy on the scheduler, holding about `need` bytes,
+    /// telling `progress`'s slot `slot` how far it has got.
     Make {
         spec: CopySpec,
         priority: Priority,
         need: u64,
         gen: u32,
+        progress: Arc<Progress>,
+        slot: u8,
     },
     /// Stop making the copy with this key.
     Cancel(CopyKey),
@@ -145,8 +228,11 @@ pub(crate) struct CopySide {
     /// Frames the map has held for.
     held_for: u64,
     reading: Option<Reading>,
-    /// Copies with the scheduler, and the memory each will take.
-    making: Vec<(CopyKey, u64)>,
+    /// Copies with the scheduler, the memory each will take, and its
+    /// slot in [`CopySide::progress`].
+    making: Vec<(CopyKey, u64, u8)>,
+    /// How far each copy with the scheduler has got.
+    progress: Arc<Progress>,
     failed: Vec<CopyKey>,
     /// The one budget for derived audio: the process's, or the one of the
     /// scheduler a test gave the host.
@@ -172,6 +258,7 @@ impl CopySide {
             held_for: 0,
             reading: None,
             making: Vec::with_capacity(MAX_MAKING),
+            progress: Arc::new(Progress::new()),
             failed: Vec::with_capacity(MAX_FAILED),
             budget: Budget::shared(),
             counts: CopyCounts::default(),
@@ -212,6 +299,30 @@ impl CopySide {
     /// Copies being read or made.
     pub(crate) fn busy(&self) -> usize {
         self.making.len() + usize::from(self.reading.is_some())
+    }
+
+    /// Where the copy with `key` stands: in, being made (how far), waiting
+    /// its turn (wanted, or being read), couldn't be made, or not wanted
+    /// (waiting too: it is wanted at the next look).
+    pub(crate) fn state(&self, tracks: &AudioTracks, key: &CopyKey) -> CopyState {
+        if tracks.has_copy(key) {
+            return CopyState::Ready;
+        }
+        if let Some(m) = self.making.iter().find(|m| m.0 == *key) {
+            return CopyState::Making(self.progress.get(m.2, Progress::tag(key)));
+        }
+        if self.failed.contains(key) {
+            return CopyState::Unmade;
+        }
+        CopyState::Waiting
+    }
+
+    /// How far each copy with the scheduler has got (0 to 1), in the
+    /// order they were asked for.
+    pub(crate) fn progress(&self, each: &mut dyn FnMut(f32)) {
+        for m in &self.making {
+            each(self.progress.get(m.2, Progress::tag(&m.0)));
+        }
     }
 
     /// What is wanted is worked out again at the next steady period: a
@@ -379,7 +490,7 @@ impl CopySide {
         if out != self.wanted {
             // What isn't wanted any more stops; what failed may be asked
             // again.
-            for &(k, _) in &self.making {
+            for &(k, _, _) in &self.making {
                 if !out.iter().any(|w| w.key == k) {
                     ask(Ask::Cancel(k));
                 }
@@ -546,8 +657,14 @@ impl CopySide {
             return;
         }
         let need = CopySpec::need(&key, want.channels);
+        // The first slot no copy under way has (there is one: at most
+        // MAX_MAKING are, and this one isn't yet).
+        let slot = (0..MAX_MAKING as u8)
+            .find(|s| !self.making.iter().any(|m| m.2 == *s))
+            .unwrap_or(0);
+        self.progress.set(slot, Progress::tag(&key), 0.0);
         if self.making.len() < self.making.capacity() {
-            self.making.push((key, key.bytes(ch)));
+            self.making.push((key, key.bytes(ch), slot));
         }
         ask(Ask::Make {
             spec: CopySpec {
@@ -558,6 +675,8 @@ impl CopySide {
             priority: want.priority,
             need,
             gen,
+            progress: Arc::clone(&self.progress),
+            slot,
         });
     }
 

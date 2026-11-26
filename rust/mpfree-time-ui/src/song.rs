@@ -75,9 +75,12 @@ use crate::widgets::{
     dashed_outline, hatch, loop_mark, rec_song_pill, view_chip_rect, view_part_at, view_part_rect,
     view_title, ArrangeView, CELL_WAVE, REC_SONG_W,
 };
+use mpfree_audiotracks::copying::CopyState;
 use mpfree_audiotracks::host::TakeWave;
-use mpfree_audiotracks::{Input, Monitor, Region, TakeInfo};
+use mpfree_audiotracks::{FollowTempo, Input, Monitor, Region, TakeInfo};
 use mpfree_transport::time::{TempoMap, Tick};
+use mpfree_ui::touch::{Class, Fingers, Press};
+use mpfree_ui::widgets::NoteTone;
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 use std::cell::RefCell;
 use std::fmt;
@@ -94,10 +97,111 @@ pub const SONG_BUTTONS: [&str; 6] = [
     "Delete",
 ];
 /// The buttons along the bottom while an audio region is picked (layout
-/// spec 4c). To a cell puts the region in its track's first empty cell;
-/// UNDO and SHIFT + UNDO undo and redo the region edits while they are
-/// what changed last.
-pub const AUDIO_BUTTONS: [&str; 6] = ["Split", "Erase", "Fades", "Gain", "Takes", "To a cell"];
+/// spec 4c), left to right. To a cell puts the region in its track's
+/// first empty cell; Tempo (phase 5c.3, board 4) opens the region's Tempo
+/// card ([`RegionCard`]); UNDO and SHIFT + UNDO undo and redo the region
+/// edits while they are what changed last. Each reports
+/// `Tab(`[`audio_tab`]`(k))`.
+pub const AUDIO_BUTTONS: [&str; 7] = [
+    "Split",
+    "Erase",
+    "Fades",
+    "Gain",
+    "Tempo",
+    "Takes",
+    "To a cell",
+];
+/// The audio region's buttons as the actions number them: Split, Erase,
+/// Fades, Gain, Takes and To a cell are `Tab(0)` to `Tab(5)`, as before
+/// Tempo came between Gain and Takes, and Tempo is [`TEMPO_CARD`].
+pub const AUDIO_TABS: usize = 6;
+/// What Tab reports for [`AUDIO_BUTTONS`]`[k]`.
+pub fn audio_tab(k: usize) -> usize {
+    match k {
+        0..=3 => k,
+        4 => TEMPO_CARD,
+        _ => k - 1,
+    }
+}
+/// What Tab reports for the region's Tempo button (phase 5c.3, board 4):
+/// its Tempo card opens, or closes if it is open.
+pub const TEMPO_CARD: usize = 0x314;
+/// The region's Tempo card's rows, top to bottom (board 4): each a
+/// setting with ‹ and ›.
+pub const REGION_ROWS: [&str; 3] = ["Tempo", "Until ready", "Made at"];
+/// The Tempo card's touches: a tap on row `k` picks it for the wheel,
+/// `Tab(REGION_ROW + k)`; its ‹ and › `Step { index: REGION_ROW + k,
+/// delta: -1 or 1 }`; From its length `Tab(REGION_FROM)`; a touch off
+/// the card `Tab(REGION_CLOSE)` (it closes, and does nothing else).
+pub const REGION_ROW: usize = 0x330;
+pub const REGION_FROM: usize = 0x338;
+pub const REGION_CLOSE: usize = 0x339;
+/// The Tempo card's row a `Tab` or `Step` index names, if it names one.
+pub fn card_row(index: usize) -> Option<usize> {
+    index
+        .checked_sub(REGION_ROW)
+        .filter(|&k| k < REGION_ROWS.len())
+}
+/// The Tempo card's size, its rows' height and its value boxes' width
+/// (board 4). A row is 48 px, Secondary's least (layout spec 1a), and
+/// answers over its whole height.
+const CARD_W: i32 = 290;
+const CARD_H: i32 = 268;
+const CARD_ROW: i32 = 48;
+const CARD_VALUE_W: i32 = 128;
+/// A value's ‹ and ›: each answers over 48 px of the value box's end and
+/// the row's height (the value between them answers to nothing), and a
+/// row's name stops 8 px short of its ‹ (spec 1a's dead gap between
+/// independent actions).
+const CARD_ARROW: i32 = 48;
+const CARD_GAP: i32 = 8;
+/// A finger down on the Tempo card, or off it while it is open: what its
+/// lift asks for if the finger is still where it landed (spec 1a: the
+/// card's controls act on the lift inside, so a slide off calls them
+/// off), and whether it landed off the card (its close).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CardPress {
+    press: Press,
+    ask: Option<EventKind>,
+    off: bool,
+}
+/// A song region's Tempo card (phase 5c.3, board 4), open over the lanes
+/// from the region's Tempo button: its name and bars, its Tempo, Until
+/// ready and Made at, the line saying what it does at the song's tempo
+/// there, and From its length. The page builds it
+/// (`crate::view::region_card`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegionCard {
+    /// The region: its audio track and its index on it.
+    pub region: (usize, usize),
+    /// "VOCAL · TAKE 2 · BARS 5–8".
+    pub title: String,
+    /// Each of [`REGION_ROWS`]' value, and its ink: Plain, Dim (Until
+    /// ready's "—" off Stretch) or Warn (Made at "not known").
+    pub values: [(String, NoteTone); 3],
+    /// The row the wheel and - / + turn.
+    pub row: usize,
+    /// What its Tempo does with it at the song's tempo there, its ink,
+    /// and while its copy is made how far (a line fills under it).
+    pub line: String,
+    pub tone: NoteTone,
+    pub progress: Option<f32>,
+    /// From its length would set a tempo: else it is faint, and a tap
+    /// says why.
+    pub from_ok: bool,
+}
+
+/// Where the Tempo card's parts are: see [`SongLanes::card_parts`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CardParts {
+    pub card: Rect,
+    pub title: Rect,
+    /// Each row, and its value box (‹ at its left end, › at its right).
+    pub rows: [Rect; 3],
+    pub values: [Rect; 3],
+    pub line: Rect,
+    pub from: Rect,
+}
 /// The last two buttons while a tempo point is picked (tempo ramps).
 pub const TEMPO_BUTTONS: [&str; 2] = ["Ramp", "Delete"];
 /// The last four buttons while a section is picked (Arrange 3.3).
@@ -443,7 +547,7 @@ impl PartialEq for SongBlocks {
 }
 
 /// An audio region as the Song view shows it: see [`audio_blocks`].
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct AudioBlock {
     pub start: Tick,
     pub end: Tick,
@@ -465,6 +569,23 @@ pub struct AudioBlock {
     pub fade_out: u32,
     pub into: u32,
     pub left: u32,
+    /// How it follows the song's tempo, and on Stretch whether it keeps
+    /// its pitch while its copy isn't ready (phase 5): the tag after its
+    /// name and its Tempo card ([`RegionCard`]).
+    pub follow: FollowTempo,
+    pub keep_pitch: bool,
+    /// The tempo its audio was made at, 0 when none is known.
+    pub bpm: f64,
+    /// Its take's number on its track, counted from 1 as the tags count
+    /// them (0 for a take not among them): its Tempo card's title.
+    pub number: usize,
+    /// Its sound as it plays now, in seconds (`frames` at the rate).
+    pub secs: f64,
+    /// The song's tempo at its start, along the tempo map.
+    pub at_bpm: f64,
+    /// Where its tempo copy stands (the app's: [`audio_blocks`] leaves it
+    /// [`CopyState::None`]).
+    pub copy: CopyState,
 }
 
 /// One of an audio track's takes, as its take lane shows it: see
@@ -619,6 +740,13 @@ pub struct SongLanes {
     pub region: Option<(usize, usize)>,
     /// The audio track whose panel is open over the lanes.
     pub panel: Option<usize>,
+    /// The picked region's Tempo card, while it is open (phase 5c.3):
+    /// over the lanes, under the region's lane if it fits; it takes every
+    /// touch, and one off it closes it.
+    pub tempo_card: Option<RegionCard>,
+    /// The fingers down on the Tempo card or off it (`CardPress`), each
+    /// the card's until it lifts, even if the card closes meanwhile.
+    pub card_fingers: Fingers<CardPress>,
     /// The audio track whose take lanes show under its lane.
     pub takes_open: Option<usize>,
     /// The project has room for another track: "+ Track" follows the
@@ -884,6 +1012,8 @@ impl Default for SongLanes {
             loop_waves: Vec::new(),
             region: None,
             panel: None,
+            tempo_card: None,
+            card_fingers: Fingers::new(),
             takes_open: None,
             can_add_track: false,
             adding: false,
@@ -1097,11 +1227,6 @@ pub fn same_waves(a: &[TakeWave], b: &[TakeWave]) -> bool {
         })
 }
 
-/// The Song view's blocks for an audio track's `regions`: each with its
-/// "take N" tag (N counts the track's takes from 1, oldest first by group
-/// and pass; the tag shows on all but the newest), and the frames it spans
-/// along `map` at `rate`. `takes` is every take (`AudioTracks::takes`);
-/// a region whose take is not among them gets no tag.
 /// Track `track`'s takes as its take lanes show them, newest first:
 /// each one's name (numbered as [`audio_blocks`] tags them), its stretch
 /// of the song along the tempo map, and where `regions` (the track's)
@@ -1137,6 +1262,12 @@ pub fn take_lanes(
         .collect()
 }
 
+/// The Song view's blocks for an audio track's `regions`: each with its
+/// "take N" tag (N counts the track's takes from 1, oldest first by group
+/// and pass; the tag shows on all but the newest), the frames it spans
+/// along `map` at `rate`, how it follows the tempo, and the song's tempo
+/// at its start. `takes` is every take (`AudioTracks::takes`); a region
+/// whose take is not among them gets no tag.
 pub fn audio_blocks(
     track: usize,
     regions: &[Region],
@@ -1151,6 +1282,7 @@ pub fn audio_blocks(
         .iter()
         .map(|r| {
             let n = mine.iter().position(|t| t.id == r.take);
+            let frames = r.src_pos(map, r.start as f64, r.end as f64, rate) - f64::from(r.phase);
             AudioBlock {
                 start: r.start,
                 end: r.end,
@@ -1162,12 +1294,19 @@ pub fn audio_blocks(
                 src: r.src,
                 // Its recording's frames under it: along the song, or
                 // following the tempo (phase 5) at its own tempo.
-                frames: r.src_pos(map, r.start as f64, r.end as f64, rate) - f64::from(r.phase),
+                frames,
                 gain: r.gain,
                 fade_in: r.fade_in,
                 fade_out: r.fade_out,
                 into: r.into,
                 left: r.left,
+                follow: r.follow,
+                keep_pitch: r.keep_pitch,
+                bpm: r.bpm,
+                number: n.map_or(0, |n| n + 1),
+                secs: frames / f64::from(rate.max(1)),
+                at_bpm: map.bpm_at(r.start),
+                copy: CopyState::None,
             }
         })
         .collect()
@@ -1186,6 +1325,7 @@ impl SongLanes {
         self.swipe = old.swipe;
         self.moving = old.moving;
         self.grip = old.grip;
+        self.card_fingers = old.card_fingers.clone();
         if let (Some(card), Some(was)) = (self.report.as_mut(), old.report.as_ref()) {
             card.keep_scroll(was);
         }
@@ -1240,6 +1380,8 @@ impl SongLanes {
             loop_waves: self.loop_waves.clone(),
             region: self.region,
             panel: self.panel,
+            tempo_card: self.tempo_card.clone(),
+            card_fingers: self.card_fingers.clone(),
             takes_open: self.takes_open,
             can_add_track: self.can_add_track,
             adding: self.adding,
@@ -1600,22 +1742,23 @@ impl SongLanes {
         }
     }
 
-    /// The buttons along the bottom (the audio region's while one is
-    /// picked). Button 0 is the audio region's Split alone: the view chip
-    /// took the place of the Clips button that was there (5.7), so
-    /// otherwise it has no width and the others start at the left.
-    pub fn button_rects(&self, r: Rect) -> [Rect; 6] {
+    /// The buttons along the bottom (the audio region's seven while one
+    /// is picked, [`AUDIO_BUTTONS`]; else six, the seventh no width).
+    /// Button 0 is the audio region's Split alone: the view chip took the
+    /// place of the Clips button that was there (5.7), so otherwise it
+    /// has no width and the others start at the left.
+    pub fn button_rects(&self, r: Rect) -> [Rect; 7] {
         let g = self.geo(r);
         let widths = if self.region.is_some() {
-            [84, 84, 84, 84, 84, 84]
+            [84; 7]
         } else if self.section_buttons() {
-            [SPLIT_W, 124, 90, 110, 150, 150]
+            [SPLIT_W, 124, 90, 110, 150, 150, 0]
         } else {
-            [SPLIT_W, 104, 128, 128, 112, 80]
+            [SPLIT_W, 104, 128, 128, 112, 80, 0]
         };
         // Duplicate's place, after Song → scenes, while it shows.
         let dup = self.duplicate_shows();
-        let mut out = [Rect::new(0, 0, 0, 0); 6];
+        let mut out = [Rect::new(0, 0, 0, 0); 7];
         let mut x = g.tools.x;
         for (k, w) in widths.iter().enumerate() {
             out[k] = Rect::new(x, g.tools.y, *w, g.tools.h);
@@ -1724,6 +1867,281 @@ impl SongLanes {
             strip,
             note,
         })
+    }
+
+    /// The picked region's Tempo card's parts, while it is open (phase
+    /// 5c.3, board 4): over the lanes from the region's left edge, under
+    /// its lane if it fits, else over it; else beside the region, after it
+    /// or before it, so the region and its tag stay in view; else on the
+    /// side of its lane with more room.
+    pub fn card_parts(&self, r: Rect) -> Option<CardParts> {
+        let c = self.tempo_card.as_ref()?;
+        let (track, index) = c.region;
+        let a = self.audio.iter().position(|l| l.track == track)?;
+        let g = self.geo(r);
+        let (left, right) = (g.lanes.x + NAME_W, g.lanes.right());
+        let w = CARD_W.min(g.lanes.w - NAME_W);
+        let h = (g.lanes.h - 4).min(CARD_H);
+        let region = self.region_rect(r, a, index);
+        let x = region.map_or(left, |b| b.x).clamp(left, right - w);
+        let (top, bottom) = (g.lanes.y + 2, g.lanes.bottom() - 2);
+        let (x, y) = match (self.lane_rect(&g, self.audio_k(a)), region) {
+            (Some(row), _) if row.bottom() + 2 + h <= bottom => (x, row.bottom() + 2),
+            (Some(row), _) if row.y - 2 - h >= top => (x, row.y - 2 - h),
+            (Some(row), Some(b)) if b.right() + 8 + w <= right || b.x - 8 - w >= left => {
+                let x = if b.right() + 8 + w <= right {
+                    b.right() + 8
+                } else {
+                    b.x - 8 - w
+                };
+                (x, (row.y + row.h / 2 - h / 2).clamp(top, bottom - h))
+            }
+            (Some(row), _) if bottom - row.bottom() >= row.y - top => (x, bottom - h),
+            _ => (x, top),
+        };
+        let card = Rect::new(x, y, w, h);
+        let (ix, iw) = (card.x + 10, card.w - 20);
+        let rows: [Rect; 3] = std::array::from_fn(|k| {
+            Rect::new(ix, card.y + 34 + k as i32 * (CARD_ROW + 1), iw, CARD_ROW)
+        });
+        let values = rows.map(|row| {
+            Rect::new(
+                row.right() - CARD_VALUE_W - 5,
+                row.y + 6,
+                CARD_VALUE_W,
+                CARD_ROW - 12,
+            )
+        });
+        let from = Rect::new(ix, card.bottom() - 58, iw, CARD_ROW);
+        Some(CardParts {
+            card,
+            title: Rect::new(card.x + 14, card.y + 8, card.w - 28, 22),
+            rows,
+            values,
+            line: Rect::new(ix + 15, from.y - 26, iw - 15, 20),
+            from,
+        })
+    }
+
+    /// The Tempo card: its title, a row a setting (the picked one lit),
+    /// the line and From its length.
+    fn paint_card(&self, cx: &mut PaintCx, p: &CardParts, c: &RegionCard) {
+        let t = cx.theme.clone();
+        let shadow = Rect::new(p.card.x + 2, p.card.y + 4, p.card.w, p.card.h);
+        cx.canvas.fill_round_rect(shadow, t.round(12), t.bg);
+        let old = cx.canvas.clip();
+        cx.canvas.set_clip(old.intersect(p.card));
+        let fill = t.surface.mix(t.raised, 0.35);
+        cx.canvas.fill_round_rect(p.card, t.round(12), fill);
+        cx.canvas
+            .stroke_round_rect(p.card, t.round(12), 1, t.outline);
+        cx.text(
+            FontId::Bold,
+            t.size_small - 3.0,
+            p.title,
+            Align::Left,
+            t.text_dim,
+            &c.title,
+        );
+        let ink = |tone: NoteTone, on: Color| match tone {
+            NoteTone::Plain => t.text,
+            NoteTone::Dim => t.text_dim,
+            NoteTone::Good => t.readable(t.good, on),
+            NoteTone::Warn => t.readable(t.warn, on),
+            NoteTone::Bad => t.readable(t.bad, on),
+            NoteTone::Accent => t.readable(t.accent, on),
+        };
+        for (k, (row, v)) in p.rows.iter().zip(p.values).enumerate() {
+            let picked = k == c.row;
+            if picked {
+                cx.canvas
+                    .fill_round_rect(*row, t.round(8), fill.mix(t.raised, 0.6));
+                cx.canvas
+                    .fill_rect(Rect::new(row.x, row.y, 3, row.h), t.accent);
+            }
+            cx.text(
+                FontId::Sans,
+                t.size_small - 1.0,
+                Rect::new(row.x + 12, row.y, v.x - row.x - 16, row.h),
+                Align::Left,
+                t.text,
+                REGION_ROWS[k],
+            );
+            cx.canvas.fill_round_rect(v, t.round(8), t.raised);
+            for (arrow, at) in [("‹", v.x + 4), ("›", v.right() - 20)] {
+                cx.text(
+                    FontId::Bold,
+                    t.size_small,
+                    Rect::new(at, v.y, 16, v.h),
+                    Align::Center,
+                    t.text_dim,
+                    arrow,
+                );
+            }
+            let (word, tone) = &c.values[k];
+            let tone = match tone {
+                NoteTone::Plain if picked => NoteTone::Accent,
+                NoteTone::Dim => NoteTone::Dim,
+                other => *other,
+            };
+            let faint = matches!(tone, NoteTone::Dim);
+            cx.text(
+                FontId::Bold,
+                t.size_small - 1.0,
+                Rect::new(v.x + 20, v.y, v.w - 40, v.h),
+                Align::Center,
+                if faint {
+                    t.text_faint
+                } else {
+                    ink(tone, t.raised)
+                },
+                word,
+            );
+        }
+        cx.text(
+            FontId::Sans,
+            t.size_small - 1.0,
+            p.line,
+            Align::Left,
+            ink(c.tone, fill),
+            &c.line,
+        );
+        // A copy being made: a line fills under its words.
+        if let Some(done) = c.progress {
+            let bar = Rect::new(p.line.x, p.line.bottom() + 1, p.line.w - 10, 3);
+            cx.canvas.fill_rect(bar, t.raised);
+            let w = (bar.w as f32 * done.clamp(0.0, 1.0)).round() as i32;
+            cx.canvas
+                .fill_rect(Rect::new(bar.x, bar.y, w, bar.h), t.accent);
+        }
+        cx.canvas.fill_round_rect(p.from, t.round(8), t.raised);
+        cx.canvas
+            .stroke_round_rect(p.from, t.round(8), 1, t.outline);
+        cx.text(
+            FontId::Bold,
+            t.size_small - 1.0,
+            p.from,
+            Align::Center,
+            if c.from_ok { t.text } else { t.text_faint },
+            "From its length",
+        );
+        cx.canvas.set_clip(old);
+    }
+
+    /// Where each of the Tempo card's controls answers, and what it asks
+    /// for: each row's name (it picks the row), its ‹ and › (a step),
+    /// then From its length. The targets and the touches both read it.
+    fn card_hits(p: &CardParts) -> Vec<(Rect, EventKind)> {
+        let mut out = Vec::new();
+        for (k, (row, v)) in p.rows.iter().zip(p.values).enumerate() {
+            let index = REGION_ROW + k;
+            let name_w = v.x - CARD_GAP - row.x;
+            out.push((
+                Rect::new(row.x, row.y, name_w, row.h),
+                EventKind::Tab(index),
+            ));
+            out.push((
+                Rect::new(v.x, row.y, CARD_ARROW, row.h),
+                EventKind::Step { index, delta: -1 },
+            ));
+            out.push((
+                Rect::new(v.right() - CARD_ARROW, row.y, CARD_ARROW, row.h),
+                EventKind::Step { index, delta: 1 },
+            ));
+        }
+        out.push((p.from, EventKind::Tab(REGION_FROM)));
+        out
+    }
+
+    /// The part of the lanes off the Tempo card its close is listed over:
+    /// the biggest of the bands above, below, left and right of the card
+    /// that is 64 px across (Normal's least), else the biggest. A touch
+    /// anywhere off the card closes it; the list names one place, so no
+    /// two of its areas overlap and none covers the card (spec 1a).
+    fn card_close_area(r: Rect, card: Rect) -> Rect {
+        let bands = [
+            Rect::new(r.x, r.y, r.w, card.y - r.y),
+            Rect::new(r.x, card.bottom(), r.w, r.bottom() - card.bottom()),
+            Rect::new(r.x, card.y, card.x - r.x, card.h),
+            Rect::new(card.right(), card.y, r.right() - card.right(), card.h),
+        ];
+        bands
+            .into_iter()
+            .filter(|b| b.w > 0 && b.h > 0)
+            .max_by_key(|b| {
+                (
+                    b.w.min(b.h) >= Class::Normal.min_px(),
+                    b.w as i64 * b.h as i64,
+                )
+            })
+            .unwrap_or(r)
+    }
+
+    /// A finger landing at (x, y) while the Tempo card is open: what its
+    /// lift there would ask for (a row picked, a step, From its length,
+    /// or off the card its close; nothing between the card's parts), the
+    /// area it must lift in, and whether it is off the card.
+    fn card_hit(&self, r: Rect, x: i32, y: i32) -> Option<CardPress> {
+        let p = self.card_parts(r)?;
+        let at = |rect: Rect, ask: Option<EventKind>, off: bool| CardPress {
+            press: Press::new(0, rect, x, y),
+            ask,
+            off,
+        };
+        if !p.card.contains(x, y) {
+            return Some(at(r, Some(EventKind::Tab(REGION_CLOSE)), true));
+        }
+        Some(
+            Self::card_hits(&p)
+                .into_iter()
+                .find(|(b, _)| b.contains(x, y))
+                .map_or(at(p.card, None, false), |(b, ask)| at(b, Some(ask), false)),
+        )
+    }
+
+    /// A touch while the Tempo card is open, or by a finger that landed
+    /// while it was: the card's controls act on the lift, while the finger
+    /// is still on what it landed on (spec 1a's lift inside), and a finger
+    /// that landed off the card closes it only if it lifts off it. Each
+    /// finger is the card's until it lifts: none reaches the lanes under
+    /// the card, even after it closes. None when the touch isn't the
+    /// card's.
+    fn card_touch(
+        &mut self,
+        f: u64,
+        phase: Touch,
+        x: i32,
+        y: i32,
+        r: Rect,
+    ) -> Option<Option<EventKind>> {
+        if phase == Touch::Down {
+            // A finger id seen again: what it held before is gone.
+            self.card_fingers.take(f);
+            let mut cp = self.card_hit(r, x, y)?;
+            cp.press.finger = f;
+            self.card_fingers.put(f, cp);
+            return Some(None);
+        }
+        if !self.card_fingers.holds(f) {
+            return None;
+        }
+        if phase == Touch::Move {
+            return Some(None);
+        }
+        let cp = self.card_fingers.take(f)?;
+        if phase == Touch::Cancel {
+            return Some(None);
+        }
+        // Lifted: on what it landed on, while the card is still open.
+        let Some(p) = self.card_parts(r) else {
+            return Some(None);
+        };
+        let inside = if cp.off {
+            r.contains(x, y) && !p.card.contains(x, y)
+        } else {
+            cp.press.lifted_inside(x, y)
+        };
+        Some(if inside { cp.ask } else { None })
     }
 
     /// The track panel: its name, Close, then a row a control.
@@ -3274,6 +3692,30 @@ impl SongLanes {
                 t.text,
                 &name,
             );
+            // Following the tempo (phase 5c.3, board 4): a small tag after
+            // its name, where it fits; Off has none.
+            let tag = match b.follow {
+                FollowTempo::Off => None,
+                FollowTempo::Repitch => Some("Repitch"),
+                FollowTempo::Stretch => Some("Stretch"),
+            };
+            if let Some(tag) = tag {
+                let size = t.size_small - 4.0;
+                let x = br.x + 6 + cx.measure(FontId::Sans, t.size_small - 3.0, &name) + 6;
+                let w = cx.measure(FontId::Bold, size, tag) + 8;
+                let pill = Rect::new(x, br.y + 2, w, label_h);
+                if pill.right() <= br.right() - 2 {
+                    cx.canvas.fill_round_rect(pill, 3, t.good);
+                    cx.text(
+                        FontId::Bold,
+                        size,
+                        pill,
+                        Align::Center,
+                        t.ink_on(t.good),
+                        tag,
+                    );
+                }
+            }
         }
         if picked {
             cx.canvas.stroke_round_rect(br, t.round(6), 2, t.accent);
@@ -3721,6 +4163,8 @@ impl Widget for SongLanes {
                 continue;
             }
             let lit = (k == 1 && self.on && !audio) || (k == 4 && tempo.is_some_and(|p| p.2));
+            // Tempo, its card open: outlined in the accent (board 4).
+            let open = audio && k == 4 && self.tempo_card.is_some();
             let live = audio
                 || tempo.is_some()
                 || section
@@ -3733,8 +4177,13 @@ impl Widget for SongLanes {
                 t.surface
             };
             cx.canvas.fill_round_rect(*br, t.round(10), fill);
+            if open {
+                cx.canvas.stroke_round_rect(*br, t.round(10), 1, t.accent);
+            }
             let ink = if lit {
                 t.ink_on(fill)
+            } else if open {
+                t.readable(t.accent, fill)
             } else if live {
                 t.text
             } else {
@@ -3775,6 +4224,9 @@ impl Widget for SongLanes {
         }
         if let Some(gr) = self.grip.filter(|g| g.lifted) {
             self.paint_drag(cx, r, &gr);
+        }
+        if let (Some(p), Some(c)) = (self.card_parts(r), &self.tempo_card) {
+            self.paint_card(cx, &p, c);
         }
         if let Some(rows) = self.chooser_rects(r) {
             paint_chooser(cx, &rows);
@@ -3833,6 +4285,44 @@ impl Widget for SongLanes {
                 .map(|(k, b)| Target::tap("add-kind", k, ADD_KINDS[k].0, *b))
                 .collect();
             out.push(Target::tap("add-close", 0, "Close", r));
+            return out;
+        }
+        // The region's Tempo card open (phase 5c.3): its rows, their
+        // arrows and From its length, and anywhere else closes it.
+        if let (Some(p), Some(c)) = (self.card_parts(r), &self.tempo_card) {
+            // Settings on a card in Make, each one region edit UNDO takes
+            // back: Secondary (spec 1a), acting on the lift inside.
+            let mut out = Vec::new();
+            for (b, ask) in Self::card_hits(&p) {
+                let t = match ask {
+                    EventKind::Tab(REGION_FROM) => {
+                        Target::tap("card-from", REGION_FROM, "From its length", b)
+                            .disabled_if(!c.from_ok)
+                    }
+                    EventKind::Tab(i) => {
+                        // The row picked already: a tap picks nothing new
+                        // (as an option list's picked row).
+                        let k = i - REGION_ROW;
+                        Target::tap("card-row", i, REGION_ROWS[k], b).disabled_if(k == c.row)
+                    }
+                    EventKind::Step { index, delta } => {
+                        let name = REGION_ROWS[index - REGION_ROW];
+                        if delta < 0 {
+                            Target::tap("card-less", index, format!("{name} ‹"), b)
+                        } else {
+                            Target::tap("card-more", index, format!("{name} ›"), b)
+                        }
+                    }
+                    _ => continue,
+                };
+                out.push(t.class(Class::Secondary));
+            }
+            out.push(Target::tap(
+                "card-close",
+                REGION_CLOSE,
+                "Close",
+                Self::card_close_area(r, p.card),
+            ));
             return out;
         }
         // The chord picker open from the Chords lane: its parts, and
@@ -4085,6 +4575,11 @@ impl Widget for SongLanes {
                 .and_then(|rows| rows.iter().position(|b| b.contains(x, y)));
             return Some(EventKind::Tab(kind.map_or(ADD_CLOSE, |k| ADD_KINDS[k].1)));
         }
+        // The region's Tempo card open (phase 5c.3): a touch is its, and
+        // one off it closes it, each on the lift.
+        if let Some(asks) = self.card_touch(f, phase, x, y, r) {
+            return asks;
+        }
         // The chord picker open from the Chords lane: a touch is its, and
         // one off it closes it.
         if let Some(pg) = self.chord_picker_geo(r) {
@@ -4243,7 +4738,11 @@ impl Widget for SongLanes {
             .iter()
             .position(|b| b.w > 0 && b.contains(x, y))
         {
-            return Some(EventKind::Tab(k));
+            return Some(EventKind::Tab(if self.region.is_some() {
+                audio_tab(k)
+            } else {
+                k
+            }));
         }
         if self.duplicate_rect(r).is_some_and(|d| d.contains(x, y)) {
             return Some(EventKind::Tab(DUPLICATE));
@@ -4440,6 +4939,12 @@ mod tests {
             CLIPS,
             SHOW_VIEW,
             DUPLICATE,
+            TEMPO_CARD,
+            REGION_ROW,
+            REGION_ROW + 1,
+            REGION_ROW + 2,
+            REGION_FROM,
+            REGION_CLOSE,
             BARS_BACK,
             BARS_ON,
             TEMPO_ROW,
@@ -4491,7 +4996,9 @@ mod tests {
         // The first, Clips, went to the view chip (5.7), and Split took
         // its place (phase 6); Duplicate sits after Song → scenes.
         assert_eq!((buttons[0].x, buttons[0].w), (r.x + 14, SPLIT_W));
-        for (k, br) in buttons.iter().enumerate() {
+        // Six: the seventh, the audio region's, has no width.
+        assert_eq!(buttons[6].w, 0);
+        for (k, br) in buttons.iter().enumerate().take(6) {
             assert!(br.right() <= r.right() - 14, "{k}: {br:?}");
             assert_eq!(
                 s.touch(1, Touch::Down, br.x + 3, br.y + 3, r),
@@ -5109,6 +5616,7 @@ mod tests {
             fade_out: 0,
             into: 0,
             left: 0,
+            ..AudioBlock::default()
         }
     }
 
@@ -5389,13 +5897,19 @@ mod tests {
         );
         let r = Rect::new(12, 140, 814, 534);
         s.region = Some((0, 0));
+        // Seven, Tempo between Gain and Takes (phase 5c.3); the others
+        // keep the tabs they had.
+        let tabs = [0, 1, 2, 3, TEMPO_CARD, 4, 5];
         for (k, br) in s.button_rects(r).iter().enumerate() {
-            assert!(br.right() <= r.right() - 14, "{k}: {br:?}");
+            assert!(br.w == 84 && br.right() <= r.right() - 14, "{k}: {br:?}");
             assert_eq!(
                 s.touch(1, Touch::Down, br.x + 3, br.y + 3, r),
-                Some(EventKind::Tab(k))
+                Some(EventKind::Tab(tabs[k])),
+                "{}",
+                AUDIO_BUTTONS[k]
             );
         }
+        assert!(!tabs.contains(&REC), "Rec song keeps its own tab");
         let mut ui = mpfree_ui::Ui::new(
             mpfree_ui::Theme::dark(),
             mpfree_ui::Fonts::embedded(),
@@ -5412,6 +5926,194 @@ mod tests {
     /// Layout spec 4c: the track panel opens over the lanes, right of the
     /// names, and its controls report themselves; touches on it never
     /// reach the blocks under it.
+    /// Board 4 (phase 5c.3): the region's Tempo card over the lanes under
+    /// its lane, its rows' arrows and taps, From its length, and a touch
+    /// off it closing it; a region on Stretch carries its tag.
+    #[test]
+    fn a_regions_tempo_card_sits_over_the_lanes_and_reports_its_rows() {
+        let mut s = lanes();
+        let mut b = block(4 * 3840, 8 * 3840, 1);
+        b.follow = FollowTempo::Stretch;
+        put_audio(
+            &mut s,
+            vec![audio_lane(0, "Vocal", vec![block(0, 3840, 0), b])],
+        );
+        let r = Rect::new(12, 140, 854, 534);
+        s.region = Some((0, 1));
+        let card = RegionCard {
+            region: (0, 1),
+            title: "VOCAL · TAKE 2 · BARS 5–8".into(),
+            values: [
+                ("Stretch".into(), NoteTone::Plain),
+                ("on time".into(), NoteTone::Plain),
+                ("120.0 BPM".into(), NoteTone::Plain),
+            ],
+            row: 0,
+            line: "Stretch: the same pitch at 92".into(),
+            tone: NoteTone::Good,
+            progress: None,
+            from_ok: true,
+        };
+        s.tempo_card = Some(card);
+        let p = s.card_parts(r).unwrap();
+        let g = s.geo(r);
+        let region = s.region_rect(r, 0, 1).unwrap();
+        // 290 by 268 in the lanes: with no room under or over the
+        // region's lane, beside the region, after it, so it stays in view.
+        assert_eq!(
+            (p.card.w, p.card.h, p.card.x),
+            (290, 268, region.right() + 8)
+        );
+        assert!(p.card.y >= g.lanes.y && p.card.bottom() <= g.lanes.bottom());
+        let both = p.card.intersect(region);
+        assert!(both.w <= 0 || both.h <= 0, "{:?} over {region:?}", p.card);
+        for (row, v) in p.rows.iter().zip(p.values) {
+            assert!(
+                p.card.contains(row.x, row.y) && p.card.contains(row.right() - 1, row.bottom() - 1)
+            );
+            assert!(row.contains(v.x, v.y) && row.contains(v.right() - 1, v.bottom() - 1));
+        }
+        assert!(p.rows[2].bottom() < p.line.y && p.line.bottom() < p.from.y);
+        assert!(p.from.bottom() <= p.card.bottom());
+        let tempo = s.button_rects(r)[4];
+        // Each control acts on the lift, still on it (spec 1a): nothing as
+        // the finger lands.
+        let mut tap = |x: i32, y: i32| {
+            assert_eq!(s.touch(1, Touch::Down, x, y, r), None, "on landing");
+            s.touch(1, Touch::Up, x, y, r)
+        };
+        let v = p.values[1];
+        assert_eq!(
+            tap(v.x + 4, v.y + 4),
+            Some(EventKind::Step {
+                index: REGION_ROW + 1,
+                delta: -1
+            })
+        );
+        assert_eq!(
+            tap(v.right() - 4, v.y + 4),
+            Some(EventKind::Step {
+                index: REGION_ROW + 1,
+                delta: 1
+            })
+        );
+        assert_eq!(
+            tap(p.rows[2].x + 20, p.rows[2].y + 10),
+            Some(EventKind::Tab(REGION_ROW + 2))
+        );
+        assert_eq!(
+            tap(p.from.x + 10, p.from.y + 10),
+            Some(EventKind::Tab(REGION_FROM))
+        );
+        // Off it, the bottom row's Tempo too: it closes, nothing more.
+        assert!(
+            !p.card.contains(tempo.x + 3, tempo.y + 3),
+            "{:?} {tempo:?}",
+            p.card
+        );
+        assert_eq!(
+            tap(tempo.x + 3, tempo.y + 3),
+            Some(EventKind::Tab(REGION_CLOSE))
+        );
+        assert_eq!(
+            tap(p.card.right() + 10, p.card.y + 10),
+            Some(EventKind::Tab(REGION_CLOSE))
+        );
+        // The card itself, between its parts, and the value between its
+        // arrows: nothing.
+        assert_eq!(tap(p.card.x + 4, p.card.y + 4), None);
+        assert_eq!(tap(v.x + v.w / 2, v.y + 4), None);
+        // A slide off calls a control off, and a cancel; a finger that
+        // landed off the card and slid onto it closes nothing, and none
+        // reaches the lanes under the card, even after it lifts.
+        let less = (v.x + 4, v.y + 4);
+        assert_eq!(s.touch(2, Touch::Down, less.0, less.1, r), None);
+        assert_eq!(s.touch(2, Touch::Move, v.x + v.w / 2, less.1, r), None);
+        assert_eq!(s.touch(2, Touch::Up, v.x + v.w / 2, less.1, r), None);
+        assert_eq!(s.touch(3, Touch::Down, less.0, less.1, r), None);
+        assert_eq!(s.touch(3, Touch::Cancel, less.0, less.1, r), None);
+        let off = (p.card.right() + 10, p.card.y + 10);
+        assert_eq!(s.touch(4, Touch::Down, off.0, off.1, r), None);
+        assert_eq!(s.touch(4, Touch::Move, r.right() + 40, off.1, r), None);
+        assert_eq!(s.touch(4, Touch::Up, r.right() + 40, off.1, r), None);
+        assert_eq!(s.touch(5, Touch::Down, off.0, off.1, r), None);
+        assert_eq!(s.touch(5, Touch::Up, less.0, less.1, r), None);
+        // A finger down when the card closes is still the card's: its
+        // lift does nothing.
+        assert_eq!(s.touch(6, Touch::Down, less.0, less.1, r), None);
+        let open = s.tempo_card.take();
+        assert_eq!(s.touch(6, Touch::Move, off.0, off.1 + 40, r), None);
+        assert_eq!(s.touch(6, Touch::Up, off.0, off.1 + 40, r), None);
+        s.tempo_card = open;
+        assert_eq!(card_row(REGION_ROW + 2), Some(2));
+        assert_eq!(card_row(REGION_ROW + 3), None);
+        assert_eq!(card_row(REGION_FROM), None);
+        // Its targets: the rows, their arrows, From its length, and Close
+        // over the rest.
+        let t = s.targets(r);
+        let ids: Vec<&str> = t.iter().map(|t| t.id).collect();
+        assert_eq!(
+            ids,
+            [
+                "card-row",
+                "card-less",
+                "card-more",
+                "card-row",
+                "card-less",
+                "card-more",
+                "card-row",
+                "card-less",
+                "card-more",
+                "card-from",
+                "card-close"
+            ]
+        );
+        // The row picked already (Tempo, as the card opens) picks nothing
+        // new: it is off, the others on.
+        let rows: Vec<bool> = t
+            .iter()
+            .filter(|t| t.id == "card-row")
+            .map(|t| t.enabled)
+            .collect();
+        assert_eq!(rows, [false, true, true]);
+        // Spec 1a: each control Secondary and 48 px across or more, a
+        // row's name 8 px from its ‹, no two areas overlapping, and Close
+        // off the card.
+        for t in &t {
+            if t.id == "card-close" {
+                let both = t.rect.intersect(p.card);
+                assert!(both.w <= 0 || both.h <= 0, "{:?} over the card", t.rect);
+                assert!(t.short_side() >= 64, "{:?}", t.rect);
+                continue;
+            }
+            assert_eq!(t.needed_class(), mpfree_ui::touch::Class::Secondary);
+            assert!(t.short_side() >= 48, "{} {:?}", t.label, t.rect);
+            assert!(p.card.contains(t.rect.x, t.rect.y));
+        }
+        for (i, a) in t.iter().enumerate() {
+            for b in &t[i + 1..] {
+                let both = a.rect.intersect(b.rect);
+                assert!(both.w <= 0 || both.h <= 0, "{} over {}", a.label, b.label);
+            }
+        }
+        for k in 0..3 {
+            let (name, less) = (&t[3 * k], &t[3 * k + 1]);
+            assert_eq!(less.rect.x - name.rect.right(), 8);
+        }
+        // Painted, with the tag on the region on Stretch.
+        let mut ui = mpfree_ui::Ui::new(
+            mpfree_ui::Theme::dark(),
+            mpfree_ui::Fonts::embedded(),
+            1280,
+            800,
+        );
+        ui.add("song", s);
+        ui.add_page("p", "song").unwrap();
+        ui.show("p").unwrap();
+        let mut c = mpfree_ui::SoftCanvas::new(1280, 800);
+        assert!(!ui.paint(&mut c).is_empty());
+    }
+
     #[test]
     fn the_track_panel_sits_over_the_lanes_and_reports_its_controls() {
         let mut s = lanes();
