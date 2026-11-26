@@ -4,6 +4,7 @@
 //! is dropped, never played, and the new one made; a clip the app lists
 //! gets its copy; with no room in the copies' share a region plays
 //! Repitch, and so does one the scheduler's memory check refuses; the
+//! copies share the one budget for derived audio by priority; the
 //! tracks emptied (a project opening) drop what was under way; Clear
 //! copies lets them go and they are made again.
 //!
@@ -234,7 +235,7 @@ fn a_clip_the_app_lists_gets_its_copy_at_the_tempo_at_the_playhead() {
 #[test]
 fn with_no_room_in_the_copies_share_a_region_plays_repitch() {
     let mut r = Rig::new(90.0, vec![stretch_region()]);
-    r.h.set_copy_budget(10_000);
+    r.s.budget().set_total(10_000);
     r.run_until(false, |r| r.h.copy_counts().no_room > 0);
     for _ in 0..200 {
         r.period();
@@ -270,6 +271,52 @@ fn a_copy_the_schedulers_memory_check_refuses_is_counted_and_its_region_plays_re
     r.run_until(false, |r| r.frame >= at + u64::from(RATE));
     let hz = r.hz(at + 2_000, at + u64::from(RATE) - 500);
     assert!((hz - 441.0 * 90.0 / 120.0).abs() <= 1.0, "{hz} Hz");
+}
+
+#[test]
+fn the_copies_share_the_one_budget_with_the_other_caches_by_priority() {
+    use mpfree_stretch::budget::Cache;
+    // One region at the playhead (Protect), and one bar of the same take
+    // twenty bars on (Speculative; a region of the same frames would share
+    // the first one's copy).
+    let far = Region {
+        follow: FollowTempo::Stretch,
+        ..Region::of(20 * BAR, 21 * BAR, 0, (0, 0.0), 120.0)
+    };
+    let mut r = Rig::new(90.0, vec![stretch_region(), far]);
+    let b = r.s.budget();
+    b.set_total(4_000_000);
+    // The sampler's Warps hold 2.5 MB: past the half a copy made just in
+    // case may fill, within the whole a copy needed now may.
+    b.set_held(Cache::Warps, 2_500_000);
+    r.run_until(true, |r| r.copies() == 1);
+    for _ in 0..300 {
+        r.period();
+        r.s.step();
+    }
+    assert_eq!(r.copies(), 1, "{:?}", r.h.copy_counts());
+    assert!(
+        r.h.copy_counts().no_room > 0,
+        "{:?} {:?} {:?}",
+        r.h.copy_counts(),
+        r.s.counts(),
+        r.h.copy_memory()
+    );
+    let v: Vec<_> = r.h.tracks.copies().collect();
+    assert_eq!(
+        v[0].key.out,
+        r.h.tracks
+            .song_copy_key(&r.h.tracks.regions(0)[0], r.t.tempo_map())
+            .unwrap()
+            .out
+    );
+    // It says what its copies use.
+    assert_eq!(b.uses(Cache::Tracks), r.h.copy_memory().0 as u64);
+    // The Warps let go: the far one is made too.
+    b.set_held(Cache::Warps, 0);
+    r.run_until(true, |r| r.copies() == 2);
+    assert_eq!(b.uses(Cache::Tracks), r.h.copy_memory().0 as u64);
+    assert!(b.used() <= b.total());
 }
 
 #[test]

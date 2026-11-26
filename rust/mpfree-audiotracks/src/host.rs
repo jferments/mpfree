@@ -1120,6 +1120,7 @@ impl AudioHost {
         while let Some(d) = self.tracks.take_dropped_copy() {
             self.send(ToWorker::DropCopy(d));
         }
+        self.copies.report(&self.tracks);
         n
     }
 
@@ -1135,15 +1136,12 @@ impl AudioHost {
         (bytes, n, self.copies.busy())
     }
 
-    /// The copies' share of memory ([`crate::copying::DEFAULT_BUDGET`] to
-    /// start with).
-    pub fn set_copy_budget(&mut self, bytes: usize) {
-        self.copies.budget = bytes;
-    }
-
-    /// Makes copies on `s` from now on, not the process's scheduler
-    /// (`Sched::shared`): for a test that steps its own.
-    pub fn copies_on(&self, s: Sched) {
+    /// Makes copies on `s` from now on, within its budget, not on the
+    /// process's scheduler (`Sched::shared`): for a test that steps its
+    /// own.
+    pub fn copies_on(&mut self, s: Sched) {
+        self.copies.budget = s.budget();
+        self.copies.report(&self.tracks);
         self.send(ToWorker::Sched(s));
     }
 
@@ -1187,6 +1185,11 @@ impl AudioHost {
                 self.send(ToWorker::DropCopy(copy.data));
             }
         }
+        while let Some(d) = self.tracks.take_dropped_copy() {
+            self.send(ToWorker::DropCopy(d));
+        }
+        // What they use now, held and being made, for the one budget.
+        self.copies.report(&self.tracks);
     }
 
     /// Run the tracks for one period (see [`AudioTracks::process`]), then
@@ -1806,6 +1809,7 @@ impl AudioHost {
         while let Some(d) = self.tracks.take_dropped_copy() {
             self.send(ToWorker::DropCopy(d));
         }
+        self.copies.report(&self.tracks);
         match self.fitting.take() {
             Some(Fitting::Reading { audio, .. }) => self.send(ToWorker::Drop(audio)),
             // Sizing and Stretching: the worker's answer carries the old

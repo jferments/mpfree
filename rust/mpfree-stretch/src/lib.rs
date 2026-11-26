@@ -28,12 +28,14 @@
 //!   through the same resampler (the sampler converts a file at another
 //!   rate to the output's when it is loaded).
 //! - **Making them ahead:** [`sched`] runs every stretch made ahead on one
-//!   worker, a step at a time, the most urgent first.
+//!   worker, a step at a time, the most urgent first, and [`budget`] keeps
+//!   all derived audio within one number.
 //!
 //! Our own code, MIT, no C++ to cross-build for the MPC.
 
 #![forbid(unsafe_code)]
 
+pub mod budget;
 mod map;
 mod resample;
 pub mod sched;
