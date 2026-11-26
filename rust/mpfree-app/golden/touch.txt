@@ -154,6 +154,7 @@ gap notes/pads-write notes/sound-chip 6 8 # before the touch audit (25 Nov 2026 
 gap notes/roll notes/ruler 2 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap notes/ruler notes/show-chip 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap notes/ruler notes/sound-chip 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap notes/sound-on notes/sound-remove 6 24 # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
 gap notes/tool-aim notes/tool-option 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap options/back options/row 4 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap options/row options/row-less 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -170,8 +171,11 @@ gap patch-edit/zone patch-edit/zone-high 6 8 # before the touch audit (25 Nov 20
 gap patch-edit/zone patch-edit/zone-low 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap patch-edit/zone-high patch-edit/zone-low 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap play-loop/arm play-loop/loop 5 8 # the Play page (touch plan A6)
+gap play-loop/capture play-loop/loop 4 8 # the Play page (touch plan A6)
+gap play-loop/group-knob play-loop/group-switch 6 8 # the Play page (touch plan A6)
 gap play-loop/layer-mute play-loop/loop 5 8 # the Play page (touch plan A6)
 gap play-loop/loop play-loop/loop-mute 2 8 # the Play page (touch plan A6)
+gap play-loop/loop play-loop/pads-keys 4 8 # the Play page (touch plan A6)
 gap play-loop/loop play-loop/ring 2 8 # the Play page (touch plan A6)
 gap play-loop/loop-mute play-loop/loop-solo 6 8 # the Play page (touch plan A6)
 gap play-loop/loop-mute play-loop/ring 6 8 # the Play page (touch plan A6)
@@ -283,18 +287,25 @@ overlap notes/aim-pick notes/continue-note # before the touch audit (25 Nov 2026
 overlap notes/aim-pick notes/lane-edge # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap notes/handle notes/note # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap notes/handle notes/note-mark # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap notes/lane-chip notes/lane-edge # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
+overlap notes/lane-edge notes/sound-on # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
+overlap notes/lane-edge notes/sound-remove # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
 overlap notes/note notes/note-mark # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap pad-map/base pad-map/row # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap pad-map/layer pad-map/row # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap patch-edit/zone patch-edit/zone-high # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap patch-edit/zone patch-edit/zone-low # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap patch-list/edit patch-list/patch # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap play-loop/arm play-loop/loop # the Play page (touch plan A6)
+overlap play-loop/layer-mute play-loop/loop # the Play page (touch plan A6)
+overlap play-loop/loop play-loop/ring # the Play page (touch plan A6)
 overlap smp-bar/layer-chip smp-bar/name # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap smp-keep/keep smp-keep/keep-recall # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap smp-play-env/point smp-play-env/point # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap smp-play-keys/zone smp-play-keys/zone # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap smp-play-keys/zone smp-play-keys/zone-low # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap smp-wave/marker smp-wave/marker # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+overlap song/add-close song/add-kind # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
 overlap song/block song/block-end # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap song/block song/block-start # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 overlap song/chord-button song/chord-dismiss # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -633,7 +644,7 @@ size notes/follow 32 normal # before the touch audit (25 Nov 2026 baseline); unt
 size notes/ghost-note 20 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size notes/handle 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size notes/lane 6 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size notes/lane-chip 28 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/lane-chip 24 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size notes/lane-edge 10 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size notes/lane-fold 24 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size notes/list-row 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -650,6 +661,8 @@ size notes/show-chip 32 normal # before the touch audit (25 Nov 2026 baseline); 
 size notes/show-none 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size notes/show-pick 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size notes/sound-chip 26 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size notes/sound-on 20 normal # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
+size notes/sound-remove 20 normal # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
 size notes/tool-aim 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size notes/tool-cancel 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size notes/tool-done 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -682,20 +695,22 @@ size patch-list/close 44 normal # before the touch audit (25 Nov 2026 baseline);
 size patch-list/edit 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size patch-list/new 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size play-loop/arm 39 normal # the Play page (touch plan A6)
-size play-loop/capture 30 normal # the Play page (touch plan A6)
+size play-loop/capture 24 normal # the Play page (touch plan A6)
+size play-loop/group-knob 60 normal # the Play page (touch plan A6)
+size play-loop/group-switch 34 normal # the Play page (touch plan A6)
 size play-loop/layer-mute 39 normal # the Play page (touch plan A6)
 size play-loop/loop 24 normal # the Play page (touch plan A6)
 size play-loop/loop-mute 30 normal # the Play page (touch plan A6)
 size play-loop/loop-solo 30 normal # the Play page (touch plan A6)
-size play-loop/pads-keys 30 normal # the Play page (touch plan A6)
+size play-loop/pads-keys 24 normal # the Play page (touch plan A6)
+size play-loop/ring 48 normal # the Play page (touch plan A6)
 size play-transport/keys 52 normal # the Play page (touch plan A6)
 size play-transport/pads 52 normal # the Play page (touch plan A6)
 size play-transport/rec 52 normal # the Play page (touch plan A6)
 size play-transport/view 44 normal # the Play page (touch plan A6)
 size prefs/back 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size prefs/button 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size prefs/choice 58 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size prefs/dial 62 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size prefs/choice 61 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size prefs/keep 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size prefs/slider 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size prefs/stepper 46 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -816,6 +831,7 @@ size song-list/step 40 normal # before the touch audit (25 Nov 2026 baseline); u
 size song-list/times-less 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size song-list/times-more 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size song-list/view 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+size song/add-kind 52 normal # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
 size song/add-track 24 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size song/arm 22 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size song/audio-header 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone

@@ -111,7 +111,6 @@ ldeck/loop-level landing-moves # jumps to where the finger lands (found 25 Nov);
 ldeck/loop-mute acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 ldeck/loop-solo acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 ldeck/pads-keys acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
-ldeck/records-from acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 ldeck/ring acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 leditor/bars acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 leditor/capture slide-off-commits # acts after the finger slides off and lifts (found 25 Nov); to look into: a slide off calls a lift-inside control off (spec 1a)
@@ -187,6 +186,8 @@ notes/scale-pick acts-on-landing # acts as the finger lands, as controls did bef
 notes/scale-root acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 notes/show-none acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 notes/show-pick acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+notes/sound-on acts-on-landing # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
+notes/sound-remove acts-on-landing # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
 notes/tool-cancel acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 notes/tool-done acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 notes/tool-option acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
@@ -200,7 +201,6 @@ pad-map/done acts-on-landing # acts as the finger lands, as controls did before 
 pad-map/layer acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 pad-map/row acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 pads/pad acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
-patch-list/close slide-off-commits # acts after the finger slides off and lifts (found 25 Nov); to look into: a slide off calls a lift-inside control off (spec 1a)
 play-loop/arm acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 play-loop/capture acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 play-loop/layer-mute acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
@@ -276,6 +276,7 @@ song-list/scene-tempo-now acts-on-landing # acts as the finger lands, as control
 song-list/times-less acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 song-list/times-more acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 song-list/view acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
+song/add-kind acts-on-landing # new on main while the audit waited (26 Nov 2026 rebase); until its screen is redone
 song/arm acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 song/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 song/chord-button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
