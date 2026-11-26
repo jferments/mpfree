@@ -198,6 +198,7 @@ mod tests {
             fade_out: 200,
             into: 0,
             left: 0,
+            ..Region::EMPTY
         }
     }
 

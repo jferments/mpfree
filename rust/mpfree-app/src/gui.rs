@@ -40511,6 +40511,9 @@ mod tests {
                     fade_out: 0,
                     into: 0,
                     left: 0,
+                    bpm: 0.0,
+                    follow: Default::default(),
+                    keep_pitch: false,
                 }],
             }],
             takes: vec![mpfree_audiotracks::save::TakeFile {
@@ -40526,6 +40529,7 @@ mod tests {
                 file: String::new(),
                 path: None,
                 audio: take.clone(),
+                varied: false,
             }],
         };
         let c = Collected {

@@ -76,7 +76,7 @@ use crate::widgets::{
     view_title, ArrangeView, CELL_WAVE, REC_SONG_W,
 };
 use mpfree_audiotracks::host::TakeWave;
-use mpfree_audiotracks::{frames_from, Input, Monitor, Region, TakeInfo};
+use mpfree_audiotracks::{Input, Monitor, Region, TakeInfo};
 use mpfree_transport::time::{TempoMap, Tick};
 use mpfree_ui::{Align, Color, EventKind, FontId, PaintCx, Rect, Target, Touch, Widget};
 use std::cell::RefCell;
@@ -451,8 +451,9 @@ pub struct AudioBlock {
     /// "take 2" when it plays an older take than the track's newest, else
     /// empty.
     pub tag: String,
-    /// The take's frame at `start`, and the frames from `start` to `end`
-    /// along the tempo map: the waveform under the block.
+    /// The take's frame at `start`, and its frames from `start` to `end`
+    /// (along the tempo map, or following the tempo at its own): the
+    /// waveform under the block.
     pub src: i64,
     pub frames: f64,
     /// Its level, 0 to 4 (1 is as recorded).
@@ -1159,7 +1160,9 @@ pub fn audio_blocks(
                     _ => String::new(),
                 },
                 src: r.src,
-                frames: frames_from(map, r.start as f64, r.end as f64, rate),
+                // Its recording's frames under it: along the song, or
+                // following the tempo (phase 5) at its own tempo.
+                frames: r.src_pos(map, r.start as f64, r.end as f64, rate) - f64::from(r.phase),
                 gain: r.gain,
                 fade_in: r.fade_in,
                 fade_out: r.fade_out,
@@ -5880,6 +5883,7 @@ mod tests {
             channels: 1,
             recording: false,
             cut_short: false,
+            varied: false,
         };
         let takes = [
             info(4, 0, 1, 0),
@@ -5898,6 +5902,9 @@ mod tests {
             fade_out: 0,
             into: 0,
             left: 0,
+            bpm: 0.0,
+            follow: Default::default(),
+            keep_pitch: false,
         }];
         let lanes = take_lanes(0, &regions, &takes, &map, 44_100);
         let shown: Vec<_> = lanes.iter().map(|l| (l.take, l.name.as_str())).collect();
@@ -6116,6 +6123,7 @@ mod tests {
             channels: 1,
             recording: false,
             cut_short: false,
+            varied: false,
         };
         let region = |start: Tick, end: Tick, take: u16| Region {
             start,
@@ -6128,6 +6136,9 @@ mod tests {
             fade_out: 7,
             into: 3,
             left: 0,
+            bpm: 0.0,
+            follow: Default::default(),
+            keep_pitch: false,
         };
         // Track 0's takes: 4 (group 0), 2 (group 1, pass 0), 9 (group 1,
         // pass 1, the newest). Take 1 is another track's.

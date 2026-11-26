@@ -220,7 +220,8 @@ enum ToWorker {
         gen: u32,
     },
     Stretch {
-        take: TakeInfo,
+        /// Boxed: the message stays small.
+        take: Box<TakeInfo>,
         audio: Vec<f32>,
         ratio: f64,
         bpm: f64,
@@ -1172,7 +1173,7 @@ impl AudioHost {
             .iter()
             .find(|r| r.contains(start) && r.start != start && plays_from_file(tr, r.take))?;
         let rate = self.tracks.rate();
-        let at = r.src + r.frames_to(map, r.start as f64, start as f64, rate);
+        let at = r.src + r.src_frames_to(map, r.start as f64, start as f64, rate);
         Some((r.take, at.max(0) as u64))
     }
 
@@ -1377,6 +1378,7 @@ impl AudioHost {
             group,
             pass: 0,
             bpm,
+            varied: false,
             anchor: at as f64,
             frames,
             channels,
@@ -2459,7 +2461,7 @@ impl AudioHost {
                             match self.tracks.free_take_id() {
                                 Some(id) => {
                                     self.send(ToWorker::Stretch {
-                                        take,
+                                        take: Box::new(take),
                                         audio,
                                         ratio,
                                         bpm,
@@ -2869,7 +2871,7 @@ impl Worker {
                 id,
                 gen,
             } => {
-                let out = StretchJob::new(take, audio, rate, ratio, bpm, id)
+                let out = StretchJob::new(*take, audio, rate, ratio, bpm, id)
                     .ok()
                     .and_then(|mut j| {
                         while !j.run(1 << 15).finished {}

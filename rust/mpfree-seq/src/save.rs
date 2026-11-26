@@ -99,8 +99,14 @@
 //! line (the tempo it was made at, its gain and its last frame) and a
 //! `region` line a region: start and end ticks, the recording's lasting
 //! id (32 hex digits), its first frame, gain, fade in, fade out, `into`
-//! and `left`. A project with one needs `audio-clips` (the app's project
-//! gate), so a build from before refuses it before reading this part.
+//! and `left`, then where between frames it starts when not on one. A
+//! project with one needs `audio-clips` (the app's project gate), so a
+//! build from before refuses it before reading this part. A region that
+//! follows the tempo (phase 5) ends its line with `follow=repitch` or
+//! `follow=stretch`, `keep=pitch`, and `bpm=` when it has a tempo of its
+//! own, each only when not the default; the project then needs
+//! `audio-tempo`, so a build from before phase 5 refuses it instead of
+//! playing the clip at its recorded rate and dropping the words.
 //!
 //! A loop cell on an audio track (phase 4, step 4b) has a `loopclip` line
 //! instead: the loop's lasting id, 32 hex digits, not 0. Its audio and
@@ -464,6 +470,16 @@ fn clip_body(s: &mut String, c: &Clip) {
             // Where between frames it starts, when not on a frame.
             if r.phase != 0.0 {
                 let _ = write!(s, " {}", r.phase);
+            }
+            // How it follows the tempo (phase 5), when it does.
+            if r.follow != crate::FollowTempo::Off {
+                let _ = write!(s, " follow={}", r.follow.word());
+            }
+            if r.keep_pitch {
+                s.push_str(" keep=pitch");
+            }
+            if r.bpm != 0.0 {
+                let _ = write!(s, " bpm={}", r.bpm);
             }
             s.push('\n');
         }
@@ -1597,21 +1613,29 @@ fn clip_region<'a>(w: &mut impl Iterator<Item = &'a str>) -> Option<crate::ClipR
         .next()
         .filter(|h| h.len() == 32)
         .and_then(|h| u128::from_str_radix(h, 16).ok())?;
-    Some(crate::ClipRegion {
-        start,
-        end,
-        rec: crate::RecId(rec),
+    let mut r = crate::ClipRegion {
         src: num(w.next())?,
         gain: num(w.next())?,
         fade_in: num(w.next())?,
         fade_out: num(w.next())?,
         into: num(w.next())?,
         left: num(w.next())?,
-        phase: match w.next() {
-            None => 0.0,
-            Some(p) => num::<f32>(Some(p)).filter(|p| p.abs() <= 0.5)?,
-        },
-    })
+        ..crate::ClipRegion::new(start, end, crate::RecId(rec), 0)
+    };
+    // Where between frames it starts, then its tempo words (phase 5): a
+    // bad value is refused, a word this build doesn't know is skipped.
+    for (i, word) in w.enumerate() {
+        match word.split_once('=') {
+            None if i == 0 => r.phase = num::<f32>(Some(word)).filter(|p| p.abs() <= 0.5)?,
+            None => return None,
+            Some(("follow", v)) => r.follow = crate::FollowTempo::from_word(v)?,
+            Some(("keep", "pitch")) => r.keep_pitch = true,
+            Some(("keep", _)) => return None,
+            Some(("bpm", v)) => r.bpm = num(Some(v))?,
+            Some(_) => {}
+        }
+    }
+    Some(r)
 }
 
 fn flag(w: Option<&str>) -> Option<bool> {
@@ -3042,6 +3066,39 @@ mod tests {
             text.replace("22050 7 -0.25", "22050 7 0.75"),
             "phase past half a frame",
         );
+        // Following the tempo (phase 5): its words read back, on a region
+        // on a frame (no phase) and one between frames; a bad word or a
+        // tempo MPFree doesn't play is refused.
+        let mut follows = p.clone();
+        let a = follows.tracks[1].slots[2].as_mut().unwrap();
+        let a = a.audio.as_mut().unwrap();
+        a.set_follow(crate::FollowTempo::Stretch, true);
+        a.regions[0].follow = crate::FollowTempo::Repitch;
+        a.regions[0].keep_pitch = false;
+        a.regions[1].bpm = 97.5;
+        follows.check().unwrap();
+        let t = to_text(&follows);
+        assert!(
+            t.contains(
+                "region 0 3840 5b2f0d9c41e8a7763c0f12ab9e4d8c01 1200 1 300 0 0 0 follow=repitch\n\
+                 region 3840 7680 00000000000000000000000000000003 -40 0.5 0 64 22050 7 -0.25 \
+                 follow=stretch keep=pitch bpm=97.5\n"
+            ),
+            "{t}"
+        );
+        assert_eq!(from_text(&t).unwrap(), follows);
+        assert!(!text.contains("follow="), "none when it doesn't follow");
+        refused(t.replace("follow=repitch", "follow=fast"), "follow");
+        refused(t.replace("keep=pitch", "keep=time"), "keep");
+        refused(
+            t.replace("bpm=97.5", "bpm=5"),
+            "a tempo MPFree doesn't play",
+        );
+        refused(
+            t.replace("bpm=97.5", "bpm=x"),
+            "a tempo that isn't a number",
+        );
+        refused(t.replace(" -0.25 ", " -0.25 2 "), "a second number");
         let mut on_notes = p.clone();
         let c = on_notes.tracks[1].slots[2].take();
         on_notes.tracks[0].slots[5] = c;

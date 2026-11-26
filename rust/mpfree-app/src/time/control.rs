@@ -101,6 +101,7 @@ macro_rules! wait_ctx {
             info: &$c.info,
             rate: $c.rate,
             heard: $c.heard,
+            tempos: &$c.rec_tempos,
         }
     };
 }
@@ -360,6 +361,18 @@ pub trait SongAudio {
     /// step 2d); nothing else asks, and nothing keeps them after.
     fn regions(&self) -> Vec<(TrackId, Vec<ClipRegion>)> {
         Vec::new()
+    }
+}
+
+/// Follow tempo in the card's words (audio tracks phase 5).
+fn follow_words(f: mpfree_seq::FollowTempo, keep_pitch: bool) -> String {
+    match f {
+        mpfree_seq::FollowTempo::Off => "Follow tempo Off".to_string(),
+        mpfree_seq::FollowTempo::Repitch => "Follow tempo Repitch".to_string(),
+        mpfree_seq::FollowTempo::Stretch if keep_pitch => {
+            "Follow tempo Stretch, keeping its pitch".to_string()
+        }
+        mpfree_seq::FollowTempo::Stretch => "Follow tempo Stretch".to_string(),
     }
 }
 
@@ -778,6 +791,10 @@ pub struct TimeControl {
     /// ticks they cover, in order ([`TimeControl::set_audio_spans`]): no
     /// block goes over one (phase 2, step 2d).
     audio_spans: super::AudioSpans,
+    /// The tempo each recording was made at, 0 for none
+    /// ([`TimeControl::set_rec_tempos`]): where a clip region following
+    /// the tempo at its recording's is in it (phase 5).
+    rec_tempos: Vec<(RecId, f64)>,
     tx: Tx<ToAudio>,
     rx: Rx<ToControl>,
     /// A view the audio half's full queue handed back, sent again on the
@@ -962,6 +979,7 @@ impl TimeControl {
             not_ready: Vec::new(),
             audio_focus: TrackId::NONE,
             audio_spans: Vec::new(),
+            rec_tempos: Vec::new(),
             tx,
             rx,
             unsent: None,
@@ -2060,6 +2078,15 @@ impl TimeControl {
         self.audio_spans = spans;
     }
 
+    /// The tempo each recording was made at, 0 for none (audio tracks
+    /// phase 5): the audio tracks host hands them over whenever they
+    /// change, for a clip region following the tempo at its recording's
+    /// (what a cue that waits for its audio needs, and Song → scenes'
+    /// cuts).
+    pub fn set_rec_tempos(&mut self, tempos: Vec<(RecId, f64)>) {
+        self.rec_tempos = tempos;
+    }
+
     /// To a cell and Put in a cell (audio tracks phase 2): `clip`, an
     /// audio clip, goes in audio track `track`'s first empty cell, top
     /// down, as an edit UNDO takes away again. The row it went in, or why
@@ -2143,6 +2170,17 @@ impl TimeControl {
             AudioSet::Name(_) => None,
             _ => Some(AUDIO_CARD_JOIN + u64::from(row)),
         };
+        // What the line says it set: the row's, or Follow tempo's words.
+        let follow_said = match set {
+            AudioSet::Follow(f, keep) => Some(follow_words(f, keep)),
+            AudioSet::Tempo { region, bpm: 0.0 } => {
+                Some(format!("region {}'s tempo its recording's", region + 1))
+            }
+            AudioSet::Tempo { region, bpm } => {
+                Some(format!("region {}'s tempo {bpm} BPM", region + 1))
+            }
+            _ => None,
+        };
         let rate = self.rate;
         let once = clip.settings().once;
         let from = clip.length;
@@ -2174,6 +2212,22 @@ impl TimeControl {
                 }
                 clip.name = name;
             }
+            // Following the tempo (phase 5): every region at once; each
+            // keeps its own tempo.
+            AudioSet::Follow(follow, keep_pitch) => a.set_follow(follow, keep_pitch),
+            AudioSet::Tempo { region, bpm } => {
+                if !(bpm == 0.0 || mpfree_transport::time::valid_bpm(bpm)) {
+                    return Err(format!(
+                        "clip: {}: MPFree doesn't play at {bpm} BPM",
+                        clip.name
+                    ));
+                }
+                let r = a
+                    .regions
+                    .get_mut(region)
+                    .ok_or_else(|| format!("clip: {} has no region {}", clip.name, region + 1))?;
+                r.bpm = bpm;
+            }
         }
         let name = clip.name.clone();
         self.takes
@@ -2189,6 +2243,9 @@ impl TimeControl {
             .clip(track, slot)
             .map(|c| {
                 let meter = self.info.meter;
+                if let Some(said) = follow_said.clone() {
+                    return said;
+                }
                 match usize::from(row) {
                     0 => format!("Length {}", bars_beats(c.length, meter)),
                     AUDIO_GAIN => format!(
@@ -5744,6 +5801,7 @@ impl TimeControl {
         let regions = std::mem::take(&mut self.song_regions);
         let sound = SongSound {
             regions: &regions,
+            tempos: &self.rec_tempos,
             map,
             rate: self.rate,
         };

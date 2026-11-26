@@ -5296,6 +5296,7 @@ fn audio_clips(rate: u32) -> Case {
             file: String::new(),
             path: None,
             audio,
+            varied: false,
         };
         assert!(a.load_take(f).is_ok(), "a take loads");
     }
@@ -5312,6 +5313,9 @@ fn audio_clips(rate: u32) -> Case {
                 fade_out: 0,
                 into: 0,
                 left: 0,
+                bpm: 0.0,
+                follow: Default::default(),
+                keep_pitch: false,
             };
             let later = i64::from(rate) / 3;
             [

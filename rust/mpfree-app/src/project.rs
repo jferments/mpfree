@@ -151,8 +151,8 @@ pub const FORMAT: u32 = mpfree_library::project::PARTS_FORMAT;
 /// ([`FREE_LOOPS`]), a scene that sets the tempo ([`SCENE_TEMPO`]), an
 /// instrument with a tuning of its own ([`OWN_TUNINGS`]), a loop cell on
 /// an audio track ([`AUDIO_LOOPS`]), a grain layer with routes
-/// ([`GRAIN_ROUTES_NEED`]) or loops kept as recordings
-/// ([`LOOP_RECORDINGS`]).
+/// ([`GRAIN_ROUTES_NEED`]), loops kept as recordings
+/// ([`LOOP_RECORDINGS`]) or audio following the tempo ([`AUDIO_TEMPO`]).
 pub const NEEDS_KEY: &str = "needs";
 /// A project with a synth in a free place (the instrument redesign's step
 /// 6: one picked for the pads, no track's): an older build would read the
@@ -224,6 +224,12 @@ pub const AUDIO_LOOPS: &str = "audio-loops";
 /// reason instead.
 pub const LOOP_RECORDINGS: &str = "loop-recordings";
 
+/// A project with a region or an audio clip's region that follows the
+/// song's tempo or has a tempo of its own, or a take whose tempo changed
+/// as it recorded (the audio tracks rethink, phase 5): a build from before
+/// would skip those words and play the audio at its recorded rate, and
+/// drop them at its next save, so it refuses the project instead.
+pub const AUDIO_TEMPO: &str = "audio-tempo";
 /// A project with a grain layer's routes from velocity, pressure or the
 /// key (sampler step 17c, `mpfree_sampler::model::GrainRoutes`): an older
 /// build would play the layer without them and drop them at its next
@@ -245,6 +251,7 @@ pub const KNOWN_NEEDS: &[&str] = &[
     AUDIO_LOOPS,
     GRAIN_ROUTES_NEED,
     LOOP_RECORDINGS,
+    AUDIO_TEMPO,
 ];
 
 // ------------------------------------------------------------ the loop's side
@@ -521,6 +528,22 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
         .any(|(name, text)| name == LOOPER && text.starts_with(mpfree_looper::save::FORMAT_2))
     {
         needs.push(LOOP_RECORDINGS);
+    }
+    // Audio following the tempo (phase 5): a clip's region, or the audio
+    // tracks' part's.
+    let clip_follows = c
+        .clips
+        .cell_clips()
+        .map(|(_, _, clip)| clip)
+        .chain(c.clips.arrangement.clips.iter())
+        .filter_map(|clip| clip.audio.as_ref())
+        .any(mpfree_seq::AudioClip::follows_tempo);
+    if clip_follows
+        || parts
+            .iter()
+            .any(|(name, text)| name == AUDIOTRACKS && mpfree_audiotracks::save::needs_tempo(text))
+    {
+        needs.push(AUDIO_TEMPO);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -3690,6 +3713,7 @@ mod tests {
                     file: "a.wav".into(),
                     path: None,
                     audio: Vec::new(),
+                    varied: false,
                 }],
             })
         };
@@ -3967,6 +3991,96 @@ mod tests {
                     .to_string()
             )
         );
+    }
+
+    /// Phase 5: an audio clip's region following the tempo, or a song
+    /// region's (the audio tracks' part), makes the project need
+    /// `audio-tempo`, and a build from before phase 5 refuses it in plain
+    /// words; audio at its recorded rate needs nothing new.
+    #[test]
+    fn audio_following_the_tempo_needs_audio_tempo_and_phase_4_refuses_it() {
+        use mpfree_audiotracks::save::{to_text, Saved, TakeFile, TrackFile};
+        let needs = |c: &Collected, extra: Vec<(String, String)>| {
+            let snap = snapshot(c, extra);
+            let line = snap.meta.extra.iter().find(|(k, _)| k == NEEDS_KEY);
+            (line.map(|(_, v)| v.clone()), snap)
+        };
+        let mut c = collected(String::new(), InstrumentList::new().text());
+        let mut t = mpfree_seq::Track::new_audio("Audio 1", 0);
+        c.clips.give_track_id(&mut t);
+        let mut clip = mpfree_seq::Clip::new("Hook", 3840);
+        clip.audio = Some(mpfree_seq::AudioClip::of(
+            mpfree_seq::RecId(5),
+            0,
+            88_200,
+            3840,
+            120.0,
+        ));
+        t.slots[0] = Some(clip);
+        c.clips.tracks.push(t);
+        c.clips.check().unwrap();
+        assert_eq!(
+            needs(&c, Vec::new()).0.as_deref(),
+            Some("audio-tracks audio-clips")
+        );
+        let t = c.clips.tracks.len() - 1;
+        let a = c.clips.tracks[t].slots[0].as_mut().unwrap();
+        a.audio
+            .as_mut()
+            .unwrap()
+            .set_follow(mpfree_seq::FollowTempo::Repitch, false);
+        let (line, snap) = needs(&c, Vec::new());
+        assert_eq!(
+            line.as_deref(),
+            Some("audio-tracks audio-clips audio-tempo")
+        );
+        assert_eq!(check(&snap), Ok(FORMAT));
+        let phase_4: Vec<&str> = KNOWN_NEEDS
+            .iter()
+            .copied()
+            .filter(|&n| n != AUDIO_TEMPO)
+            .collect();
+        assert_eq!(
+            check_against(&snap, &phase_4),
+            Err(
+                "it needs audio-tempo, which this MPFree hasn't got. Update MPFree to open it"
+                    .to_string()
+            )
+        );
+        // A song region following the tempo, in the audio tracks' part.
+        let c = collected(String::new(), InstrumentList::new().text());
+        let mut region = mpfree_audiotracks::Region::of(0, 3840, 0, (0, 0.0), 120.0);
+        let mut saved = Saved {
+            rate: 44_100,
+            tracks: vec![TrackFile {
+                index: 0,
+                id: 1,
+                input: mpfree_audiotracks::Input::Left,
+                monitor: mpfree_audiotracks::Monitor::Auto,
+                from: String::new(),
+                regions: vec![region],
+            }],
+            takes: vec![TakeFile {
+                path: None,
+                id: 0,
+                rec: mpfree_audiotracks::RecordingId(9),
+                track: 0,
+                group: 0,
+                pass: 0,
+                bpm: 120.0,
+                anchor: 0.0,
+                frames: 88_200,
+                channels: 1,
+                file: "take_9.wav".to_string(),
+                audio: Vec::new(),
+                varied: false,
+            }],
+        };
+        let part = |s: &Saved| vec![(AUDIOTRACKS.to_string(), to_text(s))];
+        assert_eq!(needs(&c, part(&saved)).0, None, "at its recorded rate");
+        region.follow = mpfree_audiotracks::FollowTempo::Repitch;
+        saved.tracks[0].regions[0] = region;
+        assert_eq!(needs(&c, part(&saved)).0.as_deref(), Some("audio-tempo"));
     }
 
     /// Sampler step 16: a learned control that names a kit's pad or a
@@ -4865,6 +4979,7 @@ mod tests {
                 file: file.to_string(),
                 path,
                 audio,
+                varied: false,
             }
         };
         let region = |start, end, take| Region {
@@ -4878,6 +4993,9 @@ mod tests {
             fade_out: 0,
             into: 0,
             left: 0,
+            bpm: 0.0,
+            follow: Default::default(),
+            keep_pitch: false,
         };
         // Take 0 was recorded to its file, which holds all of it: copied
         // whole. Take 1 has no file: written from its samples, named for

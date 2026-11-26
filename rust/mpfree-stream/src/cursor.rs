@@ -117,10 +117,7 @@ impl Cursor {
     /// the sound thread.
     pub fn new(source: u16, id: u16) -> Cursor {
         // Make the reads' tables here, never on the sound thread.
-        near_kernel();
-        kernel(Read::Near);
-        kernel(Read::Sinc8);
-        kernel(Read::Sinc16);
+        prepare_reads();
         Cursor {
             source,
             id,
@@ -289,11 +286,8 @@ impl Cursor {
             self.gather_before(p, lead);
             missed += self.gather(p, self.pos, span, lead, true);
             self.gather(p, self.pos + span as u64, tail, lead + span, false);
-            match self.read {
-                _ if self.speed == 1.0 && self.frac == 0.0 => self.copy(ch, lead, part),
-                Read::Near if self.speed <= 1.0 => self.near(ch, lead, part),
-                read => self.sinc(kernel(read), ch, lead, part),
-            }
+            let g = &self.gathered[..(lead + span + tail) * ch];
+            read_gathered(self.read, g, ch, lead, self.frac, self.speed, part);
             // Move on.
             let moved = self.frac + n as f64 * self.speed;
             let whole = moved.floor();
@@ -349,98 +343,141 @@ impl Cursor {
             }
         }
     }
+}
 
-    /// At speed 1 from a whole frame: the gathered frames themselves.
-    fn copy(&self, ch: usize, lead: usize, out: &mut [f32]) {
-        let g = &self.gathered;
-        for (j, o) in out.chunks_exact_mut(2).enumerate() {
-            for (c, slot) in o.iter_mut().enumerate() {
-                *slot = g[(lead + j) * ch + c.min(ch - 1)];
-            }
+/// Reads `out.len() / 2` frames into `out` (stereo, interleaved) from
+/// `frames`, file frames gathered by the caller (interleaved in
+/// `channels`), the way a cursor reads what it gathers: the first read's
+/// place is `frac` (0 to 1) past frame `lead`, and each next one `speed`
+/// frames on. `frames` holds the [`reach`] a read looks at either side:
+/// `lead` frames before the first place (at least [`reach_of`]'s first)
+/// and its second after the last frame passed. At speed 1 from a whole
+/// frame it is the frames themselves, bit for bit; `Read::Near` at speed
+/// 1 or under reads the pads' table; any other read is band-limited
+/// ([`Read`]). For a track that gathers from its own memory as well as
+/// a file (the audio tracks' Repitch, phase 5a). Never allocates once
+/// [`prepare_reads`] has run.
+pub fn read_gathered(
+    read: Read,
+    frames: &[f32],
+    channels: usize,
+    lead: usize,
+    frac: f64,
+    speed: f64,
+    out: &mut [f32],
+) {
+    match read {
+        _ if speed == 1.0 && frac == 0.0 => copy(frames, channels, lead, out),
+        Read::Near if speed <= 1.0 => near(frames, channels, lead, frac, speed, out),
+        read => sinc(kernel(read), frames, channels, lead, frac, speed, out),
+    }
+}
+
+/// The frames [`read_gathered`] looks at before its first place and after
+/// the last frame it passes, reading `read` at `speed`.
+pub fn reach_of(read: Read, speed: f64) -> (usize, usize) {
+    let r = reach(kernel(read), speed);
+    (r, r + 1)
+}
+
+/// Makes the reads' tables, so that [`read_gathered`] and [`reach_of`]
+/// never make one on the sound thread: call it off the sound thread
+/// before either (a [`Cursor::new`] does too).
+pub fn prepare_reads() {
+    near_kernel();
+    kernel(Read::Near);
+    kernel(Read::Sinc8);
+    kernel(Read::Sinc16);
+}
+
+/// At speed 1 from a whole frame: the gathered frames themselves.
+fn copy(g: &[f32], ch: usize, lead: usize, out: &mut [f32]) {
+    for (j, o) in out.chunks_exact_mut(2).enumerate() {
+        for (c, slot) in o.iter_mut().enumerate() {
+            *slot = g[(lead + j) * ch + c.min(ch - 1)];
         }
     }
+}
 
-    /// The 8-point read of the gathered frames (pos is at `lead`, at
-    /// least [`NEAR_HALF`]) into `out`, stereo, at the file's own speed or
-    /// slower: each frame from the 8 round its place, with the weights the
-    /// sampler's pads take from the same table for the same fraction
-    /// ([`near_kernel`], a 32-bit fraction), summed the same way.
-    fn near(&self, ch: usize, lead: usize, out: &mut [f32]) {
-        let k = near_kernel();
-        let g = &self.gathered;
-        let last = ch - 1;
-        for (j, o) in out.chunks_exact_mut(2).enumerate() {
-            // The same sum as `last` in play, so it never reads past it.
-            let x = self.frac + j as f64 * self.speed;
-            let i = x as usize;
-            let c = k.weights(((x - i as f64) * 4_294_967_296.0) as u32);
-            // Frames i - 3 to i + 4.
-            let at = lead + i + 1 - NEAR_HALF;
-            let (mut a, mut b) = ([0.0f32; NEAR_TAPS], [0.0f32; NEAR_TAPS]);
-            for m in 0..NEAR_TAPS {
-                a[m] = g[(at + m) * ch];
-                b[m] = g[(at + m) * ch + last];
-            }
-            o[0] = near_sum(&c, &a);
-            o[1] = near_sum(&c, &b);
+/// The 8-point read of the gathered frames (pos is at `lead`, at
+/// least [`NEAR_HALF`]) into `out`, stereo, at the file's own speed or
+/// slower: each frame from the 8 round its place, with the weights the
+/// sampler's pads take from the same table for the same fraction
+/// ([`near_kernel`], a 32-bit fraction), summed the same way.
+fn near(g: &[f32], ch: usize, lead: usize, frac: f64, speed: f64, out: &mut [f32]) {
+    let k = near_kernel();
+    let last = ch - 1;
+    for (j, o) in out.chunks_exact_mut(2).enumerate() {
+        // The same sum as `last` in play, so it never reads past it.
+        let x = frac + j as f64 * speed;
+        let i = x as usize;
+        let c = k.weights(((x - i as f64) * 4_294_967_296.0) as u32);
+        // Frames i - 3 to i + 4.
+        let at = lead + i + 1 - NEAR_HALF;
+        let (mut a, mut b) = ([0.0f32; NEAR_TAPS], [0.0f32; NEAR_TAPS]);
+        for m in 0..NEAR_TAPS {
+            a[m] = g[(at + m) * ch];
+            b[m] = g[(at + m) * ch + last];
         }
+        o[0] = near_sum(&c, &a);
+        o[1] = near_sum(&c, &b);
     }
+}
 
-    /// The band-limited read of the gathered frames (pos is at `lead`)
-    /// into `out`, stereo: each frame a sum of its neighbours weighted by
-    /// the kernel `k`, stretched by the speed (up to [`MAX_STRETCH`]) so it
-    /// cuts at the output's Nyquist frequency (the 8-point read's a little
-    /// under), and weights summed to 1. The taps walk the table in fixed
-    /// point, half a side at a time.
-    fn sinc(&self, k: &Kernel, ch: usize, lead: usize, out: &mut [f32]) {
-        const ONE: f64 = (1u64 << 16) as f64;
-        const INV: f32 = 1.0 / (1u32 << 16) as f32;
-        let g = &self.gathered;
-        let tab = k.table();
-        let mask = tab.len() - 1;
-        let stretch = self.speed.clamp(1.0, MAX_STRETCH);
-        let r = reach(k, self.speed);
-        // Table steps between neighbouring frames, in fixed point.
-        let per = k.steps() as f64 / stretch;
-        let step = (per * ONE) as u32;
-        let last = ch - 1;
-        let tap = |pos: u32| {
-            let i = (pos >> 16) as usize;
-            let a = tab[i & mask];
-            a + (pos & 0xFFFF) as f32 * INV * (tab[(i + 1) & mask] - a)
-        };
-        for (j, o) in out.chunks_exact_mut(2).enumerate() {
-            let x = self.frac + j as f64 * self.speed;
-            let i = x as usize;
-            let t = x - i as f64;
-            // The frames round the place: r before it and up to it, then r
-            // after.
-            let at = (lead + i + 1 - r) * ch;
-            let win = &g[at..at + 2 * r * ch];
-            let (before, after) = win.split_at(r * ch);
-            let (mut a, mut b, mut total) = (0.0f32, 0.0f32, 0.0f32);
-            // Frame i, i - 1, ...: t, t + 1, ... frames from the place.
-            let mut pos = (t * per * ONE) as u32;
-            for f in before.chunks_exact(ch).rev() {
-                let w = tap(pos);
-                a += w * f[0];
-                b += w * f[last];
-                total += w;
-                pos += step;
-            }
-            // Frame i + 1, i + 2, ...: 1 - t, 2 - t, ... frames from it.
-            let mut pos = ((1.0 - t) * per * ONE) as u32;
-            for f in after.chunks_exact(ch) {
-                let w = tap(pos);
-                a += w * f[0];
-                b += w * f[last];
-                total += w;
-                pos += step;
-            }
-            let norm = if total == 0.0 { 0.0 } else { 1.0 / total };
-            o[0] = a * norm;
-            o[1] = b * norm;
+/// The band-limited read of the gathered frames (pos is at `lead`)
+/// into `out`, stereo: each frame a sum of its neighbours weighted by
+/// the kernel `k`, stretched by the speed (up to [`MAX_STRETCH`]) so it
+/// cuts at the output's Nyquist frequency (the 8-point read's a little
+/// under), and weights summed to 1. The taps walk the table in fixed
+/// point, half a side at a time.
+#[allow(clippy::too_many_arguments)]
+fn sinc(k: &Kernel, g: &[f32], ch: usize, lead: usize, frac: f64, speed: f64, out: &mut [f32]) {
+    const ONE: f64 = (1u64 << 16) as f64;
+    const INV: f32 = 1.0 / (1u32 << 16) as f32;
+    let tab = k.table();
+    let mask = tab.len() - 1;
+    let stretch = speed.clamp(1.0, MAX_STRETCH);
+    let r = reach(k, speed);
+    // Table steps between neighbouring frames, in fixed point.
+    let per = k.steps() as f64 / stretch;
+    let step = (per * ONE) as u32;
+    let last = ch - 1;
+    let tap = |pos: u32| {
+        let i = (pos >> 16) as usize;
+        let a = tab[i & mask];
+        a + (pos & 0xFFFF) as f32 * INV * (tab[(i + 1) & mask] - a)
+    };
+    for (j, o) in out.chunks_exact_mut(2).enumerate() {
+        let x = frac + j as f64 * speed;
+        let i = x as usize;
+        let t = x - i as f64;
+        // The frames round the place: r before it and up to it, then r
+        // after.
+        let at = (lead + i + 1 - r) * ch;
+        let win = &g[at..at + 2 * r * ch];
+        let (before, after) = win.split_at(r * ch);
+        let (mut a, mut b, mut total) = (0.0f32, 0.0f32, 0.0f32);
+        // Frame i, i - 1, ...: t, t + 1, ... frames from the place.
+        let mut pos = (t * per * ONE) as u32;
+        for f in before.chunks_exact(ch).rev() {
+            let w = tap(pos);
+            a += w * f[0];
+            b += w * f[last];
+            total += w;
+            pos += step;
         }
+        // Frame i + 1, i + 2, ...: 1 - t, 2 - t, ... frames from it.
+        let mut pos = ((1.0 - t) * per * ONE) as u32;
+        for f in after.chunks_exact(ch) {
+            let w = tap(pos);
+            a += w * f[0];
+            b += w * f[last];
+            total += w;
+            pos += step;
+        }
+        let norm = if total == 0.0 { 0.0 } else { 1.0 / total };
+        o[0] = a * norm;
+        o[1] = b * norm;
     }
 }
 

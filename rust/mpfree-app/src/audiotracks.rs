@@ -60,9 +60,9 @@ use mpfree_audiotracks::host::{AudioHost, CueAudio, ImportRefused, TakeWave, MAX
 use mpfree_audiotracks::save::{Saved, TrackFile};
 use mpfree_audiotracks::streaming::StreamConfig;
 use mpfree_audiotracks::{
-    Answer, Change, ClipPlay, ClipRegion, Command, Input, LoopPlay, LoopPlayer, Monitor, Plays,
-    RecordingId, Retime, RetimeRefused, SongStep, TakeInfo, MAX_CHANGES, MAX_CLIP_REGIONS,
-    MAX_REGIONS, MAX_TAKES, MAX_TRACKS, PEAK_BLOCK,
+    Answer, Change, ClipPlay, ClipRegion, Command, FollowTempo, Input, LoopPlay, LoopPlayer,
+    Monitor, Plays, RecordingId, Region, Retime, RetimeRefused, SongStep, TakeInfo, MAX_CHANGES,
+    MAX_CLIP_REGIONS, MAX_REGIONS, MAX_TAKES, MAX_TRACKS, PEAK_BLOCK,
 };
 use mpfree_play::{AudioAnswer, AudioPlays};
 use mpfree_seq::{RecId, TrackId};
@@ -334,7 +334,56 @@ const NO_CLIP_REGION: ClipRegion = ClipRegion {
     fade_out: 0,
     into: 0,
     left: 0,
+    follow: FollowTempo::Off,
+    keep_pitch: false,
+    bpm: 0.0,
 };
+
+/// A clip region's Follow tempo in the engine's words.
+fn follow_in(f: mpfree_seq::FollowTempo) -> FollowTempo {
+    match f {
+        mpfree_seq::FollowTempo::Off => FollowTempo::Off,
+        mpfree_seq::FollowTempo::Repitch => FollowTempo::Repitch,
+        mpfree_seq::FollowTempo::Stretch => FollowTempo::Stretch,
+    }
+}
+
+/// A song region's Follow tempo in the clip's words.
+fn follow_out(f: FollowTempo) -> mpfree_seq::FollowTempo {
+    match f {
+        FollowTempo::Off => mpfree_seq::FollowTempo::Off,
+        FollowTempo::Repitch => mpfree_seq::FollowTempo::Repitch,
+        FollowTempo::Stretch => mpfree_seq::FollowTempo::Stretch,
+    }
+}
+
+/// Song region `r` of a take made at `made_at` as an audio clip's region
+/// on the same ticks: its Follow tempo kept, and its tempo as 0 when it is
+/// its take's. A region with no tempo while its take has one (set by
+/// hand) plays at its recorded rate whatever it says, so it goes as Off,
+/// playing the same.
+fn clip_region_of(r: &Region, rec: RecId, made_at: f64) -> mpfree_seq::ClipRegion {
+    let none = r.bpm == 0.0 && made_at != 0.0;
+    mpfree_seq::ClipRegion {
+        start: r.start,
+        end: r.end,
+        rec,
+        src: r.src,
+        phase: r.phase,
+        gain: r.gain,
+        fade_in: r.fade_in,
+        fade_out: r.fade_out,
+        into: r.into,
+        left: r.left,
+        follow: if none {
+            mpfree_seq::FollowTempo::Off
+        } else {
+            follow_out(r.follow)
+        },
+        keep_pitch: r.keep_pitch && !none,
+        bpm: if r.bpm == made_at { 0.0 } else { r.bpm },
+    }
+}
 
 /// What the player's `p` says, in the engine's words: a clip's regions
 /// copied into `room` (the first [`MAX_CLIP_REGIONS`]), each naming its
@@ -365,6 +414,9 @@ fn plays_in<'r>(p: &AudioPlays, room: &'r mut [ClipRegion; MAX_CLIP_REGIONS]) ->
                     fade_out: r.fade_out,
                     into: r.into,
                     left: r.left,
+                    follow: follow_in(r.follow),
+                    keep_pitch: r.keep_pitch,
+                    bpm: r.bpm,
                 };
             }
             Plays::Clip(ClipPlay {
@@ -475,6 +527,9 @@ pub struct TrackHost {
     /// The regions' spans as last handed to the time engine
     /// ([`TrackHost::spans_if_changed`]), as a fingerprint.
     spans_seen: u64,
+    /// The recordings' tempos as last handed to the time engine
+    /// ([`TrackHost::tempos_if_changed`]), as a fingerprint.
+    tempos_seen: u64,
     /// A project opening: the tracks empty once nothing records, then the
     /// project's part (if it has come) goes in.
     clearing: bool,
@@ -590,6 +645,7 @@ impl TrackHost {
             periods: 0,
             seen: 0,
             spans_seen: 0,
+            tempos_seen: 0,
             changed: false,
             clearing: false,
             pending: None,
@@ -901,8 +957,10 @@ impl TrackHost {
     }
 
     /// A new time engine (a project opened): no cue of the last one waits
-    /// any more, and what was held for them goes.
+    /// any more, and what was held for them goes; it is told the
+    /// recordings' tempos afresh.
     pub fn forget_waits(&mut self) {
+        self.tempos_seen = 0;
         for w in self.waits.drain(..) {
             self.host.let_cue_go(w.cue);
         }
@@ -2236,6 +2294,31 @@ impl TrackHost {
         .collect();
     }
 
+    /// The tempo each recording was made at (0: none, or it changed as it
+    /// recorded), by its lasting id, when any changed since the last call:
+    /// for the time engine, where a clip region following the tempo at its
+    /// recording's is in it (phase 5,
+    /// [`crate::time::TimeHost::set_rec_tempos`]). Allocates only when
+    /// something changed.
+    pub fn tempos_if_changed(&mut self) -> Option<Vec<(RecId, f64)>> {
+        let tempos = || {
+            self.host.tracks.takes().filter(|k| !k.recording).map(|k| {
+                let made_at = if k.varied { 0.0 } else { k.bpm };
+                (RecId(k.rec.0), made_at)
+            })
+        };
+        let mut h = Fnv::new();
+        for (rec, bpm) in tempos() {
+            h.add(rec.0 as u64 ^ (rec.0 >> 64) as u64);
+            h.add(bpm.to_bits());
+        }
+        if h.0 == self.tempos_seen {
+            return None;
+        }
+        self.tempos_seen = h.0;
+        Some(tempos().collect())
+    }
+
     /// Each project audio track's regions as the spans of song ticks they
     /// cover, in order, by the track's lasting id, when they changed since
     /// the last call (or `project`'s audio tracks did): for the time
@@ -2413,7 +2496,6 @@ impl TrackHost {
     /// without a wave. A loop cell's block (phase 4e.3) names its loop,
     /// whose wave the screen has from the looper.
     pub fn fill_blocks(&self, st: &mut TimeState, project: &mpfree_seq::Project, map: &TempoMap) {
-        let tr = &self.host.tracks;
         for (index, p) in project.arrangement.placements.iter().enumerate() {
             let Some(lane) = st.audio.iter_mut().find(|l| l.row == p.track) else {
                 continue;
@@ -2443,17 +2525,16 @@ impl TrackHost {
                 .regions
                 .iter()
                 .filter_map(|r| {
+                    let er = self.played(r)?;
+                    let (from, to) = ((base + r.start) as f64, (base + r.end) as f64);
                     Some(ClipPiece {
                         start: r.start,
                         end: r.end,
-                        take: tr.take_of(RecordingId(r.rec.0))?,
+                        take: er.take,
                         src: r.src,
-                        frames: mpfree_audiotracks::frames_from(
-                            map,
-                            (base + r.start) as f64,
-                            (base + r.end) as f64,
-                            self.rate,
-                        ),
+                        // Its recording's frames under it: along the song,
+                        // or following the tempo at its own.
+                        frames: er.src_pos(map, from, to, self.rate) - f64::from(r.phase),
                     })
                 })
                 .collect();
@@ -2468,13 +2549,37 @@ impl TrackHost {
         }
     }
 
+    /// Clip region `r` as the track player plays it: the take it names
+    /// here, and its tempo resolved (0, its take's: as the player's
+    /// `Set::fill`). None when its take isn't here.
+    fn played(&self, r: &mpfree_seq::ClipRegion) -> Option<Region> {
+        let tr = &self.host.tracks;
+        let take = tr.take_of(RecordingId(r.rec.0))?;
+        let info = tr.take(take)?;
+        let made_at = if info.varied { 0.0 } else { info.bpm };
+        Some(Region {
+            start: r.start,
+            end: r.end,
+            take,
+            src: r.src,
+            phase: r.phase,
+            gain: r.gain,
+            fade_in: r.fade_in,
+            fade_out: r.fade_out,
+            into: r.into,
+            left: r.left,
+            follow: follow_in(r.follow),
+            keep_pitch: r.keep_pitch,
+            bpm: if r.bpm == 0.0 { made_at } else { r.bpm },
+        })
+    }
+
     /// An audio clip's small wave over one pass of `length` clip ticks
     /// (`per_tick` frames a tick at the tempo it was made at): each
     /// column's peak, 0 to 255, from its takes' waveforms read so far
     /// (silent where none is yet), with the regions' and clip's gains.
     fn clip_wave(&self, a: &mpfree_seq::AudioClip, length: Tick, per_tick: f64) -> [u8; CELL_WAVE] {
         let mut out = [0u8; CELL_WAVE];
-        let tr = &self.host.tracks;
         let length = length.max(1) as f64;
         for (c, v) in out.iter_mut().enumerate() {
             let (t0, t1) = (
@@ -2487,12 +2592,14 @@ impl TrackHost {
                 if a0 >= a1 {
                     continue;
                 }
-                let Some(w) = tr
-                    .take_of(RecordingId(r.rec.0))
-                    .and_then(|id| self.waves.iter().find(|w| w.id == id))
-                else {
+                let Some((w, er)) = self.played(r).and_then(|er| {
+                    let w = self.waves.iter().find(|w| w.id == er.take)?;
+                    Some((w, er))
+                }) else {
                     continue;
                 };
+                // Following the tempo, at its own tempo.
+                let per_tick = er.per_tick(self.rate).unwrap_or(per_tick);
                 let f0 = r.src as f64 + (a0 - r.start as f64) * per_tick;
                 let f1 = r.src as f64 + (a1 - r.start as f64) * per_tick;
                 let fpc = w.frames_per_column.max(1) as f64;
@@ -2548,19 +2655,22 @@ impl TrackHost {
         } else {
             (format!("{who} {first}"), format!("{who}, bar {first}"))
         };
-        let mut one = mpfree_seq::ClipRegion::new(0, length, RecId(take.rec.0), reg.src);
-        one.phase = reg.phase;
-        one.gain = reg.gain;
-        one.fade_in = reg.fade_in;
-        one.fade_out = reg.fade_out;
-        one.into = reg.into;
-        one.left = reg.left;
+        let made_at = if take.varied { 0.0 } else { take.bpm };
+        let mut one = clip_region_of(&reg, RecId(take.rec.0), made_at);
+        (one.start, one.end) = (0, length);
+        // Following the tempo (phase 5), it was made at its own tempo,
+        // and its sound ends where its recording's does at that tempo.
+        let follows = reg.per_tick(self.rate).is_some();
         let mut clip = mpfree_seq::Clip::new(&name, length);
         clip.audio = Some(mpfree_seq::AudioClip {
             regions: vec![one],
-            bpm: map.bpm_at(reg.start),
+            bpm: if follows {
+                reg.bpm
+            } else {
+                map.bpm_at(reg.start)
+            },
             gain: 1.0,
-            last_frame: reg.src + frames.max(1),
+            last_frame: reg.src + reg.src_len(frames, self.rate).max(1),
         });
         clip.check()
             .map_err(|_| format!("{place} can't be a clip: it is longer than a clip holds"))?;
@@ -2812,6 +2922,59 @@ impl TrackHost {
             // The clip goes to the time engine's cells: the app builds it
             // with `region_clip` and puts it in (`main::time_action`).
             AudioAction::ToCell(_) => return Err("To a cell goes through the clips".into()),
+            // Following the tempo (phase 5): a step of the region edits'.
+            AudioAction::Follow {
+                region: r,
+                follow,
+                keep_pitch,
+            } => {
+                let reg = region(tr, r)?;
+                self.send(Command::SetFollow {
+                    track: r.track,
+                    at: reg.start,
+                    follow,
+                    keep_pitch,
+                })?;
+                let how = match follow {
+                    FollowTempo::Off => "Off",
+                    FollowTempo::Repitch => "Repitch",
+                    FollowTempo::Stretch if keep_pitch => "Stretch, keeping its pitch",
+                    FollowTempo::Stretch => "Stretch",
+                };
+                format!(
+                    "{}: Follow tempo {how} (Undo takes it back)",
+                    self.who(r.track)
+                )
+            }
+            AudioAction::Tempo {
+                region: r,
+                centi_bpm,
+            } => {
+                let reg = region(tr, r)?;
+                let take = tr.take(reg.take).ok_or("that region's take is gone")?;
+                let bpm = match centi_bpm {
+                    0 if take.varied => 0.0,
+                    0 => take.bpm,
+                    c => f64::from(c) / 100.0,
+                };
+                if !(bpm == 0.0 || mpfree_transport::time::valid_bpm(bpm)) {
+                    return Err(format!("MPFree doesn't play at {bpm} BPM"));
+                }
+                self.send(Command::SetTempo {
+                    track: r.track,
+                    at: reg.start,
+                    bpm,
+                })?;
+                let said = if centi_bpm == 0 {
+                    "its take's".to_string()
+                } else {
+                    format!("{bpm} BPM")
+                };
+                format!(
+                    "{}: region's tempo {said} (Undo takes it back)",
+                    self.who(r.track)
+                )
+            }
             AudioAction::Fades(r) => {
                 region(tr, r)?;
                 "Q4 turns the region's fades, SHIFT for fine steps".into()
@@ -3752,18 +3915,9 @@ impl crate::time::SongAudio for TrackHost {
                     .regions(s)
                     .iter()
                     .filter_map(|r| {
-                        Some(mpfree_seq::ClipRegion {
-                            start: r.start,
-                            end: r.end,
-                            rec: RecId(tr.take(r.take)?.rec.0),
-                            src: r.src,
-                            phase: r.phase,
-                            gain: r.gain,
-                            fade_in: r.fade_in,
-                            fade_out: r.fade_out,
-                            into: r.into,
-                            left: r.left,
-                        })
+                        let take = tr.take(r.take)?;
+                        let made_at = if take.varied { 0.0 } else { take.bpm };
+                        Some(clip_region_of(r, RecId(take.rec.0), made_at))
                     })
                     .collect();
                 (!regions.is_empty()).then_some((id, regions))
@@ -4791,6 +4945,90 @@ mod tests {
         );
     }
 
+    /// Audio tracks phase 5, with no screen yet (5c): a region's Follow
+    /// tempo and its own tempo are steps of the region edits, Undo takes
+    /// each back; To a cell and Song → scenes carry them (a tempo that is
+    /// its take's as 0), and the time engine hears the take's tempo.
+    #[test]
+    fn a_regions_follow_tempo_and_tempo_are_region_edits_and_clips_carry_them() {
+        let mut r = Rig::with(3);
+        r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), true)
+            .unwrap();
+        r.live = true;
+        r.command(T::Record);
+        while r.t.position() < 3840 {
+            r.period();
+        }
+        r.command(T::Stop);
+        r.periods(10);
+        r.h.action(
+            AudioAction::Arm {
+                track: 0,
+                on: false,
+            },
+            &r.info(),
+            true,
+        )
+        .unwrap();
+        let p = r.project.tracks.iter().position(|t| t.is_audio()).unwrap();
+        r.project.tracks[p].name = "Vocal".into();
+        r.periods(CHECK_EVERY as usize);
+        let reg = RegionId { track: 0, index: 0 };
+        let first = r.h.host.tracks.regions(0)[0];
+        assert_eq!((first.follow, first.bpm), (FollowTempo::Off, 120.0));
+        let follow = AudioAction::Follow {
+            region: reg,
+            follow: FollowTempo::Repitch,
+            keep_pitch: false,
+        };
+        assert_eq!(
+            r.h.action(follow, &r.info(), true).unwrap(),
+            "Vocal: Follow tempo Repitch (Undo takes it back)"
+        );
+        let tempo = |c| AudioAction::Tempo {
+            region: reg,
+            centi_bpm: c,
+        };
+        assert_eq!(
+            r.h.action(tempo(9750), &r.info(), true).unwrap(),
+            "Vocal: region's tempo 97.5 BPM (Undo takes it back)"
+        );
+        assert!(r.h.action(tempo(500), &r.info(), true).is_err());
+        r.periods(2);
+        let now = r.h.host.tracks.regions(0)[0];
+        assert_eq!((now.follow, now.bpm), (FollowTempo::Repitch, 97.5));
+        // To a cell: made at its own tempo, its sound ending where its
+        // recording's does at that tempo (a bar at 97.5 BPM).
+        let map = *r.t.tempo_map();
+        let meter = mpfree_transport::time::Meter::default();
+        let (_, clip, _) = r.h.region_clip(reg, &map, meter).unwrap();
+        let a = clip.audio.unwrap();
+        assert_eq!(a.bpm, 97.5);
+        let c = a.regions[0];
+        assert_eq!((c.follow, c.bpm), (mpfree_seq::FollowTempo::Repitch, 97.5));
+        let bar = (4.0 * 60.0 / 97.5 * f64::from(RATE)).round() as i64;
+        assert_eq!(a.last_frame, now.src + bar);
+        // Back to its take's: the clip region says 0, its recording's.
+        assert_eq!(
+            r.h.action(tempo(0), &r.info(), true).unwrap(),
+            "Vocal: region's tempo its take's (Undo takes it back)"
+        );
+        r.periods(2);
+        let songs = crate::time::SongAudio::regions(&r.h);
+        let c = songs[0].1[0];
+        assert_eq!((c.follow, c.bpm), (mpfree_seq::FollowTempo::Repitch, 0.0));
+        // The time engine is told the take's tempo once.
+        let tempos = r.h.tempos_if_changed().unwrap();
+        assert_eq!(tempos, [(c.rec, 120.0)]);
+        assert_eq!(r.h.tempos_if_changed(), None);
+        // Undo takes each back in turn.
+        for _ in 0..3 {
+            r.h.action(AudioAction::Undo, &r.info(), true).unwrap();
+            r.periods(2);
+        }
+        assert_eq!(r.h.host.tracks.regions(0)[0], first);
+    }
+
     #[test]
     fn the_q_links_turn_level_pan_gain_and_fades_and_the_cards_say_them() {
         let mut r = Rig::with(3);
@@ -5405,6 +5643,9 @@ mod tests {
                     fade_out: 0,
                     into: 0,
                     left: 0,
+                    bpm: 0.0,
+                    follow: Default::default(),
+                    keep_pitch: false,
                 }],
             }],
             takes: vec![TakeFile {
@@ -5420,6 +5661,7 @@ mod tests {
                 file: "Audio-1_take.wav".into(),
                 path: Some(path.clone()),
                 audio: Vec::new(),
+                varied: false,
             }],
         };
         r.h.clear();

@@ -2,7 +2,8 @@
 //! reads each frame) must not allocate or free. A counting global
 //! allocator checks that across a busy session: recording on several
 //! tracks at once, punch in and out, loop recording, locates, a tempo
-//! change, comping, every edit, undo and redo, a song time edit with its
+//! change, comping, every edit, undo and redo, regions following the
+//! tempo (read at another speed), a song time edit with its
 //! undo and redo, forgetting takes, a full memory, latency changes and
 //! stops, a take loaded from a save and takes read for one, at period
 //! sizes from 1 to 4096; and takes played from their files, by the
@@ -20,7 +21,7 @@ use std::cell::Cell;
 
 use mpfree_audiotracks::save::TakeFile;
 use mpfree_audiotracks::{
-    AudioTracks, Command as A, Input, Monitor, Piece, Retime, CHUNK, MAX_TRACKS,
+    AudioTracks, Command as A, FollowTempo, Input, Monitor, Piece, Retime, CHUNK, MAX_TRACKS,
 };
 use mpfree_transport::{Block, Command as T, Transport};
 
@@ -114,6 +115,20 @@ fn commands_and_periods_never_allocate() {
                         at: 1500,
                         to: 9 * BT,
                     },
+                    // Following the tempo: read at the song's speed once
+                    // the tempo changes (bar 10), and at a region's own.
+                    A::SetFollow {
+                        track: 0,
+                        at: 5000,
+                        follow: FollowTempo::Repitch,
+                        keep_pitch: false,
+                    },
+                    A::SetFollow {
+                        track: 1,
+                        at: 500,
+                        follow: FollowTempo::Stretch,
+                        keep_pitch: true,
+                    },
                 ],
                 vec![T::PlayStart],
             ),
@@ -146,6 +161,11 @@ fn commands_and_periods_never_allocate() {
                     A::SongUndo(TransactionId(1)),
                     A::SongRedo(TransactionId(1)),
                     A::ForgetSong(TransactionId(1)),
+                    A::SetTempo {
+                        track: 0,
+                        at: 5000,
+                        bpm: 180.0,
+                    },
                 ],
                 vec![T::SetTempo(200.0)],
             ),
@@ -194,6 +214,7 @@ fn commands_and_periods_never_allocate() {
             channels: 1,
             file: String::new(),
             audio: vec![0.25; 30_000],
+            varied: false,
         });
         // Whatever load_take gives back is kept here, so it is not freed
         // while watching.
@@ -750,6 +771,9 @@ fn clips_never_allocate() {
                 fade_out: 100,
                 into: 0,
                 left: 0,
+                bpm: 0.0,
+                follow: Default::default(),
+                keep_pitch: false,
             };
             [
                 r,
@@ -792,6 +816,7 @@ fn clips_never_allocate() {
                 file: String::new(),
                 path: None,
                 audio,
+                varied: false,
             };
             assert!(a.load_take(f).is_ok());
         }
@@ -925,6 +950,9 @@ fn loops_through_the_track_player_never_allocate() {
         fade_out: 0,
         into: 0,
         left: 0,
+        bpm: 0.0,
+        follow: Default::default(),
+        keep_pitch: false,
     }];
     let what = |k: u8, origin: f64| match k {
         0 => Plays::Clip(ClipPlay {
@@ -964,6 +992,7 @@ fn loops_through_the_track_player_never_allocate() {
             file: String::new(),
             path: None,
             audio,
+            varied: false,
         };
         assert!(a.load_take(f).is_ok());
         let input = vec![0.0f32; 2 * period];
