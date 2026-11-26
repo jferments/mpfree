@@ -19,10 +19,11 @@
 //!   and one in its step stops at the step's end; either way the old one
 //!   is told ([`Work::cancelled`]) and never finishes. [`Sched::cancel`]
 //!   and [`Sched::retain`] stop jobs the same way.
-//! - **Memory.** A job says what it will hold ([`Job::needs`]) and starts
-//!   only with a promise of that much ([`Config::promise`]), held until it
-//!   ends; otherwise it is refused, counted, and told why
-//!   ([`Work::refused`]), and never starts.
+//! - **Memory.** A job starts only if derived audio is within the one
+//!   budget for its priority ([`Budget::check`], 5b.3), and with a promise
+//!   of the memory it says it will hold ([`Job::needs`],
+//!   [`Config::promise`]), held until it ends; otherwise it is refused,
+//!   counted, and told why ([`Work::refused`]), and never starts.
 //! - **Where it runs.** The worker starts with the first job, and runs
 //!   [`Config::on_start`] first on its own thread: the app puts it where
 //!   the sampler's sound lane runs, off the sound's cores at idle priority.
@@ -39,6 +40,8 @@
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
+
+use crate::budget::Budget;
 
 /// How urgent a job is. The worker always takes the most urgent first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -210,7 +213,7 @@ pub struct Counts {
     /// Jobs cancelled ([`Sched::cancel`], [`Sched::retain`]), or still
     /// there when the scheduler went.
     pub cancelled: u64,
-    /// Jobs refused for want of memory.
+    /// Jobs refused for want of room in the budget or of memory.
     pub refused: u64,
     /// Times the worker couldn't start. Its jobs wait for the next try.
     pub spawn_failed: u64,
@@ -260,6 +263,7 @@ struct Shared {
     state: Mutex<State>,
     cv: Condvar,
     config: Config,
+    budget: Arc<Budget>,
 }
 
 impl Shared {
@@ -320,7 +324,8 @@ pub fn configure(config: Config) -> bool {
 
 impl Sched {
     /// The process's one scheduler, made the first time it is asked for,
-    /// with the config given to [`configure`] (or the default).
+    /// with the config given to [`configure`] (or the default), checking
+    /// the process's budget ([`Budget::shared`]).
     pub fn shared() -> Sched {
         SHARED
             .get_or_init(|| {
@@ -329,23 +334,32 @@ impl Sched {
                     .unwrap_or_else(|e| e.into_inner())
                     .take()
                     .unwrap_or_default();
-                Sched::new(config)
+                Sched::make(config, false, Budget::shared())
             })
             .clone()
     }
 
-    /// A scheduler whose worker starts with its first job.
+    /// A scheduler whose worker starts with its first job, with a budget
+    /// of its own.
     pub fn new(config: Config) -> Sched {
-        Sched::make(config, false)
+        Sched::make(config, false, Arc::default())
     }
 
     /// A scheduler with no worker: its jobs run only when the caller steps
-    /// them ([`Sched::step`], [`Sched::run_all`]). For tests.
+    /// them ([`Sched::step`], [`Sched::run_all`]), with a budget of its
+    /// own. For tests.
     pub fn manual(config: Config) -> Sched {
-        Sched::make(config, true)
+        Sched::make(config, true, Arc::default())
     }
 
-    fn make(config: Config, manual: bool) -> Sched {
+    /// The budget it checks each job against as it starts: the one its
+    /// clients say what they use to ([`Budget::set_held`],
+    /// [`Budget::set_making`]).
+    pub fn budget(&self) -> Arc<Budget> {
+        Arc::clone(&self.inner().budget)
+    }
+
+    fn make(config: Config, manual: bool, budget: Arc<Budget>) -> Sched {
         Sched(Arc::new(Owner {
             shared: Arc::new(Shared {
                 state: Mutex::new(State {
@@ -354,6 +368,7 @@ impl Sched {
                 }),
                 cv: Condvar::new(),
                 config,
+                budget,
             }),
             manual,
         }))
@@ -573,13 +588,18 @@ enum Picked {
 }
 
 /// The most urgent job, out of the list and marked in its step; a job
-/// starting is promised its memory first, or refused.
+/// starting must fit the budget for its priority and is promised its
+/// memory first, or is refused.
 fn pick(shared: &Shared, s: &mut State) -> Picked {
     let Some(i) = (0..s.jobs.len()).min_by_key(|&i| s.jobs[i].rank()) else {
         return Picked::None;
     };
     let mut e = s.jobs.swap_remove(i);
     if e.hold.is_none() {
+        if let Err(why) = shared.budget.check(e.job.priority) {
+            s.counts.refused += 1;
+            return Picked::Refused(e, why);
+        }
         match (shared.config.promise)(e.job.need) {
             Ok(h) => e.hold = Some(h),
             Err(why) => {
@@ -895,6 +915,35 @@ mod tests {
         assert_eq!(said, ["not enough memory", "stepped"]);
         let c = s.counts();
         assert_eq!((c.refused, c.done), (1, 1));
+    }
+
+    #[test]
+    fn a_job_past_the_budget_for_its_priority_is_refused_as_it_starts() {
+        use crate::budget::Cache;
+        let s = manual();
+        let b = s.budget();
+        b.set_total(1000);
+        let (tx, rx) = channel();
+        // The tracks asked for two copies, counted as they asked; the
+        // sampler's Warps fill the rest meanwhile.
+        b.set_making(Cache::Tracks, 300);
+        b.set_held(Cache::Warps, 400);
+        s.submit(Job::new(
+            key(1),
+            Priority::Speculative,
+            fake("spec", 10, &tx),
+        ));
+        s.submit(Job::new(key(2), Priority::Prepared, fake("prep", 10, &tx)));
+        s.run_all();
+        assert_eq!(
+            drain(&rx),
+            [("prep", "step"), ("prep", "finished"), ("spec", "refused")]
+        );
+        assert_eq!(s.counts().refused, 1);
+        // The process's scheduler checks the process's budget; a test's has
+        // its own.
+        assert!(Arc::ptr_eq(&Sched::shared().budget(), &Budget::shared()));
+        assert!(!Arc::ptr_eq(&b, &Budget::shared()));
     }
 
     #[test]

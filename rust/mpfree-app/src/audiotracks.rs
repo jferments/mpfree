@@ -387,6 +387,23 @@ fn clip_region_of(r: &Region, rec: RecId, made_at: f64) -> mpfree_seq::ClipRegio
     }
 }
 
+/// The one scheduler for stretches made ahead (`mpfree_stretch::sched`,
+/// the audio tracks rethink, phase 5b), as the program configures it at
+/// its start: its worker where the sampler's sound jobs run, off the
+/// sound cores at idle priority, and each job's memory promised in the
+/// shared memory check ([`crate::memory::reserve`]), beside every load's,
+/// until the job ends.
+pub fn stretch_config() -> mpfree_stretch::sched::Config {
+    mpfree_stretch::sched::Config {
+        on_start: mpfree_lanes::os::idle_job,
+        promise: |need| {
+            crate::memory::reserve(crate::memory::free_bytes, need)
+                .map(mpfree_stretch::sched::Hold::new)
+        },
+        ..mpfree_stretch::sched::Config::default()
+    }
+}
+
 /// A clip's region in the engine's words, naming its recording by the
 /// same lasting id.
 fn clip_region_in(r: &mpfree_seq::ClipRegion) -> ClipRegion {
@@ -4351,6 +4368,22 @@ mod tests {
         // Its clip gone: a block with no wave and no header.
         r.project.tracks[guitar].slots[0] = None;
         assert!(r.state().audio[0].clips.is_empty());
+    }
+
+    /// The scheduler's promise is the shared memory check's (5b.3): a job
+    /// that wouldn't leave the floor free is refused with why, and one
+    /// that starts holds its bytes in the same account as every load
+    /// until it ends.
+    #[test]
+    fn the_stretch_schedulers_promise_is_the_shared_memory_check() {
+        let c = stretch_config();
+        let why = (c.promise)(u64::MAX / 4).unwrap_err();
+        assert!(why.starts_with(crate::memory::SHORT), "{why}");
+        let before = crate::memory::promised();
+        let hold = (c.promise)(1000).expect("a small promise");
+        assert_eq!(crate::memory::promised(), before + 1000);
+        drop(hold);
+        assert_eq!(crate::memory::promised(), before);
     }
 
     /// A clip on Stretch in the project (phase 5b.2): the tracks are told

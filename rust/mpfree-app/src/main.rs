@@ -17808,11 +17808,9 @@ fn main() {
     mpfree_sampler::jobs::configure(sample_page::jobs_config());
     // The one scheduler for stretches made ahead (the audio tracks'
     // tempo copies, phase 5b): its worker where the sampler's sound jobs
-    // run, off the sound cores at idle priority.
-    mpfree_stretch::sched::configure(mpfree_stretch::sched::Config {
-        on_start: mpfree_lanes::os::idle_job,
-        ..mpfree_stretch::sched::Config::default()
-    });
+    // run, off the sound cores at idle priority, and each job's memory
+    // promised in the shared memory check, beside every load's (5b.3).
+    mpfree_stretch::sched::configure(audiotracks::stretch_config());
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = parse_args(&args).and_then(read_script).and_then(|o| {
         // Both draw every sample screen, whose one frame needs more stack
