@@ -46,7 +46,7 @@ The sound thread pushes the same float blocks whatever the format, so a format c
 
 ## Stems by track: replays
 
-Jay's decision (14 Nov 15:16Z, in the demo songs thread): "Yes, definitely one stem per track then"; and his pick on the card "Keep per-channel stems as a choice next to per-track stems?" (15:20Z): "Yes, a Stems by row". The panel's **Stems by** row picks Track (the default) or Channel (the stems above, one pass, adding up exactly to the mix); the last choice is kept with the rest. That row is in the layout spec's section 3.
+Jay's decision (14 Nov 15:16Z, in the demo songs thread): "Yes, definitely one stem per track then"; and his pick on the card "Keep per-channel stems as a choice next to per-track stems?" (15:20Z): "Yes, a Stems by row". The panel's **Stems by** row picks Track or Channel (the stems above, one pass, adding up exactly to the mix; the default since the instruments redesign). Since the Prefs redesign (24 Nov 2026) the row starts each time the panel opens from Prefs › Projects › Stems by (`ExportSetup::by`, from `Facts::setup`), as the File row starts from Export file and Export rate; a pick in the panel is for that export. That row is in the layout spec's section 3.
 
 A track's stem by track comes from (`export::track_stems`):
 

@@ -99,6 +99,8 @@ pub struct ExportSetup {
     pub folder: String,
     /// The files' format to start from: Prefs > Export file and rate.
     pub format: ExportFormat,
+    /// What stems are to start from: Prefs > Stems by.
+    pub by: StemsBy,
 }
 
 /// Where the panel is.
@@ -172,21 +174,22 @@ pub struct ExportChoice {
 impl ExportPanel {
     /// A panel ready to start: everything ticked (or as `last` had it), the
     /// arrangement when there is one, otherwise 8 bars, and Prefs' format
-    /// (a format changed on the panel was for that export only).
+    /// and stems (a format or stems changed on the panel were for that
+    /// export only).
     pub fn new(setup: ExportSetup, last: Option<ExportChoice>) -> ExportPanel {
-        let (mixdown, stems, midi, by, bars) = match last {
+        let (mixdown, stems, midi, bars) = match last {
             Some(c) => (
                 c.mixdown,
                 c.stems,
                 c.midi,
-                c.by,
                 match c.range {
                     ExportRange::Bars(n) => n,
                     ExportRange::Arrangement => DEFAULT_BARS,
                 },
             ),
-            None => (true, true, true, StemsBy::default(), DEFAULT_BARS),
+            None => (true, true, true, DEFAULT_BARS),
         };
+        let by = setup.by;
         let range = match (&setup.arrangement, last.map(|c| c.range)) {
             (Some(_), Some(ExportRange::Bars(n))) => ExportRange::Bars(n),
             (Some(_), _) => ExportRange::Arrangement,
@@ -322,6 +325,7 @@ mod tests {
                 bits: ExportBits::I24,
                 rate: 44_100,
             },
+            by: StemsBy::Channel,
         }
     }
 
@@ -372,9 +376,20 @@ mod tests {
         assert_eq!(p.stem_count(), (4, 0));
         assert_eq!(p.by_words(), "One pass; they add up to the mix");
         assert_eq!(p.choice().by, StemsBy::Channel);
-        // Kept for the next export.
-        let p = ExportPanel::new(setup(true), Some(p.choice()));
+        // Prefs' pick, each time the panel opens: a pick on the panel
+        // was for that export only.
+        let mut p = ExportPanel::new(setup(true), Some(p.choice()));
         assert_eq!(p.by, StemsBy::Channel);
+        p.pick(ExportInput::ByTrack);
+        let tracks = ExportSetup {
+            by: StemsBy::Track,
+            ..setup(true)
+        };
+        assert_eq!(
+            ExportPanel::new(setup(true), Some(p.choice())).by,
+            StemsBy::Channel
+        );
+        assert_eq!(ExportPanel::new(tracks, None).by, StemsBy::Track);
         let one = ExportSetup {
             tracks_arrangement: (3, 1),
             ..setup(true)

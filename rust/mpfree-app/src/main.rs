@@ -149,6 +149,7 @@ mod patch_screen;
 mod perf;
 mod perform_pads;
 mod perform_tab;
+mod play_feel;
 mod play_page;
 mod play_widgets;
 mod plugin_page;
@@ -10449,6 +10450,8 @@ fn player_session(
     let mut look = pad_look::PadLook::default();
     let mut look_at: Option<Instant> = None;
     let mut heat = [0u8; 128];
+    // How far turns go and the pad threshold (Prefs › Playing).
+    let mut turns = play_feel::Turns::default();
     let (mut shown_heads, mut heads_at) = (sampler::Playheads::default(), Instant::now());
     // The Grain tab's cloud box, while the audio thread holds it: filled and
     // sent back with the playheads (never freed on this thread).
@@ -11804,6 +11807,7 @@ fn player_session(
                     if let Some(mut t) = o.time.take() {
                         // The metronome is the system's: it stays as it is.
                         (t.metronome, t.click_gain) = (time.metronome, time.click_gain);
+                        t.set_click_sound(time.click_sound());
                         // Its editing side runs where the last one's did.
                         if time.apart() {
                             *t = time_apart(out, *t);
@@ -13409,7 +13413,17 @@ fn player_session(
                 track_kits.kit_of(usize::from(track)).unwrap_or(0),
             );
         }
-        for m in got {
+        let feel = app.feel();
+        for mut m in got {
+            // Prefs › Playing: a hit under the pad threshold plays nothing,
+            // and the Q-Links' and the wheel's turns go as far as Prefs
+            // says (play_feel.rs). Not a key's or MIDI Follow's, nor the
+            // Public port's knob values.
+            let public =
+                MIDI_PORTS.get(m.port).is_some_and(|p| p.1 == "Public") && m.bytes.len() == 3;
+            if !m.music && !public {
+                m.event = turns.event(m.event, &feel, Instant::now());
+            }
             let (t_item, event) = (Instant::now(), m.event);
             if let Some((token, status)) = akai::session_reply(&m.bytes) {
                 if token == akai::SESSION_TOKEN && status == akai::SESSION_RUNNING {
@@ -13823,6 +13837,10 @@ fn player_session(
                     // FULL LEVEL held: this hit sets the level every hit
                     // plays at, this one first.
                     fx.extend(app.full_level_hit(velocity));
+                    // Prefs marks a hit on the MPC's pads on the curve.
+                    if !m.music {
+                        fx.extend(app.pad_hit(velocity));
+                    }
                     let take = app.rec.ready.map(|take| take == rec_arm::Take::Add);
                     out.loop_start(pad_starts_loop(
                         &mut looper,

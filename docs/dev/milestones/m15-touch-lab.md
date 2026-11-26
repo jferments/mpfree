@@ -30,7 +30,7 @@ A "fail" isn't a device problem. It says the gesture settings and Jay's hand dis
 
 ## In the pad player
 
-**Opening it.** Prefs (SHIFT + MENU), the **Playing** tab (Prefs opens on the tab last used; SHIFT + wheel or a tap picks it), then **Touch lab**, the last row of the Touch screen card: tap its **Open**, or turn the wheel to it and press +. Both work without touch, so the lab opens even when the touchscreen seems dead, and its top line then shows why (the reader line, or `touchscreen: not available yet (...)`).
+**Opening it.** Prefs (SHIFT + MENU), the **System** tab (Prefs opens on the tab last used; SHIFT + wheel or a tap picks it), then **Touch lab**, the last row of the Buttons and touch card: tap its **Open**, or turn the wheel to it and press +. Both work without touch, so the lab opens even when the touchscreen seems dead, and its top line then shows why (the reader line, or `touchscreen: not available yet (...)`).
 
 **Leaving it.** The **Exit** button at the top right, or any hardware button that changes the page (MENU goes back to Prefs' main rows, which closes the lab too). A step in progress is closed and logged first. Opening the lab again starts over at the first step.
 

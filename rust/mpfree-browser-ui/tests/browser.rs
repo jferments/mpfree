@@ -1351,6 +1351,7 @@ fn export_setup(arrangement: bool) -> ExportSetup {
             bits: ExportBits::I24,
             rate: 44_100,
         },
+        by: mpfree_browser_ui::StemsBy::Channel,
     }
 }
 
