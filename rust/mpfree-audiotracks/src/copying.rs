@@ -626,13 +626,16 @@ impl CopySide {
         ask: &mut dyn FnMut(Ask),
         drop: &mut dyn FnMut(Vec<f32>),
     ) {
-        let Some(Reading::Reading {
-            want,
-            mut audio,
-            mut done,
-        }) = self.reading.take()
-        else {
-            return;
+        // Only a source being read: one still waiting for its buffer stays
+        // as it is. (Before, taking it dropped the wait, so `start` asked
+        // for the same buffer again every period until the worker's
+        // answer came.)
+        let (want, mut audio, mut done) = match self.reading.take() {
+            Some(Reading::Reading { want, audio, done }) => (want, audio, done),
+            other => {
+                self.reading = other;
+                return;
+            }
         };
         let key = want.key;
         let ch = usize::from(want.channels.max(1));
@@ -734,5 +737,103 @@ impl CopySide {
     /// Clear copies: everything wanted may be made again.
     pub(crate) fn cleared(&mut self) {
         self.failed.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::save::{TakeFile, TrackFile};
+    use crate::{Input, Monitor, Region};
+    use mpfree_stretch::sched::{Config, Sched};
+    use mpfree_transport::{Block, Transport};
+
+    /// A copy waiting for the worker's buffer is asked for once, however
+    /// many periods the worker takes to answer, and its source is then
+    /// read and sent to be made once. Before, every period dropped the
+    /// wait and asked again: a busy worker made a zeroed buffer for each
+    /// period it was late, each came back to be dropped, and the audio
+    /// thread's channel sends took blocks of the channels now and then
+    /// (the host's no-allocation test failed under load).
+    #[test]
+    fn a_copy_waiting_for_its_buffer_is_asked_for_once_however_late_it_comes() {
+        const RATE: u32 = 22_050;
+        const P: usize = 256;
+        let bar = 4 * i64::from(PPQ);
+        // Two bars at 120 BPM.
+        let frames = 4 * RATE as usize;
+        let rec = RecordingId(7);
+        let take = TakeFile {
+            id: 0,
+            rec,
+            track: 0,
+            group: 0,
+            pass: 0,
+            bpm: 120.0,
+            varied: false,
+            anchor: 0.0,
+            frames,
+            channels: 1,
+            file: String::new(),
+            path: None,
+            audio: (0..frames)
+                .map(|j| ((j * 31) % 97) as f32 / 97.0 - 0.5)
+                .collect(),
+        };
+        let mut tracks = AudioTracks::new(RATE, 20);
+        assert!(tracks.load_take(take).is_ok());
+        let region = Region {
+            follow: FollowTempo::Stretch,
+            ..Region::of(0, 2 * bar, 0, (0, 0.0), 120.0)
+        };
+        let track = TrackFile {
+            index: 0,
+            id: 0,
+            input: Input::Left,
+            monitor: Monitor::Auto,
+            from: String::new(),
+            regions: vec![region],
+        };
+        assert!(tracks.load_track(&track));
+        let mut side = CopySide::new();
+        side.budget = Sched::manual(Config::default()).budget();
+        // At 90 BPM the region wants a copy.
+        let mut t = Transport::new(RATE, 90.0).unwrap();
+        let mut b = Block::new();
+        let input = vec![0.0f32; 2 * P];
+        let mut out = vec![0.0f32; 2 * P];
+        let mut period =
+            |tracks: &mut AudioTracks, side: &mut CopySide, ask: &mut dyn FnMut(Ask)| {
+                assert!(t.process(P as u32, &mut b));
+                let map = *t.tempo_map();
+                tracks.process(&b, &map, &input, &mut out);
+                side.tend(tracks, &map, 0.0, P, 0, ask, &mut |_| {});
+            };
+        // About 4.6 s with the buffer never coming: asked for once.
+        let mut buffers = Vec::new();
+        for _ in 0..400 {
+            period(&mut tracks, &mut side, &mut |a| {
+                if let Ask::Buffer { n, key, .. } = a {
+                    buffers.push((n, key));
+                }
+            });
+        }
+        assert_eq!(buffers.len(), 1, "{buffers:?}");
+        let (n, key) = buffers[0];
+        assert_eq!(side.busy(), 1);
+        // It comes: the source is read and sent to be made, once.
+        assert!(side.buffer(key, vec![0.0; n]).is_ok());
+        let (mut makes, mut more) = (0, 0);
+        for _ in 0..400 {
+            period(&mut tracks, &mut side, &mut |a| match a {
+                Ask::Make { spec, .. } => {
+                    assert_eq!(spec.key, key);
+                    makes += 1;
+                }
+                Ask::Buffer { .. } => more += 1,
+                _ => {}
+            });
+        }
+        assert_eq!((makes, more), (1, 0));
     }
 }
