@@ -6470,34 +6470,69 @@ impl Player {
         )))
     }
 
-    /// The knobs Continue's sound moves may turn (composing tools S3): on
-    /// the track the steps show, while it plays the instrument the Synth
-    /// tab shows, its brightness and length as `safe_controls` picks
-    /// them from the knobs as they are set now. None otherwise: another
-    /// track's instrument is not known here.
+    /// The knobs Continue's sound moves may turn (composing tools S3), on
+    /// the track the steps show: while it plays the instrument the Synth
+    /// tab shows, its brightness and length as `safe_controls` picks them
+    /// from the knobs as they are set now (another track's instrument is
+    /// not known here); and Space, the track's first send as the Mix tab
+    /// has it, when it sends to the echo and the track isn't on outside
+    /// gear (`space_control`). None when there is none.
     fn sound_controls(&self) -> Option<(usize, mpfree_compose::SafeControls)> {
+        use mpfree_fx::ids::mixer as mx;
         use mpfree_node::Curve;
-        if !self.held_plays_synth() {
-            return None;
+        let track = self.play.steps.track;
+        let mut safe = mpfree_compose::SafeControls::default();
+        if let Some(st) = self
+            .synth
+            .as_ref()
+            .filter(|_| self.held_plays_synth())
+            .map(|s| &s.state)
+        {
+            let knobs: Vec<mpfree_compose::Knob> = st
+                .params
+                .iter()
+                .zip(st.values.iter())
+                .filter(|(p, _)| !p.readonly)
+                .map(|(p, &value)| mpfree_compose::Knob {
+                    id: p.id,
+                    name: p.name,
+                    group: p.group,
+                    min: p.min,
+                    max: p.max,
+                    log: matches!(p.curve, Curve::Log),
+                    value,
+                })
+                .collect();
+            safe = mpfree_compose::safe_controls(&knobs);
         }
-        let st = &self.synth.as_ref()?.state;
-        let knobs: Vec<mpfree_compose::Knob> = st
-            .params
-            .iter()
-            .zip(st.values.iter())
-            .filter(|(p, _)| !p.readonly)
-            .map(|(p, &value)| mpfree_compose::Knob {
-                id: p.id,
-                name: p.name,
-                group: p.group,
-                min: p.min,
-                max: p.max,
-                log: matches!(p.curve, Curve::Log),
-                value,
-            })
-            .collect();
-        let safe = mpfree_compose::safe_controls(&knobs);
-        (safe != mpfree_compose::SafeControls::default()).then_some((self.play.steps.track, safe))
+        let send = mx::send(crate::mixing::DELAY_RETURN);
+        let info = mpfree_fx::strip_params().iter().find(|p| p.id == send);
+        if let (Some(db), Some(p), false) =
+            (self.track_send_db(track), info, self.plays_gear(track))
+        {
+            safe.space = mpfree_compose::space_control(send, db, p.min, p.max);
+        }
+        (!safe.is_empty()).then_some((track, safe))
+    }
+
+    /// Track `t`'s first send (to the delay return), dB, as the Mix tab
+    /// has it, on the strip its locks reach ([`crate::mixing::track_channel`]).
+    fn track_send_db(&self, t: usize) -> Option<f32> {
+        use mpfree_fx::StripId;
+        let state = self
+            .ui
+            .get::<mpfree_mixer_ui::MixerView>(mpfree_mixer_ui::MIXER)
+            .map(|m| m.state())?;
+        let strip = state.strip(StripId::Track(crate::mixing::track_channel(t)))?;
+        strip.sends.map(|s| s[crate::mixing::DELAY_RETURN].db)
+    }
+
+    /// Whether track `t` plays outside gear (MIDI out), not a sound here.
+    fn plays_gear(&self, t: usize) -> bool {
+        self.io_model.as_ref().is_some_and(|m| {
+            let m = m.lock().unwrap_or_else(|e| e.into_inner());
+            m.setup.tracks.get(t).cloned().flatten().is_some()
+        })
     }
 
     /// What the Clips page asks of the time engine on its own, sent: Snap
@@ -6927,9 +6962,11 @@ impl Player {
             .first()
             .map(|s| s.params.iter().flatten().copied().collect())
             .unwrap_or_default();
-        for l in lanes {
-            if l.addr.on == OnTrack::Inst && !ids.contains(&l.addr.param) {
-                ids.push(l.addr.param);
+        // Each setting with a lock lane, or a lane of Continue's (S3).
+        let continues = self.play.sound_lanes().iter().map(|s| s.addr);
+        for a in lanes.iter().map(|l| l.addr).chain(continues) {
+            if a.on == OnTrack::Inst && !ids.contains(&a.param) {
+                ids.push(a.param);
             }
         }
         ids.iter()
@@ -8793,6 +8830,17 @@ impl Player {
     /// yet, so ERASE leaves them alone.
     fn erase_tap(&mut self, ev: &UiEvent) -> Option<Option<FromUi>> {
         match (ev.widget.as_str(), &ev.kind) {
+            // Continue's lane (S3) is read only here.
+            (play_page::STEPS, EventKind::Cell { row, .. })
+                if *row >= play_widgets::LOCK_LANE
+                    && self
+                        .play
+                        .sound_lane_at(row - play_widgets::LOCK_LANE)
+                        .is_some() =>
+            {
+                self.tell("ERASE: Continue's lane comes out in Notes (the lane chip's Remove)");
+                Some(None)
+            }
             // A lock lane's step: its lock comes off (the lane stays).
             (play_page::STEPS, EventKind::Cell { row, col }) if *row >= play_widgets::LOCK_LANE => {
                 let a = self.play.erase_lock(row - play_widgets::LOCK_LANE, *col);
@@ -19273,6 +19321,32 @@ impl Player {
                 self.refresh_play();
                 self.mark_unsaved();
                 Some(FromUi::LaneRows(LaneRowsAsk::Depth { target, row, depth }))
+            }
+            // Continue's lane (composing tools S3): read only; a tap on its
+            // name or a step, or the wheel on it, says where it changes.
+            (play_page::STEPS, EventKind::Cell { row: lane, .. } | EventKind::Toggle(lane))
+                if lane >= play_widgets::LOCK_LANE
+                    && self
+                        .play
+                        .sound_lane_at(lane - play_widgets::LOCK_LANE)
+                        .is_some() =>
+            {
+                let line = self.play.sound_lane_says(lane - play_widgets::LOCK_LANE)?;
+                println!("{line}");
+                self.tell(&line);
+                None
+            }
+            (play_page::STEPS, EventKind::Step { index, .. })
+                if index >= play_widgets::LOCK_LANE
+                    && self
+                        .play
+                        .sound_lane_at((index - play_widgets::LOCK_LANE) / mpfree_seq::steps::PAGE)
+                        .is_some() =>
+            {
+                let id = (index - play_widgets::LOCK_LANE) / mpfree_seq::steps::PAGE;
+                let line = self.play.sound_lane_says(id)?;
+                self.tell(&line);
+                None
             }
             (play_page::STEPS, EventKind::Cell { row, col }) if row >= play_widgets::LOCK_LANE => {
                 let r = self.play.tap_lock(row - play_widgets::LOCK_LANE, col);
@@ -35101,6 +35175,77 @@ mod tests {
         );
         assert_ne!(p.page(), STEP_SIZE_PAGE);
         assert!(p.take_actions().is_empty());
+    }
+
+    /// Continue's lane on the Steps (composing tools S3, board B): after
+    /// the lock lanes, green, named as the send's lock lane is; a tap on
+    /// its name or a step, the wheel on it, or ERASE says what it does and
+    /// where it changes, and sends nothing.
+    #[test]
+    fn continues_lane_on_the_steps_says_where_it_changes() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        let mut p = sample_play(Fonts::embedded(), PlayView::Beats);
+        p.take_actions();
+        let send = RelAddr::new(OnTrack::Strip, mpfree_fx::ids::mixer::send(0));
+        let c = p.play.steps.clip.as_mut().expect("the sample's pattern");
+        c.sound_lanes = vec![crate::time::SoundSteps {
+            addr: send,
+            on: true,
+            values: vec![Some(-6.0); 16],
+        }];
+        p.refresh_play();
+        let g = p.ui.get::<StepGrid>(play_page::STEPS).unwrap();
+        let lane = g
+            .lanes
+            .iter()
+            .find(|l| l.lock.as_ref().is_some_and(|k| k.continues))
+            .expect("Continue's lane");
+        assert_eq!(lane.name, "Delay send");
+        let pad = lane.pad;
+        let last = g.lanes.iter().map(|l| l.pad).max();
+        assert_eq!(last, Some(pad), "after the lock lanes");
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        for kind in [
+            EventKind::Toggle(pad),
+            EventKind::Cell { row: pad, col: 3 },
+            EventKind::Step {
+                index: play_widgets::LOCK_LANE
+                    + (pad - play_widgets::LOCK_LANE) * mpfree_seq::steps::PAGE
+                    + 3,
+                delta: 1,
+            },
+        ] {
+            p.ui.get_mut::<Label>("hint").unwrap().text.clear();
+            p.on_event(UiEvent {
+                widget: play_page::STEPS.into(),
+                kind: kind.clone(),
+            });
+            let said = hint(&p);
+            assert!(
+                said.contains("Continue moves Delay send") && said.contains("Notes"),
+                "{kind:?}: {said}"
+            );
+            assert!(
+                !p.take_actions()
+                    .iter()
+                    .any(|a| matches!(a, FromUi::Steps(_))),
+                "{kind:?} sent nothing"
+            );
+        }
+        p.status.erase = true;
+        p.on_event(UiEvent {
+            widget: play_page::STEPS.into(),
+            kind: EventKind::Cell { row: pad, col: 3 },
+        });
+        assert!(
+            hint(&p).contains("Continue's lane comes out in Notes"),
+            "{}",
+            hint(&p)
+        );
+        assert!(!p
+            .take_actions()
+            .iter()
+            .any(|a| matches!(a, FromUi::Steps(_))));
     }
 
     /// The Sequencer's lock lanes (the redesign's step 5, board 3): the

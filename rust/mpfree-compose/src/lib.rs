@@ -96,7 +96,8 @@
 //! - [`sound`]: the sound following the phrase without changing the
 //!   patch: brightness opening to the high point, the last notes ringing
 //!   on and thrown into the echo, on each preset's safe controls
-//!   ([`sound::safe_controls`]), at Off, Subtle or Bold ([`sound_of`]).
+//!   ([`sound::safe_controls`]) and the track's first send
+//!   ([`sound::space_control`]), at Off, Subtle or Bold ([`sound_of`]).
 //!
 //! Phrases, P2, new ideas for the arp's phrase player:
 //!
@@ -194,7 +195,8 @@ pub use row::{DrumHit, Heard, Row, RowPart, RowPlan, ToHear};
 pub use rules::{RangeSetting, Rule, RuleKind, Suggestion, Unmet, Weights};
 pub use settings::{Aim, Character, Ending, Keeps, Settings};
 pub use sound::{
-    reach_words, safe_controls, Control, Knob, Safe, SafeControls, SoundLevel, SoundMove, Swing,
+    reach_words, safe_controls, space_control, Control, Knob, Safe, SafeControls, SoundLevel,
+    SoundMove, Swing, SPACE_DB,
 };
 pub use sound_lane::put_sound;
 pub use style::{Component, PlanShape, Style, GROOVE, JAZZISH, MINIMAL, STYLES};

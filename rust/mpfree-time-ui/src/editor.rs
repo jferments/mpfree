@@ -3457,7 +3457,9 @@ pub struct SoundLane {
 impl SoundLane {
     /// Continue's lanes on `clip`, in the order they were made: those on
     /// the track's instrument, named as the clip's instrument tag names
-    /// its controls ("Control 7" when it doesn't).
+    /// its controls ("Control 7" when it doesn't), and Space's on its
+    /// strip's send, "Send" (the screen names it as its lock lane does,
+    /// [`SoundLane::named`]).
     pub fn of(clip: &Clip) -> Vec<SoundLane> {
         use mpfree_seq::mpfree_moves::{By, Kind, Target};
         use mpfree_seq::mpfree_param::OnTrack;
@@ -3466,14 +3468,15 @@ impl SoundLane {
             let (By::Continue { on, base }, Target::Track(addr)) = (lane.by, lane.target) else {
                 continue;
             };
-            if addr.on != OnTrack::Inst {
-                continue;
-            }
-            let name = clip
-                .made_for
-                .as_ref()
-                .and_then(|m| m.param_name(addr.param))
-                .map_or_else(|| format!("Control {}", addr.param), str::to_string);
+            let name = match addr.on {
+                OnTrack::Inst => clip
+                    .made_for
+                    .as_ref()
+                    .and_then(|m| m.param_name(addr.param))
+                    .map_or_else(|| format!("Control {}", addr.param), str::to_string),
+                OnTrack::Strip => "Send".to_string(),
+                _ => continue,
+            };
             let base_u = lane.map.unit(base);
             let far = lane
                 .points
@@ -3512,6 +3515,19 @@ impl SoundLane {
                 on,
                 holds,
             });
+        }
+        out
+    }
+
+    /// [`SoundLane::of`], a send named as the lock lane on it is
+    /// (`locks`: "Delay send"), so the chip says "Delay send · Continue".
+    pub fn named(clip: &Clip, locks: &[LockSetting]) -> Vec<SoundLane> {
+        use mpfree_seq::mpfree_param::OnTrack;
+        let mut out = SoundLane::of(clip);
+        for s in out.iter_mut().filter(|s| s.addr.on == OnTrack::Strip) {
+            if let Some(l) = locks.iter().find(|l| l.addr == s.addr) {
+                s.name = l.name.clone();
+            }
         }
         out
     }
@@ -12303,6 +12319,44 @@ mod tests {
             },
         );
         (c, target)
+    }
+
+    /// Space's lane (S3): on the strip's send, after the instrument's,
+    /// named as the send's lock lane is ("Delay send · Continue"), its
+    /// reach in dB; "Send" where the screen has no lock lane on it.
+    #[test]
+    fn spaces_lane_is_named_as_its_sends_lock_lane() {
+        use mpfree_seq::mpfree_moves::{By, Kind, Map, Target};
+        let (mut c, _) = sound_clip();
+        let send = RelAddr::new(OnTrack::Strip, 6);
+        let t = Target::Track(send);
+        let map = Map::linear(-80.0, 6.0);
+        let points = [(100.0, map.unit(-2.5), Kind::Step), (400.0, 0.0, Kind::End)];
+        c.moves.put(t, map, &points, c.length as u32).unwrap();
+        c.moves.set_by(
+            t,
+            By::Continue {
+                on: true,
+                base: -12.0,
+            },
+        );
+        let lock = LockSetting {
+            addr: send,
+            name: "Delay send".into(),
+            own: -12.0,
+            values: Vec::new(),
+            centred: false,
+        };
+        let mut g = grid();
+        g.sound_lanes = Arc::new(SoundLane::named(&c, &[lock]));
+        let names: Vec<String> = g
+            .sound_lanes
+            .iter()
+            .map(|s| g.lane_name(LaneKind::Sound(s.addr)))
+            .collect();
+        assert_eq!(names, ["Control 7 · Continue", "Delay send · Continue"]);
+        assert_eq!(g.sound_lanes[1].reach, "up to +9.5 dB");
+        assert_eq!(SoundLane::of(&c)[1].name, "Send");
     }
 
     /// Continue's lane (composing tools S3, board B): a lane of its own

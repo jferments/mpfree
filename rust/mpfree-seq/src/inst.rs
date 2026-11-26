@@ -30,7 +30,7 @@
 
 use crate::{Clip, Lock};
 use mpfree_moves::{Lane, Target};
-use mpfree_param::OnTrack;
+use mpfree_param::{OnTrack, RelAddr};
 use std::sync::Arc;
 
 /// An instrument: its node id (`"mpfree.poly"`, stable in saved
@@ -82,6 +82,48 @@ impl Plays {
     /// Its node id, None when not told.
     pub fn node(&self) -> Option<&str> {
         self.get().map(|i| i.node.as_str())
+    }
+}
+
+/// Where a track's knobs are now, as their own values (not moved): the
+/// ones Continue's lanes on its clips move (its instrument's, and its
+/// first send), so the lanes go with the knob
+/// ([`mpfree_moves::Lane::follow_knob`]). Told by the app, never saved,
+/// and equal to any other.
+#[derive(Clone, Debug, Default)]
+pub struct Knobs(pub Arc<[(RelAddr, f32)]>);
+
+impl PartialEq for Knobs {
+    fn eq(&self, _: &Knobs) -> bool {
+        true
+    }
+}
+
+impl Knobs {
+    /// The value of the knob at `at`, if it is told.
+    pub fn get(&self, at: RelAddr) -> Option<f32> {
+        self.0.iter().find(|(k, _)| *k == at).map(|&(_, v)| v)
+    }
+
+    /// The knob a lane of Continue's on `target` goes with, if told.
+    pub fn of(&self, target: Target) -> Option<f32> {
+        match target {
+            Target::Track(a) => self.get(a),
+            Target::Fixed(_) => None,
+        }
+    }
+}
+
+/// The knob a lane of Continue's moves on its track, if it is one (its
+/// instrument's, or its strip's send: composing tools S3).
+pub fn continues_knob(lane: &Lane) -> Option<RelAddr> {
+    match (lane.by, lane.target) {
+        (mpfree_moves::By::Continue { .. }, Target::Track(a))
+            if matches!(a.on, OnTrack::Inst | OnTrack::Strip) =>
+        {
+            Some(a)
+        }
+        _ => None,
     }
 }
 

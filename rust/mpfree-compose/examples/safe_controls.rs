@@ -40,6 +40,7 @@ fn words(node: &dyn Node, s: Option<Safe>) -> String {
         Swing::Octaves(o) => format!("±{o} oct"),
         Swing::Travel(t) => format!("±{:.0} % of its travel", t * 100.0),
         Swing::Times(f) => format!("×{f} / ÷{f}"),
+        Swing::Decibels(d) => format!("±{d:.1} dB"),
     };
     format!(
         "{name} ({group}) from {:.0}, {how}, {:.0} to {:.0}",

@@ -1758,6 +1758,7 @@ fn lead_safe() -> mpfree_compose::SafeControls {
             log: true,
         }),
         length: None,
+        space: None,
     }
 }
 
