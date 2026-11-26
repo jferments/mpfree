@@ -42,7 +42,7 @@ use mpfree_looper::{
     Snap, SnapDone, SnapPlan, SongPlan, Starts, Stats, Status, Step, Sure, Take, HEARD_SECONDS,
     LOOP_MAX_BPM, LOOP_MIN_BPM, MAX_LAYERS, MAX_LOOPS,
 };
-use mpfree_seq::loops::{LoopNow, LoopPlan};
+use mpfree_seq::loops::LoopNow;
 use mpfree_transport::time::{Tick, PPQ};
 use mpfree_transport::{Block, Span, State, Swing};
 use mpfree_ui::wave::{Peaks, WaveColumn};
@@ -318,7 +318,7 @@ pub enum LoopSource {
     /// Heard in time, like the pads; never the Loop track itself.
     Mix(mpfree_fx::StripId),
     /// An audio track's own input, for a loop recorded into one of its
-    /// cells (audio tracks phase 4b, behind Dev's switch): what a take on
+    /// cells (audio tracks phase 4b): what a take on
     /// the track would record. Set by arming the cell, never saved.
     Track(TrackInput),
 }
@@ -1896,7 +1896,7 @@ pub struct LoopHost {
     heard_peaks: Vec<f32>,
     /// A bar's ticks as the last period played.
     bar_ticks: Tick,
-    /// Loops on audio tracks (phase 4b, behind Dev's switch): each slot's
+    /// Loops on audio tracks (phase 4b): each slot's
     /// loop's lasting id, and which are on tracks.
     pub on_tracks: crate::loops_on_tracks::OnTracks,
     /// Layers as recordings (phase 4c.2, behind the same switch): saves
@@ -3697,7 +3697,7 @@ impl LoopHost {
         )
     }
 
-    /// Loop `n` on or off, as a clip launches (Loop tracks): from the bar
+    /// Loop `n` on or off, as a clip launches: from the bar
     /// line at song tick `at`, on the frame it falls on, or with `None` at
     /// once ([`Looper::launch`]). The line for the log.
     pub fn launch(&mut self, n: usize, on: bool, at: Option<mpfree_transport::Tick>) -> String {
@@ -3723,15 +3723,13 @@ impl LoopHost {
         }
     }
 
-    /// The loops as the Loop tracks need them
-    /// ([`crate::time::TimeHost::loops_are`]): which have a first pass, how
-    /// long and from where. None while an open's loops are going out or
-    /// coming in, so a project's cells aren't emptied by the old loops
-    /// fading out. A free loop ([`Clock::Free`]) is told with `free`: with
-    /// loops on Loop tracks it stays off the grid and the song (in no cell,
-    /// so the plan leaves it on and the looper alone says when it plays),
-    /// as its bars aren't the song's; on audio tracks it lands in a free
-    /// cell (phase 4e.4), which the looper still launches on its clock.
+    /// The loops as the grid's loop cells need them
+    /// ([`crate::time::TimeHost::loops_are_on`]): which have a first pass,
+    /// how long and from where. None while an open's loops are going out
+    /// or coming in, so a project's cells aren't emptied by the old loops
+    /// fading out. A free loop ([`Clock::Free`]) is told with `free`, as
+    /// its bars aren't the song's: it lands in a free cell (phase 4e.4),
+    /// which the looper still launches on its clock.
     pub fn grid_now(&self) -> Option<[LoopNow; MAX_LOOPS]> {
         if self.opening() {
             return None;
@@ -3795,31 +3793,24 @@ impl LoopHost {
         lines
     }
 
-    /// The Loop tracks' launches ([`crate::time::TimeHost::loop_plan`]),
-    /// before the period: each loop that isn't where the plan has it goes
-    /// on or off, on the frame of the bar line the plan names, or at once.
-    /// An empty loop waits. Lines for the log; allocates only then. A full
-    /// queue tries again next period.
-    pub fn follow_plan(&mut self, plan: &LoopPlan) -> Vec<String> {
+    /// A loop in no cell plays, as loops did before the grid had them,
+    /// before the period: each one that is off, or waits on a cue, goes on
+    /// at once. A loop on an audio track goes where its track says, and a
+    /// free cell's loop where its cell does (`follow_free`). An empty loop
+    /// waits. Lines for the log; allocates only then. A full queue tries
+    /// again next period.
+    pub fn follow_untracked(&mut self) -> Vec<String> {
         let mut lines = Vec::new();
         for n in 0..MAX_LOOPS {
             let Some(s) = self.looper.loop_status(n) else {
                 continue;
             };
-            let (on, at) = (plan.on[n], plan.at[n]);
-            let there = match (s.cue, at) {
-                (None, _) => s.on == on,
-                (Some(cue), Some(t)) => cue == (on, t),
-                (Some(_), None) => false,
-            };
-            // A loop on an audio track goes where its track says, not
-            // where the Loop tracks' plan does, and a free cell's loop
-            // where its cell does (`follow_free`).
+            let there = s.cue.is_none() && s.on;
             let on_track = self.looper.on_track(n) || self.looper.free_tracked(n);
             if there || on_track || s.phase == Phase::Empty || self.looper.room() == 0 {
                 continue;
             }
-            lines.push(self.launch(n, on, at));
+            lines.push(self.launch(n, true, None));
         }
         lines
     }
@@ -4121,8 +4112,8 @@ impl LoopHost {
         (&self.input_l, &self.input_r)
     }
 
-    /// Layers as recordings (audio tracks phase 4c.2, behind Dev's "Loops
-    /// on audio tracks"): with it on, a save keeps each loop as the looper
+    /// Layers as recordings (audio tracks phase 4c.2; always on in the
+    /// app since 4e.5b): with it on, a save keeps each loop as the looper
     /// holds it (`mpfree_looper::Looper::loop_file_raw`, read with
     /// `raw_layer`), each layer with its recording's id, so it opens
     /// exactly and its edits can be taken further; off, each layer as it
@@ -4185,7 +4176,7 @@ impl LoopHost {
         }
     }
 
-    /// Loops on audio tracks (phase 4b, behind Dev's switch): a loop with
+    /// Loops on audio tracks (phase 4b): a loop with
     /// sound and no lasting id yet gets one, `fresh()` (the audio tracks'
     /// id maker), one a period at most; a first pass starting is a new
     /// loop, so its slot's old id goes first
@@ -4503,8 +4494,8 @@ impl LoopHost {
     }
 
     /// Copy loop `from` into `to`, an empty loop: every layer, with its
-    /// mix, and the loop's level (loop-tracks.md part 6, a loop cell
-    /// copied onto another Loop track). The copy is launched off, so it
+    /// mix, and the loop's level (a loop cell copied onto another audio
+    /// track). The copy is launched off, so it
     /// stays silent until its cell is launched. The layers copy in one at
     /// a time in the background while the loops play on
     /// ([`Looper::copy_layer`], each a step the looper's UNDO takes
@@ -7469,7 +7460,7 @@ mod tests {
         );
     }
 
-    /// A loop cell copied onto another Loop track (loop-tracks.md part 6):
+    /// A loop cell copied onto another audio track:
     /// every layer of the loop copies into an empty one, a layer at a
     /// time, with the loop's level, off until launched; the copy's loop
     /// isn't free meanwhile, and a busy or full looper says why.
@@ -8960,8 +8951,7 @@ mod tests {
         assert!(worst < 1e-5, "differs by {worst}");
     }
 
-    /// Layers as recordings (audio tracks phase 4c.2, behind Dev's "Loops
-    /// on audio tracks"): with recordings on, each closed layer gets a
+    /// Layers as recordings (audio tracks phase 4c.2): with recordings on, each closed layer gets a
     /// recording once; a save keeps each loop as the looper holds it
     /// (`mpfree-looper 2`), each layer with its recording and its file
     /// named by it; it opens in a fresh host playing the same, and keeps
@@ -9740,8 +9730,7 @@ mod tests {
     }
 
     /// Free loops saved with the project open on their clock, stopped at
-    /// their tops, as a project opens with nothing launched, and stay off
-    /// the Loop tracks' grid. The open loads them as soon as the old free
+    /// their tops, as a project opens with nothing launched. The open loads them as soon as the old free
     /// loop is empty (its clock goes only with the next period), and
     /// PLAY starts them with the song.
     #[test]
@@ -9774,8 +9763,7 @@ mod tests {
             "it plays on"
         );
         assert_eq!(t.state(), mpfree_transport::State::Stopped);
-        // Told as free: in no cell on Loop tracks, a free cell on audio
-        // tracks (loops_on_tracks).
+        // Told as free: a free cell on audio tracks (loops_on_tracks).
         assert!(h.grid_now().unwrap()[0].free, "told as free");
         h.save();
         let saved = saved_from(&mut h, &mut t, &mut b);

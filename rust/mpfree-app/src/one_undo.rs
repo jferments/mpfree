@@ -1,5 +1,5 @@
-//! The one history (audio tracks phase 4d.1): with Dev's "Loops on audio
-//! tracks" on, UNDO takes back the newest step anywhere, in the takes (the
+//! The one history (audio tracks phase 4d.1): UNDO takes back the newest
+//! step anywhere, in the takes (the
 //! time engine), a loop or the audio tracks, and SHIFT + UNDO brings back
 //! the step taken back last.
 //!
@@ -439,8 +439,7 @@ impl OneUndo {
     /// worker has read it, then a piece a period, and once it is all in,
     /// the step that waited for it, if it is still the next; or, for the
     /// Looper tab's history list, whose presses then go on. Once a period
-    /// (in [`OneUndo::tend`] with Dev's switch on; on its own with it off,
-    /// for layers that left memory while it was on).
+    /// (in [`OneUndo::tend`]).
     pub fn tend_back(
         &mut self,
         out: &mut Out,

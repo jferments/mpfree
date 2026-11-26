@@ -48,12 +48,6 @@
 //! original lane t:mix.0 -60 6 0 n
 //! original point 0 0.5 r
 //! end
-//! track Loops A
-//! dest 1
-//! loops pads
-//! clip 0 15360 Loop 1
-//! loop 0
-//! end
 //! scene 0 Verse
 //! mutes 5
 //! value t1.mix.0 -3
@@ -113,6 +107,10 @@
 //! layers are in the looper's part. A project with one needs
 //! `audio-loops` (the app's project gate), so a build from before phase 4
 //! refuses it instead of opening the cell as an empty clip.
+//!
+//! A Loop track's `loops` line, and its cells' `loop` lines, from before
+//! loops played on audio tracks (phase 4e.5), are refused with
+//! [`LOOP_TRACKS`]: old projects aren't converted.
 //!
 //! A marker's `section <passes>[ scene <row> pass <ticks>[ changed]]`
 //! line, right after its `marker` line, is what the marker says when the
@@ -227,8 +225,8 @@ use crate::scenes::{
     Follow, FollowAction, ListStep, Scene, MAX_LIST_STEPS, MAX_ROW_CHORDS, SCENES,
 };
 use crate::{
-    Clip, ClipId, Cond, Join, LaunchGrid, Lock, LoopInput, Note, Original, Project, Quantise,
-    Speed, Touch, TouchPoint, Track, TrackKind, MAX_CLIP_TICKS, MAX_TRACKS, ROWS,
+    Clip, ClipId, Cond, Join, LaunchGrid, Lock, Note, Original, Project, Quantise, Speed, Touch,
+    TouchPoint, Track, TrackKind, MAX_CLIP_TICKS, MAX_TRACKS, ROWS,
 };
 
 /// The first line.
@@ -247,6 +245,10 @@ pub const FORMAT_4: &str = "mpfree-clips 4";
 /// The first line of a part saved before song blocks named their clip by
 /// its id (Arrange 1.3), which still opens.
 pub const FORMAT_1: &str = "mpfree-clips 1";
+/// What [`from_text`] says of a part with a Loop track (a `loops` line,
+/// or a cell's `loop` line): loops play on audio tracks now (the audio
+/// tracks rethink's phase 4e.5), and an old project isn't converted.
+pub const LOOP_TRACKS: &str = "a Loop track, from before loops played on audio tracks";
 /// Pressure points a `touch` line holds (more go on more lines).
 const TOUCH_PER_LINE: usize = 64;
 
@@ -305,9 +307,6 @@ pub fn to_text(p: &Project) -> String {
         }
         if !t.note_fx.is_empty() || t.note_fx.arp_at != 0 {
             let _ = writeln!(s, "notearp {}", t.note_fx.arp_at);
-        }
-        if let Some(input) = t.loops() {
-            let _ = writeln!(s, "loops {}", input.word());
         }
         if t.is_audio() {
             s.push_str("audio\n");
@@ -418,9 +417,6 @@ pub fn to_text(p: &Project) -> String {
 fn clip_body(s: &mut String, c: &Clip) {
     if c.id.is_given() {
         let _ = writeln!(s, "id {}", c.id.0);
-    }
-    if let Some(n) = c.looped {
-        let _ = writeln!(s, "loop {n}");
     }
     if c.speed != Speed::NORMAL {
         let _ = writeln!(s, "speed {} {}", c.speed.num, c.speed.den);
@@ -958,10 +954,7 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                 }
                 last(&mut p).note_fx.arp_at = at;
             }
-            ("loops", At::Track) => {
-                let input = w.next().and_then(LoopInput::from_word);
-                last(&mut p).kind = TrackKind::Loops(input.ok_or_else(|| bad("loops"))?)
-            }
+            ("loops", At::Track) | ("loop", At::Clip(..)) => return Err(LOOP_TRACKS.to_string()),
             ("audio", At::Track) => last(&mut p).kind = TrackKind::Audio,
             ("clip", At::Track) => {
                 let slot: usize = num(w.next()).ok_or_else(|| bad("slot"))?;
@@ -980,7 +973,6 @@ pub fn from_text(text: &str) -> Result<Project, String> {
                     .ok_or_else(|| bad("speed"))?;
             }
             ("swing", At::Clip(c, _)) => c.swing = Some(swing(&mut w).ok_or_else(|| bad("swing"))?),
-            ("loop", At::Clip(c, _)) => c.looped = Some(num(w.next()).ok_or_else(|| bad("loop"))?),
             ("quant", At::Clip(c, _)) => {
                 let (g, s) = (num(w.next()), num(w.next()));
                 c.quantise = Some(
@@ -1747,10 +1739,11 @@ mod track_id_tests {
     fn clip_ids_and_the_next_id_come_back() {
         let mut p = Project::new();
         p.tracks.push(Track::new("Drums", 0));
-        p.tracks.push(Track::new_loops("Loops", 1));
+        p.tracks.push(Track::new_audio("Loops", 1));
         p.tracks[0].slots[0] = Some(Clip::new("Beat", 3840));
         p.tracks[0].slots[2] = Some(Clip::new("Fill", 3840));
-        p.tracks[1].slots[1] = Some(Clip::new_loop(0, 3840));
+        let id = crate::LoopId(1);
+        p.tracks[1].slots[1] = Some(Clip::new_audio_loop(id, "Loop 1", 3840));
         let old = to_text(&p);
         assert!(!old.contains("\nid ") && !old.contains("nextclip"));
         assert_eq!(from_text(&old).unwrap(), p, "no ids, as saved");
@@ -1759,8 +1752,9 @@ mod track_id_tests {
         let text = to_text(&p);
         assert!(text.contains("nextclip 4\n"), "{text}");
         assert!(text.contains("clip 2 3840 Fill\nid 2\n"), "{text}");
+        assert!(text.contains("clip 1 3840 Loop 1\nid 3\n"), "{text}");
         assert!(
-            text.contains("clip 1 3840 Loop 1\nid 3\nloop 0\n"),
+            text.contains(&format!("loopclip {:032x}\n", id.0)),
             "{text}"
         );
         let back = from_text(&text).unwrap();
@@ -2930,29 +2924,24 @@ mod tests {
         assert!(from_text(&to_text(&hits)).is_err());
     }
 
+    /// A Loop track's lines, from before loops played on audio tracks
+    /// (phase 4e.5), are refused, the track's or a cell's: old projects
+    /// aren't converted.
     #[test]
-    fn loop_tracks_and_their_cells_read_back() {
+    fn a_loop_tracks_lines_are_refused() {
         let mut p = full();
-        let mut t = Track::new_loops("Loops A", 3);
-        t.kind = TrackKind::Loops(LoopInput::Line);
-        t.slots[0] = Some(Clip::new_loop(0, 7680));
-        t.slots[2] = Some(Clip::new_loop(3, 3840));
+        let mut t = Track::new("Loops A", 3);
+        t.slots[0] = Some(Clip::new("Loop 1", 7680));
         p.tracks.push(t);
-        p.tracks.push(Track::new_loops("Loops B", 4));
-        p.check().unwrap();
         let text = to_text(&p);
-        assert!(text.contains("track Loops A\ndest 3\nmute 0\narp 0\nrectouch 1\nloops line\n"));
-        assert!(text.contains("clip 2 3840 Loop 4\nloop 3\nend\n"));
-        assert_eq!(from_text(&text).unwrap(), p);
-        // A build before Loop tracks skips the lines: note tracks with
-        // empty clips. One that names no input, or a loop past the
-        // looper's, is refused; so is a cell on a note track.
-        let bad = text.replace("loops line", "loops tape");
-        assert!(from_text(&bad).is_err());
-        let past = text.replace("loop 3\n", "loop 8\n");
-        assert!(from_text(&past).is_err());
-        let moved = text.replace("loops line\n", "");
-        assert!(from_text(&moved).is_err(), "a loop cell on a note track");
+        assert!(from_text(&text).is_ok());
+        let refused = Err(LOOP_TRACKS.to_string());
+        let track = text.replace("track Loops A\n", "track Loops A\nloops line\n");
+        assert_ne!(track, text);
+        assert_eq!(from_text(&track), refused);
+        let cell = text.replace("clip 0 7680 Loop 1\n", "clip 0 7680 Loop 1\nloop 0\n");
+        assert_ne!(cell, text);
+        assert_eq!(from_text(&cell), refused);
     }
 
     /// The audio tracks rethink, phase 1: an audio track is saved as a
@@ -2975,7 +2964,6 @@ mod tests {
         let back = from_text(&text).unwrap();
         assert_eq!(back, p);
         assert!(back.tracks[1].is_audio() && !back.tracks[1].plays_notes());
-        assert_eq!(back.tracks[1].loops(), None);
         // A note clip in an audio track's cell, or its block on its lane.
         let mut cell = p.clone();
         cell.tracks[1].slots[0] = Some(Clip::new("Beat", 3840));

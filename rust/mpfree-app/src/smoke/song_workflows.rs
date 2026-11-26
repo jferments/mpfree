@@ -136,8 +136,7 @@ mod tests {
 
     /// Each song opens from BROWSE > Projects with every clip, scene and
     /// placement as written, its tempo and swing, and the Arrange page
-    /// names its tracks. Loops still play on audio tracks once it is open
-    /// (4e.5: the opened project's time engine is told).
+    /// names its tracks.
     #[test]
     fn every_song_opens_from_browse_as_it_was_written() {
         on_big_stack(|| {
@@ -151,11 +150,6 @@ mod tests {
                 written.give_clip_ids();
                 assert_eq!(l.s.time.project(), &written, "{}", song.name);
                 assert_eq!(l.s.app.settings.bpm, song.tempo, "{}", song.name);
-                assert!(
-                    l.s.time.state().loops_on,
-                    "{}: loops on audio tracks",
-                    song.name
-                );
                 l.s.run_for(0.1);
                 assert_eq!(l.s.time.info().swing, song.swing, "{}", song.name);
                 l.s.press("header", "tab", "Arrange");

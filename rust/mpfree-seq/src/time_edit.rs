@@ -715,7 +715,8 @@ mod tests {
     /// The song every edit is tried on. Drums: a one-bar beat for 8 bars,
     /// a three-beat fill for 5 (so its blocks cut partway into it), the
     /// beat again for 3. Keys: a two-bar pad for 6 bars, then from bar 8
-    /// to the end. Loops A: a loop's block in bars 3 to 10. Markers A to D
+    /// to the end. Loops A (an audio track): a loop cell's block in bars 3
+    /// to 10. Markers A to D
     /// every 4 bars. Tempo: 100 (the project's), 120 at bar 3 gliding to
     /// 140 at bar 7, 90 from bar 11, then from bar 12 gliding to 160 at
     /// bar 15. The morph lane glides from bar 2 to 6 and ends at 10; the
@@ -728,8 +729,9 @@ mod tests {
         drums.slots[1] = Some(Clip::new("fill", 3 * BEAT));
         let mut keys = Track::new("keys", 1);
         keys.slots[0] = Some(Clip::new("pad", 2 * BAR));
-        let mut loops = Track::new_loops("Loops A", 2);
-        loops.slots[0] = Some(Clip::new_loop(0, 2 * BAR));
+        let mut loops = Track::new_audio("Loops A", 2);
+        let id = crate::LoopId(1);
+        loops.slots[0] = Some(Clip::new_audio_loop(id, "Loop 1", 2 * BAR));
         p.tracks = vec![drums, keys, loops];
         p.give_clip_ids();
         let s = &mut p.arrangement;
@@ -1042,7 +1044,8 @@ mod tests {
             new.check(&p.tracks).unwrap();
             let worst = plays_its_parts(&p.arrangement, &new, &p.tracks, edit);
             println!("{edit:?}: at most {worst:.1} frames off");
-            // A block stays on its own lane, a loop's on its Loop track.
+            // A block stays on its own lane, a loop cell's on its audio
+            // track's.
             for q in &new.placements {
                 let was = p
                     .arrangement

@@ -2094,7 +2094,7 @@ mod looper {
     /// faint and a tap says why on the hint line. Once STOP stops the song
     /// (the free loop plays on), Make song starts the song on the free
     /// loop's next bar line at its tempo, the loop a song loop in its
-    /// place, on a Loop track, and the app's tempo with it. UNDO makes it
+    /// place, on its audio track, and the app's tempo with it. UNDO makes it
     /// free again, playing on, and the song stops, back at its tempo;
     /// REDO makes the song again.
     #[test]
@@ -2147,7 +2147,7 @@ mod looper {
             assert!(s.said().contains(&made), "{:?}", s.said());
             assert!(
                 s.said().iter().any(|l| l.starts_with("time: Loop 1 on ")),
-                "on a Loop track: {:?}",
+                "on its track: {:?}",
                 s.said()
             );
             assert_eq!(smart_editor(&s).song, None, "no free loop now");

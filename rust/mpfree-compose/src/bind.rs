@@ -126,7 +126,6 @@ pub fn revision(clip: &Clip) -> Revision {
         legato: _,
         once: _,
         program: _,
-        looped,
         direction,
         // The step grid changes what Steps shows, never when a note plays.
         step: _,
@@ -139,7 +138,7 @@ pub fn revision(clip: &Clip) -> Revision {
         // An audio clip's regions: the composer reads notes, and an audio
         // clip has none.
         audio: _,
-        // A loop cell's loop (phase 4): what it plays, as `looped` is.
+        // A loop cell's loop (phase 4): what it plays.
         loop_clip,
         // The synth its locks were made for: locks are out, so it is too.
         made_for: _,
@@ -153,7 +152,6 @@ pub fn revision(clip: &Clip) -> Revision {
     h.word(quantise.map_or(0, |Quantise { grid, strength }| {
         1 << 48 | u64::from(strength) << 32 | u64::from(grid)
     }));
-    h.word(looped.map_or(0, |l| 0x100 | u64::from(l)));
     h.word(loop_clip.map_or(0, |l| l.id.0 as u64 ^ (l.id.0 >> 64) as u64));
     direction.hash(&mut h);
     h.word(match holds {

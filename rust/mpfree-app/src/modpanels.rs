@@ -1654,7 +1654,7 @@ fn notes_action(
                 Vec::new()
             } else {
                 vec![Effect::Tell(
-                    "notes: a Loop track has no MIDI effects".into(),
+                    "notes: an audio track has no MIDI effects".into(),
                 )]
             }
         }

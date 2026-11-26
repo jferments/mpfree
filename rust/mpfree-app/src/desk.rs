@@ -177,8 +177,8 @@ pub struct Desk<'a> {
     pub max_db: f32,
     /// The sound card the looper's line input opens.
     pub card: u32,
-    /// The one history across the engines, for UNDO with Dev's "Loops on
-    /// audio tracks" on (audio tracks phase 4d.1).
+    /// The one history across the engines, for UNDO (audio tracks phase
+    /// 4d.1).
     pub undo: &'a mut crate::one_undo::OneUndo,
 }
 
@@ -479,29 +479,20 @@ impl Desk<'_> {
                     fx.extend(arm_loop_cell(app, time, tracks, looper, mix, out, cell));
                     return None;
                 }
-                // SHIFT + a loop's cell dropped on another Loop track: a
-                // new loop, a copy of its audio (loop-tracks.md part 6).
+                // SHIFT + an audio track's loop cell dropped on another
+                // audio track: a new loop, a copy of its audio (phase 4b).
                 if let mpfree_time_ui::TimeAction::DropClip {
                     from,
                     to,
                     copy: true,
                 } = a
                 {
-                    let loops = |t: usize| time.project().tracks.get(t).is_some_and(|t| t.is_loops());
-                    if from.0 != to.0 && loops(from.0) && loops(to.0) {
-                        fx.extend(copy_loop_cell(time, looper, out, from, to));
-                        return None;
-                    }
-                    // An audio track's loop cell (Dev's switch, phase 4b):
-                    // onto another audio track, a new loop.
                     let loop_id = time
                         .project()
                         .clip(from.0, from.1)
                         .and_then(|c| c.loop_id());
                     let audio = |t: usize| time.project().tracks.get(t).is_some_and(|t| t.is_audio());
-                    if let Some(id) = loop_id.filter(|_| {
-                        app.settings.loops_on && from.0 != to.0 && audio(to.0)
-                    }) {
+                    if let Some(id) = loop_id.filter(|_| from.0 != to.0 && audio(to.0)) {
                         fx.extend(copy_audio_loop_cell(
                             time, tracks, looper, out, from, to, id,
                         ));
@@ -579,18 +570,12 @@ impl Desk<'_> {
             gui::FromUi::ArmTrackAdd(t) => {
                 let now = rec_now(time, looper);
                 app.rec.also = time.also();
-                let name = time
-                    .project()
-                    .tracks
-                    .get(t)
-                    .map_or_else(|| format!("Track {}", t + 1), |tr| tr.name.clone());
-                if time.project().tracks.get(t).is_none_or(|tr| tr.is_loops()) {
-                    fx.push(app::Effect::Tell(format!(
-                        "{name} plays loops: the Looper row records them"
-                    )));
+                let Some(tr) = time.project().tracks.get(t) else {
+                    fx.push(app::Effect::Tell(format!("no track {}", t + 1)));
                     return None;
-                }
-                if time.project().tracks.get(t).is_some_and(|tr| tr.is_audio()) {
+                };
+                let name = tr.name.clone();
+                if tr.is_audio() {
                     fx.push(app::Effect::Tell(format!(
                         "{name} is an audio track: its arm dot on the Song view arms it"
                     )));
@@ -2182,22 +2167,16 @@ fn arm_loop_cell(
     out.show(gui::ToUi::Rec(app.rec));
     // On the song's clock whatever Sync says: a free loop has no cell.
     fx.push(app::Effect::Looper(looping::LoopAction::SelectForCell(n)));
-    // An audio track's cell (Dev's switch, phase 4b) records the track's
-    // own input; a Loop track's, its Loop input.
+    // An audio track's cell (phase 4b) records the track's own input; with
+    // no engine track to say it, the pads.
     let from = match tracks.loop_input(t, mix) {
         Some(input) => {
             fx.extend(app.loop_track_input(input));
             looping::source_words(looping::LoopSource::Track(input), None)
         }
         None => {
-            let input = time
-                .project()
-                .tracks
-                .get(t)
-                .and_then(|tr| tr.loops())
-                .unwrap_or_default();
-            fx.extend(app.loop_input(input));
-            input.name().to_lowercase()
+            fx.extend(app.loop_input_pads());
+            "pads + synth".to_string()
         }
     };
     fx.extend(rec_effects(done, time, looper));
@@ -2226,10 +2205,10 @@ fn cell_lets_go(time: &time::TimeHost, a: looping::LoopAction) -> Vec<app::Effec
     ]
 }
 
-/// Every loop in use, an audio track's empty cell tapped (Dev's "Loops on
-/// audio tracks", phase 4, board 3): the REC chip's refusal and the cells
+/// Every loop in use, an audio track's empty cell tapped (phase 4, board
+/// 3): the REC chip's refusal and the cells
 /// holding the loops, "REC: 8 loops · clear one (Vocal · row 2, Bass ·
-/// row 1, …)". None for a Loop track's cell, or while a loop is free.
+/// row 1, …)". None for a note track's cell, or while a loop is free.
 fn full_words(time: &time::TimeHost, looper: &looping::LoopHost, t: usize) -> Option<String> {
     use mpfree_looper::Phase;
     let p = time.project();
@@ -2267,53 +2246,8 @@ fn full_words(time: &time::TimeHost, looper: &looping::LoopHost, t: usize) -> Op
     ))
 }
 
-/// SHIFT + a loop's cell dropped on an empty cell of another Loop track
-/// (loop-tracks.md part 6): the cell there takes an empty loop, and the
-/// looper copies the loop's layers into it, silent until the cell is
-/// launched. Says why not: no loop free, the memory, the loop busy.
-fn copy_loop_cell(
-    time: &mut time::TimeHost,
-    looper: &mut looping::LoopHost,
-    out: &mut Out,
-    from: (usize, usize),
-    to: (usize, usize),
-) -> Vec<app::Effect> {
-    use mpfree_time_ui::TimeAction::{LoopCopy, LoopCopyOff};
-    let tell = |s: String| vec![app::Effect::Tell(s)];
-    let Some(n) = time
-        .project()
-        .clip(from.0, from.1)
-        .and_then(|c| c.looped)
-        .map(usize::from)
-    else {
-        return tell("clips: nothing to copy there".to_string());
-    };
-    let m = match looper.free_loop() {
-        Ok(m) => m,
-        Err(why) => return tell(why),
-    };
-    // The cell first: the time engine checks both cells.
-    let said = match time.act(LoopCopy {
-        from,
-        to,
-        into: m as u8,
-        id: 0,
-    }) {
-        Ok(line) => line,
-        Err(why) => return tell(why),
-    };
-    match looper.copy_loop(n, m) {
-        Ok(line) => out.note(&line),
-        Err(why) => {
-            let _ = time.act(LoopCopyOff(m as u8));
-            return tell(why);
-        }
-    }
-    tell(said)
-}
-
 /// SHIFT + an audio track's loop cell dropped on an empty cell of
-/// another audio track (Dev's "Loops on audio tracks", phase 4b): a copy
+/// another audio track (phase 4b): a copy
 /// is a new loop, so an empty loop takes a new lasting id, the cell there
 /// names it, and the looper copies the layers into it, silent until the
 /// cell is launched. Says why not, and takes the id back.
@@ -2362,7 +2296,7 @@ fn copy_audio_loop_cell(
     tell(said)
 }
 
-/// A loop's copy onto another Loop track ended
+/// A loop cell's copy onto another audio track ended
 /// ([`looping::LoopHost::copy_ended`]): all in, or stopped with some of
 /// its layers, or with none, so its cell goes.
 pub fn copy_ended(time: &mut time::TimeHost, e: looping::CopyEnd) -> Vec<app::Effect> {
@@ -2451,20 +2385,12 @@ fn loop_take(
     let track = time.project().tracks.get(t);
     match c {
         Command::Record => match looper.free_loop() {
-            Ok(n) => {
-                let resample =
-                    track.and_then(|tr| tr.loops()) == Some(mpfree_seq::LoopInput::Resample);
-                // On the song's clock whatever Sync says: a free loop
-                // has no cell.
-                vec![
-                    app::Effect::Looper(LoopAction::SelectForCell(n)),
-                    app::Effect::Looper(LoopAction::Command(if resample {
-                        Command::Resample
-                    } else {
-                        Command::Record
-                    })),
-                ]
-            }
+            // On the song's clock whatever Sync says: a free loop has no
+            // cell.
+            Ok(n) => vec![
+                app::Effect::Looper(LoopAction::SelectForCell(n)),
+                app::Effect::Looper(LoopAction::Command(Command::Record)),
+            ],
             Err(why) => vec![app::Effect::Tell(why)],
         },
         Command::Overdub => match loop_playing_on(time, looper, t) {
@@ -2474,7 +2400,7 @@ fn loop_take(
             ],
             None => vec![app::Effect::Tell(format!(
                 "Nothing plays on {} to overdub: REC records a loop into its armed cell",
-                track.map_or("the Loop track", |tr| tr.name.as_str())
+                track.map_or("the track", |tr| tr.name.as_str())
             ))],
         },
         _ => plain,

@@ -69,6 +69,7 @@ impl Default for GroupSet {
 
 impl GroupSet {
     /// All three knobs at rest: nothing is changed anywhere.
+    #[cfg(test)]
     pub fn at_rest(&self) -> bool {
         self.level_db == 0.0 && self.filter == 0.0 && self.delay == 0.0
     }

@@ -67,7 +67,7 @@ pub enum RingState {
     Overdubbing,
     Playing,
     Muted,
-    /// On a Loop track where another loop plays: silent, in its place.
+    /// Its cell stopped, or another loop soloed: silent, in its place.
     Off,
     /// A free loop (Sync: Free) while the free loops are stopped: it waits
     /// at its place on the free clock's bar 1, and a tap plays the free
@@ -89,8 +89,8 @@ impl RingState {
             Phase::Recording => RingState::Recording,
             Phase::Overdubbing => RingState::Overdubbing,
             Phase::Playing if l.muted => RingState::Muted,
-            // Silent in its place: stopped on its Loop track, or another
-            // loop is soloed.
+            // Silent in its place: its cell stopped, or another loop is
+            // soloed.
             Phase::Playing if !l.on || l.solo_out => RingState::Off,
             Phase::Playing => RingState::Playing,
         }
