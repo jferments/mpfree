@@ -27,6 +27,8 @@
 //! - **Rate:** [`convert_rate`] puts a whole sound at another sample rate
 //!   through the same resampler (the sampler converts a file at another
 //!   rate to the output's when it is loaded).
+//! - **Making them ahead:** [`sched`] runs every stretch made ahead on one
+//!   worker, a step at a time, the most urgent first.
 //!
 //! Our own code, MIT, no C++ to cross-build for the MPC.
 
@@ -34,6 +36,7 @@
 
 mod map;
 mod resample;
+pub mod sched;
 mod vocoder;
 
 use std::sync::Arc;
@@ -45,6 +48,12 @@ use vocoder::Vocoder;
 
 /// The furthest the pitch moves, either way.
 pub const MAX_SEMITONES: f32 = 24.0;
+
+/// This stretch's version: one more whenever a change here changes the
+/// audio a [`Job`] makes. Copies made ahead and kept (the audio tracks'
+/// tempo copies) are filed under it, so a new build never plays a copy an
+/// older one made.
+pub const VERSION: u32 = 1;
 
 /// `input` (`channels` interleaved, 1 or 2) recorded at `from` Hz, as the
 /// same sound at `to` Hz: read through the windowed-sinc resampler
