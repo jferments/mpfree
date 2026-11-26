@@ -18,6 +18,9 @@
 //!   audio, then write and sync a record naming it. Only then are those
 //!   frames committed and allowed out of capture memory.
 //! - [`Take::stop`] then [`Take::finish`] (P1 to P5) make it a finished WAV.
+//! - [`Take::carry_on`]: its drive went (the SD card taken out); it goes on
+//!   in another folder, the part left behind a hole in its new file, said
+//!   by a [`Hole`] record.
 //!
 //! Every failure is retried a few times from capture memory and then shown
 //! as a state ([`TakeState`]); nothing uncommitted is ever let go.
@@ -219,6 +222,11 @@ pub fn final_path(dir: &Path, stem: &str) -> PathBuf {
 }
 pub fn tail_path(dir: &Path, stem: &str) -> PathBuf {
     dir.join(format!("{stem}.tail.unverified.wav"))
+}
+/// A take that carried on in this folder after its drive went: what its
+/// file is missing ([`Hole`]).
+pub fn hole_path(dir: &Path, stem: &str) -> PathBuf {
+    dir.join(format!("{stem}.wav.hole"))
 }
 pub fn unverified_path(dir: &Path, stem: &str, raw: bool) -> PathBuf {
     dir.join(format!(
@@ -528,6 +536,119 @@ pub fn tail_crc(tail: &[u8]) -> u32 {
     crc32c::of(&tail[tail.len() - n..])
 }
 
+// ---- a take carried on in another folder ---------------------------------
+
+const HOLE_MAGIC: &[u8; 8] = b"MPFRHOLE";
+/// Where a [`Hole`]'s path starts in its record.
+const HOLE_PATH_AT: usize = 88;
+/// The longest path a [`Hole`] holds.
+pub const HOLE_PATH_MAX: usize = SLOT - HOLE_PATH_AT - 4;
+
+/// What a take that carried on in another folder after its drive went
+/// (the SD card taken out while it recorded, the SD card plan's B2c) is
+/// missing: its first `frames` frames are on that drive, in `from`, as it
+/// committed them there, and its file in the new folder holds zeros in
+/// their place (a hole the file system doesn't store) until they are
+/// brought back. Written once, as `NAME_ID.wav.hole` beside the take's
+/// files, before the take's audio goes on there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hole {
+    pub id: RecId,
+    pub frames: u64,
+    pub fmt: RecFormat,
+    /// CRC-32C of those frames' audio, as committed on the drive that
+    /// went: what the frames brought back must match.
+    pub crc: u32,
+    /// The card it went with: its marker id and volume serial (zeros when
+    /// not known).
+    pub card: [u8; 16],
+    pub serial: u32,
+    /// The take's recording file on the drive that went, as it was named
+    /// there.
+    pub from: PathBuf,
+}
+
+impl Hole {
+    /// Audio bytes missing.
+    pub fn bytes(&self) -> u64 {
+        self.frames * self.fmt.block_align() as u64
+    }
+
+    /// One 4096-byte record; None for a path that isn't UTF-8 or is longer
+    /// than [`HOLE_PATH_MAX`].
+    pub fn encode(&self) -> Option<Vec<u8>> {
+        let path = self.from.to_str()?.as_bytes();
+        if path.len() > HOLE_PATH_MAX {
+            return None;
+        }
+        let mut b = vec![0u8; SLOT];
+        b[0..8].copy_from_slice(HOLE_MAGIC);
+        put16(&mut b, 8, VERSION);
+        b[16..32].copy_from_slice(&self.id.0);
+        put64(&mut b, 32, self.frames);
+        put64(&mut b, 40, self.bytes());
+        put16(&mut b, 48, self.fmt.tag());
+        put16(&mut b, 50, self.fmt.channels);
+        put32(&mut b, 52, self.fmt.rate);
+        put16(&mut b, 56, self.fmt.bits());
+        put16(&mut b, 58, self.fmt.block_align() as u16);
+        put32(&mut b, 60, self.crc);
+        b[64..80].copy_from_slice(&self.card);
+        put32(&mut b, 80, self.serial);
+        put16(&mut b, 84, path.len() as u16);
+        let end = HOLE_PATH_AT + path.len();
+        b[HOLE_PATH_AT..end].copy_from_slice(path);
+        let crc = crc32c::of(&b[..end]);
+        put32(&mut b, end, crc);
+        Some(b)
+    }
+
+    /// Read a record; None if it is damaged, from a newer MPFree, or not
+    /// one.
+    pub fn decode(b: &[u8]) -> Option<Hole> {
+        if b.len() < SLOT || &b[0..8] != HOLE_MAGIC || get16(b, 8) != VERSION {
+            return None;
+        }
+        let len = usize::from(get16(b, 84));
+        if len > HOLE_PATH_MAX {
+            return None;
+        }
+        let end = HOLE_PATH_AT + len;
+        if crc32c::of(&b[..end]) != get32(b, end)
+            || b[10..16] != [0; 6]
+            || b[86..88] != [0; 2]
+            || b[end + 4..SLOT].iter().any(|&x| x != 0)
+        {
+            return None;
+        }
+        let fmt = RecFormat::from_fields(
+            get16(b, 48),
+            get16(b, 50),
+            get32(b, 52),
+            get16(b, 56),
+            get16(b, 58),
+        )?;
+        let frames = get64(b, 32);
+        if frames.checked_mul(fmt.block_align() as u64) != Some(get64(b, 40)) {
+            return None;
+        }
+        let from = std::str::from_utf8(&b[HOLE_PATH_AT..end]).ok()?;
+        let mut id = [0u8; 16];
+        id.copy_from_slice(&b[16..32]);
+        let mut card = [0u8; 16];
+        card.copy_from_slice(&b[64..80]);
+        Some(Hole {
+            id: RecId(id),
+            frames,
+            fmt,
+            crc: get32(b, 60),
+            card,
+            serial: get32(b, 80),
+            from: PathBuf::from(from),
+        })
+    }
+}
+
 // ---- the writer ---------------------------------------------------------
 
 /// Why a take is at risk or stopped.
@@ -623,6 +744,9 @@ pub struct Take {
     /// Stop steps done (P1 to P5).
     stop_step: u8,
     stats: TakeStats,
+    /// Frames at its start that are on a drive that went, not in its file
+    /// here ([`Take::carry_on`]).
+    hole: u64,
 }
 
 impl Take {
@@ -677,6 +801,7 @@ impl Take {
             stopping: false,
             stop_step: 0,
             stats: TakeStats::default(),
+            hole: 0,
         };
         let made = t.make(fs);
         if made.is_err() {
@@ -769,6 +894,15 @@ impl Take {
     /// Where the finished take is (once Saved).
     pub fn final_path(&self) -> PathBuf {
         final_path(&self.dir, &self.stem)
+    }
+    /// The folder its files are in now.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+    /// Frames at its start that stayed on a drive that went: its file here
+    /// holds zeros in their place ([`Take::carry_on`]).
+    pub fn hole(&self) -> u64 {
+        self.hole
     }
 
     /// Add captured frames (interleaved, the take's channels) to capture
@@ -1046,6 +1180,23 @@ impl Take {
             if self.written_run() < self.units.len() {
                 return false;
             }
+            if self.hole > 0 {
+                // Carried on with nothing written here past the hole: the
+                // file still has to reach the take's length.
+                let end = DATA_AT + data + pad as u64;
+                let short = fs.len(&self.rec).map(|l| l < end);
+                if let Err(e) = short.and_then(|s| {
+                    if s {
+                        fs.set_len(&self.rec, end)
+                    } else {
+                        Ok(())
+                    }
+                }) {
+                    self.stats.write_errors += 1;
+                    self.at_risk(Why::of(&e, Why::Writes));
+                    return false;
+                }
+            }
             let h = header(self.fmt, &self.id, Sizes::done(self.fmt, self.captured));
             if let Err(e) = fs.write_at(&self.rec, 0, &h) {
                 self.stats.write_errors += 1;
@@ -1099,6 +1250,132 @@ impl Take {
             }
         }
         true
+    }
+
+    /// The drive the take records on went (the SD card taken out): the
+    /// take carries on in `dir`, on another drive, under the same name.
+    /// What it committed stays where it was, and is never touched again
+    /// (its files there are let go of); everything after it, in capture
+    /// memory and still to come, goes into new files in `dir`, at the same
+    /// place in the take. The new recording file holds zeros where the
+    /// committed frames would be (a hole the file system doesn't store),
+    /// so it is the whole take's length and plays in step with the song,
+    /// and a [`Hole`] record says what is missing, from where (`from`:
+    /// `card`, its marker id, and `serial`, its volume serial; zeros when
+    /// not known), with its checksum.
+    ///
+    /// Steps: the hole's record made and synced (only if anything was
+    /// committed), then the recording file and its checkpoint as at
+    /// [`Take::arm`] (sequence 0, nothing committed), synced, and the
+    /// folder synced. Its checks from then on cover the file as it is,
+    /// zeros and all, so recovery after a cut treats it as any take. On
+    /// failure what it made goes and the take stays as it was (at risk,
+    /// its memory filling), so it can be tried again.
+    ///
+    /// Gives false and does nothing when there is nothing to carry: the
+    /// take is finished, or its final record is already on the drive that
+    /// went (it is whole there, and recovery finishes it).
+    pub fn carry_on(
+        &mut self,
+        fs: &mut dyn Fs,
+        dir: &Path,
+        card: [u8; 16],
+        serial: u32,
+    ) -> io::Result<bool> {
+        if self.state == TakeState::Saved || self.stop_step >= 2 {
+            return Ok(false);
+        }
+        if dir == self.dir {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "the take is already in that folder",
+            ));
+        }
+        let rec = recording_path(dir, &self.stem);
+        let ckpt = checkpoint_path(dir, &self.stem);
+        let hole_at = hole_path(dir, &self.stem);
+        if fs.exists(&rec) || fs.exists(&ckpt) || fs.exists(&final_path(dir, &self.stem)) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "a take has that name there",
+            ));
+        }
+        let hole = (self.committed > 0).then(|| Hole {
+            id: self.id,
+            frames: self.committed,
+            fmt: self.fmt,
+            crc: self.whole_crc,
+            card,
+            serial,
+            from: self.rec.clone(),
+        });
+        let made = self.make_in(fs, dir, &rec, &ckpt, &hole_at, hole.as_ref());
+        if let Err(e) = made {
+            let _ = fs.remove(&rec);
+            let _ = fs.remove(&ckpt);
+            if hole.is_some() {
+                let _ = fs.remove(&hole_at);
+            }
+            return Err(e);
+        }
+        fs.let_go(&self.rec);
+        fs.let_go(&self.ckpt);
+        let bytes = self.committed * self.fmt.block_align() as u64;
+        self.dir = dir.to_path_buf();
+        self.rec = rec;
+        self.ckpt = ckpt;
+        self.seq = 0;
+        // The file here holds zeros for what was committed: its checks
+        // say so.
+        self.whole_crc = crc32c::zeros(0, bytes);
+        self.tail = vec![0; bytes.min(TAIL_CHECK) as usize];
+        self.hole = self.committed;
+        for u in self.units.iter_mut() {
+            u.written = false;
+            u.failed = false;
+        }
+        self.stop_step = 0;
+        if let TakeState::AtRisk(_) = self.state {
+            self.state = if self.stopping {
+                TakeState::Saving
+            } else {
+                TakeState::Recording
+            };
+        }
+        Ok(true)
+    }
+
+    fn make_in(
+        &mut self,
+        fs: &mut dyn Fs,
+        dir: &Path,
+        rec: &Path,
+        ckpt: &Path,
+        hole_at: &Path,
+        hole: Option<&Hole>,
+    ) -> io::Result<()> {
+        if let Some(h) = hole {
+            let bytes = h.encode().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "the take's old path can't be kept",
+                )
+            })?;
+            fs.create(hole_at, true)?;
+            fs.write_at(hole_at, 0, &bytes)?;
+            fs.sync(hole_at)?;
+        }
+        fs.create(rec, true)?;
+        fs.write_at(rec, 0, &header(self.fmt, &self.id, Sizes::Open))?;
+        fs.create(ckpt, true)?;
+        let mut first = self.record(0, 0, false, 0);
+        first.whole_crc = 0;
+        let mut both = first.encode();
+        both.resize(2 * SLOT, 0);
+        fs.write_at(ckpt, 0, &both)?;
+        fs.sync(rec)?;
+        fs.sync(ckpt)?;
+        fs.sync_dir(dir)
     }
 
     /// Give up an armed take that never recorded: its files go.

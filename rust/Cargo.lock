@@ -1040,6 +1040,7 @@ dependencies = [
 name = "mpfree-fxlab"
 version = "0.1.0"
 dependencies = [
+ "mpfree-audiotracks",
  "mpfree-fx",
  "mpfree-grain",
  "mpfree-instruments",
@@ -1050,6 +1051,7 @@ dependencies = [
  "mpfree-stretch",
  "mpfree-synth",
  "mpfree-synth-ui",
+ "mpfree-transport",
  "mpfree-tuning",
 ]
 

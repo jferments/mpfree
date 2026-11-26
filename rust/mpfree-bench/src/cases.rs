@@ -2250,9 +2250,13 @@ pub fn all(rate: u32) -> Vec<Case> {
     v.push(measured(|| looper_on_tracks(rate, 60)));
     v.push(measured(|| looper_free(rate, 60)));
     v.push(measured(|| looper_by_ear(rate, 60)));
-    v.push(measured(|| audio_tracks(rate, 0, false)));
-    v.push(measured(|| audio_tracks(rate, 2, false)));
-    v.push(measured(|| audio_tracks(rate, 2, true)));
+    v.push(measured(|| audio_tracks(rate, 0, false, None)));
+    v.push(measured(|| audio_tracks(rate, 2, false, None)));
+    v.push(measured(|| audio_tracks(rate, 2, true, None)));
+    // Phase 5a: every region following the tempo on Repitch, the song
+    // slower and faster than the takes were made.
+    v.push(measured(|| audio_tracks(rate, 0, false, Some(0.9))));
+    v.push(measured(|| audio_tracks(rate, 0, false, Some(1.3))));
     v.push(measured(|| audio_clips(rate)));
     v.push(measured(|| stream_voices(rate, 64, Read::Near, 0.75)));
     v.push(measured(|| stream_voices(rate, 64, Read::Near, 1.5)));
@@ -5123,7 +5127,12 @@ fn looper_free(rate: u32, seconds: u32) -> Case {
 /// `files`: recording to files on (phase 3a): each take recorded is copied
 /// out of the memory as it records, at most `host::COPY_SAMPLES` samples a
 /// block, as the host does on the audio thread for the writer.
-fn audio_tracks(rate: u32, recording: usize, files: bool) -> Case {
+///
+/// `repitch`: every region follows the tempo on Repitch (phase 5a) and the
+/// song plays at this many times the tempo the takes were made at, so
+/// every track reads its takes at that speed through the band-limited
+/// read, a crossfade between two such reads on every beat.
+fn audio_tracks(rate: u32, recording: usize, files: bool, repitch: Option<f64>) -> Case {
     const BARS: i64 = 8;
     let bar = 4 * i64::from(PPQ);
     let beat = i64::from(PPQ);
@@ -5212,6 +5221,22 @@ fn audio_tracks(rate: u32, recording: usize, files: bool) -> Case {
         // Apply the queue (it holds 64) before the next track.
         step(&mut frame, &mut t, &mut a, &mut line_in, &mut out);
     }
+    // Following the tempo: every region (one a beat) on Repitch, a track
+    // at a time (the queue holds 64), then the song's tempo moves.
+    if let Some(speed) = repitch {
+        for k in 0..MAX_TRACKS {
+            for i in 0..BARS * 4 {
+                a.command(TrackCommand::SetFollow {
+                    track: k,
+                    at: i * beat + beat / 2,
+                    follow: mpfree_audiotracks::FollowTempo::Repitch,
+                    keep_pitch: false,
+                });
+            }
+            step(&mut frame, &mut t, &mut a, &mut line_in, &mut out);
+        }
+        t.command(frame, T::SetTempo(120.0 * speed));
+    }
     // Files from here on: the passes above were set up in memory.
     a.files(files);
     for k in 0..recording {
@@ -5224,13 +5249,17 @@ fn audio_tracks(rate: u32, recording: usize, files: bool) -> Case {
     let mut tr = t;
     Case {
         name: format!(
-            "Audio tracks: {} {} comped takes{}",
+            "Audio tracks: {} {} comped takes{}{}",
             MAX_TRACKS - recording,
             "playing",
             match (recording, files) {
                 (0, _) => String::new(),
                 (k, false) => format!(", {k} recording"),
                 (k, true) => format!(", {k} recording to files"),
+            },
+            match repitch {
+                Some(v) => format!(", repitched to {v}x"),
+                None => String::new(),
             }
         ),
         module: "looper",

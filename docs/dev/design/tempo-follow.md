@@ -1,10 +1,10 @@
 <!--
-covers: rust/mpfree-audiotracks/src/lib.rs rust/mpfree-audiotracks/src/clips.rs rust/mpfree-audiotracks/src/save.rs rust/mpfree-audiotracks/tests/tempo.rs rust/mpfree-stream/src/cursor.rs rust/mpfree-seq/src/audio.rs rust/mpfree-seq/src/arrange.rs rust/mpfree-app/src/audiotracks.rs rust/mpfree-app/src/time/audio_wait.rs
+covers: rust/mpfree-audiotracks/src/lib.rs rust/mpfree-audiotracks/src/clips.rs rust/mpfree-audiotracks/src/save.rs rust/mpfree-audiotracks/tests/tempo.rs rust/mpfree-stream/src/cursor.rs rust/mpfree-seq/src/audio.rs rust/mpfree-seq/src/arrange.rs rust/mpfree-app/src/audiotracks.rs rust/mpfree-app/src/time/audio_wait.rs rust/mpfree-fxlab/src/readers.rs rust/mpfree-bench/src/cases.rs
 checked: 2026-11-25 77de55c0
 -->
 # Audio following the tempo
 
-**Status:** phase 5a of the audio tracks rethink, built 2026-11-25 (the mapping, Follow tempo, Repitch, saving, the one history), with no screen yet: phase 5c draws it. Stretch plays as Repitch until phase 5b makes its copies. Workstation only; it has not run on the MPC One.
+**Status:** phase 5a of the audio tracks rethink, built 2026-11-25 (the mapping, Follow tempo, Repitch, saving, the one history, the read's measures and bench rows), with no screen yet: phase 5c draws it. Stretch plays as Repitch until phase 5b makes its copies. Workstation only; it has not run on the MPC One.
 
 Until phase 5 a region of an audio track, and an audio clip's region, played its recording at the rate it was recorded at, whatever the tempo ([audio-tracks.md, "Time"](audio-tracks.md#time)). A region recorded at 120 BPM and played at 90 stayed on its bar's start and ran on past its bars. Phase 5 lets a region follow the song's tempo instead, so it stays on its beats. The plan is [phase 5's](https://claude.ai/artifact/4hTk7JTozq8jiWPMzTvhrd) (mpfree-claude `notes/audio-tracks/07-phase-5-plan-clips-follow-the-tempo.md`), and its build steps note 16.
 
@@ -39,6 +39,8 @@ A run (a stretch of a period with one tempo; the track player already cut runs a
 - **At speed 1** (the song at the region's own tempo) it takes Off's path, bit for bit, from the same frames (`at_its_own_tempo_a_region_following_the_tempo_plays_as_off_frame_for_frame`).
 - **Range.** Past `MAX_SPEED`, four times (the cursor's), a run is silent and counted in `Stats::too_fast`, for the screens to say in 5c.
 - **The real-time rules hold.** The gathered frames and the read's output have room made at start (`gathered`, `pitched`), and the kernels are built before the sound starts (`prepare_reads`); `no_alloc.rs` covers regions following the tempo through a tempo change.
+- **Measured** through the whole track player as one of the [pitched reads](pitched-reads.md) (fxlab's `Reader::Tracks`: a take made at 100 BPM, the song at the speed's tempo): every row is the streaming cursor's band-limited read's.
+- **Cost.** 8 tracks of comped takes repitched cost about 0.60 M instructions a 128-frame block at 0.9x and 0.78 M at 1.3x on the workstation, all of the track player, against 37 k played as recorded (the bench rows `Audio tracks: 8 playing comped takes, repitched to 0.9x` and `1.3x`). Their time on the MPC is on the next device round's list; if 8 don't fit beside a full project there, the pads' two-read scheme above is the fallback.
 
 ## Saving
 
@@ -53,9 +55,9 @@ A run (a stretch of a period with one tempo; the track player already cut runs a
 
 ## Tests
 
-`rust/mpfree-audiotracks/tests/tempo.rs`: a 441 Hz tone made at 120 BPM and played at 90 fills its 2 bars at 330.75 Hz; a 4-bar recording with a click on every beat played across a tempo change halfway, a ramp and a locate into bar 3, every click on its beat's frame, none twice or missing, each at its own level; a clip launched with an offset plays its beats on the song's beats; a comp of takes made at 120 and 100 BPM plays on its beats at 110; at its own tempo a region following the tempo plays as Off, frame for frame; a take recorded across a tempo change plays Off. Besides: `save.rs` `follow_tempo_and_a_regions_own_tempo_come_back`, `mpfree-seq`'s `follow_tempo_is_set_for_the_whole_clip_and_each_region_keeps_its_tempo` and `a_region_following_the_tempo_is_cut_where_its_recording_is_at_its_tempo`, and in the app the needs gate, the region edits, the clip card's takes and a waiting cue's frames. Off plays bit for bit as before: every test from before passes unchanged, and so do the streaming cursor's tests and fxlab's readers and listening ratchets.
+`rust/mpfree-audiotracks/tests/tempo.rs`: a 441 Hz tone made at 120 BPM and played at 90 fills its 2 bars at 330.75 Hz; a 4-bar recording with a click on every beat played across a tempo change halfway, a ramp and a locate into bar 3, every click on its beat's frame, none twice or missing, each at its own level; a clip launched with an offset plays its beats on the song's beats; a comp of takes made at 120 and 100 BPM plays on its beats at 110; at its own tempo a region following the tempo plays as Off, frame for frame; a take recorded across a tempo change plays Off. Besides: `save.rs` `follow_tempo_and_a_regions_own_tempo_come_back`, `mpfree-seq`'s `follow_tempo_is_set_for_the_whole_clip_and_each_region_keeps_its_tempo` and `a_region_following_the_tempo_is_cut_where_its_recording_is_at_its_tempo`, and in the app the needs gate, the region edits, the clip card's takes and a waiting cue's frames; fxlab's `the_tracks_repitch_reads_as_the_streaming_cursors_band_limited_read` and the tracks' rows in `quality/readers.tsv`. Off plays bit for bit as before: every test from before passes unchanged, and so do the streaming cursor's tests and fxlab's readers and listening ratchets.
 
 ## Not built yet
 
 - The screens (5c): the clip card's Follow tempo row, the region's, and saying a region past `MAX_SPEED`.
-- Stretch's copies (5b), and the measures and bench rows of the tracks' read (5a.2).
+- Stretch's copies (5b), with the stretch's bench rows (a 2-bar loop and a 30 s take at 0.8x and 1.25x), which measure the job 5b runs.

@@ -25,6 +25,9 @@
 //!   [`crate::coord::Coordinator::set_reserve`].
 //! - **"Unsaved: N s"** shows on a lane once its take has more than twice
 //!   the interval not yet committed.
+//! - **Carrying on.** A take whose drive went is moved to another folder
+//!   ([`Writer::carry_on`], [`crate::rec::Take::carry_on`]), asked again
+//!   each pass until its files there are made.
 //!
 //! [`Writer`] is the schedule and the takes, driven a pass at a time by
 //! [`Writer::tick`] (the tests drive it on a made-up clock); [`Recorder`]
@@ -171,6 +174,16 @@ pub struct TakeView {
     /// Capture memory is at least 90% full.
     pub nearly_full: bool,
     pub stats: TakeStats,
+    /// Frames at its start left on a drive that went: it carried on in
+    /// another folder ([`Writer::carry_on`]).
+    pub hole: u64,
+    /// Asked to carry on in another folder and not there yet (its files
+    /// there couldn't be made yet: tried again each pass). A
+    /// [`Recorder`]'s status says so from the moment it is asked, until
+    /// the writer has taken the ask.
+    pub carrying: bool,
+    /// Asks to carry on the writer has taken ([`Writer::carry_on`]).
+    pub asks: u32,
 }
 
 /// The writer's counts, for Dev.
@@ -190,6 +203,9 @@ pub struct WriterStats {
     /// How long the rounds that touched the drive took (a checkpoint's
     /// writes and syncs, or a finish): the drive's sync times.
     pub syncs: Summary,
+    /// Tries to carry a take on in another folder that failed (and are
+    /// tried again).
+    pub carry_failed: u64,
 }
 
 /// How often a round waiting for playback looks again.
@@ -211,6 +227,18 @@ struct Entry {
     due: f64,
     /// This round's wait for playback is counted.
     waiting: bool,
+    /// Where it is to carry on, until it has ([`Writer::carry_on`]), and
+    /// how many such asks it has taken.
+    carry: Option<Carry>,
+    asks: u32,
+}
+
+/// A take's move to another folder after its drive went.
+#[derive(Clone, Debug)]
+struct Carry {
+    dir: PathBuf,
+    card: [u8; 16],
+    serial: u32,
 }
 
 /// The takes and their schedule. Every file operation happens inside its
@@ -300,8 +328,43 @@ impl Writer {
             take,
             due,
             waiting: false,
+            carry: None,
+            asks: 0,
         });
         Ok(())
+    }
+
+    /// The drive take `no` records on went: it carries on in `dir`, on
+    /// another drive ([`Take::carry_on`]; `card` and `serial` name the
+    /// card it went with, zeros when not known). Tried now, and again each
+    /// pass until its files there are made; meanwhile it is at risk, its
+    /// memory filling as it would. Its next round comes at once, so what
+    /// waits in memory goes out. False for a take it doesn't have.
+    pub fn carry_on(&mut self, no: TakeNo, dir: &Path, card: [u8; 16], serial: u32) -> bool {
+        let Some(i) = self.find(no) else {
+            return false;
+        };
+        self.takes[i].carry = Some(Carry {
+            dir: dir.to_path_buf(),
+            card,
+            serial,
+        });
+        self.takes[i].asks += 1;
+        self.try_carry(i);
+        true
+    }
+
+    fn try_carry(&mut self, i: usize) {
+        let now = self.clock.now();
+        let e = &mut self.takes[i];
+        let Some(c) = &e.carry else { return };
+        match e.take.carry_on(&mut *self.fs, &c.dir, c.card, c.serial) {
+            Ok(_) => {
+                e.carry = None;
+                e.due = e.due.min(now);
+            }
+            Err(_) => self.stats.carry_failed += 1,
+        }
     }
 
     /// When a new take's first round falls: an interval from now; with
@@ -417,6 +480,9 @@ impl Writer {
             memory: t.memory(),
             nearly_full: t.nearly_full(),
             stats: t.stats(),
+            hole: t.hole(),
+            carrying: self.takes[self.find(no)?].carry.is_some(),
+            asks: self.takes[self.find(no)?].asks,
         })
     }
 
@@ -453,6 +519,11 @@ impl Writer {
     /// what was written: 10 checkpoints in 42 s for 8 takes, some take
     /// with nearly all of it unsaved at the stop (D4, 24 and 25 Nov).
     pub fn tick(&mut self) -> f64 {
+        for i in 0..self.takes.len() {
+            if self.takes[i].carry.is_some() {
+                self.try_carry(i);
+            }
+        }
         let now = self.clock.now();
         for e in &mut self.takes {
             if e.take.state() == TakeState::Saved {
@@ -586,6 +657,7 @@ enum Cmd {
     Stop(TakeNo),
     Disarm(TakeNo),
     Forget(TakeNo),
+    CarryOn(TakeNo, PathBuf, [u8; 16], u32),
 }
 
 /// Capture memory for one take, counted across the two threads: bytes
@@ -612,6 +684,8 @@ struct Sent {
     align: usize,
     full: bool,
     counts: Arc<Counts>,
+    /// Asks to carry on sent ([`Recorder::carry_on`]).
+    carries: u32,
 }
 
 /// A [`Writer`] on a thread of its own. Calls never wait for the stick:
@@ -678,6 +752,7 @@ impl Recorder {
                 align: fmt.block_align(),
                 full: false,
                 counts: Arc::clone(&counts),
+                carries: 0,
             },
         );
         self.shown().status.insert(no, Status::Arming);
@@ -746,9 +821,27 @@ impl Recorder {
         self.send(Cmd::Forget(no));
     }
 
+    /// The drive take `no` records on went: it carries on in `dir`
+    /// ([`Writer::carry_on`]). Its finished file is then in `dir`
+    /// ([`Recorder::final_path`]), and its view says what stayed behind.
+    /// Its status says it is carrying from now on, until the writer has
+    /// carried it (or found nothing to carry: it is saved, or being
+    /// finished), so a status read before the writer took the ask is never
+    /// taken for its answer.
+    pub fn carry_on(&mut self, no: TakeNo, dir: &Path, card: [u8; 16], serial: u32) {
+        if let Some(s) = self.sent.get_mut(&no) {
+            s.carries += 1;
+        }
+        self.send(Cmd::CarryOn(no, dir.to_path_buf(), card, serial));
+    }
+
     /// What the writer last saw of a take.
     pub fn status(&self, no: TakeNo) -> Option<Status> {
-        self.shown().status.get(&no).cloned()
+        let mut st = self.shown().status.get(&no).cloned();
+        if let (Some(Status::Take(v)), Some(s)) = (st.as_mut(), self.sent.get(&no)) {
+            v.carrying |= s.carries > v.asks;
+        }
+        st
     }
 
     /// Where a take's finished file is.
@@ -856,6 +949,9 @@ fn apply(
             w.forget(no);
             counts.remove(&no);
             failed.remove(&no);
+        }
+        Cmd::CarryOn(no, dir, card, serial) => {
+            w.carry_on(no, &dir, card, serial);
         }
     }
 }

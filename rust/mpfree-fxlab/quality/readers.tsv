@@ -400,3 +400,51 @@ reads/stretch[two semitones up, 3 kHz out]/level_db	0
 reads/stretch[two semitones up, 3 kHz out]/spur_worst_db	-106.6621
 reads/stretch[two semitones up, 9 kHz out]/level_db	-0.0001
 reads/stretch[two semitones up, 9 kHz out]/spur_worst_db	-106.2207
+reads/tracks repitch[15 kHz an octave up]/heard_db	-68.2813
+reads/tracks repitch[18 kHz a fifth up]/heard_db	-54.9172
+reads/tracks repitch[a fifth down, 13.5 kHz out]/level_db	-1.6946
+reads/tracks repitch[a fifth down, 13.5 kHz out]/spur_worst_db	-13.3129
+reads/tracks repitch[a fifth down, 3 kHz out]/level_db	0.0025
+reads/tracks repitch[a fifth down, 3 kHz out]/spur_worst_db	-70.6324
+reads/tracks repitch[a fifth down, 9 kHz out]/level_db	0.0131
+reads/tracks repitch[a fifth down, 9 kHz out]/spur_worst_db	-68.9612
+reads/tracks repitch[a fifth up, 13.5 kHz out]/level_db	0.013
+reads/tracks repitch[a fifth up, 13.5 kHz out]/spur_worst_db	-70.5222
+reads/tracks repitch[a fifth up, 3 kHz out]/level_db	0.0133
+reads/tracks repitch[a fifth up, 3 kHz out]/spur_worst_db	-73.5969
+reads/tracks repitch[a fifth up, 9 kHz out]/level_db	0.0081
+reads/tracks repitch[a fifth up, 9 kHz out]/spur_worst_db	-74.6253
+reads/tracks repitch[a semitone down, 13.5 kHz out]/level_db	0.002
+reads/tracks repitch[a semitone down, 13.5 kHz out]/spur_worst_db	-64.0028
+reads/tracks repitch[a semitone down, 3 kHz out]/level_db	0.0125
+reads/tracks repitch[a semitone down, 3 kHz out]/spur_worst_db	-66.7834
+reads/tracks repitch[a semitone down, 9 kHz out]/level_db	0.0029
+reads/tracks repitch[a semitone down, 9 kHz out]/spur_worst_db	-69.7152
+reads/tracks repitch[a semitone up, 13.5 kHz out]/level_db	0.013
+reads/tracks repitch[a semitone up, 13.5 kHz out]/spur_worst_db	-65.1304
+reads/tracks repitch[a semitone up, 3 kHz out]/level_db	0.0133
+reads/tracks repitch[a semitone up, 3 kHz out]/spur_worst_db	-67.9088
+reads/tracks repitch[a semitone up, 9 kHz out]/level_db	0.0081
+reads/tracks repitch[a semitone up, 9 kHz out]/spur_worst_db	-68.7222
+reads/tracks repitch[an octave and a fifth up, 13.5 kHz out]/level_db	0.008
+reads/tracks repitch[an octave and a fifth up, 13.5 kHz out]/spur_worst_db	-79.9603
+reads/tracks repitch[an octave and a fifth up, 3 kHz out]/level_db	0.012
+reads/tracks repitch[an octave and a fifth up, 3 kHz out]/spur_worst_db	-78.9048
+reads/tracks repitch[an octave and a fifth up, 9 kHz out]/level_db	0.0023
+reads/tracks repitch[an octave and a fifth up, 9 kHz out]/spur_worst_db	-97.7266
+reads/tracks repitch[an octave down, 3 kHz out]/level_db	0.002
+reads/tracks repitch[an octave down, 3 kHz out]/spur_worst_db	-72.5931
+reads/tracks repitch[an octave down, 9 kHz out]/level_db	-0.0702
+reads/tracks repitch[an octave down, 9 kHz out]/spur_worst_db	-41.8181
+reads/tracks repitch[two semitones down, 13.5 kHz out]/level_db	-0.0047
+reads/tracks repitch[two semitones down, 13.5 kHz out]/spur_worst_db	-59.1377
+reads/tracks repitch[two semitones down, 3 kHz out]/level_db	0.0114
+reads/tracks repitch[two semitones down, 3 kHz out]/spur_worst_db	-65.9049
+reads/tracks repitch[two semitones down, 9 kHz out]/level_db	-0.001
+reads/tracks repitch[two semitones down, 9 kHz out]/spur_worst_db	-66.3288
+reads/tracks repitch[two semitones up, 13.5 kHz out]/level_db	0.013
+reads/tracks repitch[two semitones up, 13.5 kHz out]/spur_worst_db	-66.4529
+reads/tracks repitch[two semitones up, 3 kHz out]/level_db	0.0133
+reads/tracks repitch[two semitones up, 3 kHz out]/spur_worst_db	-70.2765
+reads/tracks repitch[two semitones up, 9 kHz out]/level_db	0.0081
+reads/tracks repitch[two semitones up, 9 kHz out]/spur_worst_db	-71.1711

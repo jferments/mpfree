@@ -357,6 +357,9 @@ fn the_board_names_the_cause_not_its_echoes() {
         memory: 0,
         nearly_full: false,
         stats: Default::default(),
+        hole: 0,
+        carrying: false,
+        asks: 0,
     };
     let mut reports = Vec::new();
     w.take(TAKE, &v, &mut |r| reports.push(r));
