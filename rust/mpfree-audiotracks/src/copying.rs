@@ -10,7 +10,8 @@
 //!    steady tempo and of the clips' regions on Stretch the app lists
 //!    ([`ClipWant`], at the tempo at the playhead), most urgent first:
 //!    song regions from the playhead to two bars on and the clips the app
-//!    says play ([`Priority::Protect`]), then what comes in the next eight
+//!    says play, and the copies the regions drifting on Keep pitch wait
+//!    for ([`Priority::Protect`]), then what comes in the next eight
 //!    bars and the clips set up to come ([`Priority::Prepared`]), then the
 //!    rest ([`Priority::Speculative`]).
 //! 2. **Room.** The copies share the one budget for derived audio with
@@ -274,6 +275,21 @@ impl CopySide {
                 too_many += 1;
             }
         };
+        // The regions drifting on Keep pitch first: they rejoin the bars
+        // once their copy is here.
+        tracks.drift_wants(&mut |key| {
+            let Some(take) = tracks.take_of(key.rec) else {
+                return;
+            };
+            let channels = tracks.take(take).map_or(1, |i| i.channels as u8);
+            let w = Want {
+                key,
+                take,
+                channels,
+                priority: Priority::Protect,
+            };
+            push(&mut out, w);
+        });
         for t in 0..MAX_TRACKS {
             for r in tracks.regions(t) {
                 if r.follow != FollowTempo::Stretch || (r.end as f64) < now {
