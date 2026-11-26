@@ -6,8 +6,9 @@
 //! tempo (read at another speed), a song time edit with its
 //! undo and redo, forgetting takes, a full memory, latency changes and
 //! stops, a take loaded from a save and takes read for one, at period
-//! sizes from 1 to 4096; and takes played from their files, by the
-//! tracks alone and in the host.
+//! sizes from 1 to 4096; takes played from their files, by the tracks
+//! alone and in the host; and Stretch's copies made and played through
+//! the host (phase 5b).
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -1071,4 +1072,137 @@ fn loops_through_the_track_player_never_allocate() {
         assert!(loops.stolen() > 0, "period {period}");
         assert_eq!(calls, 0, "period {period}");
     }
+}
+
+/// Phase 5b.2, Stretch's copies: the host's period hardly allocates (the
+/// worker's channel now and then) while it waits for the tempo to hold,
+/// works out what is wanted, reads a song region's and a clip's sources,
+/// takes their copies in, plays from one, plays Repitch to the region's
+/// end after a tempo change while the new copies are made, and lets them
+/// go at Clear copies, which doesn't allocate either. The scheduler,
+/// stepped between periods, isn't watched: it has its own thread.
+#[test]
+fn the_host_period_hardly_allocates_while_copies_are_made_and_played() {
+    use mpfree_audiotracks::copying::ClipWant;
+    use mpfree_audiotracks::host::AudioHost;
+    use mpfree_audiotracks::save::TrackFile;
+    use mpfree_audiotracks::{ClipRegion, RecordingId, Region, MAX_CLIP_REGIONS};
+    use mpfree_stretch::sched::{Config, Priority, Sched};
+    use std::time::{Duration, Instant};
+    const RATE: u32 = 22_050;
+    const P: usize = 256;
+    let bar = 4 * i64::from(mpfree_transport::time::PPQ);
+    let rec = RecordingId(900);
+    let frames = (8.0 * 60.0 * f64::from(RATE) / 120.0) as usize;
+    let take = TakeFile {
+        id: 0,
+        rec,
+        track: 0,
+        group: 0,
+        pass: 0,
+        bpm: 120.0,
+        varied: false,
+        anchor: 0.0,
+        frames,
+        channels: 1,
+        file: String::new(),
+        path: None,
+        audio: (0..frames)
+            .map(|j| ((j * 31) % 97) as f32 / 97.0 - 0.5)
+            .collect(),
+    };
+    let s = Sched::manual(Config::default());
+    let mut h = AudioHost::new(RATE, 20);
+    h.copies_on(s.clone());
+    assert!(h.tracks.load_take(take).is_ok());
+    let region = Region {
+        follow: FollowTempo::Stretch,
+        ..Region::of(0, 2 * bar, 0, (0, 0.0), 120.0)
+    };
+    let track = TrackFile {
+        index: 0,
+        id: 0,
+        input: Input::Left,
+        monitor: Monitor::Auto,
+        from: String::new(),
+        regions: vec![region],
+    };
+    assert!(h.tracks.load_track(&track));
+    let clip = ClipRegion {
+        start: 0,
+        end: 2 * bar,
+        rec,
+        src: 0,
+        phase: 0.0,
+        gain: 1.0,
+        fade_in: 0,
+        fade_out: 0,
+        into: 0,
+        left: 0,
+        follow: FollowTempo::Stretch,
+        keep_pitch: false,
+        bpm: 0.0,
+    };
+    h.clip_copies(vec![ClipWant {
+        regions: [clip; MAX_CLIP_REGIONS],
+        n: 1,
+        len: 2 * bar,
+        last_frame: frames as i64,
+        priority: Priority::Prepared,
+    }]);
+    let mut t = Transport::new(RATE, 90.0).unwrap();
+    let mut b = Block::new();
+    let input = vec![0.0f32; 2 * P];
+    let mut out = vec![0.0f32; 2 * P];
+    let mut frame = 0u64;
+    let mut calls = 0;
+    let t0 = Instant::now();
+    // 0: the first two copies made; 1: playing; 2: the tempo turned, the
+    // new two made; 3: played on.
+    let mut stage = 0;
+    let mut at = 0u64;
+    while stage < 4 {
+        assert!(
+            t0.elapsed() < Duration::from_secs(60),
+            "stage {stage}: {:?}",
+            h.copy_counts()
+        );
+        match stage {
+            0 if h.copy_counts().made == 2 => {
+                assert!(t.command(frame, T::PlayStart));
+                (stage, at) = (1, frame);
+            }
+            1 if frame > at + u64::from(RATE) => {
+                assert!(t.command(frame, T::TempoNow(100.0)));
+                stage = 2;
+            }
+            2 if h.copy_counts().made == 4 => {
+                (stage, at) = (3, frame);
+            }
+            3 if frame > at + u64::from(RATE) => stage = 4,
+            _ => {}
+        }
+        t.process(P as u32, &mut b);
+        let map = *t.tempo_map();
+        CALLS.with(|c| c.set(0));
+        watch(true);
+        h.period(&b, &map, &input, &mut out);
+        watch(false);
+        calls += CALLS.with(Cell::get);
+        frame += P as u64;
+        s.step();
+        std::thread::sleep(Duration::from_micros(100));
+    }
+    let st = h.tracks.stats();
+    assert!(st.copied > 0, "{st:?}");
+    CALLS.with(|c| c.set(0));
+    watch(true);
+    let gone = h.clear_copies();
+    watch(false);
+    let cleared = CALLS.with(Cell::get);
+    assert_eq!(gone, 4);
+    assert_eq!(cleared, 0, "{cleared} allocations clearing the copies");
+    // None in practice; the channel to the worker may take a block now
+    // and then.
+    assert!(calls <= 4, "{calls} allocations in the host's period");
 }

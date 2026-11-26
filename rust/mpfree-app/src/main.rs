@@ -15607,6 +15607,7 @@ fn player_session(
             // phase 2); the next look tells the tracks.
             tracks.keep_named(time.recordings());
             tracks.clip_starts(time.project());
+            tracks.clip_copies(time.project());
             let st = time_state(&time, &tracks);
             if st.audio_waits.needs_rev != needs_rev {
                 needs_rev = st.audio_waits.needs_rev;
@@ -17805,6 +17806,13 @@ fn main() {
     );
     // The sampler's job service, before anything asks it for work.
     mpfree_sampler::jobs::configure(sample_page::jobs_config());
+    // The one scheduler for stretches made ahead (the audio tracks'
+    // tempo copies, phase 5b): its worker where the sampler's sound jobs
+    // run, off the sound cores at idle priority.
+    mpfree_stretch::sched::configure(mpfree_stretch::sched::Config {
+        on_start: mpfree_lanes::os::idle_job,
+        ..mpfree_stretch::sched::Config::default()
+    });
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = parse_args(&args).and_then(read_script).and_then(|o| {
         // Both draw every sample screen, whose one frame needs more stack

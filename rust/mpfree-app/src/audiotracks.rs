@@ -55,6 +55,7 @@
 //! takes also stay in RAM until streaming plays them from their files
 //! (phase 3b).
 
+use mpfree_audiotracks::copying::ClipWant;
 use mpfree_audiotracks::host::FitCopy;
 use mpfree_audiotracks::host::{AudioHost, CueAudio, ImportRefused, TakeWave, MAX_COLUMNS};
 use mpfree_audiotracks::save::{Saved, TrackFile};
@@ -66,6 +67,7 @@ use mpfree_audiotracks::{
 };
 use mpfree_play::{AudioAnswer, AudioPlays};
 use mpfree_seq::{RecId, TrackId};
+use mpfree_stretch::sched::Priority;
 use mpfree_time_ui::song::{
     audio_blocks, input_chip, take_lanes, AudioLane, ClipBlock, ClipPiece, MixFrom, MONITORS,
 };
@@ -385,6 +387,26 @@ fn clip_region_of(r: &Region, rec: RecId, made_at: f64) -> mpfree_seq::ClipRegio
     }
 }
 
+/// A clip's region in the engine's words, naming its recording by the
+/// same lasting id.
+fn clip_region_in(r: &mpfree_seq::ClipRegion) -> ClipRegion {
+    ClipRegion {
+        start: r.start,
+        end: r.end,
+        rec: RecordingId(r.rec.0),
+        src: r.src,
+        phase: r.phase,
+        gain: r.gain,
+        fade_in: r.fade_in,
+        fade_out: r.fade_out,
+        into: r.into,
+        left: r.left,
+        follow: follow_in(r.follow),
+        keep_pitch: r.keep_pitch,
+        bpm: r.bpm,
+    }
+}
+
 /// What the player's `p` says, in the engine's words: a clip's regions
 /// copied into `room` (the first [`MAX_CLIP_REGIONS`]), each naming its
 /// recording by the same lasting id.
@@ -403,21 +425,7 @@ fn plays_in<'r>(p: &AudioPlays, room: &'r mut [ClipRegion; MAX_CLIP_REGIONS]) ->
         } => {
             let n = regions.len().min(MAX_CLIP_REGIONS);
             for (d, r) in room.iter_mut().zip(regions) {
-                *d = ClipRegion {
-                    start: r.start,
-                    end: r.end,
-                    rec: RecordingId(r.rec.0),
-                    src: r.src,
-                    phase: r.phase,
-                    gain: r.gain,
-                    fade_in: r.fade_in,
-                    fade_out: r.fade_out,
-                    into: r.into,
-                    left: r.left,
-                    follow: follow_in(r.follow),
-                    keep_pitch: r.keep_pitch,
-                    bpm: r.bpm,
-                };
+                *d = clip_region_in(r);
             }
             Plays::Clip(ClipPlay {
                 regions: &room[..n],
@@ -905,6 +913,42 @@ impl TrackHost {
         starts.sort_unstable();
         starts.dedup();
         self.host.clip_starts(starts);
+    }
+
+    /// The project's audio clips with a region on Stretch, on the pads and
+    /// the song's own, for their tempo copies to be made ahead (the audio
+    /// tracks rethink, phase 5b: [`AudioHost::clip_copies`]). Each is
+    /// Prepared: it may be launched at any time.
+    pub fn clip_copies(&mut self, project: &mpfree_seq::Project) {
+        let pads = project
+            .tracks
+            .iter()
+            .filter(|t| t.is_audio())
+            .flat_map(|t| t.slots.iter().map(|(_, c)| c));
+        let wants: Vec<ClipWant> = pads
+            .chain(project.arrangement.clips.iter())
+            .filter_map(|c| Some((c.length, c.audio.as_ref()?)))
+            .filter(|(_, a)| {
+                a.regions
+                    .iter()
+                    .any(|r| r.follow == mpfree_seq::FollowTempo::Stretch)
+            })
+            .filter_map(|(len, a)| {
+                let first = clip_region_in(a.regions.first()?);
+                let mut regions = [first; MAX_CLIP_REGIONS];
+                for (d, r) in regions.iter_mut().zip(&a.regions) {
+                    *d = clip_region_in(r);
+                }
+                Some(ClipWant {
+                    regions,
+                    n: a.regions.len().min(MAX_CLIP_REGIONS),
+                    len,
+                    last_frame: a.last_frame,
+                    priority: Priority::Prepared,
+                })
+            })
+            .collect();
+        self.host.clip_copies(wants);
     }
 
     /// The cues waiting for their audio, as the time engine lists them
@@ -4307,6 +4351,45 @@ mod tests {
         // Its clip gone: a block with no wave and no header.
         r.project.tracks[guitar].slots[0] = None;
         assert!(r.state().audio[0].clips.is_empty());
+    }
+
+    /// A clip on Stretch in the project (phase 5b.2): the tracks are told
+    /// of it, and its copy for the tempo playing is made ahead on the
+    /// scheduler, so it plays at its own pitch whenever it is launched.
+    #[test]
+    fn a_clip_on_stretch_gets_its_copy_made_ahead_at_the_tempo_playing() {
+        let mut r = Rig::with(1);
+        r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), false)
+            .unwrap();
+        r.periods(CHECK_EVERY as usize);
+        r.live = true;
+        r.command(T::Record);
+        while r.t.position() < 3840 {
+            r.period();
+        }
+        r.command(T::Stop);
+        r.live = false;
+        r.periods(20);
+        let k = r.h.host.tracks.takes().next().expect("a take");
+        let mut audio = mpfree_seq::AudioClip::of(RecId(k.rec.0), 0, k.frames as i64, 3840, 120.0);
+        audio.regions[0].follow = mpfree_seq::FollowTempo::Stretch;
+        let mut riff = mpfree_seq::Clip::new("Riff", 3840);
+        riff.audio = Some(audio);
+        let guitar = r.h.place(0).unwrap();
+        r.project.put_new_clip(guitar, 0, riff).unwrap();
+        r.h.clip_copies(&r.project);
+        r.command(T::TempoNow(90.0));
+        let t0 = Instant::now();
+        while r.h.host.copy_memory().1 == 0 {
+            let c = r.h.host.copy_counts();
+            assert!(t0.elapsed() < Duration::from_secs(30), "{c:?}");
+            r.period();
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        let v: Vec<_> = r.h.host.tracks.copies().collect();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].key.rec, k.rec);
+        assert_eq!(f64::from_bits(v[0].key.tempo), 90.0);
     }
 
     /// A loop cell's block (phase 4e.3, board 8): its lane draws it as a
