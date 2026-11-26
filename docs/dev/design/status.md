@@ -179,6 +179,7 @@ Jay's pick on 23 Nov 2026 at 11:43Z ("Save a report, then kernel errors", from t
 
 - **What it holds:** when it was saved and how long MPFree had run; Prefs > System info (`sysinfo::read`) without the host name; a normal start or a safe start with the crash's panic line (`Player::set_crash_why`); the page's numbers (CPU, RAM, free memory, the stick, the temperature and trip point, the processor's speeds); every problem on the board (`Board::raw`, hidden and settling ones too, marked), with its level, id, title, count, first and last, and whether it is going; and the last 200 `status:` lines (`Player::status_log`), each with its time since the start.
 - **What it never holds:** serial numbers and network addresses (System info leaves them out), the host name, and names someone typed: a problem about a track or a take says "track 3" or "found take 1" (`status_report::about`, also used for the log's copy), and only a MIDI port keeps its device's name. The test `a_report_holds_the_session_and_no_names_typed` checks a track's name and the host name stay out.
+- **Beside it, Eject card** (the SD card plan's B2c): on Storage, while the SD card is open (`Readings::card_open`), the page's foot button (`StatusView::foot`, `status_page::FOOT`) sits left of Save a report, as wide as its words, and does what the Browser's Eject card does ([B2c](../hardware/sd-card-and-internal-drive.md#b2c-the-card-taken-out-being-built)).
 
 ## The kernel's stick and memory errors (after phase 3)
 

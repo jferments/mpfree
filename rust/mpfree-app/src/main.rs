@@ -183,6 +183,7 @@ mod script;
 mod sd_card;
 // Recording to the SD card's MPFree folder when it opens for saving (S2b, B2b; switched off until B2c).
 mod card_takes;
+mod eject_card;
 mod set_checks;
 mod set_play;
 mod setup;
@@ -11778,6 +11779,8 @@ fn player_session(
                 // The same card back: takes cut off on it are made whole
                 // on the stick (B2c).
                 gui::FromUi::AudioJoin(mark, places) => tracks.join_card(mark, places),
+                // Eject card: what still uses the card, for its sheet.
+                gui::FromUi::CardUse => out.show(gui::ToUi::CardUse(tracks.card_use())),
                 gui::FromUi::AudioSavedInto(dir) => tracks.saved_into(dir),
                 gui::FromUi::OpenProject(mut o) => {
                     // Everything stops first: the clips change under the

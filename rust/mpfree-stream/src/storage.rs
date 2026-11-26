@@ -54,6 +54,10 @@ pub trait CardHandle: Send + Sync {
     /// it while it runs (`true` as it starts, `false` once it ends), as
     /// a take playing from it does.
     fn hold(&self, _on: bool) {}
+    /// Which takes play from files on this opening (each take's number
+    /// and its file's name), as the reader last counted them with
+    /// [`CardHandle::set_users`]: what an Eject says will go quiet (B2c).
+    fn set_playing(&self, _takes: &[(u16, &str)]) {}
 }
 
 /// Which card: the random id in its `MPFree` folder's marker file
@@ -154,6 +158,7 @@ pub struct Lease {
     mark: OnceLock<CardMark>,
     users: AtomicUsize,
     held: AtomicUsize,
+    playing: std::sync::Mutex<Vec<(u16, String)>>,
 }
 
 impl Lease {
@@ -165,7 +170,15 @@ impl Lease {
             mark: OnceLock::new(),
             users: AtomicUsize::new(0),
             held: AtomicUsize::new(0),
+            playing: std::sync::Mutex::new(Vec::new()),
         })
+    }
+
+    /// The takes playing from files on this opening, as the reader last
+    /// said ([`CardHandle::set_playing`]): each take's number and its
+    /// file's name.
+    pub fn playing(&self) -> Vec<(u16, String)> {
+        self.playing.lock().map(|p| p.clone()).unwrap_or_default()
     }
 
     /// How many files on this opening are open to play from, as the reader
@@ -210,6 +223,37 @@ impl CardHandle for Lease {
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
         }
     }
+    fn set_playing(&self, takes: &[(u16, &str)]) {
+        let Ok(mut p) = self.playing.lock() else {
+            return;
+        };
+        let same =
+            p.len() == takes.len() && p.iter().zip(takes).all(|(a, b)| a.0 == b.0 && a.1 == b.1);
+        if !same {
+            p.clear();
+            p.extend(takes.iter().map(|&(k, n)| (k, n.to_string())));
+        }
+    }
+}
+
+/// This process's open files under `root` (a card's mount point): the
+/// paths of the links in Linux's `/proc/self/fd` that lead there. A card
+/// is closed only once there are none (an Eject, the SD card plan's B2c):
+/// its window stops whatever still holds a file on it. An error where the
+/// links can't be listed (not Linux).
+pub fn open_under(root: &Path) -> io::Result<Vec<PathBuf>> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut out = Vec::new();
+    for e in std::fs::read_dir("/proc/self/fd")? {
+        // A link that went between the listing and the read was closed.
+        let Ok(to) = std::fs::read_link(e?.path()) else {
+            continue;
+        };
+        if to.starts_with(&root) {
+            out.push(to);
+        }
+    }
+    Ok(out)
 }
 
 /// Leases are told apart by which opening they are, not by where.

@@ -142,6 +142,10 @@ If the card wasn't safely removed last time (the power went off, or it was pulle
 
 With no card in the slot, the place says so: put one in and tap **SD card** again. The card is put away 30 seconds after you close the browser, and opens again when you come back to it.
 
+#### Taking the card out
+
+To take the card out while MPFree is running, tap **Eject card**: it is under the list while the card is open, and on **System status** when you pick **Storage**. If nothing is using the card, it closes at once and the place says **The SD card can be taken out now**. If an audio track is playing a take from a file on the card, a sheet lists it first: it goes quiet until the card is back. Tap **Eject** to go on, or **Cancel** (or press **BROWSE**) to leave the card in. If MPFree is still reading a file on the card 15 seconds later, the card stays in and the hint line says so; try again in a moment. To use the card again without taking it out, tap **Use the card again**.
+
 ### Pickers
 
 Where you need one kind of file, a narrower **picker** shows the same browser with only what fits. A picker only loads; renaming and deleting are in the full browser.

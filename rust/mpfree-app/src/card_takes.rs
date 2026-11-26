@@ -278,6 +278,17 @@ impl CardTakes {
         out
     }
 
+    /// The card was ejected (B2c's Eject card): as [`CardTakes::closed`],
+    /// and it isn't asked for again (a later ask would open it again as it
+    /// is taken out). The Browser's SD card place opens it when it is back.
+    pub fn ejected(&mut self) -> Vec<Do> {
+        let out = self.closed();
+        if matches!(self.state, State::Asked { .. }) {
+            self.state = State::Off;
+        }
+        out
+    }
+
     /// Once a frame: the card asked for again when due, and the recovery's
     /// or the marker's answer once it comes.
     pub fn tick(&mut self, now: Instant) -> Vec<Do> {
@@ -557,6 +568,26 @@ mod tests {
         }
         assert!(!mpfree.join(mpfree_stream::storage::MARKER).exists());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_ejected_card_is_not_asked_for_again() {
+        let mut c = CardTakes::new(true);
+        let t0 = Instant::now();
+        c.stick_ready(PathBuf::from("/stick"), true);
+        c.not_opened(true, t0);
+        assert!(matches!(
+            c.state,
+            State::Asked {
+                again_at: Some(_),
+                ..
+            }
+        ));
+        // Ejected (opened meanwhile by the Browser): no ask opens it again
+        // as it is taken out.
+        assert!(c.ejected().is_empty());
+        assert!(matches!(c.state, State::Off));
+        assert!(c.tick(t0 + FIRST_WAIT * 64).is_empty());
     }
 
     #[test]

@@ -959,6 +959,9 @@ fn takes_on_the_card_open_again_when_the_card_comes_back() {
     });
     assert_eq!(said, Some((5, CueAudio::Short)), "its audio can't come");
     assert_eq!(gens(&r), before, "nothing opens again until it is back");
+    // The takes on it let go of their files there, so it can be closed
+    // cleanly (an Eject).
+    r.run_until(|_| mpfree_stream::storage::open_under(&card).is_ok_and(|o| o.is_empty()));
 
     // It opens again: a new insertion.
     let again = Lease::new(&card);
@@ -972,6 +975,13 @@ fn takes_on_the_card_open_again_when_the_card_comes_back() {
     r.run_until(|r| r.h.heads_held == r.h.heads_wanted);
     r.run_until(|_| again.users() == 2);
     assert_eq!(lease.users(), 0, "the opening before holds nothing");
+    // Which takes, by their files' names: what an Eject says goes quiet.
+    let playing = again.playing();
+    assert_eq!(playing.len(), 2, "{playing:?}");
+    assert!(playing
+        .iter()
+        .all(|(k, n)| r.h.tracks.take(*k).is_some() && n.ends_with(".wav")));
+    assert!(lease.playing().is_empty());
     assert!(r.play_song() == want, "read again from the card, the same");
     assert_eq!(r.h.tracks.stats().missed, 0);
     let ev = r.events();
@@ -1053,9 +1063,13 @@ fn a_take_on_the_card_carries_on_on_the_stick_when_the_card_goes() {
     };
     assert!(r.frame < START + 6 * BAR, "the card took too long");
     let on_card = r.h.tracks.file_gen(k).unwrap();
+    // What an Eject says carries on on the stick.
+    assert_eq!(r.h.recording_on(&card), [0]);
+    assert!(r.h.recording_on(&stick).is_empty());
 
     // The card goes; the app moves recording to the stick.
     lease.revoke();
+    assert!(r.h.recording_on(&card).is_empty(), "its opening is over");
     assert!(
         r.h.record_to(stick.clone(), quick()).is_ok(),
         "nothing waits"
@@ -1069,6 +1083,10 @@ fn a_take_on_the_card_carries_on_on_the_stick_when_the_card_goes() {
     assert_eq!(r.h.tracks.stats().full, 0);
     let now = r.h.tracks.file_gen(k).unwrap();
     assert_ne!(now, on_card, "it plays from its file on the stick");
+    // Nothing on the card is open any more, so it can be closed cleanly
+    // (an Eject).
+    let open = mpfree_stream::storage::open_under(&card).unwrap();
+    assert!(open.is_empty(), "{open:?}");
 
     // Its file on the stick: zeros for the card's part, then the rest.
     let holes: Vec<PathBuf> = std::fs::read_dir(&stick)

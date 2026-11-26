@@ -104,6 +104,9 @@ pub struct Readings {
     /// That drive is the SD card, not the stick: the takes record on the
     /// card's MPFree folder (the SD card plan's S2b, phase B2b).
     pub card: bool,
+    /// The SD card is open (read-only, or for saving): Storage offers
+    /// Eject card (B2c).
+    pub card_open: bool,
     /// The MPC's temperature and processor clock at the last read (every
     /// 2 s, heat.rs).
     pub heat: Option<Heat>,
@@ -556,6 +559,7 @@ pub fn view(
         .as_ref()
         .filter(|_| place.picked == System::Memory)
         .map(made_audio);
+    let foot = (place.picked == System::Storage && r.card_open).then(|| "Eject card".to_string());
     StatusView {
         head,
         head_tone,
@@ -567,6 +571,7 @@ pub fn view(
         cards,
         numbers,
         made,
+        foot,
     }
 }
 
@@ -737,6 +742,7 @@ mod tests {
             free: Some(1_100_000_000),
             stick: None,
             card: false,
+            card_open: true,
             heat: None,
             engines: None,
             tracks: None,
@@ -744,6 +750,7 @@ mod tests {
         };
         let v = view(&b, &Watch::default(), &r, &mut place, t);
         assert_eq!(v.head, "The sound dropped out");
+        assert_eq!(v.foot, None, "Eject card is Storage's");
         assert_eq!(v.head_tone, Tone::Bad);
         assert_eq!(v.counts, "2 problems now: tap a system to see why.");
         assert_eq!(v.systems.len(), 9);
@@ -756,8 +763,21 @@ mod tests {
         assert!(v.cards[0].now);
         assert_eq!(v.meters[0].0, "CPU");
         assert_eq!(v.meters[0].3, Tone::Bad);
+        // Storage, with the SD card open: its Eject card button; with
+        // the card closed, none.
+        place.step(2);
+        let v = view(&b, &Watch::default(), &r, &mut place, t);
+        assert_eq!(v.foot.as_deref(), Some("Eject card"));
+        let closed = Readings {
+            card_open: false,
+            ..r.clone()
+        };
+        assert_eq!(
+            view(&b, &Watch::default(), &closed, &mut place, t).foot,
+            None
+        );
         // Step to MIDI and sync: the port's card.
-        for _ in 0..4 {
+        for _ in 0..2 {
             place.step(1);
         }
         let v = view(&b, &Watch::default(), &r, &mut place, t);

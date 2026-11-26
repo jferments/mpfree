@@ -938,6 +938,29 @@ impl AudioHost {
         (self.tracks.take(id)?.rec == rec).then_some(v)
     }
 
+    /// The tracks whose takes are being written on the SD card opening at
+    /// `root` (recording, being finished, or at risk there): what an Eject
+    /// carries on on the stick (the SD card plan's B2c). Allocates.
+    pub fn recording_on(&self, root: &Path) -> Vec<usize> {
+        let on = self
+            .work_card
+            .as_ref()
+            .is_some_and(|c| c.valid() && c.root() == root);
+        let mut out = Vec::new();
+        if !on {
+            return out;
+        }
+        for k in self.tracks.takes() {
+            let writing = self
+                .file(k.id)
+                .is_some_and(|f| f.state != files::TakeState::Saved);
+            if writing && !out.contains(&k.track) {
+                out.push(k.track);
+            }
+        }
+        out
+    }
+
     /// Whether track `track`'s next take's files are made: Some(false)
     /// while they are being made, None when it isn't armed to record to a
     /// file.

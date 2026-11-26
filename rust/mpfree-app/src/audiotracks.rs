@@ -538,6 +538,9 @@ pub struct TrackHost {
     /// A take was made whole on the stick since last asked
     /// ([`TrackHost::take_joined`]).
     joined: bool,
+    /// The SD card's opening, as last given ([`TrackHost::own_drive`]):
+    /// what Eject card asks about ([`TrackHost::card_use`]).
+    card: Option<std::sync::Arc<mpfree_stream::storage::Lease>>,
     /// What the lanes showed at the last check, and whether that changed.
     seen: u64,
     changed: bool,
@@ -661,6 +664,7 @@ impl TrackHost {
             grown_at: 0,
             periods: 0,
             joined: false,
+            card: None,
             seen: 0,
             spans_seen: 0,
             tempos_seen: 0,
@@ -741,7 +745,37 @@ impl TrackHost {
     /// reads; and the opening takes there read on, until it is revoked
     /// (`AudioHost::own_device`). Allocates the message: between periods.
     pub fn own_drive(&mut self, lease: std::sync::Arc<mpfree_stream::storage::Lease>) {
+        self.card = Some(lease.clone());
         self.host.own_device(lease);
+    }
+
+    /// What still uses the SD card, for Eject card's sheet (the SD card
+    /// plan's B2c, eject_card.rs): each track whose take records on it
+    /// (it carries on on the stick), then each take playing from its file
+    /// there (it goes quiet until the card is back), by track name.
+    /// Nothing once its opening is over. Allocates: between periods.
+    pub fn card_use(&self) -> Vec<crate::eject_card::Use> {
+        use crate::eject_card::Use;
+        use mpfree_stream::storage::CardHandle;
+        let Some(card) = self.card.as_ref().filter(|c| c.valid()) else {
+            return Vec::new();
+        };
+        let mut out: Vec<Use> = self
+            .host
+            .recording_on(card.root())
+            .into_iter()
+            .map(|t| Use::Recording { track: self.who(t) })
+            .collect();
+        for (id, file) in card.playing() {
+            let Some(k) = self.host.tracks.take(id).filter(|k| !k.recording) else {
+                continue;
+            };
+            out.push(Use::Playing {
+                track: self.who(k.track),
+                file,
+            });
+        }
+        out
     }
 
     fn tend_files(&mut self) {

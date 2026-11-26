@@ -359,20 +359,20 @@ pub enum Refusal {
 }
 
 enum Store {
+    /// A WAV, RF64 or AIFF file. Its file is let go of (`None`) once its
+    /// card goes ([`Src::let_go`]).
     File {
-        file: Arc<File>,
+        file: Option<Arc<File>>,
         layout: Layout,
     },
     /// A FLAC file: its frames found through its index and decoded on the
     /// coordinator's thread, never on the sound thread.
     Flac {
-        file: Arc<File>,
+        file: Option<Arc<File>>,
         index: Arc<Index>,
     },
     /// Lent by the engine that holds it: its bytes, for the ledger.
-    Memory {
-        bytes: u64,
-    },
+    Memory { bytes: u64 },
 }
 
 struct Src {
@@ -412,11 +412,21 @@ impl Src {
         }
     }
 
-    /// The file it reads, for a file source.
+    /// The file it reads, for a file source still holding it.
     fn file(&self) -> Option<&Arc<File>> {
         match &self.store {
-            Store::File { file, .. } | Store::Flac { file, .. } => Some(file),
+            Store::File { file, .. } | Store::Flac { file, .. } => file.as_ref(),
             Store::Memory { .. } => None,
+        }
+    }
+
+    /// Its card went: its file is closed here (once the reads in flight
+    /// with it come back, it is closed for good), so nothing on the card
+    /// stays open for it and the card can be closed cleanly (an Eject).
+    /// Nothing more is read for it anyway.
+    fn let_go(&mut self) {
+        if let Store::File { file, .. } | Store::Flac { file, .. } = &mut self.store {
+            *file = None;
         }
     }
 
@@ -960,6 +970,9 @@ impl Coordinator {
         let Store::File { file, layout } = &mut src.store else {
             return Err("only a WAV or RF64 file being written can grow".into());
         };
+        let Some(file) = file else {
+            return Err("its card went".into());
+        };
         let old = layout.frames;
         if frames < old {
             return Err(format!("{frames} frames: it has {old}, and only grows"));
@@ -1122,7 +1135,7 @@ impl Coordinator {
                     return Err(say(&"its FLAC index is out of date: build it again"));
                 }
                 let (rate, frames) = (index.info.rate, index.frames);
-                let file = Arc::new(file);
+                let file = Some(Arc::new(file));
                 (Store::Flac { file, index }, rate, frames)
             }
             None => {
@@ -1130,7 +1143,7 @@ impl Coordinator {
                 if let Some(committed) = growing {
                     layout.frames = layout.frames.min(committed);
                 }
-                let file = Arc::new(file);
+                let file = Some(Arc::new(file));
                 (Store::File { file, layout }, layout.rate, layout.frames)
             }
         };
@@ -1549,11 +1562,13 @@ impl Coordinator {
     }
 
     /// Report each source whose card went, once; its reads in flight are
-    /// cancelled (a reply that comes anyway is dropped).
+    /// cancelled (a reply that comes anyway is dropped) and its file let
+    /// go of.
     fn note_lost(&mut self) {
         for src in self.sources.iter_mut().flatten() {
             if !src.reported && src.lost() {
                 src.reported = true;
+                src.let_go();
                 self.lost.push_back(src.tag);
                 for f in self.flights.values() {
                     if matches!(f.kind, Kind::Units { tag, .. } if tag == src.tag) {
