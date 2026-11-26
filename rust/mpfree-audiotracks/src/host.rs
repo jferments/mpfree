@@ -1111,6 +1111,17 @@ impl AudioHost {
         }
     }
 
+    /// The audio clips launched and waiting for their copies (5b.4), at
+    /// their priority (Urgent) and the tempo at their line: asked for
+    /// before anything else, at the next steady period. The old list goes
+    /// to the worker to drop.
+    pub fn launch_copies(&mut self, clips: Vec<ClipWant>) {
+        let old = self.copies.set_launches(clips);
+        if old.capacity() > 0 {
+            self.send(ToWorker::DropClips(old));
+        }
+    }
+
     /// Clear copies: lets every copy go that nothing plays now (System
     /// status's Memory, 5c). No recording is touched, it is no undo step,
     /// and each is made again when it is next wanted. How many went.

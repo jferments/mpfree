@@ -91,7 +91,7 @@ use std::f32::consts::TAU;
 pub use apart::Say;
 use apart::{Apart, Told};
 pub use audio::TimeAudio;
-pub use audio_wait::{AudioNeed, CueKey};
+pub use audio_wait::{AudioNeed, CopyNeed, CueKey};
 pub use control::EXACT;
 pub use control::{edits_steps, MuteLight, PadTap, SongAudio, TimeControl};
 pub use follow::Follow;
@@ -1307,6 +1307,28 @@ impl TimeHost {
     /// `TimeControl::audio_given_back`).
     pub fn audio_given_back(&mut self, key: CueKey) -> bool {
         let r = self.with(|c| c.audio_given_back(key));
+        self.sent(r)
+    }
+
+    /// Cues wait for their tempo copies too (see
+    /// `TimeControl::set_copy_waits`).
+    pub fn set_copy_waits(&mut self, on: bool) {
+        self.with(|c| c.set_copy_waits(on));
+        self.sent(());
+    }
+
+    /// The tempo copies the waiting cues need ready (see
+    /// `TimeControl::copy_needs`). Ask again when the state's
+    /// `audio_waits.needs_rev` rises.
+    pub fn copy_needs(&mut self) -> Vec<CopyNeed> {
+        self.with(|c| c.copy_needs().to_vec())
+    }
+
+    /// Every copy `key`'s cues need is ready (`ok`), or not (see
+    /// `TimeControl::copies_ready`). False when nothing waits for copies
+    /// under `key`.
+    pub fn copies_ready(&mut self, key: CueKey, ok: bool) -> bool {
+        let r = self.with(|c| c.copies_ready(key, ok));
         self.sent(r)
     }
 
@@ -16057,6 +16079,191 @@ mod tests {
             run(&mut h, &mut pads, 3 * BAR + BAR / 8, &[]);
             assert_eq!(playing(&h, VOCAL), Some((0, TICKS)));
             assert_eq!(counts(&h), (1, 1, 1, 0, 0, 0));
+        }
+
+        // Launches that wait for their tempo copies (phase 5b.4).
+
+        /// The vocal's clip in `slot` on Stretch (Keep pitch or Play on
+        /// time), its recordings made at 100 BPM, and the song at 120: each
+        /// region needs a copy.
+        fn stretch(h: &mut TimeHost, slot: usize, keep: bool) {
+            let a = h.control.project.tracks[VOCAL].slots[slot]
+                .as_mut()
+                .unwrap()
+                .audio
+                .as_mut()
+                .unwrap();
+            a.set_follow(mpfree_seq::FollowTempo::Stretch, keep);
+            h.set_rec_tempos(vec![
+                (RecId(1), 100.0),
+                (RecId(2), 100.0),
+                (RecId(9), 100.0),
+            ]);
+            h.set_copy_waits(true);
+        }
+
+        fn copy_counts(h: &TimeHost) -> (u64, u64, u64, u64, u64) {
+            let c = h.state().audio_waits;
+            (
+                c.copy_kept,
+                c.copy_ready,
+                c.copy_moved,
+                c.copy_repitch,
+                c.copy_cancelled,
+            )
+        }
+
+        #[test]
+        fn a_cue_on_stretch_waits_for_its_tempo_copies_and_lands_on_its_line_once_ready() {
+            let (mut h, mut pads) = host(false);
+            stretch(&mut h, 0, false);
+            launch(&mut h, VOCAL, 0);
+            // Streaming off: no audio to hold, but each region's copy at
+            // the tempo at its line.
+            assert!(h.audio_needs().is_empty());
+            let needs = h.copy_needs();
+            let key = needs[0].cue;
+            let got: Vec<_> = needs
+                .iter()
+                .map(|n| (n.cue, n.track, n.slot, n.region, n.bpm))
+                .collect();
+            assert_eq!(
+                got,
+                vec![(key, VOCAL, 0, 0, 120.0), (key, VOCAL, 0, 1, 120.0)]
+            );
+            assert_eq!(cued_in_view(&h, VOCAL), None, "out of the view");
+            assert_eq!(copy_counts(&h), (1, 0, 0, 0, 0));
+            assert_eq!(h.state().audio_waits.waiting, 1);
+            run(&mut h, &mut pads, BAR / 2, &[]);
+            assert!(h.copies_ready(key, true));
+            assert_eq!(cued_in_view(&h, VOCAL), Some(Some(0)));
+            run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), Some((0, TICKS)), "on its line");
+            assert!(h.copy_needs().is_empty());
+            assert_eq!(copy_counts(&h), (1, 1, 0, 0, 0));
+            // The audio waits' own counts stay as they were.
+            assert_eq!(counts(&h), (0, 0, 0, 0, 0, 0));
+            assert!(!h.copies_ready(key, true), "nothing waits under it now");
+        }
+
+        #[test]
+        fn on_play_on_time_a_cue_whose_copy_is_late_starts_on_repitch_at_its_second_move() {
+            let (mut h, mut pads) = host(false);
+            stretch(&mut h, 1, false);
+            launch(&mut h, VOCAL, 1);
+            let key = h.copy_needs()[0].cue;
+            assert!(h.copies_ready(key, false), "not ready yet: it waits");
+            run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), None);
+            let said = h.take_later_note().unwrap();
+            assert!(
+                said.contains("copy not ready: Vocal: Chorus moves to bar 3"),
+                "{said}"
+            );
+            run(&mut h, &mut pads, 2 * BAR + BAR / 8, &[]);
+            let said = h.take_later_note().unwrap();
+            assert!(
+                said.contains("copy not ready: Vocal: Chorus starts on Repitch at bar 4"),
+                "{said}"
+            );
+            assert_eq!(cued_in_view(&h, VOCAL), Some(Some(1)), "it goes in");
+            run(&mut h, &mut pads, 3 * BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), Some((1, 3 * TICKS)), "on that line");
+            assert_eq!(copy_counts(&h), (1, 0, 1, 1, 0));
+            assert!(h.copy_needs().is_empty());
+        }
+
+        #[test]
+        fn on_keep_pitch_a_cue_whose_copy_is_late_is_cancelled_after_two_moves() {
+            let (mut h, mut pads) = host(false);
+            stretch(&mut h, 1, true);
+            launch(&mut h, VOCAL, 1);
+            run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+            assert!(h.take_later_note().unwrap().contains("moves to bar 3"));
+            run(&mut h, &mut pads, 2 * BAR + BAR / 8, &[]);
+            assert!(h.take_later_note().unwrap().contains("moves to bar 4"));
+            assert_eq!(cued_in_view(&h, VOCAL), None, "still out");
+            run(&mut h, &mut pads, 3 * BAR + BAR / 8, &[]);
+            let said = h.take_later_note().unwrap();
+            assert!(
+                said.contains("copy not ready: Vocal: Chorus cancelled after 2 moves"),
+                "{said}"
+            );
+            assert!(h.control.cues.is_empty());
+            assert!(h.copy_needs().is_empty());
+            run(&mut h, &mut pads, 5 * BAR, &[]);
+            assert_eq!(playing(&h, VOCAL), None, "never launched");
+            assert_eq!(copy_counts(&h), (1, 0, 2, 0, 1));
+            assert_eq!(h.state().audio_waits.cancelled, 1);
+        }
+
+        #[test]
+        fn at_now_play_on_time_goes_after_two_bars_and_keep_pitch_is_cancelled() {
+            for keep in [false, true] {
+                let (mut h, mut pads) = host(false);
+                stretch(&mut h, 1, keep);
+                h.control.project.tracks[VOCAL].slots[1]
+                    .as_mut()
+                    .unwrap()
+                    .launch = Some(LaunchGrid::Now);
+                launch(&mut h, VOCAL, 1);
+                assert_eq!(cued_in_view(&h, VOCAL), None);
+                run(&mut h, &mut pads, 2 * BAR, &[]);
+                assert_eq!(playing(&h, VOCAL), None, "keep {keep}: waits two bars");
+                run(&mut h, &mut pads, 2 * BAR + BAR / 2, &[]);
+                let said = h.take_later_note().unwrap();
+                if keep {
+                    assert!(said.contains("cancelled after 2 bars"), "{said}");
+                    assert_eq!(playing(&h, VOCAL), None);
+                    assert_eq!(copy_counts(&h), (1, 0, 0, 0, 1));
+                } else {
+                    assert!(said.contains("starts on Repitch after 2 bars"), "{said}");
+                    assert!(playing(&h, VOCAL).is_some_and(|(s, _)| s == 1));
+                    assert_eq!(copy_counts(&h), (1, 0, 0, 1, 0));
+                }
+            }
+        }
+
+        #[test]
+        fn with_streaming_on_a_cue_waits_for_its_audio_and_its_copies() {
+            let (mut h, mut pads) = host(true);
+            stretch(&mut h, 0, false);
+            launch(&mut h, VOCAL, 0);
+            let key = h.audio_needs()[0].cue;
+            assert_eq!(h.copy_needs()[0].cue, key, "one key for both");
+            assert!(h.audio_held(key, true));
+            assert_eq!(cued_in_view(&h, VOCAL), None, "its copies aren't ready");
+            assert!(h.copies_ready(key, true));
+            assert_eq!(cued_in_view(&h, VOCAL), Some(Some(0)));
+            run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), Some((0, TICKS)));
+            assert_eq!(counts(&h), (1, 1, 0, 0, 0, 0));
+            assert_eq!(copy_counts(&h), (1, 1, 0, 0, 0));
+        }
+
+        #[test]
+        fn a_clip_at_its_own_tempo_or_with_copy_waits_off_needs_no_copy() {
+            // At its own tempo.
+            let (mut h, mut pads) = host(false);
+            stretch(&mut h, 0, true);
+            h.set_rec_tempos(vec![(RecId(1), 120.0), (RecId(9), 120.0)]);
+            launch(&mut h, VOCAL, 0);
+            assert!(h.copy_needs().is_empty());
+            assert_eq!(cued_in_view(&h, VOCAL), Some(Some(0)));
+            run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), Some((0, TICKS)));
+            // Copy waits off (the offline copy): it goes as it did, and
+            // one waiting goes in when they are turned off.
+            let (mut h, mut pads) = host(false);
+            stretch(&mut h, 0, false);
+            launch(&mut h, VOCAL, 0);
+            assert_eq!(cued_in_view(&h, VOCAL), None);
+            h.set_copy_waits(false);
+            assert_eq!(cued_in_view(&h, VOCAL), Some(Some(0)));
+            assert!(h.copy_needs().is_empty());
+            run(&mut h, &mut pads, BAR + BAR / 8, &[]);
+            assert_eq!(playing(&h, VOCAL), Some((0, TICKS)));
+            assert_eq!(copy_counts(&h), (1, 0, 0, 0, 0));
         }
     }
 

@@ -79,7 +79,7 @@ use mpfree_transport::{Block, TempoMap, Tick};
 use mpfree_ui::qlink::QLinkCard;
 
 use crate::mixing::MixHost;
-use crate::time::{AudioNeed, CueKey};
+use crate::time::{AudioNeed, CopyNeed, CueKey};
 use crate::PERIOD;
 use mpfree_fx::ids::mixer as mx;
 
@@ -406,6 +406,26 @@ pub fn stretch_config() -> mpfree_stretch::sched::Config {
 
 /// A clip's region in the engine's words, naming its recording by the
 /// same lasting id.
+/// Audio clip `c` as the host wants it for its tempo copies, at
+/// `priority` and `bpm` (0: the tempo at the playhead). None for a clip
+/// with no audio regions.
+fn clip_want(c: &mpfree_seq::Clip, priority: Priority, bpm: f64) -> Option<ClipWant> {
+    let a = c.audio.as_ref()?;
+    let first = clip_region_in(a.regions.first()?);
+    let mut regions = [first; MAX_CLIP_REGIONS];
+    for (d, r) in regions.iter_mut().zip(&a.regions) {
+        *d = clip_region_in(r);
+    }
+    Some(ClipWant {
+        regions,
+        n: a.regions.len().min(MAX_CLIP_REGIONS),
+        len: c.length,
+        last_frame: a.last_frame,
+        priority,
+        bpm,
+    })
+}
+
 fn clip_region_in(r: &mpfree_seq::ClipRegion) -> ClipRegion {
     ClipRegion {
         start: r.start,
@@ -494,6 +514,15 @@ struct Waiting {
     cue: u32,
     needs: Vec<(RecordingId, i64, i64)>,
     held: Option<bool>,
+}
+
+/// A cue waiting for its tempo copies (5b.4), as the time engine lists
+/// it: the keys of the copies it needs, and what the engine was last told
+/// (None: nothing yet).
+struct CopyWaiting {
+    key: CueKey,
+    keys: Vec<mpfree_audiotracks::copies::CopyKey>,
+    told: Option<bool>,
 }
 
 pub struct TrackHost {
@@ -602,6 +631,8 @@ pub struct TrackHost {
     /// asked again.
     waits: Vec<Waiting>,
     next_cue: u32,
+    /// The cues waiting for their tempo copies (5b.4).
+    copy_waits: Vec<CopyWaiting>,
     waits_looked: u32,
     /// Fit to tempo on an audio clip's card, under way.
     clip_fit: Option<ClipFit>,
@@ -691,6 +722,7 @@ impl TrackHost {
             named: Vec::new(),
             waits: Vec::new(),
             next_cue: 0,
+            copy_waits: Vec::new(),
             waits_looked: 0,
             clip_fit: None,
             cell_sound: None,
@@ -944,28 +976,97 @@ impl TrackHost {
             .flat_map(|t| t.slots.iter().map(|(_, c)| c));
         let wants: Vec<ClipWant> = pads
             .chain(project.arrangement.clips.iter())
-            .filter_map(|c| Some((c.length, c.audio.as_ref()?)))
-            .filter(|(_, a)| {
-                a.regions
-                    .iter()
-                    .any(|r| r.follow == mpfree_seq::FollowTempo::Stretch)
-            })
-            .filter_map(|(len, a)| {
-                let first = clip_region_in(a.regions.first()?);
-                let mut regions = [first; MAX_CLIP_REGIONS];
-                for (d, r) in regions.iter_mut().zip(&a.regions) {
-                    *d = clip_region_in(r);
-                }
-                Some(ClipWant {
-                    regions,
-                    n: a.regions.len().min(MAX_CLIP_REGIONS),
-                    len,
-                    last_frame: a.last_frame,
-                    priority: Priority::Prepared,
+            .filter(|c| {
+                c.audio.as_ref().is_some_and(|a| {
+                    a.regions
+                        .iter()
+                        .any(|r| r.follow == mpfree_seq::FollowTempo::Stretch)
                 })
             })
+            .filter_map(|c| clip_want(c, Priority::Prepared, 0.0))
             .collect();
         self.host.clip_copies(wants);
+    }
+
+    /// The tempo copies the cues waiting for them need (5b.4), as the time
+    /// engine lists them (`TimeHost::copy_needs`, asked again when its
+    /// `needs_rev` rises): each launched clip goes to the host at Urgent at
+    /// the tempo at its line, and the keys each cue needs are kept to tell
+    /// the engine when they are ready ([`TrackHost::copy_answers`]). A
+    /// region whose copy has no key (its take not here, or past the speeds
+    /// a copy is made at) needs nothing.
+    pub fn hold_copies(&mut self, needs: &[CopyNeed], project: &mpfree_seq::Project) {
+        let mut wants: Vec<ClipWant> = Vec::new();
+        let mut waits: Vec<CopyWaiting> = Vec::new();
+        let mut seen: Vec<(CueKey, usize, usize)> = Vec::new();
+        for n in needs {
+            let w = match waits.iter().position(|w| w.key == n.cue) {
+                Some(i) => i,
+                None => {
+                    waits.push(CopyWaiting {
+                        key: n.cue,
+                        keys: Vec::new(),
+                        told: None,
+                    });
+                    waits.len() - 1
+                }
+            };
+            if seen.contains(&(n.cue, n.track, n.slot)) {
+                continue;
+            }
+            seen.push((n.cue, n.track, n.slot));
+            let Some(want) = project
+                .clip(n.track, n.slot)
+                .and_then(|c| clip_want(c, Priority::Urgent, n.bpm))
+            else {
+                continue;
+            };
+            let regions: Vec<usize> = needs
+                .iter()
+                .filter(|m| (m.cue, m.track, m.slot) == (n.cue, n.track, n.slot))
+                .map(|m| m.region)
+                .collect();
+            let play = ClipPlay {
+                regions: &want.regions[..want.n],
+                origin: 0.0,
+                len: want.len,
+                last_frame: want.last_frame,
+                gain: 1.0,
+                clip: 0,
+                stamp: 0,
+            };
+            let keys = &mut waits[w].keys;
+            self.host.tracks.clip_copy_keys(&play, n.bpm, &mut |i, k| {
+                if regions.contains(&i) && !keys.contains(&k) {
+                    keys.push(k);
+                }
+            });
+            wants.push(want);
+        }
+        // What the engine was told stands for a cue needing the same.
+        for w in &mut waits {
+            w.told = self
+                .copy_waits
+                .iter()
+                .find(|o| o.key == w.key && o.keys == w.keys)
+                .and_then(|o| o.told);
+        }
+        self.copy_waits = waits;
+        self.host.launch_copies(wants);
+    }
+
+    /// Whether the copies each cue waiting for them needs are ready, for
+    /// the time engine (`TimeHost::copies_ready`), told when it changes:
+    /// call it every look.
+    pub fn copy_answers(&mut self, mut f: impl FnMut(CueKey, bool)) {
+        let tracks = &self.host.tracks;
+        for w in &mut self.copy_waits {
+            let ready = w.keys.iter().all(|k| tracks.has_copy(k));
+            if w.told != Some(ready) {
+                w.told = Some(ready);
+                f(w.key, ready);
+            }
+        }
     }
 
     /// The cues waiting for their audio, as the time engine lists them
@@ -1024,6 +1125,10 @@ impl TrackHost {
         self.tempos_seen = 0;
         for w in self.waits.drain(..) {
             self.host.let_cue_go(w.cue);
+        }
+        if !self.copy_waits.is_empty() {
+            self.copy_waits.clear();
+            self.host.launch_copies(Vec::new());
         }
     }
 
@@ -4423,6 +4528,67 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].key.rec, k.rec);
         assert_eq!(f64::from_bits(v[0].key.tempo), 90.0);
+    }
+
+    /// A launch waiting for its tempo copy (phase 5b.4): the host makes it
+    /// at once, at the tempo at the cue's line, though the clip was never
+    /// listed ahead, and the time engine is told it is ready once it is,
+    /// and only then.
+    #[test]
+    fn a_launch_waiting_for_its_copy_gets_it_made_at_once_and_is_told_when_ready() {
+        use crate::time::{CopyNeed, CueKey};
+        let mut r = Rig::with(1);
+        r.h.action(AudioAction::Arm { track: 0, on: true }, &r.info(), false)
+            .unwrap();
+        r.periods(CHECK_EVERY as usize);
+        r.live = true;
+        r.command(T::Record);
+        while r.t.position() < 3840 {
+            r.period();
+        }
+        r.command(T::Stop);
+        r.live = false;
+        r.periods(20);
+        let k = r.h.host.tracks.takes().next().expect("a take");
+        let mut audio = mpfree_seq::AudioClip::of(RecId(k.rec.0), 0, k.frames as i64, 3840, 120.0);
+        audio.regions[0].follow = mpfree_seq::FollowTempo::Stretch;
+        let mut riff = mpfree_seq::Clip::new("Riff", 3840);
+        riff.audio = Some(audio);
+        let guitar = r.h.place(0).unwrap();
+        r.project.put_new_clip(guitar, 0, riff).unwrap();
+        let key = CueKey::test(7);
+        let need = CopyNeed {
+            cue: key,
+            track: guitar,
+            slot: 0,
+            region: 0,
+            bpm: 90.0,
+        };
+        r.h.hold_copies(&[need], &r.project);
+        let mut told = Vec::new();
+        r.h.copy_answers(|k, ok| told.push((k, ok)));
+        assert_eq!(told, vec![(key, false)], "not ready yet");
+        r.command(T::TempoNow(90.0));
+        let t0 = Instant::now();
+        while r.h.host.copy_memory().1 == 0 {
+            let c = r.h.host.copy_counts();
+            assert!(t0.elapsed() < Duration::from_secs(30), "{c:?}");
+            r.period();
+            r.h.copy_answers(|k, ok| told.push((k, ok)));
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        r.h.copy_answers(|k, ok| told.push((k, ok)));
+        assert_eq!(
+            told,
+            vec![(key, false), (key, true)],
+            "told once, when ready"
+        );
+        let v: Vec<_> = r.h.host.tracks.copies().collect();
+        assert_eq!(f64::from_bits(v[0].key.tempo), 90.0);
+        // Its cue gone, nothing more is said of it.
+        r.h.hold_copies(&[], &r.project);
+        r.h.copy_answers(|k, ok| told.push((k, ok)));
+        assert_eq!(told.len(), 2);
     }
 
     /// A loop cell's block (phase 4e.3, board 8): its lane draws it as a
