@@ -26,6 +26,10 @@ pub const BACK: usize = mpfree_ui::widgets::OPTION_BACK;
 pub const NEW_THEME: usize = usize::MAX - 22;
 /// `Tab(CUSTOMISE)`: Customise › on the theme in use's card.
 pub const CUSTOMISE: usize = usize::MAX - 23;
+/// `Tab(RESET)`: the sidebar's Reset button, at its foot.
+pub const RESET: usize = usize::MAX - 24;
+/// The words over the sidebar's Reset button.
+const RESET_LINE: [&str; 2] = ["Yours, kept on the stick: the", "same in every project."];
 
 const GAP: i32 = 12;
 const SIDE_W: i32 = 220;
@@ -43,8 +47,10 @@ const HEAD_GAP: i32 = 12;
 const ROW_GAP: i32 = 14;
 const NAME_H: i32 = 22;
 const DESC_H: i32 = 20;
-const SEG_H: i32 = 50;
-const SEG_SUB_H: i32 = 58;
+/// A choice's buttons, with and without a line under each word: at
+/// least 64 px tall, the touch audit's Normal size for a tapped control.
+const SEG_H: i32 = 64;
+const SEG_SUB_H: i32 = 64;
 const TILE_H: i32 = 62;
 const TILE_GAP: i32 = 10;
 /// The most a tile grows when its card has room to spare.
@@ -57,7 +63,11 @@ const SWITCH_W: i32 = 56;
 const SWITCH_H: i32 = 32;
 const BUTTON_W: i32 = 176;
 const BUTTON_H: i32 = 46;
+/// The sidebar's Reset (Normal size, as a choice's buttons).
+const RESET_H: i32 = 64;
 const SLIDE_H: i32 = 30;
+/// A meter row's bar.
+const METER_H: i32 = 10;
 const LABELS_H: i32 = 22;
 const KNOB_D: i32 = 64;
 const INFO_H: i32 = 30;
@@ -66,7 +76,9 @@ const SPLIT_H: i32 = 52;
 const PICTURE_MIN: i32 = 110;
 const IN_USE_H: i32 = 164;
 /// A knob of a line of several (Customise), and how much it may grow.
-const DIAL_D: i32 = 56;
+const DIAL_D: i32 = 64;
+/// Between a dial and its value.
+const DIAL_TEXT_GAP: i32 = 2;
 const DIAL_GROW: i32 = 16;
 /// A colour to tap, and the word under it.
 const SWATCH_H: i32 = 38;
@@ -158,6 +170,9 @@ pub enum Control {
     Stepper(String),
     /// On or off.
     Switch(bool),
+    /// A level meter across the row: what comes in now, from
+    /// [`PrefsPage::meter`] (the line input's, while it is on).
+    Meter,
     /// Opens or starts something; the button's words.
     Button(String),
     /// A line about the system (System status): a dot in `tone`, a title
@@ -175,8 +190,9 @@ pub enum Control {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Picture {
     /// A curve from (0, 0) to (1, 1), x and y from 0 to 1, with a straight
-    /// line under it for comparison.
-    Curve(Vec<(f32, f32)>),
+    /// line under it for comparison; and the last hit, as it came and as
+    /// it played (1 to 127), marked on it.
+    Curve(Vec<(f32, f32)>, Option<(u8, u8)>),
     /// The MPC's 16 pads, pad 1 at the bottom left, each in its colour as
     /// it would light (Prefs › Screen and lights).
     Pads(Vec<Color>),
@@ -294,6 +310,9 @@ pub struct PrefsView {
     /// The hint line's words, where the tab has its own (Customise says
     /// how well the theme reads).
     pub hint: Option<String>,
+    /// The sidebar's Reset button's words ("Reset Playing"), on a tab
+    /// that has one.
+    pub reset: Option<String>,
 }
 
 /// Where everything sits, worked out from the view and the widget's
@@ -302,6 +321,8 @@ pub struct PrefsView {
 struct Geo {
     side: Rect,
     back: Rect,
+    /// The sidebar's Reset button, at its foot.
+    reset: Option<Rect>,
     tabs: Vec<Rect>,
     content: Rect,
     cards: Vec<Rect>,
@@ -346,6 +367,12 @@ pub struct PrefsPage {
     drag: Option<(u64, usize, i32, f32)>,
     /// A finger moving a slider: its finger and row.
     slide: Option<(u64, usize)>,
+    /// A finger down on Reset: it acts when that finger lifts on it, so
+    /// a finger that slides off or is cancelled changes nothing.
+    resetting: Option<u64>,
+    /// The level a meter row shows, dBFS: what comes in now, None while
+    /// nothing is listened to (the screen sets it as levels arrive).
+    pub meter: Option<f32>,
 }
 
 impl PrefsPage {
@@ -382,9 +409,18 @@ impl PrefsPage {
                 r
             })
             .collect();
+        let reset = self.view.reset.as_ref().map(|_| {
+            Rect::new(
+                side.x + 10,
+                side.bottom() - 10 - RESET_H,
+                side.w - 20,
+                RESET_H,
+            )
+        });
         let mut g = Geo {
             side,
             back,
+            reset,
             tabs,
             content,
             rows: vec![RowGeo::default(); self.view.rows.len()],
@@ -458,8 +494,9 @@ impl PrefsPage {
             Some(Control::Tiles { .. }) => TILE_H + if row.bare { 0 } else { 8 },
             Some(Control::Steps { .. }) => 6 + SLIDE_H + LABELS_H,
             Some(Control::Slider { .. }) => 6 + SLIDE_H,
+            Some(Control::Meter) => 6 + METER_H,
             Some(Control::Knob { .. }) => return KNOB_D + 16,
-            Some(Control::Dial { .. }) => return DIAL_D + 8 + NAME_H + DESC_H,
+            Some(Control::Dial { .. }) => return DIAL_D + DIAL_TEXT_GAP + NAME_H + DESC_H,
             Some(Control::Swatches {
                 colours, numbered, ..
             }) => {
@@ -721,6 +758,9 @@ impl PrefsPage {
             Some(Control::Slider { .. }) => {
                 geo.control = Rect::new(area.x, y + 6, area.w, SLIDE_H);
             }
+            Some(Control::Meter) => {
+                geo.control = Rect::new(area.x, y + 6, area.w, METER_H);
+            }
             Some(Control::Knob { .. }) => {
                 // The knob at the left; its name, value and line beside it.
                 let d = KNOB_D + grow;
@@ -736,10 +776,10 @@ impl PrefsPage {
             Some(Control::Dial { .. }) => {
                 // The knob over its value and name, in the middle.
                 let d = DIAL_D + grow;
-                let block = d + 8 + NAME_H + DESC_H;
+                let block = d + DIAL_TEXT_GAP + NAME_H + DESC_H;
                 let top = area.y + (area.h - block) / 2;
                 geo.control = Rect::new(area.x + (area.w - d) / 2, top, d, d);
-                geo.head = Rect::new(area.x, top + d + 8, area.w, NAME_H + DESC_H);
+                geo.head = Rect::new(area.x, top + d + DIAL_TEXT_GAP, area.w, NAME_H + DESC_H);
             }
             Some(Control::Swatches { colours, .. }) => {
                 let n = colours.len().max(1) as i32;
@@ -824,6 +864,9 @@ impl PrefsPage {
     fn hit(&self, g: &Geo, x: i32, y: i32) -> Option<EventKind> {
         if g.back.contains(x, y) {
             return Some(EventKind::Tab(BACK));
+        }
+        if g.reset.is_some_and(|r| r.contains(x, y)) {
+            return Some(EventKind::Tab(RESET));
         }
         if let Some(i) = g.tabs.iter().position(|t| t.contains(x, y)) {
             let tab = self.view.tabs[i].tab;
@@ -967,6 +1010,22 @@ impl PrefsPage {
                 t.text_dim,
                 sub,
             );
+        }
+        // Reset, at the sidebar's foot, under what Prefs are.
+        if let (Some(r), Some(words)) = (g.reset, &self.view.reset) {
+            for (k, line) in RESET_LINE.iter().enumerate() {
+                let at = Rect::new(r.x + 4, r.y - 52 + 20 * k as i32, r.w - 8, 20);
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    at,
+                    Align::Left,
+                    t.text_dim,
+                    line,
+                );
+            }
+            cx.canvas.fill_round_rect(r, t.round(10), t.raised);
+            cx.text(FontId::Bold, t.size_body, r, Align::Center, t.text, words);
         }
     }
 
@@ -1122,7 +1181,7 @@ impl PrefsPage {
             }
         }
         match (geo.picture, &row.picture) {
-            (Some(r), Some(Picture::Curve(pts))) => paint_curve(cx, r, pts, fill),
+            (Some(r), Some(Picture::Curve(pts, hit))) => paint_curve(cx, r, pts, *hit, fill),
             (Some(r), Some(Picture::Pads(colours))) => paint_pads(cx, r, colours),
             _ => {}
         }
@@ -1252,6 +1311,28 @@ impl PrefsPage {
                 let c = geo.control;
                 let track = Rect::new(c.x + 18, c.y, c.w - 36, SLIDE_H);
                 paint_slider(cx, track, *pos, fill);
+            }
+            Control::Meter => {
+                let c = geo.control;
+                let bar = Rect::new(c.x, c.y + (c.h - METER_H) / 2, c.w, METER_H);
+                cx.canvas.fill_round_rect(bar, METER_H / 2, t.raised);
+                if let Some(db) = self.meter {
+                    // -48 dB to 0 along the bar: good, then warn past -12,
+                    // bad past -3.
+                    let at = ((db + 48.0) / 48.0).clamp(0.0, 1.0);
+                    let w = (bar.w as f32 * at).round() as i32;
+                    if w > 0 {
+                        let ink = if db > -3.0 {
+                            t.bad
+                        } else if db > -12.0 {
+                            t.warn
+                        } else {
+                            t.good
+                        };
+                        let lit = Rect::new(bar.x, bar.y, w.max(METER_H), bar.h);
+                        cx.canvas.fill_round_rect(lit, METER_H / 2, ink);
+                    }
+                }
             }
             Control::Knob { pos } => {
                 let c = geo.control;
@@ -1724,6 +1805,9 @@ impl Widget for PrefsPage {
     fn targets(&self, r: Rect) -> Vec<Target> {
         let g = self.geo(r);
         let mut out = vec![Target::tap("back", 0, "Back", g.back)];
+        if let (Some(r), Some(words)) = (g.reset, &self.view.reset) {
+            out.push(Target::tap("reset", 0, words.clone(), r));
+        }
         for (i, tab) in self.view.tabs.iter().enumerate() {
             out.push(
                 Target::tap("tab", tab.tab, tab.name.clone(), g.tabs[i])
@@ -1824,7 +1908,7 @@ impl Widget for PrefsPage {
                 Some(Control::Status { button, .. }) => {
                     out.push(Target::tap("button", i, button.clone(), geo.control));
                 }
-                None => {}
+                None | Some(Control::Meter) => {}
             }
         }
         out
@@ -1882,6 +1966,10 @@ impl Widget for PrefsPage {
                     }
                 }
                 let ev = self.hit(&g, x, y);
+                if ev == Some(EventKind::Tab(RESET)) {
+                    self.resetting = Some(finger);
+                    return None;
+                }
                 self.slide = match ev {
                     Some(EventKind::Values { index, .. }) => Some((finger, index)),
                     Some(EventKind::Cell { row, .. })
@@ -1927,6 +2015,11 @@ impl Widget for PrefsPage {
                 }
                 if self.slide.is_some_and(|d| d.0 == finger) {
                     self.slide = None;
+                }
+                if self.resetting == Some(finger) {
+                    self.resetting = None;
+                    let on = g.reset.is_some_and(|r| r.contains(x, y));
+                    return (phase == Touch::Up && on).then_some(EventKind::Tab(RESET));
                 }
                 None
             }
@@ -2079,7 +2172,7 @@ fn paint_pads(cx: &mut PaintCx, r: Rect, colours: &[Color]) {
     );
 }
 
-fn paint_curve(cx: &mut PaintCx, r: Rect, pts: &[(f32, f32)], fill: Color) {
+fn paint_curve(cx: &mut PaintCx, r: Rect, pts: &[(f32, f32)], hit: Option<(u8, u8)>, fill: Color) {
     let t = cx.theme.clone();
     cx.canvas
         .fill_round_rect(r, t.round(10), t.panel().mix(t.raised, 0.6));
@@ -2101,14 +2194,36 @@ fn paint_curve(cx: &mut PaintCx, r: Rect, pts: &[(f32, f32)], fill: Color) {
     let mut s = mpfree_ui::Shape::new(r);
     s.polyline(&pts, 3.0);
     cx.canvas.blend_shape(&s, fill);
-    let words = Rect::new(p.x, p.y, p.w, 20);
+    // The last hit: up from how hard it came, across to how loud it
+    // played, and the two in words under "loud".
+    if let Some((came, went)) = hit {
+        let mark = at((f32::from(came) / 127.0, f32::from(went) / 127.0));
+        let mut s = mpfree_ui::Shape::new(r);
+        s.dashed(&[(mark.0, p.bottom() as f32), mark], 1.5, 4.0);
+        s.dashed(&[(p.x as f32, mark.1), mark], 1.5, 4.0);
+        cx.canvas.blend_shape(&s, t.warn);
+        let mut dot = mpfree_ui::Shape::new(r);
+        dot.disc(mark.0, mark.1, 6.0);
+        cx.canvas.blend_shape(&dot, t.warn);
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            Rect::new(p.x + 8, p.y + 22, p.w, 20),
+            Align::Left,
+            t.text_dim,
+            &format!("Last hit  {came} in → {went} out"),
+        );
+    }
+    // Top left, where no curve's fill reaches: the top right is under
+    // every curve's end.
+    let words = Rect::new(p.x + 8, p.y, p.w, 20);
     cx.text(
         FontId::Sans,
         t.size_small,
         words,
-        Align::Right,
+        Align::Left,
         t.text_dim,
-        "loud",
+        "↑ loud",
     );
     let soft = Rect::new(p.x, p.bottom() - 20, p.w, 20);
     cx.text(
@@ -2439,7 +2554,10 @@ mod tests {
             tab: 0,
             rows: vec![
                 RowView {
-                    picture: Some(Picture::Curve(vec![(0.0, 0.0), (0.5, 0.7), (1.0, 1.0)])),
+                    picture: Some(Picture::Curve(
+                        vec![(0.0, 0.0), (0.5, 0.7), (1.0, 1.0)],
+                        None,
+                    )),
                     ..row(
                         "Curve",
                         Control::Choice {
@@ -2594,17 +2712,26 @@ mod tests {
     #[test]
     fn every_target_answers_with_its_event() {
         let mut p = PrefsPage {
-            view: sample(),
+            view: PrefsView {
+                reset: Some("Reset Playing".into()),
+                ..sample()
+            },
             ..PrefsPage::default()
         };
+        assert!(p.targets(R).iter().any(|t| t.id == "reset"));
         for t in p.targets(R) {
             let (x, y) = t.centre();
-            let ev = p.touch(1, Touch::Down, x, y, R);
-            p.touch(1, Touch::Up, x, y, R);
+            let down = p.touch(1, Touch::Down, x, y, R);
+            let up = p.touch(1, Touch::Up, x, y, R);
+            if t.id == "reset" {
+                assert_eq!(down, None, "Reset waits for the lift");
+            }
+            let ev = down.or(up);
             match t.id {
                 "knob" => assert!(ev.is_none(), "a knob waits for the finger's move"),
                 _ if !t.enabled => assert!(ev.is_none(), "{t:?} is already so"),
                 "back" => assert_eq!(ev, Some(EventKind::Tab(BACK))),
+                "reset" => assert_eq!(ev, Some(EventKind::Tab(RESET))),
                 "tab" => assert_eq!(ev, Some(EventKind::Tab(t.index))),
                 "choice" | "tile" => assert_eq!(
                     ev,
@@ -2628,6 +2755,35 @@ mod tests {
         }
         // A touch outside every control answers nothing.
         assert_eq!(p.touch(1, Touch::Down, 600, 700, R), None);
+    }
+
+    /// Reset acts when the finger lifts on it: one that slides off, or is
+    /// cancelled, changes nothing.
+    #[test]
+    fn reset_acts_on_the_lift_on_it() {
+        let mut p = PrefsPage {
+            view: PrefsView {
+                reset: Some("Reset Playing".into()),
+                ..sample()
+            },
+            ..PrefsPage::default()
+        };
+        let t = p
+            .targets(R)
+            .into_iter()
+            .find(|t| t.id == "reset")
+            .expect("Reset");
+        let (x, y) = t.centre();
+        assert!(t.rect.h >= 64, "Normal size: {:?}", t.rect);
+        assert_eq!(p.touch(1, Touch::Down, x, y, R), None);
+        assert_eq!(p.touch(1, Touch::Up, x, y, R), Some(EventKind::Tab(RESET)));
+        assert_eq!(p.touch(2, Touch::Down, x, y, R), None);
+        assert_eq!(p.touch(2, Touch::Up, x + 400, y, R), None, "slid off");
+        assert_eq!(p.touch(3, Touch::Down, x, y, R), None);
+        assert_eq!(p.touch(3, Touch::Cancel, x, y, R), None, "cancelled");
+        // Another finger's lift doesn't press it.
+        assert_eq!(p.touch(4, Touch::Down, x, y, R), None);
+        assert_eq!(p.touch(5, Touch::Up, x, y, R), None);
     }
 
     /// Customise's controls: a banner across both columns, dials, swatches,

@@ -27,7 +27,7 @@ M12 measured how one MPC One's touch panel is mounted (`swap_xy=true, flip_x=tru
 
 ## In the pad player
 
-**Opening it.** Prefs (SHIFT + MENU), the **Playing** tab, then **Calibrate touch** on the Touch screen card (just above Touch lab): tap its **Start**, or turn the wheel to it and press +. **Leaving it:** Exit in the middle of the screen, or MENU.
+**Opening it.** Prefs (SHIFT + MENU), the **System** tab, then **Calibrate touch** on the Buttons and touch card (just above Touch lab): tap its **Start**, or turn the wheel to it and press +. **Leaving it:** Exit in the middle of the screen, or MENU.
 
 **The page.** A target in one corner at a time, in order: top-left, top-right, bottom-right, bottom-left, as the owner faces the MPC. Each tap counts where the finger lifts. A tap too near the middle, or in a corner that is already done, is asked again with a note. After the fourth tap, the page says one of three things:
 - the panel matches the built-in mapping;

@@ -792,5 +792,6 @@ fn export_setup(arrangement: bool) -> ExportSetup {
             bits: crate::export::ExportBits::I24,
             rate: 44_100,
         },
+        by: crate::export::StemsBy::Channel,
     }
 }

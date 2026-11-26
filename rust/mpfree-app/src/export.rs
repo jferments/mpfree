@@ -327,6 +327,7 @@ impl Facts {
         &self,
         pref: Mode,
         format: mpfree_browser_ui::ExportFormat,
+        by: mpfree_browser_ui::StemsBy,
         folder: &str,
     ) -> (mpfree_browser_ui::ExportSetup, Mode, Why) {
         let (mode, why) = choose(pref, &self.rig);
@@ -349,6 +350,7 @@ impl Facts {
             tracks_bars: self.track_count(self.range(mpfree_browser_ui::ExportRange::Bars(1))),
             folder: format!("Recordings / {folder}"),
             format,
+            by,
         };
         (setup, mode, why)
     }
@@ -1279,7 +1281,8 @@ mod tests {
         let r = f.range(ExportRange::Bars(8));
         assert_eq!((r.start, r.end, r.song), (3840 * 5, 3840 * 13, None));
         let fmt = panel_format(mpfree_fx::Bits::I24, crate::RATE);
-        let (setup, mode, why) = f.setup(Mode::Fast, fmt, "Song 2026-11-14 01.32");
+        let (setup, mode, why) =
+            f.setup(Mode::Fast, fmt, StemsBy::Channel, "Song 2026-11-14 01.32");
         assert_eq!(setup.arrangement.as_deref(), Some("4:48, 96 bars"));
         assert_eq!(setup.from_bar, 6);
         assert_eq!(setup.stems, 3);
@@ -1297,7 +1300,12 @@ mod tests {
             arrangement_end: 0,
             ..facts()
         };
-        assert_eq!(none.setup(Mode::Fast, fmt, "x").0.arrangement, None);
+        assert_eq!(
+            none.setup(Mode::Fast, fmt, StemsBy::Channel, "x")
+                .0
+                .arrangement,
+            None
+        );
         assert_eq!(none.range(ExportRange::Arrangement).song, None);
     }
 

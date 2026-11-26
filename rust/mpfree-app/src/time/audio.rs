@@ -1978,6 +1978,14 @@ impl TimeAudio {
         self.click.gain = gain;
     }
 
+    pub fn set_click_sound(&mut self, sound: super::ClickSound) {
+        self.click.sound = sound;
+    }
+
+    pub fn click_sound(&self) -> super::ClickSound {
+        self.click.sound
+    }
+
     pub fn run(&mut self, frames: u32, pads: &mut impl Pads, arps: Option<&mut TrackArps>) {
         let ok = match self.advanced.take() {
             Some(ok) => ok,

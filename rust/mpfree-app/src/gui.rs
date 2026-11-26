@@ -1240,6 +1240,12 @@ pub enum ToUi {
     /// A short press of the power button (power.rs): the power card opens,
     /// or closes if it is open.
     PowerPress,
+    /// STOP silenced everything (STOP while stopped, SHIFT + STOP): every
+    /// finger on the screen is let go of, as a page change does, so a pad
+    /// held on the screen stops, the XY pad's effect goes off and a throw
+    /// lets go; a finger still down does nothing more until it lifts
+    /// (layout spec 1a: a momentary action is released on Stop).
+    LetGo,
     /// What Export needs to know about the song (export.rs), after
     /// [`FromUi::ExportAsk`].
     ExportFacts(Box<crate::export::Facts>),
@@ -2035,6 +2041,9 @@ pub enum FromUi {
     PrefsTab(usize),
     /// Prefs › Themes: the New theme tile (true) or Customise › (false).
     NewTheme(bool),
+    /// Prefs: the sidebar's Reset button (the tab's settings back to how
+    /// they came, on a second tap).
+    PrefsReset,
     /// Customise's Rename: the name typed.
     ThemeName(String),
     /// Prefs: choice `k` of row `i` picked (a button of a choice, a tile,
@@ -5918,7 +5927,7 @@ impl Player {
             .push(FromUi::Time(TimeAction::Edit(EditAction::Knob {
                 k,
                 ticks,
-                fine: self.status.shift,
+                fine: self.fine(),
                 turn,
             })));
     }
@@ -6276,11 +6285,13 @@ impl Player {
         }
         // An I/O section with its own Q-Link cards takes the turn.
         if self.io_showing() && mpfree_mixer_ui::io_qlinks(&self.ui).is_some() {
-            mpfree_mixer_ui::io_qlink_turn(&mut self.ui, k, d, self.status.shift);
+            let fine = self.fine();
+            mpfree_mixer_ui::io_qlink_turn(&mut self.ui, k, d, fine);
             self.after_io();
             return;
         }
-        if let Some(a) = mpfree_mixer_ui::qlink_turn(&mut self.ui, k, d, self.status.shift) {
+        let fine = self.fine();
+        if let Some(a) = mpfree_mixer_ui::qlink_turn(&mut self.ui, k, d, fine) {
             self.outbox.push(FromUi::Mixer(a));
         }
         self.refresh_qlinks();
@@ -6294,7 +6305,7 @@ impl Player {
         if d == 0 || !self.chain_page.drives(self.view) {
             return;
         }
-        match self.chain_page.turn(k, d, self.status.shift) {
+        match self.chain_page.turn(k, d, self.fine()) {
             Some(Turned::Chain(a)) => self.outbox.push(FromUi::Chain(a)),
             Some(Turned::Macro(a)) => self.outbox.push(FromUi::Macros(a)),
             Some(Turned::Learned) => self.outbox.push(FromUi::ChainLearned),
@@ -8744,7 +8755,7 @@ impl Player {
     /// pan, and its seam fade.
     fn looper_qlink(&mut self, k: usize, ticks: i32) {
         use crate::looper_page::LoopTurn;
-        let fine = self.status.shift;
+        let fine = self.fine();
         match self.looper_page.qlink(&mut self.ui, k, ticks, fine) {
             Some(LoopTurn::LoopLevel(n, level)) => {
                 self.outbox.push(FromUi::LoopLevel(n, level));
@@ -9178,7 +9189,7 @@ impl Player {
     }
 
     fn play_qlink(&mut self, k: usize, ticks: i32) {
-        match self.play.turn(k, ticks, self.status.shift) {
+        match self.play.turn(k, ticks, self.fine()) {
             Some(Turn::Fx(fx)) => self.outbox.push(FromUi::PlayFx(fx)),
             Some(Turn::Step(a)) => {
                 self.outbox.push(FromUi::Steps(a));
@@ -9225,7 +9236,7 @@ impl Player {
                 } else {
                     sample_page::PadKnob::Decay
                 };
-                self.sample.turn_pad(pad, which, d, self.status.shift);
+                self.sample.turn_pad(pad, which, d, self.fine());
                 self.print_sample_lines();
             }
             None => {}
@@ -9572,9 +9583,46 @@ impl Player {
         self.refresh_hint();
     }
 
+    /// Prefs' "Coming in now": the line input's level, while it is on
+    /// and Prefs shows (redrawn only when it moves by a dB or more).
+    fn prefs_meter(&mut self) {
+        if self.view != View::Prefs {
+            return;
+        }
+        let v = &self.looper;
+        // The meter is what the looper records from: the line input's
+        // while it is that.
+        let line = v.line_on && v.source == crate::looping::LoopSource::Line;
+        let want = line.then(|| v.meter_db[0].max(v.meter_db[1]).max(-60.0));
+        let shown = self
+            .ui
+            .get_mut_quiet::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET)
+            .map(|p| p.meter);
+        let moved = match (shown, want) {
+            (Some(Some(a)), Some(b)) => (a - b).abs() >= 1.0,
+            (Some(a), b) => a.is_some() != b.is_some(),
+            (None, _) => false,
+        };
+        if moved {
+            if let Some(p) = self
+                .ui
+                .get_mut::<crate::prefs_page::PrefsPage>(crate::prefs_page::WIDGET)
+            {
+                p.meter = want;
+            }
+        }
+    }
+
+    /// SHIFT held makes a Q-Link's or the wheel's turn finer, unless
+    /// Prefs' Fine with SHIFT is off.
+    fn fine(&self) -> bool {
+        self.status.shift && self.settings.fine_shift
+    }
+
     /// The hint line says this even with Hint line Off: a held button's
-    /// jobs, a pop-up's keys (the power card, a number or letters pad) and
-    /// Map controls' steps.
+    /// jobs, a pop-up's keys (the power card, a number or letters pad),
+    /// Map controls' steps, and the Looper's questions, whose buttons
+    /// (Snap anyway / Not now, Read as / Discard) float at its end.
     fn hint_needed(&self) -> bool {
         let st = &self.status;
         let holding = st.main_held.is_some()
@@ -9588,6 +9636,8 @@ impl Player {
             || self.learning.is_some()
             || (self.ready && holding)
             || self.play.held_name().is_some()
+            || (self.view == View::Looper
+                && (self.looper.smart.length.is_some() || self.looper.smart.asking.is_some()))
     }
 
     fn refresh_hint(&mut self) {
@@ -10279,6 +10329,11 @@ impl Player {
             }
         }
         let timing = self.settings.timing_strip != s.timing_strip;
+        // Prefs' Audition level moved (or came from the saved settings):
+        // BROWSE previews from it; its Q-Link 3 changes it for the moment.
+        if s.audition_db != self.settings.audition_db {
+            self.preview_db = f32::from(s.audition_db);
+        }
         // What the XY pad plays, as Prefs keeps it: the page follows, and
         // the mixer hears it (at start, the saved pick).
         if s.xy_effect != self.play.xy_effect {
@@ -10435,8 +10490,7 @@ impl Player {
         if let Some(p) = self.ui.get_mut::<mpfree_ui::history::HistoryPanel>(HISTORY) {
             p.clear();
         }
-        if self.ui.show(HISTORY_PAGE).is_ok() {
-            self.looper_page.sync_drag(&mut self.ui, self.status.shift);
+        if self.switch_page(HISTORY_PAGE) {
             self.history = Some(HistoryOpen {
                 of,
                 back,
@@ -10456,7 +10510,7 @@ impl Player {
         if let Some(p) = self.ui.get_mut::<mpfree_ui::history::HistoryPanel>(HISTORY) {
             p.clear();
         }
-        let _ = self.ui.show(&h.back);
+        self.switch_page(&h.back);
         self.outbox.push(FromUi::Overlay(false));
         self.refresh_hint();
     }
@@ -11333,8 +11387,7 @@ impl Player {
         if let Some(p) = self.ui.get_mut::<mpfree_ui::numpad::NumPad>(NUMPAD) {
             p.open(ask);
         }
-        if self.ui.show(NUMPAD_PAGE).is_ok() {
-            self.looper_page.sync_drag(&mut self.ui, self.status.shift);
+        if self.switch_page(NUMPAD_PAGE) {
             self.typing = Some(Typing { to, back });
             self.outbox.push(FromUi::Overlay(true));
             self.refresh_hint();
@@ -11372,8 +11425,7 @@ impl Player {
         if let Some(p) = self.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD) {
             p.open(asks);
         }
-        if self.ui.show(TEXTPAD_PAGE).is_ok() {
-            self.looper_page.sync_drag(&mut self.ui, self.status.shift);
+        if self.switch_page(TEXTPAD_PAGE) {
             self.typing = Some(Typing { to, back });
             self.outbox.push(FromUi::Overlay(true));
             self.refresh_hint();
@@ -11433,7 +11485,7 @@ impl Player {
         let back = self.ui.page().to_string();
         let project = self.power_project();
         self.power_show(crate::power::Step::Ask { project });
-        if self.ui.show(crate::power::PAGE).is_ok() {
+        if self.switch_page(crate::power::PAGE) {
             self.power = Some(PowerOpen {
                 back,
                 waited: 0.0,
@@ -11476,7 +11528,7 @@ impl Player {
         let r = Recall::open(input, pad, onto, filled.len());
         let second = self.sample.recall_second();
         let page = RecallPage::open(&mut self.ui, input, r, self.sample.tempo(), filled, second);
-        if self.ui.show(PAGE).is_err() {
+        if !self.switch_page(PAGE) {
             return;
         }
         self.recall = Some(RecallOpen {
@@ -11502,7 +11554,7 @@ impl Player {
         if r.heard {
             self.outbox.push(FromUi::PreviewStop);
         }
-        let _ = self.ui.show(&r.back);
+        self.switch_page(&r.back);
         self.outbox.push(FromUi::Overlay(false));
         self.outbox.push(FromUi::Recall(false));
         self.refresh_hint();
@@ -11647,7 +11699,7 @@ impl Player {
         if let Some(c) = self.power_card() {
             c.close();
         }
-        let _ = self.ui.show(&p.back);
+        self.switch_page(&p.back);
         self.outbox.push(FromUi::Overlay(false));
         self.refresh_hint();
     }
@@ -11796,7 +11848,7 @@ impl Player {
         if let Some(p) = self.ui.get_mut::<mpfree_ui::textpad::TextPad>(TEXTPAD) {
             p.close();
         }
-        let _ = self.ui.show(&t.back);
+        self.switch_page(&t.back);
         self.outbox.push(FromUi::Overlay(false));
         self.refresh_hint();
     }
@@ -12594,6 +12646,7 @@ impl Player {
                 self.seen_loop = seen;
                 let asked = self.looper.smart.asking;
                 self.looper = *v;
+                self.prefs_meter();
                 if matches!(self.view, View::Looper | View::Play) {
                     self.refresh_looper();
                 }
@@ -12712,8 +12765,8 @@ impl Player {
                 }
             }
             ToUi::ChainWheel(d) => {
-                if self.view == View::Chain
-                    && !mpfree_chain_ui::chain_wheel(&mut self.ui, d, self.status.shift)
+                let fine = self.fine();
+                if self.view == View::Chain && !mpfree_chain_ui::chain_wheel(&mut self.ui, d, fine)
                 {
                     self.chain_qlink(0, d);
                 }
@@ -13211,7 +13264,7 @@ impl Player {
                 }
             }
             ToUi::SynthQLink(n, ticks) if self.skin_showing() => {
-                let fine = self.status.shift;
+                let fine = self.fine();
                 if let Some(w) = self.ui.get_mut::<skin_page::SkinWidget>(skin_page::SKIN) {
                     let e = w.view.qlink(&w.vals, n, ticks, fine);
                     w.push(e);
@@ -13230,7 +13283,7 @@ impl Player {
                 self.refresh_qlinks();
             }
             ToUi::SynthWheel(ticks) if self.skin_showing() => {
-                let fine = self.status.shift;
+                let fine = self.fine();
                 if let Some(w) = self.ui.get_mut::<skin_page::SkinWidget>(skin_page::SKIN) {
                     let e = w.view.wheel(&w.vals, ticks, fine);
                     w.push(e);
@@ -13276,7 +13329,8 @@ impl Player {
                 if self.browsing() {
                     self.browser_qlink(k, ticks);
                 } else if self.view.sampler() {
-                    self.sample.qlink(&mut self.ui, k, ticks, self.status.shift);
+                    let fine = self.fine();
+                    self.sample.qlink(&mut self.ui, k, ticks, fine);
                 }
             }
             ToUi::SampleLift => self.sample.lift(),
@@ -13654,6 +13708,7 @@ impl Player {
                 }
             }
             ToUi::PowerPress => self.power_press(),
+            ToUi::LetGo => self.let_go_of_fingers(),
             ToUi::ScriptTap(t) => self.script_taps.push_back((t, None)),
             ToUi::TouchBell | ToUi::Quit => {}
             ToUi::PerformSet { set, opened } => {
@@ -15021,7 +15076,12 @@ impl Player {
         let folder = crate::export::new_folder_name(&recordings, &song, now_utc());
         let format =
             crate::export::panel_format(self.settings.export_bits, self.settings.export_rate);
-        let (setup, _, _) = f.setup(self.settings.export_mode, format, &folder);
+        let (setup, _, _) = f.setup(
+            self.settings.export_mode,
+            format,
+            self.settings.stems_by,
+            &folder,
+        );
         b.open_export(setup);
         self.export_facts = Some(f);
         self.step_browser();
@@ -17047,7 +17107,7 @@ impl Player {
                 region: knobs.region,
                 knob: k,
                 ticks,
-                fine: self.status.shift,
+                fine: self.fine(),
             })));
         true
     }
@@ -17268,11 +17328,32 @@ impl Player {
     }
 
     /// Change page, first letting go of every finger on the screen (the
-    /// page's widgets would never hear them lift).
-    fn switch_page(&mut self, page: &str) {
+    /// page's widgets would never hear them lift: a pad held on the screen
+    /// would keep sounding, the XY pad would keep its effect on). Every
+    /// page change goes this way: the tabs, and the cards that show as
+    /// pages of their own (the number and text pads, Undo history, the
+    /// power card, Sample Recall) and the way back from them (the touch
+    /// review, 25 Nov 2026: nothing loses its release). True when `page`
+    /// shows, now or already.
+    fn switch_page(&mut self, page: &str) -> bool {
         if self.ui.page() == page {
-            return;
+            return true;
         }
+        if !self.ui.pages().iter().any(|p| p == page) {
+            return false;
+        }
+        self.let_go_of_fingers();
+        let shown = self.ui.show(page).is_ok();
+        // A layer the wheel picked up on the Looper tab goes back.
+        self.looper_page.sync_drag(&mut self.ui, self.status.shift);
+        shown
+    }
+
+    /// Every finger on the screen let go of: each widget hears its finger
+    /// cancelled (a pad lets go, the XY pad's effect goes off, a drag ends
+    /// where it is, nothing is tapped), and what that means goes to the
+    /// audio thread. A finger still down does nothing more until it lifts.
+    fn let_go_of_fingers(&mut self) {
         for f in std::mem::take(&mut self.fingers) {
             if let Some(ev) = self.ui.touch(f, Touch::Cancel, 0, 0) {
                 if let Some(a) = self.on_event(ev) {
@@ -17280,9 +17361,6 @@ impl Player {
                 }
             }
         }
-        let _ = self.ui.show(page);
-        // A layer the wheel picked up on the Looper tab goes back.
-        self.looper_page.sync_drag(&mut self.ui, self.status.shift);
     }
 
     /// Actions that did not come from a touch, for the audio thread.
@@ -17383,6 +17461,7 @@ impl Player {
                 | FromUi::MenuSelect(_)
                 | FromUi::PrefsTab(_)
                 | FromUi::NewTheme(_)
+                | FromUi::PrefsReset
                 | FromUi::ThemeName(_)
                 | FromUi::GuideButton(_)
                 | FromUi::HelpButton(_)
@@ -17775,13 +17854,14 @@ impl Player {
 
     /// What a touch on Prefs asks of the app.
     fn prefs_event(kind: EventKind) -> Option<FromUi> {
-        use crate::prefs_page::{BACK, CUSTOMISE, GO_BACK, KEEP, NEW_THEME};
+        use crate::prefs_page::{BACK, CUSTOMISE, GO_BACK, KEEP, NEW_THEME, RESET};
         match kind {
             EventKind::Tab(BACK) => Some(FromUi::OptionsButton),
             EventKind::Tab(KEEP) => Some(FromUi::HelpButton(0)),
             EventKind::Tab(GO_BACK) => Some(FromUi::HelpButton(1)),
             EventKind::Tab(NEW_THEME) => Some(FromUi::NewTheme(true)),
             EventKind::Tab(CUSTOMISE) => Some(FromUi::NewTheme(false)),
+            EventKind::Tab(RESET) => Some(FromUi::PrefsReset),
             EventKind::Tab(i) => Some(FromUi::PrefsTab(i)),
             EventKind::Cell { row, col } => Some(FromUi::MenuChoose(row, col)),
             EventKind::Step { index, delta } => Some(FromUi::MenuStep(index, delta)),
@@ -19259,7 +19339,7 @@ impl Player {
             (play_page::STEPS, EventKind::Step { index, delta })
                 if index >= play_widgets::LOCK_LANE =>
             {
-                let fine = self.status.shift;
+                let fine = self.fine();
                 let cell = index - play_widgets::LOCK_LANE;
                 let r = if self
                     .play
@@ -22166,6 +22246,7 @@ pub fn apply_effects(p: &mut Player, fx: Vec<crate::app::Effect>) {
             | Effect::KitOnTrack { .. }
             | Effect::ProgEdit
             | Effect::Metronome { .. }
+            | Effect::ClickSound(_)
             | Effect::Fill(_)
             | Effect::Mixer(_)
             | Effect::MixerLast
@@ -25264,8 +25345,11 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
         out.push((name, p));
     }
-    // Prefs' Playing tab with the wheel on Touch lab (Touch screen card).
+    // Prefs' System tab with the wheel on Touch lab (Buttons and touch
+    // card), System info's rows fixed as on prefs-setup.
     let mut touch = sample_player(fonts());
+    touch.prefs_fixed_info = true;
+    touch.set_prefs_info(crate::sysinfo::sample());
     let mut t = crate::app::App::new(44_100, false);
     let mut fx = t.open_tab(View::Prefs);
     if let Some(i) = t.prefs_go_to(crate::app::Item::TouchLab) {
@@ -25431,6 +25515,25 @@ pub fn sample_screens(fonts: impl Fn() -> Fonts) -> Vec<(&'static str, Player)> 
     }
     apply_effects(&mut lights, fx);
     out.push(("prefs-lights", lights));
+    // Prefs' Playing: the custom curve (Shape +30, Softest 9), a hit at 64
+    // marked on it, and Reset asking for its second tap.
+    let mut curve = sample_player(fonts());
+    let mut c = crate::app::App::new(44_100, false);
+    let mut fx = c.open_tab(View::Prefs);
+    if let Some(i) = c.row_of(crate::app::Item::CurveShape) {
+        for _ in 0..3 {
+            fx.extend(c.step_item(i, 1));
+        }
+    }
+    if let Some(i) = c.row_of(crate::app::Item::CurveSoftest) {
+        for _ in 0..2 {
+            fx.extend(c.step_item(i, 1));
+        }
+    }
+    fx.extend(c.pad_hit(64));
+    fx.extend(c.prefs_reset());
+    apply_effects(&mut curve, fx);
+    out.push(("prefs-curve", curve));
     // The guide from Prefs ("Find the buttons again"), PLAY pressed when it
     // asks for MENU.
     let mut guide = sample_player(fonts());
@@ -29485,6 +29588,27 @@ mod tests {
         assert_eq!(hint(&p), "Saved", "what the app tells shows");
         p.apply(ToUi::Settings(on));
         assert_eq!(hint(&p), "Saved");
+    }
+
+    /// With Hint line Off, the Looper's question still shows on the line
+    /// while its buttons float at the line's end (a snap asking: Snap
+    /// anyway / Not now).
+    #[test]
+    fn hint_line_off_keeps_the_loopers_question_with_its_buttons() {
+        let mut p = sample_looper_picking(Fonts::embedded(), 0).expect("a looper");
+        let on = p.settings.clone();
+        p.apply(ToUi::Settings(Settings {
+            hint_line: false,
+            ..on
+        }));
+        let hint = |p: &Player| p.ui.get::<Label>("hint").unwrap().text.clone();
+        assert_eq!(hint(&p), "", "no question: the line is empty");
+        sample_smart_loop_end(&mut p, "looper-smart-ask", false);
+        let v = p.looper.clone();
+        let (snap, read) = v.smart.asking.expect("a snap asks");
+        let asked = hint(&p);
+        assert!(!asked.is_empty());
+        assert_eq!(asked, crate::looping::ask_words(v.selected, snap, read));
     }
 
     /// The held buttons' lines: hold MAIN (the pads pick a track), hold
@@ -34580,6 +34704,40 @@ mod tests {
         );
     }
 
+    /// STOP that silences lets go of every finger on the screen (layout
+    /// spec 1a: a momentary action is released on Stop): a throw held on
+    /// Play lets go and the XY pad's effect goes off, and a finger still
+    /// down does nothing more, moved or lifted, until it lifts.
+    #[test]
+    fn stop_that_silences_lets_go_of_a_held_throw_and_the_xy_pad() {
+        let mut p = sample_play(Fonts::embedded(), PlayView::All);
+        p.take_actions();
+        let throws = p.ui.rect_of(play_page::THROWS).unwrap();
+        let t0 = p.ui.get::<Throws>(play_page::THROWS).unwrap().cells(throws)[0];
+        let xy = p.ui.rect_of(play_page::XY).unwrap();
+        let (cx, cy) = (xy.x + xy.w / 2, xy.y + xy.h / 2);
+        assert!(p.touch(5, Touch::Down, t0.x + 5, t0.y + 5).is_some());
+        assert!(p.touch(6, Touch::Down, cx, cy).is_some());
+        p.take_actions();
+        p.apply(ToUi::LetGo);
+        let acts = p.take_actions();
+        assert!(
+            acts.iter()
+                .any(|a| matches!(a, FromUi::PlayFx(PlayFx::Throw { down: false, .. }))),
+            "the throw lets go: {acts:?}"
+        );
+        assert!(
+            acts.iter()
+                .any(|a| matches!(a, FromUi::PlayFx(PlayFx::Xy { down: false, .. }))),
+            "the XY pad lets go: {acts:?}"
+        );
+        assert!(!p.ui.get::<Throws>(play_page::THROWS).unwrap().items[0].on);
+        assert_eq!(p.touch(6, Touch::Move, cx + 40, cy - 40), None);
+        assert_eq!(p.touch(6, Touch::Up, cx + 40, cy - 40), None);
+        assert_eq!(p.touch(5, Touch::Up, t0.x + 5, t0.y + 5), None);
+        assert!(p.take_actions().is_empty());
+    }
+
     /// With the queue to the audio thread full, the XY pad's press and
     /// lift wait for room and go in order, never dropped; the pad's state
     /// is written beside the queue first (xy_slot.rs).
@@ -38166,9 +38324,11 @@ mod tests {
         let mut fx = app.button(1, true, 0.0);
         app.button(1, false, 0.0);
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
-        // Prefs opens on Playing, whose last row is Touch lab (the Touch
-        // screen card's last): + on it opens the lab.
-        fx.extend(app.step_item(usize::MAX, 1));
+        // Touch lab is System's last row (the Buttons and touch card's
+        // last): + on it opens the lab.
+        let lab = app.prefs_go_to(crate::app::Item::TouchLab).expect("a row");
+        assert_eq!(lab, app_rows(&app) - 1);
+        fx.extend(app.step_item(lab, 1));
         assert!(fx.contains(&crate::app::Effect::TouchLab), "{fx:?}");
         for e in fx {
             match e {
@@ -38210,9 +38370,13 @@ mod tests {
         let mut fx = app.button(1, true, 0.0);
         app.button(1, false, 0.0);
         app.button(mpfree_controller::mpc_one::button::SHIFT, false, 0.0);
-        // On Playing's Touch screen card, Calibrate touch is the row before
-        // the Touch lab, the tab's last.
-        fx.extend(app.step_item(app_rows(&app) - 2, 1));
+        // On System's Buttons and touch card, Calibrate touch is the row
+        // before the Touch lab, the tab's last.
+        let calibrate = app
+            .prefs_go_to(crate::app::Item::CalibrateTouch)
+            .expect("a row");
+        assert_eq!(calibrate, app_rows(&app) - 2);
+        fx.extend(app.step_item(calibrate, 1));
         assert_eq!(
             fx.last(),
             Some(&crate::app::Effect::CalibrateTouch),
@@ -50793,6 +50957,68 @@ mod tests {
             .contains("NOTE REPEAT + MENU: close"));
     }
 
+    /// The cards that show as pages of their own (the power card, the
+    /// number and text pads, Undo history) let go of a pad held on the
+    /// screen as they open, as a tab change does: it stops sounding, and
+    /// its finger's lift does nothing more. Their way back lets go too
+    /// (the touch review, 25 Nov 2026: nothing loses its release).
+    #[test]
+    fn the_cards_over_a_page_let_go_of_pads_held_on_the_screen() {
+        let released = FromUi::Pad {
+            pad: 0,
+            down: false,
+        };
+        for card in ["power", "number pad", "text pad", "undo history"] {
+            let mut p = sample_player(Fonts::embedded());
+            p.apply(ToUi::Show(View::Play));
+            p.ui.add_page("pads-test", "col(header:60, pads:*, hint:26)")
+                .unwrap();
+            p.ui.show("pads-test").unwrap();
+            let pads = p.ui.rect_of("pads").unwrap();
+            let (x, y) = (pads.x + 20, pads.bottom() - 20);
+            assert_eq!(
+                p.touch(1, Touch::Down, x, y),
+                Some(FromUi::Pad { pad: 0, down: true })
+            );
+            assert!(p.take_actions().is_empty());
+            match card {
+                "power" => p.apply(ToUi::PowerPress),
+                "number pad" => p.type_tempo(),
+                "text pad" => p.open_textpad(
+                    vec![mpfree_ui::textpad::TextAsk {
+                        key: "name".to_string(),
+                        label: "Name".to_string(),
+                        title: "Name it".to_string(),
+                        value: "Pad".to_string(),
+                        max_len: 16,
+                    }],
+                    TypeTo::StyleName,
+                ),
+                _ => p.open_history(),
+            }
+            assert_ne!(p.page(), "pads-test", "{card}: the card shows");
+            let acts = p.take_actions();
+            assert_eq!(acts.first(), Some(&released), "{card}: {acts:?}");
+            assert!(acts.contains(&FromUi::Overlay(true)), "{card}: {acts:?}");
+            assert_eq!(p.touch(1, Touch::Up, x, y), None, "{card}");
+            assert!(p.take_actions().is_empty(), "{card}: the lift is no tap");
+        }
+        // The way back: a finger left on the number pad as it closes is
+        // let go of too, and the page under it hears nothing of it.
+        let mut p = sample_player(Fonts::embedded());
+        p.apply(ToUi::Show(View::Play));
+        p.type_tempo();
+        assert_eq!(p.page(), NUMPAD_PAGE);
+        let pad = p.ui.rect_of(NUMPAD).unwrap();
+        p.touch(2, Touch::Down, pad.x + pad.w / 2, pad.y + pad.h / 2);
+        let _ = p.take_actions();
+        p.close_numpad();
+        assert_ne!(p.page(), NUMPAD_PAGE);
+        assert_eq!(
+            p.touch(2, Touch::Up, pad.x + pad.w / 2, pad.y + pad.h / 2),
+            None
+        );
+    }
     #[test]
     fn a_page_change_lets_go_of_pads_held_on_the_screen() {
         let mut p = sample_player(Fonts::embedded());
