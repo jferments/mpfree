@@ -1,6 +1,6 @@
 # UI architecture
 
-**Status:** 2026-11-17 (the text keyboard, `TextPad`); 2026-11-16 (actions keep the order of the touches that made them, even several in one read); 2026-11-14 (the wheel's outline; on 13 Nov, controls listed for the smoke tests, and saying why in place); first written 2026-11-10. The toolkit is [`rust/mpfree-ui`](../../../rust/mpfree-ui); its first app is the Hello MPC pad player ([`gui.rs`](../../../rust/mpfree-app/src/gui.rs) draws it, [`app.rs`](../../../rust/mpfree-app/src/app.rs) decides what buttons and touches do). It first ran on the MPC in [round 4](../guides/mpfree-app.md#round-4-results-2026-11-10); round 5 starts it at power-on.
+**Status:** 2026-11-25 (touch rules in code, `mpfree_ui::touch`; letting go of fingers); 2026-11-17 (the text keyboard, `TextPad`); 2026-11-16 (actions keep the order of the touches that made them, even several in one read); 2026-11-14 (the wheel's outline; on 13 Nov, controls listed for the smoke tests, and saying why in place); first written 2026-11-10. The toolkit is [`rust/mpfree-ui`](../../../rust/mpfree-ui); its first app is the Hello MPC pad player ([`gui.rs`](../../../rust/mpfree-app/src/gui.rs) draws it, [`app.rs`](../../../rust/mpfree-app/src/app.rs) decides what buttons and touches do). It first ran on the MPC in [round 4](../guides/mpfree-app.md#round-4-results-2026-11-10); round 5 starts it at power-on.
 
 ## What the owner asked for
 
@@ -72,6 +72,19 @@ A `Target` has an `id` that names the kind of control within its widget ("tab", 
 When a press can't do what it asks, the screen says so in place rather than doing nothing (Jay, 13 Nov 2026). A faint button or card still answers a tap, and the page puts why on the hint line (`Player::tell`): a faint looper tool, a blank Q-Link card, a faint take button or morph button on Arrange, a faint sampler button (`ButtonRow::why`) or Q-Link card (`KnobCard::why`), a sampler or Arrange setting already at its end (`time_view::why_not`, and `SamplePage` notices a step that changed nothing), an I/O setting that can't move (`IoSection::take_note`, read through the mixer's `take_io_note` after each touch and each tick of the section showing, so an answer that comes later, such as the Monitor's Save log, is said too). Controls that only show (status chips) say what they show.
 
 The routing from the screen's actions to the engines (`FromUi` to the app, the mixer, the time engine, the looper and the chain editor) lives in `desk.rs`, shared by `main.rs` and the test `Session`, so the smoke tests drive the code the MPC runs.
+
+### Touch rules in code
+
+Layout spec section 1a says each control declares, in code, how it acts under a finger. [`mpfree_ui::touch`](../../../rust/mpfree-ui/src/touch.rs) holds the words for it and a `Target` carries them beside its `rect`:
+
+- **Class** (`Class`: Precision 0, Dense 44, Secondary 48, Normal 64, Performance 76, Critical 85 px at least, `Class::min_px`; `preferred_px` the size to aim for). The MPC One's screen has 8.49 px to the millimetre (`PX_PER_MM`).
+- **Context, consequence and timing** (`Context` Make, Perform or Both; `Consequence` Minor, Disruptive or Destructive; `Timing` None, Quantized or Immediate), set together with `Target::plays`. They call for a class (`touch::called_for`: Perform or Both, or a consequence or timing beyond the least, raise it), and `Target::needed_class` is the higher of that and the declared class, except that a declared Dense or Precision stands where the three call for no more than Normal (a row of one kind, or a precise control with an alternative).
+- **Commit** (`Commit`: Press, LiftInside, Hold) and **movement** (`Movement`: None, Relative, Absolute, Structural). `Target::drag` starts Relative and `Target::hold` commits on Hold.
+- **Object** (`Target::object`): a stable name for what the control acts on ("strip Track(0)", "track 2 row 5", "stop all"), so a finger owns the object, not the place, and a test can check the command reached it. **Drawn** (`Target::drawn`) is where the control is drawn when its hit area is bigger.
+
+Every field has a default: a target that says nothing is a Normal, lift-inside control in Make with a minor consequence, so a smaller one has to say so where a reviewer sees it. The declarations change nothing a widget does. So far the mixer's strips (`MixerView`) and the Clips grid (`ClipGrid`) declare theirs; the touch audit (the touch plan's next step) measures every declaration against the sample screens and against what its handler does, and the other widgets declare theirs as it reaches them. Tests: `mpfree-mixer-ui`'s `the_strip_says_how_each_control_acts` and `mpfree-time-ui`'s `the_grid_says_how_its_controls_act`.
+
+The same module has the helpers that make the spec's finger rules the easy way to write a widget: `Fingers<T>` keeps a widget's touch state per finger (put on the press, read on a move, taken on the lift or a cancel; the mixer's grabs and the Clips grid's grips use it), `Press` is what a lift-inside button keeps to call itself off when the finger slides off, and `Thresholds` gathers the distances a finger may move per gesture (tap, structural pickup, hold slop and scroll start 12 px, pinch 16 px).
 
 ### The wheel's outline
 

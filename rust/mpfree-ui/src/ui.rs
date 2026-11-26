@@ -7,6 +7,7 @@ use crate::layout;
 use crate::style::{Styled, GLOW_REACH};
 use crate::text::{Align, FontId, Fonts};
 use crate::theme::{Backdrop, Theme};
+use crate::touch::{Class, Commit, Consequence, Context, Movement, Timing};
 use crate::Color;
 use std::any::Any;
 
@@ -296,6 +297,27 @@ pub struct Target {
     /// picked in its chain): the wheel's push grabs it, a turn moves it
     /// through [`Widget::step`], and a push puts it down. False for most.
     pub moves: bool,
+    /// What it acts on, by a name that stays the same while the screen
+    /// changes ("track 3 row 2"), so a finger owns that object rather than
+    /// a place, and a test can check the command reached it. None: the
+    /// control is its own object (layout spec 1a, "Fingers").
+    pub object: Option<String>,
+    /// How big its hit area must be ([`crate::touch`]); Normal unless the
+    /// widget says otherwise.
+    pub class: Class,
+    /// Where it is played, what a wrong touch costs and when its action
+    /// lands: together they can call for a bigger class than `class`
+    /// ([`Target::needed_class`]).
+    pub context: Context,
+    pub consequence: Consequence,
+    pub timing: Timing,
+    /// How it commits (for a control that moves: what a touch that doesn't
+    /// move does) and how it moves.
+    pub commit: Commit,
+    pub movement: Movement,
+    /// The control as drawn, when its hit area (`rect`) is bigger (a tab
+    /// drawn 44 px tall answering over the 60 px bar). None: as `rect`.
+    pub drawn: Option<Rect>,
 }
 
 impl Target {
@@ -309,12 +331,23 @@ impl Target {
             towards: (36, -60),
             enabled: true,
             moves: false,
+            object: None,
+            class: Class::Normal,
+            context: Context::Make,
+            consequence: Consequence::Minor,
+            timing: Timing::None,
+            commit: Commit::LiftInside,
+            movement: Movement::None,
+            drawn: None,
         }
     }
 
+    /// A control a finger drags: it follows the finger from where it lands
+    /// ([`Movement::Relative`]) unless it says otherwise.
     pub fn drag(id: &'static str, index: usize, label: impl Into<String>, rect: Rect) -> Target {
         Target {
             gesture: Gesture::Drag,
+            movement: Movement::Relative,
             ..Target::tap(id, index, label, rect)
         }
     }
@@ -322,8 +355,65 @@ impl Target {
     pub fn hold(id: &'static str, index: usize, label: impl Into<String>, rect: Rect) -> Target {
         Target {
             gesture: Gesture::Hold,
+            commit: Commit::Hold,
             ..Target::tap(id, index, label, rect)
         }
+    }
+
+    /// The same control, of class `class` (layout spec 1a).
+    pub fn class(self, class: Class) -> Target {
+        Target { class, ..self }
+    }
+
+    /// The same control, played in `context`, costing `consequence` when
+    /// touched by mistake, landing with `timing`.
+    pub fn plays(self, context: Context, consequence: Consequence, timing: Timing) -> Target {
+        Target {
+            context,
+            consequence,
+            timing,
+            ..self
+        }
+    }
+
+    /// The same control, committing by `commit`.
+    pub fn commit(self, commit: Commit) -> Target {
+        Target { commit, ..self }
+    }
+
+    /// The same control, moving by `movement`.
+    pub fn movement(self, movement: Movement) -> Target {
+        Target { movement, ..self }
+    }
+
+    /// The same control, acting on `object` (see [`Target::object`]).
+    pub fn object(self, object: impl Into<String>) -> Target {
+        Target {
+            object: Some(object.into()),
+            ..self
+        }
+    }
+
+    /// The same control, drawn in `drawn` inside its bigger hit area.
+    pub fn drawn(self, drawn: Rect) -> Target {
+        Target {
+            drawn: Some(drawn),
+            ..self
+        }
+    }
+
+    /// The class its hit area needs: its own, raised to what its context,
+    /// consequence and timing call for ([`crate::touch::needed`]).
+    pub fn needed_class(&self) -> Class {
+        crate::touch::needed(
+            self.class,
+            crate::touch::called_for(self.context, self.consequence, self.timing),
+        )
+    }
+
+    /// The short side of its hit area, in pixels.
+    pub fn short_side(&self) -> i32 {
+        self.rect.w.min(self.rect.h)
     }
 
     /// The same drag, the other way: `(dx, dy)` pixels from the middle.

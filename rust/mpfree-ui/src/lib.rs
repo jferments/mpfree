@@ -18,6 +18,8 @@
 //! - [`wave`] has the sampler's waveform widgets: a zoomable waveform with
 //!   marker tabs and playheads, and an overview strip, drawn from peaks
 //!   (min, max and RMS per pixel column) so any zoom costs the same.
+//! - [`touch`] has what a control says about touch (its size class, how it
+//!   commits and moves, what it acts on) and the per-finger helpers.
 //! - [`Ui`] ties these together: the current page, which widgets changed
 //!   (only those are redrawn), and which widget owns each finger (the one it
 //!   first touched, until it lifts).
@@ -45,6 +47,7 @@ pub mod style;
 pub mod text;
 pub mod textpad;
 pub mod theme;
+pub mod touch;
 pub mod ui;
 pub mod wave;
 pub mod widgets;
@@ -57,6 +60,9 @@ pub use shape::{Part, Shape};
 pub use style::Styled;
 pub use text::{Align, FontId, Fonts};
 pub use theme::{Backdrop, Corners, Startup, Theme, Tone};
+pub use touch::{
+    Class, Commit, Consequence, Context, Fingers, Movement, Press, Thresholds, Timing,
+};
 pub use ui::{
     EventKind, Gesture, PageTarget, PaintCx, Target, Touch, Ui, UiEvent, Widget, WHEEL_FINGER,
 };

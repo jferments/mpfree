@@ -10,7 +10,8 @@ use crate::chord_strip::{
 };
 use mpfree_ui::widgets::Chip;
 use mpfree_ui::{
-    Align, Canvas, Color, EventKind, FontId, PaintCx, Rect, Target, Tone, Touch, Widget,
+    Align, Canvas, Class, Color, Commit, Consequence, Context, EventKind, Fingers, FontId,
+    Movement, PaintCx, Rect, Target, Timing, Tone, Touch, Widget,
 };
 use std::cell::RefCell;
 use std::f32::consts::TAU;
@@ -719,7 +720,7 @@ pub struct ClipGrid {
     /// it pages.
     press: Vec<(u64, (i32, usize))>,
     /// Fingers on a clip or a row's number, and where each has dragged it.
-    grip: Vec<(u64, Grip)>,
+    grip: Fingers<Grip>,
     /// Fingers on an empty cell: (track, slot) and where it went down.
     /// It makes a clip on the lift; one that moves off as a drag or a
     /// scroll does nothing (the Arrange refactor's 5.4).
@@ -1068,8 +1069,9 @@ impl ClipGrid {
     /// launches nothing and drops nothing.
     pub fn let_go_of_row(&mut self) {
         let still = |g: &Grip| matches!(g.held, Held::Row(_)) && !g.lifted;
-        if let Some(i) = self.grip.iter().position(|(_, g)| still(g)) {
-            self.grip.remove(i);
+        let held = self.grip.iter().find(|(_, g)| still(g)).map(|(f, _)| f);
+        if let Some(f) = held {
+            self.grip.take(f);
         }
     }
 
@@ -1109,7 +1111,7 @@ impl ClipGrid {
             veil: None,
             drawn: RefCell::new(None),
             press: Vec::new(),
-            grip: Vec::new(),
+            grip: Fingers::new(),
             empty: Vec::new(),
         }
     }
@@ -1180,7 +1182,7 @@ impl ClipGrid {
 
     /// Whether a drag is under way (something lifted).
     pub fn dragging(&self) -> bool {
-        self.grip.iter().any(|(_, g)| g.lifted)
+        self.grip.any(|g| g.lifted)
     }
 
     fn dragged_now(&self) -> Option<(Held, (i32, i32))> {
@@ -2255,12 +2257,28 @@ impl Widget for ClipGrid {
         if self.tracks.is_empty() {
             return out;
         }
-        out.push(Target::tap(
-            "stop-all",
-            0,
-            "Stop all",
-            self.stop_all_rect(r),
-        ));
+        // What the grid's controls say about touch (layout spec 1a), as
+        // they act today: Stop all on the press; a clip, a row's number
+        // and a track's name on the lift. In Perform (`big`) the clips and
+        // rows are played and never move; in Make they are rows of one
+        // kind that drag.
+        let (class, context, movement) = if self.big {
+            (Class::Performance, Context::Perform, Movement::None)
+        } else {
+            (Class::Dense, Context::Make, Movement::Structural)
+        };
+        let launch = |t: Target| {
+            t.class(class)
+                .plays(context, Consequence::Disruptive, Timing::Quantized)
+                .movement(movement)
+        };
+        out.push(
+            Target::tap("stop-all", 0, "Stop all", self.stop_all_rect(r))
+                .class(Class::Critical)
+                .plays(Context::Both, Consequence::Disruptive, Timing::Immediate)
+                .commit(Commit::Press)
+                .object("stop all"),
+        );
         if let Some(s) = self.strip.as_ref().filter(|_| !self.dragging()) {
             for (k, c) in self.chip_rects(r).into_iter().enumerate() {
                 let name = format!("Chord {}", s.chips[k].name);
@@ -2274,19 +2292,25 @@ impl Widget for ClipGrid {
         }
         for slot in self.first_row..self.slots {
             if let Some(b) = self.scene_rect(r, slot) {
-                out.push(Target::tap("scene", slot, format!("Scene {}", slot + 1), b));
+                let t = Target::tap("scene", slot, format!("Scene {}", slot + 1), b);
+                out.push(launch(t).object(format!("row {}", slot + 1)));
             }
         }
         let tracks = self.first_track..(self.first_track + GRID_COLS).min(self.tracks.len());
         for track in tracks {
             let name = &self.tracks[track].name;
             if let Some(h) = self.head_rect(r, track) {
-                out.push(Target::tap("track", track, name.clone(), h));
+                let t = Target::tap("track", track, name.clone(), h)
+                    .plays(Context::Make, Consequence::Disruptive, Timing::None)
+                    .object(format!("track {}", track + 1));
+                out.push(t);
             }
             for slot in self.first_row..self.slots {
                 if let Some(c) = self.cell_rect(r, track, slot) {
                     let label = format!("{name} slot {}", slot + 1);
-                    out.push(Target::tap("slot", track * self.slots + slot, label, c));
+                    let t = Target::tap("slot", track * self.slots + slot, label, c);
+                    let at = format!("track {} row {}", track + 1, slot + 1);
+                    out.push(launch(t).object(at));
                 }
             }
         }
@@ -2358,8 +2382,7 @@ impl Widget for ClipGrid {
         // dragged, a drop where it lifts. Perform launches and never
         // moves anything: nothing lifts there, and a finger slid off what
         // it held lets go of it.
-        if let Some(i) = self.grip.iter().position(|(g, _)| *g == f) {
-            let mut g = self.grip[i].1;
+        if let Some(mut g) = self.grip.get(f).copied() {
             match phase {
                 Touch::Move => {
                     g.at = (x, y);
@@ -2377,11 +2400,11 @@ impl Widget for ClipGrid {
                         }
                         (None, _) => None,
                     };
-                    self.grip[i].1 = g;
+                    self.grip.put(f, g);
                     return page;
                 }
                 Touch::Up => {
-                    self.grip.remove(i);
+                    self.grip.take(f);
                     g.at = (x, y);
                     if !g.lifted {
                         if self.big && !self.still_on(r, g.held, x, y) {
@@ -2411,11 +2434,11 @@ impl Widget for ClipGrid {
                     return None;
                 }
                 Touch::Cancel => {
-                    self.grip.remove(i);
+                    self.grip.take(f);
                     return None;
                 }
                 Touch::Down => {
-                    self.grip.remove(i);
+                    self.grip.take(f);
                 }
             }
         }
@@ -2512,7 +2535,7 @@ impl Widget for ClipGrid {
         for slot in self.first_row..self.slots {
             if self.scene_rect(r, slot).is_some_and(|b| b.contains(x, y)) {
                 // Launched on the lift, unless it is dragged.
-                self.grip.push((
+                self.grip.put(
                     f,
                     Grip {
                         held: Held::Row(slot),
@@ -2521,7 +2544,7 @@ impl Widget for ClipGrid {
                         lifted: false,
                         edge: None,
                     },
-                ));
+                );
                 return None;
             }
         }
@@ -2549,7 +2572,7 @@ impl Widget for ClipGrid {
                         return None;
                     }
                     // A clip launches on the lift, unless it is dragged.
-                    self.grip.push((
+                    self.grip.put(
                         f,
                         Grip {
                             held: Held::Clip(track, slot),
@@ -2558,7 +2581,7 @@ impl Widget for ClipGrid {
                             lifted: false,
                             edge: None,
                         },
-                    ));
+                    );
                     return None;
                 }
             }
@@ -3731,6 +3754,45 @@ mod tests {
         let (label, _) = g.strip_rects(r).unwrap();
         assert_eq!(label.h, ROW_MIN_H_MAKE);
         assert!(g.cell_rect(r, 0, 2).unwrap().h >= ROW_MIN_H);
+    }
+
+    /// The grid's controls say how they act (layout spec 1a): in Make a
+    /// clip and a row's number are Dense rows that drag; in Perform they
+    /// are played, need Performance size and never move; Stop all is
+    /// Critical, on the press. Each names what it acts on.
+    #[test]
+    fn the_grid_says_how_its_controls_act() {
+        use mpfree_ui::{Class, Commit, Context, Movement};
+        let r = Rect::new(12, 128, 814, 610);
+        let mut g = grid(4);
+        let slot = |g: &ClipGrid| {
+            g.targets(r)
+                .into_iter()
+                .find(|t| t.id == "slot" && t.index == g.slots + 1)
+                .unwrap()
+        };
+        let make = slot(&g);
+        assert_eq!(
+            (make.class, make.needed_class()),
+            (Class::Dense, Class::Dense)
+        );
+        assert_eq!(make.movement, Movement::Structural);
+        assert_eq!(make.commit, Commit::LiftInside);
+        assert_eq!(make.object.as_deref(), Some("track 2 row 2"));
+        g.big = true;
+        let perform = slot(&g);
+        assert_eq!(perform.context, Context::Perform);
+        assert_eq!(perform.needed_class(), Class::Performance);
+        assert_eq!(perform.movement, Movement::None);
+        let stop = g
+            .targets(r)
+            .into_iter()
+            .find(|t| t.id == "stop-all")
+            .unwrap();
+        assert_eq!(
+            (stop.needed_class(), stop.commit),
+            (Class::Critical, Commit::Press)
+        );
     }
 
     /// The chord picker under a chip: every touch is its own while it is
