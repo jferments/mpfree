@@ -591,9 +591,6 @@ pub struct SoundKnob {
 /// The lock colour on a Sound card whose step has a lock, and a lock's
 /// dot on a step's cell (the step pads' purple).
 pub const LOCKED: Color = Color::rgb(0xA0_40_FF);
-/// Continue's lanes on the Steps (composing tools S3): the dark theme's
-/// green; the grid draws them in the theme's own.
-pub const CONTINUES: Color = Color::rgb(0x3D_DC_97);
 
 impl SoundKind {
     /// The value as the card writes it, where its ring is, and whether it
@@ -2512,7 +2509,9 @@ impl PlayPage {
         Lane {
             pad: crate::play_widgets::LOCK_LANE + id,
             name: self.lock_name(s.addr),
-            color: CONTINUES,
+            // A lock lane row's colour isn't drawn: the grid paints its
+            // own inks, Continue's in the theme's good (`paint_lock_lane`).
+            color: LOCKED,
             muted: false,
             steps: Vec::new(),
             marks: Vec::new(),
