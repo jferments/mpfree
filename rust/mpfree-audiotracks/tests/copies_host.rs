@@ -8,14 +8,17 @@
 //! tracks emptied (a project opening) drop what was under way; Clear
 //! copies lets them go and they are made again; a region on Keep pitch
 //! drifts through a tempo change until the host makes the copy for the
-//! new tempo, then rejoins the bars.
+//! new tempo, then rejoins the bars. Where a clip's copy stands (5c, for
+//! its card and cell) follows it from waiting to made, and says when it
+//! couldn't be made.
 //!
 //! The scheduler is a manual one the test steps between periods, so what
 //! it does is the test's to see.
 
 use std::time::{Duration, Instant};
 
-use mpfree_audiotracks::copying::ClipWant;
+use mpfree_audiotracks::clips::ClipPlay;
+use mpfree_audiotracks::copying::{ClipWant, CopyState};
 use mpfree_audiotracks::host::AudioHost;
 use mpfree_audiotracks::save::{TakeFile, TrackFile};
 use mpfree_audiotracks::{
@@ -233,6 +236,111 @@ fn a_clip_the_app_lists_gets_its_copy_at_the_tempo_at_the_playhead() {
     let v: Vec<_> = r.h.tracks.copies().collect();
     assert_eq!(v[0].key.ends, mpfree_audiotracks::copies::Ends::Wrapped);
     assert_eq!(f64::from_bits(v[0].key.tempo), 90.0);
+}
+
+/// Two bars of the tone take as a clip's one region, on `follow`.
+fn clip_of(follow: FollowTempo) -> ClipWant {
+    let region = ClipRegion {
+        start: 0,
+        end: 2 * BAR,
+        rec: REC,
+        src: 0,
+        phase: 0.0,
+        gain: 1.0,
+        fade_in: 0,
+        fade_out: 0,
+        into: 0,
+        left: 0,
+        follow,
+        keep_pitch: false,
+        bpm: 0.0,
+    };
+    ClipWant {
+        regions: [region; MAX_CLIP_REGIONS],
+        n: 1,
+        len: 2 * BAR,
+        last_frame: tone_take().frames as i64,
+        priority: Priority::Prepared,
+        bpm: 0.0,
+    }
+}
+
+fn play(w: &ClipWant) -> ClipPlay<'_> {
+    ClipPlay {
+        regions: &w.regions[..w.n],
+        origin: 0.0,
+        len: w.len,
+        last_frame: w.last_frame,
+        gain: 1.0,
+        clip: 0,
+        stamp: 0,
+    }
+}
+
+#[test]
+fn where_a_clips_copy_stands_goes_from_waiting_through_making_to_ready() {
+    let mut r = Rig::new(90.0, vec![]);
+    let w = clip_of(FollowTempo::Stretch);
+    r.h.clip_copies(vec![w]);
+    // Once its take is in, and until the tempo has held long enough to
+    // ask for it (half a second), it waits its turn.
+    r.run_until(false, |r| {
+        r.h.clip_copy_state(&play(&w), 90.0) != CopyState::None
+    });
+    for _ in 0..10 {
+        assert_eq!(r.h.clip_copy_state(&play(&w), 90.0), CopyState::Waiting);
+        r.period();
+    }
+    // At its own tempo, or Off, it needs none.
+    assert_eq!(r.h.clip_copy_state(&play(&w), 120.0), CopyState::None);
+    let off = clip_of(FollowTempo::Off);
+    assert_eq!(r.h.clip_copy_state(&play(&off), 90.0), CopyState::None);
+    // Made a step at a time on the scheduler: how far, from its worker.
+    let mut seen: Vec<f32> = Vec::new();
+    r.run_until(true, |r| {
+        let st = r.h.clip_copy_state(&play(&w), 90.0);
+        if let CopyState::Making(p) = st {
+            seen.push(p);
+        }
+        st == CopyState::Ready
+    });
+    assert!(seen.iter().any(|&p| p > 0.0 && p < 1.0), "{seen:?}");
+    assert!(seen.windows(2).all(|p| p[0] <= p[1]), "{seen:?}");
+    assert_eq!(r.copies(), 1);
+}
+
+#[test]
+fn two_hosts_making_the_same_copy_on_one_scheduler_each_get_it() {
+    // The process has one scheduler, where a newer job with a key
+    // replaces an older: two hosts' jobs for one copy (two engines, tests
+    // side by side) once took each other's place and neither came.
+    let mut a = Rig::new(90.0, vec![]);
+    let mut b = Rig::new(90.0, vec![]);
+    b.h.copies_on(a.s.clone());
+    let w = clip_of(FollowTempo::Stretch);
+    a.h.clip_copies(vec![w]);
+    b.h.clip_copies(vec![w]);
+    let t0 = Instant::now();
+    while a.h.clip_copy_state(&play(&w), 90.0) != CopyState::Ready
+        || b.h.clip_copy_state(&play(&w), 90.0) != CopyState::Ready
+    {
+        assert!(t0.elapsed() < Duration::from_secs(60), "{:?}", a.s.counts());
+        a.period();
+        b.period();
+        a.s.step();
+        std::thread::sleep(Duration::from_micros(200));
+    }
+    assert_eq!((a.copies(), b.copies()), (1, 1));
+}
+
+#[test]
+fn a_clips_copy_with_no_room_says_it_couldnt_be_made() {
+    let mut r = Rig::new(90.0, vec![]);
+    r.s.budget().set_total(10_000);
+    let w = clip_of(FollowTempo::Stretch);
+    r.h.clip_copies(vec![w]);
+    r.run_until(false, |r| r.h.copy_counts().no_room > 0);
+    assert_eq!(r.h.clip_copy_state(&play(&w), 90.0), CopyState::Unmade);
 }
 
 #[test]

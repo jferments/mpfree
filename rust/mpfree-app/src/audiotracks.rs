@@ -55,8 +55,7 @@
 //! takes also stay in RAM until streaming plays them from their files
 //! (phase 3b).
 
-use mpfree_audiotracks::copying::ClipWant;
-use mpfree_audiotracks::host::FitCopy;
+use mpfree_audiotracks::copying::{ClipWant, CopyState};
 use mpfree_audiotracks::host::{AudioHost, CueAudio, ImportRefused, TakeWave, MAX_COLUMNS};
 use mpfree_audiotracks::save::{Saved, TrackFile};
 use mpfree_audiotracks::streaming::StreamConfig;
@@ -72,7 +71,7 @@ use mpfree_time_ui::song::{
     audio_blocks, input_chip, take_lanes, AudioLane, ClipBlock, ClipPiece, MixFrom, MONITORS,
 };
 use mpfree_time_ui::view::{
-    audio_color, track_color, AudioAction, RegionId, TimeState, TransportInfo,
+    audio_color, track_color, AudioAction, RegionId, StretchNow, TimeState, TransportInfo,
 };
 use mpfree_time_ui::widgets::CELL_WAVE;
 use mpfree_transport::{Block, TempoMap, Tick};
@@ -83,25 +82,6 @@ use crate::time::{AudioNeed, CopyNeed, CueKey};
 use crate::PERIOD;
 use mpfree_fx::ids::mixer as mx;
 
-/// Fit to tempo on an audio clip's card, under way
-/// ([`TrackHost::fit_clip`]): one fitted copy a recording the clip names,
-/// one after another, then the clip pointed at them.
-struct ClipFit {
-    track: usize,
-    slot: usize,
-    /// The clip's id, so an edit to the cell meanwhile is seen.
-    id: mpfree_seq::ClipId,
-    name: String,
-    /// The clip's audio as it was asked, and the tempos from and to.
-    audio: mpfree_seq::AudioClip,
-    from: f64,
-    to: f64,
-    /// The recordings still to fit, the one fitting first.
-    todo: Vec<RecId>,
-    total: usize,
-    done: Vec<FitCopy>,
-}
-
 /// Put in a cell under way ([`TrackHost::bring_to_cell`]): the sound
 /// copying in as a take of its own, for a clip in project track `track`.
 struct CellSound {
@@ -109,37 +89,6 @@ struct CellSound {
     name: String,
     frames: usize,
     bpm: f64,
-}
-
-/// How a Fit to tempo ended ([`TrackHost::tend_clip_fit`]).
-#[derive(Debug, PartialEq)]
-pub enum ClipFitDone {
-    /// The clip at (`track`, `slot`), still `id`, plays `audio`: its
-    /// regions on the fitted copies, made at `bpm`.
-    Fitted {
-        track: usize,
-        slot: usize,
-        id: mpfree_seq::ClipId,
-        name: String,
-        audio: mpfree_seq::AudioClip,
-        bpm: f64,
-        /// The copies it plays: forgotten if the cell can't take it
-        /// ([`TrackHost::forget_copies`]).
-        copies: Vec<FitCopy>,
-    },
-    /// The worker couldn't make a copy (or a recording went); nothing
-    /// changed.
-    Failed { name: String },
-}
-
-/// A tempo as the hint line says it: "92 BPM", "92.5 BPM".
-pub fn bpm_words(bpm: f64) -> String {
-    let tenths = (bpm * 10.0).round();
-    if tenths % 10.0 == 0.0 {
-        format!("{} BPM", tenths / 10.0)
-    } else {
-        format!("{:.1} BPM", tenths / 10.0)
-    }
 }
 
 /// Prefs "Audio track memory" (layout spec 4c): the stereo seconds every
@@ -634,8 +583,6 @@ pub struct TrackHost {
     /// The cues waiting for their tempo copies (5b.4).
     copy_waits: Vec<CopyWaiting>,
     waits_looked: u32,
-    /// Fit to tempo on an audio clip's card, under way.
-    clip_fit: Option<ClipFit>,
     /// Put in a cell, the sound copying in.
     cell_sound: Option<CellSound>,
     /// The frame the last period ended on, for a ringing clip's playhead.
@@ -724,7 +671,6 @@ impl TrackHost {
             next_cue: 0,
             copy_waits: Vec::new(),
             waits_looked: 0,
-            clip_fit: None,
             cell_sound: None,
             frame_now: 0,
             opened: Vec::new(),
@@ -2133,9 +2079,6 @@ impl TrackHost {
             self.host.drop_saved(old);
         }
         self.clearing = true;
-        // A fit under way was the old project's clip's: the host stops it
-        // and forgets its copies with the rest.
-        self.clip_fit = None;
         self.cell_sound = None;
         self.tend_open();
     }
@@ -2368,17 +2311,25 @@ impl TrackHost {
         let (done, redo) = tr.history();
         h.add(done as u64);
         h.add(redo as u64);
-        // The cells' Fit to tempo bar and ringing playheads, in steps of a
-        // percent and of 1/64.
-        if let Some((t, slot, f)) = self.clip_fit_progress() {
-            h.add((t * 64 + slot) as u64);
-            h.add((f * 100.0) as u64);
-        }
+        // The copies (the clip cards' "Making its copy: 40 %", phase 5c):
+        // how many are held and under way, and how far each is, in
+        // percent; and the cells' ringing playheads, in steps of 1/64.
+        let (_, held, busy) = self.host.copy_memory();
+        h.add(held as u64);
+        h.add(busy as u64);
+        self.host.copy_progress(&mut |p| h.add((p * 100.0) as u64));
         for t in 0..MAX_TRACKS {
             if let Some((clip, f)) = tr.ringing(t, self.frame_now) {
                 h.add(u64::from(clip));
                 h.add((f * 64.0) as u64);
             }
+            // What each playing clip plays on Stretch (the cells' "repitch
+            // now", "rejoins 9.1", phase 5c.2).
+            tr.on_stretch_each(t, &mut |clip, s| {
+                h.add(u64::from(clip));
+                h.add(u64::from(s.repitch) | u64::from(s.drift) << 1);
+                h.add(s.join.map_or(u64::MAX, f64::to_bits));
+            });
         }
         let s = tr.stats();
         h.add(u64::from(s.refused));
@@ -2426,7 +2377,15 @@ impl TrackHost {
                     .place(t)
                     .and_then(|i| st.tracks.get(i))
                     .is_some_and(|i| i.solo),
-                blocks: audio_blocks(t, tr.regions(t), &takes, map, self.rate),
+                blocks: {
+                    let mut blocks = audio_blocks(t, tr.regions(t), &takes, map, self.rate);
+                    // Where each one's tempo copy stands (5c.3: its Tempo
+                    // card's line).
+                    for (b, r) in blocks.iter_mut().zip(tr.regions(t)) {
+                        b.copy = self.host.song_copy_state(r, map);
+                    }
+                    blocks
+                },
                 takes: take_lanes(t, tr.regions(t), &takes, map, self.rate),
                 recording: tr
                     .recording(t)
@@ -2535,19 +2494,18 @@ impl TrackHost {
     /// 4f and 4j): each clip's small wave over one pass (from its takes'
     /// waveforms), its sound's length in seconds, why its audio is missing
     /// if it is, how far a once clip still sounding past its stop has got,
-    /// and the Fit to tempo under way. Into `st` as
+    /// the tempo each region was made at, and where its tempo copies for
+    /// the tempo now stand (phase 5c). Into `st` as
     /// [`crate::time::TimeHost::state`] made it of `project`.
     pub fn fill_cells(&self, st: &mut TimeState, project: &mpfree_seq::Project) {
-        st.fitting = self.clip_fit_progress();
         let tr = &self.host.tracks;
+        let bpm = st.transport.bpm;
         for (i, t) in project.tracks.iter().enumerate() {
             if !t.is_audio() {
                 continue;
             }
-            let ring = self
-                .slots
-                .slot_of(t.id)
-                .and_then(|s| tr.ringing(s, self.frame_now));
+            let at = self.slots.slot_of(t.id);
+            let ring = at.and_then(|s| tr.ringing(s, self.frame_now));
             for (row, c) in t.slots.shown().enumerate() {
                 let Some((c, a)) = c.as_ref().and_then(|c| Some((c, c.audio.as_ref()?))) else {
                     continue;
@@ -2580,8 +2538,53 @@ impl TrackHost {
                 });
                 info.wave = self.clip_wave(a, c.length, per_tick);
                 info.ring = ring.filter(|r| r.0 == c.id.0).map(|r| r.1);
+                info.tempos = a
+                    .regions
+                    .iter()
+                    .map(|r| {
+                        if r.bpm != 0.0 {
+                            return r.bpm;
+                        }
+                        tr.take_of(RecordingId(r.rec.0))
+                            .and_then(|id| tr.take(id))
+                            .filter(|k| !k.varied)
+                            .map_or(0.0, |k| k.bpm)
+                    })
+                    .collect();
+                info.copy = self.clip_copy_state(c, bpm);
+                // Playing on Stretch: as made, Repitch for want of its
+                // copy, or drifting on Keep pitch (phase 5c.2).
+                let now = at.map(|s| tr.on_stretch(s, c.id.0)).unwrap_or_default();
+                info.stretch_now = match (now.drift, now.join) {
+                    (true, join) => StretchNow::Drift(join.map(|j| j.round() as Tick)),
+                    (false, _) if now.repitch => StretchNow::Repitch,
+                    _ => StretchNow::AsMade,
+                };
             }
         }
+    }
+
+    /// Where audio clip `c`'s tempo copies for `bpm` stand (phase 5c):
+    /// `CopyState::None` unless a region is on Stretch.
+    fn clip_copy_state(&self, c: &mpfree_seq::Clip, bpm: f64) -> CopyState {
+        let stretch = c.audio.as_ref().is_some_and(|a| {
+            a.regions
+                .iter()
+                .any(|r| r.follow == mpfree_seq::FollowTempo::Stretch)
+        });
+        let Some(want) = clip_want(c, Priority::Prepared, bpm).filter(|_| stretch) else {
+            return CopyState::None;
+        };
+        let play = ClipPlay {
+            regions: &want.regions[..want.n],
+            origin: 0.0,
+            len: want.len,
+            last_frame: want.last_frame,
+            gain: 1.0,
+            clip: 0,
+            stamp: 0,
+        };
+        self.host.clip_copy_state(&play, bpm)
     }
 
     /// The oldest sound put on an audio track's lane since the last ask
@@ -2843,161 +2846,12 @@ impl TrackHost {
         Ok((track, clip, place))
     }
 
-    /// Fit to tempo on an audio clip's card (audio tracks phase 2): clip
-    /// `clip`, in cell `slot` of project track `track`, made at its own
-    /// tempo, fitted to `bpm` keeping its pitch. Each recording it names
-    /// gets a fitted copy, one after another, as takes of their own the
-    /// song never plays (the song keeps the originals); once all are in,
-    /// [`TrackHost::tend_clip_fit`] gives the clip pointed at them, for
-    /// the clips to put in its cell as one UNDO step. A line for the hint,
-    /// or why not: a fit under way, a once clip (it plays to its end at
-    /// any tempo), a clip made at `bpm` already, its audio missing or
-    /// still recording, or no worker.
-    pub fn fit_clip(
-        &mut self,
-        track: usize,
-        slot: usize,
-        clip: &mpfree_seq::Clip,
-        bpm: f64,
-    ) -> Result<String, String> {
-        let name = clip.name.clone();
-        let audio = clip
-            .audio
-            .as_ref()
-            .ok_or_else(|| format!("{name} plays notes: Fit to tempo is for audio clips"))?;
-        if self.clip_fit.is_some() || self.host.fitting().is_some() {
-            return Err("a fit is under way: one at a time".into());
-        }
-        if clip.settings().once {
-            return Err(format!(
-                "{name} plays once, to its end, at any tempo: there is nothing to fit"
-            ));
-        }
-        if (audio.bpm - bpm).abs() < 0.005 {
-            return Err(format!(
-                "{name} was made at {}, the project's tempo: there is nothing to fit",
-                bpm_words(bpm)
-            ));
-        }
-        let mut todo: Vec<RecId> = audio.regions.iter().map(|r| r.rec).collect();
-        todo.sort_unstable();
-        todo.dedup();
-        let tr = &self.host.tracks;
-        for &rec in &todo {
-            match tr.take_of(RecordingId(rec.0)).and_then(|id| tr.take(id)) {
-                None => return Err(format!("{name}'s audio is missing: it can't be fitted")),
-                Some(t) if t.recording => return Err(format!("{name}'s audio is still recording")),
-                Some(_) => {}
-            }
-        }
-        let first = todo[0];
-        let id = tr.take_of(RecordingId(first.0)).expect("checked");
-        if !self.host.fit_copy(id, audio.bpm, bpm) {
-            return Err(format!("{name} can't be fitted now: try again"));
-        }
-        let total = todo.len();
-        self.clip_fit = Some(ClipFit {
-            track,
-            slot,
-            id: clip.id,
-            name: name.clone(),
-            audio: audio.clone(),
-            from: audio.bpm,
-            to: bpm,
-            todo,
-            total,
-            done: Vec::with_capacity(total),
-        });
-        Ok(format!("{name}: fitting to {}…", bpm_words(bpm)))
-    }
-
-    /// Each loop: the Fit to tempo under way moved on. Some once it ends:
-    /// fitted (the clip to put in its cell) or failed (its copies
-    /// forgotten, nothing changed).
-    pub fn tend_clip_fit(&mut self) -> Option<ClipFitDone> {
-        let f = self.clip_fit.as_mut()?;
-        match self.host.fitted_copy() {
-            Some(c) if Some(&RecId(c.from.0)) == f.todo.first() => {
-                f.done.push(c);
-                f.todo.remove(0);
-                if let Some(&next) = f.todo.first() {
-                    let started = self
-                        .host
-                        .tracks
-                        .take_of(RecordingId(next.0))
-                        .is_some_and(|id| self.host.fit_copy(id, f.from, f.to));
-                    return if started { None } else { self.fit_failed() };
-                }
-            }
-            Some(c) => {
-                // Not the copy asked for: let it go.
-                if let Some(id) = self.host.tracks.take_of(c.to) {
-                    let _ = self.host.command(Command::Forget(id));
-                }
-                return self.fit_failed();
-            }
-            None if self.host.fitting().is_some() => return None,
-            None => return self.fit_failed(),
-        }
-        let f = self.clip_fit.take()?;
-        let mut audio = f.audio.clone();
-        let copy_of = |rec: RecId| f.done.iter().find(|c| RecId(c.from.0) == rec);
-        let scale = |n: f64, ratio: f64| (n * ratio).round();
-        for r in &mut audio.regions {
-            if let Some(c) = copy_of(r.rec) {
-                r.rec = RecId(c.to.0);
-                let x = (r.src as f64 + f64::from(r.phase)) * c.ratio;
-                (r.src, r.phase) = (x.round() as i64, (x - x.round()) as f32);
-                r.into = scale(f64::from(r.into), c.ratio) as u32;
-                r.left = scale(f64::from(r.left), c.ratio) as u32;
-            }
-        }
-        if let Some(c) = f.audio.regions.last().and_then(|r| copy_of(r.rec)) {
-            audio.last_frame = scale(audio.last_frame as f64, c.ratio) as i64;
-        }
-        audio.bpm = f.to;
-        Some(ClipFitDone::Fitted {
-            track: f.track,
-            slot: f.slot,
-            id: f.id,
-            name: f.name,
-            audio,
-            bpm: f.to,
-            copies: f.done,
-        })
-    }
-
-    /// The fit under way ended without its copies: those made go.
-    fn fit_failed(&mut self) -> Option<ClipFitDone> {
-        let f = self.clip_fit.take()?;
-        self.forget_copies(&f.done);
-        Some(ClipFitDone::Failed { name: f.name })
-    }
-
-    /// Fitted copies no clip will name (the fit failed, or its clip
-    /// couldn't take them): forgotten, their memory back.
-    pub fn forget_copies(&mut self, copies: &[FitCopy]) {
-        for c in copies {
-            if let Some(id) = self.host.tracks.take_of(c.to) {
-                let _ = self.host.command(Command::Forget(id));
-            }
-        }
-    }
-
     /// A recording no clip will name (a sound Put in a cell whose cell
     /// went meanwhile): forgotten, its memory back.
     pub fn forget_recording(&mut self, rec: RecId) {
         if let Some(id) = self.host.tracks.take_of(RecordingId(rec.0)) {
             let _ = self.host.command(Command::Forget(id));
         }
-    }
-
-    /// The cell whose clip is fitting, and how far it has got, 0 to 1.
-    pub fn clip_fit_progress(&self) -> Option<(usize, usize, f32)> {
-        let f = self.clip_fit.as_ref()?;
-        let now = self.host.fit_progress().unwrap_or(0.0);
-        let share = (f.done.len() as f32 + now) / f.total.max(1) as f32;
-        Some((f.track, f.slot, share.clamp(0.0, 1.0)))
     }
 
     /// What a touch on the Song view's audio lanes asked for. `t` is the

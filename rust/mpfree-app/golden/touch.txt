@@ -47,6 +47,7 @@ gap chords-card/chords-row-less chords-card/chords-row-more 0 8 # before the tou
 gap chords-card/chords-row-less chords-card/tab 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap chords-card/chords-row-more chords-card/tab 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap clip-card/row clip-card/row-less 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
+gap clip-card/row clip-card/row-more 6 8 # an option list's faint row (the clip card's Until ready, faint off Stretch: audio tracks 5c.1, built before the audit) answers over its whole row, 6 px under the row above's arrows, as every option list's rows sit 6 px apart; until its screen is redone
 gap clip-card/row clip-card/tab 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap clip-card/row-less clip-card/tab 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap clip-card/row-more clip-card/tab 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone

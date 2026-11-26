@@ -3528,7 +3528,8 @@ impl SamplePage {
             .filter(|&&c| !cell && start < c && c < end)
             .map(|&c| c - start)
             .collect();
-        // Its tempo, for the Song view's Fit to tempo.
+        // Its tempo, for its clip's Tempo (phase 5c: Repitch and Stretch
+        // need it, and the card says it).
         let bpm = self
             .sources
             .get(&s)

@@ -330,6 +330,13 @@ struct Latch {
     tempo: u64,
     /// On Keep pitch, since the tempo moved away from `tempo`.
     drift: Option<Drift>,
+    /// The lane it plays on ([`instance`]'s `owner`): a track's song, or
+    /// one of its voices.
+    owner: u16,
+    /// It plays its recording off its own tempo, its copy wanted and not
+    /// here: Repitch for want of its copy (the cells' "repitch now",
+    /// phase 5c.2).
+    repitch: bool,
 }
 
 const FREE: Latch = Latch {
@@ -339,7 +346,24 @@ const FREE: Latch = Latch {
     heard: 0,
     tempo: 0,
     drift: None,
+    owner: 0,
+    repitch: false,
 };
+
+/// What the regions on Stretch a lane heard last play (phase 5c.2, the
+/// cells' words): [`Copies::on_stretch`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct OnStretch {
+    /// One plays Repitch for want of its copy (Play on time, or a copy
+    /// that went), to the end of its pass.
+    pub repitch: bool,
+    /// One plays on in pitch from audio the tempo moved away from (Keep
+    /// pitch), off the bars.
+    pub drift: bool,
+    /// The bar line (song tick) a drifting one rejoins the bars on, once
+    /// its copy for the tempo now is here: the soonest.
+    pub join: Option<f64>,
+}
 
 /// A region on Keep pitch playing on at speed 1 from the audio it was
 /// latched to, after the tempo moved away from it (see the module notes).
@@ -638,6 +662,40 @@ impl Copies {
         })
     }
 
+    /// What the regions on Stretch of the lanes `lane` picks heard last
+    /// play, if heard lately (phase 5c.2, the cells' words): one on
+    /// Repitch for want of its copy, one drifting on Keep pitch, and the
+    /// soonest bar line a drifting one rejoins on. Nothing allocates.
+    pub(crate) fn on_stretch(&self, lane: &dyn Fn(u16) -> bool) -> OnStretch {
+        let mut out = OnStretch::default();
+        if !self.any_latch {
+            return out;
+        }
+        let ours = |l: &&Latch| l.id != 0 && lane(l.owner);
+        let Some(last) = self
+            .latches
+            .iter()
+            .filter(ours)
+            .map(|l| l.heard)
+            .max()
+            .filter(|&h| h + PLAYING >= self.now)
+        else {
+            return out;
+        };
+        for l in self.latches.iter().filter(ours).filter(|l| l.heard == last) {
+            match l.drift {
+                Some(d) => {
+                    out.drift = true;
+                    if let Some(j) = d.join {
+                        out.join = Some(out.join.map_or(j, |o| o.min(j)));
+                    }
+                }
+                None => out.repitch |= l.repitch,
+            }
+        }
+        out
+    }
+
     /// Forgets every region's choice: a locate, a jump, the transport
     /// stopping.
     pub(crate) fn unlatch(&mut self) {
@@ -652,9 +710,11 @@ impl Copies {
     /// latched), else its recording (None). Heard on frame `f`. A region on
     /// Keep pitch (`keep`) drifting from the bars gives [`DRIFT`] plus its
     /// latch ([`Copies::drifting`]).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn source(
         &mut self,
         id: u64,
+        owner: u16,
         key: Option<CopyKey>,
         f: u64,
         decide: bool,
@@ -702,6 +762,8 @@ impl Copies {
             heard: f,
             tempo,
             drift: None,
+            owner,
+            repitch: found.is_none() && key.is_some(),
         };
         self.any_latch = true;
         found
@@ -746,6 +808,10 @@ impl Copies {
             return self.drift(l, d, li, key, f, keep);
         }
         if l.slot == NONE {
+            if decide {
+                // Off its own tempo now, or back on it.
+                l.repitch = key.is_some();
+            }
             return None;
         }
         let slot = l.slot as usize;
@@ -757,6 +823,7 @@ impl Copies {
             if decide || keep.is_none() {
                 l.slot = NONE;
                 l.tempo = 0;
+                l.repitch = key.is_some();
             }
             return None;
         }
@@ -783,6 +850,7 @@ impl Copies {
             l.drift = None;
             l.slot = NONE;
             l.tempo = 0;
+            l.repitch = key.is_some();
             return None;
         };
         d.want = key;
@@ -820,6 +888,7 @@ impl Copies {
             if k.run.frames_to(join, k.rate) + FADE as i64 <= 0 {
                 // Over the crossfade: it holds what it rejoined.
                 (l.slot, l.serial, l.tempo, l.drift) = (d.to_slot, d.to_serial, d.to_tempo, None);
+                l.repitch = false;
                 if l.slot == NONE {
                     return None;
                 }
