@@ -213,7 +213,7 @@ impl Wait {
     }
 
     /// Whether it waits on its copies alone, its audio held.
-    fn copies_only(&self) -> bool {
+    pub(super) fn copies_only(&self) -> bool {
         self.held && !self.ready
     }
 
@@ -236,6 +236,18 @@ impl AudioWaits {
             .filter(|w| !w.goes() && w.moves > 0)
             .filter(|w| !matches!(w.grid, LaunchGrid::Now | LaunchGrid::At(_)))
             .flat_map(|w| w.cues.iter().map(move |c| (c.track, w.line)))
+            .collect()
+    }
+
+    /// Of [`AudioWaits::late`], the tracks whose cue waits on its tempo
+    /// copies alone: the cell says "waits copy" (phase 5c.2).
+    pub fn copy_late(&self) -> Vec<usize> {
+        let late = self.late();
+        self.waits
+            .iter()
+            .filter(|w| w.copies_only())
+            .flat_map(|w| w.cues.iter().map(|c| c.track))
+            .filter(|t| late.iter().any(|l| l.0 == *t))
             .collect()
     }
 

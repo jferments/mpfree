@@ -63,7 +63,7 @@ use mpfree_transport::time::TempoMap;
 use mpfree_transport::{Block, Mark, Tick};
 
 use crate::copies::Copy;
-use crate::copying::{Ask, ClipWant, CopyCounts, CopySide, MAX_MAKING};
+use crate::copying::{Ask, ClipWant, CopyCounts, CopySide, CopyState, MAX_MAKING};
 use crate::files::{
     self, DriveProbe, DriveSeen, FileEvent, FileView, Files, Growing, LayerWrite, Name, Problem,
     Said, WriterConfig,
@@ -1145,6 +1145,31 @@ impl AudioHost {
     pub fn copy_memory(&self) -> (usize, usize, usize) {
         let (bytes, n) = self.tracks.copy_bytes();
         (bytes, n, self.copies.busy())
+    }
+
+    /// How far each copy being made has got (0 to 1), for the app to see
+    /// when the clip cards' progress moves. Doesn't allocate.
+    pub fn copy_progress(&self, each: &mut dyn FnMut(f32)) {
+        self.copies.progress(each);
+    }
+
+    /// Where clip `c`'s tempo copies for a steady `bpm` stand, over its
+    /// regions on Stretch (5c: the clip card's foot, the cells' words):
+    /// [`CopyState::None`] if it needs none.
+    pub fn clip_copy_state(&self, c: &crate::clips::ClipPlay, bpm: f64) -> CopyState {
+        let mut st = CopyState::None;
+        self.tracks.clip_copy_keys(c, bpm, &mut |_, k| {
+            st = st.with(self.copies.state(&self.tracks, &k));
+        });
+        st
+    }
+
+    /// Where song region `r`'s tempo copy along `map` stands (5c.3: its
+    /// Tempo card's line): [`CopyState::None`] when it needs none.
+    pub fn song_copy_state(&self, r: &crate::Region, map: &TempoMap) -> CopyState {
+        self.tracks
+            .song_copy_key(r, map)
+            .map_or(CopyState::None, |k| self.copies.state(&self.tracks, &k))
     }
 
     /// Makes copies on `s` from now on, within its budget, not on the
@@ -2778,8 +2803,20 @@ fn keep_problem(room: &mut Vec<Problem>, lost: &mut u64, p: Problem) {
 /// The scheduler's kind for the tracks' copies.
 const COPY_KIND: &str = "audio tracks copy";
 
-fn copy_key(key: &crate::copies::CopyKey) -> sched::Key {
-    sched::Key::new(COPY_KIND, key.id())
+/// The next host's number among the scheduler's copy jobs.
+static NEXT_OWNER: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(1);
+
+/// A copy's job on the process's one scheduler, for host `owner`: its
+/// number in the id's low 16 bits, so two hosts making the same copy (two
+/// projects' engines, tests side by side) never replace each other's job,
+/// and Clear copies stops only its own ([`ours`]).
+fn copy_key(owner: u16, key: &crate::copies::CopyKey) -> sched::Key {
+    sched::Key::new(COPY_KIND, (key.id() & !0xffff) | u128::from(owner))
+}
+
+/// Whether job `k` is one of host `owner`'s copies.
+fn ours(owner: u16, k: sched::Key) -> bool {
+    k.kind == COPY_KIND && k.id as u16 == owner
 }
 
 /// A copy being made on the scheduler: its job starts (finding the hits)
@@ -2789,6 +2826,10 @@ struct CopyWork {
     job: Option<crate::copies::CopyJob>,
     done: Sender<FromWorker>,
     gen: u32,
+    /// Where it says how far it has got, for the host to read (5c).
+    progress: Arc<crate::copying::Progress>,
+    slot: u8,
+    tag: u32,
 }
 
 impl CopyWork {
@@ -2818,7 +2859,10 @@ impl sched::Work for CopyWork {
             }
             return false;
         }
-        self.job.as_mut().is_none_or(|j| j.run(frames))
+        let done = self.job.as_mut().is_none_or(|j| j.run(frames));
+        let p = self.job.as_ref().map_or(0.0, |j| j.progress());
+        self.progress.set(self.slot, self.tag, p);
+        done
     }
 
     fn progress(&self) -> f32 {
@@ -2882,6 +2926,7 @@ fn work(
         drive_stop: None,
         layers: Vec::new(),
         sched: None,
+        owner: NEXT_OWNER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
     };
     loop {
         let m = if w.files.writing() || !w.layers.is_empty() {
@@ -2966,6 +3011,8 @@ struct Worker {
     /// Where copies are made: the process's scheduler unless a test gave
     /// its own ([`ToWorker::Sched`]).
     sched: Option<Sched>,
+    /// Its number among the scheduler's copy jobs ([`copy_key`]).
+    owner: u16,
 }
 
 impl Worker {
@@ -3192,27 +3239,33 @@ impl Worker {
                 priority,
                 need,
                 gen,
+                progress,
+                slot,
             }) => {
                 let key = spec.key;
                 let s = self.sched.get_or_insert_with(Sched::shared);
                 let work = CopyWork {
+                    tag: crate::copying::Progress::tag(&key),
                     spec: Some(spec),
                     job: None,
                     done: done.clone(),
                     gen,
+                    progress,
+                    slot,
                 };
-                s.submit(sched::Job::new(copy_key(&key), priority, work).needs(need));
+                s.submit(sched::Job::new(copy_key(self.owner, &key), priority, work).needs(need));
                 return None;
             }
             ToWorker::Copy(Ask::Cancel(key)) => {
                 if let Some(s) = &self.sched {
-                    s.cancel(copy_key(&key));
+                    s.cancel(copy_key(self.owner, &key));
                 }
                 return None;
             }
             ToWorker::Copy(Ask::CancelAll) => {
                 if let Some(s) = &self.sched {
-                    s.retain(|k| k.kind != COPY_KIND);
+                    let owner = self.owner;
+                    s.retain(|k| !ours(owner, k));
                 }
                 return None;
             }
