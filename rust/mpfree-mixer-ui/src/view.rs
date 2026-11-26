@@ -26,7 +26,8 @@ use std::cell::{Cell, RefCell};
 use mpfree_fx::ids::mixer::{self as mx, output};
 use mpfree_fx::{StripId, BUSES, SILENT_DB};
 use mpfree_ui::{
-    Align, Color, EventKind, FontId, PaintCx, Rect, Target, Theme, Tone, Touch, Widget,
+    Align, Color, Commit, Consequence, Context, EventKind, Fingers, FontId, PaintCx, Rect, Target,
+    Theme, Timing, Tone, Touch, Widget,
 };
 
 use crate::eq_look::{self, Dot};
@@ -713,7 +714,7 @@ pub struct MixerView {
     picker: Option<StripId>,
     /// The strip whose menu is open.
     menu: Option<StripId>,
-    grabs: Vec<(u64, Grab)>,
+    grabs: Fingers<Grab>,
     actions: Vec<MixAction>,
     dirty: Cell<Dirty>,
     /// Strips per page at the last paint, to keep the selection in view.
@@ -786,7 +787,7 @@ impl MixerView {
             first: 0,
             picker: None,
             menu: None,
-            grabs: Vec::new(),
+            grabs: Fingers::new(),
             actions: Vec::new(),
             dirty: Cell::new(Dirty::All),
             per_page: Cell::new(10),
@@ -805,7 +806,7 @@ impl MixerView {
     /// Shows a new state. Only the meters are drawn again when nothing else
     /// changed. A strip the fingers are holding keeps the finger's value.
     pub fn update(&mut self, mut st: MixState) {
-        for (_, g) in &self.grabs {
+        for (_, g) in self.grabs.iter() {
             let (id, ids): (StripId, Vec<u16>) = match *g {
                 Grab::Fader { id, .. } => (id, vec![mx::VOLUME]),
                 Grab::Pan { id, .. } => (id, vec![mx::PAN]),
@@ -1244,7 +1245,7 @@ impl MixerView {
                     self.set(id, mx::send_pre(k), if sends[k].pre { 0.0 } else { 1.0 });
                 } else {
                     let w = (bar.w - 34).max(1) as f32;
-                    self.grabs.push((
+                    self.grabs.put(
                         finger,
                         Grab::Send {
                             id,
@@ -1253,13 +1254,13 @@ impl MixerView {
                             pos0: db_to_pos(sends[k].db),
                             w,
                         },
-                    ));
+                    );
                 }
                 return;
             }
         }
         if p.pan.contains(x, y) {
-            self.grabs.push((
+            self.grabs.put(
                 finger,
                 Grab::Pan {
                     id,
@@ -1268,12 +1269,12 @@ impl MixerView {
                     w: p.pan.w.max(1) as f32,
                     moved: false,
                 },
-            ));
+            );
             return;
         }
         if p.fader.contains(x, y) {
             let (top, bot) = travel(p.fader);
-            self.grabs.push((
+            self.grabs.put(
                 finger,
                 Grab::Fader {
                     id,
@@ -1281,11 +1282,11 @@ impl MixerView {
                     pos0: db_to_pos(s.volume_db),
                     travel: (bot - top).max(1) as f32,
                 },
-            ));
+            );
             return;
         }
         if p.value.contains(x, y) {
-            self.grabs.push((finger, Grab::Level { id, at: p.value }));
+            self.grabs.put(finger, Grab::Level { id, at: p.value });
             return;
         }
         if p.buttons.contains(x, y) && id != StripId::Master {
@@ -1345,7 +1346,7 @@ impl MixerView {
                 let line = ins.on
                     && (ins.key.is_some() || ins.nothing_picked)
                     && y >= cells[k].y + 6 + (cells[k].h - 12) / 2 + 2;
-                self.grabs.push((
+                self.grabs.put(
                     finger,
                     Grab::Fx {
                         id,
@@ -1354,7 +1355,7 @@ impl MixerView {
                         to: None,
                         line,
                     },
-                ));
+                );
             } else if k == len && len < slots {
                 self.push(MixAction::AddInsert { strip: id });
             }
@@ -1446,7 +1447,7 @@ impl MixerView {
         let vals = s.inserts[slot].eq.clone().unwrap_or_default();
         let curve = self.eq_curve(&vals);
         let dot = eq_look::hit(&vals, &curve, eq_look::plot(graph), x, y);
-        self.grabs.push((
+        self.grabs.put(
             finger,
             Grab::Eq {
                 id,
@@ -1456,7 +1457,7 @@ impl MixerView {
                 y0: y,
                 moved: false,
             },
-        ));
+        );
     }
 
     /// Picks strip `id`'s EQ in `slot` and band `dot` for the Q-Links.
@@ -1555,10 +1556,10 @@ impl MixerView {
         if self.io_finger(finger, Touch::Move, x, y, r) {
             return;
         }
-        let Some(gi) = self.grabs.iter().position(|(f, _)| *f == finger) else {
+        let Some(g) = self.grabs.get(finger).copied() else {
             return;
         };
-        match self.grabs[gi].1 {
+        match g {
             Grab::Eq {
                 id,
                 slot,
@@ -1571,14 +1572,17 @@ impl MixerView {
                     return;
                 }
                 if !moved {
-                    self.grabs[gi].1 = Grab::Eq {
-                        id,
-                        slot,
-                        dot: Some(dot),
-                        x0,
-                        y0,
-                        moved: true,
-                    };
+                    self.grabs.put(
+                        finger,
+                        Grab::Eq {
+                            id,
+                            slot,
+                            dot: Some(dot),
+                            x0,
+                            y0,
+                            moved: true,
+                        },
+                    );
                     self.eq_pick(id, slot, Some(dot));
                 }
                 self.eq_drag(id, slot, dot, x, y, r);
@@ -1595,13 +1599,16 @@ impl MixerView {
                     return;
                 }
                 let at = self.fx_slot_at(id, x, r).or(Some(from));
-                self.grabs[gi].1 = Grab::Fx {
-                    id,
-                    from,
-                    x0,
-                    to: at,
-                    line,
-                };
+                self.grabs.put(
+                    finger,
+                    Grab::Fx {
+                        id,
+                        from,
+                        x0,
+                        to: at,
+                        line,
+                    },
+                );
             }
             Grab::Fader {
                 id,
@@ -1624,13 +1631,16 @@ impl MixerView {
                 if !moved && (x - x0).abs() < 6 {
                     return;
                 }
-                self.grabs[gi].1 = Grab::Pan {
-                    id,
-                    x0,
-                    v0,
-                    w,
-                    moved: true,
-                };
+                self.grabs.put(
+                    finger,
+                    Grab::Pan {
+                        id,
+                        x0,
+                        v0,
+                        w,
+                        moved: true,
+                    },
+                );
                 let v = (v0 + (x - x0) as f32 * 200.0 / w)
                     .clamp(-100.0, 100.0)
                     .round();
@@ -1657,10 +1667,9 @@ impl MixerView {
         if self.io_finger(finger, phase, x, y, r) {
             return;
         }
-        let Some(gi) = self.grabs.iter().position(|(f, _)| *f == finger) else {
+        let Some(g) = self.grabs.take(finger) else {
             return;
         };
-        let (_, g) = self.grabs.remove(gi);
         if let Grab::Level { id, at } = g {
             let s = self
                 .state
@@ -3819,67 +3828,88 @@ impl Widget for MixerView {
         for (k, (s, sr)) in strips.into_iter().enumerate() {
             let p = parts_of(sr, s);
             let name = &s.name;
+            // What each control says about touch (layout spec 1a), as the
+            // strip acts today: its taps act on the press, except the
+            // level's, which asks for a number on the lift (#1007).
+            let obj = format!("strip {:?}", s.id);
+            let tap = |t: Target| t.object(obj.clone()).commit(Commit::Press);
+            let edit = (Context::Make, Consequence::Disruptive, Timing::None);
             // The selected strip's name opens its menu only with takes.
             let picked = self.state.selected == Some(s.id);
             out.push(
-                Target::tap("strip-name", k, name.clone(), p.name)
+                tap(Target::tap("strip-name", k, name.clone(), p.name))
                     .disabled_if(picked && !self.state.takes),
             );
             let rows = if s.input.is_some() { 2 } else { 4 };
             for (i, row) in p.inserts.iter().enumerate() {
                 if let Some(_inp) = s.input.filter(|_| i >= 2) {
                     let id = if i == 2 { "source" } else { "monitor" };
-                    out.push(Target::tap(id, k, format!("{name} {id}"), *row));
+                    let t = Target::tap(id, k, format!("{name} {id}"), *row);
+                    out.push(tap(t).plays(edit.0, edit.1, edit.2));
                 } else if i < rows && i < s.inserts.len().min(4) {
                     let label = s.inserts.get(i).map_or(String::new(), |v| v.name.clone());
-                    out.push(Target::tap("insert", k * 4 + i, label, *row));
+                    out.push(tap(Target::tap("insert", k * 4 + i, label, *row)));
                 } else if i < rows && i == s.inserts.len() && s.inserts.len() < s.slots {
-                    out.push(Target::tap(
+                    out.push(tap(Target::tap(
                         "add-insert",
                         k,
                         format!("{name} + Insert"),
                         *row,
-                    ));
+                    )));
                 }
             }
             if s.sends.is_some() {
                 for (j, row) in p.sends.iter().enumerate() {
                     let (letter, bar) = row.take_left(18);
                     let send = ["A", "B", "C", "D"][j.min(3)];
-                    out.push(Target::tap(
+                    let pre = Target::tap(
                         "send-pre",
                         k * 4 + j,
                         format!("{name} send {send} pre/post"),
                         letter,
-                    ));
+                    );
+                    out.push(tap(pre).plays(edit.0, edit.1, edit.2));
                     out.push(
                         Target::drag("send", k * 4 + j, format!("{name} send {send}"), bar)
-                            .towards(40, 0),
+                            .towards(40, 0)
+                            .object(obj.clone())
+                            .plays(edit.0, edit.1, edit.2),
                     );
                 }
             }
-            out.push(Target::drag("pan", k, format!("{name} pan"), p.pan).towards(40, 0));
-            out.push(Target::drag("fader", k, format!("{name} fader"), p.fader).towards(0, -40));
-            out.push(Target::tap(
-                "value",
-                k,
-                format!("{name} level (type it)"),
-                p.value,
-            ));
+            out.push(
+                Target::drag("pan", k, format!("{name} pan"), p.pan)
+                    .towards(40, 0)
+                    .object(obj.clone())
+                    .plays(edit.0, edit.1, edit.2),
+            );
+            // A fader is played in Perform as well.
+            out.push(
+                Target::drag("fader", k, format!("{name} fader"), p.fader)
+                    .towards(0, -40)
+                    .object(obj.clone())
+                    .plays(Context::Both, Consequence::Disruptive, Timing::None),
+            );
+            out.push(
+                Target::tap("value", k, format!("{name} level (type it)"), p.value)
+                    .object(obj.clone()),
+            );
             if s.id != StripId::Master {
                 let n = if s.input.is_some() { 3 } else { 2 };
                 for (j, b) in buttons(p.buttons, n).into_iter().enumerate() {
                     let id = ["mute", "solo", "arm"][j];
-                    out.push(Target::tap(
-                        id,
-                        k,
-                        format!("{name} {}", ["M", "S", "Arm"][j]),
-                        b,
+                    let t = Target::tap(id, k, format!("{name} {}", ["M", "S", "Arm"][j]), b);
+                    // Played in both modes, at once.
+                    out.push(tap(t).plays(
+                        Context::Both,
+                        Consequence::Disruptive,
+                        Timing::Immediate,
                     ));
                 }
             }
             if s.has_output() {
-                out.push(Target::tap("output", k, format!("{name} output"), p.output));
+                let t = Target::tap("output", k, format!("{name} output"), p.output);
+                out.push(tap(t).plays(edit.0, edit.1, edit.2));
             }
         }
         out
@@ -4225,6 +4255,32 @@ mod tests {
             }],
             "a second tap unmutes"
         );
+    }
+
+    /// The strip's controls say how they act (layout spec 1a), as they act
+    /// today: M, S and the inserts on the press, played in both modes; the
+    /// fader, pan and sends follow the finger; the level asks on the lift.
+    /// Each names its strip.
+    #[test]
+    fn the_strip_says_how_each_control_acts() {
+        use mpfree_ui::{Class, Commit, Context, Movement};
+        let ui = ui(state(12));
+        let r = ui.rect_of(crate::MIXER).unwrap();
+        let all = ui.get::<MixerView>(crate::MIXER).unwrap().targets(r);
+        let find = |id: &str| all.iter().find(|t| t.id == id && t.index == 0).unwrap();
+        let mute = find("mute");
+        assert_eq!(mute.commit, Commit::Press);
+        assert_eq!(mute.context, Context::Both);
+        assert_eq!(mute.needed_class(), Class::Performance);
+        assert_eq!(mute.object.as_deref(), Some("strip Track(0)"));
+        for id in ["fader", "pan"] {
+            assert_eq!(find(id).movement, Movement::Relative, "{id}");
+            assert_eq!(find(id).object, mute.object, "{id}");
+        }
+        assert_eq!(find("value").commit, Commit::LiftInside);
+        assert_eq!(find("insert").commit, Commit::Press);
+        assert_eq!(find("fader").needed_class(), Class::Performance);
+        assert_eq!(find("pan").needed_class(), Class::Normal);
     }
 
     /// A tap on a strip's pan leaves it where it is (the touch usability
