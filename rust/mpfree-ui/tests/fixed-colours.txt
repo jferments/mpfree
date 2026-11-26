@@ -6,6 +6,7 @@ mpfree-app/src/alsa.rs * # ALSA constants, not colours
 mpfree-app/src/gui.rs 6 # before theme roles (phase 0 baseline)
 mpfree-app/src/looper_deck.rs 1 # before theme roles (phase 0 baseline)
 mpfree-app/src/looper_tab.rs 8 # before theme roles (phase 0 baseline)
+mpfree-app/src/looping/tests.rs * # looping's unit tests (moved out of looping.rs, where #[cfg(test)] kept them out): lasting loop ids like 0xfeed_0001, not colours
 mpfree-app/src/modpanels.rs 1 # before theme roles (phase 0 baseline)
 mpfree-app/src/perform_tab.rs 2 # before theme roles (phase 0 baseline)
 mpfree-app/src/play_page.rs 1 # before theme roles (phase 0 baseline)
