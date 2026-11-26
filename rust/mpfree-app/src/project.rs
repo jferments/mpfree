@@ -213,14 +213,13 @@ pub const SCENE_TEMPO: &str = "scene-tempo";
 pub const OWN_TUNINGS: &str = "own-tunings";
 
 /// A project with a loop cell on an audio track, or a block of one (the
-/// audio tracks rethink, phase 4b, made with Dev's "Loops on audio
-/// tracks"): a build from before phase 4 would read its `loopclip` line as
+/// audio tracks rethink, phase 4b): a build from before phase 4 would read its `loopclip` line as
 /// unknown and open it as an empty note clip, so it refuses the project
 /// instead.
 pub const AUDIO_LOOPS: &str = "audio-loops";
 /// A project whose loops are kept as the looper holds them, each layer as
-/// a recording (`mpfree-looper 2`, the audio tracks rethink's phase 4c.2,
-/// saved with Dev's "Loops on audio tracks"): a build from before it
+/// a recording (`mpfree-looper 2`, the audio tracks rethink's phase
+/// 4c.2): a build from before it
 /// can't read the looper's part, so it refuses the project with this
 /// reason instead.
 pub const LOOP_RECORDINGS: &str = "loop-recordings";
@@ -873,13 +872,13 @@ pub fn opening(
     let time = match snap.part(CLIPS) {
         None => None,
         Some(text) => {
-            let mut p = mpfree_seq::save::from_text(text).map_err(|e| cant(CLIPS, e))?;
             // Loops play on audio tracks (phase 4e.5): a project with a
             // Loop track is refused, nothing of it sent anywhere. Old
             // projects aren't converted.
-            if p.tracks.iter().any(|t| t.is_loops()) {
-                return Err(LOOP_TRACKS_REFUSED.to_string());
-            }
+            let mut p = mpfree_seq::save::from_text(text).map_err(|e| match e {
+                e if e == mpfree_seq::save::LOOP_TRACKS => LOOP_TRACKS_REFUSED.to_string(),
+                e => cant(CLIPS, e),
+            })?;
             if !since_4b {
                 let old = old_strip_targets(&mut p);
                 if old != OldStripTargets::default() {
@@ -4485,8 +4484,15 @@ mod tests {
         let mut c = collected(String::new(), InstrumentList::new().text());
         c.clips.tracks.push(Track::new("Track 1", 0));
         assert!(opening(&snapshot(&c, Vec::new()), 44_100, "fine", none).is_ok());
-        c.clips.tracks.push(Track::new_loops("Loops A", 1));
-        let why = opening(&snapshot(&c, Vec::new()), 44_100, "old", none).expect_err("refused");
+        c.clips.tracks.push(Track::new("Loops A", 1));
+        let mut old = snapshot(&c, Vec::new());
+        for (name, text) in old.parts.iter_mut() {
+            if name == CLIPS {
+                *text = text.replace("track Loops A\n", "track Loops A\nloops pads\n");
+                assert!(text.contains("loops pads"), "{text}");
+            }
+        }
+        let why = opening(&old, 44_100, "old", none).expect_err("refused");
         assert_eq!(why, LOOP_TRACKS_REFUSED);
     }
 

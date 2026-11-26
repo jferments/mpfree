@@ -467,10 +467,9 @@ pub fn big_playing(armed: usize) -> Result<Session, String> {
 
 /// A full Arrange page for the announcement screens (Jay, 19 Nov
 /// 02:45Z: more clips, in more states, with some slots left empty): seven
-/// note tracks and a Loop track, most rows filled, a few holes and the
-/// last rows free.
+/// note tracks and an audio track of loops, most rows filled, a few holes
+/// and the last rows free. Loop `n`'s cells name lasting id `n + 1`.
 pub fn busy_project() -> Project {
-    use mpfree_seq::{LoopInput, TrackKind};
     let mut p = Project::new();
     type Clips<'a> = &'a [(usize, &'a str, Tick, u8, Tick)];
     // (track, [(slot, name, length, pad, a note every)])
@@ -549,18 +548,24 @@ pub fn busy_project() -> Project {
         }
         p.tracks.push(t);
     }
-    let mut t = Track::new_loops("Loops A", p.tracks.len() as u16);
-    t.kind = TrackKind::Loops(LoopInput::Pads);
+    let mut t = Track::new_audio("Loops A", p.tracks.len() as u16);
     for (slot, n, ticks) in [
         (0usize, 0u8, 4 * BAR),
         (1, 1, 2 * BAR),
         (2, 3, BAR),
         (4, 4, 2 * BAR),
     ] {
-        t.slots[slot] = Some(Clip::new_loop(n, ticks));
+        t.slots[slot] = Some(loop_cell(n, ticks));
     }
     p.tracks.push(t);
     p
+}
+
+/// A loop cell on an audio track for loop `n` ("Loop 1" for 0), naming
+/// lasting id `n + 1`.
+fn loop_cell(n: u8, ticks: Tick) -> Clip {
+    let id = mpfree_seq::LoopId(u128::from(n) + 1);
+    Clip::new_audio_loop(id, &format!("Loop {}", n + 1), ticks)
 }
 
 /// [`busy_project`] in the middle of a jam, at 3.4: Drums, Hats, Bass,
@@ -592,33 +597,25 @@ pub fn busy_playing() -> Result<Session, String> {
     Ok(s)
 }
 
-/// Loop tracks (loop-tracks.md): Drums, Hats and Bass, then Loops A
-/// (Pads + synth: Loop 1 in rows 1 and 2, Loop 4 in row 4), Loops B (Line
-/// in: Loop 2 in row 2, Loop 3 in row 3) and an empty Loops C (Resample),
-/// playing row 2 at 3.1.
+/// Loops on audio tracks (loops-on-audio-tracks.md): Drums, Hats and
+/// Bass, then Vocal (Loop 1 in rows 1 and 2, Loop 4 in row 4) and Guitar
+/// (Loop 2 in row 2, Loop 3 in row 3), playing row 2 at 3.1. Loop `n`'s
+/// cells name lasting id `n + 1`.
 pub fn loops_playing() -> Result<Session, String> {
-    use mpfree_seq::{LoopInput, TrackKind};
     let mut p = project();
     p.tracks.truncate(3);
-    let mut loops = |name: &str, input: LoopInput, cells: &[(usize, u8, Tick)]| {
-        let mut t = Track::new_loops(name, p.tracks.len() as u16);
-        t.kind = TrackKind::Loops(input);
+    let mut loops = |name: &str, cells: &[(usize, u8, Tick)]| {
+        let mut t = Track::new_audio(name, p.tracks.len() as u16);
         for &(slot, n, ticks) in cells {
-            t.slots[slot] = Some(Clip::new_loop(n, ticks));
+            t.slots[slot] = Some(loop_cell(n, ticks));
         }
         p.tracks.push(t);
     };
     loops(
-        "Loops A",
-        LoopInput::Pads,
+        "Vocal",
         &[(0, 0, 2 * BAR), (1, 0, 2 * BAR), (3, 3, 4 * BAR)],
     );
-    loops(
-        "Loops B",
-        LoopInput::Line,
-        &[(1, 1, 2 * BAR), (2, 2, 4 * BAR)],
-    );
-    loops("Loops C", LoopInput::Resample, &[]);
+    loops("Guitar", &[(1, 1, 2 * BAR), (2, 2, 4 * BAR)]);
     let launches = (0..5)
         .filter(|&t| p.tracks[t].slots[1].is_some())
         .map(|track| Launch {
@@ -632,24 +629,6 @@ pub fn loops_playing() -> Result<Session, String> {
     s.command_at(0, Command::Play)?;
     s.run_to(2 * BAR + SIXTEENTH)?;
     Ok(s)
-}
-
-/// The Song view with Loop tracks (loop-tracks.md part 5): `loops_playing`'s
-/// rows 1 to 4 made into a song and song mode on, so the Loop tracks'
-/// lanes hold their loops' blocks under the note tracks'.
-pub fn song_loops_state() -> Result<TimeState, String> {
-    let mut s = loops_playing()?;
-    let rows: Vec<(usize, Tick)> = (0..4)
-        .filter(|&r| s.project.row_filled(r))
-        .map(|r| (r, scene_length(&s.project, r, BAR)))
-        .collect();
-    s.project.arrangement = scenes_to_song(&s.project, &rows, 0)
-        .map(|t| t.song)
-        .map_err(|e| format!("{e:?}"))?;
-    let mut state = s.state();
-    state.song_view = true;
-    state.song_on = true;
-    Ok(state)
 }
 
 /// The Song view of the 24-track project: rows 1 to 4 made into a song,
@@ -1236,7 +1215,6 @@ pub fn song_audio_state() -> Result<TimeState, String> {
         t.name = l.name.clone();
         t.sound = format!("In {}", crate::song::input_chip(l.input));
         t.audio = true;
-        t.loops = None;
         t.melodic = false;
         (t.mute, t.solo, t.silent) = (false, false, false);
         t.slots = vec![None; t.slots.len()];
@@ -1400,7 +1378,6 @@ pub fn clips_audio_state() -> Result<TimeState, String> {
             length: bars * BAR,
             speed: mpfree_seq::Speed::NORMAL,
             notes: 0,
-            looped: None,
             settings,
             variation: None,
             holds_notes: false,
@@ -1742,14 +1719,82 @@ pub fn riff_clip() -> Clip {
 /// shows the new bars faintly after yours, each bar's job on the ruler and
 /// the chords under it, the drawer Continue's settings and the tries.
 pub fn notes_continue_state() -> Result<TimeState, String> {
-    continue_sample(false, false)
+    continue_sample(false, false, false)
+}
+
+/// [`notes_continue_state`] with the sound moving (composing tools S3,
+/// board A): the drawer on its Sound row at Subtle, the try's cutoff on a
+/// lane of Continue's, and the hint saying the try plays with it.
+pub fn notes_continue_sound_state() -> Result<TimeState, String> {
+    continue_sample(false, false, true)
+}
+
+/// The lead's instrument as a clip made for it names it: Poly, whose
+/// control 3 is its filter's Cutoff.
+fn lead_inst() -> mpfree_seq::inst::Inst {
+    mpfree_seq::inst::Inst {
+        node: "mpfree.poly".into(),
+        name: "Poly".into(),
+        params: vec![(3, "Cutoff".into())],
+    }
+}
+
+/// Poly's Cutoff on the track's instrument: Continue's lane in
+/// [`notes_continue_lane_state`].
+pub fn lead_addr() -> mpfree_seq::mpfree_param::RelAddr {
+    use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+    RelAddr::new(OnTrack::Inst, 3)
+}
+
+/// The knobs Continue may move on the lead: Poly's Cutoff, at 1.2 kHz.
+fn lead_safe() -> mpfree_compose::SafeControls {
+    mpfree_compose::SafeControls {
+        brightness: Some(mpfree_compose::Safe {
+            id: 3,
+            swing: mpfree_compose::Swing::Octaves(1.0),
+            base: 1200.0,
+            min: 20.0,
+            max: 20_000.0,
+            log: true,
+        }),
+        length: None,
+    }
+}
+
+/// The riff kept with Continue's four bars and its sound (S3, board B):
+/// the note editor on the clip, which the app shows with the lane under
+/// the roll on Continue's Cutoff lane ([`lead_addr`]): green bars over the
+/// dashed line of your knob, what it does in words, On and Remove.
+pub fn notes_continue_lane_state() -> Result<TimeState, String> {
+    let made = continue_sample(false, false, true)?;
+    let heard = made
+        .continuing
+        .as_ref()
+        .and_then(|c| c.clip.clone())
+        .ok_or("no try")?;
+    let mut s = playing()?;
+    s.project.tracks[CHORDS].slots[1] = Some((*heard).clone());
+    let mut state = s.state();
+    let mut editor = crate::editor::Editor::new(CHORDS, 1, &heard);
+    editor.sel.clear();
+    state.edit = Some(Box::new(crate::view::EditInfo {
+        editor,
+        clip: heard,
+        rev: 0,
+        track_name: "Chords".into(),
+        bar: BAR,
+        answer: Default::default(),
+        locks: Default::default(),
+        ghosts: Default::default(),
+    }));
+    Ok(state)
 }
 
 /// [`notes_continue_state`] with a Character (S5 board A): Yearning
 /// picked in the drawer, the try made with it, the tool bar's title
 /// naming it and its line saying what it does.
 pub fn notes_continue_character_state() -> Result<TimeState, String> {
-    continue_sample(false, true)
+    continue_sample(false, true, false)
 }
 
 /// [`notes_continue_state`] a step on (phase 1 step 3): bar 4 locked, bar
@@ -1757,10 +1802,10 @@ pub fn notes_continue_character_state() -> Result<TimeState, String> {
 /// ruler marks both, the drawer's button unlocks or locks bar 6 and the
 /// tool bar's button tries it again.
 pub fn notes_continue_picks_state() -> Result<TimeState, String> {
-    continue_sample(true, false)
+    continue_sample(true, false, false)
 }
 
-fn continue_sample(picks: bool, yearning: bool) -> Result<TimeState, String> {
+fn continue_sample(picks: bool, yearning: bool, sound: bool) -> Result<TimeState, String> {
     use crate::continuing::{Again, Continuing, Try};
     use crate::editor::compose::{self, Picks};
     use crate::editor::{NoteTool, ToolKind};
@@ -1774,6 +1819,9 @@ fn continue_sample(picks: bool, yearning: bool) -> Result<TimeState, String> {
     if yearning {
         set.character = mpfree_compose::Character::Yearning;
         set.row = compose::CHARACTER_ROW;
+    }
+    if sound {
+        set.row = compose::SOUND_ROW;
     }
     let settings = mpfree_compose::Settings {
         seed: 2,
@@ -1821,6 +1869,24 @@ fn continue_sample(picks: bool, yearning: bool) -> Result<TimeState, String> {
     heard.apply(&proposal.edit).map_err(|e| format!("{e:?}"))?;
     let mut state = s.state();
     let new_from = made.to - Tick::from(settings.bars) * BAR;
+    // S3: the cutoff follows the new phrases at Subtle, on Continue's lane.
+    let mut level = None;
+    if sound {
+        let moves = mpfree_compose::sound_on(
+            &made,
+            &settings,
+            riff.length,
+            Default::default(),
+            BPM,
+            set.sound,
+        );
+        heard.made_for = Some(lead_inst());
+        let moved = mpfree_compose::put_sound(&mut heard, &moves, &lead_safe(), new_from, |_| true);
+        if moved.is_empty() {
+            return Err("the sample's try moves no knob".into());
+        }
+        level = Some(set.sound);
+    }
     state.continuing = Some(std::sync::Arc::new(Continuing {
         track: CHORDS,
         slot: 1,
@@ -1833,6 +1899,7 @@ fn continue_sample(picks: bool, yearning: bool) -> Result<TimeState, String> {
         line: None,
         words: None,
         settings,
+        sound: level,
         tries,
     }));
     let mut editor = crate::editor::Editor::new(CHORDS, 1, &riff);
@@ -2399,7 +2466,7 @@ fn row_reads(p: &Project, row: usize, but: usize) -> Vec<mpfree_compose::ToRead>
         .filter(|&(t, tr)| t != but && tr.kind == mpfree_seq::TrackKind::Notes)
         .filter_map(|(t, tr)| {
             let c = tr.slots.get(row)?.as_ref()?;
-            if c.looped.is_some() || c.notes.is_empty() {
+            if c.notes.is_empty() {
                 return None;
             }
             let role = match c.holds {

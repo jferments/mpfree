@@ -14,10 +14,10 @@ abletown chain 6 # AbleTown (22 Nov): faded off-state labels and small marks on 
 abletown chain-comp 3 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown chain-notes 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown chain-xy 6 # as chain (the same page and runs; the XY marks add none)
-abletown clips 7 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
-abletown clips-add-part 4 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-abletown clips-add-part-new-track 3 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips
-abletown clips-add-part-phrase 4 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips
+abletown clips 12 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+abletown clips-add-part 8 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+abletown clips-add-part-new-track 7 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+abletown clips-add-part-phrase 8 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
 abletown clips-card 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown clips-card-style 1 # the clip card's own runs, as clips-card (the card scrolled to its Style row, composing step 6); none of the Style row's
 abletown clips-card-continue 1 # the clip card's own runs, as clips-card (baseline before the theme refactor)
@@ -27,9 +27,9 @@ abletown clips-make-style 1 # the Clips grid's runs, as clips-make-phrase; none 
 abletown clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 abletown clips-card-direction 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown clips-card-mutate 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
-abletown clips-chord-picker 4 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-abletown clips-chords 3 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-abletown clips-loops 3 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
+abletown clips-chord-picker 8 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+abletown clips-chords 7 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+abletown clips-loops 10 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
 abletown clips-mutes 1 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
 abletown clips-pad-window 7 # the Clips grid's own runs (row 1's progress rings, faint +), as clips; the pads' window outline is no text (5.5)
 abletown clips-perform 7 # AbleTown (22 Nov): faded off-state labels and small marks on the mid greys
@@ -80,10 +80,10 @@ console browser-xy-layouts 3 # as browser (the same runs: each row's star while 
 console chain 1 # before the theme refactor (phase 0 baseline)
 console chain-sidechain-list 1 # before the theme refactor (phase 0 baseline)
 console chain-xy 1 # as chain (the same page and runs; the XY marks add none)
-console clips 6 # before the theme refactor (phase 0 baseline)
-console clips-add-part 4 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-console clips-add-part-new-track 4 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips
-console clips-add-part-phrase 5 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips, and the faint Try again of a phrase
+console clips 10 # before the theme refactor (phase 0 baseline); 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+console clips-add-part 8 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+console clips-add-part-new-track 8 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+console clips-add-part-phrase 9 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips, and the faint Try again of a phrase; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
 console clips-card 1 # before the theme refactor (phase 0 baseline)
 console clips-card-style 1 # the clip card's own runs, as clips-card (the card scrolled to its Style row, composing step 6); none of the Style row's
 console clips-card-continue 1 # the clip card's own runs, as clips-card (baseline before the theme refactor)
@@ -93,9 +93,9 @@ console clips-make-style 1 # the Clips grid's runs, as clips-make-phrase; none o
 console clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 console clips-card-direction 1 # before the theme refactor (phase 0 baseline)
 console clips-card-mutate 1 # before the theme refactor (phase 0 baseline)
-console clips-chord-picker 4 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-console clips-chords 3 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-console clips-loops 3 # before the theme refactor (phase 0 baseline)
+console clips-chord-picker 8 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+console clips-chords 7 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+console clips-loops 8 # before the theme refactor (phase 0 baseline); 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
 console clips-mutes 1 # before the theme refactor (phase 0 baseline)
 console clips-pad-window 7 # the Clips grid's own runs (row 1's progress rings, faint +), as clips; the pads' window outline is no text (5.5)
 console clips-perform 16 # before the theme refactor (phase 0 baseline)
@@ -249,10 +249,10 @@ default chain-comp 1 # before the theme refactor (phase 0 baseline)
 default chain-sidechain 1 # before the theme refactor (phase 0 baseline)
 default chain-sidechain-list 8 # before the theme refactor (phase 0 baseline)
 default chain-xy 2 # as chain (the same page and runs; the XY marks add none)
-default clips 6 # before the theme refactor (phase 0 baseline)
-default clips-add-part 4 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-default clips-add-part-new-track 4 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips
-default clips-add-part-phrase 5 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips, and the faint Try again of a phrase
+default clips 10 # before the theme refactor (phase 0 baseline); 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+default clips-add-part 8 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+default clips-add-part-new-track 8 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+default clips-add-part-phrase 9 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips, and the faint Try again of a phrase; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
 default clips-card 1 # before the theme refactor (phase 0 baseline)
 default clips-card-style 1 # the clip card's own runs, as clips-card (the card scrolled to its Style row, composing step 6); none of the Style row's
 default clips-card-continue 1 # the clip card's own runs, as clips-card (baseline before the theme refactor)
@@ -262,9 +262,9 @@ default clips-make-style 1 # the Clips grid's runs, as clips-make-phrase; none o
 default clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 default clips-card-direction 1 # before the theme refactor (phase 0 baseline)
 default clips-card-mutate 1 # before the theme refactor (phase 0 baseline)
-default clips-chord-picker 4 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-default clips-chords 3 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-default clips-loops 3 # before the theme refactor (phase 0 baseline)
+default clips-chord-picker 8 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+default clips-chords 7 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+default clips-loops 8 # before the theme refactor (phase 0 baseline); 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
 default clips-mutes 1 # before the theme refactor (phase 0 baseline)
 default clips-pad-window 7 # the Clips grid's own runs (row 1's progress rings, faint +), as clips; the pads' window outline is no text (5.5)
 default clips-perform 16 # before the theme refactor (phase 0 baseline)
@@ -349,7 +349,7 @@ default play-all-loop 4 # before the theme refactor (phase 0 baseline)
 default play-controller 9 # before the theme refactor (phase 0 baseline)
 default play-free-loops 7 # before the theme refactor (phase 0 baseline)
 default play-keys 9 # the Play page's own runs (Capture, the loop row's + marks, the master scale), as on play (live shows C1)
-default play-loop 8 # before the theme refactor (phase 0 baseline)
+default play-loop 7 # before the theme refactor (phase 0 baseline)
 default play-macros 9 # before the theme refactor (phase 0 baseline)
 default play-pad-types 9 # before the theme refactor (phase 0 baseline)
 default play-rec-both 9 # before the theme refactor (phase 0 baseline)
@@ -403,10 +403,10 @@ light browser-samples 6 # Light (phase 4): faint text, under 3:1 in Default too
 light browser-xy-layouts 2 # as browser (the same runs: each row's star while not starred)
 light chain 1 # Light (phase 4): faint text, under 3:1 in Default too
 light chain-xy 1 # as chain (the same page and runs; the XY marks add none)
-light clips 6 # Light (phase 4): faint text, under 3:1 in Default too
-light clips-add-part 4 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-light clips-add-part-new-track 3 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips
-light clips-add-part-phrase 4 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips
+light clips 11 # Light (phase 4): faint text, under 3:1 in Default too; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+light clips-add-part 8 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+light clips-add-part-new-track 7 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+light clips-add-part-phrase 8 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
 light clips-card 1 # Light (phase 4): faint text, under 3:1 in Default too
 light clips-card-style 1 # the clip card's own runs, as clips-card (the card scrolled to its Style row, composing step 6); none of the Style row's
 light clips-card-continue 1 # the clip card's own runs, as clips-card (baseline before the theme refactor)
@@ -416,9 +416,9 @@ light clips-make-style 1 # the Clips grid's runs, as clips-make-phrase; none of 
 light clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 light clips-card-direction 1 # Light (phase 4): faint text, under 3:1 in Default too
 light clips-card-mutate 1 # Light (phase 4): faint text, under 3:1 in Default too
-light clips-chord-picker 4 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-light clips-chords 3 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-light clips-loops 3 # Light (phase 4): faint text, under 3:1 in Default too
+light clips-chord-picker 8 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+light clips-chords 7 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+light clips-loops 9 # Light (phase 4): faint text, under 3:1 in Default too; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
 light clips-mutes 1 # Light (phase 4): faint text, under 3:1 in Default too
 light clips-pad-window 7 # the Clips grid's own runs (row 1's progress rings, faint +), as clips; the pads' window outline is no text (5.5)
 light clips-perform 7 # Light (phase 4): faint text, under 3:1 in Default too
@@ -455,10 +455,10 @@ slate chain-notes 1 # Slate (22 Nov): faded off-state labels and small marks on 
 slate chain-sidechain 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate chain-sidechain-list 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate chain-xy 2 # as chain (the same page and runs; the XY marks add none)
-slate clips 6 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
-slate clips-add-part 4 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-slate clips-add-part-new-track 3 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips
-slate clips-add-part-phrase 4 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips
+slate clips 11 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+slate clips-add-part 8 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+slate clips-add-part-new-track 7 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+slate clips-add-part-phrase 8 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
 slate clips-card 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate clips-card-style 1 # the clip card's own runs, as clips-card (the card scrolled to its Style row, composing step 6); none of the Style row's
 slate clips-card-continue 1 # the clip card's own runs, as clips-card (baseline before the theme refactor)
@@ -468,9 +468,9 @@ slate clips-make-style 1 # the Clips grid's runs, as clips-make-phrase; none of 
 slate clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 slate clips-card-direction 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate clips-card-mutate 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
-slate clips-chord-picker 4 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-slate clips-chords 3 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-slate clips-loops 3 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
+slate clips-chord-picker 8 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+slate clips-chords 7 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+slate clips-loops 9 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
 slate clips-mutes 1 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
 slate clips-pad-window 7 # the Clips grid's own runs (row 1's progress rings, faint +), as clips; the pads' window outline is no text (5.5)
 slate clips-perform 7 # Slate (22 Nov): faded off-state labels and small marks on the mid blue-greys
@@ -539,7 +539,6 @@ spaceship arrange-song-block 10 # arrange-song with Hook picked (Arrange phase 6
 spaceship arrange-song-box 12 # new screen (Arrange 6.5): arrange-song's faint runs (the ruler's numbers, the faint Duplicate, Make unique and Delete, the morph bar's and Takes' faint labels); the box adds none
 spaceship arrange-song-chord-picker 13 # new screen (composing step 6, board C): arrange-song-chords' 12 runs and the picker's faint Use Ab7 (nothing changed yet)
 spaceship arrange-song-chords 12 # new screen (composing step 6, board C): arrange-song's 10 runs and the faint Duplicate and Make unique with nothing picked, as arrange-report; none of the Chords lane's
-spaceship arrange-song-loops 12 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-over 12 # the Song view's runs, as arrange-song; none of the preview's own
 spaceship arrange-song-panel 12 # before the theme refactor (phase 0 baseline)
 spaceship arrange-song-panel-mix 12 # new screen (instrument redesign, step 9): the faint labels arrange-song-panel has
@@ -566,9 +565,9 @@ spaceship chain-sidechain 2 # before the theme refactor (phase 0 baseline)
 spaceship chain-sidechain-list 9 # before the theme refactor (phase 0 baseline)
 spaceship chain-xy 3 # as chain (the same page and runs; the XY marks add none)
 spaceship clips 43 # before the theme refactor (phase 0 baseline)
-spaceship clips-add-part 40 # new screen (composing tools S2.6): the faint + of empty cells, the playing rings and the transport's Undo, as clips (spaceship's text_faint on bg)
-spaceship clips-add-part-new-track 41 # new screen (composing tools S2.6b): as clips-add-part (the faint + of empty cells, the playing rings and the transport's Undo), with the Bass cell's + (the try plays on the new track) and the faint ‹ Try of a first try (spaceship's text_faint)
-spaceship clips-add-part-phrase 41 # new screen (composing tools P2, board H): as clips-add-part (the faint + of empty cells, the playing rings and the transport's Undo), with the faint Try again of a phrase, which plays one way (spaceship's text_faint)
+spaceship clips-add-part 41 # new screen (composing tools S2.6): the faint + of empty cells, the playing rings and the transport's Undo, as clips (spaceship's text_faint on bg); 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+spaceship clips-add-part-new-track 42 # new screen (composing tools S2.6b): as clips-add-part (the faint + of empty cells, the playing rings and the transport's Undo), with the Bass cell's + (the try plays on the new track) and the faint ‹ Try of a first try (spaceship's text_faint); 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+spaceship clips-add-part-phrase 42 # new screen (composing tools P2, board H): as clips-add-part (the faint + of empty cells, the playing rings and the transport's Undo), with the faint Try again of a phrase, which plays one way (spaceship's text_faint); 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
 spaceship clips-bank-b 56 # the Clips grid's runs (its empty cells' faint +), as clips; none of the bank chip's own
 spaceship clips-card 68 # before the theme refactor (phase 0 baseline)
 spaceship clips-card-style 68 # the clip card's own runs, as clips-card (the card scrolled to its Style row, composing step 6); none of the Style row's
@@ -579,9 +578,9 @@ spaceship clips-make-style 66 # the Clips grid's runs, as clips-make-phrase; non
 spaceship clips-card-convert 67 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 spaceship clips-card-direction 68 # before the theme refactor (phase 0 baseline)
 spaceship clips-card-mutate 68 # before the theme refactor (phase 0 baseline)
-spaceship clips-chord-picker 41 # new screen (composing tools S2.6): the faint + of empty cells, the playing rings and the transport's Undo, as clips (spaceship's text_faint on bg)
-spaceship clips-chords 44 # new screen (composing tools S2.6): the faint + of empty cells, the playing rings and the transport's Undo, as clips (spaceship's text_faint on bg)
-spaceship clips-loops 44 # before the theme refactor (phase 0 baseline)
+spaceship clips-chord-picker 42 # new screen (composing tools S2.6): the faint + of empty cells, the playing rings and the transport's Undo, as clips (spaceship's text_faint on bg); 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+spaceship clips-chords 45 # new screen (composing tools S2.6): the faint + of empty cells, the playing rings and the transport's Undo, as clips (spaceship's text_faint on bg); 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+spaceship clips-loops 31 # before the theme refactor (phase 0 baseline)
 spaceship clips-mutes 43 # before the theme refactor (phase 0 baseline)
 spaceship clips-pad-window 62 # the Clips grid's own runs (row 1's progress rings, faint +), as clips; the pads' window outline is no text (5.5)
 spaceship clips-perform 46 # before the theme refactor (phase 0 baseline)
@@ -665,20 +664,20 @@ spaceship pads-perform-scenes 18 # a window page: its empty cells' faint "empty"
 spaceship pads-types 21 # before the theme refactor (phase 0 baseline)
 spaceship play 18 # before the theme refactor (phase 0 baseline)
 spaceship play-16-levels 5 # before the theme refactor (phase 0 baseline)
-spaceship play-all-loop 13 # before the theme refactor (phase 0 baseline)
+spaceship play-all-loop 14 # before the theme refactor (phase 0 baseline); 4e.5b: one more faint label on the page (Spaceship's faint text is under 3:1 on its background), now that the sample has no Loop track
 spaceship play-controller 18 # before the theme refactor (phase 0 baseline)
-spaceship play-free-loops 16 # before the theme refactor (phase 0 baseline)
-spaceship play-keys 18 # the Play page's own runs (Capture, the loop row's + marks, the master scale), as on play (live shows C1)
+spaceship play-free-loops 17 # before the theme refactor (phase 0 baseline); 4e.5b: one more faint label on the page (Spaceship's faint text is under 3:1 on its background), now that the sample has no Loop track
+spaceship play-keys 19 # the Play page's own runs (Capture, the loop row's + marks, the master scale), as on play (live shows C1); 4e.5b: one more faint label on the page (Spaceship's faint text is under 3:1 on its background), now that the sample has no Loop track
 spaceship play-loop 17 # before the theme refactor (phase 0 baseline)
 spaceship play-macros 18 # before the theme refactor (phase 0 baseline)
-spaceship play-pad-types 24 # before the theme refactor (phase 0 baseline)
+spaceship play-pad-types 25 # before the theme refactor (phase 0 baseline); 4e.5b: one more faint label on the page (Spaceship's faint text is under 3:1 on its background), now that the sample has no Loop track
 spaceship play-patch-edit 5 # the Play frame's master scale, as play-xy-list; none of the patch page's own (live shows C1)
 spaceship play-patches 5 # the Play frame's master scale, as play-xy-list; none of the patch page's own (live shows C1)
 spaceship play-rec-both 18 # before the theme refactor (phase 0 baseline)
 spaceship play-rec-list 6 # before the theme refactor (phase 0 baseline)
 spaceship play-rec-pad 18 # before the theme refactor (phase 0 baseline)
 spaceship play-rec-ready 18 # before the theme refactor (phase 0 baseline)
-spaceship play-rec-tracks 18 # before the theme refactor (phase 0 baseline)
+spaceship play-rec-tracks 19 # before the theme refactor (phase 0 baseline); 4e.5b: one more faint label on the page (Spaceship's faint text is under 3:1 on its background), now that the sample has no Loop track
 spaceship play-rec-tracks-list 5 # before the theme refactor (phase 0 baseline)
 spaceship play-synth 19 # before the theme refactor (phase 0 baseline)
 spaceship play-synth-chords 20 # before the theme refactor (phase 0 baseline)
@@ -719,7 +718,9 @@ spaceship sequencer-notes-chords 15 # the roll's faint key names and beat number
 spaceship sequencer-notes-continue 15 # the roll's faint key names and the transport's, as sequencer-notes, and the Tries' faint › (spaceship's text_faint on bg)
 spaceship sequencer-notes-continue-aim 15 # the same runs as sequencer-notes-continue; none of the Try again menu's (composing S5, aimed tries)
 spaceship sequencer-notes-continue-character 15 # the same runs as sequencer-notes-continue; none of the Character row's (composing S5)
+spaceship sequencer-notes-continue-lane 14 # the roll's faint key names and the transport's, as sequencer-notes; none of Continue's lane's (composing S3, board B)
 spaceship sequencer-notes-continue-picks 15 # the roll's faint key names and the transport's, as sequencer-notes, and the Tries' faint › (spaceship's text_faint on bg)
+spaceship sequencer-notes-continue-sound 15 # the same runs as sequencer-notes-continue; none of the Sound row's (composing S3, board A)
 spaceship sequencer-notes-drums 4 # the roll's faint beat numbers and the transport's, as sequencer-notes (spaceship's text_faint on bg)
 spaceship sequencer-notes-ghosts 21 # the roll's faint key names and beat numbers and the transport's, as sequencer-notes (spaceship's text_faint on bg)
 spaceship sequencer-notes-list 1 # before the theme refactor (phase 0 baseline)
@@ -757,10 +758,10 @@ synthwave browser-samples 6 # before the theme refactor (phase 0 baseline)
 synthwave browser-xy-layouts 2 # as browser (the same runs: each row's star while not starred)
 synthwave chain 1 # before the theme refactor (phase 0 baseline)
 synthwave chain-xy 1 # as chain (the same page and runs; the XY marks add none)
-synthwave clips 6 # before the theme refactor (phase 0 baseline)
-synthwave clips-add-part 4 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-synthwave clips-add-part-new-track 3 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips
-synthwave clips-add-part-phrase 4 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips
+synthwave clips 10 # before the theme refactor (phase 0 baseline); 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+synthwave clips-add-part 8 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+synthwave clips-add-part-new-track 7 # new screen (composing tools S2.6b): as clips-add-part, the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+synthwave clips-add-part-phrase 8 # new screen (composing tools P2, board H): as clips-add-part, the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
 synthwave clips-card 1 # before the theme refactor (phase 0 baseline)
 synthwave clips-card-style 1 # the clip card's own runs, as clips-card (the card scrolled to its Style row, composing step 6); none of the Style row's
 synthwave clips-card-continue 1 # the clip card's own runs, as clips-card (baseline before the theme refactor)
@@ -770,9 +771,9 @@ synthwave clips-make-style 1 # the Clips grid's runs, as clips-make-phrase; none
 synthwave clips-card-convert 1 # the Clips grid's runs, as clips-card-mutate; none of the preview's own
 synthwave clips-card-direction 1 # before the theme refactor (phase 0 baseline)
 synthwave clips-card-mutate 1 # before the theme refactor (phase 0 baseline)
-synthwave clips-chord-picker 4 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-synthwave clips-chords 3 # new screen (composing tools S2.6): the playing rings' tracks, as clips
-synthwave clips-loops 3 # before the theme refactor (phase 0 baseline)
+synthwave clips-chord-picker 8 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+synthwave clips-chords 7 # new screen (composing tools S2.6): the playing rings' tracks, as clips; 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
+synthwave clips-loops 8 # before the theme refactor (phase 0 baseline); 4e.5b: the loop cells (an audio track's, for everyone) each have their ring, its track faint on the cell as a playing clip's
 synthwave clips-mutes 1 # before the theme refactor (phase 0 baseline)
 synthwave clips-pad-window 7 # the Clips grid's own runs (row 1's progress rings, faint +), as clips; the pads' window outline is no text (5.5)
 synthwave clips-perform 7 # before the theme refactor (phase 0 baseline)

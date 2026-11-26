@@ -185,8 +185,7 @@ pub const ADD_AUDIO: usize = REC + 1;
 /// The `col` of a `Cell` for a tap on an audio lane's name or input chip.
 pub const PANEL: usize = usize::MAX;
 /// The `col` of a `Cell` for a tap on an audio lane's input chip (the
-/// right of its header, [`CHIP_HIT_W`]): its panel, as the name opens,
-/// or with Dev's "Loops on audio tracks" its input list (phase 4, board
+/// right of its header, [`CHIP_HIT_W`]): its input list (phase 4, board
 /// 4; [`crate::inputs`]).
 pub const INPUT_CHIP: usize = usize::MAX - 1;
 /// How much of a header's right end a tap takes for its input chip.
@@ -625,7 +624,7 @@ pub struct SongLanes {
     /// last lane.
     pub can_add_track: bool,
     /// The "+ Track" chooser is open under it (the app's, from a tap on
-    /// "+ Track"): Note track, Audio track, Loop track.
+    /// "+ Track"): Note track, Audio track.
     pub adding: bool,
     /// A finger swiping across a take lane: the take, where it went down
     /// and where it is now (x).
@@ -1065,7 +1064,7 @@ pub fn paint_chooser(cx: &mut PaintCx, rows: &[Rect; KINDS]) {
     }
 }
 
-/// A small wave mark in `r` (an audio track's, a Loop track's): four
+/// A small wave mark in `r` (an audio track's): four
 /// bars of different heights.
 pub fn wave_mark(cx: &mut PaintCx, r: Rect, color: Color) {
     for (k, h) in [5, 12, 8, 3].iter().enumerate() {

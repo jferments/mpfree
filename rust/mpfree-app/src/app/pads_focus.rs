@@ -342,9 +342,6 @@ pub fn unfit(
     let Some(k) = project.tracks.get(t) else {
         return Some("isn't in the project");
     };
-    if k.is_loops() {
-        return Some("is a Loop track");
-    }
     if k.is_audio() {
         return Some("is an audio track");
     }

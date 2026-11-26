@@ -377,8 +377,8 @@ fn plays_in<'r>(p: &AudioPlays, room: &'r mut [ClipRegion; MAX_CLIP_REGIONS]) ->
                 stamp,
             })
         }
-        // A loop cell (phase 4b): the track player's loops play it with
-        // Dev's switch on; without it, the region player hears nothing.
+        // A loop cell (phase 4b): the track player's loops play it; the
+        // region player hears nothing.
         AudioPlays::Loop { .. } => loop_plays(p),
     }
 }
@@ -534,7 +534,7 @@ pub struct TrackHost {
     opened: Vec<(RecId, String)>,
     /// The song's meter, for the bar a dropout was at.
     time_sig: mpfree_transport::time::Meter,
-    /// Loops on audio tracks (phase 4b, behind Dev's switch): where each
+    /// Loops on audio tracks (phase 4b): where each
     /// track's loops sound this period and how loud
     /// ([`TrackHost::plan_loops`]).
     loops: LoopPlayer,
@@ -1016,14 +1016,13 @@ impl TrackHost {
         }
     }
 
-    /// Loops on audio tracks (Dev's "Loops on audio tracks", phase 4,
-    /// board 6; layout spec 3a, No Loop strip): each audio strip's input
+    /// Loops on audio tracks (phase 4, board 6; layout spec 3a, No Loop
+    /// strip): each audio strip's input
     /// in words ("Line L", "Mix › Bass", after the wave mark) and a tag
     /// for what its track plays now, "loop · row 2" and the loop's name or
     /// "take · row 3" and the clip's (`plays`: the clip each track plays,
     /// by its place in the track list, and whether it is a loop cell). The
-    /// Loop strip goes while the project has no Loop track: each loop
-    /// plays through its own track's channel.
+    /// Loop strip goes: each loop plays through its own track's channel.
     pub fn dress_loop_strips(
         &self,
         st: &mut mpfree_mixer_ui::MixState,
@@ -1060,10 +1059,9 @@ impl TrackHost {
                 v.tag.clone_from(&tag);
             }
         }
-        if !project.tracks.iter().any(|t| t.is_loops()) {
-            let looper = mpfree_fx::StripId::Track(crate::mixing::LOOP);
-            st.strips.retain(|v| v.id != looper);
-        }
+        // The Loop strip is the looper's own: loops play on their tracks.
+        let looper = mpfree_fx::StripId::Track(crate::mixing::LOOP);
+        st.strips.retain(|v| v.id != looper);
     }
 
     /// The audio tracks that sound, for Stems by Track (export.rs): each
@@ -1155,7 +1153,9 @@ impl TrackHost {
     /// track (by its place in the track list) played in the period, as the
     /// arranger's player has it ([`mpfree_play::Player::audio`]): its
     /// clips, its song or nothing; None plays every track's song, as
-    /// before clips.
+    /// before clips. (The app runs [`TrackHost::period_with_loops`]; the
+    /// tests run the tracks alone with this.)
+    #[cfg(test)]
     pub fn period<'a>(
         &mut self,
         block: &Block,
@@ -1167,7 +1167,7 @@ impl TrackHost {
         self.period_inner(block, map, song_on, line, plays, None);
     }
 
-    /// Loops on audio tracks (phase 4b, behind Dev's switch), before the
+    /// Loops on audio tracks (phase 4b), before the
     /// looper runs: where each track's loops sound this period, from what
     /// the arranger's player says each plays (`plays`, as for
     /// [`TrackHost::period`]), for the loop host to tell the looper
@@ -1255,8 +1255,8 @@ impl TrackHost {
         self.host.tracks.fresh_rec().0
     }
 
-    /// [`TrackHost::period`] with the tracks' loops (phase 4b, behind
-    /// Dev's switch): planned before the looper ran
+    /// [`TrackHost::period`] with the tracks' loops (phase 4b): planned
+    /// before the looper ran
     /// ([`TrackHost::plan_loops`]), and each loop's sound in the period by
     /// its id (`src`: the loop host's [`crate::looping::LoopHost::track_loop`]),
     /// into its track before the track's level, pan, mute and solo.
@@ -1552,7 +1552,7 @@ impl TrackHost {
     }
 
     /// What a loop recorded into project track `p`'s cell records (audio
-    /// tracks phase 4b, behind Dev's switch): the track's own input, as a
+    /// tracks phase 4b): the track's own input, as a
     /// take on it would (inside the mix at its point, or its line pick),
     /// and its own channel, which is never in it. None when `p` is not an
     /// audio track here.
@@ -2285,14 +2285,12 @@ impl TrackHost {
     /// The audio clips' cells and cards (audio tracks phase 2, layout spec
     /// 4f and 4j): each clip's small wave over one pass (from its takes'
     /// waveforms), its sound's length in seconds, why its audio is missing
-    /// if it is, and how far a once clip still sounding past its stop has
-    /// got; the Fit to tempo under way; and the audio tracks' history,
-    /// for UNDO on Arrange. Into `st` as
+    /// if it is, how far a once clip still sounding past its stop has got,
+    /// and the Fit to tempo under way. Into `st` as
     /// [`crate::time::TimeHost::state`] made it of `project`.
     pub fn fill_cells(&self, st: &mut TimeState, project: &mpfree_seq::Project) {
         st.fitting = self.clip_fit_progress();
         let tr = &self.host.tracks;
-        st.audio_history = tr.history();
         for (i, t) in project.tracks.iter().enumerate() {
             if !t.is_audio() {
                 continue;

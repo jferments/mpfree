@@ -254,7 +254,7 @@ pub fn why_faint(c: Ctl, s: &Status) -> &'static str {
 /// Why Send's choice `i` can't be used now.
 pub fn why_no_send(i: usize) -> &'static str {
     if i == SEND_SHOW {
-        return "This loop is in no cell yet: once it has a first pass it shows on a Loop track";
+        return "This loop is in no cell yet: once its first pass ends it lands in an audio track's cell";
     }
     "Not built yet: Show in Clips works now (the bounce to a pad, a track or a file comes next)"
 }
@@ -371,7 +371,7 @@ pub struct LooperPage {
     levelled: [Option<(f32, Instant)>; MAX_LOOPS],
     /// The undo history is open in the lanes' place.
     history_open: bool,
-    /// Each loop's place on the Clips grid (Loop tracks), for its name.
+    /// Each loop's place on the Clips grid (audio tracks), for its name.
     places: [Option<LoopPlace>; MAX_LOOPS],
     /// The song's clock, for the deck's header and a waiting loop's bar.
     transport: TransportInfo,
@@ -383,9 +383,9 @@ pub struct LooperPage {
     /// the master, the tracks and the submixes, never the Loop track
     /// ([`LooperPage::set_mixes`]).
     mixes: Vec<(String, mpfree_fx::StripId)>,
-    /// Dev's "Loops on audio tracks" (phase 4, board 5): where the next
-    /// loop goes, for the header ("Vocal · row 3 · Line L"); None with the
-    /// switch off ([`LooperPage::set_on_tracks`]).
+    /// Loops on audio tracks (phase 4, board 5): where the next loop goes,
+    /// for the header ("Vocal · row 3 · Line L"); None until the app says
+    /// ([`LooperPage::set_on_tracks`]).
     on_tracks: Option<String>,
 }
 
@@ -432,9 +432,9 @@ impl LooperPage {
         true
     }
 
-    /// Loops on audio tracks (phase 4, board 5): with Dev's switch on,
-    /// where the next loop goes ("Vocal · row 3 · Line L"); None with it
-    /// off. True when it changed (the page is then refreshed).
+    /// Loops on audio tracks (phase 4, board 5): where the next loop goes
+    /// ("Vocal · row 3 · Line L"). True when it changed (the page is then
+    /// refreshed).
     pub fn set_on_tracks(&mut self, into: Option<String>) -> bool {
         if self.on_tracks == into {
             return false;
@@ -443,15 +443,21 @@ impl LooperPage {
         true
     }
 
-    /// Loop `n`'s place, when it is a loop cell on an audio track with
-    /// Dev's switch on (phase 4): its card and header name it there.
+    /// The header's input chip says where the next loop goes ("Records
+    /// into"), as it does once the app has said; before that it is
+    /// Records from, whose chip opens its choices.
+    pub fn records_into_shown(&self) -> bool {
+        self.on_tracks.is_some()
+    }
+
+    /// Loop `n`'s place, when it is a loop cell on an audio track (phase
+    /// 4): its card and header name it there.
     fn audio_place(&self, n: usize) -> Option<&LoopPlace> {
         self.on_tracks.as_ref()?;
         self.place(n).filter(|p| p.audio)
     }
 
-    /// Loops on audio tracks (phase 4, board 5), with Dev's switch on:
-    /// loop `n`'s card named by its place ("Vocal · row 2", the loop's
+    /// Loops on audio tracks (phase 4, board 5): loop `n`'s card named by its place ("Vocal · row 2", the loop's
     /// name under it), its M and S its track's; a free slot says how one
     /// is filled.
     fn on_track_card(&self, n: usize, ch: &mut Channel) {
@@ -770,7 +776,7 @@ impl LooperPage {
                 .iter()
                 .position(|m| m.1 == s)
                 .map_or(usize::MAX, |i| fixed + i),
-            // An audio track's input (phase 4b, Dev's switch): no chip.
+            // An audio track's input (phase 4b): no chip.
             (false, LoopSource::Track(_)) => usize::MAX,
         }
     }
@@ -2723,8 +2729,8 @@ mod tests {
         assert_eq!(free_bpm_words(119.96), "120");
     }
 
-    /// The audio tracks rethink's phase 4, board 5: with Dev's "Loops on
-    /// audio tracks" on, a loop in an audio cell's card is named by its
+    /// The audio tracks rethink's phase 4, board 5: once the app says where
+    /// the next loop goes, a loop in an audio cell's card is named by its
     /// place over its clip's name, its M and S are its track's, a free
     /// slot says how one is filled, and the header's gauge and Records
     /// into say where the next loop goes. Off, the cards are as before.

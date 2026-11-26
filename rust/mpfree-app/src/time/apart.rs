@@ -37,7 +37,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use mpfree_seq::loops::{LoopNow, LoopPlan};
+use mpfree_seq::loops::LoopNow;
 use mpfree_seq::{Project, RecId, TrackId, LOOPS, MAX_TRACKS};
 use mpfree_time_ui::view::{MuteWait, TimeState};
 use mpfree_transport::time::Tick;
@@ -95,7 +95,7 @@ pub enum Told {
     /// stopped, a take turning Rec song on or off.
     Note(String),
     /// Lines for the log, one each: what the looper's loops did on the
-    /// grid ([`TimeControl::loops_are`]).
+    /// grid ([`TimeControl::loops_are_on`]).
     Notes(Vec<String>),
     /// What Rec song put on audio tracks' lanes: its song edit and the
     /// blocks' spans ([`TimeControl::take_song_placed`]).
@@ -132,7 +132,6 @@ pub struct Light {
     pub can_redo: bool,
     pub silenced: u128,
     pub mute_bits: (u128, u128),
-    pub loop_plan: LoopPlan,
     pub pad_waiting: [bool; PADS],
     pub muted: [Option<bool>; MAX_TRACKS],
     pub mute_light: [Option<MuteLight>; MAX_TRACKS],
@@ -161,7 +160,6 @@ impl Light {
             can_redo: c.can_redo(),
             silenced: c.silenced(),
             mute_bits: c.mute_bits(),
-            loop_plan: c.loop_plan(),
             pad_waiting: std::array::from_fn(|p| c.selected().is_some_and(|s| c.pad_waiting(s, p))),
             muted: std::array::from_fn(|t| c.muted(t)),
             mute_light: std::array::from_fn(|t| c.mute_light(t)),
@@ -485,17 +483,9 @@ impl Apart {
         self.thread.take()?.join().ok().flatten()
     }
 
-    /// The loops the looper has, for [`TimeControl::loops_are`]: sent as an
-    /// ask, its lines come back as notes.
-    pub fn loops_are(&mut self, now: [LoopNow; LOOPS]) {
-        self.ask(Box::new(move |c| {
-            let lines = c.loops_are(&now);
-            (!lines.is_empty()).then_some(Told::Notes(lines))
-        }));
-    }
-
-    /// [`Apart::loops_are`] with each loop's lasting id
-    /// ([`TimeControl::loops_are_on`]).
+    /// The loops the looper has, with each loop's lasting id
+    /// ([`TimeControl::loops_are_on`]): sent as an ask, its lines come back
+    /// as notes.
     pub fn loops_are_on(&mut self, now: [LoopNow; LOOPS], ids: [u128; LOOPS], room: bool) {
         self.ask(Box::new(move |c| {
             let lines = c.loops_are_on(&now, &ids, room);

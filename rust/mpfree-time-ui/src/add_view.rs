@@ -208,7 +208,7 @@ pub fn part_tracks(st: &TimeState, row: usize) -> Vec<usize> {
     st.tracks
         .iter()
         .enumerate()
-        .filter(|(_, t)| t.loops.is_none() && !t.audio)
+        .filter(|(_, t)| !t.audio)
         .filter(|(t, _)| has_room(st, *t, row))
         .map(|(t, _)| t)
         .collect()
@@ -218,8 +218,7 @@ pub fn part_tracks(st: &TimeState, row: usize) -> Vec<usize> {
 /// no notes (the Sequencer's empty clip makes way at Keep, S2.6; a clip
 /// of only locks or moves the time engine refuses, saying so).
 pub fn has_room(st: &TimeState, track: usize, row: usize) -> bool {
-    st.clip(track, row)
-        .is_none_or(|c| c.notes == 0 && c.looped.is_none())
+    st.clip(track, row).is_none_or(|c| c.notes == 0)
 }
 
 /// The panel's choices: the screen's own, kept while it is open.
@@ -830,7 +829,7 @@ pub fn panel_view(st: &TimeState, pick: &AddPick) -> AddPanelView {
         .tracks
         .iter()
         .enumerate()
-        .filter(|(t, tr)| *t != pick.track && !tr.silent && tr.loops.is_none() && !tr.audio)
+        .filter(|(t, tr)| *t != pick.track && !tr.silent && !tr.audio)
         .filter_map(|(t, tr)| {
             let c = st.clip(t, pick.row)?;
             if c.notes == 0 {

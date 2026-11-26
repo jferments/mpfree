@@ -2654,7 +2654,7 @@ fn plays_notes(
     own: &instruments::Instruments,
 ) -> bool {
     match t.kind {
-        mpfree_seq::TrackKind::Loops(_) | mpfree_seq::TrackKind::Audio => false,
+        mpfree_seq::TrackKind::Audio => false,
         mpfree_seq::TrackKind::Notes if own.plays(track) => own.plays_notes(track),
         mpfree_seq::TrackKind::Notes => kits.plays_synth(track) && synth.plays_notes(),
     }
@@ -2899,8 +2899,8 @@ fn pads_instrument(
 
 /// What audio track `t`'s input list offers (phase 4, board 4), from the
 /// mixer: each strip an instrument plays into named by its track (a kit
-/// or the synth by its own name), the Loop strip only while the project
-/// has a Loop track, the pads' instrument as the looper was last told it,
+/// or the synth by its own name), never the Loop strip, the pads'
+/// instrument as the looper was last told it,
 /// and the mixer's refusals for a recording into the track's channel.
 fn input_choices(
     time: &time::TimeHost,
@@ -2930,11 +2930,10 @@ fn input_choices(
             owner: o,
         }
     };
-    let loop_track = project.tracks.iter().any(|x| x.is_loops());
     let sources: Vec<InputSource> = mix
         .inside_sources()
         .into_iter()
-        .filter(|(_, s)| loop_track || *s != StripId::Track(mixing::LOOP))
+        .filter(|(_, s)| *s != StripId::Track(mixing::LOOP))
         .map(|(name, s)| named(s, name))
         .collect();
     let pads = pads_source(project, looper, mix);
@@ -10743,11 +10742,9 @@ fn player_session(
         app.settings.audio_streams = tracks.streams();
         out.show(gui::ToUi::Settings(app.settings.clone()));
     }
-    // Loops play on audio tracks (phase 4e.5: for everyone).
-    let loops_on = app.settings.loops_on;
-    time.set_loops_on(loops_on);
-    // Layers as recordings (phase 4c.2) come with the same switch.
-    looper.set_recordings(loops_on);
+    // Loops play on audio tracks (phase 4e.5: for everyone), their layers
+    // as recordings (phase 4c.2).
+    looper.set_recordings(true);
     // And the one UNDO across the takes, the loops and the audio tracks
     // (phase 4d.1), followed once a period.
     let mut one_undo = one_undo::OneUndo::default();
@@ -11811,9 +11808,6 @@ fn player_session(
                         // The metronome is the system's: it stays as it is.
                         (t.metronome, t.click_gain) = (time.metronome, time.click_gain);
                         t.set_click_sound(time.click_sound());
-                        // Loops play on audio tracks in it too (4e.5): an
-                        // opened project's engine starts with them off.
-                        t.set_loops_on(loops_on);
                         // Its editing side runs where the last one's did.
                         if time.apart() {
                             *t = time_apart(out, *t);
@@ -15967,11 +15961,10 @@ fn player_session(
         if i.is_multiple_of(32) {
             looper.set_pattern_bars(pattern_bars(&time));
         }
-        // The loop, for its track; the line input comes with it. First
-        // the Loop tracks' launches, so a loop goes on or off on its bar
-        // line's own frame (loop-tracks.md).
+        // The loop, for its track; the line input comes with it. First a
+        // loop in no cell plays, as loops did before the grid had them.
         let t_loop = Instant::now();
-        for line in looper.follow_plan(&time.loop_plan()) {
+        for line in looper.follow_untracked() {
             out.note(&line);
         }
         looper.set_tempo_from_loop(tempo_from_loop_allowed(
@@ -15994,26 +15987,23 @@ fn player_session(
         // tempo set), or its UNDO.
         let (said, song_tempo) = looper.tend_song(&mut time, export.running());
         out.loop_start(said);
-        // Loops on audio tracks (Dev's switch, phase 4b): the track
-        // player plans where each track's loops sound from what the
-        // arranger says, and each loop a loop cell names is told its runs
-        // before the looper runs.
-        if loops_on {
-            tracks.sync(time.project(), time.silenced(), false);
-            tracks.loops_moving(&looper.moving_ids());
-            tracks.plan_loops(time.block(), &|p| time.audio(p));
-            looper.give_loop_id(|| tracks.fresh_loop_id());
-            looper.give_layer_recs(|| tracks.fresh_recording_id());
-            // Closed layers to their files soon after they close (4c.3).
-            if let Some(line) = looper.write_layers(&mut tracks, time.block().frames as usize) {
-                out.note(&line);
-            }
-            looper.tell_tracks(time.project(), tracks.loop_player());
-            // Free cells (4e.4): each free loop a cell names goes on or off
-            // on the free clock as its cells say.
-            for line in looper.follow_free(&time.free_plan()) {
-                out.note(&line);
-            }
+        // Loops on audio tracks (phase 4b): the track player plans where
+        // each track's loops sound from what the arranger says, and each
+        // loop a loop cell names is told its runs before the looper runs.
+        tracks.sync(time.project(), time.silenced(), false);
+        tracks.loops_moving(&looper.moving_ids());
+        tracks.plan_loops(time.block(), &|p| time.audio(p));
+        looper.give_loop_id(|| tracks.fresh_loop_id());
+        looper.give_layer_recs(|| tracks.fresh_recording_id());
+        // Closed layers to their files soon after they close (4c.3).
+        if let Some(line) = looper.write_layers(&mut tracks, time.block().frames as usize) {
+            out.note(&line);
+        }
+        looper.tell_tracks(time.project(), tracks.loop_player());
+        // Free cells (4e.4): each free loop a cell names goes on or off
+        // on the free clock as its cells say.
+        for line in looper.follow_free(&time.free_plan()) {
+            out.note(&line);
         }
         let line_note = looper.run(time.block(), &mut loop_l, &mut loop_r);
         // A loop that heard the line input with the song stopped starts it.
@@ -16049,55 +16039,44 @@ fn player_session(
         tracks.feed_inside(&mut mix);
         // What each audio track plays (its clips, its song or nothing)
         // comes from the player's last period, on its frames.
-        if loops_on {
-            // Listen playing a loop on a track, through that track (4e.2).
-            tracks.loop_listen(looper.listen_track());
-            // A free cell's loop, through its track as the looper plays it
-            // on the free clock (4e.4).
-            tracks.loop_free(&looper.free_cells());
-            // The Loop group (4e.1) on each loop's sound before its track:
-            // every loop, or the armed audio track's (by its own arm).
-            let (set, armed) = (loop_group.set(), time.audio_armed());
-            loop_group.run(
-                PERIOD,
-                |n| looper.slot_out(n),
-                |n| loop_group::reaches(&set, armed, looper.slot_track(n)),
-            );
-            // Each loop on a track into its track (phase 4b).
-            tracks.period_with_loops(
-                time.block(),
-                time.tempo_map(),
-                time.song_on(),
-                looper.input(),
-                &|p| time.audio(p),
-                &|id| {
-                    looper
-                        .slot_of(id)
-                        .and_then(|n| loop_group.out(n))
-                        .or_else(|| looper.track_loop(id))
-                },
-            );
-            // And its Delay on Send A of each track playing a loop.
-            let plays: [Option<(usize, bool)>; mpfree_audiotracks::MAX_TRACKS] =
-                std::array::from_fn(|s| {
-                    let p = tracks.place(s)?;
-                    let on = !tracks.loop_player().runs(s).is_empty();
-                    Some((
-                        mix.track_channel(p),
-                        on && loop_group::reaches(&set, armed, Some(p)),
-                    ))
-                });
-            loop_group.sends(&mut mix.mixer, |s| plays[s]);
-        } else {
-            loop_group.sends(&mut mix.mixer, |_| None);
-            tracks.period(
-                time.block(),
-                time.tempo_map(),
-                time.song_on(),
-                looper.input(),
-                Some(&|p| time.audio(p)),
-            );
-        }
+        // Listen playing a loop on a track, through that track (4e.2).
+        tracks.loop_listen(looper.listen_track());
+        // A free cell's loop, through its track as the looper plays it
+        // on the free clock (4e.4).
+        tracks.loop_free(&looper.free_cells());
+        // The Loop group (4e.1) on each loop's sound before its track:
+        // every loop, or the armed audio track's (by its own arm).
+        let (set, armed) = (loop_group.set(), time.audio_armed());
+        loop_group.run(
+            PERIOD,
+            |n| looper.slot_out(n),
+            |n| loop_group::reaches(&set, armed, looper.slot_track(n)),
+        );
+        // Each loop on a track into its track (phase 4b).
+        tracks.period_with_loops(
+            time.block(),
+            time.tempo_map(),
+            time.song_on(),
+            looper.input(),
+            &|p| time.audio(p),
+            &|id| {
+                looper
+                    .slot_of(id)
+                    .and_then(|n| loop_group.out(n))
+                    .or_else(|| looper.track_loop(id))
+            },
+        );
+        // And its Delay on Send A of each track playing a loop.
+        let plays: [Option<(usize, bool)>; mpfree_audiotracks::MAX_TRACKS] =
+            std::array::from_fn(|s| {
+                let p = tracks.place(s)?;
+                let on = !tracks.loop_player().runs(s).is_empty();
+                Some((
+                    mix.track_channel(p),
+                    on && loop_group::reaches(&set, armed, Some(p)),
+                ))
+            });
+        loop_group.sends(&mut mix.mixer, |s| plays[s]);
         // Each audio track into its own channel (phase 1b).
         tracks.play_into(&mut mix);
         // The strip's waveform, built a slice at a time: its cost counts in
@@ -16439,18 +16418,16 @@ fn player_session(
         if let Some(mut st) = mix.poll_state(Instant::now()) {
             // The audio tracks' strips, named and lit as their tracks.
             tracks.dress_strips(&mut st, time.project(), time.silenced(), &mix);
-            // Loops on audio tracks (Dev's switch, phase 4, board 6).
-            if app.settings.loops_on {
-                let plays = |t: usize| {
-                    let a = time.audio(t);
-                    match a.changes().last().map_or(a.start, |c| c.plays) {
-                        mpfree_play::AudioPlays::Loop { clip, .. } => Some((true, clip)),
-                        mpfree_play::AudioPlays::Clip { clip, .. } => Some((false, clip)),
-                        _ => None,
-                    }
-                };
-                tracks.dress_loop_strips(&mut st, time.project(), plays, &mix);
-            }
+            // Loops on audio tracks (phase 4, board 6).
+            let plays = |t: usize| {
+                let a = time.audio(t);
+                match a.changes().last().map_or(a.start, |c| c.plays) {
+                    mpfree_play::AudioPlays::Loop { clip, .. } => Some((true, clip)),
+                    mpfree_play::AudioPlays::Clip { clip, .. } => Some((false, clip)),
+                    _ => None,
+                }
+            };
+            tracks.dress_loop_strips(&mut st, time.project(), plays, &mix);
             out.show(gui::ToUi::Mixer(Box::new(st)));
         }
         panels.poll(
@@ -16494,19 +16471,14 @@ fn player_session(
         for line in looper.changes(|| time.position_text()) {
             out.note(&line);
         }
-        // A loop recorded lands on a Loop track (or, with loops on audio
-        // tracks, in an audio track's cell, by its lasting id: one armed
-        // for it, else the armed audio track's, another's or a new audio
-        // track's, 4e.4); its cells follow it.
+        // A loop recorded lands in an audio track's cell, by its lasting
+        // id: one armed for it, else the armed audio track's, another's or
+        // a new audio track's (4e.4); its cells follow it.
         if let Some(now) = looper.grid_now() {
             let before = time.project().tracks.len();
-            let lines = if loops_on {
-                let room = tracks.free_slot().is_some();
-                time.loops_are_on(&now, &looper.loop_ids(), room)
-            } else {
-                time.loops_are(&now)
-            };
-            if loops_on && !lines.is_empty() {
+            let room = tracks.free_slot().is_some();
+            let lines = time.loops_are_on(&now, &looper.loop_ids(), room);
+            if !lines.is_empty() {
                 looper.look_again();
                 // A new audio track for a loop takes its engine track now,
                 // and records what the loop recorded (4e.5).
@@ -16522,31 +16494,23 @@ fn player_session(
             }
             for line in lines {
                 out.note(&format!("time: {line}"));
-                // With loops on audio tracks the hint says where (4e.4).
-                if loops_on {
-                    out.show(gui::ToUi::Tell(line));
-                }
+                // The hint says where (4e.4).
+                out.show(gui::ToUi::Tell(line));
             }
         }
-        // A loop's copy onto another Loop track ended.
+        // A loop cell's copy onto another audio track ended.
         if let Some(end) = looper.copy_ended() {
             fx.extend(desk::copy_ended(&mut time, end));
         }
         // The one UNDO follows each engine's steps (phase 4d.1), and asks
-        // them to forget what it can no longer reach (4d.3). With the
-        // switch off it still brings back a layer that left memory while
-        // it was on, for the loop's own UNDO (4d.4).
-        if loops_on {
-            if let Some(next) = one_undo.follow(&time, &tracks, &looper) {
-                out.show(gui::ToUi::OneUndo(next));
-            }
-            fx.extend(one_undo.tend(out, &mut time, &mut tracks, &mut looper));
-            // The looper records the input of the track its next recording
-            // goes to (4e.5).
-            fx.extend(follow_loop_target(&time, &tracks, &looper, &mix, &mut app));
-        } else {
-            fx.extend(one_undo.tend_back(out, &mut tracks, &mut looper));
+        // them to forget what it can no longer reach (4d.3).
+        if let Some(next) = one_undo.follow(&time, &tracks, &looper) {
+            out.show(gui::ToUi::OneUndo(next));
         }
+        fx.extend(one_undo.tend(out, &mut time, &mut tracks, &mut looper));
+        // The looper records the input of the track its next recording
+        // goes to (4e.5).
+        fx.extend(follow_loop_target(&time, &tracks, &looper, &mix, &mut app));
         if let Some(wave) = loop_wave {
             out.show(gui::ToUi::LoopWave(wave));
         }
@@ -20162,7 +20126,6 @@ mod tests {
         p.give_track_ids();
         p.give_clip_ids();
         let mut time = time::TimeHost::with_project(RATE, 120.0, p).unwrap();
-        time.set_loops_on(true);
         let mut tracks = audiotracks::TrackHost::new(RATE, 10);
         let mut out = Out {
             console: None,
@@ -20573,7 +20536,7 @@ mod tests {
         let run = |r: &mut SongRig, one: &mut OneUndo, n: usize, sound: bool| {
             for _ in 0..n {
                 r.period();
-                for line in r.looper.follow_plan(&r.time.loop_plan()) {
+                for line in r.looper.follow_untracked() {
                     assert!(!line.contains("refused"), "{line}");
                 }
                 let x = if sound { 0.25 } else { 0.0 };
@@ -20698,13 +20661,12 @@ mod tests {
         assert_eq!(press(&mut r, &mut one, true), "Nothing to redo");
     }
 
-    /// A period as the audio loop runs one with Dev's switch on, for phase
-    /// 4d.4's tests: layers get recordings and go to their files, the
+    /// A period as the audio loop runs one, for phase 4d.4's tests: layers get recordings and go to their files, the
     /// looper runs on the pads' steady `x`, and the one history follows
     /// and tends. What it says comes back.
     fn period_with_files(r: &mut SongRig, one: &mut one_undo::OneUndo, x: f32) -> Option<String> {
         r.period();
-        let _ = r.looper.follow_plan(&r.time.loop_plan());
+        let _ = r.looper.follow_untracked();
         let tracks = &mut r.tracks;
         r.looper.give_layer_recs(|| tracks.fresh_recording_id());
         assert_eq!(r.looper.write_layers(&mut r.tracks, PERIOD), None);
@@ -20737,8 +20699,7 @@ mod tests {
         }
     }
 
-    /// UNDO (or REDO) as the desk sends it with the switch on, and what
-    /// it said.
+    /// UNDO (or REDO) as the desk sends it, and what it said.
     fn press_one(r: &mut SongRig, one: &mut one_undo::OneUndo, redo: bool) -> String {
         let fx = one_undo::press(
             one,
@@ -20886,9 +20847,9 @@ mod tests {
     /// Phase 4d.4: the Looper tab's history list (holding UNDO) goes back
     /// two steps at once: the overdub, then, once the deleted layer it
     /// waits for is brought back from its file, the Delete; and forward
-    /// again, the overdub coming back in turn. With Dev's switch turned
-    /// off, the loop's own UNDO of a step whose layer is away waits for it
-    /// the same way rather than being refused.
+    /// again, the overdub coming back in turn. The looper's own UNDO of a
+    /// step whose layer is away waits for it the same way rather than
+    /// being refused.
     #[test]
     fn the_looper_tabs_history_list_waits_for_a_layer_away_and_goes_on() {
         use mpfree_looper::Command as L;
@@ -20934,9 +20895,8 @@ mod tests {
         assert_eq!(told, ["Bringing back Loop 1's layer"]);
         assert_eq!(r.looper.looper.history().redo().len(), 0);
         assert!(r.looper.looper.is_away(0, second.born), "it made room");
-        // The switch off: the loop's own UNDO of the Delete waits for its
-        // layer as the list does, rather than being refused.
-        r.looper.set_recordings(false);
+        // The looper's own UNDO of the Delete waits for its layer as the
+        // list does, rather than being refused.
         r.looper.command(L::Undo);
         settle(r, &mut one, 3);
         assert_eq!(layers(r), 2);
@@ -21002,7 +20962,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Phase 4e.3's rig: on the real engines with Dev's switch on, a
+    /// Phase 4e.3's rig: on the real engines, a
     /// project of one audio track, Vocal, its first cell a three-bar loop
     /// the looper holds, opened as a project's loop is, so its audio is
     /// known: every frame its own value ([`loop_frame`]). Song mode on,
@@ -21050,7 +21010,6 @@ mod tests {
                 p.arrangement.place(b).unwrap();
             }
             let mut time = time::TimeHost::with_project(RATE, 120.0, p).unwrap();
-            time.set_loops_on(true);
             time.act(TimeAction::SongMode(true)).unwrap();
             let mut tracks = audiotracks::TrackHost::new(RATE, 10);
             tracks.sync(time.project(), 0, true);
@@ -21118,8 +21077,7 @@ mod tests {
             r
         }
 
-        /// A period as the audio loop runs one with the switch on
-        /// (main.rs): the arranger, the track player's plan, the looper
+        /// A period as the audio loop runs one (main.rs): the arranger, the track player's plan, the looper
         /// told its runs and run, the time engine told the loops, then
         /// the audio tracks with each loop into its track. Vocal's left
         /// channel.
@@ -21128,7 +21086,7 @@ mod tests {
             let (time, tracks, looper) = (&mut self.time, &mut self.tracks, &mut self.looper);
             time.advance(PERIOD as u32);
             time.period(PERIOD as u32, &mut QuietPads);
-            let _ = looper.follow_plan(&time.loop_plan());
+            let _ = looper.follow_untracked();
             tracks.sync(time.project(), time.silenced(), false);
             tracks.loops_moving(&looper.moving_ids());
             tracks.plan_loops(time.block(), &|p| time.audio(p));
