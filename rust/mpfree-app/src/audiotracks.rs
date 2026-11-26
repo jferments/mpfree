@@ -395,7 +395,7 @@ fn clip_region_of(r: &Region, rec: RecId, made_at: f64) -> mpfree_seq::ClipRegio
 /// until the job ends.
 pub fn stretch_config() -> mpfree_stretch::sched::Config {
     mpfree_stretch::sched::Config {
-        on_start: mpfree_lanes::os::idle_job,
+        on_start: std::sync::Arc::new(mpfree_lanes::os::idle_job),
         promise: |need| {
             crate::memory::reserve(crate::memory::free_bytes, need)
                 .map(mpfree_stretch::sched::Hold::new)

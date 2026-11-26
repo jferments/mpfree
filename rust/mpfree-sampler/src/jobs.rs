@@ -10,7 +10,7 @@
 //!
 //! - **Two lanes**, so different work doesn't wait behind each other:
 //!   [`Lane::Sound`] (working out views, pitch, hits, octave copies,
-//!   stretching, Process) and [`Lane::File`] (reading sounds and kits), so
+//!   Process) and [`Lane::File`] (reading sounds and kits), so
 //!   a long analysis never holds up a load. Each lane has its own workers,
 //!   started the first time it gets a job, at the priority the app gives
 //!   its lane ([`Config::on_start`]).
@@ -33,6 +33,13 @@
 //!   first use with the config the program gave [`configure`] at its start
 //!   (the default one, for tests and offline renders, if it gave none). A
 //!   test can still make a service of its own with [`Jobs::new`].
+//! - **Warp's copies go on the stretch scheduler** ([`Jobs::stretch`],
+//!   `mpfree_stretch::sched`, the audio tracks rethink 5b.3): one worker,
+//!   a step at a time, for every stretch MPFree makes ahead, within one
+//!   budget for derived audio. The process's service has the process's
+//!   scheduler; a service made for a test has its own, started as its
+//!   sound lane's workers are and promising memory as it does. Keys,
+//!   holding, counts and memory reserved take in its jobs.
 //! - **Nothing falls back to the screen.** If a worker can't start, its
 //!   jobs wait, the failure is counted ([`Counts::spawn_failed`]) and the
 //!   next job tries again. Only a service made for a test runs jobs in
@@ -46,6 +53,8 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+
+use mpfree_stretch::sched::{self, Priority, Sched};
 
 /// Which workers run a job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +95,11 @@ pub struct Key {
 impl Key {
     pub fn new(kind: &'static str, id: u128) -> Key {
         Key { kind, id }
+    }
+
+    /// The same key on the stretch scheduler ([`Jobs::stretch`]).
+    pub fn stretch(self) -> sched::Key {
+        sched::Key::new(self.kind, self.id)
     }
 }
 
@@ -177,30 +191,9 @@ pub struct Config {
 }
 
 /// A promise of memory a running job holds ([`Config::promise`]): whatever
-/// the promise's maker returns, kept until the job ends.
-pub struct Hold(Option<Box<dyn Send>>);
-
-impl Hold {
-    /// No promise: memory isn't counted.
-    pub fn none() -> Hold {
-        Hold(None)
-    }
-
-    /// Holds `promise` (a memory ticket) until dropped.
-    pub fn new(promise: impl Send + 'static) -> Hold {
-        Hold(Some(Box::new(promise)))
-    }
-}
-
-impl std::fmt::Debug for Hold {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(if self.0.is_some() {
-            "Hold"
-        } else {
-            "Hold(none)"
-        })
-    }
-}
+/// the promise's maker returns, kept until the job ends. The stretch
+/// scheduler's own, so one promise serves both ([`Jobs::stretch`]).
+pub use mpfree_stretch::sched::Hold;
 
 impl Default for Config {
     /// One worker a lane, nothing done at their start, and memory never
@@ -268,6 +261,8 @@ impl Shared {
 struct Owner {
     shared: Arc<Shared>,
     in_place: bool,
+    /// Where the Warps' stretched copies are made ([`Jobs::stretch`]).
+    stretch: Sched,
 }
 
 impl Drop for Owner {
@@ -314,7 +309,9 @@ impl Jobs {
                     .unwrap_or_else(|e| e.into_inner())
                     .take()
                     .unwrap_or_default();
-                Jobs::new(config)
+                // The process's one stretch scheduler, which the program
+                // configures as it does this service's sound lane.
+                Jobs::make(config, false, Sched::shared())
             })
             .clone()
     }
@@ -324,18 +321,33 @@ impl Jobs {
         Arc::ptr_eq(&self.0, &other.0)
     }
 
-    /// A service whose workers start as their lane's first job comes.
+    /// A service whose workers start as their lane's first job comes,
+    /// with a stretch scheduler of its own promising memory as it does.
     pub fn new(config: Config) -> Jobs {
-        Jobs::make(config, false)
+        Jobs::make(config, false, Jobs::own_stretch(&config))
     }
 
     /// A service for tests that runs each job on the caller as it comes,
-    /// with the same memory check. The app never uses it.
+    /// with the same memory check. The app never uses it. Its stretch
+    /// scheduler is its own, with a worker as [`Jobs::new`]'s: Warp's
+    /// copies are made on that worker, not on the caller.
     pub fn in_place(config: Config) -> Jobs {
-        Jobs::make(config, true)
+        Jobs::make(config, true, Jobs::own_stretch(&config))
     }
 
-    fn make(config: Config, in_place: bool) -> Jobs {
+    /// A stretch scheduler for a service of its own: its worker starts as
+    /// this service's sound lane's do, and it promises memory as this
+    /// service does.
+    fn own_stretch(config: &Config) -> Sched {
+        let start = config.on_start;
+        Sched::new(sched::Config {
+            on_start: Arc::new(move || start(Lane::Sound)),
+            promise: config.promise,
+            ..sched::Config::default()
+        })
+    }
+
+    fn make(config: Config, in_place: bool, stretch: Sched) -> Jobs {
         Jobs(Arc::new(Owner {
             shared: Arc::new(Shared {
                 state: Mutex::new(State::default()),
@@ -343,7 +355,19 @@ impl Jobs {
                 config,
             }),
             in_place,
+            stretch,
         }))
+    }
+
+    /// The stretch scheduler the Warps' copies are made on
+    /// (`mpfree_stretch::sched`, the audio tracks rethink 5b.3): one worker
+    /// for every stretch made ahead, the tracks' tempo copies too, within
+    /// one budget for derived audio. The process's service has the
+    /// process's scheduler; a test's service has its own. [`Jobs::hold`],
+    /// [`Jobs::waiting`], [`Jobs::busy`], [`Jobs::counts`] and
+    /// [`Jobs::reserved`] count its jobs with this service's.
+    pub fn stretch(&self) -> &Sched {
+        &self.0.stretch
     }
 
     fn inner(&self) -> &Arc<Shared> {
@@ -386,8 +410,17 @@ impl Jobs {
     }
 
     /// Moves the job with `key` to the front if it is waiting. True if it
-    /// is waiting or running, so the caller needn't submit it again.
+    /// is waiting or running, so the caller needn't submit it again. A
+    /// stretch on the stretch scheduler with that key is raised there to
+    /// [`Priority::Protect`] (what something playing needs next).
     pub fn promote(&self, key: Key) -> bool {
+        if self
+            .0
+            .stretch
+            .reorder(key.stretch(), Priority::Protect, None)
+        {
+            return true;
+        }
         let mut s = self.inner().lock();
         if s.running.iter().any(|b| b.key == key) {
             return true;
@@ -405,14 +438,20 @@ impl Jobs {
         }
     }
 
-    /// Whether a job with `key` is waiting or running.
+    /// Whether a job with `key` is waiting or running, here or on the
+    /// stretch scheduler.
     pub fn has(&self, key: Key) -> bool {
+        if self.0.stretch.has(key.stretch()) {
+            return true;
+        }
         let s = self.inner().lock();
         s.running.iter().any(|b| b.key == key) || s.waiting.iter().any(|w| w.key == key)
     }
 
-    /// Drops the job with `key` if it waits, and tells it to stop if it runs.
+    /// Drops the job with `key` if it waits, and tells it to stop if it
+    /// runs, here or on the stretch scheduler.
     pub fn cancel(&self, key: Key) {
+        self.0.stretch.cancel(key.stretch());
         self.retain(|k| k != key);
     }
 
@@ -434,29 +473,43 @@ impl Jobs {
     /// Holds every worker before its next job (`true`), or lets them go
     /// on: for tests that look at what comes before a job's result.
     pub fn hold(&self, held: bool) {
+        self.0.stretch.hold(held);
         self.inner().lock().held = held;
         self.inner().cv.notify_all();
     }
 
-    /// Jobs waiting, on both lanes.
+    /// Jobs waiting, on both lanes and the stretch scheduler (not started
+    /// there).
     pub fn waiting(&self) -> usize {
-        self.inner().lock().waiting.len()
+        self.inner().lock().waiting.len() + self.0.stretch.waiting()
     }
 
-    /// Whether any job is waiting or running.
+    /// Whether any job is waiting or running, the stretch scheduler's too.
     pub fn busy(&self) -> bool {
+        // The scheduler first, so its lock is never taken under this one.
+        if !self.0.stretch.is_empty() {
+            return true;
+        }
         let s = self.inner().lock();
         !s.waiting.is_empty() || !s.running.is_empty()
     }
 
-    /// What the service has done so far.
+    /// What the service has done so far, with the stretch scheduler's.
     pub fn counts(&self) -> Counts {
-        self.inner().lock().counts
+        let mut c = self.inner().lock().counts;
+        let st = self.0.stretch.counts();
+        c.done += st.done;
+        c.replaced += st.replaced;
+        c.cancelled += st.cancelled;
+        c.refused += st.refused;
+        c.spawn_failed += st.spawn_failed;
+        c
     }
 
-    /// Memory the running jobs said they hold.
+    /// Memory the running jobs said they hold, the stretch scheduler's
+    /// too.
     pub fn reserved(&self) -> u64 {
-        self.inner().lock().reserved
+        self.inner().lock().reserved + self.0.stretch.reserved()
     }
 
     /// Starts `lane`'s workers up to its number. One that can't start is
@@ -748,6 +801,39 @@ mod tests {
         jobs.hold(false);
         settle(&jobs);
         assert_eq!(rx.try_iter().collect::<Vec<_>>(), vec![3, 1, 2]);
+    }
+
+    /// The audio tracks rethink 5b.3: promote on the key of a stretch on
+    /// the stretch scheduler (the Warps' copies) raises it there, to what
+    /// something playing needs next.
+    #[test]
+    fn promote_raises_a_stretch_waiting_on_the_stretch_scheduler() {
+        struct Say(u32, mpsc::Sender<u32>);
+        impl sched::Work for Say {
+            fn step(&mut self, _: usize) -> bool {
+                true
+            }
+            fn finish(self: Box<Self>) {
+                let _ = self.1.send(self.0);
+            }
+        }
+        let jobs = Jobs::new(Config::default());
+        let (tx, rx) = mpsc::channel();
+        jobs.hold(true);
+        let st = jobs.stretch();
+        for (n, priority) in [(1, Priority::Prepared), (2, Priority::Speculative)] {
+            let key = Key::new("stretch", u128::from(n)).stretch();
+            st.submit(sched::Job::new(key, priority, Say(n, tx.clone())));
+        }
+        assert!(jobs.has(Key::new("stretch", 2)));
+        assert_eq!(jobs.waiting(), 2);
+        assert!(jobs.promote(Key::new("stretch", 2)));
+        jobs.hold(false);
+        let got: Vec<u32> = (0..2)
+            .map(|_| rx.recv_timeout(Duration::from_secs(10)).unwrap())
+            .collect();
+        assert_eq!(got, vec![2, 1]);
+        assert_eq!(jobs.counts().done, 2);
     }
 
     #[test]
