@@ -62,6 +62,8 @@ use mpfree_stream::writer::Gate;
 use mpfree_transport::time::TempoMap;
 use mpfree_transport::{Block, Mark, Tick};
 
+use crate::copies::Copy;
+use crate::copying::{Ask, ClipWant, CopyCounts, CopySide, MAX_MAKING};
 use crate::files::{
     self, DriveProbe, DriveSeen, FileEvent, FileView, Files, Growing, LayerWrite, Name, Problem,
     Said, WriterConfig,
@@ -75,6 +77,7 @@ use crate::{
     AudioTracks, Command, Io, RecordingId, TakeInfo, CHUNK, MAX_REGIONS, MAX_TAKES, MAX_TRACKS,
     PEAK_BLOCK,
 };
+use mpfree_stretch::sched::{self, Sched};
 
 /// The most starts held in the cache: every region of every track, and
 /// each track's frame at the loop's start.
@@ -354,9 +357,44 @@ enum ToWorker {
     /// thread).
     Read(Read),
     DropPlayer(Box<Player>),
+    /// About Stretch's copies ([`crate::copying`]).
+    Copy(Ask),
+    /// A copy's audio, or the clips' old list, to drop.
+    DropCopy(Arc<[f32]>),
+    DropClips(Vec<ClipWant>),
+    /// Make copies on this scheduler from now on (a test's).
+    Sched(Sched),
+}
+
+/// Why a copy won't come ([`FromWorker::CopyGone`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Gone {
+    /// No longer wanted: stopped on the scheduler.
+    Cancelled,
+    /// The scheduler's memory check said no.
+    Refused,
+    /// Its stretch couldn't be made.
+    Failed,
 }
 
 enum FromWorker {
+    /// A copy's source buffer, made.
+    CopyBuffer {
+        key: crate::copies::CopyKey,
+        audio: Vec<f32>,
+        gen: u32,
+    },
+    /// A copy made.
+    Copied {
+        copy: Copy,
+        gen: u32,
+    },
+    /// A copy that won't come, and why.
+    CopyGone {
+        key: crate::copies::CopyKey,
+        why: Gone,
+        gen: u32,
+    },
     Room(Saved),
     /// For System status (the takes' files, the drive).
     Problem(Problem),
@@ -555,6 +593,11 @@ pub struct AudioHost {
     waiting: Option<Saved>,
     /// The stream player's counters as System status last heard them.
     watch: Watch,
+    /// Stretch's copies being made ([`crate::copying`]).
+    copies: CopySide,
+    /// Copies come back from the scheduler, taken in after this period's
+    /// look if they are still wanted.
+    arrived: Vec<Copy>,
     /// Reports for System status that found no room (taken too slowly).
     pub problems_lost: u64,
     /// The card last opened at each folder ([`AudioHost::own_device`]),
@@ -618,6 +661,8 @@ impl AudioHost {
                 layers_open: Vec::with_capacity(LAYERS_DONE),
             },
             watch: Watch::new(),
+            copies: CopySide::new(),
+            arrived: Vec::with_capacity(MAX_MAKING),
             problems_lost: 0,
             cards: Vec::new(),
             work_card: None,
@@ -1047,7 +1092,101 @@ impl AudioHost {
     }
 
     pub fn command(&mut self, c: Command) -> bool {
+        // It may edit a region on Stretch: what is wanted is looked at
+        // again once it has run, and a copy under way for the old region
+        // stops.
+        self.copies.look_soon();
         self.tracks.command(c)
+    }
+
+    // ---- Stretch's copies (phase 5b) -------------------------------------
+
+    /// The audio clips with regions on Stretch, for their copies to be
+    /// made ([`crate::copying`]): the app lists them as it lists their
+    /// starts. The old list goes to the worker to drop.
+    pub fn clip_copies(&mut self, clips: Vec<ClipWant>) {
+        let old = self.copies.set_clips(clips);
+        if old.capacity() > 0 {
+            self.send(ToWorker::DropClips(old));
+        }
+    }
+
+    /// Clear copies: lets every copy go that nothing plays now (System
+    /// status's Memory, 5c). No recording is touched, it is no undo step,
+    /// and each is made again when it is next wanted. How many went.
+    pub fn clear_copies(&mut self) -> usize {
+        let n = self.tracks.clear_copies();
+        self.copies.cleared();
+        while let Some(d) = self.tracks.take_dropped_copy() {
+            self.send(ToWorker::DropCopy(d));
+        }
+        n
+    }
+
+    /// What the copies have done.
+    pub fn copy_counts(&self) -> CopyCounts {
+        self.copies.counts
+    }
+
+    /// Memory the copies hold, how many there are, and how many are being
+    /// read or made.
+    pub fn copy_memory(&self) -> (usize, usize, usize) {
+        let (bytes, n) = self.tracks.copy_bytes();
+        (bytes, n, self.copies.busy())
+    }
+
+    /// The copies' share of memory ([`crate::copying::DEFAULT_BUDGET`] to
+    /// start with).
+    pub fn set_copy_budget(&mut self, bytes: usize) {
+        self.copies.budget = bytes;
+    }
+
+    /// Makes copies on `s` from now on, not the process's scheduler
+    /// (`Sched::shared`): for a test that steps its own.
+    pub fn copies_on(&self, s: Sched) {
+        self.send(ToWorker::Sched(s));
+    }
+
+    /// The copies' period: dropped ones to the worker, then what is
+    /// wanted, room and the source being read ([`CopySide::tend`]).
+    fn tend_copies(&mut self, block: &Block, map: &TempoMap) {
+        while let Some(d) = self.tracks.take_dropped_copy() {
+            self.send(ToWorker::DropCopy(d));
+        }
+        let Some(sp) = block.spans().last() else {
+            return;
+        };
+        let now = sp.tick_at(sp.frame + u64::from(sp.len));
+        let tx = self.tx.clone();
+        let send = |m: ToWorker| {
+            if let Some(tx) = &tx {
+                let _ = tx.send(m);
+            }
+        };
+        let gen = self.generation;
+        self.copies.tend(
+            &mut self.tracks,
+            map,
+            now,
+            block.frames as usize,
+            gen,
+            &mut |a| send(ToWorker::Copy(a)),
+            &mut |a| send(ToWorker::Drop(a)),
+        );
+        drop(tx);
+        while let Some(copy) = self.arrived.pop() {
+            if self.copies.made(&copy.key, &mut self.tracks, copy.bytes()) {
+                match self.tracks.put_copy(copy) {
+                    Ok(()) => self.copies.counts.made += 1,
+                    Err(c) => {
+                        self.copies.counts.no_room += 1;
+                        self.send(ToWorker::DropCopy(c.data));
+                    }
+                }
+            } else {
+                self.send(ToWorker::DropCopy(copy.data));
+            }
+        }
     }
 
     /// Run the tracks for one period (see [`AudioTracks::process`]), then
@@ -1093,6 +1232,7 @@ impl AudioHost {
     fn after_period(&mut self, block: &Block, map: &TempoMap) {
         self.tend_import(map);
         self.tend(block.frames as usize);
+        self.tend_copies(block, map);
         self.periods += 1;
         if self.periods.is_multiple_of(PLAYER_LOOK_EVERY) {
             if let Some(st) = self.tracks.player_stats() {
@@ -1655,6 +1795,17 @@ impl AudioHost {
             return false;
         }
         self.generation = self.generation.wrapping_add(1);
+        if let Some(a) = self.copies.clear() {
+            self.send(ToWorker::Drop(a));
+        }
+        self.send(ToWorker::Copy(Ask::CancelAll));
+        while let Some(c) = self.arrived.pop() {
+            self.copies.counts.stale += 1;
+            self.send(ToWorker::DropCopy(c.data));
+        }
+        while let Some(d) = self.tracks.take_dropped_copy() {
+            self.send(ToWorker::DropCopy(d));
+        }
         match self.fitting.take() {
             Some(Fitting::Reading { audio, .. }) => self.send(ToWorker::Drop(audio)),
             // Sizing and Stretching: the worker's answer carries the old
@@ -1714,6 +1865,39 @@ impl AudioHost {
         }
         while let Some(m) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             match m {
+                FromWorker::CopyBuffer { audio, gen, .. } if gen != self.generation => {
+                    self.send(ToWorker::Drop(audio));
+                }
+                FromWorker::CopyBuffer { key, audio, .. } => {
+                    if let Err(a) = self.copies.buffer(key, audio) {
+                        self.send(ToWorker::Drop(a));
+                    }
+                }
+                FromWorker::Copied { copy, gen } if gen != self.generation => {
+                    self.copies.counts.stale += 1;
+                    self.send(ToWorker::DropCopy(copy.data));
+                }
+                FromWorker::Copied { copy, .. } => {
+                    // Taken in once what is wanted has been looked at
+                    // again (`tend_copies`): a region edited while it was
+                    // made doesn't get it.
+                    if self.arrived.len() < self.arrived.capacity() {
+                        self.copies.look_soon();
+                        self.arrived.push(copy);
+                    } else {
+                        self.copies.gone(&copy.key, false);
+                        self.send(ToWorker::DropCopy(copy.data));
+                    }
+                }
+                FromWorker::CopyGone { gen, .. } if gen != self.generation => {}
+                FromWorker::CopyGone { key, why, .. } => {
+                    match why {
+                        Gone::Cancelled => {}
+                        Gone::Refused => self.copies.counts.refused += 1,
+                        Gone::Failed => self.copies.counts.failed += 1,
+                    }
+                    self.copies.gone(&key, why != Gone::Cancelled);
+                }
                 FromWorker::Room(saved) | FromWorker::Sized(saved, _) if self.cancelled > 0 => {
                     self.cancelled -= 1;
                     self.send(ToWorker::DropSaved(saved));
@@ -2242,13 +2426,13 @@ impl AudioHost {
                 budget -= got * ch;
                 if o.fill == full {
                     let buf = o.buf.take().expect("filled");
-                    let _ = self.tx.as_ref().map(|tx| {
-                        tx.send(ToWorker::Push {
+                    if let Some(tx) = &self.tx {
+                        let _ = tx.send(ToWorker::Push {
                             rec: o.rec,
                             buf,
                             len: full,
-                        })
-                    });
+                        });
+                    }
                     o.fill = 0;
                 }
                 if got == 0 {
@@ -2576,6 +2760,92 @@ fn keep_problem(room: &mut Vec<Problem>, lost: &mut u64, p: Problem) {
 /// and the files (see the module notes). It wakes at least every 20 ms
 /// while the writer runs, to see how its takes stand. `back` is its own
 /// channel, for the stream thread's whole-file reads.
+/// The scheduler's kind for the tracks' copies.
+const COPY_KIND: &str = "audio tracks copy";
+
+fn copy_key(key: &crate::copies::CopyKey) -> sched::Key {
+    sched::Key::new(COPY_KIND, key.id())
+}
+
+/// A copy being made on the scheduler: its job starts (finding the hits)
+/// in its first step, and what comes of it goes back to the host.
+struct CopyWork {
+    spec: Option<crate::copies::CopySpec>,
+    job: Option<crate::copies::CopyJob>,
+    done: Sender<FromWorker>,
+    gen: u32,
+}
+
+impl CopyWork {
+    fn key(&self) -> crate::copies::CopyKey {
+        match (&self.job, &self.spec) {
+            (Some(j), _) => *j.key(),
+            (None, Some(s)) => s.key,
+            (None, None) => unreachable!("a copy's work has its spec or its job"),
+        }
+    }
+}
+
+impl sched::Work for CopyWork {
+    fn step(&mut self, frames: usize) -> bool {
+        if let Some(spec) = self.spec.take() {
+            let key = spec.key;
+            match spec.start() {
+                Ok(j) => self.job = Some(j),
+                Err(_) => {
+                    let _ = self.done.send(FromWorker::CopyGone {
+                        key,
+                        why: Gone::Failed,
+                        gen: self.gen,
+                    });
+                    return true;
+                }
+            }
+            return false;
+        }
+        self.job.as_mut().is_none_or(|j| j.run(frames))
+    }
+
+    fn progress(&self) -> f32 {
+        self.job.as_ref().map_or(0.0, |j| j.progress())
+    }
+
+    fn finish(self: Box<Self>) {
+        let gen = self.gen;
+        // A job that couldn't start has said so already.
+        let Some(job) = self.job else {
+            return;
+        };
+        let key = *job.key();
+        let _ = self.done.send(match job.finish() {
+            Some(copy) => FromWorker::Copied { copy, gen },
+            None => FromWorker::CopyGone {
+                key,
+                why: Gone::Failed,
+                gen,
+            },
+        });
+    }
+
+    fn cancelled(self: Box<Self>) {
+        let _ = self.done.send(FromWorker::CopyGone {
+            key: self.key(),
+            why: Gone::Cancelled,
+            gen: self.gen,
+        });
+    }
+
+    /// Refused for want of memory: counted ([`CopyCounts::refused`]); the
+    /// reason stays here, as a string would be freed on the audio thread.
+    fn refused(self: Box<Self>, _why: String) {
+        let _ = self.done.send(FromWorker::CopyGone {
+            key: self.key(),
+            why: Gone::Refused,
+            gen: self.gen,
+        });
+    }
+}
+
 fn work(
     rate: u32,
     jobs: &Receiver<ToWorker>,
@@ -2596,6 +2866,7 @@ fn work(
         drive: None,
         drive_stop: None,
         layers: Vec::new(),
+        sched: None,
     };
     loop {
         let m = if w.files.writing() || !w.layers.is_empty() {
@@ -2677,6 +2948,9 @@ struct Worker {
     drive_stop: Option<Sender<(PathBuf, bool)>>,
     /// Loop layers' files being written (phase 4c.3).
     layers: Vec<LayerWrite>,
+    /// Where copies are made: the process's scheduler unless a test gave
+    /// its own ([`ToWorker::Sched`]).
+    sched: Option<Sched>,
 }
 
 impl Worker {
@@ -2893,6 +3167,52 @@ impl Worker {
     ) -> Option<FromWorker> {
         let (rate, files) = (self.rate, &mut self.files);
         Some(match m {
+            ToWorker::Copy(Ask::Buffer { n, key, gen }) => FromWorker::CopyBuffer {
+                key,
+                audio: vec![0.0; n],
+                gen,
+            },
+            ToWorker::Copy(Ask::Make {
+                spec,
+                priority,
+                need,
+                gen,
+            }) => {
+                let key = spec.key;
+                let s = self.sched.get_or_insert_with(Sched::shared);
+                let work = CopyWork {
+                    spec: Some(spec),
+                    job: None,
+                    done: done.clone(),
+                    gen,
+                };
+                s.submit(sched::Job::new(copy_key(&key), priority, work).needs(need));
+                return None;
+            }
+            ToWorker::Copy(Ask::Cancel(key)) => {
+                if let Some(s) = &self.sched {
+                    s.cancel(copy_key(&key));
+                }
+                return None;
+            }
+            ToWorker::Copy(Ask::CancelAll) => {
+                if let Some(s) = &self.sched {
+                    s.retain(|k| k.kind != COPY_KIND);
+                }
+                return None;
+            }
+            ToWorker::DropCopy(d) => {
+                drop(d);
+                return None;
+            }
+            ToWorker::DropClips(c) => {
+                drop(c);
+                return None;
+            }
+            ToWorker::Sched(s) => {
+                self.sched = Some(s);
+                return None;
+            }
             ToWorker::Room => FromWorker::Room(Saved::room(rate)),
             ToWorker::Size {
                 mut saved,

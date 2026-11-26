@@ -39,6 +39,9 @@ mpfree-sampler-ui = { path = "../mpfree-sampler-ui" }
 mpfree-looper = { path = "../mpfree-looper" }
 # Audio tracks on the Song view (audiotracks.rs).
 mpfree-audiotracks = { path = "../mpfree-audiotracks" }
+# The one scheduler for stretches made ahead (the tracks' tempo copies),
+# configured at the start (main.rs).
+mpfree-stretch = { path = "../mpfree-stretch" }
 mpfree-store = { path = "../mpfree-store" }
 # The mixer (every sound is summed in it) and its screen.
 mpfree-fx = { path = "../mpfree-fx" }
