@@ -6,7 +6,9 @@
 //! Repitch, and so does one the scheduler's memory check refuses; the
 //! copies share the one budget for derived audio by priority; the
 //! tracks emptied (a project opening) drop what was under way; Clear
-//! copies lets them go and they are made again.
+//! copies lets them go and they are made again; a region on Keep pitch
+//! drifts through a tempo change until the host makes the copy for the
+//! new tempo, then rejoins the bars.
 //!
 //! The scheduler is a manual one the test steps between periods, so what
 //! it does is the test's to see.
@@ -357,4 +359,42 @@ fn the_tracks_emptied_drop_what_was_under_way_and_clear_copies_lets_them_go() {
     assert_eq!(back, tone_take().audio);
     r.run_until(true, |r| r.copies() == 1);
     assert_eq!(r.h.copy_counts().made, 2);
+}
+
+#[test]
+fn a_region_on_keep_pitch_drifts_through_a_tempo_change_until_its_copy_is_made_then_rejoins() {
+    let region = Region {
+        keep_pitch: true,
+        ..stretch_region()
+    };
+    let mut r = Rig::new(90.0, vec![region]);
+    r.run_until(true, |r| r.copies() == 1);
+    let at = r.frame;
+    assert!(r.t.command(at, T::PlayStart));
+    r.run_until(true, |r| r.frame >= at + 2_048);
+    // Turned to 100 a few periods in: it plays on in pitch from its copy
+    // for 90 while the host makes the copy for 100 (the copy for 90 still
+    // plays, so it stays).
+    let c = r.frame;
+    assert!(r.t.command(c, T::TempoNow(100.0)));
+    r.run_until(true, |r| r.copies() == 2);
+    let made = r.frame;
+    assert_eq!(r.h.copy_counts().made, 2);
+    // It rejoins on the next bar line, bar 2's, and holds the new copy to
+    // its end.
+    let beat100 = 60.0 * f64::from(RATE) / 100.0;
+    let beats_at_c = (c - at) as f64 / (60.0 * f64::from(RATE) / 90.0);
+    let bar2 = c + ((4.0 - beats_at_c) * beat100) as u64;
+    assert!(made < bar2, "the copy came before bar 2's line, at {made}");
+    let end = c + ((8.0 - beats_at_c) * beat100) as u64;
+    r.run_until(true, |r| r.frame >= end + 2_048);
+    let hz = r.hz(c + 500, end - 500);
+    assert!((hz - 441.0).abs() <= 0.5, "in pitch all the way: {hz} Hz");
+    let st = r.h.tracks.stats();
+    assert_eq!(st.for_now, 0, "never Repitch: {st:?}");
+    let drift = (bar2 - c) as f64;
+    assert!(
+        (st.drifted as f64 - drift).abs() <= 2.0 * P as f64 + 64.0,
+        "drifted to bar 2's line: {st:?}, {drift}"
+    );
 }
