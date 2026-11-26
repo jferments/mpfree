@@ -10799,6 +10799,10 @@ fn player_session(
     // start of its audio is in memory (the audio tracks rethink's phase
     // 2): the needs go to the tracks whenever they change.
     time.set_audio_waits(tracks.streams());
+    // And a cue that launches an audio clip with a region on Stretch waits
+    // for its tempo copy at the tempo at its line (phase 5b.4), streaming
+    // on or not.
+    time.set_copy_waits(true);
     let mut needs_rev = 0u64;
     // A Fit to tempo ended, or a sound Put in a cell came in: its clip
     // waits while the time engine records.
@@ -11861,6 +11865,7 @@ fn player_session(
                         // Its cues wait for their audio as the last one's
                         // did; none of the last one's waits any more.
                         time.set_audio_waits(tracks.streams());
+                        time.set_copy_waits(true);
                         tracks.forget_waits();
                         needs_rev = 0;
                         // The old engine goes back in the box, to be freed
@@ -15564,6 +15569,10 @@ fn player_session(
                 time.audio_given_back(key);
             }
         });
+        // And about their tempo copies (5b.4).
+        tracks.copy_answers(|key, ready| {
+            time.copies_ready(key, ready);
+        });
         // The audio tracks' regions as the time engine refuses blocks
         // over them (phase 2, step 2d), when they changed.
         if let Some(spans) = tracks.spans_if_changed(time.project()) {
@@ -15612,6 +15621,7 @@ fn player_session(
             if st.audio_waits.needs_rev != needs_rev {
                 needs_rev = st.audio_waits.needs_rev;
                 tracks.hold_waits(&time.audio_needs());
+                tracks.hold_copies(&time.copy_needs(), time.project());
             }
             pad_grid = perform_pads::Grid::of(&st);
             out.show(gui::ToUi::Time(Box::new(st)));

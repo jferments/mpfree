@@ -70,7 +70,7 @@ use mpfree_time_ui::view::{
 use mpfree_transport::time::{TempoMap, Tick, PPQ};
 use mpfree_transport::{Block, Command, State, TransactionId};
 
-use super::audio_wait::{AudioNeed, AudioWaits, Ctx as WaitCtx, CueKey, Wait};
+use super::audio_wait::{AudioNeed, AudioWaits, CopyNeed, Ctx as WaitCtx, CueKey, Wait};
 use super::follow::FollowCounts;
 use super::link::{
     Counts, CueCounts, InPlace, PeriodEnd, Rx, StripCounts, ToAudio, ToControl, Tracks, Tx,
@@ -2277,6 +2277,43 @@ impl TimeControl {
         self.audio_waits.needs()
     }
 
+    /// Cues that launch an audio clip with a region on Stretch wait for
+    /// its tempo copy at the tempo at their line too (phase 5b.4,
+    /// `audio_wait.rs`), streaming on or not. Turned off, every cue
+    /// waiting only for copies goes into the next view as it is. The
+    /// offline copy never turns it on.
+    pub fn set_copy_waits(&mut self, on: bool) {
+        if self.audio_waits.set_copies_on(on) {
+            let _ = self.compile();
+        }
+    }
+
+    /// The tempo copies the waiting cues need ready, as [`audio_needs`]
+    /// lists their audio (the same `needs_rev`). A copy said ready stays
+    /// listed until its cue lands or goes.
+    ///
+    /// [`audio_needs`]: TimeControl::audio_needs
+    pub fn copy_needs(&self) -> &[CopyNeed] {
+        self.audio_waits.copy_needs()
+    }
+
+    /// The app has every copy `key`'s cues need ready (`ok`): with their
+    /// audio held they go into the view at once and land on their line.
+    /// Not `ok`: not (any more), so they stay out, or come out again, and
+    /// move on when their line plays without them. False when nothing
+    /// waits for copies under `key`.
+    pub fn copies_ready(&mut self, key: CueKey, ok: bool) -> bool {
+        match self.audio_waits.copies_ready(key, ok) {
+            None => false,
+            Some(compile) => {
+                if compile {
+                    let _ = self.compile();
+                }
+                true
+            }
+        }
+    }
+
     /// The app holds the audio `key`'s cues need (`ok`): they go into the
     /// view at once and land on their line (a hold in its last few ms
     /// lands late, in phase). Not `ok`: not held (yet), so they stay out,
@@ -2316,8 +2353,8 @@ impl TimeControl {
     fn audio_waits_due(&mut self, frames: u32) -> bool {
         let period = self.period_ticks(frames);
         let cx = wait_ctx!(self);
-        let mut compile = false;
-        for (gone, said) in self.audio_waits.period(&cx, period) {
+        let (due, mut compile) = self.audio_waits.period(&cx, period);
+        for (gone, said) in due {
             if let Some(w) = gone {
                 self.cancel_wait(w);
                 compile = true;
@@ -10101,6 +10138,14 @@ impl TimeControl {
                 "; cues waiting for their audio: {} kept back, {} held in time, {} moved to a \
                  later line, {} cancelled, {} given back, {} waiting now",
                 w.kept, w.held, w.moved, w.cancelled, w.given_back, w.waiting
+            ));
+        }
+        // Cues that waited for their tempo copies (phase 5b.4).
+        if w.copy_kept > 0 {
+            line.push_str(&format!(
+                "; cues waiting for their tempo copies: {} kept back, {} ready in time, {} moved \
+                 to a later line, {} started on Repitch, {} cancelled on Keep pitch",
+                w.copy_kept, w.copy_ready, w.copy_moved, w.copy_repitch, w.copy_cancelled
             ));
         }
         // Song edits UNDO took back while the audio regions stayed (their

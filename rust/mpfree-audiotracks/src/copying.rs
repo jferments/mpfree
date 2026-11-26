@@ -71,6 +71,9 @@ pub struct ClipWant {
     pub len: Tick,
     pub last_frame: i64,
     pub priority: Priority,
+    /// The tempo its copies are for: a launch's, the tempo at its line
+    /// (5b.4); 0 for the tempo at the playhead.
+    pub bpm: f64,
 }
 
 /// A copy wanted: its key, its take and channels, how urgent.
@@ -136,6 +139,8 @@ pub(crate) struct CopySide {
     /// Where the next look builds what is wanted, made once.
     scratch: Vec<Want>,
     clips: Vec<ClipWant>,
+    /// The clips launched and waiting for their copies (5b.4), at Urgent.
+    launches: Vec<ClipWant>,
     map: Option<TempoMap>,
     /// Frames the map has held for.
     held_for: u64,
@@ -162,6 +167,7 @@ impl CopySide {
             wanted: Vec::with_capacity(MAX_WANTED),
             scratch: Vec::with_capacity(MAX_WANTED),
             clips: Vec::new(),
+            launches: Vec::new(),
             map: None,
             held_for: 0,
             reading: None,
@@ -179,6 +185,14 @@ impl CopySide {
     /// the host to drop off the audio thread.
     pub(crate) fn set_clips(&mut self, clips: Vec<ClipWant>) -> Vec<ClipWant> {
         std::mem::replace(&mut self.clips, clips)
+    }
+
+    /// The clips launched and waiting for their copies, from the app
+    /// (5b.4); looked at again at the next steady period. Gives back the
+    /// old list, for the host to drop off the audio thread.
+    pub(crate) fn set_launches(&mut self, clips: Vec<ClipWant>) -> Vec<ClipWant> {
+        self.relook = true;
+        std::mem::replace(&mut self.launches, clips)
     }
 
     /// Forgets everything under way: the tracks were emptied. The buffer
@@ -275,8 +289,39 @@ impl CopySide {
                 too_many += 1;
             }
         };
-        // The regions drifting on Keep pitch first: they rejoin the bars
-        // once their copy is here.
+        let bpm = map.bpm_at(now.max(0.0) as Tick);
+        let clip =
+            |out: &mut Vec<Want>, c: &ClipWant, push: &mut dyn FnMut(&mut Vec<Want>, Want)| {
+                let play = ClipPlay {
+                    regions: &c.regions[..c.n.min(MAX_CLIP_REGIONS)],
+                    origin: 0.0,
+                    len: c.len,
+                    last_frame: c.last_frame,
+                    gain: 1.0,
+                    clip: 0,
+                    stamp: 0,
+                };
+                let at = if c.bpm > 0.0 { c.bpm } else { bpm };
+                tracks.clip_copy_keys(&play, at, &mut |_, key| {
+                    let Some(take) = tracks.take_of(key.rec) else {
+                        return;
+                    };
+                    let channels = tracks.take(take).map_or(1, |i| i.channels as u8);
+                    let w = Want {
+                        key,
+                        take,
+                        channels,
+                        priority: c.priority,
+                    };
+                    push(out, w);
+                });
+            };
+        // The clips launched and waiting for their copies (5b.4), then
+        // the regions drifting on Keep pitch: they rejoin the bars once
+        // their copy is here.
+        for c in &self.launches {
+            clip(&mut out, c, &mut push);
+        }
         tracks.drift_wants(&mut |key| {
             let Some(take) = tracks.take_of(key.rec) else {
                 return;
@@ -318,30 +363,8 @@ impl CopySide {
                 push(&mut out, w);
             }
         }
-        let bpm = map.bpm_at(now.max(0.0) as Tick);
         for c in &self.clips {
-            let play = ClipPlay {
-                regions: &c.regions[..c.n.min(MAX_CLIP_REGIONS)],
-                origin: 0.0,
-                len: c.len,
-                last_frame: c.last_frame,
-                gain: 1.0,
-                clip: 0,
-                stamp: 0,
-            };
-            tracks.clip_copy_keys(&play, bpm, &mut |_, key| {
-                let Some(take) = tracks.take_of(key.rec) else {
-                    return;
-                };
-                let channels = tracks.take(take).map_or(1, |i| i.channels as u8);
-                let w = Want {
-                    key,
-                    take,
-                    channels,
-                    priority: c.priority,
-                };
-                push(&mut out, w);
-            });
+            clip(&mut out, c, &mut push);
         }
         self.counts.too_many += too_many;
         // Most urgent first, in the order found within each (an insertion

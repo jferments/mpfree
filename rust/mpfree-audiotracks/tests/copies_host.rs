@@ -227,6 +227,7 @@ fn a_clip_the_app_lists_gets_its_copy_at_the_tempo_at_the_playhead() {
         len: 2 * BAR,
         last_frame: tone_take().frames as i64,
         priority: Priority::Prepared,
+        bpm: 0.0,
     }]);
     r.run_until(true, |r| r.copies() == 1);
     let v: Vec<_> = r.h.tracks.copies().collect();
