@@ -14402,6 +14402,10 @@ fn player_session(
                     mix.instruments.stop();
                     mix.pad_synths.stop();
                     music.patches_stopped();
+                    // The screen lets go of every finger: a pad held there,
+                    // the XY pad's effect and a throw let go too (layout
+                    // spec 1a: a momentary action is released on Stop).
+                    out.show(gui::ToUi::LetGo);
                     // STOP while stopped turns the XY pad's Hold off (its
                     // layout lets go as it says).
                     if mix.xy_held() {
