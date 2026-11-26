@@ -342,6 +342,9 @@ fn a_gesture_takes_continues_lane_over_and_undo_gives_it_back() {
             .unwrap();
         c.moves.set_by(target, By::Continue { on, base: 0.5 });
         let was = c.moves.clone();
+        // The knob turned down since the try (S3): yours as you heard it.
+        s.project.tracks[0].knobs =
+            mpfree_seq::inst::Knobs(vec![(RelAddr::new(OnTrack::Inst, 3), 0.3)].into());
         s.moves = vec![
             (100.0, mv(cut(), 0.2)),
             (200.0, mv(cut(), 0.5)),
@@ -354,7 +357,11 @@ fn a_gesture_takes_continues_lane_over_and_undo_gives_it_back() {
         assert_eq!(moves.by(target), Some(By::Hand), "on {on}: yours");
         let ticks: Vec<u32> = lane(&r.project, target).iter().map(|p| p.tick).collect();
         match on {
-            true => assert_eq!(ticks, [100, 200, 300, 2000, 2400]),
+            true => {
+                assert_eq!(ticks, [100, 200, 300, 2000, 2400]);
+                let at = lane(&r.project, target)[3].u;
+                assert!((at - 0.6).abs() < 1e-5, "0.8 heard 0.2 lower: {at}");
+            }
             false => assert_eq!(ticks, [100, 200, 300]),
         }
         r.takes.undo(&mut r.project).unwrap();

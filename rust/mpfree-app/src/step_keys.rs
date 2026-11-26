@@ -749,6 +749,7 @@ mod tests {
             lock_values: Vec::new(),
             silent: None,
             new_from: None,
+            sound_lanes: Vec::new(),
         }
     }
 

@@ -295,6 +295,37 @@ impl Lane {
         }
     }
 
+    /// A lane of Continue's heard with its knob at `now` (S3: the moves go
+    /// with your knob): each point as far from `now` as it was from the
+    /// knob it was written against, by ratio on a log map (a cutoff an
+    /// octave up stays an octave up) and by difference on any other, held
+    /// in the knob's range; then written against `now`. A lane of yours,
+    /// or a knob where it was, stays as it is. Not real-time.
+    pub fn follow_knob(&mut self, now: f32) {
+        let By::Continue { on, base } = self.by else {
+            return;
+        };
+        if !now.is_finite() || now == base {
+            return;
+        }
+        let m = self.map;
+        let (lo, hi) = (m.min.min(m.max), m.max.max(m.min));
+        let ratio = m.log && base > 0.0 && now > 0.0;
+        for p in &mut self.points {
+            if p.kind == Kind::End {
+                continue;
+            }
+            let v = m.value(p.u);
+            let w = if ratio {
+                v * (now / base)
+            } else {
+                v + (now - base)
+            };
+            p.u = m.unit(w.clamp(lo, hi));
+        }
+        self.by = By::Continue { on, base: now };
+    }
+
     /// The knob position at `tick` (a point on `tick` counts), or `None`
     /// where the lane is free. Before its first point a lane is where the
     /// pass before left it.
@@ -441,20 +472,23 @@ impl Moves {
 
     /// A move of your own about to go on `target`'s lane: when the lane is
     /// Continue's it becomes yours (S3: your moves win), keeping its points
-    /// if it was on and losing them if it was off (you weren't hearing
-    /// them). The lane as it was, for [`Moves::put_back`] to undo it with;
+    /// if it was on, as heard with the knob at `knob` when known
+    /// ([`Lane::follow_knob`]), and losing them if it was off (you weren't
+    /// hearing them). The lane as it was, for [`Moves::put_back`] to undo it with;
     /// None when the lane was yours or there is none. Not real-time: it
     /// clones the lane.
-    pub fn take_over(&mut self, target: Target) -> Option<Lane> {
+    pub fn take_over(&mut self, target: Target, knob: Option<f32>) -> Option<Lane> {
         let lane = self.lane_mut(target)?;
         let By::Continue { on, .. } = lane.by else {
             return None;
         };
         let was = lane.clone();
-        lane.by = By::Hand;
-        if !on {
-            lane.points.clear();
+        match (on, knob) {
+            (true, Some(now)) => lane.follow_knob(now),
+            (true, None) => {}
+            (false, _) => lane.points.clear(),
         }
+        lane.by = By::Hand;
         Some(was)
     }
 

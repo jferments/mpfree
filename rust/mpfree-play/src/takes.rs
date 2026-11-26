@@ -754,8 +754,9 @@ impl Takes {
         k: &TakenMove,
         points: &[(f64, f32, Kind)],
     ) -> Result<(), ModelError> {
+        let knobs = knobs_of(project, k.track);
         let c = clip(project, k.track, k.slot).ok_or(ModelError::BadSlot)?;
-        let put = write_move(c, k.track, k.slot, k.target, k.map, points, k.len)?;
+        let put = write_move(c, &knobs, (k.track, k.slot), k.target, k.map, points, k.len)?;
         self.entry(k.take).moves.push(put);
         Ok(())
     }
@@ -779,12 +780,13 @@ impl Takes {
         {
             return Err(ModelError::BadSlot);
         }
+        let knobs = knobs_of(project, track);
         let c = clip(project, track, slot).ok_or(ModelError::BadSlot)?;
         let before = c.moves.clone();
         let len = u32::try_from(c.length).map_err(|_| ModelError::ClipLength)?;
         let mut puts = Vec::with_capacity(gestures.len());
         for (target, map, points) in gestures {
-            match write_move(c, track, slot, *target, *map, points, len) {
+            match write_move(c, &knobs, (track, slot), *target, *map, points, len) {
                 Ok(p) => puts.push(p),
                 Err(e) => {
                     c.moves = before;
@@ -2012,11 +2014,12 @@ impl Takes {
             }
         }
         for put in &mut take.moves {
+            let knobs = knobs_of(project, put.track);
             if let Some(c) = clip(project, put.track, put.slot) {
                 if let Ok(again) = write_move(
                     c,
-                    put.track,
-                    put.slot,
+                    &knobs,
+                    (put.track, put.slot),
                     put.target,
                     put.map,
                     &put.points,
@@ -2283,12 +2286,23 @@ impl Takes {
     }
 }
 
+/// Where track `track`'s knobs are, as the app told them: a lane of
+/// Continue's taken over is yours as you heard it (`Moves::take_over`).
+fn knobs_of(project: &Project, track: usize) -> mpfree_seq::inst::Knobs {
+    project
+        .tracks
+        .get(track)
+        .map(|t| t.knobs.clone())
+        .unwrap_or_default()
+}
+
 /// Write a gesture into clip `c`'s lane, keeping what it replaces. A lane
-/// of Continue's there becomes yours first (`Moves::take_over`).
+/// of Continue's there becomes yours first (`Moves::take_over`), with the
+/// knobs where `knobs` says.
 fn write_move(
     c: &mut Clip,
-    track: usize,
-    slot: usize,
+    knobs: &mpfree_seq::inst::Knobs,
+    (track, slot): (usize, usize),
     target: Target,
     map: Map,
     points: &[(f64, f32, Kind)],
@@ -2298,7 +2312,7 @@ fn write_move(
         return Err(ModelError::BadSlot);
     }
     let mut saved = Vec::new();
-    let was = c.moves.take_over(target);
+    let was = c.moves.take_over(target, knobs.of(target));
     let put = c
         .moves
         .put_saving(target, map, points, len, |from, to, old| {

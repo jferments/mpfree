@@ -11,13 +11,14 @@
 //!   lane ends there unless that note has a move of its own, or at the
 //!   moved note's end when no new note follows, so a looping clip comes
 //!   round to your bars on your knob.
-//! - Brightness and Length only. Space (the track's echo send) waits for a
-//!   later step.
+//! - Brightness and Length on the track's instrument, and Space on the
+//!   track's first send (its mixer strip, [`crate::space_control`]).
 //! - A knob with a lane of your own is left alone (your moves win), and so
-//!   is one the clip's instrument locks forbid ([`Clip::inst_refuses`]).
+//!   is an instrument knob the clip's instrument locks forbid
+//!   ([`Clip::inst_refuses`]).
 //! - The values are the knob's own, written against where it was when the
-//!   try was made (`base`): a later turn of the knob doesn't carry the lane
-//!   with it.
+//!   try was made (`base`); what plays hears them from the knob where it
+//!   is now ([`mpfree_seq::mpfree_moves::Lane::follow_knob`]).
 //! - Over a lane of Continue's already there (an earlier Done), the new
 //!   bars are written afresh and the bars before them kept.
 
@@ -37,24 +38,33 @@ const NEAR: Tick = mpfree_context::groove::STEP / 2;
 
 /// The controls a lane of Continue's moves, in the order their lanes go
 /// in.
-const CONTROLS: [Control; 2] = [Control::Brightness, Control::Length];
+const CONTROLS: [Control; 3] = [Control::Brightness, Control::Length, Control::Space];
 
 /// The lane of Continue's for the knob `id` of the track's instrument.
 pub fn target_of(id: u16) -> Target {
     Target::Track(RelAddr::new(OnTrack::Inst, id))
 }
 
+/// The lane of Continue's for `control`'s knob `id`: Space's is on the
+/// track's mixer strip (its send), the rest on its instrument.
+pub fn lane_of(control: Control, id: u16) -> Target {
+    match control {
+        Control::Space => Target::Track(RelAddr::new(OnTrack::Strip, id)),
+        _ => target_of(id),
+    }
+}
+
 /// `clip` with Continue's lanes for `moves` over its new bars (from
 /// `new_from`, in clip ticks) on the knobs `safe` names; `may(id)` says
-/// whether knob `id` may take a lane on this clip. The knobs that got a
-/// lane, in order.
+/// whether instrument knob `id` may take a lane on this clip. The lanes
+/// that went in, in order.
 pub fn put_sound(
     clip: &mut Clip,
     moves: &[SoundMove],
     safe: &SafeControls,
     new_from: Tick,
     may: impl Fn(u16) -> bool,
-) -> Vec<u16> {
+) -> Vec<Target> {
     let len = clip.length.max(1);
     let mut onsets: Vec<(Tick, Tick)> = clip
         .notes
@@ -76,8 +86,9 @@ pub fn put_sound(
         let Some(k) = safe.get(control) else {
             continue;
         };
-        let target = target_of(k.id);
-        if clip.moves.by(target) == Some(By::Hand) || !may(k.id) {
+        let target = lane_of(control, k.id);
+        let inst = control != Control::Space;
+        if clip.moves.by(target) == Some(By::Hand) || (inst && !may(k.id)) {
             continue;
         }
         let map = Map {
@@ -124,7 +135,7 @@ pub fn put_sound(
             continue;
         }
         if write_lane(clip, target, map, points, k.base, new_from) {
-            out.push(k.id);
+            out.push(target);
         }
     }
     out
@@ -144,7 +155,14 @@ fn write_lane(
 ) -> bool {
     let first = points.first().map_or(0, |p| p.tick);
     let cut = first.min(u32::try_from(new_from.max(0)).unwrap_or(u32::MAX));
-    let mut all: Vec<Point> = match clip.moves.lane(target) {
+    // The bars kept from before are heard from the knob where it is now
+    // (`base`), as the new ones are written.
+    let kept = clip.moves.lane(target).map(|old| {
+        let mut old = old.clone();
+        old.follow_knob(base);
+        old
+    });
+    let mut all: Vec<Point> = match &kept {
         Some(old) => old
             .points
             .iter()
@@ -237,6 +255,7 @@ mod tests {
         SafeControls {
             brightness: Some(cutoff()),
             length: Some(release()),
+            space: None,
         }
     }
 
@@ -250,7 +269,7 @@ mod tests {
             mv(Control::Brightness, BAR + 3 * 960, -0.5),
         ];
         let got = put_sound(&mut c, &moves, &safe(), BAR, |_| true);
-        assert_eq!(got, vec![7]);
+        assert_eq!(got, vec![target_of(7)]);
         let lane = c.moves.lane(target_of(7)).expect("a lane on the cutoff");
         assert_eq!(
             lane.by,
@@ -295,7 +314,7 @@ mod tests {
             mv(Control::Length, BAR + 3 * 960, 0.6),
         ];
         let got = put_sound(&mut c, &moves, &safe(), BAR, |_| true);
-        assert_eq!(got, vec![9], "the release only");
+        assert_eq!(got, vec![target_of(9)], "the release only");
         assert_eq!(c.moves.lane(target).cloned(), before);
     }
 
@@ -324,7 +343,7 @@ mod tests {
         b.base = 1500.0;
         let s = SafeControls {
             brightness: Some(b),
-            length: None,
+            ..SafeControls::default()
         };
         let second = [mv(Control::Brightness, 2 * BAR + 960, -1.0)];
         put_sound(&mut longer, &second, &s, 2 * BAR, |_| true);
@@ -342,6 +361,21 @@ mod tests {
                 base: 1500.0
             }
         );
+        // The bars before go with the knob, now at 1500: the same ratio
+        // to it as they had to the knob they were written against.
+        let old = c.moves.lane(target_of(7)).unwrap();
+        let ratio = |l: &mpfree_seq::mpfree_moves::Lane| {
+            let By::Continue { base, .. } = l.by else {
+                panic!("Continue's");
+            };
+            l.map.value(l.points[0].u) / base
+        };
+        assert!(
+            (ratio(lane) - ratio(old)).abs() < 1e-3,
+            "{} {}",
+            ratio(lane),
+            ratio(old)
+        );
     }
 
     #[test]
@@ -351,9 +385,45 @@ mod tests {
         let none = SafeControls::default();
         let moves = [mv(Control::Brightness, BAR, 0.5)];
         assert!(put_sound(&mut c, &moves, &none, BAR, |_| true).is_empty());
-        // Space has no knob here.
+        // Space has no send here.
         let space = [mv(Control::Space, BAR, 0.5)];
         assert!(put_sound(&mut c, &space, &safe(), BAR, |_| true).is_empty());
         assert!(c.moves.is_empty());
+    }
+
+    /// Space throws the note into the echo on the track's first send (its
+    /// mixer strip, not the instrument): up to three times its own level
+    /// at a full move, never past the send's top, and an instrument lock
+    /// refused there doesn't stop it. A send that is off has no Space.
+    #[test]
+    fn space_moves_the_tracks_first_send() {
+        use crate::sound::{space_control, SPACE_DB};
+        let send = 6;
+        let mut c = clip();
+        let s = SafeControls {
+            space: space_control(send, -12.0, -80.0, 6.0),
+            ..safe()
+        };
+        let moves = [mv(Control::Space, BAR + 3 * 960, 1.0)];
+        let got = put_sound(&mut c, &moves, &s, BAR, |_| false);
+        let strip = lane_of(Control::Space, send);
+        assert_eq!(got, vec![strip]);
+        assert_eq!(strip, Target::Track(RelAddr::new(OnTrack::Strip, send)));
+        let lane = c.moves.lane(strip).unwrap();
+        let top = lane.map.value(lane.points[0].u);
+        assert!((top - (-12.0 + SPACE_DB)).abs() < 1e-3, "{top}");
+        assert_eq!(
+            lane.by,
+            By::Continue {
+                on: true,
+                base: -12.0
+            }
+        );
+        // Near the top: held there.
+        let high = space_control(send, 2.0, -80.0, 6.0).unwrap();
+        assert_eq!(high.value(1.0), 6.0);
+        // Off, or at the top already: no Space.
+        assert_eq!(space_control(send, -80.0, -80.0, 6.0), None);
+        assert_eq!(space_control(send, 6.0, -80.0, 6.0), None);
     }
 }
