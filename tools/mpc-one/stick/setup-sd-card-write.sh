@@ -44,10 +44,14 @@ R=''
 #      filesystem stops writing (errors=remount-ro after an error);
 #   7. closes: sync, both mounts unmounted (LETGO seconds for files to be let go, then whatever still holds a
 #      file or folder inside the card is stopped, as a shutdown would; if even that leaves it mounted, the
-#      MPC shuts down cleanly, which unmounts it), the disk read-only again, the first sector read again
+#      MPC shuts down cleanly, which unmounts it). Then the disk read-only again, the first sector read again
 #      (the mark must be clear: a clean unmount clears it), fsck.exfat -n again, the sectors written noted,
 #      then the read-only window's close (unbind, no device left, the rule, links and mount points gone). A
 #      controller that won't let go turns the MPC off, as the read-only window does.
+#      A card taken out, while open or during that wait, is different (S2b's B2c): nothing can be written
+#      to it or closed cleanly any more, so its mounts are taken away at once (lazily, as the read-only
+#      window does) and nothing is stopped: a program still holding a file there (the pad player,
+#      recording) gets errors on it and lets go itself. Then the read-only window's close.
 # The only writes outside /run (RAM, the kernel log, the controller's sysfs bind and unbind files and the
 # card's force_ro files): the card's MPFree folder, which only the asker writes in, the folder itself if it
 # was missing, and the exFAT in-use mark the kernel sets while the card is open and clears at the unmount.
@@ -78,6 +82,7 @@ QUIET=30
 ALIVE="$ASK/sd-card-write.alive"
 NEEDS='cat cut dd dmesg grep mkdir mount mv od readlink rm rmdir sleep sync systemctl tr udevadm umount'
 opened=''
+gone=''
 mounted=''
 card=''
 dev=''
@@ -155,22 +160,47 @@ unmount_one() {   # $1: wait up to $2 seconds for a plain unmount
   done
   return 0
 }
+gone_now() {   # the card was taken out, seen now or before; from then on its mounts only go lazily
+  [ -n "$gone" ] && return 0
+  [ -e "$R/sys/block/$card" ] && return 1
+  say "the card was taken out while it was being closed"
+  gone=yes
+}
+let_go() {
+  # The card was taken out: take its mounts away now, whatever still holds a file there, and stop
+  # nothing (never the pad player, never a shutdown). Their files are gone from every path at once;
+  # what holds one gets errors and lets go. A mount that stays is said; the next window won't open while
+  # anything is mounted at the card's places. No sync: nothing reaches a card that's gone.
+  for m in "$MPF" "$MNT" "$PRIV"; do
+    on "$m" || continue
+    if umount -l "$R$m" 2>/dev/null; then
+      say "unmounted $m lazily: the card was taken out"
+    else
+      say "could not unmount $m after the card was taken out"
+    fi
+  done
+  mounted=''
+}
 unmount() {
   [ -n "$mounted" ] || return 0
+  gone_now && { let_go; return 0; }
   sync
   ok=yes
   for m in "$MPF" "$MNT" "$PRIV"; do
     on "$m" || continue
     unmount_one "$m" "$LETGO" && continue
+    gone_now && { let_go; return 0; }
     for p in $(holders); do
       say "stopping process $p ($(cat "$R/proc/$p/comm" 2>/dev/null)): it still held a file on the card"
       kill -TERM "$p" 2>/dev/null
     done
     unmount_one "$m" 5 && continue
+    gone_now && { let_go; return 0; }
     for p in $(holders); do kill -KILL "$p" 2>/dev/null; done
     unmount_one "$m" 5 || ok=''
   done
   if [ -z "$ok" ] || card_mounted; then
+    gone_now && { let_go; return 0; }
     say "STOP: the card could not be unmounted; shutting down cleanly, which unmounts it"
     status failed "The SD card could not be closed, so the MPC shuts down to close it cleanly."
     sync
@@ -484,11 +514,17 @@ trap '' TERM INT
 status closing "Closing the SD card"
 if [ "$why" = out ]; then
   say "the card was taken out while it was open for writing"
+  gone=yes
   close_window
   status closed "The card was taken out while open for writing: check it on a computer before the next save."
   exit 0
 fi
 unmount
+if gone_now; then
+  close_window
+  status closed "The card was taken out while it was being closed: check it on a computer before the next save."
+  exit 0
+fi
 written=$(( ($(sectors_written) - written_before) / 2048 ))
 setro
 [ "$(cat "$R/sys/block/$card/ro")" = 1 ] || fail "$card could not be made read-only again"
