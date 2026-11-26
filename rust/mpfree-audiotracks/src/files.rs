@@ -1713,6 +1713,7 @@ mod tests {
             group: 0,
             pass: 0,
             bpm: 0.0,
+            varied: false,
             anchor: 0.0,
             frames: 500,
             channels: 1,

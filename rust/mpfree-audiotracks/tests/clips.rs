@@ -58,6 +58,7 @@ fn take(k: u16, frames: usize, f: impl Fn(u64) -> (f32, f32)) -> TakeFile {
         file: String::new(),
         path: None,
         audio,
+        varied: false,
     }
 }
 
@@ -74,6 +75,9 @@ fn region(k: u16, s: i64, e: i64, src: i64) -> ClipRegion {
         fade_out: 0,
         into: 0,
         left: 0,
+        bpm: 0.0,
+        follow: Default::default(),
+        keep_pitch: false,
     }
 }
 

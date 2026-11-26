@@ -7992,6 +7992,51 @@ fn track_instruments(
     }
 }
 
+/// The own value of the knob `at` on track `t` (under the clips' locks
+/// and lanes, and the last turn of it): where Continue's lanes there are
+/// heard from (composing tools S3). An instrument knob on the instrument
+/// the track plays, found as [`track_instruments`] finds it; a send on
+/// the strip the track's sound is heard on, as the time engine sends its
+/// lanes there (`time::strips`). None on MIDI out, a kit, or a knob there
+/// isn't.
+fn track_knob(
+    t: usize,
+    at: mpfree_play::mpfree_param::RelAddr,
+    mix: &mixing::MixHost,
+    kits: &sampler::TrackKits,
+    synth: &synth::Synth,
+    midi: &midi_out::MidiOut,
+) -> Option<f32> {
+    use mpfree_play::mpfree_param::{track_strip, OnTrack, Owner, ParamAddr, Strip};
+    let own = &mix.instruments;
+    let id = at.param;
+    if midi.takes(u16::try_from(t).ok()?) {
+        None
+    } else if at.on == OnTrack::Strip {
+        let on = own
+            .heard_on(t)
+            .and_then(|s| u8::try_from(s).ok())
+            .map_or(track_strip(u8::try_from(t).ok()?), Strip::Track);
+        let addr = ParamAddr::new(Owner::Strip(on), id);
+        mix.modu
+            .engine()
+            .base(addr)
+            .or_else(|| modmix::describe(&mix.mixer, addr).map(|(_, v)| v))
+    } else if at.on != OnTrack::Inst {
+        None
+    } else if own.plays(t) {
+        own.pad_beneath(t, id).map(|(_, v)| v)
+    } else if kits.plays_synth(t) {
+        let (_, params) = synth.node_ref();
+        params
+            .iter()
+            .any(|p| p.id == id && !p.readonly)
+            .then(|| synth.pad_beneath(id).1)
+    } else {
+        None
+    }
+}
+
 impl SeqPads<'_> {
     /// Pressure on `pad`'s sounding note of `track`, from `by` (its clip,
     /// or its arp): the synth's notes that source started, else the pad's
@@ -15088,7 +15133,11 @@ fn player_session(
             &synth,
             &midi_out,
         );
-        time.set_instruments(&inst_now[..n]);
+        // Continue's playing lanes go with the knobs they move (composing
+        // tools S3): each knob's own value, under the clips' locks.
+        time.set_instruments_and_knobs(&inst_now[..n], |t, at| {
+            track_knob(t, at, &mix, &track_kits, &synth, &midi_out)
+        });
         // A take on a track whose instrument plays notes records notes
         // (instrument redesign step 5c), the shared synth's too (step
         // sequencer refactor E4).
@@ -15519,6 +15568,9 @@ fn player_session(
         // over them (phase 2, step 2d), when they changed.
         if let Some(spans) = tracks.spans_if_changed(time.project()) {
             time.set_audio_spans(spans);
+        }
+        if let Some(tempos) = tracks.tempos_if_changed() {
+            time.set_rec_tempos(tempos);
         }
         cut_blocks_under_takes(out, &mut time, &mut tracks);
         // Fit to tempo on an audio clip's card: once its copies are in,
@@ -18820,6 +18872,7 @@ mod tests {
                 file: String::new(),
                 path: None,
                 audio: vec![0.25; frames],
+                varied: false,
             };
             assert!(r.tracks.host.tracks.load_take(take).is_ok());
             while r.tracks.host.tracks.loading() > 0 {
@@ -19014,6 +19067,7 @@ mod tests {
             file: String::new(),
             path: None,
             audio,
+            varied: false,
         };
         assert!(tracks.host.tracks.load_take(take).is_ok());
         let (mut out, mut at) = (Vec::new(), None);
@@ -19211,6 +19265,7 @@ mod tests {
             file: String::new(),
             path: None,
             audio: vec![0.5; made],
+            varied: false,
         };
         assert!(tracks.host.tracks.load_take(take).is_ok());
         let mut rest = Vec::new();
@@ -19334,6 +19389,7 @@ mod tests {
                 file: String::new(),
                 path: None,
                 audio: vec![level; bar_frames],
+                varied: false,
             };
             assert!(tracks.host.tracks.load_take(take).is_ok());
         }
@@ -19483,6 +19539,7 @@ mod tests {
             file: String::new(),
             path: None,
             audio,
+            varied: false,
         };
         assert!(tracks.host.tracks.load_take(take).is_ok());
         fn run(
@@ -19625,6 +19682,9 @@ mod tests {
                 if let Some(spans) = tracks.spans_if_changed(time.project()) {
                     time.set_audio_spans(spans);
                 }
+                if let Some(tempos) = tracks.tempos_if_changed() {
+                    time.set_rec_tempos(tempos);
+                }
                 cut_blocks_under_takes(out, time, tracks);
             }
         }
@@ -19661,6 +19721,7 @@ mod tests {
                         }
                     })
                     .collect(),
+                varied: false,
             };
             assert!(tracks.host.tracks.load_take(take).is_ok());
         }
@@ -19865,6 +19926,9 @@ mod tests {
                 if let Some(spans) = tracks.spans_if_changed(time.project()) {
                     time.set_audio_spans(spans);
                 }
+                if let Some(tempos) = tracks.tempos_if_changed() {
+                    time.set_rec_tempos(tempos);
+                }
                 cut_blocks_under_takes(out, time, tracks);
             }
         }
@@ -19893,6 +19957,7 @@ mod tests {
                 audio: (0..frames)
                     .map(|i| (i % k) as f32 / (2.0 * k as f32))
                     .collect(),
+                varied: false,
             };
             assert!(tracks.host.tracks.load_take(take).is_ok());
         }
@@ -20062,6 +20127,7 @@ mod tests {
                 file: String::new(),
                 path: None,
                 audio: vec![0.25; frames],
+                varied: false,
             };
             assert!(tracks.host.tracks.load_take(take).is_ok());
         }
@@ -20177,6 +20243,7 @@ mod tests {
             file: String::new(),
             path: None,
             audio: vec![0.25; 2 * bar_frames],
+            varied: false,
         };
         assert!(tracks.host.tracks.load_take(take).is_ok());
         for _ in 0..100 {
@@ -20281,6 +20348,7 @@ mod tests {
             file: String::new(),
             path: None,
             audio: vec![0.25; bar_frames],
+            varied: false,
         };
         assert!(tracks.host.tracks.load_take(take).is_ok());
         let run = |time: &mut time::TimeHost,

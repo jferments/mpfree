@@ -199,6 +199,60 @@ pub struct StepClip {
     /// then the one heard with the result, yours and the new bars, and
     /// nothing is written until Done.
     pub new_from: Option<usize>,
+    /// Continue's lanes on the clip (composing tools S3, board B), as
+    /// the Steps show them under the lock lanes: read only.
+    pub sound_lanes: Vec<SoundSteps>,
+}
+
+/// One of Continue's lanes on a clip, step by step (composing tools S3):
+/// what it holds its knob at on each step, heard from the knob where it
+/// is now ([`mpfree_seq::mpfree_moves::Lane::follow_knob`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SoundSteps {
+    /// The knob: the track's instrument's, or its strip's send (Space).
+    pub addr: RelAddr,
+    /// It plays; off, the clip plays without it.
+    pub on: bool,
+    /// Each step's value (the knob's own units) where the lane holds the
+    /// knob as the step starts, or moves it within the step; None where
+    /// it leaves your knob alone.
+    pub values: Vec<Option<f32>>,
+}
+
+impl SoundSteps {
+    /// The steps of Continue's lane `lane` on a clip of `steps` steps of
+    /// `step` ticks each, its knob told at `knob` (None: as written).
+    pub fn of(
+        lane: &mpfree_seq::mpfree_moves::Lane,
+        addr: RelAddr,
+        knob: Option<f32>,
+        steps: usize,
+        step: Tick,
+    ) -> SoundSteps {
+        use mpfree_seq::mpfree_moves::{By, Kind};
+        let mut lane = lane.clone();
+        if let Some(k) = knob {
+            lane.follow_knob(k);
+        }
+        let size = step.max(1);
+        let values = (0..steps)
+            .map(|i| {
+                let from = i as Tick * size;
+                let to = from + size;
+                lane.value_at(from as f64).or_else(|| {
+                    lane.points
+                        .iter()
+                        .find(|p| p.kind != Kind::End && (from..to).contains(&Tick::from(p.tick)))
+                        .map(|p| lane.map.value(p.u))
+                })
+            })
+            .collect();
+        SoundSteps {
+            addr,
+            on: matches!(lane.by, By::Continue { on: true, .. }),
+            values,
+        }
+    }
 }
 
 /// A clip's instrument locks that don't play on its track's instrument
@@ -1271,6 +1325,12 @@ impl TimeHost {
         self.with(|c| c.set_audio_spans(spans));
     }
 
+    /// The tempo each recording was made at, 0 for none (audio tracks
+    /// phase 5; see `TimeControl::set_rec_tempos`).
+    pub fn set_rec_tempos(&mut self, tempos: Vec<(mpfree_seq::RecId, f64)>) {
+        self.with(|c| c.set_rec_tempos(tempos));
+    }
+
     /// Audio track `track` armed or disarmed by its own arm: the Clip tab
     /// follows it (see `TimeControl::focus_audio`).
     pub fn focus_audio(&mut self, track: usize, on: bool) {
@@ -2285,9 +2345,27 @@ impl TimeHost {
 
     /// The instrument each track plays now, by place (step sequencer
     /// refactor F1): a clip's instrument locks play only on the kind they
-    /// were made for. Cheap when nothing changed; told every period.
+    /// were made for. Cheap when nothing changed; told every period (with
+    /// the knobs, [`TimeHost::set_instruments_and_knobs`]; the tests' own).
+    #[cfg(test)]
     pub fn set_instruments(&mut self, plays: &[Option<InstRef>]) {
         self.with(|c| c.set_instruments(plays));
+    }
+
+    /// [`TimeHost::set_instruments`], and where the knobs are that
+    /// Continue's playing lanes move (composing tools S3): `own(t, at)` is
+    /// the own value of the knob `at` on track `t` (its instrument's, or
+    /// its strip's send), so the lanes go with the knob. One trip to the
+    /// time engine for both.
+    pub fn set_instruments_and_knobs(
+        &mut self,
+        plays: &[Option<InstRef>],
+        own: impl Fn(usize, mpfree_play::mpfree_param::RelAddr) -> Option<f32>,
+    ) {
+        self.with(|c| {
+            c.set_instruments(plays);
+            c.set_knobs(own);
+        });
     }
 
     /// The tracks whose instrument plays notes (a track's own synth, or
@@ -15933,6 +16011,38 @@ mod tests {
             assert_eq!(playing(&h, VOCAL).map(|p| p.0), Some(1));
         }
 
+        /// Audio tracks phase 5: a clip following the tempo needs its
+        /// recordings' frames at their own tempos, its recording's (as the
+        /// audio tracks tell the time engine) or its own: a second of the
+        /// song is twice as many frames of audio made at 60 BPM, half as
+        /// many of audio made at 240.
+        #[test]
+        fn a_clip_following_the_tempo_needs_its_frames_at_its_own_tempo() {
+            let (mut h, _pads) = host(true);
+            let a = h.control.project.tracks[VOCAL].slots[0]
+                .as_mut()
+                .unwrap()
+                .audio
+                .as_mut()
+                .unwrap();
+            a.set_follow(mpfree_seq::FollowTempo::Repitch, false);
+            a.regions[1].bpm = 240.0;
+            h.set_rec_tempos(vec![(RecId(1), 60.0), (RecId(9), 90.0)]);
+            launch(&mut h, VOCAL, 0);
+            let got: Vec<_> = h
+                .audio_needs()
+                .iter()
+                .map(|n| (n.rec, n.from, n.to))
+                .collect();
+            assert_eq!(
+                got,
+                vec![
+                    (RecId(1), 0, 2 * SECOND),
+                    (RecId(9), 100_000, 100_000 + SECOND / 2)
+                ]
+            );
+        }
+
         #[test]
         fn a_loop_jump_aims_a_waiting_cue_at_the_next_line_without_a_move() {
             let (mut h, mut pads) = host(true);
@@ -16498,6 +16608,77 @@ mod tests {
             assert_eq!(clip(&h).audio.unwrap().gain, 1.0);
             h.act(TimeAction::Undo).unwrap();
             assert_eq!((clip(&h).length, region(&h)), (3840, first));
+        }
+
+        /// Audio tracks phase 5, with no card row yet (5c): Follow tempo
+        /// set for a whole clip, and a region's own tempo, each one take
+        /// on the one history that UNDO takes back; a tempo MPFree
+        /// doesn't play, or a region the clip hasn't got, is refused.
+        #[test]
+        fn an_audio_clips_follow_tempo_and_a_regions_tempo_are_a_take_each() {
+            use mpfree_seq::FollowTempo;
+            use mpfree_time_ui::view::AudioSet;
+            let mut h = host();
+            let set = |row, set| TimeAction::AudioClip {
+                track: VOCAL,
+                slot: 0,
+                row,
+                set,
+            };
+            let clip = |h: &TimeHost| h.control.project.clip(VOCAL, 0).unwrap().clone();
+            let region = |h: &TimeHost| clip(h).audio.unwrap().regions[0];
+            let said = h
+                .act(set(7, AudioSet::Follow(FollowTempo::Repitch, false)))
+                .unwrap();
+            assert_eq!(
+                said,
+                "clip: Verse · Follow tempo Repitch (UNDO takes it back)"
+            );
+            assert_eq!(region(&h).follow, FollowTempo::Repitch);
+            assert_eq!(region(&h).bpm, 0.0, "its recording's tempo");
+            let said = h
+                .act(set(
+                    8,
+                    AudioSet::Tempo {
+                        region: 0,
+                        bpm: 97.5,
+                    },
+                ))
+                .unwrap();
+            assert_eq!(
+                said,
+                "clip: Verse · region 1's tempo 97.5 BPM (UNDO takes it back)"
+            );
+            assert_eq!(region(&h).bpm, 97.5);
+            assert!(clip(&h).audio.unwrap().follows_tempo());
+            assert_eq!(h.state().done.len(), 2, "a take each");
+            assert!(h
+                .act(set(
+                    8,
+                    AudioSet::Tempo {
+                        region: 0,
+                        bpm: 5.0
+                    }
+                ))
+                .is_err());
+            assert!(h
+                .act(set(
+                    8,
+                    AudioSet::Tempo {
+                        region: 3,
+                        bpm: 100.0
+                    }
+                ))
+                .is_err());
+            assert_eq!(region(&h).bpm, 97.5, "nothing changed");
+            h.act(TimeAction::Undo).unwrap();
+            assert_eq!(
+                (region(&h).follow, region(&h).bpm),
+                (FollowTempo::Repitch, 0.0)
+            );
+            h.act(TimeAction::Undo).unwrap();
+            assert_eq!(region(&h).follow, FollowTempo::Off);
+            assert!(!clip(&h).audio.unwrap().follows_tempo());
         }
 
         #[test]
@@ -17654,6 +17835,174 @@ mod tests {
         assert_eq!(to_mixer, 0, "none went to the mixer");
         let (values, _) = heard(false);
         assert_eq!(values, [], "off plays nothing");
+    }
+
+    /// Space (composing tools S3): a lead's try throws its last note into
+    /// the echo on the track's first send, Continue's lane on its strip,
+    /// kept with the try; with no instrument knobs known at all (a plugin,
+    /// a sampled sound), Space alone still moves.
+    #[test]
+    fn continues_space_moves_the_tracks_first_send() {
+        use mpfree_compose::{InstrumentKind, Lanes};
+        use mpfree_seq::mpfree_moves::{By, Target};
+        use mpfree_seq::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_time_ui::continuing::Parts;
+        use mpfree_time_ui::editor::{EditAction as E, ToolAct, CONTINUE_ROW};
+        let mut h = riff_host();
+        let mut pads = Fake::default();
+        let send = mpfree_fx::ids::mixer::send(0);
+        let safe = mpfree_compose::SafeControls {
+            space: mpfree_compose::space_control(send, -12.0, -80.0, 6.0),
+            ..Default::default()
+        };
+        let parts = Parts {
+            kinds: vec![Some(InstrumentKind::OneNote)],
+            lanes: Lanes::default(),
+            sound: Some((0, safe)),
+        };
+        h.act(TimeAction::Continue(ContinueAction::Parts(Arc::new(parts))))
+            .unwrap();
+        h.act(TimeAction::Edit(E::Open)).unwrap();
+        h.act(TimeAction::Edit(E::Row {
+            row: CONTINUE_ROW,
+            delta: 1,
+        }))
+        .unwrap();
+        until(&mut h, &mut pads, |h| {
+            continuing(h).is_some_and(|c| c.heard)
+        });
+        let target = Target::Track(RelAddr::new(OnTrack::Strip, send));
+        let c = continuing(&h).unwrap();
+        assert_eq!(c.sound, Some(mpfree_compose::SoundLevel::Subtle));
+        let clip = c.clip.clone().unwrap();
+        let lane = clip.moves.lane(target).expect("Space's lane on the send");
+        let top = lane
+            .points
+            .iter()
+            .map(|p| lane.map.value(p.u))
+            .fold(f32::MIN, f32::max);
+        assert!(top > -12.0 && top <= 6.0, "into the echo: {top}");
+        h.act(TimeAction::Edit(E::Tool(ToolAct::Done))).unwrap();
+        assert_eq!(
+            h.project().clip(0, 0).unwrap().moves.by(target),
+            Some(By::Continue {
+                on: true,
+                base: -12.0
+            })
+        );
+    }
+
+    /// Continue's lane goes with its knob (composing tools S3): told the
+    /// knob turned down since the try, what plays compiles again and the
+    /// moves reach the instrument that much lower; the clip keeps the lane
+    /// as written, so UNDO and saving are as they were.
+    #[test]
+    fn continues_lane_follows_the_knob_turned_since() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::mpfree_moves::{By, Kind, Map, Target};
+        let rel = RelAddr::new(OnTrack::Inst, 7);
+        let target = Target::Track(rel);
+        let mut h = riff_host();
+        let c = h.control.project.tracks[0].slots[0].as_mut().unwrap();
+        let gesture = [(0.0, 0.3, Kind::Step), (1920.0, 0.8, Kind::Step)];
+        c.moves
+            .put(target, Map::linear(0.0, 1.0), &gesture, 3840)
+            .unwrap();
+        c.moves.set_by(
+            target,
+            By::Continue {
+                on: true,
+                base: 0.3,
+            },
+        );
+        let written = c.moves.clone();
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        let mut pads = Fake {
+            insts: true,
+            ..Fake::default()
+        };
+        let compiles = h.control.costs.compiles;
+        while pads.frame < BAR - 1000 {
+            h.set_instruments_and_knobs(&[None], |t, at| ((t, at) == (0, rel)).then_some(0.15));
+            h.period(PERIOD, &mut pads);
+            pads.frame += u64::from(PERIOD);
+        }
+        let values: Vec<f32> = pads
+            .locks
+            .iter()
+            .filter(|l| l.2 == rel.on(0))
+            .filter_map(|l| l.3)
+            .collect();
+        let near = |v: &[f32], w: [f32; 2]| {
+            v.len() >= 2
+                && v[v.len() - 2..]
+                    .iter()
+                    .zip(w)
+                    .all(|(a, b)| (a - b).abs() < 1e-5)
+        };
+        assert!(near(&values, [0.15, 0.65]), "0.15 lower: {values:?}");
+        assert!(h.control.costs.compiles > compiles, "compiled again");
+        assert_eq!(h.project().clip(0, 0).unwrap().moves, written);
+    }
+
+    /// Continue's lane on Steps (S3, board B): each step's value where it
+    /// holds the knob, heard from the knob where it is now, and whether
+    /// it plays; a lane of yours isn't one.
+    #[test]
+    fn continues_lane_shows_on_steps_as_heard() {
+        use mpfree_play::mpfree_param::{OnTrack, RelAddr};
+        use mpfree_seq::mpfree_moves::{By, Kind, Map, Target};
+        let rel = RelAddr::new(OnTrack::Inst, 7);
+        let yours = RelAddr::new(OnTrack::Inst, 8);
+        let mut h = riff_host();
+        let c = h.control.project.tracks[0].slots[0].as_mut().unwrap();
+        // Held at 0.3 from step 1, let go on step 5, 0.8 from step 9.
+        let gesture = [
+            (0.0, 0.3, Kind::Step),
+            (960.0, 0.0, Kind::End),
+            (1918.0, 0.8, Kind::Step),
+        ];
+        for t in [rel, yours] {
+            c.moves
+                .put(Target::Track(t), Map::linear(0.0, 1.0), &gesture, 3840)
+                .unwrap();
+        }
+        let on = |on| By::Continue { on, base: 0.3 };
+        c.moves.set_by(Target::Track(rel), on(true));
+        let lanes = |h: &TimeHost| h.steps().clip.expect("the clip").sound_lanes;
+        let l = lanes(&h);
+        assert_eq!(l.len(), 1, "yours isn't Continue's");
+        assert_eq!((l[0].addr, l[0].on), (rel, true));
+        assert_eq!(l[0].values.len(), 16);
+        let step = |v: &[Option<f32>], i: usize| v[i].map(|x| (x * 100.0).round() / 100.0);
+        assert_eq!(step(&l[0].values, 0), Some(0.3));
+        assert_eq!(step(&l[0].values, 3), Some(0.3));
+        assert_eq!(step(&l[0].values, 4), None, "let go");
+        // Two ticks ahead of step 9's note: it counts on step 8, where it
+        // moves the knob, and holds on.
+        assert_eq!(step(&l[0].values, 7), Some(0.8));
+        assert_eq!(step(&l[0].values, 15), Some(0.8));
+        // The knob turned 0.15 lower since: what plays, and so the Steps,
+        // 0.15 lower.
+        h.act(TimeAction::Launch { track: 0, slot: 0 }).unwrap();
+        h.command(Command::Play);
+        let mut pads = Fake {
+            insts: true,
+            ..Fake::default()
+        };
+        for _ in 0..4 {
+            h.set_instruments_and_knobs(&[None], |t, at| ((t, at) == (0, rel)).then_some(0.15));
+            h.period(PERIOD, &mut pads);
+            pads.frame += u64::from(PERIOD);
+        }
+        let l = lanes(&h);
+        assert_eq!(step(&l[0].values, 0), Some(0.15));
+        assert_eq!(step(&l[0].values, 8), Some(0.65));
+        // Off: still shown, as off.
+        let c = h.control.project.tracks[0].slots[0].as_mut().unwrap();
+        c.moves.set_by(Target::Track(rel), on(false));
+        assert!(!lanes(&h)[0].on);
     }
 
     /// Apart (Arrange 2.6b), Continue goes through the editing side's

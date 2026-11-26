@@ -162,6 +162,8 @@ A send's lane throws on chosen steps: lock **Delay send** high on the last two s
 
 {{shot: sequencer-lock-lanes | Lock lanes on the Steps: Tune and Decay under the kick, a Tune lane under the snare, each locked step a purple bar with its value.}}
 
+**Continue's lanes.** When you keep a try of [Continue](editing-notes.md#continues-lane) with Sound on, the knobs it moves get lanes of Continue's own, shown after your lock lanes in green ("Cutoff" over "Continue · under your locks"): a bar on each step where it holds the knob, as the knob is now. They are only to see here, with no **×**: a tap on one says what it does, and its **On** and **Remove** are in the note editor. A lane that is off is faint and says so.
+
 **On a synth track** the lanes go under the note rows, and **+ Lane** lists the synth's first four Q-Link settings (and any synth setting you locked on the Synth tab with steps held), then the track's.
 
 **On a track that plays outside gear** through MIDI out (see [Playing a synth from a track](midi-and-cv.md#playing-a-synth-from-a-track)) the lanes are **CC lanes**: **+ Lane** lists the controls its [device profile](midi-and-cv.md#device-profiles) names (or, with none, the ones most gear shares, such as Mod wheel and Cutoff on CC 74), then **Bend** and **Pressure**; **Another CC** on the list's card takes any CC by number. With more lanes than fit under the notes, swipe them.

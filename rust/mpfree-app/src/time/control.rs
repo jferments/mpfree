@@ -101,6 +101,7 @@ macro_rules! wait_ctx {
             info: &$c.info,
             rate: $c.rate,
             heard: $c.heard,
+            tempos: &$c.rec_tempos,
         }
     };
 }
@@ -119,6 +120,11 @@ const AUDIO_CARD_JOIN: u64 = 0xA1 << 16;
 
 /// Started cues one period may bring before the list grows.
 const STARTED_ROOM: usize = 64;
+
+/// Periods between two compiles while a knob that Continue's playing lanes
+/// move turns (S3, [`TimeControl::set_knobs`]): about 23 ms at 128 frames,
+/// so the moves follow the knob without a compile every period.
+const KNOB_PERIODS: u32 = 8;
 
 /// The tracks' mutes and solos as they will be once a mute queue lands,
 /// read without changing the project.
@@ -355,6 +361,18 @@ pub trait SongAudio {
     /// step 2d); nothing else asks, and nothing keeps them after.
     fn regions(&self) -> Vec<(TrackId, Vec<ClipRegion>)> {
         Vec::new()
+    }
+}
+
+/// Follow tempo in the card's words (audio tracks phase 5).
+fn follow_words(f: mpfree_seq::FollowTempo, keep_pitch: bool) -> String {
+    match f {
+        mpfree_seq::FollowTempo::Off => "Follow tempo Off".to_string(),
+        mpfree_seq::FollowTempo::Repitch => "Follow tempo Repitch".to_string(),
+        mpfree_seq::FollowTempo::Stretch if keep_pitch => {
+            "Follow tempo Stretch, keeping its pitch".to_string()
+        }
+        mpfree_seq::FollowTempo::Stretch => "Follow tempo Stretch".to_string(),
     }
 }
 
@@ -736,6 +754,11 @@ pub struct TimeControl {
     /// a preset that brings other controls under the same kind tells
     /// again.
     inst_told: Vec<(usize, usize, usize)>,
+    /// The instrument knobs Continue's lanes move in what plays (S3), as
+    /// (track, control id), found at each compile; and the periods to
+    /// wait before a knob's turn compiles again.
+    knob_watch: Vec<(usize, mpfree_seq::mpfree_param::RelAddr)>,
+    knob_wait: u32,
     /// Clips recorded pressure went into since the recording stopped
     /// last, to check against `TOUCH_RECLAIM_AT` once it has (B4b).
     touch_grew: Vec<(usize, usize)>,
@@ -768,6 +791,10 @@ pub struct TimeControl {
     /// ticks they cover, in order ([`TimeControl::set_audio_spans`]): no
     /// block goes over one (phase 2, step 2d).
     audio_spans: super::AudioSpans,
+    /// The tempo each recording was made at, 0 for none
+    /// ([`TimeControl::set_rec_tempos`]): where a clip region following
+    /// the tempo at its recording's is in it (phase 5).
+    rec_tempos: Vec<(RecId, f64)>,
     tx: Tx<ToAudio>,
     rx: Rx<ToControl>,
     /// A view the audio half's full queue handed back, sent again on the
@@ -936,6 +963,8 @@ impl TimeControl {
             touch_lost: 0,
             inst_refused: 0,
             inst_told: Vec::new(),
+            knob_watch: Vec::new(),
+            knob_wait: 0,
             touch_grew: Vec::new(),
             touch_freed: (0, 0),
             // A project's own timeline, never another's (step 0C).
@@ -950,6 +979,7 @@ impl TimeControl {
             not_ready: Vec::new(),
             audio_focus: TrackId::NONE,
             audio_spans: Vec::new(),
+            rec_tempos: Vec::new(),
             tx,
             rx,
             unsent: None,
@@ -1727,6 +1757,83 @@ impl TimeControl {
         }
     }
 
+    /// Where the knobs are that Continue's lanes in what plays move
+    /// (composing tools S3), told every period: `own(t, at)` is the own
+    /// value of the knob `at` on track `t` (its instrument's, or its
+    /// strip's send). When one moved, the
+    /// tracks' knobs are kept ([`mpfree_seq::Track::knobs`]) and what plays
+    /// compiles again, the lanes heard from the knob where it is now
+    /// ([`mpfree_seq::mpfree_moves::Lane::follow_knob`]); at most every
+    /// [`KNOB_PERIODS`] periods while a knob turns. Nothing to do, and no
+    /// allocation, while no such lane plays.
+    pub fn set_knobs(
+        &mut self,
+        own: impl Fn(usize, mpfree_seq::mpfree_param::RelAddr) -> Option<f32>,
+    ) {
+        if self.knob_watch.is_empty() {
+            return;
+        }
+        if self.knob_wait > 0 {
+            self.knob_wait -= 1;
+            return;
+        }
+        let tracks = &self.project.tracks;
+        let told = |t: usize, at| tracks.get(t).and_then(|tr| tr.knobs.get(at));
+        if !self
+            .knob_watch
+            .iter()
+            .any(|&(t, at)| own(t, at).is_some_and(|v| Some(v) != told(t, at)))
+        {
+            return;
+        }
+        let mut k = 0;
+        while k < self.knob_watch.len() {
+            let t = self.knob_watch[k].0;
+            let knobs: Vec<_> = self.knob_watch[k..]
+                .iter()
+                .take_while(|w| w.0 == t)
+                .filter_map(|&(_, at)| Some((at, own(t, at)?)))
+                .collect();
+            k += self.knob_watch[k..].iter().take_while(|w| w.0 == t).count();
+            if let Some(tr) = self.project.tracks.get_mut(t) {
+                tr.knobs = mpfree_seq::inst::Knobs(knobs.into());
+            }
+        }
+        self.knob_wait = KNOB_PERIODS;
+        let _ = self.compile();
+    }
+
+    /// The knobs Continue's playing lanes move (S3), for
+    /// [`TimeControl::set_knobs`]: on the clips that play or wait to, or
+    /// every clip while the song plays; by track, then knob.
+    fn watch_knobs(&mut self) {
+        self.knob_watch.clear();
+        let mut add = |t: usize, c: &Clip| {
+            for lane in c.moves.lanes().iter().filter(|l| l.by.plays()) {
+                if let Some(at) = mpfree_seq::inst::continues_knob(lane) {
+                    self.knob_watch.push((t, at));
+                }
+            }
+        };
+        for (t, tr) in self.project.tracks.iter().enumerate() {
+            let plays = |slot: usize| {
+                self.song
+                    || self.launches.iter().any(|l| (l.track, l.slot) == (t, slot))
+                    || self
+                        .cues
+                        .iter()
+                        .any(|c| c.track == t && c.slot == Some(slot))
+            };
+            for (slot, c) in tr.slots.iter() {
+                if plays(slot) {
+                    add(t, c);
+                }
+            }
+        }
+        self.knob_watch.sort_unstable();
+        self.knob_watch.dedup();
+    }
+
     /// Whether a clip of track `t` that plays or waits to has instrument
     /// locks (or move lanes), so what plays changes with its instrument.
     fn inst_shown(&self, t: usize) -> bool {
@@ -1913,6 +2020,7 @@ impl TimeControl {
         let played = v.notes() + v.locks();
         self.sync_tracks();
         self.send_view(Box::new(v));
+        self.watch_knobs();
         self.compile_asked = false;
         self.changed = true;
         self.recorded = false;
@@ -1968,6 +2076,15 @@ impl TimeControl {
     /// dropped, moved or made longer over a region is refused.
     pub fn set_audio_spans(&mut self, spans: super::AudioSpans) {
         self.audio_spans = spans;
+    }
+
+    /// The tempo each recording was made at, 0 for none (audio tracks
+    /// phase 5): the audio tracks host hands them over whenever they
+    /// change, for a clip region following the tempo at its recording's
+    /// (what a cue that waits for its audio needs, and Song → scenes'
+    /// cuts).
+    pub fn set_rec_tempos(&mut self, tempos: Vec<(RecId, f64)>) {
+        self.rec_tempos = tempos;
     }
 
     /// To a cell and Put in a cell (audio tracks phase 2): `clip`, an
@@ -2053,6 +2170,17 @@ impl TimeControl {
             AudioSet::Name(_) => None,
             _ => Some(AUDIO_CARD_JOIN + u64::from(row)),
         };
+        // What the line says it set: the row's, or Follow tempo's words.
+        let follow_said = match set {
+            AudioSet::Follow(f, keep) => Some(follow_words(f, keep)),
+            AudioSet::Tempo { region, bpm: 0.0 } => {
+                Some(format!("region {}'s tempo its recording's", region + 1))
+            }
+            AudioSet::Tempo { region, bpm } => {
+                Some(format!("region {}'s tempo {bpm} BPM", region + 1))
+            }
+            _ => None,
+        };
         let rate = self.rate;
         let once = clip.settings().once;
         let from = clip.length;
@@ -2084,6 +2212,22 @@ impl TimeControl {
                 }
                 clip.name = name;
             }
+            // Following the tempo (phase 5): every region at once; each
+            // keeps its own tempo.
+            AudioSet::Follow(follow, keep_pitch) => a.set_follow(follow, keep_pitch),
+            AudioSet::Tempo { region, bpm } => {
+                if !(bpm == 0.0 || mpfree_transport::time::valid_bpm(bpm)) {
+                    return Err(format!(
+                        "clip: {}: MPFree doesn't play at {bpm} BPM",
+                        clip.name
+                    ));
+                }
+                let r = a
+                    .regions
+                    .get_mut(region)
+                    .ok_or_else(|| format!("clip: {} has no region {}", clip.name, region + 1))?;
+                r.bpm = bpm;
+            }
         }
         let name = clip.name.clone();
         self.takes
@@ -2099,6 +2243,9 @@ impl TimeControl {
             .clip(track, slot)
             .map(|c| {
                 let meter = self.info.meter;
+                if let Some(said) = follow_said.clone() {
+                    return said;
+                }
                 match usize::from(row) {
                     0 => format!("Length {}", bars_beats(c.length, meter)),
                     AUDIO_GAIN => format!(
@@ -2870,10 +3017,24 @@ impl TimeControl {
                     now: plays.map_or_else(String::new, |p| p.name.clone()),
                 }
             });
+            // Continue's lanes (S3), as heard from the knobs where they
+            // are now.
+            let steps = grid.steps(c.length);
+            let knobs = self.project.tracks.get(track).map(|t| &t.knobs);
+            let sound_lanes = c
+                .moves
+                .lanes()
+                .iter()
+                .filter_map(|l| {
+                    let at = mpfree_seq::inst::continues_knob(l)?;
+                    let knob = knobs.and_then(|k| k.get(at));
+                    Some(crate::time::SoundSteps::of(l, at, knob, steps, grid.size()))
+                })
+                .collect();
             Some(StepClip {
                 slot,
                 name: c.name.clone(),
-                steps: grid.steps(c.length),
+                steps,
                 step: grid.size(),
                 song_length: c.speed.to_song(c.length as f64),
                 song_step: c.speed.to_song(grid.size() as f64),
@@ -2896,6 +3057,7 @@ impl TimeControl {
                     .collect(),
                 silent,
                 new_from,
+                sound_lanes,
             })
         });
         let playing = self
@@ -5639,6 +5801,7 @@ impl TimeControl {
         let regions = std::mem::take(&mut self.song_regions);
         let sound = SongSound {
             regions: &regions,
+            tempos: &self.rec_tempos,
             map,
             rate: self.rate,
         };

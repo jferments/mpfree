@@ -2427,6 +2427,7 @@ impl PlayPage {
                 .map(|p| self.lane(p))
                 .chain(self.lock_lanes_shown())
                 .chain(self.value_lanes_shown())
+                .chain(self.sound_lanes_shown())
                 .collect();
         }
         // Any of a kit's 128 pads (the synth's 16); the empty ones of the
@@ -2451,7 +2452,91 @@ impl PlayPage {
         // under its sound).
         lanes.extend(self.lock_lanes_shown());
         lanes.extend(self.value_lanes_shown());
+        lanes.extend(self.sound_lanes_shown());
         lanes
+    }
+
+    /// Continue's lanes on the clip shown (composing tools S3, board B):
+    /// read only, numbered on from the Velocity and Chance lanes.
+    pub fn sound_lanes(&self) -> &[crate::time::SoundSteps] {
+        match self.steps.clip.as_ref() {
+            Some(c) if self.sequencer => &c.sound_lanes,
+            _ => &[],
+        }
+    }
+
+    /// Lane number `id` (as the grid numbers lock lanes) when it is one
+    /// of Continue's.
+    pub fn sound_lane_at(&self, id: usize) -> Option<&crate::time::SoundSteps> {
+        let n = self.lock_lanes().len() + self.value_lanes().len();
+        self.sound_lanes().get(id.checked_sub(n)?)
+    }
+
+    /// What a tap on Continue's lane `id` says: what it does and where it
+    /// is changed. None for any other lane.
+    pub fn sound_lane_says(&self, id: usize) -> Option<String> {
+        let s = self.sound_lane_at(id)?;
+        let name = self.lock_name(s.addr);
+        Some(if s.on {
+            format!(
+                "steps: Continue moves {name} with the phrase, under your locks · \
+                 turn it off or take it out in Notes (the lane chip)"
+            )
+        } else {
+            format!("steps: Continue's {name} lane is off: your knob plays as it is set · turn it on in Notes")
+        })
+    }
+
+    /// Continue's lanes as the Steps show them, after the Velocity and
+    /// Chance lanes.
+    fn sound_lanes_shown(&self) -> impl Iterator<Item = Lane> + '_ {
+        let n = self.lock_lanes().len() + self.value_lanes().len();
+        self.sound_lanes()
+            .iter()
+            .enumerate()
+            .map(move |(j, s)| self.sound_lane(n + j, s))
+    }
+
+    /// Lane `id`: Continue's lane `s` on the page, a bar where it holds
+    /// the knob, in green (board B), read only; faint with why while off.
+    fn sound_lane(&self, id: usize, s: &crate::time::SoundSteps) -> Lane {
+        let from = self.page * PAGE;
+        let sub = if s.on {
+            "Continue · under your locks".to_string()
+        } else {
+            "Continue · off".to_string()
+        };
+        Lane {
+            pad: crate::play_widgets::LOCK_LANE + id,
+            name: self.lock_name(s.addr),
+            // A lock lane row's colour isn't drawn: the grid paints its
+            // own inks, Continue's in the theme's good (`paint_lock_lane`).
+            color: LOCKED,
+            muted: false,
+            steps: Vec::new(),
+            marks: Vec::new(),
+            note: None,
+            root: false,
+            label: None,
+            empty: false,
+            tag: None,
+            lock: Some(crate::play_widgets::LockCells {
+                sub,
+                owner: None,
+                cells: (from..from + PAGE)
+                    .map(|i| {
+                        let v = s.values.get(i).copied().flatten()?;
+                        Some(self.lock_cell(s.addr, v))
+                    })
+                    .collect(),
+                opens_rows: false,
+                moved: false,
+                values: None,
+                silent: (!s.on)
+                    .then(|| "off: your knob plays as it is set · On in Notes".to_string()),
+                continues: true,
+            }),
+        }
     }
 
     /// The Velocity and Chance lanes on the clip shown (refactor D3), by
@@ -2538,6 +2623,7 @@ impl PlayPage {
                     percent: kind == NoteValue::Chance,
                 }),
                 silent: None,
+                continues: false,
             }),
         }
     }
@@ -2818,6 +2904,7 @@ impl PlayPage {
                 moved,
                 values: None,
                 silent: silent.map(|s| s.line(l.addr.param)),
+                continues: false,
             }),
         }
     }
@@ -4122,8 +4209,89 @@ mod tests {
             lock_values: Vec::new(),
             silent: None,
             new_from: None,
+            sound_lanes: Vec::new(),
         });
         p
+    }
+
+    /// Continue's lanes on Steps (composing tools S3, board B): after the
+    /// lock lanes and numbered on from them, green and read only, a bar
+    /// on each step where it holds the knob, valued as the knob's lock
+    /// lane would be; off, faint with why; a tap says where it changes.
+    #[test]
+    fn continues_lanes_show_after_the_lock_lanes_read_only() {
+        use crate::play_widgets::LOCK_LANE;
+        use crate::time::SoundSteps;
+        use mpfree_play::mpfree_param::OnTrack;
+        let mut p = synth_page(&[(0, 0), (0, 4)]);
+        p.sequencer = true;
+        let send = RelAddr::new(OnTrack::Strip, mpfree_fx::ids::mixer::send(0));
+        let cutoff = RelAddr::new(OnTrack::Inst, 7);
+        p.lock_knobs = vec![SoundKnob {
+            name: "Delay send".into(),
+            addr: send,
+            kind: SoundKind::Send,
+            own: -12.0,
+        }];
+        let c = p.steps.clip.as_mut().unwrap();
+        // A lock lane of yours on the synth's control 7.
+        c.lock_values.push((LINE, 2, cutoff, 0.5));
+        let mut held = vec![None; 16];
+        held[..4].fill(Some(-6.0));
+        c.sound_lanes = vec![
+            SoundSteps {
+                addr: send,
+                on: true,
+                values: held,
+            },
+            SoundSteps {
+                addr: cutoff,
+                on: false,
+                values: vec![Some(0.7); 16],
+            },
+        ];
+        assert_eq!(p.lock_lanes().len(), 1);
+        assert_eq!(p.sound_lane_at(0), None, "yours");
+        assert_eq!(p.sound_lane_at(1).map(|s| s.addr), Some(send));
+        let lanes = p.lanes();
+        let ids: Vec<usize> = lanes
+            .iter()
+            .filter(|l| l.pad >= LOCK_LANE)
+            .map(|l| l.pad - LOCK_LANE)
+            .collect();
+        assert_eq!(ids, [0, 1, 2], "after your lock lane");
+        let lane = |id: usize| {
+            let l = lanes.iter().find(|l| l.pad == LOCK_LANE + id).unwrap();
+            (l.name.as_str(), l.lock.clone().unwrap())
+        };
+        let (name, yours) = lane(0);
+        assert_eq!(name, "Synth 7");
+        assert!(!yours.continues);
+        let (name, space) = lane(1);
+        assert!(space.continues && space.silent.is_none() && space.owner.is_none());
+        assert_eq!(
+            (name, space.sub.as_str()),
+            ("Delay send", "Continue · under your locks")
+        );
+        let text = SoundKind::Send.read(-6.0).0;
+        assert!(space.cells[..4]
+            .iter()
+            .all(|c| c.as_ref().is_some_and(|c| c.1 == text)));
+        assert!(space.cells[4..].iter().all(Option::is_none));
+        let (name, off) = lane(2);
+        assert_eq!((name, off.sub.as_str()), ("Synth 7", "Continue · off"));
+        assert!(off.continues && off.silent.is_some());
+        // A tap says what it does and where it changes; none on yours.
+        let said = p.sound_lane_says(1).unwrap();
+        assert!(
+            said.contains("Delay send") && said.contains("Notes"),
+            "{said}"
+        );
+        assert!(p.sound_lane_says(2).unwrap().contains("is off"));
+        assert_eq!(p.sound_lane_says(0), None);
+        // Off the Sequencer's Steps (Play's rows), none.
+        p.sequencer = false;
+        assert!(p.sound_lanes().is_empty());
     }
 
     /// The Sequencer's lock lanes (the redesign's step 5, board 3): + Lane

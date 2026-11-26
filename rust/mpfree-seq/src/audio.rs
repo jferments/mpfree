@@ -32,6 +32,15 @@
 //!   cell, never both, and `Project::check` that a loop belongs to one
 //!   track (`Project::loop_track`).
 //!
+//! - **Following the tempo** (phase 5, docs/dev/design/tempo-follow.md):
+//!   each region has the song region's Follow tempo ([`FollowTempo`] and
+//!   `keep_pitch`) and its made-at tempo (`bpm`, 0 for its recording's),
+//!   so a clip cut from the song plays exactly as the song did, and a clip
+//!   whose regions were made at two tempos plays each on its beats. The
+//!   clip card's one setting sets every region's
+//!   ([`AudioClip::set_follow`]). A clip with any of it makes the project
+//!   need `audio-tempo` ([`AudioClip::follows_tempo`]).
+//!
 //! Whether each recording named is in the project's recordings table, and
 //! has the frames named, is the audio tracks part's to say, which is not
 //! this crate's: the app checks it as a project opens (`mpfree-app`
@@ -95,6 +104,38 @@ impl LoopClip {
     }
 }
 
+/// How a region follows the song's tempo (audio tracks phase 5), as a
+/// song region does (`mpfree_audiotracks::FollowTempo`, which says what
+/// each plays).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FollowTempo {
+    /// At the rate it was recorded at, whatever the tempo.
+    #[default]
+    Off,
+    /// Read faster or slower with the tempo: on its beats, its pitch moves
+    /// with the speed.
+    Repitch,
+    /// On its beats at its own pitch (a stretched copy; phase 5b).
+    Stretch,
+}
+
+impl FollowTempo {
+    /// Its word in a save (`follow=`).
+    pub fn word(self) -> &'static str {
+        match self {
+            FollowTempo::Off => "off",
+            FollowTempo::Repitch => "repitch",
+            FollowTempo::Stretch => "stretch",
+        }
+    }
+
+    pub fn from_word(w: &str) -> Option<FollowTempo> {
+        [FollowTempo::Off, FollowTempo::Repitch, FollowTempo::Stretch]
+            .into_iter()
+            .find(|f| f.word() == w)
+    }
+}
+
 /// One region of an audio clip: clip ticks `start..end` play recording
 /// `rec` from frame `src` (which may be below 0: those frames are silent).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -117,6 +158,16 @@ pub struct ClipRegion {
     /// its end: 0 for a region never cut.
     pub into: u32,
     pub left: u32,
+    /// How it follows the song's tempo, and on Stretch whether it keeps
+    /// its pitch (`mpfree_audiotracks::Region::follow`).
+    pub follow: FollowTempo,
+    pub keep_pitch: bool,
+    /// The tempo its audio was made at, when not its recording's: 0 for
+    /// its recording's (none for a recording whose tempo changed as it
+    /// recorded), else a tempo MPFree plays. Following the tempo, the
+    /// frame playing at clip tick `t` is `src` plus its `phase` and the
+    /// ticks from `start` at this tempo, not the song's.
+    pub bpm: f64,
 }
 
 impl ClipRegion {
@@ -134,7 +185,16 @@ impl ClipRegion {
             fade_out: 0,
             into: 0,
             left: 0,
+            follow: FollowTempo::Off,
+            keep_pitch: false,
+            bpm: 0.0,
         }
+    }
+
+    /// Whether it follows the tempo or has a tempo of its own: what a
+    /// build from before phase 5 would drop.
+    pub fn follows_tempo(&self) -> bool {
+        self.follow != FollowTempo::Off || self.keep_pitch || self.bpm != 0.0
     }
 }
 
@@ -168,18 +228,21 @@ impl AudioClip {
     /// Every value in range for a clip `length` ticks long: 1 to
     /// [`MAX_CLIP_REGIONS`] regions, in order, none overlapping, each
     /// inside `0..length` with ticks to play; gains 0 to [`MAX_GAIN`]; a
-    /// tempo MPFree plays; and `last_frame` past the last region's first
-    /// frame. `BadAudioClip` otherwise.
+    /// tempo MPFree plays (and for each region 0 or one); and `last_frame`
+    /// past the last region's first frame. `BadAudioClip` otherwise.
     pub fn check(&self, length: Tick) -> Result<(), ModelError> {
         let gain_ok = |g: f32| g.is_finite() && (0.0..=MAX_GAIN).contains(&g);
         let ok = !self.regions.is_empty()
             && self.regions.len() <= MAX_CLIP_REGIONS
             && valid_bpm(self.bpm)
             && gain_ok(self.gain)
-            && self
-                .regions
-                .iter()
-                .all(|r| 0 <= r.start && r.start < r.end && r.end <= length && gain_ok(r.gain))
+            && self.regions.iter().all(|r| {
+                0 <= r.start
+                    && r.start < r.end
+                    && r.end <= length
+                    && gain_ok(r.gain)
+                    && (r.bpm == 0.0 || valid_bpm(r.bpm))
+            })
             && self.regions.windows(2).all(|w| w[0].end <= w[1].start)
             && self.regions.last().is_some_and(|r| self.last_frame > r.src);
         if ok {
@@ -187,6 +250,30 @@ impl AudioClip {
         } else {
             Err(ModelError::BadAudioClip)
         }
+    }
+
+    /// Whether any region follows the tempo or has a tempo of its own:
+    /// the project then needs `audio-tempo` (the app's project gate).
+    pub fn follows_tempo(&self) -> bool {
+        self.regions.iter().any(ClipRegion::follows_tempo)
+    }
+
+    /// Follow tempo for the whole clip (the card's one row): every region
+    /// set to `follow` and `keep_pitch`. Each keeps its own tempo.
+    pub fn set_follow(&mut self, follow: FollowTempo, keep_pitch: bool) {
+        for r in &mut self.regions {
+            (r.follow, r.keep_pitch) = (follow, keep_pitch);
+        }
+    }
+
+    /// The setting every region has, or None when they differ (the card
+    /// shows them mixed).
+    pub fn follow(&self) -> Option<(FollowTempo, bool)> {
+        let first = self.regions.first().map(|r| (r.follow, r.keep_pitch))?;
+        self.regions
+            .iter()
+            .all(|r| (r.follow, r.keep_pitch) == first)
+            .then_some(first)
     }
 
     /// The recordings it names, in region order (one may repeat).
@@ -258,6 +345,21 @@ mod tests {
         assert_eq!(bad(&|a| a.regions[0].gain = f32::NAN), refused, "gain");
         assert_eq!(bad(&|a| a.gain = MAX_GAIN * 2.0), refused, "clip gain");
         assert_eq!(bad(&|a| a.bpm = 0.0), refused, "tempo");
+        assert_eq!(
+            bad(&|a| a.regions[1].bpm = 2.0),
+            refused,
+            "a region's tempo"
+        );
+        assert_eq!(
+            bad(&|a| a.regions[1].bpm = f64::NAN),
+            refused,
+            "a region's tempo"
+        );
+        assert_eq!(
+            bad(&|a| a.regions[1].bpm = 100.0),
+            Ok(()),
+            "a region's own tempo"
+        );
         assert_eq!(bad(&|a| a.last_frame = 44_100), refused, "last frame");
         // 16 regions fit.
         let mut full = two_regions();
@@ -265,6 +367,24 @@ mod tests {
             .map(|i| ClipRegion::new(i * 10, i * 10 + 10, RecId(1), 0))
             .collect();
         assert_eq!(full.check(2 * BAR), Ok(()));
+    }
+
+    #[test]
+    fn follow_tempo_is_set_for_the_whole_clip_and_each_region_keeps_its_tempo() {
+        let mut a = two_regions();
+        assert!(!a.follows_tempo());
+        assert_eq!(a.follow(), Some((FollowTempo::Off, false)));
+        a.regions[1].bpm = 100.0;
+        assert!(a.follows_tempo(), "a tempo of its own");
+        a.set_follow(FollowTempo::Stretch, true);
+        assert_eq!(a.follow(), Some((FollowTempo::Stretch, true)));
+        assert_eq!((a.regions[0].bpm, a.regions[1].bpm), (0.0, 100.0));
+        a.regions[0].follow = FollowTempo::Repitch;
+        assert_eq!(a.follow(), None, "mixed");
+        for f in [FollowTempo::Off, FollowTempo::Repitch, FollowTempo::Stretch] {
+            assert_eq!(FollowTempo::from_word(f.word()), Some(f));
+        }
+        assert_eq!(FollowTempo::from_word("fast"), None);
     }
 
     #[test]

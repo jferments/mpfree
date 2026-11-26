@@ -56,6 +56,7 @@ fn ones(frames: usize) -> TakeFile {
         file: String::new(),
         path: None,
         audio: vec![1.0; 2 * frames],
+        varied: false,
     }
 }
 
@@ -70,6 +71,9 @@ const REGION: [ClipRegion; 1] = [ClipRegion {
     fade_out: 0,
     into: 0,
     left: 0,
+    bpm: 0.0,
+    follow: mpfree_audiotracks::FollowTempo::Off,
+    keep_pitch: false,
 }];
 
 fn take_clip(origin: i64) -> Plays<'static> {

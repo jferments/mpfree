@@ -73,13 +73,14 @@ use crate::mpfree_param::ParamAddr;
 use crate::scenes::{SongList, MAX_TIMES};
 use crate::time_edit::{Refused, TimeEdit};
 use crate::{
-    AudioClip, Clip, ClipId, ClipRegion, Cond, Direction, Follow, FollowAction, Join, ModelError,
-    Project, Scene, Track, TrackId, MAX_CLIP_REGIONS, MAX_TRACKS, ROWS, SCENES, SLOTS,
+    AudioClip, Clip, ClipId, ClipRegion, Cond, Direction, Follow, FollowAction, FollowTempo, Join,
+    ModelError, Project, RecId, Scene, Track, TrackId, MAX_CLIP_REGIONS, MAX_TRACKS, ROWS, SCENES,
+    SLOTS,
 };
 use mpfree_context::chord::Heard;
 use mpfree_context::harmony::RowHarmony;
 use mpfree_transport::time::{
-    valid_bpm, MapError, Segment, TempoMap, Tick, MAX_SEGMENTS, MIN_SPAN_TICKS,
+    valid_bpm, MapError, Segment, TempoMap, Tick, MAX_SEGMENTS, MIN_SPAN_TICKS, PPQ,
 };
 use std::sync::Arc;
 
@@ -1749,6 +1750,10 @@ pub fn sections(
 #[derive(Clone, Copy, Debug)]
 pub struct SongSound<'a> {
     pub regions: &'a [(TrackId, Vec<ClipRegion>)],
+    /// The tempo each recording was made at (0: none known), for a region
+    /// following the tempo at its recording's (audio tracks phase 5); a
+    /// recording not here has none.
+    pub tempos: &'a [(RecId, f64)],
     pub map: TempoMap,
     pub rate: u32,
 }
@@ -1759,6 +1764,7 @@ impl SongSound<'_> {
     pub fn none(map: TempoMap, rate: u32) -> SongSound<'static> {
         SongSound {
             regions: &[],
+            tempos: &[],
             map,
             rate,
         }
@@ -1788,10 +1794,46 @@ impl SongSound<'_> {
 
     /// `r`'s frames from song tick `at`, where it starts, to song tick
     /// `t`, on its own rounding (its `phase`), as the audio tracks count
-    /// them (`Region::frames_to`): to its end, its length.
+    /// them (`Region::frames_to`): to its end, its length. Frames of the
+    /// song, which its fades and cut counts are measured in.
     fn frames_of(&self, r: &ClipRegion, at: Tick, t: Tick) -> i64 {
         let x = self.map.frames_between(at as f64, t as f64, self.rate);
         (f64::from(r.phase) + x).round() as i64
+    }
+
+    /// Frames of `r`'s recording a song tick, when it follows the tempo
+    /// at a tempo it knows (phase 5: its own, else its recording's), as
+    /// `Region::per_tick`; None when it plays at its recorded rate.
+    fn per_tick(&self, r: &ClipRegion) -> Option<f64> {
+        if r.follow == FollowTempo::Off {
+            return None;
+        }
+        let bpm = if r.bpm != 0.0 {
+            r.bpm
+        } else {
+            self.tempos
+                .iter()
+                .find(|(rec, _)| *rec == r.rec)
+                .map_or(0.0, |&(_, bpm)| bpm)
+        };
+        valid_bpm(bpm).then(|| 60.0 * f64::from(self.rate) / (bpm * f64::from(PPQ)))
+    }
+
+    /// Where `r`'s recording is at song tick `t`, from `src`, `r` starting
+    /// at song tick `at` (`Region::src_pos`): its `phase` and the frames
+    /// along the song, or, following the tempo, the ticks at its tempo.
+    fn src_pos(&self, r: &ClipRegion, at: Tick, t: Tick) -> f64 {
+        f64::from(r.phase)
+            + match self.per_tick(r) {
+                Some(k) => (t - at) as f64 * k,
+                None => self.map.frames_between(at as f64, t as f64, self.rate),
+            }
+    }
+
+    /// The frame of `r`'s recording past the last it plays, `r` playing
+    /// song ticks `at..end`: where its sound ends.
+    fn end_frame(&self, r: &ClipRegion, at: Tick, end: Tick) -> i64 {
+        r.src + (self.src_pos(r, at, end).round() as i64).max(1)
     }
 
     /// `r`, on song ticks `at..end`, cut at song tick `cut` inside it, as
@@ -1806,9 +1848,11 @@ impl SongSound<'_> {
         let len = self.frames_of(r, at, end);
         let (mut before, mut after) = (*r, *r);
         before.left = add(r.left, len - k);
-        after.src = r.src + k;
-        let x = self.map.frames_between(at as f64, cut as f64, self.rate);
-        after.phase = (f64::from(r.phase) + x - k as f64) as f32;
+        // Where its recording is at the cut, on its own mapping (at its
+        // recorded rate: frame `k`, where the part before ends).
+        let x = self.src_pos(r, at, cut);
+        after.src = r.src + x.round() as i64;
+        after.phase = (x - x.round()) as f32;
         after.into = add(r.into, k);
         (before, after)
     }
@@ -2290,9 +2334,9 @@ fn regions_clip(
     } else {
         format!("{} {first}", track.name)
     };
-    let end = heard.last().map_or(0, |r| {
-        r.src + sound.frames_of(r, a + r.start, a + r.end).max(1)
-    });
+    let end = heard
+        .last()
+        .map_or(0, |r| sound.end_frame(r, a + r.start, a + r.end));
     let mut clip = Clip::new(&name, b - a);
     clip.audio = Some(AudioClip {
         regions: heard.to_vec(),
@@ -2335,7 +2379,7 @@ fn turned_audio(audio: &AudioClip, len: Tick, by: Tick, at: Tick, sound: &SongSo
     }
     parts.sort_by_key(|p| p.0.start);
     let last_frame = parts.last().map_or(audio.last_frame, |(r, from, to)| {
-        r.src + sound.frames_of(r, *from, *to).max(1)
+        sound.end_frame(r, *from, *to)
     });
     AudioClip {
         regions: parts.into_iter().map(|p| p.0).collect(),
@@ -2665,6 +2709,84 @@ mod tests {
         before.left = frames(BAR) as u32;
         assert_eq!(turned.regions, [after, before]);
         assert_eq!(turned.last_frame, 500 + frames(BAR));
+        p.check().unwrap();
+    }
+
+    /// Audio tracks phase 5: a region following the tempo is cut where its
+    /// recording is on its own mapping, at its recording's tempo (as the
+    /// audio tracks give it) or its own, so the rows play on along its
+    /// beats; its cut counts stay in the song's frames, as its fades are.
+    /// A block of a clip following the tempo turns round the same way.
+    #[test]
+    fn a_region_following_the_tempo_is_cut_where_its_recording_is_at_its_tempo() {
+        let mut p = audio_song();
+        let vocal = p.tracks[0].id;
+        let mut one = ClipRegion::new(BAR / 2, 3 * BAR / 2, RecId(1), 1000);
+        one.follow = FollowTempo::Repitch;
+        let mut two = ClipRegion::new(7 * BAR / 4, 5 * BAR / 2, RecId(2), 0);
+        (two.follow, two.bpm) = (FollowTempo::Stretch, 150.0);
+        let regions = vec![(vocal, vec![one, two])];
+        let tempos = [(RecId(1), 100.0), (RecId(2), 90.0)];
+        let sound = SongSound {
+            regions: &regions,
+            tempos: &tempos,
+            ..quiet()
+        };
+        assert_eq!(song_to_scenes(&mut p, BAR, &sound).unwrap().rows, [1, 2, 3]);
+        let audio =
+            |p: &Project, row: usize| p.tracks[0].slots[row].clone().unwrap().audio.unwrap();
+        // Half a bar, 2 beats, of recording 1 at 100 BPM is 1.2 s.
+        let (verse, chorus, last) = (audio(&p, 1), audio(&p, 2), audio(&p, 3));
+        assert_eq!(verse.last_frame, 1000 + 52_920);
+        let mut after = ClipRegion {
+            start: 0,
+            end: BAR / 2,
+            src: 1000 + 52_920,
+            into: frames(BAR / 2) as u32,
+            ..one
+        };
+        assert_eq!(chorus.regions[0], after, "its recording's tempo, kept as 0");
+        // A quarter bar, 1 beat, at its own 150 BPM is 0.4 s.
+        assert_eq!(chorus.regions[1].src, 0);
+        assert_eq!(chorus.regions[1].left, frames(BAR / 2) as u32);
+        assert_eq!(chorus.last_frame, 17_640);
+        assert_eq!(
+            last.regions,
+            [ClipRegion {
+                start: 0,
+                end: BAR / 2,
+                src: 17_640,
+                into: frames(BAR / 4) as u32,
+                ..two
+            }]
+        );
+        p.check().unwrap();
+
+        // A block of a clip following the tempo at its recording's 60 BPM,
+        // turned a bar (4 s of it) round.
+        let mut p = audio_song();
+        let mut c = Clip::new("Hook", 2 * BAR);
+        let mut a = AudioClip::of(RecId(7), 500, 500 + 8 * 44_100, 2 * BAR, 60.0);
+        a.set_follow(FollowTempo::Repitch, false);
+        c.audio = Some(a);
+        p.tracks[0].slots[0] = Some(c);
+        p.give_clip_ids();
+        p.arrangement
+            .place(Placement::of(&p.tracks, 0, 0, 0, 2 * BAR))
+            .unwrap();
+        let tempos = [(RecId(7), 60.0)];
+        let sound = SongSound {
+            tempos: &tempos,
+            ..quiet()
+        };
+        song_to_scenes(&mut p, BAR, &sound).unwrap();
+        let turned = audio(&p, 2);
+        after = ClipRegion::new(0, BAR, RecId(7), 500 + 4 * 44_100);
+        (after.into, after.follow) = (frames(BAR) as u32, FollowTempo::Repitch);
+        let mut before = ClipRegion::new(BAR, 2 * BAR, RecId(7), 500);
+        (before.left, before.follow) = (frames(BAR) as u32, FollowTempo::Repitch);
+        assert_eq!(turned.regions, [after, before]);
+        assert_eq!(turned.last_frame, 500 + 4 * 44_100);
         p.check().unwrap();
     }
 

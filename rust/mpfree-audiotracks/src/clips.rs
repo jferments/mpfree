@@ -45,7 +45,7 @@
 //! Everything here happens on a frame and is the same for any period
 //! size, and nothing allocates.
 
-use crate::{Envelope, Join, Region, FADE};
+use crate::{Envelope, FollowTempo, Join, Region, FADE};
 use mpfree_transport::time::{ticks_in, TempoMap, Tick};
 
 pub use crate::RecordingId;
@@ -62,8 +62,12 @@ pub const DECLICK: usize = 32;
 pub const MAX_CHANGES: usize = 4;
 
 /// One region of a clip: clip ticks `start..end` play recording `rec`
-/// from frame `src` at its recorded rate. A song region's fields, on the
-/// clip's ticks, naming the recording by its lasting id.
+/// from frame `src` at its recorded rate (or following the tempo, phase
+/// 5). A song region's fields, on the clip's ticks, naming the recording
+/// by its lasting id. Each region has its own Follow tempo (`follow` and
+/// `keep_pitch`, as a song region's), and its own made-at tempo in `bpm`:
+/// 0 for its recording's ([`TakeInfo::bpm`](crate::TakeInfo), none for
+/// a take whose tempo changed as it recorded), else [`Region::bpm`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ClipRegion {
     pub start: Tick,
@@ -76,6 +80,9 @@ pub struct ClipRegion {
     pub fade_out: u32,
     pub into: u32,
     pub left: u32,
+    pub follow: FollowTempo,
+    pub keep_pitch: bool,
+    pub bpm: f64,
 }
 
 /// A clip as a track plays it.
@@ -385,13 +392,14 @@ impl Set {
         self.origin + p as f64 * self.len as f64
     }
 
-    pub(crate) fn fill(&mut self, c: &ClipPlay, takes: &[u16; MAX_CLIP_REGIONS]) {
+    pub(crate) fn fill(&mut self, c: &ClipPlay, takes: &[(u16, f64); MAX_CLIP_REGIONS]) {
         self.n = c.regions.len().min(MAX_CLIP_REGIONS);
         for (i, r) in c.regions.iter().take(self.n).enumerate() {
+            let (take, made_at) = takes[i];
             self.regions[i] = Region {
                 start: r.start,
                 end: r.end,
-                take: takes[i],
+                take,
                 src: r.src,
                 phase: r.phase,
                 gain: r.gain,
@@ -399,6 +407,9 @@ impl Set {
                 fade_out: r.fade_out,
                 into: r.into,
                 left: r.left,
+                follow: r.follow,
+                keep_pitch: r.keep_pitch,
+                bpm: if r.bpm == 0.0 { made_at } else { r.bpm },
             };
         }
         self.origin = c.origin;
@@ -472,7 +483,7 @@ impl Voice {
     pub(crate) fn start(
         &mut self,
         c: &ClipPlay,
-        takes: &[u16; MAX_CLIP_REGIONS],
+        takes: &[(u16, f64); MAX_CLIP_REGIONS],
         f: u64,
         tick: f64,
         open: Join,
@@ -507,7 +518,7 @@ impl Voice {
     pub(crate) fn restamp(
         &mut self,
         c: &ClipPlay,
-        takes: &[u16; MAX_CLIP_REGIONS],
+        takes: &[(u16, f64); MAX_CLIP_REGIONS],
         f: u64,
         tick: f64,
     ) {
@@ -603,10 +614,11 @@ impl Voice {
         let Some(b) = b.filter(|b| b.start == 0 || i + 1 < s.n) else {
             return false;
         };
+        let a_to = a.src + a.src_len(len_a, rate);
         b.take == a.take
             && a.take != NO_TAKE_ID
-            && (b.src == a.src + len_a
-                || (i + 1 == s.n && frames(a.take).is_some_and(|n| a.src + len_a == n as i64)))
+            && b.per_tick(rate) == a.per_tick(rate)
+            && (b.src == a_to || (i + 1 == s.n && frames(a.take).is_some_and(|n| a_to == n as i64)))
     }
 
     pub(crate) fn uses(&self, id: u16) -> bool {
@@ -665,7 +677,7 @@ impl Voice {
         let len_f = r.frames_to(map, at, base + r.end as f64, rate);
         let e = r.frames_to(map, at, tick, rate);
         let g = r.gain * Envelope::of(r, len_f).at(e) * self.shape.glide.to;
-        Some((r.take, r.src + e, g))
+        Some((r.take, r.src + r.src_frames_to(map, at, tick, rate), g))
     }
 
     /// [`Voice::heard`] for the audio running into song tick `tick`: a
@@ -696,7 +708,7 @@ impl Voice {
         let len_f = r.frames_to(map, at, base + r.end as f64, rate);
         let e = r.frames_to(map, at, tick, rate);
         let g = r.gain * Envelope::of(r, len_f).at(e) * self.shape.glide.to;
-        Some((r.take, r.src + e, g))
+        Some((r.take, r.src + r.src_frames_to(map, at, tick, rate), g))
     }
 }
 
@@ -886,6 +898,7 @@ impl Lane {
 /// How the regions either side of a pass's end meet: `a` the last of a
 /// pass, ending at it if `a_ends`, `b` the first of the next, starting at
 /// it if `b_starts`; `a_frames` the frames of `a`'s recording.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn seam(
     a: &Region,
     len_a: i64,
@@ -894,15 +907,18 @@ pub(crate) fn seam(
     len_b: i64,
     b_starts: bool,
     a_frames: Option<usize>,
+    rate: u32,
 ) -> Join {
     if !(a_ends && b_starts) {
         return Join::Fade;
     }
-    if b.take == a.take && b.src == a.src + len_a {
+    // Where `a`'s recording ends as it plays.
+    let a_to = a.src + a.src_len(len_a, rate);
+    if b.take == a.take && b.src == a_to {
         // The same audio running straight on.
-        return crate::join_run(a, len_a, b, len_b);
+        return crate::join_run(a, len_a, b, len_b, rate);
     }
-    if b.take == a.take && a_frames.is_some_and(|n| a.src + len_a == n as i64) {
+    if b.take == a.take && a_frames.is_some_and(|n| a_to == n as i64) {
         // A recording that ends right at the pass end loops as made.
         return Join::Straight;
     }
@@ -983,7 +999,13 @@ impl crate::Reader<'_> {
                     let ringing = v.ring && p == set.last && i == n - 1;
                     let len0 = placed(r, base);
                     let len_f = if ringing {
-                        len0.max(set.last_frame - r.src)
+                        // To the clip's last frame: its recording's frames,
+                        // in the frames they play for.
+                        let more = set.last_frame - r.src;
+                        len0.max(match r.speed(bpm) {
+                            Some(sp) => (more as f64 / sp).ceil() as i64,
+                            None => more,
+                        })
                     } else {
                         len0
                     };
@@ -999,7 +1021,7 @@ impl crate::Reader<'_> {
                     let before = if i > 0 {
                         let a = &set.regions[i - 1];
                         if a.end == r.start {
-                            crate::join_run(a, placed(a, base), r, len0)
+                            crate::join_run(a, placed(a, base), r, len0, rate)
                         } else {
                             Join::Fade
                         }
@@ -1007,12 +1029,30 @@ impl crate::Reader<'_> {
                         let a = &set.regions[n - 1];
                         let len_a = placed(a, base - lenp);
                         let frames = self.frames_of(a.take);
-                        seam(a, len_a, a.end == set.len, r, len0, r.start == 0, frames)
+                        seam(
+                            a,
+                            len_a,
+                            a.end == set.len,
+                            r,
+                            len0,
+                            r.start == 0,
+                            frames,
+                            rate,
+                        )
                     } else if let Some(ps) = prev.filter(|ps| ps.n > 0) {
                         let a = &ps.regions[ps.n - 1];
                         let len_a = placed(a, ps.base(ps.last));
                         let frames = self.frames_of(a.take);
-                        seam(a, len_a, a.end == ps.len, r, len0, r.start == 0, frames)
+                        seam(
+                            a,
+                            len_a,
+                            a.end == ps.len,
+                            r,
+                            len0,
+                            r.start == 0,
+                            frames,
+                            rate,
+                        )
                     } else if at <= v.t_start + EPS {
                         // It started in this region: the voice's window
                         // fades it in.
@@ -1029,18 +1069,36 @@ impl crate::Reader<'_> {
                     } else if i + 1 < n {
                         let b = &set.regions[i + 1];
                         if r.end == b.start {
-                            crate::join_run(r, len0, b, placed(b, base))
+                            crate::join_run(r, len0, b, placed(b, base), rate)
                         } else {
                             Join::Fade
                         }
                     } else if p < set.last {
                         let b = &set.regions[0];
                         let len_b = placed(b, base + lenp);
-                        seam(r, len0, r.end == set.len, b, len_b, b.start == 0, frames)
+                        seam(
+                            r,
+                            len0,
+                            r.end == set.len,
+                            b,
+                            len_b,
+                            b.start == 0,
+                            frames,
+                            rate,
+                        )
                     } else if let Some(nx) = follow.filter(|nx| nx.n > 0) {
                         let b = &nx.regions[0];
                         let len_b = placed(b, nx.origin);
-                        seam(r, len0, r.end == set.len, b, len_b, b.start == 0, frames)
+                        seam(
+                            r,
+                            len0,
+                            r.end == set.len,
+                            b,
+                            len_b,
+                            b.start == 0,
+                            frames,
+                            rate,
+                        )
                     } else {
                         Join::Fade
                     };
@@ -1052,7 +1110,7 @@ impl crate::Reader<'_> {
                         after,
                         shape: v.shape,
                     };
-                    self.add(&pl, map, rate, tick0, f0, dst);
+                    self.add(&pl, map, rate, bpm, tick0, f0, dst);
                 }
             }
         }

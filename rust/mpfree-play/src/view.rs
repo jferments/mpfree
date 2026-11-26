@@ -27,6 +27,7 @@ use std::ops::Range;
 
 use mpfree_param::RelAddr;
 use mpfree_seq::arrange::SONG_LANE_LEN;
+use mpfree_seq::inst::Knobs;
 use mpfree_seq::mpfree_moves::{Kind, Map, Moves, Target};
 use mpfree_seq::steps::Edit;
 use mpfree_seq::{
@@ -1032,12 +1033,12 @@ impl PlayView {
             let swing = k.swing.map(|(grid, amount)| Swing { grid, amount });
             // A cell's clip plays as its own track's instrument would; a
             // song clip of its own, shared by lanes, plays all its locks.
-            let plays = k
-                .cell
-                .and_then(|(t, _)| project.tracks.get(t))
-                .and_then(|t| t.plays.get());
+            let track = k.cell.and_then(|(t, _)| project.tracks.get(t));
+            let plays = track.and_then(|t| t.plays.get());
+            let no_knobs = Knobs::default();
+            let knobs = track.map_or(&no_knobs, |t| &t.knobs);
             self.song_clips
-                .push(view_of(clip, swing, plays, k.slot, 0, 0));
+                .push(view_of(clip, swing, plays, knobs, k.slot, 0, 0));
         }
         self.song_keys = keys;
         for (track, key, mut region) in blocks {
@@ -1492,7 +1493,15 @@ fn clip_view(
         .filter(|_| slot < ROWS)
         .ok_or(CompileError::EmptySlot { track, slot })?;
     clip.check().map_err(CompileError::Model)?;
-    Ok(view_of(clip, t.swing, t.plays.get(), slot, origin, start))
+    Ok(view_of(
+        clip,
+        t.swing,
+        t.plays.get(),
+        &t.knobs,
+        slot,
+        origin,
+        start,
+    ))
 }
 
 /// `clip` compiled, named `slot`, on a track whose swing is `track_swing`
@@ -1504,19 +1513,31 @@ pub(crate) fn view_of(
     clip: &Clip,
     track_swing: Option<Swing>,
     plays: Option<&mpfree_seq::inst::Inst>,
+    knobs: &Knobs,
     slot: usize,
     origin: Tick,
     start: Tick,
 ) -> ClipView {
+    use mpfree_seq::mpfree_moves::By;
     let silent = clip.inst_silent(plays).is_some();
     let quiet = |lane: &mpfree_seq::mpfree_moves::Lane| {
         !lane.by.plays() || (silent && !clip.lane_plays(lane, plays))
     };
-    let moves = if clip.moves.lanes().iter().any(quiet) {
+    // A lane of Continue's goes with its knob (S3): heard from where the
+    // knob is now, when the app has told it and it moved.
+    let moved = |lane: &mpfree_seq::mpfree_moves::Lane| match lane.by {
+        By::Continue { base, .. } => knobs.of(lane.target).is_some_and(|now| now != base),
+        By::Hand => false,
+    };
+    let moves = if clip.moves.lanes().iter().any(|l| quiet(l) || moved(l)) {
         let mut m = clip.moves.clone();
         for lane in clip.moves.lanes() {
             if quiet(lane) {
                 m.remove(lane.target);
+            } else if let (true, Some(now), Some(l)) =
+                (moved(lane), knobs.of(lane.target), m.lane_mut(lane.target))
+            {
+                l.follow_knob(now);
             }
         }
         m
@@ -1752,6 +1773,9 @@ fn audio_hash(a: &AudioView) -> u64 {
             fade_out,
             into,
             left,
+            follow,
+            keep_pitch,
+            bpm,
         } = *r;
         h.word(start as u64);
         h.word(end as u64);
@@ -1761,6 +1785,7 @@ fn audio_hash(a: &AudioView) -> u64 {
         h.word(u64::from(gain.to_bits()) | u64::from(fade_in) << 32);
         h.word(u64::from(fade_out) | u64::from(into) << 32);
         h.word(u64::from(left) | u64::from(phase.to_bits()) << 32);
+        h.word(bpm.to_bits() ^ (follow as u64) << 1 ^ u64::from(keep_pitch));
     }
     h.done() | 1
 }
@@ -2525,7 +2550,7 @@ mod tests {
         clip.moves.put(cut, map, &gesture, 960).unwrap();
         clip.moves.put(res, map, &gesture, 960).unwrap();
         let lanes = |c: &Clip| -> Vec<Target> {
-            let v = view_of(c, None, None, 2, 0, 0);
+            let v = view_of(c, None, None, &Knobs::default(), 2, 0, 0);
             v.moves.lanes().iter().map(|l| l.target).collect()
         };
         clip.moves.set_by(
@@ -2546,6 +2571,50 @@ mod tests {
         assert_eq!(lanes(&clip), [res]);
     }
 
+    /// Continue's lane is heard from its knob where the app says it is
+    /// now (S3): the compiled lane follows it, the clip's stays as written,
+    /// and a lane of yours, or a knob not told, plays as it is.
+    #[test]
+    fn continues_lane_plays_from_its_knob_where_it_is() {
+        use mpfree_seq::mpfree_moves::By;
+        let mut clip = project().tracks[0].slots[2].clone().unwrap();
+        let cut = Target::Track(RelAddr::new(mpfree_param::OnTrack::Inst, 3));
+        let res = Target::Track(RelAddr::new(mpfree_param::OnTrack::Inst, 4));
+        let map = Map::linear(0.0, 1.0);
+        let gesture = [(0.0, 0.6, Kind::Step), (100.0, 0.7, Kind::Step)];
+        clip.moves.put(cut, map, &gesture, 960).unwrap();
+        clip.moves.put(res, map, &gesture, 960).unwrap();
+        clip.moves.set_by(
+            cut,
+            By::Continue {
+                on: true,
+                base: 0.5,
+            },
+        );
+        let heard = |knobs: &Knobs, t: Target| -> Vec<f32> {
+            let v = view_of(&clip, None, None, knobs, 2, 0, 0);
+            let l = v.moves.lane(t).unwrap();
+            l.points.iter().map(|p| l.map.value(p.u)).collect()
+        };
+        let none = Knobs::default();
+        let inst = |id| RelAddr::new(mpfree_param::OnTrack::Inst, id);
+        let down = Knobs(vec![(inst(3), 0.3), (inst(4), 0.3)].into());
+        let near = |a: Vec<f32>, b: [f32; 2]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5);
+        assert!(near(heard(&none, cut), [0.6, 0.7]), "not told: as written");
+        assert!(
+            near(heard(&down, cut), [0.4, 0.5]),
+            "{:?}",
+            heard(&down, cut)
+        );
+        assert!(near(heard(&down, res), [0.6, 0.7]), "yours: as written");
+        let back = Knobs(vec![(inst(3), 0.5)].into());
+        assert_eq!(
+            view_of(&clip, None, None, &back, 2, 0, 0),
+            view_of(&clip, None, None, &none, 2, 0, 0),
+            "where it was written: the same view"
+        );
+    }
+
     #[test]
     fn a_stamp_kept_up_while_recording_in_place_is_the_one_a_compile_makes() {
         let mut clip = project().tracks[0].slots[2].clone().unwrap();
@@ -2553,7 +2622,7 @@ mod tests {
         let map = Map::linear(0.0, 1.0);
         let gesture = |a: f64, b: f64| [(a, 0.2, Kind::Ramp), (b, 0.7, Kind::Ramp)];
         clip.moves.put(cut, map, &gesture(0.0, 100.0), 960).unwrap();
-        let fresh = |c: &Clip| view_of(c, None, None, 2, 0, 0);
+        let fresh = |c: &Clip| view_of(c, None, None, &Knobs::default(), 2, 0, 0);
         let mut v = fresh(&clip);
         v.make_room(4, 4);
         let mut stamps = vec![v.stamp];
@@ -2629,7 +2698,7 @@ mod tests {
                 ..Note::new(470, 120, 61, 100)
             },
         ];
-        let fresh = |c: &Clip| view_of(c, None, None, 2, 0, 0);
+        let fresh = |c: &Clip| view_of(c, None, None, &Knobs::default(), 2, 0, 0);
         let mut v = fresh(&clip);
         v.make_room(4, 4);
         for (tick, want) in [(240, 129), (480, 5), (720, 5)] {
@@ -2672,14 +2741,14 @@ mod tests {
             c.moves = lane(cut, map, &ramp);
             c
         };
-        let stamp = |c: &Clip| view_of(c, None, None, 2, 0, 0).stamp;
+        let stamp = |c: &Clip| view_of(c, None, None, &Knobs::default(), 2, 0, 0).stamp;
         assert_eq!(
             stamp(&base()),
             stamp(&base()),
             "the same clip, the same stamp"
         );
         assert_eq!(
-            view_of(&base(), None, None, 5, 960, 3840).stamp,
+            view_of(&base(), None, None, &Knobs::default(), 5, 960, 3840).stamp,
             stamp(&base()),
             "where it plays is not in it"
         );
