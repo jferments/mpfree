@@ -443,6 +443,9 @@ enum FromWorker {
     },
     /// Recording to files couldn't start: why.
     FilesFailed(String),
+    /// Recording couldn't carry on in the folder asked, its card gone
+    /// ([`ToWorker::CarryOn`]): why. The tracks record into memory only.
+    CarryFailed(String),
     /// The stream layer's player, for the tracks.
     Player(Box<Player>),
     /// The stream layer couldn't start: why.
@@ -617,6 +620,13 @@ pub struct AudioHost {
     /// ([`AudioHost::record_to`]).
     cards: Vec<Arc<dyn CardHandle>>,
     work_card: Option<Arc<dyn CardHandle>>,
+    /// Takes whose first part is on a card that went (they carried on,
+    /// the SD card plan's B2c), by take id, with their lasting id, until
+    /// the part is joined back (made at start: none allocates later).
+    card_parts: Vec<Option<RecordingId>>,
+    /// Recording couldn't carry on off the card that went
+    /// ([`FromWorker::CarryFailed`]), until it moves again.
+    carry_failed: bool,
 }
 
 /// Why [`AudioHost::import`] could not take a sound.
@@ -677,6 +687,8 @@ impl AudioHost {
             problems_lost: 0,
             cards: Vec::new(),
             work_card: None,
+            card_parts: vec![None; MAX_TAKES],
+            carry_failed: false,
             fits: 0,
             fits_failed: 0,
             fit_copy: false,
@@ -908,6 +920,7 @@ impl AudioHost {
             return Err(dir);
         }
         self.work_card = self.card_for(&dir);
+        self.carry_failed = false;
         self.send(ToWorker::Files { dir, cfg });
         Ok(())
     }
@@ -959,6 +972,13 @@ impl AudioHost {
             }
         }
         out
+    }
+
+    /// How many tracks are armed to record to files (their next take's
+    /// files made, or being made): for System status's recording room.
+    /// Does not allocate.
+    pub fn armed_files(&self) -> usize {
+        self.files.armed.iter().flatten().count()
     }
 
     /// Whether track `track`'s next take's files are made: Some(false)
@@ -1101,6 +1121,53 @@ impl AudioHost {
 
     fn problem(&mut self, p: Problem) {
         keep_problem(&mut self.files.problems, &mut self.problems_lost, p);
+    }
+
+    /// The tracks whose takes wait for their first part from a card that
+    /// went (they carried on on the stick, the SD card plan's B2c), each
+    /// once, in track order: what System status lists until the same card
+    /// is back. Allocates.
+    pub fn card_parts(&self) -> Vec<usize> {
+        let mut out: Vec<usize> = self
+            .card_parts
+            .iter()
+            .enumerate()
+            .filter_map(|(id, p)| {
+                let rec = (*p)?;
+                let t = self.tracks.take(id as u16)?;
+                (t.rec == rec).then_some(t.track)
+            })
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Card out for System status, from the takes still waiting for
+    /// their first part from a card that went (`Watch::card_out`): red
+    /// when recording couldn't carry on, or a take that carried on
+    /// stopped by itself. A take gone since (erased, or the project
+    /// closed) waits no more. Does not allocate.
+    fn look_card_out(&mut self) {
+        let mut parts = 0;
+        let mut stopped = self.carry_failed;
+        for id in 0..self.card_parts.len() {
+            let Some(rec) = self.card_parts[id] else {
+                continue;
+            };
+            if self.tracks.take(id as u16).is_none_or(|t| t.rec != rec) {
+                self.card_parts[id] = None;
+                continue;
+            }
+            parts += 1;
+            stopped |= self
+                .file(id as u16)
+                .is_some_and(|f| matches!(f.state, files::TakeState::Stopped(_)));
+        }
+        let (room, lost) = (&mut self.files.problems, &mut self.problems_lost);
+        self.watch.card_out(parts, stopped, &mut |r| {
+            keep_problem(room, lost, Problem::of(r))
+        });
     }
 
     /// The SD card opened, its files under `card.root()` (its mount
@@ -1341,6 +1408,7 @@ impl AudioHost {
         self.tend_copies(block, map);
         self.periods += 1;
         if self.periods.is_multiple_of(PLAYER_LOOK_EVERY) {
+            self.look_card_out();
             if let Some(st) = self.tracks.player_stats() {
                 let (room, lost) = (&mut self.files.problems, &mut self.problems_lost);
                 self.watch
@@ -2087,6 +2155,12 @@ impl AudioHost {
                     self.tracks.files(false);
                     self.event(FileEvent::ArmFailed { track: 0, why });
                 }
+                FromWorker::CarryFailed(why) => {
+                    self.tracks.files(false);
+                    self.carry_failed = true;
+                    self.event(FileEvent::ArmFailed { track: 0, why });
+                    self.look_card_out();
+                }
                 // For tracks emptied since it was asked for (a project
                 // opened): dropped, never let near the new project's takes.
                 FromWorker::Buffer { audio, gen } if gen != self.generation => {
@@ -2372,6 +2446,12 @@ impl AudioHost {
     fn heard(&mut self, said: Said) {
         match said {
             Said::CarriedOn { rec, hole } => {
+                if let Some(id) = self.tracks.take_of(rec).filter(|_| hole > 0) {
+                    if let Some(p) = self.card_parts.get_mut(usize::from(id)) {
+                        *p = Some(rec);
+                    }
+                }
+                self.look_card_out();
                 if let Some(t) = self.tracks.take_of(rec).and_then(|id| self.tracks.take(id)) {
                     let hole_s = hole as f32 / self.tracks.rate() as f32;
                     let track = t.track;
@@ -2379,6 +2459,10 @@ impl AudioHost {
                 }
             }
             Said::Joined { rec, frames } => {
+                if let Some(p) = self.card_parts.iter_mut().find(|p| **p == Some(rec)) {
+                    *p = None;
+                }
+                self.look_card_out();
                 if let Some(t) = self.tracks.take_of(rec).and_then(|id| self.tracks.take(id)) {
                     let joined_s = frames as f32 / self.tracks.rate() as f32;
                     let track = t.track;
@@ -3455,7 +3539,7 @@ impl Worker {
                     self.look_at_drive(done);
                     return None;
                 }
-                Err(e) => FromWorker::FilesFailed(e.to_string()),
+                Err(e) => FromWorker::CarryFailed(e.to_string()),
             },
             ToWorker::Join { mark, places } => {
                 let card = self

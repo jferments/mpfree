@@ -1250,6 +1250,9 @@ pub enum ToUi {
     /// from it), for Eject card's sheet (eject_card.rs), after
     /// [`FromUi::CardUse`].
     CardUse(Vec<crate::eject_card::Use>),
+    /// What the audio tracks say about the drives for System status's
+    /// Storage, after [`FromUi::StorageAsk`].
+    StorageUse(Box<crate::status_screen::StorageUse>),
     /// What Export needs to know about the song (export.rs), after
     /// [`FromUi::ExportAsk`].
     ExportFacts(Box<crate::export::Facts>),
@@ -1954,6 +1957,9 @@ pub enum FromUi {
     /// Eject card (the SD card plan's B2c): the audio loop says what still
     /// uses the SD card ([`ToUi::CardUse`]).
     CardUse,
+    /// System status shows Storage: the audio loop says what it knows of
+    /// the drives ([`ToUi::StorageUse`]), about once a second.
+    StorageAsk,
     /// A project save finished into this folder (the project's
     /// `samples/`): the audio tracks keep their takes' files from there.
     AudioSavedInto(std::path::PathBuf),
@@ -3103,6 +3109,10 @@ pub struct Player {
     /// The card being ejected had takes recording on it, which carry on on
     /// the stick: the ejected place says to put it back for the join.
     ejected_takes: bool,
+    /// What the audio tracks last said about the drives, for Storage, and
+    /// how long since it was asked for (s).
+    storage_use: Option<crate::status_screen::StorageUse>,
+    storage_asked: f32,
     /// A finger on Play's BPM: which, how long (s) and where it landed.
     tempo_press: Option<(u64, f32, i32, i32)>,
     /// A finger on the Sample page's Keep card, as [`Self::tempo_press`].
@@ -3557,6 +3567,8 @@ impl Player {
             eject: None,
             eject_asked: false,
             ejected_takes: false,
+            storage_use: None,
+            storage_asked: f32::INFINITY,
             tempo_press: None,
             keep_press: None,
             guard_press: None,
@@ -11148,6 +11160,19 @@ impl Player {
                 self.fill_system_status();
             }
         }
+        // Storage's numbers: what the audio tracks know of the drives,
+        // asked for at once and then about once a second while it shows.
+        if self.view == View::SystemStatus
+            && self.status_place.picked == mpfree_status::System::Storage
+        {
+            self.storage_asked += dt;
+            if self.storage_asked >= 1.0 {
+                self.storage_asked = 0.0;
+                self.outbox.push(FromUi::StorageAsk);
+            }
+        } else {
+            self.storage_asked = f32::INFINITY;
+        }
     }
 
     /// System status from the board as it stands. While it shows, every
@@ -11401,6 +11426,7 @@ impl Player {
                 use mpfree_stream::storage::CardHandle;
                 l.valid()
             }),
+            storage: self.storage_use.clone(),
             heat: self.heat,
             engines: self.engines.as_deref().and_then(crate::engines::shares),
             tracks: self.engines.as_deref().and_then(|e| self.status_tracks(e)),
@@ -12996,6 +13022,7 @@ impl Player {
             }
             ToUi::ProjectParts(c) => self.save_project(c),
             ToUi::CardUse(uses) => self.eject_uses(uses),
+            ToUi::StorageUse(u) => self.storage_use = Some(*u),
             ToUi::ExportFacts(f) => self.export_facts(f),
             ToUi::ExportOver(run) => self.export_over(run),
             ToUi::Printed(name, p) => self.save_print(name, p),
@@ -17821,6 +17848,7 @@ impl Player {
                 | FromUi::AudioDrive(_)
                 | FromUi::AudioJoin(..)
                 | FromUi::CardUse
+                | FromUi::StorageAsk
                 | FromUi::AudioSavedInto(_)
                 | FromUi::Kit(_)
                 | FromUi::LevelDb(_)
@@ -43087,6 +43115,48 @@ mod tests {
         p.status_page_event(EventKind::Tab(FOOT));
         assert!(!p.outbox.contains(&FromUi::CardUse));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Storage on System status asks the audio tracks for its numbers at
+    /// once and about once a second while it shows, and stops when another
+    /// system or page is picked (the SD card plan's B2c, screen 7d).
+    #[test]
+    fn storage_asks_for_its_numbers_while_it_shows() {
+        use crate::status_screen::StorageUse;
+        use mpfree_status::System;
+        let mut p = browser_samples(Fonts::embedded()).unwrap();
+        let asks = |p: &mut Player| {
+            let n = p
+                .outbox
+                .iter()
+                .filter(|a| **a == FromUi::StorageAsk)
+                .count();
+            p.outbox.clear();
+            n
+        };
+        p.apply(ToUi::Show(View::SystemStatus));
+        p.status_place.picked = System::Sound;
+        p.tick(0.1);
+        assert_eq!(asks(&mut p), 0, "not while another system shows");
+        p.status_place.picked = System::Storage;
+        p.tick(0.1);
+        assert_eq!(asks(&mut p), 1, "at once");
+        p.tick(0.5);
+        assert_eq!(asks(&mut p), 0);
+        p.tick(0.6);
+        assert_eq!(asks(&mut p), 1, "a second on");
+        let got = StorageUse {
+            parts: vec!["Vocals".into()],
+            armed: 1,
+            armed_bps: 288_000,
+            memory_s: Some(30.0),
+            ..Default::default()
+        };
+        p.apply(ToUi::StorageUse(Box::new(got.clone())));
+        assert_eq!(p.status_readings().storage, Some(got));
+        p.apply(ToUi::Show(View::Play));
+        p.tick(1.5);
+        assert_eq!(asks(&mut p), 0, "not once the page is gone");
     }
 
     /// S2b phase B2b, switched on here as B2c will: once the stick's own

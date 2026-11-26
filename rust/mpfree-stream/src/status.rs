@@ -14,6 +14,7 @@
 //! | [`Watch::admission`]: [`Admission`] | Streaming at limit (not even the least safe read-ahead fits) |
 //! | [`Watch::player`]: [`player::Stats`] | Stick fell behind (frames played as silence since last time) |
 //! | [`Watch::card_lost`]: sources [`Coordinator::lost`] gave | Card removed |
+//! | [`Watch::card_out`]: takes waiting for a part on a card that went | Card out, Card out (recording stopped) |
 //! | [`Watch::drive`]: the stick's [`Drive`] | Stick missing, Stick nearly full |
 //! | [`Watch::found`]: recovery's [`Found`] | Take recovered |
 //! | [`Watch::checked`]: a whole-take check's answer | Take damaged |
@@ -26,9 +27,9 @@
 //! [`Coordinator::lost`]: crate::coord::Coordinator::lost
 
 use mpfree_status::kinds::{
-    CARD_MISSING, CARD_NEARLY_FULL, CARD_REMOVED, NOT_SAVED_YET, RECORDING_AT_RISK,
-    RECORDING_MAY_STOP, RECORDING_STOPPED, STICK_FELL_BEHIND, STICK_MISSING, STICK_NEARLY_FULL,
-    STREAMING_AT_LIMIT, TAKE_DAMAGED, TAKE_RECOVERED,
+    CARD_MISSING, CARD_NEARLY_FULL, CARD_OUT, CARD_OUT_STOPPED, CARD_REMOVED, NOT_SAVED_YET,
+    RECORDING_AT_RISK, RECORDING_MAY_STOP, RECORDING_STOPPED, STICK_FELL_BEHIND, STICK_MISSING,
+    STICK_NEARLY_FULL, STREAMING_AT_LIMIT, TAKE_DAMAGED, TAKE_RECOVERED,
 };
 use mpfree_status::{Kind, Report, Subject};
 
@@ -172,6 +173,18 @@ impl Watch {
         if sources > 0 {
             out(Report::happened(&CARD_REMOVED, 1));
         }
+    }
+
+    /// The SD card came out while takes recorded on it (the SD card plan's
+    /// B2c): `parts` takes still wait for their first part from it (they
+    /// carried on on the stick), and `stopped` when the stick couldn't
+    /// take them over (a take that carried on stopped by itself, or
+    /// recording couldn't move there at all). Card out while any wait and
+    /// nothing stopped; Card out (recording stopped) once something did,
+    /// until it is put right.
+    pub fn card_out(&mut self, parts: usize, stopped: bool, out: &mut dyn FnMut(Report)) {
+        self.set(&CARD_OUT_STOPPED, Subject::NONE, stopped, out);
+        self.set(&CARD_OUT, Subject::NONE, parts > 0 && !stopped, out);
     }
 
     /// The drive the takes record to: missing, or nearly full, as the

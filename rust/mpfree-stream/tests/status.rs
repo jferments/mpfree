@@ -8,9 +8,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mpfree_status::kinds::{
-    CARD_MISSING, CARD_NEARLY_FULL, CARD_REMOVED, NOT_SAVED_YET, RECORDING_AT_RISK,
-    RECORDING_MAY_STOP, RECORDING_STOPPED, STICK_FELL_BEHIND, STICK_MISSING, STICK_NEARLY_FULL,
-    STREAMING_AT_LIMIT, TAKE_DAMAGED, TAKE_RECOVERED,
+    CARD_MISSING, CARD_NEARLY_FULL, CARD_OUT, CARD_OUT_STOPPED, CARD_REMOVED, NOT_SAVED_YET,
+    RECORDING_AT_RISK, RECORDING_MAY_STOP, RECORDING_STOPPED, STICK_FELL_BEHIND, STICK_MISSING,
+    STICK_NEARLY_FULL, STREAMING_AT_LIMIT, TAKE_DAMAGED, TAKE_RECOVERED,
 };
 use mpfree_status::{Board, Kind, Op, Report, Subject, System, Window};
 use mpfree_stream::coord::Admission;
@@ -442,4 +442,53 @@ fn the_card_says_its_own_problems_and_a_move_ends_the_other_drives() {
             ended(&CARD_MISSING),
         ]
     );
+}
+
+/// The SD card came out while takes recorded on it (B2c): Card out while
+/// any take waits for its part from it, red once the stick couldn't take
+/// them over, and on the board Card out hides Card missing.
+#[test]
+fn a_card_that_came_out_says_so_until_its_takes_are_whole() {
+    let mut w = Watch::new();
+    let mut got = Vec::new();
+    w.card_out(0, false, &mut |r| got.push(r));
+    w.card_out(2, false, &mut |r| got.push(r));
+    w.card_out(2, false, &mut |r| got.push(r));
+    // One joined back: still out.
+    w.card_out(1, false, &mut |r| got.push(r));
+    // A take that carried on stopped by itself: red, the yellow ends.
+    w.card_out(1, true, &mut |r| got.push(r));
+    // Put right (recording moved again) and the last part back.
+    w.card_out(1, false, &mut |r| got.push(r));
+    w.card_out(0, false, &mut |r| got.push(r));
+    let ops: Vec<(&str, Op)> = got.iter().map(|r| (r.kind.id, r.op)).collect();
+    assert_eq!(
+        ops,
+        vec![
+            began(&CARD_OUT),
+            began(&CARD_OUT_STOPPED),
+            ended(&CARD_OUT),
+            ended(&CARD_OUT_STOPPED),
+            began(&CARD_OUT),
+            ended(&CARD_OUT),
+        ]
+    );
+    // Recording couldn't move off the card at all: red with no take
+    // waiting.
+    let mut got = Vec::new();
+    w.card_out(0, true, &mut |r| got.push(r));
+    assert_eq!(got.len(), 1);
+    assert_eq!((got[0].kind.id, got[0].op), began(&CARD_OUT_STOPPED));
+    // On the board, the cause, not its echo: the card said missing while
+    // it is out shows only as out.
+    let t = Instant::now();
+    let mut b = Board::new();
+    b.apply(Report::began(&CARD_OUT), t);
+    b.apply(Report::began(&CARD_MISSING), t);
+    let now: Vec<&str> = b
+        .problems(System::Storage, Window::Now)
+        .iter()
+        .map(|p| p.kind.id)
+        .collect();
+    assert_eq!(now, vec![CARD_OUT.id]);
 }

@@ -551,6 +551,7 @@ Phase 3 of [System status](status.md): this layer's problems are entries in the 
 |---|---|---|---|
 | Stick missing | red, stays | `Watch::drive`: the data partition gone or read-only | nothing can be saved or recorded; it hides the saves, takes and room that fail because of it |
 | Card missing | red, stays | `Watch::drive` with `Drive::card`: the SD card the takes record on gone or read-only (S2b) | takes since then are only in memory; it hides the takes at risk and not saved, and the card's room |
+| SD card out (recording stopped) | red, stays | `Watch::card_out` with `stopped`: the card the takes recorded on came out and the stick couldn't take recording over, or a take that carried on there stopped by itself (B2c) | what was recorded is kept, but recording stopped where the musician didn't stop it; it hides Card missing and Card out |
 | Recording at risk | red, lasts | `Watch::take`: state At risk | a cut now loses everything since the last commit; it hides Not saved yet |
 | Recording stopped | red, happens (once per take) | `Watch::take`: state Stopped | capture memory filled: the take stopped where the musician didn't stop it |
 | Card removed | red, happens | `Watch::card_lost`: sources `Coordinator::lost` gave | sounds stopped mid-song (one report for the lot) |
@@ -559,6 +560,7 @@ Phase 3 of [System status](status.md): this layer's problems are entries in the 
 | Not saved yet | yellow, lasts | `Watch::take`: unsaved past twice the interval, not at risk | the stick is slow but saving works |
 | Streaming at limit | yellow, lasts | `Watch::admission`: not even the least safe read-ahead fits | MPFree says so rather than quietly read less far ahead |
 | Stick nearly full | yellow, lasts | `Watch::drive`: under 1 GB, or under 10 minutes of what is armed | nothing lost yet; ends only once the room is a tenth over the line, so it doesn't come and go |
+| SD card out | yellow, stays | `Watch::card_out`: takes wait for their first part from a card that came out, recording going on on the stick (B2c) | nothing lost: each take is made whole when the same card is back; it hides Card missing |
 | Card nearly full | yellow, lasts | `Watch::drive` with `Drive::card`: the same line, on the SD card the takes record on (S2b) | as Stick nearly full |
 | Take damaged | yellow, until seen | `Watch::checked`: a whole-take check failed | the audio is kept for the musician to judge |
 | Take recovered | note, happens | `Watch::found`: recovery finished a take (`Finished`, `CutOff`) | worth listing for the session; never colours anything |

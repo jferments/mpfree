@@ -11781,6 +11781,9 @@ fn player_session(
                 gui::FromUi::AudioJoin(mark, places) => tracks.join_card(mark, places),
                 // Eject card: what still uses the card, for its sheet.
                 gui::FromUi::CardUse => out.show(gui::ToUi::CardUse(tracks.card_use())),
+                gui::FromUi::StorageAsk => {
+                    out.show(gui::ToUi::StorageUse(Box::new(tracks.storage_use())));
+                }
                 gui::FromUi::AudioSavedInto(dir) => tracks.saved_into(dir),
                 gui::FromUi::OpenProject(mut o) => {
                     // Everything stops first: the clips change under the

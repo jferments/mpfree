@@ -749,6 +749,30 @@ impl TrackHost {
         self.host.own_device(lease);
     }
 
+    /// What System status's Storage says about the drives (the SD card
+    /// plan's B2c): the tracks whose takes wait for a part from the SD
+    /// card that came out, what uses the card now, the tracks armed, and
+    /// how long they could record into memory should the drive stop
+    /// taking them. Allocates: between periods, while Storage shows.
+    pub fn storage_use(&self) -> crate::status_screen::StorageUse {
+        let armed_bps = self.host.drive_seen().armed_bytes_per_s();
+        let m = self.host.tracks.memory();
+        // Samples a second the armed takes take (4 bytes each).
+        let rate = armed_bps / 4;
+        crate::status_screen::StorageUse {
+            parts: self
+                .host
+                .card_parts()
+                .into_iter()
+                .map(|t| self.who(t))
+                .collect(),
+            using: self.card_use(),
+            armed: self.host.armed_files(),
+            armed_bps,
+            memory_s: (rate > 0).then(|| m.capacity.saturating_sub(m.used) as f64 / rate as f64),
+        }
+    }
+
     /// What still uses the SD card, for Eject card's sheet (the SD card
     /// plan's B2c, eject_card.rs): each track whose take records on it
     /// (it carries on on the stick), then each take playing from its file

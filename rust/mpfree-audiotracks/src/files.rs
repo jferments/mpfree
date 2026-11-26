@@ -1412,12 +1412,21 @@ pub struct DriveSeen {
     total: AtomicU64,
     /// The drive watched is the SD card (S2b, phase B2b).
     card: AtomicBool,
+    /// Bytes a second the armed takes record, at the last look: with the
+    /// free space, the recording room System status says (B2c).
+    armed: AtomicU64,
 }
 
 impl DriveSeen {
     /// Whether the drive watched is the SD card, not the stick.
     pub fn on_card(&self) -> bool {
         self.card.load(Ordering::Relaxed)
+    }
+
+    /// Bytes a second the armed takes record, at the last look (0 with
+    /// none armed).
+    pub fn armed_bytes_per_s(&self) -> u64 {
+        self.armed.load(Ordering::Relaxed)
     }
 
     /// A look's answer: None when the drive didn't answer.
@@ -1485,11 +1494,13 @@ pub fn watch_drive(
                 seen.card.store(card, Ordering::Relaxed);
                 let room = probe(&dir);
                 seen.set(room);
+                let armed_bytes_per_s = armed.load(Ordering::Relaxed);
+                seen.armed.store(armed_bytes_per_s, Ordering::Relaxed);
                 let d = Drive {
                     card,
                     writable: room.is_some_and(|r| r.writable),
                     free: room.map_or(0, |r| r.free),
-                    armed_bytes_per_s: armed.load(Ordering::Relaxed),
+                    armed_bytes_per_s,
                 };
                 let mut live = true;
                 watch.drive(&d, &mut |r| live &= report(Problem::of(r)));
