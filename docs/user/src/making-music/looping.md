@@ -1,6 +1,6 @@
 <!--
 status: changing
-covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/loop_row.rs rust/mpfree-app/src/looper_deck.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs rust/mpfree-seq/src/loops.rs
+covers: rust/mpfree-looper rust/mpfree-app/src/looper_page.rs rust/mpfree-app/src/loop_row.rs rust/mpfree-app/src/looper_deck.rs rust/mpfree-app/src/looper_tab.rs rust/mpfree-app/src/looping.rs rust/mpfree-app/src/looping rust/mpfree-seq/src/loops.rs
 checked: 2026-11-24 459299e3
 -->
 
