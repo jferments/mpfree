@@ -33,7 +33,7 @@ The pattern's length, the step inspector and your timing are on the [Sequencer](
 
 ## Throws
 
-**Throws** are effects you play like an instrument: hold one and the effect comes in, let go and it stops. There are eight: **Delay throw** (a dotted echo), **Reverb wash**, **Stutter**, **Tape stop**, **Filter dip** (a low-pass sweep), **Beat repeat**, **Drop drums** and **Vinyl brake**. The Play page has room for the first six; the Sequencer's Steps view shows all eight while no step is picked, and page B of the [Perform set](looping.md#more-pages-the-perform-set) has the eight on pads 1 to 8. Each tile shows its timing or length. While the music plays, a throw starts on the next sixteenth note, so it lands in time even if you press a little early. Hold one at the end of a phrase and let go on the next downbeat. The data wheel's push holds the outlined throw on until you push again (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)).
+**Throws** are effects you play like an instrument: hold one and the effect comes in, let go and it stops. There are eight: **Delay throw** (a dotted echo), **Reverb wash**, **Stutter**, **Tape stop**, **Filter dip** (a low-pass sweep), **Beat repeat**, **Drop drums** and **Vinyl brake**. The Play page has room for the first six; the Sequencer's Steps view shows all eight while no step is picked, and page B of the [Perform set](looping.md#more-pages-the-perform-set) has the eight on pads 1 to 8. Each tile shows its timing or length. While the music plays, a throw starts on the next sixteenth note, so it lands in time even if you press a little early. Hold one at the end of a phrase and let go on the next downbeat. The data wheel's push holds the outlined throw on until you push again (see [The wheel's outline](../getting-started/the-screen.md#the-wheels-outline)). **STOP** with the music stopped, or **SHIFT + STOP**, silences everything: a throw you hold lets go too, as do the XY pad and a pad held on the screen. Lift your finger and touch again to play it.
 
 **Drop drums** mutes the kick, snare and hi-hats while you hold it: the classic breakdown move.
 
@@ -103,7 +103,7 @@ The last kind in the column, **Transpose**, moves a playing line instead of a so
 
 ## When it gets busy
 
-However much is playing, a pad, a key or a recording on the Sample page that you let go always stops on time, so no note is left hanging. If one moment holds more than MPFree can line up (hundreds of hits and pressure changes at once), it first merges pressure and knob moves into the newest one, then skips new hits, and never skips a let-go. With **Show developer tools** on in Prefs, the Dev tab's Debug page counts how often that happened.
+However much is playing, a pad, a key or a recording on the Sample page that you let go always stops on time, so no note is left hanging. Changing tabs, or a card opening over the page (the number pad, Undo history, the power card, Sample Recall), lets go of whatever your fingers hold on the screen, so nothing keeps playing under it. If one moment holds more than MPFree can line up (hundreds of hits and pressure changes at once), it first merges pressure and knob moves into the newest one, then skips new hits, and never skips a let-go. With **Show developer tools** on in Prefs, the Dev tab's Debug page counts how often that happened.
 
 ## Your timing
 

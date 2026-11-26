@@ -5,7 +5,7 @@
 //! Each strip, top to bottom: its name over a colour stripe, four insert
 //! rows (a tap opens the slot's page, or the effect list on the empty
 //! slot), sends A to D (drag to set; a tap on the letter takes it before or
-//! after the fader), pan (drag; a tap centres it), the fader beside a
+//! after the fader), pan (drag; a tap leaves it where it is), the fader beside a
 //! stereo meter (drag; it moves relative to where the finger lands, with a
 //! detent at 0 dB), the level (a tap let go on it opens the number pad;
 //! SHIFT + the wheel's push sets 0 dB), Mute and Solo (and Arm on an
@@ -1672,14 +1672,6 @@ impl MixerView {
                     db,
                     name,
                 });
-            }
-        }
-        if let Grab::Pan {
-            id, moved: false, ..
-        } = g
-        {
-            if !cancel {
-                self.set(id, mx::PAN, 0.0);
             }
         }
         if let Grab::Eq {
@@ -3908,8 +3900,10 @@ impl Widget for MixerView {
         self.turn(t, delta, fine, r)
     }
 
-    /// SHIFT + the wheel's push: the fader to 0 dB, the pan to the middle
-    /// (as a tap on the level or the pan does), a send off.
+    /// SHIFT + the wheel's push: the fader to 0 dB, the pan to the middle,
+    /// a send off. A tap never does it (the touch usability review, 25 Nov
+    /// 2026): a tap on the level asks for a number, one on the pan does
+    /// nothing, so a slip never resets either.
     fn reset(&mut self, t: &Target, r: Rect) -> Option<EventKind> {
         let (strip, j) = self.strip_of(t, r)?;
         let s = self.state.strip(strip)?;
@@ -4173,7 +4167,7 @@ mod tests {
     }
 
     #[test]
-    fn taps_mute_solo_type_a_level_centre_pan_and_open_inserts() {
+    fn taps_mute_solo_type_a_level_and_open_inserts_and_leave_the_pan() {
         let mut ui = ui(state(12));
         let p = strip_parts(&ui, 0);
         let b = buttons(p.buttons, 2);
@@ -4210,11 +4204,6 @@ mod tests {
                     db: 0.0,
                     name: default_name(t0),
                 },
-                MixAction::Set {
-                    strip: t0,
-                    id: mx::PAN,
-                    value: 0.0
-                },
                 MixAction::OpenInsert { strip: t0, slot: 0 },
                 MixAction::AddInsert { strip: t0 },
                 MixAction::AddInsert { strip: t0 },
@@ -4235,6 +4224,36 @@ mod tests {
                 value: 0.0
             }],
             "a second tap unmutes"
+        );
+    }
+
+    /// A tap on a strip's pan leaves it where it is (the touch usability
+    /// review, 25 Nov 2026: the 26 px row sat between the sends and the
+    /// fader, and a tap centred it, so a finger reaching for the fader
+    /// could throw away a pan set by ear). A drag moves it; SHIFT + the
+    /// wheel's push centres it.
+    #[test]
+    fn a_tap_on_the_pan_leaves_it_and_a_drag_moves_it() {
+        let mut st = state(12);
+        st.strips[0].pan = -40.0;
+        let mut ui = ui(st);
+        let p = strip_parts(&ui, 0);
+        let t0 = StripId::Track(0);
+        let (x, y) = mid(p.pan);
+        ui.touch(9, Touch::Down, x, y);
+        ui.touch(9, Touch::Move, x + 3, y + 1);
+        ui.touch(9, Touch::Up, x + 3, y + 1);
+        assert_eq!(crate::take_actions(&mut ui), vec![], "a tap: nothing");
+        ui.touch(9, Touch::Down, x, y);
+        ui.touch(9, Touch::Move, x + 20, y);
+        ui.touch(9, Touch::Up, x + 20, y);
+        let acts = crate::take_actions(&mut ui);
+        assert!(
+            matches!(
+                acts.last(),
+                Some(MixAction::Set { strip, id, value }) if *strip == t0 && *id == mx::PAN && *value > -40.0
+            ),
+            "a drag right moves it right: {acts:?}"
         );
     }
 

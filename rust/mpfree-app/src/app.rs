@@ -4314,7 +4314,17 @@ impl App {
         fx
     }
 
+    /// STOP silencing: the sounds stop, and every throw a Perform pad
+    /// plays lets go, held or latched (layout spec 1a: a momentary action
+    /// is released on Stop; the XY pad's Hold goes off as well).
     fn stop_sounds(&mut self) -> Vec<Effect> {
+        let throws = self.throws_off();
+        let mut fx = self.stop_sounds_only();
+        fx.splice(0..0, throws);
+        fx
+    }
+
+    fn stop_sounds_only(&mut self) -> Vec<Effect> {
         if self.latched
             && self.generating()
             && !self.arps.engine_at(self.track).hushed()
@@ -12625,6 +12635,40 @@ mod tests {
         assert!(!app.pads_are_loop_keys());
         assert!(fx.contains(&Effect::Note("SHIFT + SAMPLER: the pads play again".into())));
         assert_eq!(app.view(), View::Looper);
+    }
+
+    /// STOP that silences lets go of every throw, held or latched (layout
+    /// spec 1a: a momentary action is released on Stop); a pad still held
+    /// lets go of nothing more on its lift. STOP while the music plays only
+    /// stops the transport: the throws ring on with the sounds.
+    #[test]
+    fn stop_that_silences_lets_go_of_the_throws() {
+        use crate::perform_pads::{Hold, Throw};
+        let mut app = ready();
+        app.open_tab(View::Looper);
+        held(&mut app, button::SHIFT, |a| press(a, button::SAMPLER));
+        assert!(app.pads_are_loop_keys());
+        let reverb = Throw::new(1, Hold::WhileHeld);
+        let brake = Throw::new(7, Hold::Latch);
+        app.perform_throw(reverb, true);
+        app.perform_throw(brake, true);
+        app.perform_throw(brake, false);
+        assert_eq!(app.throws_on().len(), 2);
+        // Playing: STOP stops the transport and the throws go on.
+        app.rolling = true;
+        let fx = press(&mut app, button::STOP);
+        assert!(!fx.contains(&Effect::StopSounds), "{fx:?}");
+        assert_eq!(app.throws_on().len(), 2);
+        // Stopped: STOP silences, and both let go.
+        app.rolling = false;
+        let fx = press(&mut app, button::STOP);
+        assert!(fx.contains(&Effect::StopSounds), "{fx:?}");
+        for t in [1, 7] {
+            let off = crate::perform_pads::throw_fx(t, false, 0).unwrap();
+            assert!(fx.contains(&Effect::PlayFx(off)), "{t}: {fx:?}");
+        }
+        assert!(app.throws_on().is_empty());
+        assert_eq!(app.perform_throw(reverb, false), None, "the lift: nothing");
     }
 
     /// The Perform set on the pads (step 6, board 7): PAD BANK picks its
