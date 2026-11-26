@@ -1402,6 +1402,11 @@ class StaticTests(unittest.TestCase):
             # the host-only display lists for the GPU benchmark (--display-lists, never on the MPC)
             "OpenOptions::new().write(true).create_new(true).open(&path).and_then(|mut f| f.write_all(&bytes))"
             ".map_err(|e| format!(\"{}: {e}\", path.display()))?;",
+            # the touch audit's dump (--touch-targets DIR, touch plan A4, a dev command never run on the MPC):
+            # DIR/PAGE.touch.tsv for each sample page, made new in the folder it is given; create_new neither
+            # overwrites a file nor follows a link, and no device is opened
+            "OpenOptions::new().write(true).create_new(true).open(&path).and_then(|mut f| f.write_all(text.as_bytes()))"
+            ".map_err(|e| format!(\"{}: {e}\", path.display()))?;",
             # the host-only contact sheet's page (--contact-sheet DIR, themes phase 5, never on the MPC): DIR/index.html,
             # made new beside the PNGs write_png makes in DIR/theme and DIR/base; create_new neither overwrites a
             # file nor follows a link, and nothing else is opened
