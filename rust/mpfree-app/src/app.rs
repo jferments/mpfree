@@ -861,10 +861,13 @@ pub struct Settings {
     pub held_pad: crate::pad_look::HeldPad,
     pub pads_show: crate::pad_look::PadsShow,
     pub empty_pads: crate::pad_look::EmptyPads,
-    /// Prefs "Hint line": the help line along the foot of every page (On,
-    /// the default). Off, it shows only what a held button does and what
-    /// the app tells.
-    pub hint_line: bool,
+    /// Prefs "Hints": how much the hint line says (Persistent, the
+    /// default; Contextual; On demand; Off: only what a held button does
+    /// and what the app tells). `hints.rs`.
+    pub hints: crate::hints::Hints,
+    /// The pages visited so far, each up to three times: Contextual helps
+    /// on a page until it is known. Kept in Prefs.
+    pub hints_seen: crate::hints::Seen,
     /// Prefs › Playing: the custom curve's Shape, Softest and Loudest,
     /// kept while another curve is chosen.
     pub curve_bend: crate::play_feel::Bend,
@@ -969,7 +972,8 @@ impl Default for Settings {
             held_pad: crate::pad_look::HeldPad::Brighter,
             pads_show: crate::pad_look::PadsShow::Kit,
             empty_pads: crate::pad_look::EmptyPads::Dark,
-            hint_line: true,
+            hints: crate::hints::Hints::Persistent,
+            hints_seen: crate::hints::Seen::default(),
             curve_bend: crate::play_feel::Bend::default(),
             pad_threshold: crate::play_feel::THRESHOLD_MIN,
             qlink_speed: crate::play_feel::Speed::Normal,
@@ -1078,8 +1082,8 @@ pub enum Item {
     PadsShow,
     /// Prefs › Screen and lights: what a pad with no sound shows.
     EmptyPads,
-    /// Prefs › Screen and lights: the hint line on or off.
-    HintLine,
+    /// Prefs › Screen and lights: how much the hint line says.
+    Hints,
     /// Prefs › Playing: the custom curve's Shape, Softest and Loudest.
     CurveShape,
     CurveSoftest,
@@ -2622,6 +2626,16 @@ impl App {
     /// the UNDO light follows at the next [`Self::transport_lights`].
     pub fn set_undo_ready(&mut self, ready: bool) {
         self.undo_ready = ready;
+    }
+
+    /// The screen showed `page` ([`crate::gui::FromUi::PageSeen`]): one
+    /// more visit, kept until it is known (Prefs' Hints, Contextual, helps
+    /// on a page's first three visits). The screen counts its own copy, so
+    /// nothing goes back.
+    pub fn page_seen(&mut self, page: &str) {
+        if self.settings.hints_seen.visit(page) {
+            self.save_dirty = true;
+        }
     }
 
     /// The screen opened (true) or closed a list or pad over the page
@@ -5586,10 +5600,7 @@ impl App {
             Item::HeldPad => ("A held pad", s.held_pad.name().to_string()),
             Item::PadsShow => ("Pads show", s.pads_show.name().to_string()),
             Item::EmptyPads => ("Empty pads", s.empty_pads.name().to_string()),
-            Item::HintLine => (
-                "Hint line",
-                if s.hint_line { "On" } else { "Off" }.to_string(),
-            ),
+            Item::Hints => ("Hints", s.hints.name().to_string()),
             Item::CurveShape => ("Shape", s.curve_bend.shape_text()),
             Item::CurveSoftest => ("Softest", s.curve_bend.softest.to_string()),
             Item::CurveLoudest => ("Loudest", s.curve_bend.loudest.to_string()),
@@ -5941,7 +5952,7 @@ impl App {
             | Item::HeldPad
             | Item::PadsShow
             | Item::EmptyPads
-            | Item::HintLine
+            | Item::Hints
             | Item::CurveShape
             | Item::CurveSoftest
             | Item::CurveLoudest
@@ -6389,7 +6400,7 @@ impl App {
             Item::EmptyPads => {
                 s.empty_pads = cycle(&crate::pad_look::EmptyPads::ALL, s.empty_pads, d)
             }
-            Item::HintLine => s.hint_line = d > 0,
+            Item::Hints => s.hints = cycle(&crate::hints::Hints::ALL, s.hints, d),
             Item::CurveShape | Item::CurveSoftest | Item::CurveLoudest => {
                 use crate::play_feel::Bend;
                 let b = &mut s.curve_bend;

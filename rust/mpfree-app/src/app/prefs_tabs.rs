@@ -155,7 +155,7 @@ const LIGHTS: &[CardPlan] = &[
         0,
         &[Item::PadBrightness, Item::HeldPad, Item::EmptyPads],
     ),
-    card("Screen", "on every page", Hue::Cyan, 0, &[Item::HintLine]),
+    card("Screen", "on every page", Hue::Cyan, 0, &[Item::Hints]),
     CardPlan {
         fill: true,
         ..card(
@@ -334,7 +334,7 @@ const LIGHTS_ROWS: &[Item] = &[
     Item::PadBrightness,
     Item::HeldPad,
     Item::EmptyPads,
-    Item::HintLine,
+    Item::Hints,
     Item::PadsShow,
 ];
 const PROJECTS_ROWS: &[Item] = &[
@@ -855,6 +855,16 @@ impl App {
                 options(&[("Dark", ""), ("Dim", "")]),
                 usize::from(s.empty_pads == crate::pad_look::EmptyPads::Dim),
             ),
+            Item::Hints => (
+                crate::hints::Hints::ALL
+                    .iter()
+                    .map(|h| (h.name().to_string(), h.line().to_string()))
+                    .collect(),
+                crate::hints::Hints::ALL
+                    .iter()
+                    .position(|&h| h == s.hints)
+                    .unwrap_or(0),
+            ),
             Item::QuickAdvance => (
                 options(&[
                     (
@@ -1069,7 +1079,7 @@ impl App {
             },
             Item::HeldPad => choice("While you hold a pad down"),
             Item::EmptyPads => choice("Pads with no sound on them"),
-            Item::HintLine => switch("The help line along the foot of every page", s.hint_line),
+            Item::Hints => choice("What the line along the foot of the page says"),
             Item::PadsShow => RowView {
                 picture: Some(Picture::Pads(
                     crate::pad_look::example(crate::akai::kit_colour(0), &self.pad_look()).to_vec(),
@@ -1599,9 +1609,13 @@ mod tests {
         let empty = app.prefs_go_to(Item::EmptyPads).expect("a row");
         app.choose(empty, 1);
         assert_eq!(app.pad_look().empty, EmptyPads::Dim);
-        let hint = app.prefs_go_to(Item::HintLine).expect("a row");
-        app.step_item(hint, -1);
-        assert!(!app.settings.hint_line);
+        let hints = app.prefs_go_to(Item::Hints).expect("a row");
+        app.choose(hints, 2);
+        assert_eq!(app.settings.hints, crate::hints::Hints::OnDemand);
+        app.step_item(hints, 1);
+        assert_eq!(app.settings.hints, crate::hints::Hints::Off);
+        app.step_item(hints, 1);
+        assert_eq!(app.settings.hints, crate::hints::Hints::Off, "the last");
 
         let show = app.prefs_go_to(Item::PadsShow).expect("a row");
         let theme = app.theme_in_use();

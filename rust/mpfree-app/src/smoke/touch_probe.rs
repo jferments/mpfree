@@ -90,6 +90,7 @@ fn commits(acts: Vec<FromUi>) -> Vec<FromUi> {
                 FromUi::Outline(_)
                     | FromUi::Held(_)
                     | FromUi::UndoReady(_)
+                    | FromUi::PageSeen(_)
                     | FromUi::Chain(mpfree_chain_ui::ChainAction::Focus(_))
             )
         })
