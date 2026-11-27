@@ -14,7 +14,7 @@ use mpfree_audiotracks::{
     Answer, AudioTracks, Change, ClipPlay, ClipRegion, Command as A, FollowTempo, Input, Monitor,
     Plays, RecordingId, Region, FADE,
 };
-use mpfree_transport::time::{TempoMap, PPQ};
+use mpfree_transport::time::{Segment, TempoMap, PPQ};
 use mpfree_transport::{Block, Command as T, Transport};
 
 const RATE: u32 = 22_050;
@@ -65,6 +65,11 @@ fn stretch_region(start: i64, end: i64, src: i64) -> Region {
 
 /// The copy for `key`, made at once from `audio` (the take's, mono).
 fn copy_for(key: CopyKey, audio: &[f32]) -> copies::Copy {
+    copy_over(key, audio, None)
+}
+
+/// [`copy_for`], for a copy over a tempo change along `over` (5d.1).
+fn copy_over(key: CopyKey, audio: &[f32], over: Option<copies::Over>) -> copies::Copy {
     let from = CopySpec::frames_from(&key);
     let n = CopySpec::frames_in(&key);
     let input = (0..n as i64)
@@ -81,6 +86,7 @@ fn copy_for(key: CopyKey, audio: &[f32]) -> copies::Copy {
         key,
         channels: 1,
         audio: input,
+        over,
     })
     .expect("a copy")
 }
@@ -877,4 +883,396 @@ fn a_looping_copy_goes_round_with_no_frame_missing_after_a_tempo_change() {
             "pass {p}"
         );
     }
+}
+
+// Song regions over a ramp or a tempo point (5d.1): the copy follows the
+// song's tempo map over the region, so it holds each change on its frame
+// at the region's own pitch.
+
+/// The song at 120, ramping to `to` from tick `from` to `until`, then on
+/// at `to`.
+fn ramp_map(from: i64, until: i64, to: f64) -> TempoMap {
+    let segs = [
+        Segment {
+            start: 0,
+            bpm: 120.0,
+        },
+        Segment {
+            start: from,
+            bpm: 120.0,
+        },
+        Segment {
+            start: until,
+            bpm: to,
+        },
+    ];
+    match from {
+        0 => TempoMap::new(&[segs[0], segs[2]]).unwrap().ramp(0).unwrap(),
+        _ => TempoMap::new(&segs).unwrap().ramp(1).unwrap(),
+    }
+}
+
+/// The song at 120, then `to` from tick `at`.
+fn step_map(at: i64, to: f64) -> TempoMap {
+    TempoMap::new(&[
+        Segment {
+            start: 0,
+            bpm: 120.0,
+        },
+        Segment { start: at, bpm: to },
+    ])
+    .unwrap()
+}
+
+/// The copy song region `region` needs along `map`, over a change, made
+/// as the host makes it.
+fn copy_along(r: &Rig, region: &Region, map: &TempoMap, audio: &[f32]) -> (CopyKey, copies::Copy) {
+    let key =
+        r.a.song_copy_key(region, map)
+            .expect("a key over the change");
+    assert_ne!(key.shape, 0, "a copy that follows the map");
+    let over = copies::Over {
+        map: *map,
+        at: region.start as f64,
+        len: (region.end - region.start) as f64,
+    };
+    (key, copy_over(key, audio, Some(over)))
+}
+
+/// `beats` beats at 120 of clicks, each half a beat after its beat.
+fn click_track(beats: usize) -> TakeFile {
+    let per = beat_frames(120.0);
+    let frames = (beats as f64 * per) as usize;
+    let audio = (0..frames)
+        .map(|j| {
+            let b = (j as f64 / per - 0.5)
+                .round()
+                .clamp(0.0, beats as f64 - 1.0);
+            let d = (j as f64 - (b + 0.5) * per) / 2.0;
+            (0.4 * (-0.5 * d * d).exp()) as f32
+        })
+        .collect();
+    take(frames, audio)
+}
+
+/// The frame song tick `t` plays on along `map`, the song started on
+/// frame START.
+fn song_frame(map: &TempoMap, t: f64) -> f64 {
+    START as f64 + map.frames_between(0.0, t, RATE)
+}
+
+#[test]
+fn over_a_ramp_from_120_to_140_a_tone_made_at_120_stays_441_hz() {
+    let tk = long_tone(8);
+    let audio = tk.audio.clone();
+    let region = stretch_region(0, 8 * BAR, 0);
+    let mut r = Rig::new(120.0, tk, vec![region]);
+    let map = ramp_map(0, 4 * BAR, 140.0);
+    assert!(r.t.set_tempo_map(map).is_ok());
+    let (key, copy) = copy_along(&r, &region, &map, &audio);
+    assert!(r.a.put_copy(copy).is_ok());
+    assert!(r.t.command(START, T::PlayStart));
+    let f = |beats: i64| song_frame(&map, (beats * BEAT) as f64) as u64;
+    r.run(f(32) + 1_000);
+    // Two beats at a time through the ramp and at 140 after it: 441 Hz,
+    // where Repitch would climb to 514.5.
+    for b in (1..30).step_by(2) {
+        let hz = r.hz(f(b), f(b + 2));
+        assert!((hz - 441.0).abs() <= 1.5, "beats {b} and on: {hz} Hz");
+    }
+    let st = r.a.stats();
+    assert_eq!(st.for_now, 0, "{st:?}");
+    assert!(st.copied > 0, "{st:?}");
+    // The ramp to another tempo is another copy; the same tempo over a
+    // region moved on is the same shape.
+    let other = ramp_map(0, 4 * BAR, 150.0);
+    assert_ne!(r.a.song_copy_key(&region, &other), Some(key));
+    let len = (8 * BAR) as f64;
+    assert_eq!(
+        copies::shape_of(&ramp_map(8 * BAR, 12 * BAR, 140.0), (8 * BAR) as f64, len),
+        copies::shape_of(&map, 0.0, len)
+    );
+}
+
+#[test]
+fn over_a_ramp_every_click_lands_on_its_beats_frame() {
+    let tk = click_track(32);
+    let audio = tk.audio.clone();
+    let region = stretch_region(0, 8 * BAR, 0);
+    let mut r = Rig::new(120.0, tk, vec![region]);
+    let map = ramp_map(0, 4 * BAR, 140.0);
+    assert!(r.t.set_tempo_map(map).is_ok());
+    let (_, copy) = copy_along(&r, &region, &map, &audio);
+    assert!(r.a.put_copy(copy).is_ok());
+    assert!(r.t.command(START, T::PlayStart));
+    let end = song_frame(&map, (8 * BAR) as f64) as u64;
+    r.run(end + 1_000);
+    let heard = r.clicks(START + 100, end, 0.1);
+    assert_eq!(heard.len(), 32, "{heard:?}");
+    // A hit lands about 30 × (1 − stretch) frames off its peak (the hit
+    // finder finds a click's onset before it): 4 at 140.
+    let tol = 32.0 * (1.0 - 120.0 / 140.0) + 2.0;
+    for (b, h) in heard.iter().enumerate() {
+        let w = song_frame(&map, (b as f64 + 0.5) * BEAT as f64);
+        assert!((h - w).abs() <= tol, "click {b} at {h}, its beat's at {w}");
+    }
+}
+
+#[test]
+fn a_tempo_point_at_bar_9_inside_a_region_changes_on_its_frame_at_the_same_pitch() {
+    // Bars 7 to 10 of the song, the tempo 120 to bar 9 and 100 from there.
+    let map = step_map(8 * BAR, 100.0);
+    let region = stretch_region(6 * BAR, 10 * BAR, 0);
+    // A region over one tempo needs no copy that follows the map.
+    let tk = click_track(16);
+    let audio = tk.audio.clone();
+    let mut r = Rig::new(120.0, tk, vec![region]);
+    assert!(r.t.set_tempo_map(map).is_ok());
+    let after = stretch_region(8 * BAR, 10 * BAR, 0);
+    assert_eq!(r.a.song_copy_key(&after, &map).map(|k| k.shape), Some(0));
+    let before = stretch_region(0, 2 * BAR, 0);
+    assert!(r.a.song_copy_key(&before, &map).is_none(), "its own tempo");
+    let (_, copy) = copy_along(&r, &region, &map, &audio);
+    assert!(r.a.put_copy(copy).is_ok());
+    assert!(r.t.command(START, T::PlayStart));
+    let end = song_frame(&map, (10 * BAR) as f64) as u64;
+    r.run(end + 1_000);
+    let from = song_frame(&map, (6 * BAR) as f64) as u64;
+    let heard = r.clicks(from + 100, end, 0.1);
+    assert_eq!(heard.len(), 16, "{heard:?}");
+    for (b, h) in heard.iter().enumerate() {
+        let w = song_frame(&map, (6 * BAR) as f64 + (b as f64 + 0.5) * BEAT as f64);
+        // At its own tempo to bar 9, then 100: 32 × 0.2 + 2 frames.
+        let tol = if b < 8 { 2.0 } else { 8.5 };
+        assert!((h - w).abs() <= tol, "click {b} at {h}, its beat's at {w}");
+    }
+    assert_eq!(r.a.stats().for_now, 0);
+
+    // The tone over the same bars: 441 Hz either side of bar 9.
+    let tk = long_tone(4);
+    let audio = tk.audio.clone();
+    let mut r = Rig::new(120.0, tk, vec![region]);
+    assert!(r.t.set_tempo_map(map).is_ok());
+    let (_, copy) = copy_along(&r, &region, &map, &audio);
+    assert!(r.a.put_copy(copy).is_ok());
+    assert!(r.t.command(START, T::PlayStart));
+    r.run(end + 1_000);
+    let f = |bar: i64| song_frame(&map, (bar * BAR) as f64) as u64;
+    let hz = r.hz(f(6) + 500, f(8) - 50);
+    assert!((hz - 441.0).abs() <= 1.0, "before bar 9: {hz} Hz");
+    let hz = r.hz(f(8) + 50, f(10) - 500);
+    assert!((hz - 441.0).abs() <= 1.0, "from bar 9: {hz} Hz");
+    assert_eq!(r.a.stats().for_now, 0);
+}
+
+#[test]
+fn on_keep_pitch_a_region_over_a_ramp_plays_its_copy_and_never_drifts() {
+    let tk = long_tone(8);
+    let audio = tk.audio.clone();
+    let region = keep(0, 8 * BAR);
+    let mut r = Rig::new(120.0, tk, vec![region]);
+    let map = ramp_map(0, 4 * BAR, 140.0);
+    assert!(r.t.set_tempo_map(map).is_ok());
+    let (_, copy) = copy_along(&r, &region, &map, &audio);
+    assert!(r.a.put_copy(copy).is_ok());
+    assert!(r.t.command(START, T::PlayStart));
+    let f = |beats: i64| song_frame(&map, (beats * BEAT) as f64) as u64;
+    r.run(f(32) + 1_000);
+    let hz = r.hz(f(1), f(31));
+    assert!((hz - 441.0).abs() <= 1.0, "{hz} Hz");
+    let st = r.a.stats();
+    assert_eq!((st.for_now, st.drifted), (0, 0), "{st:?}");
+}
+
+// Clips across a tempo point of the map (5d.2): a clip's region on Stretch
+// plays the copy for the tempo now, and at a tempo point switches on the
+// point's frame to the copy for the tempo there, crossfaded; with none
+// held it plays Repitch from there (Play on time) or drifts in pitch (Keep
+// pitch), as for a tempo change nobody planned; through a ramp it plays
+// Repitch, and the copy for the ramp's end tempo takes over where it ends.
+
+/// A map from `points` (tick, tempo), the segments `ramps` gliding to the
+/// next.
+fn map_of(points: &[(i64, f64)], ramps: &[usize]) -> TempoMap {
+    let segs: Vec<Segment> = points
+        .iter()
+        .map(|&(start, bpm)| Segment { start, bpm })
+        .collect();
+    ramps
+        .iter()
+        .fold(TempoMap::new(&segs).unwrap(), |m, &i| m.ramp(i).unwrap())
+}
+
+/// The copy key of `clip`'s one region at a steady `bpm`.
+fn clip_key(a: &AudioTracks, clip: Plays<'static>, bpm: f64) -> CopyKey {
+    let Plays::Clip(cp) = clip else {
+        unreachable!()
+    };
+    let mut k = None;
+    a.clip_copy_keys(&cp, bpm, &mut |_, key| k = Some(key));
+    k.unwrap()
+}
+
+const TONE_STEP: f32 = (0.5 * std::f64::consts::TAU * 441.0 / RATE as f64) as f32;
+
+#[test]
+fn a_clip_switches_to_its_copy_at_a_tempo_point_on_its_frame_every_click_on_its_beat() {
+    // 90 to bar 2, then 100: the point halfway through the clip's first
+    // pass.
+    let map = map_of(&[(0, 90.0), (BAR, 100.0)], &[]);
+    let tk = clicks_take();
+    let audio = tk.audio.clone();
+    let mut r = Rig::new(90.0, tk, vec![]);
+    assert!(r.t.set_tempo_map(map).is_ok());
+    let clip = loop_clip(&LOOP);
+    for bpm in [90.0, 100.0] {
+        assert!(r
+            .a
+            .put_copy(copy_for(clip_key(&r.a, clip, bpm), &audio))
+            .is_ok());
+    }
+    r.plays.push((START, clip));
+    assert!(r.t.command(START, T::PlayStart));
+    let end = song_frame(&map, (6 * BAR) as f64) as u64;
+    r.run(end + 1_000);
+    let heard = r.clicks(START + 100, end, 0.1);
+    assert_eq!(heard.len(), 24, "three passes: {heard:?}");
+    for (b, h) in heard.iter().enumerate() {
+        let w = song_frame(&map, (b as f64 + 0.5) * BEAT as f64);
+        // Each hit where the stretch puts it (above): 32 × (stretch − 1).
+        let tol = if b < 4 { 13.0 } else { 8.5 };
+        assert!((h - w).abs() <= tol, "click {b} at {h}, its beat's at {w}");
+    }
+    let st = r.a.stats();
+    assert_eq!((st.for_now, st.drifted), (0, 0), "{st:?}");
+}
+
+#[test]
+fn at_a_tempo_point_a_clip_keeps_its_pitch_with_no_click() {
+    let map = map_of(&[(0, 90.0), (BAR, 100.0)], &[]);
+    let tk = tone_take();
+    let audio = tk.audio.clone();
+    let mut r = Rig::new(90.0, tk, vec![]);
+    assert!(r.t.set_tempo_map(map).is_ok());
+    let clip = loop_clip(&LOOP);
+    for bpm in [90.0, 100.0] {
+        assert!(r
+            .a
+            .put_copy(copy_for(clip_key(&r.a, clip, bpm), &audio))
+            .is_ok());
+    }
+    r.plays.push((START, clip));
+    assert!(r.t.command(START, T::PlayStart));
+    let f = |beats: f64| song_frame(&map, beats * BEAT as f64) as u64;
+    r.run(f(16.0) + 1_000);
+    let point = f(4.0);
+    for (a, b, what) in [
+        (START + 1_000, point - 200, "its copy for 90"),
+        (point + 200, f(8.0) - 200, "its copy for 100, mid-pass"),
+        (f(8.0) + 200, f(16.0) - 500, "the next pass"),
+    ] {
+        let hz = r.hz(a, b);
+        assert!((hz - 441.0).abs() <= 1.0, "{what}: {hz} Hz");
+    }
+    let j = r.jump(point - 300, point + 300);
+    assert!(j <= 1.5 * TONE_STEP, "at the point: {j}");
+    assert_eq!(r.a.stats().for_now, 0);
+}
+
+#[test]
+fn a_clip_whose_copy_for_the_tempo_point_isnt_here_plays_repitch_to_its_pass_end_then_its_copy() {
+    let map = map_of(&[(0, 90.0), (BAR, 100.0)], &[]);
+    let tk = tone_take();
+    let audio = tk.audio.clone();
+    let mut r = Rig::new(90.0, tk, vec![]);
+    assert!(r.t.set_tempo_map(map).is_ok());
+    let clip = loop_clip(&LOOP);
+    assert!(r
+        .a
+        .put_copy(copy_for(clip_key(&r.a, clip, 90.0), &audio))
+        .is_ok());
+    r.plays.push((START, clip));
+    assert!(r.t.command(START, T::PlayStart));
+    let f = |beats: f64| song_frame(&map, beats * BEAT as f64) as u64;
+    let point = f(4.0);
+    r.run(point + 2_000);
+    // Its copy for 100 comes after the point: Repitch to the pass end.
+    assert!(r
+        .a
+        .put_copy(copy_for(clip_key(&r.a, clip, 100.0), &audio))
+        .is_ok());
+    r.run(f(16.0) + 1_000);
+    let hz = r.hz(START + 1_000, point - 200);
+    assert!((hz - 441.0).abs() <= 1.0, "its copy for 90: {hz} Hz");
+    let hz = r.hz(point + 200, f(8.0) - 200);
+    assert!((hz - 367.5).abs() <= 1.0, "Repitch at 100: {hz} Hz");
+    let hz = r.hz(f(8.0) + 200, f(16.0) - 500);
+    assert!((hz - 441.0).abs() <= 1.0, "the next pass: {hz} Hz");
+    // Crossfaded into Repitch at the point.
+    let j = r.jump(point - 300, point + 300);
+    assert!(j <= 1.5 * TONE_STEP, "at the point: {j}");
+    assert!(r.a.stats().for_now > 0);
+}
+
+#[test]
+fn on_keep_pitch_a_clip_switches_at_a_tempo_point_without_drifting() {
+    let map = map_of(&[(0, 90.0), (BAR, 100.0)], &[]);
+    let tk = tone_take();
+    let audio = tk.audio.clone();
+    let mut r = Rig::new(90.0, tk, vec![]);
+    assert!(r.t.set_tempo_map(map).is_ok());
+    let clip = loop_clip(&KEEP_LOOP);
+    for bpm in [90.0, 100.0] {
+        assert!(r
+            .a
+            .put_copy(copy_for(clip_key(&r.a, clip, bpm), &audio))
+            .is_ok());
+    }
+    r.plays.push((START, clip));
+    assert!(r.t.command(START, T::PlayStart));
+    let f = |beats: f64| song_frame(&map, beats * BEAT as f64) as u64;
+    r.run(f(16.0) + 1_000);
+    let hz = r.hz(START + 1_000, f(16.0) - 500);
+    assert!((hz - 441.0).abs() <= 1.0, "{hz} Hz");
+    let st = r.a.stats();
+    assert_eq!((st.for_now, st.drifted), (0, 0), "{st:?}");
+    assert_eq!(r.a.on_stretch(0, 1), copies::OnStretch::default());
+}
+
+#[test]
+fn through_a_ramp_a_clip_plays_repitch_and_its_copy_for_the_ramps_end_takes_over_there() {
+    // 90, gliding from beat 2 to 100 at beat 6, then 100.
+    let map = map_of(&[(0, 90.0), (2 * BEAT, 90.0), (6 * BEAT, 100.0)], &[1]);
+    let tk = tone_take();
+    let audio = tk.audio.clone();
+    let mut r = Rig::new(90.0, tk, vec![]);
+    assert!(r.t.set_tempo_map(map).is_ok());
+    let clip = loop_clip(&LOOP);
+    for bpm in [90.0, 100.0] {
+        assert!(r
+            .a
+            .put_copy(copy_for(clip_key(&r.a, clip, bpm), &audio))
+            .is_ok());
+    }
+    r.plays.push((START, clip));
+    assert!(r.t.command(START, T::PlayStart));
+    let f = |beats: f64| song_frame(&map, beats * BEAT as f64) as u64;
+    r.run(f(16.0) + 1_000);
+    let hz = r.hz(START + 1_000, f(2.0) - 200);
+    assert!((hz - 441.0).abs() <= 1.0, "its copy for 90: {hz} Hz");
+    // Repitch through the ramp: from 330.75 Hz up to 367.5.
+    let hz = r.hz(f(2.0) + 200, f(6.0) - 200);
+    assert!((330.0..368.0).contains(&hz), "through the ramp: {hz} Hz");
+    let hz = r.hz(f(6.0) + 200, f(16.0) - 500);
+    assert!((hz - 441.0).abs() <= 1.0, "its copy for 100: {hz} Hz");
+    for at in [f(2.0), f(6.0)] {
+        let j = r.jump(at - 300, at + 300);
+        assert!(j <= 1.5 * TONE_STEP, "at {at}: {j}");
+    }
+    let st = r.a.stats();
+    let ramp = (f(6.0) - f(2.0)) as i64;
+    assert!(
+        (st.for_now as i64 - ramp).abs() <= 2 * FADE as i64 + 256,
+        "Repitch for the ramp: {st:?}, {ramp}"
+    );
 }
