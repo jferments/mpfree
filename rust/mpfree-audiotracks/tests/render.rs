@@ -995,6 +995,19 @@ fn a_render_file_is_whole_or_not_there_whatever_the_stick_does() {
 }
 
 #[test]
+fn no_takes_file_looks_like_a_cut_off_hidden_part() {
+    use mpfree_audiotracks::files::{file_name, Name};
+    for track in [".part", "..hidden.part", " .x.part", "Vocal", ".", ""] {
+        let name = Name::new(track);
+        let file = file_name(name.as_str(), REC);
+        assert!(
+            !file.starts_with('.') && !file.ends_with(".part"),
+            "{track:?} gives {file:?}"
+        );
+    }
+}
+
+#[test]
 fn the_next_start_removes_what_was_never_whole_and_keeps_renders() {
     let work = std::env::temp_dir().join(format!("mpfree-render-start-{}", std::process::id()));
     let keep = work.with_extension("keep");
@@ -1009,7 +1022,23 @@ fn the_next_start_removes_what_was_never_whole_and_keeps_renders() {
         mpfree_audiotracks::save::wav(&[0.1, 0.2], 1, RATE),
     )
     .unwrap();
+    // Never through a link: a hidden `.part` that is a link to a file
+    // elsewhere is left, and so is what it points at.
+    #[cfg(unix)]
+    let outside = work.with_extension("outside");
+    #[cfg(unix)]
+    {
+        std::fs::write(&outside, b"not ours").unwrap();
+        std::os::unix::fs::symlink(&outside, work.join(".link.part")).unwrap();
+    }
     let found = recover_into(&work, &keep).unwrap();
+    #[cfg(unix)]
+    {
+        assert_eq!(std::fs::read(&outside).unwrap(), b"not ours");
+        assert!(std::fs::symlink_metadata(work.join(".link.part")).is_ok());
+        std::fs::remove_file(work.join(".link.part")).unwrap();
+        std::fs::remove_file(&outside).unwrap();
+    }
     assert!(
         std::fs::read_dir(&work).unwrap().next().is_none(),
         "nothing left in the work folder"
