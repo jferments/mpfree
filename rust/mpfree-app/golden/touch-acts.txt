@@ -328,7 +328,6 @@ synth-presets/row acts-on-landing # acts as the finger lands, as controls did be
 synth-title/gear acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 takes/button acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 textpad/key acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
-throws/throw acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 transport/mode acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 transport/play acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 transport/rec acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
@@ -341,4 +340,3 @@ xy-list/yours acts-on-landing # acts as the finger lands, as controls did before
 xy-setup/delete acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 xy-setup/name acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
 xy-setup/save acts-on-landing # acts as the finger lands, as controls did before spec 1a; it acts on the lift (or declares Press, where timing matters) when its screen is redone
-xy/xy landing-moves # the XY pad is absolute by design (spec 1a: where the finger is, is the point); it declares it with the Play page (touch plan A6)

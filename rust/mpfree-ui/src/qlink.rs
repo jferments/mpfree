@@ -24,14 +24,18 @@ use crate::draw;
 use crate::geom::Rect;
 use crate::text::{Align, FontId};
 use crate::theme::Theme;
-use crate::touch::Fingers;
+use crate::touch::{Class, Fingers};
 use crate::ui::{EventKind, PaintCx, Target, Touch, Widget};
 
 /// The column's width on every page that has it, in pixels (168 until
 /// Jay's 17 Nov ask to give the page beside it the room).
 pub const COLUMN_WIDTH: i32 = 128;
-/// The master bar's width on the Play page, in pixels.
-pub const MASTER_WIDTH: i32 = 66;
+/// The master bar's width on the Play page, in pixels: 66 until the touch
+/// design set's tab 3 (25 Nov 2026) put its scale on the meter. Under 48
+/// its level would fall below the Secondary class.
+pub const MASTER_WIDTH: i32 = 52;
+/// A bar narrower than this draws its scale over the meter, not beside it.
+const SCALE_BESIDE_W: i32 = 64;
 /// Pixels of drag per detent of a card's knob.
 pub const DRAG_DETENT: i32 = 8;
 
@@ -389,25 +393,38 @@ impl Widget for MasterBar {
         cx.panel(r);
         let inner = r.inset_xy(8, 12);
         let (top, _) = inner.take_top(18);
+        // Across the whole bar: a slim one's inside is narrower than the
+        // word.
+        let top = Rect::new(r.x, top.y, r.w, top.h);
         cx.text(FontId::Bold, 10.5, top, Align::Center, t.text_dim, "MASTER");
         let (bottom, _) = inner.take_bottom(46);
         let bars = MasterBar::track(r);
-        // The scale on the left, two bars, then the limiter's reduction.
-        let scale = Rect::new(bars.x, bars.y, 20, bars.h);
-        for db in [0.0f32, -6.0, -12.0, -24.0, -36.0] {
-            let y = MasterBar::y_of(bars, db);
-            let txt = format!("{}", db.abs() as i32);
-            cx.text(
-                FontId::Sans,
-                10.0,
-                Rect::new(scale.x, y - 6, scale.w, 12),
-                Align::Right,
-                t.text_faint,
-                &txt,
-            );
-        }
-        let bx = scale.right() + 4;
+        let beside = r.w >= SCALE_BESIDE_W;
+        // The scale on the left, two bars, then the limiter's reduction;
+        // in a slim bar the two bars and the limiter in the middle, and
+        // the scale over them.
         let bw = 9;
+        let scale = Rect::new(bars.x, bars.y, 20, bars.h);
+        let bx = if beside {
+            scale.right() + 4
+        } else {
+            bars.x + (bars.w - (2 * bw + 2 + 6 + 5)) / 2
+        };
+        let marks = [0.0f32, -6.0, -12.0, -24.0, -36.0];
+        if beside {
+            for db in marks {
+                let y = MasterBar::y_of(bars, db);
+                let txt = format!("{}", db.abs() as i32);
+                cx.text(
+                    FontId::Sans,
+                    10.0,
+                    Rect::new(scale.x, y - 6, scale.w, 12),
+                    Align::Right,
+                    t.text_faint,
+                    &txt,
+                );
+            }
+        }
         for side in 0..2 {
             let br = Rect::new(bx + side as i32 * (bw + 2), bars.y, bw, bars.h);
             draw::meter_bar(cx, br, self.peak_db[side], self.hold_db[side], true);
@@ -419,6 +436,20 @@ impl Widget for MasterBar {
             let gh = (self.limit_db / LIMIT_SCALE_DB * bars.h as f32) as i32;
             cx.canvas
                 .fill_rect(Rect::new(gx, bars.y, 5, gh.clamp(3, bars.h.max(3))), t.warn);
+        }
+        if !beside {
+            // The scale on the meter: a tick at the left and the number on
+            // a dark backing, so it reads over the bars at any level.
+            for db in marks {
+                let y = MasterBar::y_of(bars, db);
+                let txt = format!("{}", db.abs() as i32);
+                let w = cx.measure(FontId::Bold, 11.0, &txt) + 6;
+                cx.canvas
+                    .fill_rect(Rect::new(bars.x - 2, y, 5, 1), t.text_dim);
+                let back = Rect::new(bars.right() - w + 2, y - 7, w, 14);
+                cx.canvas.fill_round_rect(back, 3, t.bg.with_alpha(210));
+                cx.text(FontId::Bold, 11.0, back, Align::Center, t.text, &txt);
+            }
         }
         let fy = MasterBar::y_of(bars, self.fader_db);
         cx.canvas
@@ -442,7 +473,9 @@ impl Widget for MasterBar {
         if tr.h <= 0 {
             return Vec::new();
         }
-        vec![Target::drag("level", 0, self.text.clone(), r)]
+        // Secondary: the master level is a setting the wheel also steps,
+        // and the touch design set's tab 3 sized the bar for it (52 px).
+        vec![Target::drag("level", 0, self.text.clone(), r).class(Class::Secondary)]
     }
 
     fn steps(&self, _t: &Target) -> bool {
