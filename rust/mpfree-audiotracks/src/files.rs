@@ -42,6 +42,7 @@ use mpfree_stream::writer::{Gate, RealClock, Recorder, Status, TakeNo, TakeView}
 use mpfree_status::{Report, Subject};
 
 use crate::host::TakeWave;
+use crate::render::Provenance;
 use crate::save::TakeFile;
 use crate::{RecordingId, TakeInfo, PEAK_BLOCK};
 
@@ -506,6 +507,10 @@ pub(crate) struct Files {
     /// again: the SD card's opened): a save takes files over from them
     /// too.
     was: Vec<PathBuf>,
+    /// Where a render made each of these recordings from (phase 6.0.1),
+    /// for a save to write on its take line again; let go of when the
+    /// tracks are emptied.
+    provs: Vec<(RecordingId, Provenance)>,
     /// The card takes' first parts are brought back from, while it is in
     /// ([`Files::join_card`]), and the joins' answers.
     join_to: Option<JoinTo>,
@@ -539,9 +544,16 @@ impl Files {
             armed: Arc::new(AtomicU64::new(0)),
             layer_files: Vec::new(),
             was: Vec::new(),
+            provs: Vec::new(),
             join_to: None,
             joined: std::sync::mpsc::channel(),
         }
+    }
+
+    /// Recording `rec` was made by a render, as `prov` says.
+    pub fn set_prov(&mut self, rec: RecordingId, prov: Provenance) {
+        self.provs.retain(|(r, _)| *r != rec);
+        self.provs.push((rec, prov));
     }
 
     /// A loop layer's file was written whole in the work folder.
@@ -1052,6 +1064,7 @@ impl Files {
     /// stay where they are). Files still only armed are left for their
     /// [`Files::disarm`].
     pub fn clear(&mut self) {
+        self.provs.clear();
         let Files {
             writing,
             recs,
@@ -1216,6 +1229,11 @@ impl Files {
             k.file.clear();
             k.path = None;
             let f = self.recs.iter_mut().find(|f| f.rec == k.rec);
+            k.prov = self
+                .provs
+                .iter()
+                .find(|(r, _)| *r == k.rec)
+                .map(|(_, p)| p.clone());
             let whole = f
                 .as_ref()
                 .and_then(|f| f.path.as_ref().filter(|_| f.frames == k.frames));
@@ -1617,6 +1635,132 @@ pub fn write_take(
     Ok((name, path))
 }
 
+/// A render's recording's file name in the work folder and a project's
+/// `samples/` (phase 6.0.3): `render_ID.wav`.
+pub fn render_file_name(rec: RecordingId) -> String {
+    format!("render_{rec}.wav")
+}
+
+/// A render's file in the work folder (the audio tracks rethink, phase
+/// 6.0.3, docs/dev/design/renders.md, "One way to finish a render"):
+/// `render_ID.wav` ([`render_file_name`]), 32-bit float, written to a
+/// hidden `.render_ID.wav.part` made new, a piece at a time
+/// ([`RenderFile::write`]), then made durable whole
+/// ([`RenderFile::finish`]: the file synced, renamed, the folder synced),
+/// so the name `render_ID.wav` only ever holds the whole render. Anything
+/// that stops it first ([`RenderFile::abandon`], dropping it, or an error)
+/// removes the `.part`; one a crash leaves goes at the next start
+/// ([`recover_into`]).
+/// On any [`Fs`], so the tests can fill the stick or cut the power after
+/// any operation.
+pub struct RenderFile<F: Fs = StdFs> {
+    fs: F,
+    dir: PathBuf,
+    name: String,
+    part: PathBuf,
+    path: PathBuf,
+    /// Samples the file holds once whole, and written so far.
+    samples: usize,
+    put: usize,
+    bytes: Vec<u8>,
+    /// Renamed: its `.part` is gone.
+    done: bool,
+}
+
+impl<F: Fs> RenderFile<F> {
+    /// Start `rec`'s render file in `dir`: `frames` frames of `channels`
+    /// at `rate`, its header written (a `.part` an earlier render left
+    /// goes first).
+    pub fn begin(
+        mut fs: F,
+        dir: &Path,
+        rec: RecordingId,
+        frames: usize,
+        channels: usize,
+        rate: u32,
+    ) -> io::Result<RenderFile<F>> {
+        let name = render_file_name(rec);
+        let part = dir.join(format!(".{name}.part"));
+        if fs.exists(&part) {
+            let _ = fs.remove(&part);
+        }
+        let samples = frames * channels.clamp(1, 2);
+        let header = crate::save::wav_header(samples, channels, rate);
+        let made = fs
+            .create(&part, true)
+            .and_then(|()| fs.write_at(&part, 0, &header));
+        if let Err(e) = made {
+            let _ = fs.remove(&part);
+            return Err(e);
+        }
+        Ok(RenderFile {
+            fs,
+            dir: dir.to_path_buf(),
+            path: dir.join(&name),
+            name,
+            part,
+            samples,
+            put: 0,
+            bytes: Vec::with_capacity(4 * crate::pool::CHUNK),
+            done: false,
+        })
+    }
+
+    /// Write `piece`, the next samples (interleaved). More than the file
+    /// holds is refused.
+    pub fn write(&mut self, piece: &[f32]) -> io::Result<()> {
+        if self.put + piece.len() > self.samples {
+            return Err(io::Error::other("more audio than the render holds"));
+        }
+        self.bytes.clear();
+        for v in piece {
+            self.bytes.extend_from_slice(&v.to_le_bytes());
+        }
+        let at = 44 + 4 * self.put as u64;
+        self.fs.write_at(&self.part, at, &self.bytes)?;
+        self.put += piece.len();
+        Ok(())
+    }
+
+    /// Samples written so far, and the whole render's.
+    pub fn written(&self) -> (usize, usize) {
+        (self.put, self.samples)
+    }
+
+    /// Make it durable: checked whole, synced, renamed `render_ID.wav`,
+    /// the folder synced. Its name and path; on any error the `.part`
+    /// goes (and a renamed file whose folder didn't sync stays for the
+    /// next start to keep).
+    pub fn finish(mut self) -> io::Result<(String, PathBuf)> {
+        let out = if self.put != self.samples {
+            Err(io::Error::other("the render stopped short"))
+        } else {
+            self.fs
+                .sync(&self.part)
+                .and_then(|()| self.fs.rename(&self.part, &self.path))
+        };
+        // On an error, dropped: the `.part` goes.
+        out?;
+        self.done = true;
+        self.fs.sync_dir(&self.dir)?;
+        Ok((
+            std::mem::take(&mut self.name),
+            std::mem::take(&mut self.path),
+        ))
+    }
+
+    /// Stopped before it was whole: its `.part` goes.
+    pub fn abandon(self) {}
+}
+
+impl<F: Fs> Drop for RenderFile<F> {
+    fn drop(&mut self) {
+        if !self.done {
+            let _ = self.fs.remove(&self.part);
+        }
+    }
+}
+
 /// A loop layer's recording's file name in the work folder and a
 /// project's `samples/` (phase 4c.3): `loop_ID.wav`, as the app's save
 /// names it.
@@ -1840,12 +1984,35 @@ pub fn recover_into(work: &Path, keep: &Path) -> io::Result<Recovered> {
     }
     std::fs::create_dir_all(keep)?;
     // Takes, and stretches of audio that couldn't be checked.
-    let (mut moved, mut apart, mut layers) = (0, 0, 0);
+    let (mut moved, mut apart, mut layers, mut renders) = (0, 0, 0, 0);
     let mut names: Vec<_> = std::fs::read_dir(work)?
         .filter_map(Result::ok)
         .filter_map(|e| e.file_name().into_string().ok())
         .collect();
     names.sort();
+    // A file written to a hidden `.part` (a take's, a loop layer's or a
+    // render's) was never made whole: nothing names it, and it goes
+    // (phase 6.0.3). Only a plain file directly in the work folder.
+    let mut parts = 0;
+    for n in &names {
+        let from = work.join(n);
+        if n.starts_with('.')
+            && n.ends_with(".part")
+            && std::fs::symlink_metadata(&from).is_ok_and(|m| m.is_file())
+        {
+            std::fs::remove_file(&from)?;
+            parts += 1;
+        }
+    }
+    if parts > 0 {
+        fs.sync_dir(work)?;
+        lines.push(format!(
+            "audio tracks: {parts} file{} cut off before {} whole {} removed",
+            if parts == 1 { "" } else { "s" },
+            if parts == 1 { "it was" } else { "they were" },
+            if parts == 1 { "was" } else { "were" }
+        ));
+    }
     for n in &names {
         let take = n.ends_with(".wav") || n.ends_with(".raw");
         let stem = n.strip_suffix(".wav").unwrap_or(n);
@@ -1871,11 +2038,14 @@ pub fn recover_into(work: &Path, keep: &Path) -> io::Result<Recovered> {
         } else if n.starts_with("loop_") {
             // A loop's layer, written once it closed (phase 4c.3).
             layers += 1;
+        } else if n.starts_with("render_") {
+            // A render made whole and never saved in a project (6.0.3).
+            renders += 1;
         } else {
             moved += 1;
         }
     }
-    if moved + apart + layers > 0 {
+    if moved + apart + layers + renders > 0 {
         fs.sync_dir(keep)?;
         fs.sync_dir(work)?;
     }
@@ -1891,6 +2061,13 @@ pub fn recover_into(work: &Path, keep: &Path) -> io::Result<Recovered> {
             "audio tracks: {layers} loop layer{} not saved in a project {} kept in Recordings",
             if layers == 1 { "" } else { "s" },
             if layers == 1 { "was" } else { "were" }
+        ));
+    }
+    if renders > 0 {
+        lines.push(format!(
+            "audio tracks: {renders} render{} not saved in a project {} kept in Recordings",
+            if renders == 1 { "" } else { "s" },
+            if renders == 1 { "was" } else { "were" }
         ));
     }
     if apart > 0 {
@@ -2122,6 +2299,7 @@ mod tests {
         f.recs.push(rec(1, Some(path)));
         f.recs.push(rec(2, Some(dir.join("gone.wav"))));
         let take = |n: u128, track: usize| TakeFile {
+            prov: None,
             id: 0,
             rec: RecordingId(n),
             track,

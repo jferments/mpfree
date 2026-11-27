@@ -45,11 +45,18 @@
 //!   playback's reads, and one reading a take from memory when it moves
 //!   goes on from its file; a save copies it whole, as before.
 //!
+//! - **Renders:** [`AudioHost::render`] makes a recording from a
+//!   [`crate::render::RenderDesc`] the one way the plan gives (phase 6.0.3:
+//!   reserve, snapshot, render on the scheduler into a hidden `.part`,
+//!   check, make durable, commit as one undo step, release); see
+//!   `host/rendering.rs` and docs/dev/design/renders.md.
+//!
 //! The channels to the worker are `std::sync::mpsc`: a message now and
 //! then can allocate a block of the channel, as in the looper's host. A
 //! period with nothing under way sends nothing.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU32;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::Duration;
@@ -68,6 +75,7 @@ use crate::files::{
     self, DriveProbe, DriveSeen, FileEvent, FileView, Files, Growing, LayerWrite, Name, Problem,
     Said, WriterConfig,
 };
+use crate::render::{Provenance, RenderDesc};
 use crate::save::{Saved, TakeFile};
 use crate::streaming::{
     self, Board, FromStream, Head, Read, Stream, StreamConfig, Syncs, Timings, ToStream,
@@ -78,6 +86,10 @@ use crate::{
     PEAK_BLOCK,
 };
 use mpfree_stretch::sched::{self, Sched};
+
+mod rendering;
+use rendering::{render_key, Leftovers, RenderSide, RenderWork};
+pub use rendering::{RenderFailure, RenderOutcome, RenderRefused};
 
 /// The most starts held in the cache: every region of every track, and
 /// each track's frame at the loop's start.
@@ -293,6 +305,12 @@ enum ToWorker {
         frames: usize,
         channels: usize,
     },
+    /// Where a render made recording `rec` from (phase 6.0.1), for a save
+    /// to write again; with no recording, only to be dropped.
+    Prov {
+        rec: RecordingId,
+        prov: Provenance,
+    },
     /// The tracks were emptied: what is asked from now on is for the
     /// tracks of generation `gen`.
     Clear {
@@ -375,6 +393,29 @@ enum ToWorker {
     DropClips(Vec<ClipWant>),
     /// Make copies on this scheduler from now on (a test's).
     Sched(Sched),
+    /// A zeroed buffer of `n` samples for a render's source (phase
+    /// 6.0.3), for the tracks of generation `gen`.
+    RenderBuffer {
+        n: usize,
+        gen: u32,
+    },
+    /// Render `desc`: `audio` (`frames` frames of `channels`) written as
+    /// recording `rec`'s render file in the work folder, on the
+    /// scheduler, its provenance made at `at`.
+    Render {
+        desc: RenderDesc,
+        audio: Vec<f32>,
+        channels: usize,
+        frames: usize,
+        rec: RecordingId,
+        at: u64,
+        gen: u32,
+        progress: Arc<AtomicU32>,
+    },
+    /// Stop recording `rec`'s render on the scheduler.
+    CancelRender(RecordingId),
+    /// What a render left, to drop (and its file, if it asks).
+    RenderLeftovers(Leftovers),
 }
 
 /// Why a copy won't come ([`FromWorker::CopyGone`]).
@@ -388,6 +429,7 @@ enum Gone {
     Failed,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum FromWorker {
     /// A copy's source buffer, made.
     CopyBuffer {
@@ -460,6 +502,28 @@ enum FromWorker {
         rec: RecordingId,
         gen: u32,
         out: Result<(String, PathBuf), (String, Vec<f32>)>,
+    },
+    /// A render's source buffer, made.
+    RenderBuffer {
+        audio: Vec<f32>,
+        gen: u32,
+    },
+    /// Recording `rec`'s render is whole and durable as `name` at `path`.
+    Rendered {
+        rec: RecordingId,
+        name: String,
+        path: PathBuf,
+        audio: Vec<f32>,
+        desc: RenderDesc,
+        prov: Provenance,
+        gen: u32,
+    },
+    /// Recording `rec`'s render stopped without one, and why.
+    RenderGone {
+        rec: RecordingId,
+        why: RenderOutcome,
+        leftovers: Leftovers,
+        gen: u32,
     },
 }
 
@@ -620,6 +684,8 @@ pub struct AudioHost {
     /// ([`AudioHost::record_to`]).
     cards: Vec<Arc<dyn CardHandle>>,
     work_card: Option<Arc<dyn CardHandle>>,
+    /// The render under way and the last one's outcome (phase 6.0.3).
+    render: RenderSide,
     /// Takes whose first part is on a card that went (they carried on,
     /// the SD card plan's B2c), by take id, with their lasting id, until
     /// the part is joined back (made at start: none allocates later).
@@ -716,6 +782,7 @@ impl AudioHost {
             cue_answers: Vec::with_capacity(CUE_ANSWERS),
             cue_answers_lost: 0,
             loop_range: None,
+            render: RenderSide::new(),
         }
     }
 
@@ -1602,6 +1669,8 @@ impl AudioHost {
             let (id, frames, channels) = (k.id, k.frames, k.channels);
             let name = std::mem::take(&mut k.file);
             let path = k.path.take();
+            // Kept with its file's name on the worker (dropped there too).
+            let prov = k.prov.take();
             let as_file = self.streaming
                 && path.is_some()
                 && k.rec.is_given()
@@ -1619,6 +1688,7 @@ impl AudioHost {
                     frames,
                     channels,
                 });
+                self.keep_prov(k.rec, prov);
                 self.opening.push(k);
                 continue;
             }
@@ -1627,6 +1697,7 @@ impl AudioHost {
                 // written to one and played from it, as a sound brought
                 // in is.
                 let audio = std::mem::take(&mut k.audio);
+                k.prov = prov;
                 self.write_take(k, audio);
                 continue;
             }
@@ -1644,6 +1715,8 @@ impl AudioHost {
                             frames,
                             channels,
                         });
+                        let rec = t.rec;
+                        self.keep_prov(rec, prov);
                     }
                 }
                 Err(k) => {
@@ -1658,6 +1731,7 @@ impl AudioHost {
                         frames: 0,
                         channels,
                     });
+                    self.keep_prov(RecordingId::NONE, prov);
                 }
             }
         }
@@ -1722,6 +1796,7 @@ impl AudioHost {
             .map_or(0, |g| g + 1);
         let frames = audio.len().checked_div(channels).unwrap_or(0);
         let mut file = TakeFile {
+            prov: None,
             id,
             // A sound brought in is a new recording: the tracks give its id.
             rec: crate::RecordingId::NONE,
@@ -1888,6 +1963,15 @@ impl AudioHost {
         self.fitting = Some(Fitting::Stretching { take });
     }
 
+    /// Where a render made recording `rec` from goes to the worker, which
+    /// keeps it for a save (dropped there when `rec` is none). Does not
+    /// allocate: `prov` is moved.
+    fn keep_prov(&self, rec: RecordingId, prov: Option<Provenance>) {
+        if let Some(prov) = prov {
+            self.send(ToWorker::Prov { rec, prov });
+        }
+    }
+
     /// Whether `take` is still there, the same recording, now on its file
     /// (it moved while it was read from memory).
     fn moved_to_file(&self, take: u16, rec: RecordingId) -> bool {
@@ -1954,6 +2038,30 @@ impl AudioHost {
         self.send(ToWorker::DropSaved(s));
     }
 
+    /// The tracks' generation: one more each time they are emptied
+    /// ([`AudioHost::clear`], New project or a project opening). It is
+    /// the revision of [`crate::render::Dep::Project`] (phase 6.0.2): a
+    /// render begun before a project opened never holds after.
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    /// The revision of `dep` now, for those the audio tracks hold: a
+    /// recording ([`AudioTracks::rec_rev`]), a track by its engine number
+    /// (`slot` maps the project's lasting number to it:
+    /// [`AudioTracks::track_rev`]) and the project ([`Self::generation`]).
+    /// None for one gone, and for a clip, a loop or the routes (the
+    /// app's). Allocates nothing.
+    pub fn rev(&self, dep: crate::render::Dep, slot: impl Fn(u32) -> Option<usize>) -> Option<u64> {
+        use crate::render::Dep;
+        match dep {
+            Dep::Recording(rec) => self.tracks.rec_rev(rec),
+            Dep::Track(id) => self.tracks.track_rev(slot(id)?),
+            Dep::Project => Some(u64::from(self.generation)),
+            Dep::Clip(_) | Dep::Loop(_) | Dep::Routes => None,
+        }
+    }
+
     /// Every track as new and every take forgotten
     /// ([`AudioTracks::clear`]: refused, false, while a track records, a
     /// take copies in or a take is still being copied out to its file),
@@ -1981,6 +2089,7 @@ impl AudioHost {
             self.send(ToWorker::DropCopy(d));
         }
         self.copies.report(&self.tracks);
+        self.clear_render();
         match self.fitting.take() {
             Some(Fitting::Reading { audio, .. }) => self.send(ToWorker::Drop(audio)),
             // Sizing and Stretching: the worker's answer carries the old
@@ -2141,6 +2250,22 @@ impl AudioHost {
                 }
                 FromWorker::Stream(o) => self.stream_said(o),
                 FromWorker::TakeWritten { rec, gen, out } => self.take_written(rec, gen, out),
+                FromWorker::RenderBuffer { audio, gen } => self.render_buffer(audio, gen),
+                FromWorker::Rendered {
+                    rec,
+                    name,
+                    path,
+                    audio,
+                    desc,
+                    prov,
+                    gen,
+                } => self.rendered(rec, name, path, audio, desc, prov, gen),
+                FromWorker::RenderGone {
+                    rec,
+                    why,
+                    leftovers,
+                    gen,
+                } => self.render_gone(rec, why, leftovers, gen),
                 FromWorker::WaveFile(w) => match self.waving {
                     Some(Waving::File { id }) if id == w.id => {
                         self.waving = None;
@@ -2243,6 +2368,7 @@ impl AudioHost {
         let budget = READ_SPEED * frames.max(1);
         self.tend_save(budget);
         self.tend_fit(budget);
+        self.tend_render(budget);
         self.tend_wave(WAVE_SPEED * frames.max(1));
     }
 
@@ -2383,7 +2509,7 @@ impl AudioHost {
         let i = self.to_write.iter().position(|k| k.rec == rec);
         match (i.filter(|_| gen == self.generation), out) {
             (Some(i), Ok((name, path))) => {
-                let k = self.to_write.swap_remove(i);
+                let mut k = self.to_write.swap_remove(i);
                 self.send(ToWorker::Known {
                     rec,
                     take: k.id,
@@ -2392,14 +2518,23 @@ impl AudioHost {
                     frames: k.frames,
                     channels: k.channels,
                 });
+                let prov = k.prov.take();
+                self.keep_prov(rec, prov);
                 self.opening.push(k);
             }
             (Some(i), Err((why, audio))) => {
                 let mut k = self.to_write.swap_remove(i);
                 self.tracks.reserve(k.id, false);
-                let track = k.track;
+                let (track, id) = (k.track, k.id);
                 k.audio = audio;
-                match self.tracks.load_take(k) {
+                let prov = k.prov.take();
+                let kept = self.tracks.load_take(k);
+                let rec = match kept {
+                    Ok(()) => self.tracks.take(id).map_or(RecordingId::NONE, |t| t.rec),
+                    Err(_) => RecordingId::NONE,
+                };
+                self.keep_prov(rec, prov);
+                match kept {
                     Ok(()) => self.event(FileEvent::Unwritten { track, why }),
                     Err(k) => {
                         self.send(ToWorker::Drop(k.audio));
@@ -3445,6 +3580,70 @@ impl Worker {
                 self.sched = Some(s);
                 return None;
             }
+            ToWorker::RenderBuffer { n, gen } => FromWorker::RenderBuffer {
+                audio: vec![0.0; n],
+                gen,
+            },
+            ToWorker::Render {
+                desc,
+                audio,
+                channels,
+                frames,
+                rec,
+                at,
+                gen,
+                progress,
+            } => {
+                let prov = Provenance::of(&desc, at);
+                let Some(dir) = files.work_dir().map(std::path::Path::to_path_buf) else {
+                    return Some(FromWorker::RenderGone {
+                        rec,
+                        why: RenderOutcome::Failed(RenderFailure::NoWorkFolder),
+                        leftovers: Leftovers {
+                            desc: Some(desc),
+                            prov: Some(prov),
+                            name: None,
+                            path: None,
+                            audio,
+                            remove: false,
+                        },
+                        gen,
+                    });
+                };
+                let work = RenderWork {
+                    desc: Some(desc),
+                    prov: Some(prov),
+                    audio,
+                    channels,
+                    frames,
+                    rate,
+                    rec,
+                    dir,
+                    file: None,
+                    put: 0,
+                    failed: None,
+                    done: done.clone(),
+                    gen,
+                    progress,
+                };
+                let s = self.sched.get_or_insert_with(Sched::shared);
+                s.submit(sched::Job::new(
+                    render_key(self.owner, rec),
+                    sched::Priority::Prepared,
+                    work,
+                ));
+                return None;
+            }
+            ToWorker::CancelRender(rec) => {
+                if let Some(s) = &self.sched {
+                    s.cancel(render_key(self.owner, rec));
+                }
+                return None;
+            }
+            ToWorker::RenderLeftovers(l) => {
+                l.drop_on_worker(files.work_dir());
+                return None;
+            }
             ToWorker::Room => FromWorker::Room(Saved::room(rate)),
             ToWorker::Size {
                 mut saved,
@@ -3608,6 +3807,12 @@ impl Worker {
             } => {
                 if rec.is_given() {
                     files.known(rec, take, name, path, (channels, frames));
+                }
+                return None;
+            }
+            ToWorker::Prov { rec, prov } => {
+                if rec.is_given() {
+                    files.set_prov(rec, prov);
                 }
                 return None;
             }

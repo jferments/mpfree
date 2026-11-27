@@ -29,6 +29,15 @@
 //! regions Off, so the project names the needs word `audio-tempo` while
 //! any is there ([`Saved::needs_tempo`]) and such a build refuses it.
 //!
+//! Where a render made a take from (phase 6.0.1,
+//! [`crate::render::Provenance`]): its take line has `made=`, `for=`,
+//! `ver=`, `at=` and, when it read anything, `reads=`, before `file=`, as
+//! [`crate::render::Provenance::words`] writes them; a take recorded or
+//! brought in has none. Wrong provenance words refuse the part, as a
+//! wrong `rec=` does. The project needs `audio-provenance` while any take
+//! has them ([`Saved::needs_provenance`]): a build from before would drop
+//! them at its next save.
+//!
 //! A track line's `id` is the lasting id of its track in the project's
 //! track list (the audio tracks rethink, phase 1: an audio track is a
 //! track like any other); its `track` number only ties the takes to it in
@@ -64,6 +73,7 @@
 
 use mpfree_transport::time::{valid_bpm, Tick};
 
+use crate::render::Provenance;
 use crate::{FollowTempo, Input, Monitor, RecordingId, Region, MAX_REGIONS, MAX_TAKES, MAX_TRACKS};
 
 /// The first line of the text.
@@ -127,6 +137,10 @@ pub struct TakeFile {
     /// Interleaved, `frames * channels` long (empty in the text, and when
     /// `path` gives it).
     pub audio: Vec<f32>,
+    /// Where it came from, when a render made it (phase 6.0.1,
+    /// [`crate::render::Provenance`]): its words on the take line, before
+    /// `file=`. None for a take recorded or brought in.
+    pub prov: Option<Provenance>,
 }
 
 /// The audio tracks' part of a project.
@@ -161,6 +175,14 @@ impl Saved {
             || self.tracks.iter().flat_map(|t| &t.regions).any(|r| {
                 r.follow != FollowTempo::Off || r.keep_pitch || r.bpm != self.made_at(r.take)
             })
+    }
+
+    /// Whether a take says where a render made it from: then the project
+    /// needs `audio-provenance` (phase 6.0.1), so a build from before,
+    /// which would skip the words and drop them at its next save, refuses
+    /// it instead.
+    pub fn needs_provenance(&self) -> bool {
+        self.takes.iter().any(|k| k.prov.is_some())
     }
 
     /// The takes, recorded at [`Saved::rate`], as at `rate`, so the song
@@ -221,6 +243,7 @@ impl Saved {
                 .collect(),
             takes: (0..MAX_TAKES)
                 .map(|id| TakeFile {
+                    prov: None,
                     id: id as u16,
                     rec: RecordingId::NONE,
                     track: 0,
@@ -301,7 +324,7 @@ pub fn to_text(saved: &Saved) -> String {
     }
     for k in &saved.takes {
         s.push_str(&format!(
-            "take={} rec={} track={} group={} pass={} bpm={}{} anchor={} frames={} channels={} file={}\n",
+            "take={} rec={} track={} group={} pass={} bpm={}{} anchor={} frames={} channels={}{} file={}\n",
             k.id,
             k.rec,
             k.track,
@@ -312,6 +335,7 @@ pub fn to_text(saved: &Saved) -> String {
             k.anchor,
             k.frames,
             k.channels,
+            k.prov.as_ref().map(Provenance::words).unwrap_or_default(),
             k.file
         ));
     }
@@ -323,6 +347,12 @@ pub fn to_text(saved: &Saved) -> String {
 /// doesn't read needs nothing more.
 pub fn needs_tempo(text: &str) -> bool {
     from_text(text).is_ok_and(|s| s.needs_tempo())
+}
+
+/// Whether the part `text` needs `audio-provenance`
+/// ([`Saved::needs_provenance`]), as [`needs_tempo`].
+pub fn needs_provenance(text: &str) -> bool {
+    from_text(text).is_ok_and(|s| s.needs_provenance())
 }
 
 /// A region's tempo words ([`to_text`]): `follow=` and `keep=` when not
@@ -489,6 +519,8 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
             if saved.takes.iter().any(|k| k.rec == rec) {
                 return Err(format!("line {n}: recording {rec} twice"));
             }
+            let prov = Provenance::from_words(|k| get(&kv, k))
+                .map_err(|why| format!("line {n}: where take {id} came from: {why}"))?;
             saved.takes.push(TakeFile {
                 id,
                 rec,
@@ -506,6 +538,7 @@ pub fn from_text(text: &str) -> Result<Saved, String> {
                 file,
                 path: None,
                 audio: Vec::new(),
+                prov,
             });
         }
     }
@@ -707,6 +740,7 @@ mod tests {
             ..Region::EMPTY
         };
         let take = |id, track, file: &str| TakeFile {
+            prov: None,
             id,
             rec: RecordingId(0xabc0_0000_0000_0000_0000_0000_0000_0000 + u128::from(id)),
             track,

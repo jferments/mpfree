@@ -109,6 +109,7 @@ pub mod files;
 pub mod host;
 pub mod loop_play;
 mod pool;
+pub mod render;
 pub mod retime;
 pub mod save;
 pub mod streaming;
@@ -2371,6 +2372,58 @@ impl AudioTracks {
         self.takes
             .get(id as usize)
             .is_some_and(|t| t.live && t.kept)
+    }
+
+    /// Track `track`'s revision (the audio tracks rethink, phase 6.0.2,
+    /// [`render`]): a number for its regions and the takes on it as they
+    /// stand now, every field of each. The same whenever they are the
+    /// same (an UNDO back to a state gives that state's number), another
+    /// after any edit of them; a render that read the track holds while it
+    /// is the one read ([`render::changed`]). None for a track that isn't
+    /// there. Cheap, and it allocates nothing.
+    pub fn track_rev(&self, track: usize) -> Option<u64> {
+        let t = self.tracks.get(track)?;
+        let mut h = render::Fnv64::new();
+        h.u64(t.n as u64);
+        for r in t.regions() {
+            for v in [
+                r.start as u64,
+                r.end as u64,
+                u64::from(r.take),
+                r.src as u64,
+                u64::from(r.phase.to_bits()),
+                u64::from(r.gain.to_bits()),
+                u64::from(r.fade_in),
+                u64::from(r.fade_out),
+                u64::from(r.into),
+                u64::from(r.left),
+                r.follow as u64,
+                u64::from(r.keep_pitch),
+                r.bpm.to_bits(),
+            ] {
+                h.u64(v);
+            }
+        }
+        for (i, k) in self.takes.iter().enumerate() {
+            if k.live && k.track as usize == track {
+                h.u64(i as u64);
+                h.u128(k.rec.0);
+                h.u64(k.frames as u64);
+                h.u64(u64::from(k.recording));
+                h.u64(k.bpm.to_bits());
+                h.u64(u64::from(k.varied));
+                h.u64(k.anchor.to_bits());
+            }
+        }
+        Some(h.finish())
+    }
+
+    /// Recording `rec`'s revision ([`render::Dep::Recording`]): its
+    /// frames, once it has stopped recording; None while it records or if
+    /// no take here is it. A finished recording never changes.
+    pub fn rec_rev(&self, rec: RecordingId) -> Option<u64> {
+        let t = &self.takes[self.take_of(rec)? as usize];
+        (!t.recording).then_some(t.frames as u64)
     }
 
     /// The take whose lasting id is `rec`, if it is here.
