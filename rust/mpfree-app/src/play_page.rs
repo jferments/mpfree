@@ -7,10 +7,13 @@
 //!
 //! - the frame, the same in every view: the transport card (84 px), the
 //!   view under it, and beside them, from under the top bar to the hint
-//!   line, the master meter (66 px) and the four Q-Link cards (128 px)
-//!   next to the MPC's Q-Link knobs;
+//!   line, the master meter (52 px, its scale on the meter) and the four
+//!   Q-Link cards (128 px) next to the MPC's Q-Link knobs, all 8 px apart
+//!   and 8 px from the screen's edge (the touch design set, tab 3: the
+//!   room goes to the steps, the throws and the XY pad);
 //! - **All** (home, F): the loop row (every loop, [`crate::loop_row`]),
-//!   the pattern, and the throws beside the XY pad;
+//!   the pattern (six rows of 44 px steps), and the throws beside the XY
+//!   pad in a bottom row without titles;
 //! - **Beats** (G), the Sequencer tab's Steps: the whole pattern, then
 //!   (unless Play's options turn it off) the Your timing strip, then the
 //!   throws.
@@ -94,6 +97,14 @@ pub const BEATS_TIMING_STEP_PAGE: &str = "Play · Beats · timing · step";
 pub const TIMING_STRIP_H: i32 = 72;
 /// The transport card's height.
 pub const TRANSPORT_H: i32 = 84;
+/// The space between the frame's panels and around it (12 px, the theme's
+/// gap, elsewhere).
+pub const FRAME_GAP: i32 = 8;
+/// All's bottom row: the throws and the XY pad, with the hint line kept
+/// under it (the touch design set, tab 3, Persistent hints).
+pub const BOTTOM_H: i32 = 78;
+/// The XY pad's width in All's bottom row, its chip's column included.
+pub const XY_W: i32 = 340;
 
 /// The views in Play's frame: Play's own (All) and the Sequencer tab's
 /// Steps (Beats' pages).
@@ -149,7 +160,10 @@ impl PlayView {
         };
         let row = crate::loop_row::LOOP_ROW;
         match self {
-            PlayView::All => format!("{row}:150, {}, row({THROWS}:*, {XY}:280):120", first(STEPS)),
+            PlayView::All => format!(
+                "{row}:150, {}, row({THROWS}:*, {XY}:{XY_W}):{BOTTOM_H}",
+                first(STEPS)
+            ),
             PlayView::Beats if timing => {
                 format!("{}, {TIMING}:{TIMING_STRIP_H}, {THROWS}:196", first(STEPS))
             }
@@ -194,11 +208,12 @@ impl PlayView {
 }
 
 /// The Play frame around `body` (one or more panels, top to bottom): the
-/// transport card over it, the master meter and the Q-Link cards beside.
+/// transport card over it, the master meter and the Q-Link cards beside,
+/// [`FRAME_GAP`] apart.
 pub fn frame(body: &str) -> String {
     format!(
-        "col(header:60, row(col({TRANSPORT}:{TRANSPORT_H}, {body}):*, \
-             {MASTER}:{MASTER_WIDTH}, {QLINKS}:{COLUMN_WIDTH}):*, hint:26)"
+        "gap{FRAME_GAP}(col(header:60, row(col({TRANSPORT}:{TRANSPORT_H}, {body}):*, \
+             {MASTER}:{MASTER_WIDTH}, {QLINKS}:{COLUMN_WIDTH}):*, hint:26))"
     )
 }
 
@@ -4674,12 +4689,12 @@ mod tests {
         assert_eq!(p.card(Knob::Swing, None).value, "58 %");
     }
 
+    /// The page's slots as the `Ui` places them: its own margin and gap
+    /// (the frame's 8 px), else the theme's 12.
     fn slots(spec: &str) -> Vec<(String, Rect)> {
-        layout::solve(
-            &layout::parse(spec).unwrap(),
-            Rect::new(12, 12, 1256, 776),
-            12,
-        )
+        let node = layout::parse(spec).unwrap();
+        let g = layout::page_gap(&node, 12);
+        layout::solve(&node, Rect::new(0, 0, 1280, 800).inset(g), g)
     }
 
     fn rect(spec: &str, name: &str) -> Rect {
@@ -4697,20 +4712,20 @@ mod tests {
             for spec in [v.layout(), v.quick_layout()].into_iter().chain(timing) {
                 assert_eq!(
                     rect(&spec, TRANSPORT),
-                    Rect::new(12, 84, 1038, TRANSPORT_H),
+                    Rect::new(8, 76, 1068, TRANSPORT_H),
                     "{spec}"
                 );
                 assert_eq!(
                     rect(&spec, MASTER),
-                    Rect::new(1062, 84, MASTER_WIDTH, 666),
+                    Rect::new(1084, 76, MASTER_WIDTH, 682),
                     "{spec}"
                 );
                 assert_eq!(
                     rect(&spec, QLINKS),
-                    Rect::new(1140, 84, COLUMN_WIDTH, 666),
+                    Rect::new(1144, 76, COLUMN_WIDTH, 682),
                     "{spec}"
                 );
-                assert_eq!(rect(&spec, "hint").y, 762, "{spec}");
+                assert_eq!(rect(&spec, "hint").y, 766, "{spec}");
             }
         }
     }
@@ -4721,21 +4736,23 @@ mod tests {
         let all = PlayView::All.layout();
         // The loop row, in the room the looper strip had (step 5).
         let row = crate::loop_row::LOOP_ROW;
-        assert_eq!(rect(&all, row), Rect::new(12, 180, 1038, 150));
-        // The pattern fills the room the mini pads had (Jay, 12 Nov 15:45Z).
-        assert_eq!(rect(&all, STEPS), Rect::new(12, 342, 1038, 276));
-        assert_eq!(rect(&all, THROWS), Rect::new(12, 630, 746, 120));
-        assert_eq!(rect(&all, XY), Rect::new(770, 630, 280, 120));
+        assert_eq!(rect(&all, row), Rect::new(8, 168, 1068, 150));
+        // The pattern fills the room the mini pads had (Jay, 12 Nov 15:45Z),
+        // and since the touch design set's tab 3 the room the 8 px gaps
+        // and the throws' title gave: six rows of 44 px steps.
+        assert_eq!(rect(&all, STEPS), Rect::new(8, 326, 1068, 346));
+        assert_eq!(rect(&all, THROWS), Rect::new(8, 680, 720, BOTTOM_H));
+        assert_eq!(rect(&all, XY), Rect::new(736, 680, XY_W, BOTTOM_H));
         let beats = PlayView::Beats.layout();
-        assert_eq!(rect(&beats, STEPS), Rect::new(12, 180, 1038, 362));
-        assert_eq!(rect(&beats, THROWS), Rect::new(12, 554, 1038, 196));
+        assert_eq!(rect(&beats, STEPS), Rect::new(8, 168, 1068, 386));
+        assert_eq!(rect(&beats, THROWS), Rect::new(8, 562, 1068, 196));
         // Beats with the timing strip (Jay 13 Nov: the Drum view's
         // timing folded into Beats): the pattern keeps six lanes, as All's.
         let timed = PlayView::Beats.layout_for(true);
-        assert_eq!(rect(&timed, STEPS), Rect::new(12, 180, 1038, 278));
+        assert_eq!(rect(&timed, STEPS), Rect::new(8, 168, 1068, 306));
         assert_eq!(
             rect(&timed, TIMING),
-            Rect::new(12, 470, 1038, TIMING_STRIP_H)
+            Rect::new(8, 482, 1068, TIMING_STRIP_H)
         );
         assert_eq!(rect(&timed, THROWS), rect(&beats, THROWS));
         const { assert!(TIMING_STRIP_H < crate::play_widgets::YourTiming::FULL_H) };
@@ -4765,8 +4782,8 @@ mod tests {
         let spec = framed(arp_view::ARP_LAYOUT);
         assert!(!slots(&spec).iter().any(|(n, _)| n == PADS), "{spec}");
         let list = rect(&spec, arp_view::LIST);
-        assert_eq!((list.x, list.right()), (12, 1050), "{list:?}");
-        assert_eq!(rect(&spec, QLINKS), Rect::new(1140, 84, COLUMN_WIDTH, 666));
+        assert_eq!((list.x, list.right()), (8, 1076), "{list:?}");
+        assert_eq!(rect(&spec, QLINKS), Rect::new(1144, 76, COLUMN_WIDTH, 682));
         assert_eq!(framed(&spec), spec, "framing twice changes nothing");
         // Any other page body still gets the frame.
         let other = framed("col(header:60, log:*, hint:26)");

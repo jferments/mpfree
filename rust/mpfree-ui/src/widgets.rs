@@ -257,6 +257,19 @@ impl Header {
         let w = pitch.get(i).map_or(0, |&w| fit(w) - TAB_GAP);
         Rect::new(r.x + LEFT_W + x, y, w, h)
     }
+
+    /// Where tab `i` answers a finger: drawn 44 px tall, it answers over
+    /// the bar's whole height and half the gap to each neighbouring tab,
+    /// so the tabs leave no dead space between them (the touch design set,
+    /// tab 3). The first and last tabs keep their outer edges, so a chip
+    /// beside them keeps its gap.
+    pub fn tab_hit(&self, r: Rect, i: usize) -> Rect {
+        let tr = self.tab_rect(r, i);
+        let half = TAB_GAP / 2;
+        let left = if i > 0 { half } else { 0 };
+        let right = if i + 1 < self.tabs.len() { half } else { 0 };
+        Rect::new(tr.x - left, r.y, tr.w + left + right, r.h)
+    }
 }
 
 impl Widget for Header {
@@ -422,7 +435,10 @@ impl Widget for Header {
 
     fn targets(&self, r: Rect) -> Vec<Target> {
         let mut out: Vec<Target> = (0..self.tabs.len())
-            .map(|i| Target::tap("tab", i, self.tabs[i].clone(), self.tab_rect(r, i)))
+            .map(|i| {
+                Target::tap("tab", i, self.tabs[i].clone(), self.tab_hit(r, i))
+                    .drawn(self.tab_rect(r, i))
+            })
             .collect();
         if let Some(b) = self.icon_rect(r) {
             out.push(Target::tap("mixer-icon", 0, "mixer", b));
@@ -444,7 +460,7 @@ impl Widget for Header {
         if phase != Touch::Down {
             return None;
         }
-        if let Some(i) = (0..self.tabs.len()).find(|&i| self.tab_rect(r, i).contains(x, y)) {
+        if let Some(i) = (0..self.tabs.len()).find(|&i| self.tab_hit(r, i).contains(x, y)) {
             self.active = i;
             return Some(EventKind::Tab(i));
         }
@@ -2562,7 +2578,31 @@ mod tests {
             Some(EventKind::Tab(1))
         );
         assert_eq!(h.active, 1);
-        assert_eq!(h.touch(1, Touch::Down, 5, 5, r), None);
+        assert_eq!(h.touch(1, Touch::Down, 2, 5, r), None, "left of every tab");
+        // A tab answers over the bar's whole height, drawn 44 px tall, and
+        // its neighbour from the middle of the gap between them.
+        let t0 = h.tab_rect(r, 0);
+        assert_eq!(
+            h.touch(1, Touch::Down, t0.x + 3, 1, r),
+            Some(EventKind::Tab(0))
+        );
+        assert_eq!(
+            h.touch(1, Touch::Down, t0.x + 3, 59, r),
+            Some(EventKind::Tab(0))
+        );
+        assert_eq!(
+            h.touch(1, Touch::Down, t1.x - 1, 30, r),
+            Some(EventKind::Tab(1)),
+            "the gap's right half is tab 1's"
+        );
+        let tabs: Vec<Target> = h.targets(r).into_iter().filter(|t| t.id == "tab").collect();
+        assert_eq!(tabs[0].rect.h, 60);
+        assert_eq!(tabs[0].drawn, Some(t0));
+        assert_eq!(
+            tabs[0].rect.right(),
+            tabs[1].rect.x,
+            "no dead space between tabs"
+        );
     }
 
     #[test]

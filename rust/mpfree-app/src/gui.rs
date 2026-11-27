@@ -34595,8 +34595,13 @@ mod tests {
         for v in [View::Sequencer, View::Play] {
             p.apply(ToUi::Show(v));
             let throws = p.ui.rect_of(play_page::THROWS).unwrap();
+            let master = p.ui.rect_of(play_page::MASTER).unwrap();
+            let hint = p.ui.rect_of("hint").unwrap();
+            let gap = play_page::FRAME_GAP;
             assert!(
-                throws.y > 168 && throws.bottom() <= 750 && throws.right() <= 1050,
+                throws.y > 168
+                    && throws.bottom() <= hint.y - gap
+                    && throws.right() <= master.x - gap,
                 "{v:?}: {throws:?}"
             );
             assert!(p.ui.rect_of(play_page::PADS).is_none(), "{v:?}: no pads");
@@ -34977,8 +34982,11 @@ mod tests {
         // Drop drums mutes the kicks, snares and hats while held.
         assert_eq!(p.play.drum_pads(), 0x00FF, "pads 1 to 8 of Boom Bap");
         // The XY pad: where the finger is, and on.
-        let xy = p.ui.rect_of(play_page::XY).unwrap();
-        let first = p.touch(6, Touch::Down, xy.x + xy.w / 2, xy.bottom() - 30);
+        // (The pad itself: its chip is the column at its left.)
+        let slot = p.ui.rect_of(play_page::XY).unwrap();
+        let pad = p.ui.get::<XyPad>(play_page::XY).unwrap();
+        let xy = mpfree_ui::Widget::targets(pad, slot)[1].rect;
+        let first = p.touch(6, Touch::Down, xy.x + xy.w / 2, xy.bottom() - 8);
         assert!(
             matches!(first, Some(FromUi::PlayFx(PlayFx::Xy { x, y, down: true })) if (x - 0.5).abs() < 0.02 && y < 0.2),
             "{first:?}"
@@ -38717,16 +38725,21 @@ mod tests {
         // card on top, the pattern across the room, the master meter and
         // the Q-Link cards at the right edge, beside the knobs.
         assert!(p.ui.rect_of(play_page::PADS).is_none());
+        // The frame's 8 px gaps and margin (the touch design set, tab 3).
         let steps = p.ui.rect_of(play_page::STEPS).unwrap();
-        assert!(steps.w == 1038 && steps.h > 250, "{steps:?}");
+        assert!(steps.w == 1068 && steps.h > 340, "{steps:?}");
         assert_eq!(
             p.ui.rect_of(play_page::TRANSPORT).map(|r| (r.y, r.h)),
-            Some((84, 84))
+            Some((76, 84))
         );
         assert_eq!(
             p.ui.rect_of(play_page::QLINKS)
                 .map(|r| (r.right(), r.y, r.bottom())),
-            Some((1268, 84, 750))
+            Some((1272, 76, 758))
+        );
+        assert_eq!(
+            p.ui.rect_of(play_page::MASTER).map(|r| (r.x, r.w)),
+            Some((1084, 52))
         );
         assert!(p
             .ui
