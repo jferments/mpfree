@@ -535,6 +535,12 @@ pub struct TrackHost {
     /// The period of the last waveform asked for while recording.
     grown_at: u64,
     periods: u64,
+    /// A take was made whole on the stick since last asked
+    /// ([`TrackHost::take_joined`]).
+    joined: bool,
+    /// The SD card's opening, as last given ([`TrackHost::own_drive`]):
+    /// what Eject card asks about ([`TrackHost::card_use`]).
+    card: Option<std::sync::Arc<mpfree_stream::storage::Lease>>,
     /// What the lanes showed at the last check, and whether that changed.
     seen: u64,
     changed: bool,
@@ -657,6 +663,8 @@ impl TrackHost {
             reading: None,
             grown_at: 0,
             periods: 0,
+            joined: false,
+            card: None,
             seen: 0,
             spans_seen: 0,
             tempos_seen: 0,
@@ -737,7 +745,61 @@ impl TrackHost {
     /// reads; and the opening takes there read on, until it is revoked
     /// (`AudioHost::own_device`). Allocates the message: between periods.
     pub fn own_drive(&mut self, lease: std::sync::Arc<mpfree_stream::storage::Lease>) {
+        self.card = Some(lease.clone());
         self.host.own_device(lease);
+    }
+
+    /// What System status's Storage says about the drives (the SD card
+    /// plan's B2c): the tracks whose takes wait for a part from the SD
+    /// card that came out, what uses the card now, the tracks armed, and
+    /// how long they could record into memory should the drive stop
+    /// taking them. Allocates: between periods, while Storage shows.
+    pub fn storage_use(&self) -> crate::status_screen::StorageUse {
+        let armed_bps = self.host.drive_seen().armed_bytes_per_s();
+        let m = self.host.tracks.memory();
+        // Samples a second the armed takes take (4 bytes each).
+        let rate = armed_bps / 4;
+        crate::status_screen::StorageUse {
+            parts: self
+                .host
+                .card_parts()
+                .into_iter()
+                .map(|t| self.who(t))
+                .collect(),
+            using: self.card_use(),
+            armed: self.host.armed_files(),
+            armed_bps,
+            memory_s: (rate > 0).then(|| m.capacity.saturating_sub(m.used) as f64 / rate as f64),
+        }
+    }
+
+    /// What still uses the SD card, for Eject card's sheet (the SD card
+    /// plan's B2c, eject_card.rs): each track whose take records on it
+    /// (it carries on on the stick), then each take playing from its file
+    /// there (it goes quiet until the card is back), by track name.
+    /// Nothing once its opening is over. Allocates: between periods.
+    pub fn card_use(&self) -> Vec<crate::eject_card::Use> {
+        use crate::eject_card::Use;
+        use mpfree_stream::storage::CardHandle;
+        let Some(card) = self.card.as_ref().filter(|c| c.valid()) else {
+            return Vec::new();
+        };
+        let mut out: Vec<Use> = self
+            .host
+            .recording_on(card.root())
+            .into_iter()
+            .map(|t| Use::Recording { track: self.who(t) })
+            .collect();
+        for (id, file) in card.playing() {
+            let Some(k) = self.host.tracks.take(id).filter(|k| !k.recording) else {
+                continue;
+            };
+            out.push(Use::Playing {
+                track: self.who(k.track),
+                file,
+            });
+        }
+        out
     }
 
     fn tend_files(&mut self) {
@@ -766,6 +828,26 @@ impl TrackHost {
         self.host.saved_into(samples);
     }
 
+    /// Whether a take that carried on on the stick was made whole there
+    /// since last asked (its first part back from the SD card, B2c): the
+    /// project's copy of it has silence for that part until the next save,
+    /// so the work is unsaved.
+    pub fn take_joined(&mut self) -> bool {
+        std::mem::take(&mut self.joined)
+    }
+
+    /// The same SD card is in again, as `mark` says (its marker and volume
+    /// serial): the takes that carried on on the stick when it went get
+    /// their first parts back from it, looked for in `places` too
+    /// (`AudioHost::join_card`). Allocates the message: between periods.
+    pub fn join_card(
+        &self,
+        mark: mpfree_stream::storage::CardMark,
+        places: Vec<std::path::PathBuf>,
+    ) {
+        self.host.join_card(mark, places);
+    }
+
     /// The next line for the log about a take's file (it couldn't be made,
     /// it is at risk, a save took a take from memory, it couldn't be
     /// opened to play from), naming the track as the musician named it;
@@ -774,6 +856,7 @@ impl TrackHost {
     /// only when there is one.
     pub fn take_file_line(&mut self) -> Option<String> {
         if let Some(e) = self.host.take_event() {
+            self.joined |= matches!(e, mpfree_audiotracks::files::FileEvent::Joined { .. });
             return Some(e.line(&self.who(e.track())));
         }
         if self.host.streams() && self.periods.is_multiple_of(DROPOUTS_EVERY) {

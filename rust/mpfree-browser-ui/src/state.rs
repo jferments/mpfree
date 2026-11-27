@@ -50,6 +50,14 @@ pub enum CardState {
     Open { about: String, dirty: bool },
     /// Not opened, and why, in the musician's words.
     NotOpened(String),
+    /// Eject card was pressed (the SD card plan's B2c): it is being
+    /// closed, for taking out.
+    Ejecting,
+    /// Ejected: it can be taken out. It stays so (never opened again by
+    /// showing the place) until Use the card again. `takes`: a take that
+    /// was recording on it carried on on the stick, its first part left on
+    /// the card, to be joined when the same card is back.
+    Ejected { takes: bool },
 }
 
 /// The places column, top to bottom. A gap is drawn before Recent and
@@ -337,6 +345,11 @@ pub enum Button {
     /// with notes, on the Make a phrase sheet (the app's, step 3 of the
     /// phrases).
     MakePhrase,
+    /// The SD card place's, while the card is open: close it for taking
+    /// out ([`BrowseAction::EjectCard`]).
+    EjectCard,
+    /// The SD card place's, once ejected: open it again.
+    UseCardAgain,
 }
 
 impl Button {
@@ -366,6 +379,8 @@ impl Button {
             Button::NewTrack => "New track with this kit",
             Button::NewTrackSound => "New track",
             Button::MakePhrase => "Make a phrase",
+            Button::EjectCard => "Eject card",
+            Button::UseCardAgain => "Use the card again",
         }
     }
 }
@@ -674,6 +689,11 @@ pub enum BrowseAction {
     /// with [`Browser::set_card`] (and the library's
     /// [`Library::set_card`]). The app closes it when the browser closes.
     OpenCard,
+    /// Eject card (the SD card plan's B2c): the app says what still uses
+    /// the card, moves recording to the stick and closes the card for
+    /// taking out, answering with [`CardState::Ejecting`], then
+    /// [`CardState::Ejected`] (or the card open again, and why not).
+    EjectCard,
     /// A finger on the pad map (the Selected column's pads): kit pad `pad`
     /// (0 is A1) pressed or lifted. The app picks it, as a hit on the
     /// MPC's pad does, so Load names it, and plays what is on it while the
@@ -876,6 +896,12 @@ pub struct Screen {
     /// place's head, so the browser opened on Samples had none). Not in
     /// a picker or under the Export panel.
     pub new_project: bool,
+    /// The SD card was ejected (B2c): its place says "out", and shows that
+    /// it can be taken out with Use the card again.
+    pub card_ejected: bool,
+    /// Ejected with takes' first parts left on it: the place says the
+    /// same card back joins them.
+    pub card_takes_out: bool,
 }
 
 impl Screen {
@@ -917,6 +943,8 @@ impl Screen {
             load_on: None,
             pad_map: None,
             new_project: false,
+            card_ejected: false,
+            card_takes_out: false,
         }
     }
 }
@@ -2771,6 +2799,21 @@ impl Browser {
         if self.pick.as_ref().is_some_and(|p| !p.allows(b)) {
             return;
         }
+        match b {
+            Button::EjectCard if matches!(self.card, CardState::Open { .. }) => {
+                self.actions.push(BrowseAction::EjectCard);
+                return;
+            }
+            Button::UseCardAgain if matches!(self.card, CardState::Ejected { .. }) => {
+                self.card = CardState::Opening;
+                self.status = None;
+                self.actions.push(BrowseAction::OpenCard);
+                self.refresh();
+                return;
+            }
+            Button::EjectCard | Button::UseCardAgain => return,
+            _ => {}
+        }
         let row = self.selected_row().cloned();
         let loc = row.as_ref().and_then(|r| r.loc.clone());
         // The SD card is read only: nothing on it is renamed, moved or
@@ -2812,6 +2855,8 @@ impl Browser {
             return;
         }
         match b {
+            // Answered above.
+            Button::EjectCard | Button::UseCardAgain => {}
             Button::Cancel => self.cancel_picker(),
             Button::Save => self.actions.push(BrowseAction::SaveRequested),
             Button::SaveKit => {
@@ -3690,6 +3735,8 @@ impl Browser {
                 CardState::Open { about, .. } if self.folder.is_top() => {
                     format!("SD card \u{b7} {about} \u{b7} read only")
                 }
+                CardState::Ejecting => "SD card \u{b7} ejecting".into(),
+                CardState::Ejected { .. } => "SD card \u{b7} ejected".into(),
                 _ => self.folder.display(),
             },
             (_, Source::Place(_)) => self.folder.display(),
@@ -3733,7 +3780,11 @@ impl Browser {
                 // Nothing to make or paste in a search or a project's saves.
                 _ if self.mode != Mode::Folder => Vec::new(),
                 Source::Place(Place::Trash) => vec![Button::EmptyTrash],
-                // Read only: nothing is made or pasted there.
+                // Read only: nothing is made or pasted there. Open, it
+                // can be ejected.
+                Source::Place(Place::Card) if matches!(self.card, CardState::Open { .. }) => {
+                    vec![Button::EjectCard]
+                }
                 Source::Place(Place::Card) => Vec::new(),
                 Source::Place(p) => {
                     // Projects are made by saving, so no New folder there:
@@ -3780,6 +3831,8 @@ impl Browser {
             load_on: self.pad_target.clone(),
             pad_map: self.map_shown(),
             new_project: self.pick.is_none(),
+            card_ejected: matches!(self.card, CardState::Ejected { .. }),
+            card_takes_out: self.card == CardState::Ejected { takes: true },
         }
     }
 
@@ -3892,6 +3945,11 @@ impl Browser {
                             format!("{why} Tap SD card to try again.")
                         }
                         CardState::Closed => "Tap SD card to open it".into(),
+                        CardState::Ejecting => {
+                            "Ejecting the SD card: waiting for MPFree to let go of it\u{2026}"
+                                .into()
+                        }
+                        CardState::Ejected { .. } => "The SD card can be taken out now".into(),
                         CardState::Open { .. } if self.folder.is_top() => {
                             "Nothing on the card".into()
                         }

@@ -12,7 +12,7 @@ use mpfree_stream::cursor::Cursor;
 use mpfree_stream::player::{Config, Player};
 use mpfree_stream::policy::Device as Place;
 use mpfree_stream::storage::{
-    make_marker, read_marker, CardHandle, CardMark, Lease, Refusal, Storage, MARKER,
+    make_marker, open_under, read_marker, CardHandle, CardMark, Lease, Refusal, Storage, MARKER,
 };
 use mpfree_stream::testkit::{folder, played, wav, PretendCard, Store};
 
@@ -348,6 +348,10 @@ fn the_card_pulled_mid_play() {
     );
     assert_eq!(drums_missed, 0, "the stick played on without a gap");
     assert_eq!(r.c.lost(), None);
+    // Nothing on the card stays open for it, so the card can be closed
+    // cleanly; the stick's file stays open.
+    assert_eq!(open_under(&card).unwrap(), Vec::<std::path::PathBuf>::new());
+    assert!(!open_under(&stick).unwrap().is_empty());
 
     // The card back in is a new insertion: the old source stays as it is,
     // and the old find can't open anything.

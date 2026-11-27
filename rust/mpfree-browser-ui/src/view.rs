@@ -54,10 +54,42 @@ struct Geo {
     place_rows: Vec<Rect>,
     /// New project, at the foot of the places column (`Screen::new_project`).
     new_project: Option<Rect>,
+    /// The ejected SD card's place (`Screen::card_ejected`): its tick, its
+    /// two lines and Use the card again, in the middle of the list.
+    ejected: Option<Ejected>,
     detail_buttons: Vec<(Button, Rect)>,
     detail_body: Rect,
     /// The pad map under a sound, when the Selected column has room.
     map: Option<MapGeo>,
+}
+
+/// Where the ejected card's words go: the tick's circle, the title, the
+/// line under it and the button.
+struct Ejected {
+    tick: Rect,
+    title: Rect,
+    line: Rect,
+    again: Rect,
+}
+
+impl Ejected {
+    /// In the middle of the list's rows, as drawn (B2c, board 7c).
+    fn new(rows: Rect) -> Ejected {
+        let h = 72 + 16 + 34 + 12 + 48 + 26 + 52;
+        let top = rows.y + (rows.h - h).max(0) / 2;
+        let mid = rows.x + rows.w / 2;
+        let tick = Rect::new(mid - 36, top, 72, 72);
+        let title = Rect::new(rows.x, tick.bottom() + 16, rows.w, 34);
+        let line = Rect::new(rows.x + 24, title.bottom() + 12, rows.w - 48, 48);
+        let w = 56 + 10 * Button::UseCardAgain.label().len() as i32;
+        let again = Rect::new(mid - w / 2, line.bottom() + 26, w, 52);
+        Ejected {
+            tick,
+            title,
+            line,
+            again,
+        }
+    }
 }
 
 /// The pad map's places: its heading, its arrows and its 16 pads (pad 1,
@@ -228,6 +260,8 @@ impl Geo {
             status,
             place_rows,
             new_project,
+            ejected: (s.card_ejected && SOURCES.get(s.source) == Some(&Source::Place(Place::Card)))
+                .then(|| Ejected::new(rows)),
             detail_buttons,
             detail_body: body,
             map,
@@ -892,6 +926,9 @@ impl BrowserView {
         if s.can_go_back && g.back.contains(x, y) {
             return Some(Input::Back);
         }
+        if g.ejected.as_ref().is_some_and(|e| e.again.contains(x, y)) {
+            return Some(Input::Button(Button::UseCardAgain));
+        }
         if let Some((b, _)) = g.list_buttons.iter().find(|(_, br)| br.contains(x, y)) {
             return Some(Input::Button(*b));
         }
@@ -954,6 +991,16 @@ impl Widget for BrowserView {
                 if on { t.text } else { t.text_dim },
                 s.place_label(i),
             );
+            if s.card_ejected && *src == Source::Place(Place::Card) {
+                cx.text(
+                    FontId::Sans,
+                    t.size_small,
+                    text.inset_xy(8, 0),
+                    Align::Right,
+                    t.text_dim,
+                    "out",
+                );
+            }
         }
         if let Some(b) = g.new_project {
             button(cx, b, Button::NewProject.label(), false, false);
@@ -1004,6 +1051,10 @@ impl Widget for BrowserView {
         if let Some(b) = g.new_project {
             let n = Button::NewProject;
             out.push(Target::tap("button", n as usize, n.label(), b));
+        }
+        if let Some(e) = &g.ejected {
+            let n = Button::UseCardAgain;
+            out.push(Target::tap("button", n as usize, n.label(), e.again));
         }
         if let Some(p) = &s.plugins {
             out.extend(crate::plugins::targets(g.list, g.detail, p));
@@ -1489,6 +1540,54 @@ pub(crate) fn star_shape(cx: &mut PaintCx, x: i32, y: i32, rad: i32, c: Color) {
     cx.canvas.blend_mask(x - rad, y - rad, n, n, &mask, c);
 }
 
+/// The ejected SD card's place: it can be taken out, and Use the card
+/// again (B2c, board 7c).
+fn paint_ejected(cx: &mut PaintCx, e: &Ejected, takes: bool) {
+    let t = cx.theme.clone();
+    cx.canvas
+        .fill_round_rect(e.tick, e.tick.w / 2, t.surface.mix(t.good, 0.18));
+    let mut tick = mpfree_ui::Shape::new(e.tick);
+    let (x, y) = (e.tick.x as f32, e.tick.y as f32);
+    tick.polyline(
+        &[
+            (x + 25.0, y + 38.0),
+            (x + 32.0, y + 45.0),
+            (x + 47.0, y + 28.0),
+        ],
+        4.0,
+    );
+    cx.canvas.blend_shape(&tick, t.good);
+    cx.text(
+        FontId::Bold,
+        t.size_title,
+        e.title,
+        Align::Center,
+        t.text,
+        "The SD card can be taken out now",
+    );
+    // The join's line only when a take left a part on the card.
+    let lines: &[&str] = if takes {
+        &[
+            "Recording carries on on the USB stick. Put the same card",
+            "back in to join each take\u{2019}s two parts on the stick.",
+        ]
+    } else {
+        &["Recording carries on on the USB stick."]
+    };
+    for (k, line) in lines.iter().enumerate() {
+        let r = Rect::new(e.line.x, e.line.y + 24 * k as i32, e.line.w, 24);
+        cx.text(
+            FontId::Sans,
+            t.size_small,
+            r,
+            Align::Center,
+            t.text_dim,
+            line,
+        );
+    }
+    button(cx, e.again, Button::UseCardAgain.label(), false, false);
+}
+
 /// The files places' list and selected item.
 fn paint_files(cx: &mut PaintCx, g: &Geo, s: &Screen) {
     let t = cx.theme.clone();
@@ -1522,7 +1621,9 @@ fn paint_files(cx: &mut PaintCx, g: &Geo, s: &Screen) {
         t.outline,
     );
     let vis = g.visible();
-    if s.rows.is_empty() {
+    if let Some(e) = &g.ejected {
+        paint_ejected(cx, e, s.card_takes_out);
+    } else if s.rows.is_empty() {
         let msg = if s.busy {
             "Reading…"
         } else if SOURCES.get(s.source) == Some(&Source::Place(Place::Card)) {

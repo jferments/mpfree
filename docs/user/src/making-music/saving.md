@@ -134,13 +134,23 @@ The data wheel moves through the list and its push opens or loads; the other but
 
 {{shot: browser-sd-card | The SD card place: an exFAT card's folders and a sound, read only, with Copy to put it in the library.}}
 
-**SD card** in the places shows the card in the MPC's slot. MPFree only reads it: nothing on the card is changed, added or deleted, so it is safe with a card your MPC software uses too. Tap **SD card** and it opens in a few seconds; the top of the list says what the card is, such as **SD card · exFAT, 63.9 GB · read only**. MPFree reads FAT32 and exFAT cards.
+**SD card** in the places shows the card in the MPC's slot. The browser only reads it: nothing on the card is changed, added or deleted from here, so it is safe with a card your MPC software uses too. (Audio track takes can record on the card, in its own **MPFree** folder: see [Recording on the card](#recording-on-the-card).) Tap **SD card** and it opens in a few seconds; the top of the list says what the card is, such as **SD card · exFAT, 63.9 GB · read only**. MPFree reads FAT32 and exFAT cards.
 
 Sounds on the card play, load and go on pads as anywhere else. To keep one in your library, pick it, tap **Copy**, then go to a place such as Samples and tap **Paste**. There is no Rename, Cut, Delete, New folder or star on the card.
 
 If the card wasn't safely removed last time (the power went off, or it was pulled out while something was saving to it), the line under the list says **This card wasn't safely removed last time: check it on a computer**. It still opens to read. The card keeps that mark until a disk check clears it, so it may be from long ago. Before saving anything to it from your computer or the MPC software, check it with your computer's disk tool (on Windows, the drive's Properties > Tools > Check; on a Mac, Disk Utility > First Aid).
 
 With no card in the slot, the place says so: put one in and tap **SD card** again. The card is put away 30 seconds after you close the browser, and opens again when you come back to it.
+
+#### Recording on the card
+
+With an exFAT card in the slot that checks clean, audio track takes record on the card instead of on the stick, so a long session has the card's room. MPFree opens the card for this by itself a few seconds after it starts (or when you open **SD card** in the browser), and keeps it open while takes are on it. It writes only inside the card's own **MPFree** folder: each take goes into `MPFree/.work/audiotracks` as you record, and takes left there by a run that was cut off (the power went off) are put in the card's `MPFree/Recordings` the next time. Saving the project still saves to the stick, with every take. A FAT32 card, or one that wasn't safely removed last time, stays read-only, and takes record on the stick as before. **System status** > **Storage** says where takes record now, and how long you can record at the tracks armed.
+
+If the card comes out while a take records on it, the take carries on recording on the USB stick, and System status says **The SD card came out**. What the take recorded before is still on the card, and plays as silence until the card is back. Put the same card back in and MPFree joins the take's two parts into one take on the USB stick, without writing anything to the card; then save the project to keep it whole. To take the card out on purpose, use **Eject card**.
+
+#### Taking the card out
+
+To take the card out while MPFree is running, tap **Eject card**: it is under the list while the card is open, and on **System status** when you pick **Storage**. If nothing is using the card, it closes at once and the place says **The SD card can be taken out now**. If a take is recording on the card, or an audio track is playing a take from a file on it, a sheet lists them first: a take recording carries on on the USB stick, and a take playing goes quiet until the card is back. Tap **Eject** (**Move recording to the stick and eject** while a take records there) to go on, or **Cancel** (or press **BROWSE**) to leave the card in. If MPFree is still reading a file on the card 15 seconds later, the card stays in and the hint line says so; try again in a moment. To use the card again without taking it out, tap **Use the card again**.
 
 ### Pickers
 
