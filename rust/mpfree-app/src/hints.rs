@@ -14,8 +14,8 @@
 //! - **Off**: no ordinary help.
 //!
 //! In every mode the line still says what a held button does, what the app
-//! tells you (as "Saved"), and the power card's, the letters pad's and
-//! learning's keys. Away from Persistent, Play has no line: what it would
+//! tells you (as "Saved"), and the power card's, Eject card's, the
+//! letters pad's and learning's keys. Away from Persistent, Play has no line: what it would
 //! say shows over the bottom row, and what the app tells shows over the
 //! tabs (`gui.rs`, `play_widgets::News`).
 

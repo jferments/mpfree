@@ -9741,9 +9741,10 @@ impl Player {
     }
 
     /// The hint line says this whatever Prefs' Hints: a held button's
-    /// jobs, a pop-up's keys (the power card, a number or letters pad),
-    /// Map controls' steps, and the Looper's questions, whose buttons
-    /// (Snap anyway / Not now, Read as / Discard) float at its end.
+    /// jobs, a pop-up's keys (the power card, Eject card's sheet, a number
+    /// or letters pad), Map controls' steps, and the Looper's questions,
+    /// whose buttons (Snap anyway / Not now, Read as / Discard) float at
+    /// its end.
     fn hint_needed(&self) -> bool {
         let st = &self.status;
         let holding = st.main_held.is_some()
