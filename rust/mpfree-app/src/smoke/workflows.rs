@@ -67,6 +67,31 @@ mod tests {
             .param(id)
     }
 
+    /// Opens `strip`'s effect `name` in the chain editor as a musician
+    /// would (touch plan A7): the strip's FX summary turns the mixer to
+    /// its Effects look, a tap there picks the effect and a second opens
+    /// it.
+    fn open_effect(s: &mut Session, strip: &str, name: &str) {
+        to_effects(s, strip);
+        s.press("mixer", "fx", name);
+        if s.view() == View::Mixer {
+            s.press("mixer", "fx", name);
+        }
+    }
+
+    /// The mixer on its Effects look, from `strip`'s FX summary when the
+    /// Faders look shows.
+    fn to_effects(s: &mut Session, strip: &str) {
+        let fx = format!("{strip} effects");
+        if s.control("mixer", "strip-fx", &fx).is_some() {
+            s.press("mixer", "strip-fx", &fx);
+        }
+        assert_eq!(
+            mpfree_mixer_ui::look(&s.screen.ui),
+            mpfree_mixer_ui::Look::Effects
+        );
+    }
+
     /// The insert rows a strip shows on the mixer.
     fn strip_inserts(s: &Session, strip: &str) -> Vec<String> {
         let v = s.screen.ui.get::<MixerView>(MIXER).expect("the mixer");
@@ -402,7 +427,8 @@ mod tests {
         on_big_stack(|| {
             let mut s = Session::new();
             s.press("header", "tab", "Mix");
-            s.press("mixer", "insert", "Filter · DJ").run_for(0.2);
+            open_effect(&mut s, "Drums", "Filter · DJ");
+            s.run_for(0.2);
             assert_eq!(s.view(), View::Chain);
             assert_eq!(engine(&mut s).title, "Drums FX");
             s.press("chain", "strip", "Drums").run_for(0.3);
@@ -524,7 +550,8 @@ mod tests {
             assert_eq!(strip_inserts(&s, "Drums"), ["Filter · DJ"]);
 
             // "+ Insert" opens the editor in the mixer's place, picker up.
-            s.press("mixer", "add-insert", "Drums + Insert");
+            to_effects(&mut s, "Drums");
+            s.press("mixer", "fx-add", "Drums + FX");
             assert_eq!(s.view(), View::Chain);
             assert!(s.control("chain", "cancel", "Cancel").is_some());
             s.press("chain", "pick", "Compressor").run_for(0.1);
@@ -579,7 +606,7 @@ mod tests {
             assert_eq!(strip_inserts(&s, "Drums"), ["Compressor", "Filter · DJ"]);
 
             // Its row opens the editor on it.
-            s.press("mixer", "insert", "Compressor");
+            open_effect(&mut s, "Drums", "Compressor");
             assert_eq!(s.view(), View::Chain);
             assert_eq!(engine(&mut s).selected, Some(0));
             agree(&mut s, "opened from its row");
@@ -601,7 +628,8 @@ mod tests {
         on_big_stack(|| {
             let mut s = Session::new();
             s.press("header", "tab", "Mix");
-            s.press("mixer", "add-insert", "Loop + Insert");
+            to_effects(&mut s, "Loop");
+            s.press("mixer", "fx-add", "Loop + FX");
             s.press("chain", "cancel", "Cancel").run_for(0.1);
             assert_eq!(s.view(), View::Chain);
             assert!(
@@ -632,7 +660,7 @@ mod tests {
             let drums = StripId::Track(0);
             let mut s = Session::new();
             s.press("header", "tab", "Mix");
-            s.press("mixer", "insert", "Filter · DJ");
+            open_effect(&mut s, "Drums", "Filter · DJ");
             s.press("chain", "knob", "Position");
             let at = node_param(&s, drums, 0, "Position");
             s.press("chain", "macro", "Macro 1");
@@ -674,7 +702,7 @@ mod tests {
             let drums = StripId::Track(0);
             let mut s = Session::new();
             s.press("header", "tab", "Mix");
-            s.press("mixer", "insert", "Filter · DJ");
+            open_effect(&mut s, "Drums", "Filter · DJ");
             s.press("chain", "knob", "Position");
             s.press("chain", "learn", "Learn");
             let n = s.sent.len();
@@ -736,8 +764,10 @@ mod tests {
                     (v.volume_db - m.param(drums, mx::VOLUME)).abs() < 0.05,
                     "{when}: volume"
                 );
-                assert_eq!(v.mute, m.param(drums, mx::MUTE) > 0.5, "{when}: M");
-                assert_eq!(v.solo, m.param(drums, mx::SOLO) > 0.5, "{when}: S");
+                // Drums' M and S are track 1's (one mute per track, A7b).
+                let t1 = &s.time.project().tracks[0];
+                assert_eq!((v.mute, v.solo), (t1.mute, t1.solo), "{when}: M and S");
+                assert_eq!(v.track, Some(0), "{when}: track 1's strip");
                 assert_eq!(
                     f32::from(v.output),
                     m.param(drums, mx::OUTPUT),
@@ -781,23 +811,36 @@ mod tests {
             assert_eq!(p(&s, mx::VOLUME), -6.5, "the level typed");
             shows(&mut s, "typed");
 
+            // One mute per track (A7b): Drums' M is track 1's mute, as
+            // TRACK MUTE's pad 1 is; the strip's own stays off.
             s.press("mixer", "mute", "Drums M");
-            assert_eq!(p(&s, mx::MUTE), 1.0);
-            assert!(!s.mix.mixer.is_audible(drums));
+            assert!(s.time.project().tracks[0].mute, "track 1 muted");
+            assert_eq!(p(&s, mx::MUTE), 0.0, "not the strip's own");
+            assert_eq!(s.time.silenced() & 1, 1);
             shows(&mut s, "muted");
             s.press("mixer", "mute", "Drums M");
-            assert_eq!(p(&s, mx::MUTE), 0.0);
+            assert!(!s.time.project().tracks[0].mute);
 
             s.press("mixer", "solo", "Drums S");
-            assert_eq!(p(&s, mx::SOLO), 1.0);
-            assert!(
-                !s.mix.mixer.is_audible(synth),
-                "the synth is quiet while Drums is soloed"
-            );
+            assert!(s.time.project().tracks[0].solo, "track 1 soloed");
             shows(&mut s, "soloed");
             s.press("mixer", "solo", "Drums S");
+            assert!(!s.time.project().tracks[0].solo);
+
+            // The Synth strip has no one track: its own M, in the mixer.
+            s.press("mixer", "mute", "Synth M");
+            assert_eq!(s.mix.mixer.param(synth, mx::MUTE), 1.0);
+            assert!(!s.mix.mixer.is_audible(synth));
+            s.press("mixer", "mute", "Synth M");
             assert!(s.mix.mixer.is_audible(synth));
 
+            // The strip's sends summary: the Sends look, a row a strip
+            // (touch plan A7).
+            s.press("mixer", "strip-path", "Drums sends");
+            assert_eq!(
+                mpfree_mixer_ui::look(&s.screen.ui),
+                mpfree_mixer_ui::Look::Sends
+            );
             let a0 = p(&s, mx::send(0));
             s.press("mixer", "send", "Drums send A");
             assert!(p(&s, mx::send(0)) > a0, "send A went up");
@@ -874,7 +917,7 @@ mod tests {
         on_big_stack(|| {
             let mut s = Session::new();
             s.press("header", "tab", "Mix");
-            s.press("mixer", "insert", "Filter · DJ");
+            open_effect(&mut s, "Drums", "Filter · DJ");
             s.press("chain", "knob", "Resonance");
             assert!(s.control("chain", "depth", "").is_none());
             s.press("chain", "add-lfo", "+ LFO").run_for(0.1);
@@ -4932,6 +4975,54 @@ mod tests {
             s.button("MAIN").run_for(0.2);
             assert_eq!(s.view(), View::Play);
             assert_eq!(s.time.info().state, State::Playing);
+            s.button("STOP");
+        });
+    }
+
+    /// One mute per track in Perform (the touch plan's A7b): the mixer's
+    /// MUTE on Drums is track 1's, waits for the next bar line as TRACK
+    /// MUTE's pad does, and its strip shows it hatched meanwhile; a second
+    /// tap while it waits calls it off; with SHIFT it lands at once.
+    #[test]
+    fn in_perform_a_tracks_mixer_mute_waits_for_the_bar() {
+        on_big_stack(|| {
+            let mut s = Session::new();
+            s.play_view("Beats");
+            for k in [1, 5, 9, 13] {
+                s.press("steps", "step", &format!("Kick step {k}"));
+            }
+            s.button("PLAY").run_for(0.3);
+            s.button_with("SHIFT", "MAIN").run_for(0.2);
+            assert!(s.time.project().perform);
+            s.press("header", "tab", "Mix").run_for(0.1);
+            // The mixer's hint (the line shows what Perform told for now).
+            assert_eq!(
+                mpfree_mixer_ui::hint(&s.screen.ui),
+                mpfree_mixer_ui::MIXER_HINT_PERFORM
+            );
+            s.press("mixer", "mute", "Drums MUTE").run_for(0.1);
+            assert_eq!(s.time.muted(0), Some(false), "it waits");
+            assert!(s.time.mute_light(0).unwrap().waiting);
+            assert!(!strip(&s, "Drums").mute, "not lit yet");
+            // Called off, then asked again.
+            s.press("mixer", "mute", "Drums MUTE").run_for(0.1);
+            assert!(s.time.mute_wait().is_none(), "called off");
+            s.press("mixer", "mute", "Drums MUTE").run_for(0.1);
+            assert!(s.time.mute_light(0).unwrap().waiting);
+            s.run_for(2.6);
+            assert_eq!(s.time.muted(0), Some(true), "landed on the bar");
+            s.run_for(0.1);
+            assert!(strip(&s, "Drums").mute, "lit");
+            // SHIFT: at once.
+            let shift = s.button_note("SHIFT");
+            let t = s.t();
+            let fx = s.app.button(shift, true, t);
+            s.fx.extend(fx);
+            s.press("mixer", "mute", "Drums MUTE");
+            let t = s.t();
+            let fx = s.app.button(shift, false, t);
+            s.fx.extend(fx);
+            assert_eq!(s.time.muted(0), Some(false), "SHIFT: at once");
             s.button("STOP");
         });
     }

@@ -2495,7 +2495,13 @@ impl Session {
             None => {}
         }
         let now = self.now();
-        if let Some(st) = self.mix.poll_state(now) {
+        if let Some(mut st) = self.mix.poll_state(now) {
+            // As main.rs dresses them: the audio tracks' strips, and every
+            // track's strip's M and S its track's (one mute per track).
+            let (project, silenced) = (self.time.project(), self.time.silenced());
+            self.tracks
+                .dress_strips(&mut st, project, silenced, &self.mix);
+            crate::desk::dress_track_strips(&mut st, &self.time, &self.mix);
             self.out.show(ToUi::Mixer(Box::new(st)));
         }
         let (view, bpm) = (self.app.view(), self.time.info().bpm);
