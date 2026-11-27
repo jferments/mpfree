@@ -10,6 +10,9 @@
 //! - Any other name is a slot: the widget added to the `Ui` under that name.
 //! - After a child, `:N` gives it N pixels, `:N*` a share of what is left
 //!   (weight N), and `:*` or nothing a share of weight 1.
+//! - `gapN(...)` around one child spaces everything inside it N pixels
+//!   apart instead; around a whole page it is the page's margin too (the
+//!   Play frame's 8 px, layout spec section 1).
 
 use crate::geom::Rect;
 
@@ -24,6 +27,8 @@ pub enum Node {
     Slot(String),
     Row(Vec<(Node, Size)>),
     Col(Vec<(Node, Size)>),
+    /// `gapN(child)`: the child with its own gap.
+    Gap(i32, Box<Node>),
 }
 
 struct Parser<'a> {
@@ -75,6 +80,16 @@ impl Parser<'_> {
         if !self.eat(b'(') {
             return Ok(Node::Slot(name));
         }
+        if let Some(n) = name.strip_prefix("gap").and_then(|n| n.parse::<i32>().ok()) {
+            if !(0..=100).contains(&n) {
+                return Err(self.err("gap out of range"));
+            }
+            let kid = self.node()?;
+            if !self.eat(b')') {
+                return Err(self.err("gapN( takes one row( or col( and ')'"));
+            }
+            return Ok(Node::Gap(n, Box::new(kid)));
+        }
         let mut kids = Vec::new();
         loop {
             let kid = self.node()?;
@@ -95,7 +110,7 @@ impl Parser<'_> {
         match name.as_str() {
             "row" => Ok(Node::Row(kids)),
             "col" => Ok(Node::Col(kids)),
-            _ => Err(format!("layout: '{name}(' is not row( or col(")),
+            _ => Err(format!("layout: '{name}(' is not row(, col( or gapN(")),
         }
     }
 
@@ -152,10 +167,21 @@ pub fn slots(node: &Node) -> Vec<String> {
         match n {
             Node::Slot(s) => out.push(s.clone()),
             Node::Row(k) | Node::Col(k) => k.iter().for_each(|(c, _)| walk(c, out)),
+            Node::Gap(_, c) => walk(c, out),
         }
     }
     walk(node, &mut out);
     out
+}
+
+/// The gap a page laid out by `node` uses between its panels and around
+/// its edge: its own when the whole page is a `gapN(...)`, else `default`
+/// (the theme's).
+pub fn page_gap(node: &Node, default: i32) -> i32 {
+    match node {
+        Node::Gap(n, _) => *n,
+        _ => default,
+    }
 }
 
 /// Place every slot of `node` inside `r`, `gap` pixels apart.
@@ -173,6 +199,10 @@ fn place(node: &Node, r: Rect, gap: i32, out: &mut Vec<(String, Rect)>) {
         }
         Node::Row(k) => (k, true),
         Node::Col(k) => (k, false),
+        Node::Gap(g, kid) => {
+            place(kid, r, *g, out);
+            return;
+        }
     };
     let total = if across { r.w } else { r.h };
     let avail = (total - gap * (kids.len() as i32 - 1)).max(0);
@@ -329,6 +359,25 @@ mod tests {
     }
 
     #[test]
+    fn a_gap_wrapper_spaces_its_child_and_sets_the_page_margin() {
+        let n = parse("gap8(col(header:60, row(a, b:100):*, hint:26))").unwrap();
+        assert_eq!(page_gap(&n, 12), 8);
+        assert_eq!(page_gap(&parse("col(a, b)").unwrap(), 12), 12);
+        let s = solve(&n, Rect::new(8, 8, 1264, 784), 12);
+        let get = |k: &str| s.iter().find(|(n, _)| n == k).unwrap().1;
+        assert_eq!(get("header"), Rect::new(8, 8, 1264, 60));
+        assert_eq!(get("a"), Rect::new(8, 76, 1156, 682));
+        assert_eq!(get("b"), Rect::new(1172, 76, 100, 682));
+        assert_eq!(get("hint"), Rect::new(8, 766, 1264, 26));
+        assert_eq!(slots(&n), vec!["header", "a", "b", "hint"]);
+        // Nested, with a size: only its own children are spaced so.
+        let n = parse("col(a:20, gap0(row(b, c)):40)").unwrap();
+        let s = solve(&n, Rect::new(0, 0, 100, 100), 10);
+        assert_eq!(s[1].1, Rect::new(0, 30, 50, 40));
+        assert_eq!(s[2].1, Rect::new(50, 30, 50, 40));
+    }
+
+    #[test]
     fn weights_fill_exactly() {
         let n = parse("row(a,b,c)").unwrap();
         let s = solve(&n, Rect::new(0, 0, 100, 10), 0);
@@ -356,6 +405,9 @@ mod tests {
             "row(a, a)",
             "row(a) b",
             "row(a:0*)",
+            "gap8(a, b)",
+            "gap500(a)",
+            "gap8(",
         ] {
             assert!(parse(bad).is_err(), "{bad}");
         }

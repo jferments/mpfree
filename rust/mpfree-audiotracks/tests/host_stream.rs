@@ -922,6 +922,8 @@ fn takes_on_the_card_open_again_when_the_card_comes_back() {
     assert!(r.h.load(saved.clone()).is_ok());
     r.run_until(|r| r.h.opening() == 0);
     assert!(r.all_on_file());
+    // The opening counts the takes playing from it, which hold the card.
+    r.run_until(|_| lease.users() == 2);
     assert!(r.play_song() == want);
     r.run_until(|r| r.h.heads_wanted > 0 && r.h.heads_held == r.h.heads_wanted);
     let gens = |r: &Rig| -> Vec<Option<u32>> {
@@ -957,6 +959,9 @@ fn takes_on_the_card_open_again_when_the_card_comes_back() {
     });
     assert_eq!(said, Some((5, CueAudio::Short)), "its audio can't come");
     assert_eq!(gens(&r), before, "nothing opens again until it is back");
+    // The takes on it let go of their files there, so it can be closed
+    // cleanly (an Eject).
+    r.run_until(|_| mpfree_stream::storage::open_under(&card).is_ok_and(|o| o.is_empty()));
 
     // It opens again: a new insertion.
     let again = Lease::new(&card);
@@ -968,6 +973,15 @@ fn takes_on_the_card_open_again_when_the_card_comes_back() {
             .all(|(now, was)| now.is_some() && now != was)
     });
     r.run_until(|r| r.h.heads_held == r.h.heads_wanted);
+    r.run_until(|_| again.users() == 2);
+    assert_eq!(lease.users(), 0, "the opening before holds nothing");
+    // Which takes, by their files' names: what an Eject says goes quiet.
+    let playing = again.playing();
+    assert_eq!(playing.len(), 2, "{playing:?}");
+    assert!(playing
+        .iter()
+        .all(|(k, n)| r.h.tracks.take(*k).is_some() && n.ends_with(".wav")));
+    assert!(lease.playing().is_empty());
     assert!(r.play_song() == want, "read again from the card, the same");
     assert_eq!(r.h.tracks.stats().missed, 0);
     let ev = r.events();
@@ -975,8 +989,9 @@ fn takes_on_the_card_open_again_when_the_card_comes_back() {
 
     // Out again, and the project opened again meanwhile: its takes are
     // left out, and why is said.
-    again.revoke();
     assert!(r.h.clear());
+    r.run_until(|_| again.users() == 0);
+    again.revoke();
     r.run_to(r.frame + 4 * P);
     assert!(r.h.load(saved).is_ok());
     r.run_until(|r| r.h.opening() == 0);
@@ -998,11 +1013,13 @@ fn takes_on_the_card_open_again_when_the_card_comes_back() {
 /// same take, recording on: once the app asks for the stick's folder, the
 /// take's file there holds zeros for what was committed on the card and
 /// everything after, the card's part is left where it was, the take plays
-/// from its file on the stick from then on, and the log says so.
+/// from its file on the stick from then on, and the log says so. When the
+/// same card is back, the take gets its first part from it and is whole on
+/// the stick, the card left as it was, and the next save names it anew.
 #[test]
 fn a_take_on_the_card_carries_on_on_the_stick_when_the_card_goes() {
     use mpfree_stream::rec::Hole;
-    use mpfree_stream::storage::Lease;
+    use mpfree_stream::storage::{CardMark, Lease};
     let card = scratch("carry-card");
     let stick = scratch("carry-stick");
     let mut mem = Rig::sized(None, None, 30);
@@ -1011,6 +1028,11 @@ fn a_take_on_the_card_carries_on_on_the_stick_when_the_card_goes() {
 
     let mut r = Rig::sized(None, Some(small()), 30);
     let lease = Lease::new(&card);
+    let mark = CardMark {
+        id: *b"card-marker-id-1",
+        serial: 0x5EC0_1A2B,
+    };
+    assert!(lease.set_mark(mark));
     r.h.own_device(lease.clone());
     assert!(r.h.record_to(card.clone(), quick()).is_ok());
     r.h.command(A::Arm(0, true));
@@ -1041,9 +1063,13 @@ fn a_take_on_the_card_carries_on_on_the_stick_when_the_card_goes() {
     };
     assert!(r.frame < START + 6 * BAR, "the card took too long");
     let on_card = r.h.tracks.file_gen(k).unwrap();
+    // What an Eject says carries on on the stick.
+    assert_eq!(r.h.recording_on(&card), [0]);
+    assert!(r.h.recording_on(&stick).is_empty());
 
     // The card goes; the app moves recording to the stick.
     lease.revoke();
+    assert!(r.h.recording_on(&card).is_empty(), "its opening is over");
     assert!(
         r.h.record_to(stick.clone(), quick()).is_ok(),
         "nothing waits"
@@ -1057,6 +1083,10 @@ fn a_take_on_the_card_carries_on_on_the_stick_when_the_card_goes() {
     assert_eq!(r.h.tracks.stats().full, 0);
     let now = r.h.tracks.file_gen(k).unwrap();
     assert_ne!(now, on_card, "it plays from its file on the stick");
+    // Nothing on the card is open any more, so it can be closed cleanly
+    // (an Eject).
+    let open = mpfree_stream::storage::open_under(&card).unwrap();
+    assert!(open.is_empty(), "{open:?}");
 
     // Its file on the stick: zeros for the card's part, then the rest.
     let holes: Vec<PathBuf> = std::fs::read_dir(&stick)
@@ -1068,6 +1098,11 @@ fn a_take_on_the_card_carries_on_on_the_stick_when_the_card_goes() {
     let hole = Hole::decode(&std::fs::read(&holes[0]).unwrap()).expect("a hole record");
     assert!(hole.frames > 0);
     assert_eq!(hole.from.parent(), Some(card.as_path()));
+    assert_eq!(
+        (hole.card, hole.serial),
+        (mark.id, mark.serial),
+        "which card"
+    );
     let saved = r.save();
     let path = saved.takes[0].path.as_ref().expect("its file holds it all");
     assert!(path.starts_with(&stick));
@@ -1106,6 +1141,141 @@ fn a_take_on_the_card_carries_on_on_the_stick_when_the_card_goes() {
         )),
         "{ev:?}"
     );
+    // System status: the card came out, the track's take waiting for its
+    // part from it.
+    let said = |r: &mut Rig| {
+        let mut v = Vec::new();
+        while let Some(p) = r.h.take_problem() {
+            v.push((p.report.kind.id, p.report.op));
+        }
+        v
+    };
+    let mut problems = said(&mut r);
+    assert!(
+        problems.contains(&(mpfree_status::kinds::CARD_OUT.id, mpfree_status::Op::Began)),
+        "{problems:?}"
+    );
+    assert_eq!(r.h.card_parts(), [0]);
+
+    // The same card is back (read-only, as a pulled card comes back): the
+    // take gets its first part from it, into its file on the stick, and
+    // is whole there; nothing on the card changes.
+    let card_before = std::fs::read(&hole.from).unwrap();
+    // Another card in its place (its volume serial differs) is not it.
+    let other = Lease::new(&card);
+    let not_it = CardMark {
+        serial: mark.serial ^ 1,
+        ..mark
+    };
+    assert!(other.set_mark(not_it));
+    r.h.own_device(other.clone());
+    r.h.join_card(not_it, vec![card.clone()]);
+    for _ in 0..200 {
+        r.period();
+        std::thread::sleep(Duration::from_micros(300));
+    }
+    let ev = r.events();
+    assert!(
+        !ev.iter()
+            .any(|e| matches!(e, FileEvent::Joined { .. } | FileEvent::Unjoined { .. })),
+        "{ev:?}"
+    );
+    assert!(holes[0].is_file() && other.users() == 0);
+    other.revoke();
+    let back = Lease::new(&card);
+    assert!(back.set_mark(mark));
+    r.h.own_device(back.clone());
+    r.h.join_card(mark, vec![card.clone()]);
+    let mut ev = Vec::new();
+    r.run_until(|r| {
+        ev.extend(r.events());
+        ev.iter()
+            .any(|e| matches!(e, FileEvent::Joined { .. } | FileEvent::Unjoined { .. }))
+    });
+    assert!(
+        ev.iter().any(|e| matches!(
+            e,
+            FileEvent::Joined { track: 0, joined_s }
+                if (*joined_s - hole.frames as f32 / RATE as f32).abs() < 1e-3
+        )),
+        "{ev:?}"
+    );
+    let (audio, _, _) = from_wav(&std::fs::read(path).unwrap()).unwrap();
+    assert!(
+        audio == want.takes[0].audio,
+        "the take is whole on the stick"
+    );
+    assert!(!holes[0].exists(), "its hole record goes");
+    // Whole: nothing waits for the card, and System status says so.
+    assert!(r.h.card_parts().is_empty());
+    problems.extend(said(&mut r));
+    assert!(
+        problems.contains(&(mpfree_status::kinds::CARD_OUT.id, mpfree_status::Op::Ended)),
+        "{problems:?}"
+    );
+    assert_eq!(std::fs::read(&hole.from).unwrap(), card_before);
+    assert!(ckpt.is_file(), "the card's files are left as they were");
+    // It plays from its whole file, and the card is let go.
+    r.run_until(|r| r.h.tracks.file_gen(k).is_some_and(|g| g != now) && back.users() == 0);
+    // The project's copy has the zeros, so the next save copies the whole
+    // take in under a name of its own.
+    let again = r.save();
+    let whole = &again.takes[0];
+    assert_eq!(whole.path.as_deref(), Some(path.as_path()));
+    assert!(whole.file.ends_with("_whole.wav"), "{}", whole.file);
+    assert_ne!(whole.file, saved.takes[0].file);
+    let _ = std::fs::remove_dir_all(&card);
+    let _ = std::fs::remove_dir_all(&stick);
+}
+
+/// The SD card goes while a take records on it and the stick can't take
+/// recording over (its folder can't be made): System status says
+/// recording stopped when the card came out, until recording moves again.
+#[test]
+fn a_card_that_goes_with_nowhere_to_carry_on_says_recording_stopped() {
+    use mpfree_status::{kinds, Op};
+    use mpfree_stream::storage::Lease;
+    let card = scratch("carry-nowhere-card");
+    let stick = scratch("carry-nowhere-stick");
+    std::fs::create_dir_all(&card).unwrap();
+    std::fs::create_dir_all(&stick).unwrap();
+    // A file where the stick's folder would be made.
+    let blocked = stick.join("not-a-folder");
+    std::fs::write(&blocked, b"x").unwrap();
+    let mut r = Rig::sized(None, Some(small()), 30);
+    let lease = Lease::new(&card);
+    r.h.own_device(lease.clone());
+    assert!(r.h.record_to(card.clone(), quick()).is_ok());
+    r.h.command(A::Arm(0, true));
+    r.armed(&[0]);
+    r.t.command(START, T::Record);
+    r.run_until(|r| r.h.recording_on(&card) == [0]);
+    let said = |r: &mut Rig| {
+        let mut v = Vec::new();
+        while let Some(p) = r.h.take_problem() {
+            v.push((p.report.kind.id, p.report.op));
+        }
+        v
+    };
+    lease.revoke();
+    assert!(r.h.record_to(blocked.join("work"), quick()).is_ok());
+    let mut problems = Vec::new();
+    r.run_until(|r| {
+        problems.extend(said(r));
+        problems.contains(&(kinds::CARD_OUT_STOPPED.id, Op::Began))
+    });
+    assert!(
+        !problems.contains(&(kinds::CARD_OUT.id, Op::Began)),
+        "{problems:?}"
+    );
+    // Recording moves again (the card back, or room on the stick).
+    r.t.command(r.frame + P, T::Stop);
+    r.live = false;
+    r.run_until(|r| r.h.record_to(stick.join("work"), quick()).is_ok());
+    r.run_until(|r| {
+        problems.extend(said(r));
+        problems.contains(&(kinds::CARD_OUT_STOPPED.id, Op::Ended))
+    });
     let _ = std::fs::remove_dir_all(&card);
     let _ = std::fs::remove_dir_all(&stick);
 }

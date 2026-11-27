@@ -19,6 +19,7 @@ use crate::play_page::{SynthPads, LAYOUT_SWITCH, LOCKED};
 use mpfree_arp::scale::pads::PadLayout;
 use mpfree_seq::Cond;
 use mpfree_ui::draw::{self, card, card_head, dot, pill, speaker_on};
+use mpfree_ui::touch::{Class, Commit, Consequence, Context, Movement, Timing};
 use mpfree_ui::widgets::{Pad, PadGrid};
 use mpfree_ui::{
     Align, Color, EventKind, FontId, PaintCx, Rect, Role, Target, Tone, Touch, Widget,
@@ -1374,8 +1375,9 @@ pub struct StepGrid {
     swipe: Option<Swipe>,
     /// A finger on a lock's cell: a tap until it moves, then it turns.
     drag: Option<LockDrag>,
-    /// A finger on a mod row's depth bar, and its row, until it lifts.
-    depth_drag: Option<(u64, usize)>,
+    /// A finger on a mod row's depth bar, its row, where it landed (x)
+    /// and the depth then, until it lifts.
+    depth_drag: Option<(u64, usize, i32, f32)>,
     /// A finger drawing on a Velocity or Chance lane (refactor D3).
     stroke: Option<ValueStroke>,
     /// The last stroke's changes, for the app to take on
@@ -1761,6 +1763,9 @@ impl BankLayout {
 /// Lanes are about this tall at least.
 const LANE_MIN_H: i32 = 34;
 const LANE_MAX_H: i32 = 44;
+/// The most rows Play's pattern shows (the sixth a swipe away when fewer
+/// fit).
+pub const PLAY_ROWS: usize = 6;
 const LANE_GAP: i32 = 5;
 const NAMES_W: i32 = 132;
 
@@ -1824,7 +1829,11 @@ impl StepGrid {
             None => body.take_left(NAMES_W),
         };
         let fit = ((grid.h + LANE_GAP) / (LANE_MIN_H + LANE_GAP)).clamp(1, 8) as usize;
-        let rows = fit.min(self.lanes.len()).max(1);
+        // Play's rows: six at most, so the room the frame gives makes
+        // them taller, up to 44 px, rather than more of them (the touch
+        // design set, tab 3).
+        let most = if self.bank.is_some() { PLAY_ROWS } else { 8 };
+        let rows = fit.min(most).min(self.lanes.len()).max(1);
         let rh = ((grid.h - (rows as i32 - 1) * LANE_GAP) / rows as i32).min(LANE_MAX_H);
         let cw = (grid.w - 3 * 10 - 15 * 4) / 16;
         GridGeom {
@@ -2881,11 +2890,12 @@ fn paint_rows(cx: &mut PaintCx, open: &LaneRows, rg: &RowsGeom) {
     );
 }
 
-/// A finger at `x` on a mod row's depth bar: its depth, -1 to 1 from the
-/// middle, in hundredths (as the chain editor's).
-fn depth_at(bar: Rect, x: i32) -> f32 {
-    let t = (x - bar.x) as f32 / bar.w.max(1) as f32;
-    ((t * 2.0 - 1.0).clamp(-1.0, 1.0) * 100.0).round() / 100.0
+/// A mod row's depth after a finger moved `dx` along its bar from where
+/// it landed with the depth at `d0`: -1 to 1 from the middle, the bar's
+/// width the whole range, in hundredths (as the chain editor's).
+fn depth_moved(bar: Rect, d0: f32, dx: i32) -> f32 {
+    let d = d0 + 2.0 * dx as f32 / bar.w.max(1) as f32;
+    (d.clamp(-1.0, 1.0) * 100.0).round() / 100.0
 }
 
 impl Widget for StepGrid {
@@ -3554,8 +3564,9 @@ impl StepGrid {
     }
 
     /// A finger on the mod rows while they're open: a row's × takes it
-    /// off, its bar sets its depth (and follows the finger), + LFO adds
-    /// one; a finger anywhere else closes them and does nothing more.
+    /// off, a drag along its bar sets its depth (from where the finger
+    /// lands, so landing moves nothing: layout spec 1a), + LFO adds one; a
+    /// finger anywhere else closes them and does nothing more.
     fn rows_touch(
         &mut self,
         rg: &RowsGeom,
@@ -3564,17 +3575,16 @@ impl StepGrid {
         x: i32,
         y: i32,
     ) -> Option<EventKind> {
-        let depth = |k: usize, bar: Rect| EventKind::Step {
-            index: LANE_ROWS + k,
-            delta: (depth_at(bar.inset_xy(4, 0), x) * 100.0).round() as i32,
-        };
-        if let Some((finger, k)) = self.depth_drag.filter(|(finger, _)| *finger == f) {
+        if let Some((_, k, x0, d0)) = self.depth_drag.filter(|d| d.0 == f) {
             if matches!(phase, Touch::Up | Touch::Cancel) {
                 self.depth_drag = None;
                 return None;
             }
-            let _ = finger;
-            return rg.rows.get(k).map(|(_, bar, _)| depth(k, *bar));
+            let (_, bar, _) = rg.rows.get(k)?;
+            return Some(EventKind::Step {
+                index: LANE_ROWS + k,
+                delta: (depth_moved(bar.inset_xy(4, 0), d0, x - x0) * 100.0).round() as i32,
+            });
         }
         if phase != Touch::Down {
             return None;
@@ -3587,8 +3597,13 @@ impl StepGrid {
                 return Some(EventKind::Toggle(LANE_ROWS + k));
             }
             if bar.contains(x, y) {
-                self.depth_drag = Some((f, k));
-                return Some(depth(k, *bar));
+                let d0 = self
+                    .rows_open
+                    .as_ref()
+                    .and_then(|o| o.rows.get(k))
+                    .map_or(0.0, |r| r.1);
+                self.depth_drag = Some((f, k, x, d0));
+                return None;
             }
         }
         let can_add = self.rows_open.as_ref().is_some_and(|o| o.can_add);
@@ -3771,7 +3786,9 @@ impl StepInspector {
         let chips =
             std::array::from_fn(|k| Rect::new(body.x + k as i32 * (cw + gap), body.y, cw, 58));
         let label = Rect::new(body.x, body.y + 58 + 12, body.w, 14);
-        let row = Rect::new(body.x, label.bottom() + 4, body.w, 44);
+        // 4 px short of the panel's edge: Clear keeps 24 px from the master
+        // bar beside the frame (layout spec 1a's gaps beside Delete/Clear).
+        let row = Rect::new(body.x, label.bottom() + 4, body.w - 4, 44);
         let clear = Rect::new(row.right() - BUTTON_W, row.y, BUTTON_W, row.h);
         let copy = Rect::new(clear.x - gap - BUTTON_W, row.y, BUTTON_W, row.h);
         let off = Rect::new(copy.x - gap - ON_W, row.y, ON_W, row.h);
@@ -4110,6 +4127,10 @@ pub struct Throw {
 /// Hold-to-play effects: as many as fit (6 in a row on the home view, 8
 /// in two rows, 4 in a narrow panel). A finger down on one gives
 /// `Pad { index, down: true }`, its lift `down: false`.
+///
+/// A single row (Play's bottom row) goes without the card and its title:
+/// the throws are the row, each as tall as the slot (the touch design
+/// set, tab 3). Two rows keep the card.
 #[derive(Default)]
 pub struct Throws {
     pub items: Vec<Throw>,
@@ -4118,10 +4139,25 @@ pub struct Throws {
 }
 
 impl Throws {
+    /// True when `r` holds one row, drawn without the card.
+    fn bare(r: Rect) -> bool {
+        r.h < BARE_THROWS_H
+    }
+
+    /// Where the throws go in `r`: all of it in a bare row, else the
+    /// card's body.
+    fn body(r: Rect) -> Rect {
+        if Throws::bare(r) {
+            r
+        } else {
+            card_head(r).1
+        }
+    }
+
     /// How many show in `r`, and in how many columns.
     fn grid(r: Rect) -> (usize, usize) {
-        let (_, body) = card_head(r);
-        if body.h < 80 {
+        let body = Throws::body(r);
+        if Throws::bare(r) || body.h < 80 {
             (6, 6)
         } else if r.w < 420 {
             (4, 2)
@@ -4131,7 +4167,7 @@ impl Throws {
     }
 
     pub fn cells(&self, r: Rect) -> Vec<Rect> {
-        let (_, body) = card_head(r);
+        let body = Throws::body(r);
         let (n, cols) = Throws::grid(r);
         let n = n.min(self.items.len());
         let cols = cols as i32;
@@ -4152,11 +4188,16 @@ impl Throws {
     }
 }
 
+/// A throws slot shorter than this is one bare row.
+const BARE_THROWS_H: i32 = 130;
+
 impl Widget for Throws {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
-        card(cx, r, "Throws", &self.right);
+        if !Throws::bare(r) {
+            card(cx, r, "Throws", &self.right);
+        }
         for (cr, th) in self.cells(r).iter().zip(&self.items) {
             let (w, h) = (cr.w, cr.h);
             if th.on {
@@ -4219,7 +4260,13 @@ impl Widget for Throws {
         self.cells(r)
             .into_iter()
             .enumerate()
-            .map(|(i, c)| Target::hold("throw", i, self.items[i].name.clone(), c))
+            .map(|(i, c)| {
+                // Played while the music runs, at once: it acts as the
+                // finger lands and stops as it lifts.
+                Target::hold("throw", i, self.items[i].name.clone(), c)
+                    .plays(Context::Both, Consequence::Minor, Timing::Immediate)
+                    .commit(Commit::Press)
+            })
             .collect()
     }
 
@@ -4254,6 +4301,12 @@ impl Widget for Throws {
 /// where the finger was. Its head is a chip naming what it plays ("XY ·
 /// Filter + echo ▾"): a tap anywhere on the head gives `Select(0)`, and
 /// the screen opens the list to pick another (Jay, 18 Nov 2026 07:34Z).
+///
+/// In a short slot (Play's bottom row) there is no card: the chip is a
+/// column of its own at the pad's left ("XY ▾"), the pad takes the rest,
+/// and what it plays is written in the pad's corner, a label rather than
+/// a control, so every touch that starts on the pad is the pad's (the
+/// touch design set, tab 3).
 pub struct XyPad {
     pub title: String,
     /// What it plays, on its chip: "Filter + echo", "Wash".
@@ -4294,15 +4347,33 @@ impl Default for XyPad {
 
 const TRAIL: usize = 10;
 
+/// An XY slot shorter than this has its chip beside the pad.
+const SIDE_CHIP_H: i32 = 160;
+/// The chip's column beside the pad: wide enough for a Secondary control.
+pub const XY_CHIP_W: i32 = 52;
+/// Between the chip's column and the pad.
+const XY_CHIP_GAP: i32 = 8;
+
 impl XyPad {
+    /// True when `r` is short: the chip beside the pad, no card.
+    fn side(r: Rect) -> bool {
+        r.h < SIDE_CHIP_H
+    }
+
     fn pad(r: Rect) -> Rect {
+        if XyPad::side(r) {
+            return r.take_left(XY_CHIP_W + XY_CHIP_GAP).1;
+        }
         let (_, body) = card_head(r);
         body.take_bottom(18).1
     }
 
-    /// The head over the pad, all of it the chip's target (a fingertip
-    /// across the card's width).
+    /// The chip's target: the head over the pad (a fingertip across the
+    /// card's width), or in a short slot the column at its left.
     fn head(r: Rect) -> Rect {
+        if XyPad::side(r) {
+            return r.take_left(XY_CHIP_W).0;
+        }
         let pad = XyPad::pad(r);
         Rect::new(r.x, r.y, r.w, (pad.y - 4 - r.y).max(0))
     }
@@ -4328,26 +4399,60 @@ impl Widget for XyPad {
     fn paint(&self, cx: &mut PaintCx, r: Rect) {
         let t = cx.theme.clone();
         cx.canvas.fill_rect(r, t.bg);
-        let body = card(cx, r, "", &self.right);
-        // The chip: what the pad plays, and a ▾ for the list.
-        let chip = self.chip_rect(cx, r);
-        cx.canvas.fill_round_rect(chip, chip.h / 2, t.raised);
-        cx.text(
-            FontId::Bold,
-            draw::HEAD_PX,
-            Rect::new(chip.x + 12, chip.y, chip.w - 30, chip.h),
-            Align::Left,
-            t.text,
-            &self.chip_text(),
-        );
-        let (cx0, cy0) = (chip.right() - 16, chip.y + chip.h / 2 - 2);
-        for k in 0..5 {
-            cx.canvas
-                .fill_rect(Rect::new(cx0 - 4 + k, cy0 + k, 9 - 2 * k, 1), t.text_dim);
-        }
-        let (axis, pad) = body.take_bottom(18);
+        let side = XyPad::side(r);
+        let (axis, pad) = if side {
+            // The chip's column: XY over a ▾.
+            let col = XyPad::head(r);
+            cx.canvas.fill_round_rect(col, t.round(10), t.raised);
+            let mid = col.y + col.h / 2;
+            cx.text(
+                FontId::Bold,
+                draw::HEAD_PX,
+                Rect::new(col.x, mid - 20, col.w, 20),
+                Align::Center,
+                t.text,
+                "XY",
+            );
+            let (cx0, cy0) = (col.x + col.w / 2, mid + 6);
+            for k in 0..5 {
+                cx.canvas
+                    .fill_rect(Rect::new(cx0 - 4 + k, cy0 + k, 9 - 2 * k, 1), t.text_dim);
+            }
+            let pad = XyPad::pad(r);
+            (pad.inset_xy(10, 4).take_bottom(18).0, pad)
+        } else {
+            let body = card(cx, r, "", &self.right);
+            // The chip: what the pad plays, and a ▾ for the list.
+            let chip = self.chip_rect(cx, r);
+            cx.canvas.fill_round_rect(chip, chip.h / 2, t.raised);
+            cx.text(
+                FontId::Bold,
+                draw::HEAD_PX,
+                Rect::new(chip.x + 12, chip.y, chip.w - 30, chip.h),
+                Align::Left,
+                t.text,
+                &self.chip_text(),
+            );
+            let (cx0, cy0) = (chip.right() - 16, chip.y + chip.h / 2 - 2);
+            for k in 0..5 {
+                cx.canvas
+                    .fill_rect(Rect::new(cx0 - 4 + k, cy0 + k, 9 - 2 * k, 1), t.text_dim);
+            }
+            body.take_bottom(18)
+        };
         cx.canvas
             .fill_round_rect(pad, t.round(10), t.bg.mix(t.surface, 0.4));
+        if side {
+            // What it plays, written in the corner: not a control.
+            cx.text(
+                FontId::Bold,
+                12.0,
+                Rect::new(pad.x + 10, pad.y + 4, pad.w - 20, 18),
+                Align::Left,
+                t.text_faint,
+                &self.chip,
+            );
+        }
         for k in 1..4 {
             let x = pad.x + pad.w * k / 4;
             let y = pad.y + pad.h * k / 4;
@@ -4417,7 +4522,14 @@ impl Widget for XyPad {
             } else {
                 px - gap - lw
             };
-            let ly = (py - 9).clamp(pad.y + 4, pad.bottom() - 22);
+            // In a short slot the name and the axes are inside the pad:
+            // the label stays between them.
+            let (lo, hi) = if side {
+                (pad.y + 22, pad.bottom() - 40)
+            } else {
+                (pad.y + 4, pad.bottom() - 22)
+            };
+            let ly = (py - 9).clamp(lo, hi.max(lo));
             cx.text(
                 FontId::Bold,
                 12.0,
@@ -4435,8 +4547,10 @@ impl Widget for XyPad {
             return Vec::new();
         }
         vec![
-            Target::tap("xy-chip", 0, self.chip_text(), XyPad::head(r)),
-            Target::drag("xy", 0, self.title.clone(), pad),
+            // Picking what it plays: a chip, put back with one more touch.
+            Target::tap("xy-chip", 0, self.chip_text(), XyPad::head(r)).class(Class::Secondary),
+            // Where the finger is, is the point (spec 1a).
+            Target::drag("xy", 0, self.title.clone(), pad).movement(Movement::Absolute),
         ]
     }
 
@@ -5053,8 +5167,13 @@ mod tests {
             .collect();
         let r = Rect::new(0, 0, 1038, 330);
         let rows = g.rows_shown(r);
-        assert!((6..=8).contains(&rows), "{rows}");
+        assert_eq!(rows, PLAY_ROWS, "six, however much room");
         assert_eq!(g.lanes_shown(r), (0..rows).collect::<Vec<_>>());
+        // In the Play frame's 346 px, six rows of 44 px steps (Dense).
+        let frame = Rect::new(8, 322, 1068, 346);
+        assert_eq!(g.rows_shown(frame), 6);
+        let g6 = g.geom(frame);
+        assert_eq!((g6.rh, g6.cw), (44, 44));
         // A tap on a step waits for the lift.
         let (x, y) = g.step_at(r, 1, 4);
         assert_eq!(g.touch(1, Touch::Down, x, y, r), None);
@@ -5362,6 +5481,21 @@ mod tests {
             ..Throws::default()
         };
         assert_eq!(th.cells(Rect::new(0, 0, 704, 120)).len(), 6);
+        // Play's bottom row: one bare row, each throw the slot's height,
+        // 8 px apart, played at once in both modes.
+        let row = Rect::new(8, 680, 720, 78);
+        let cells = th.cells(row);
+        assert_eq!(cells.len(), 6);
+        assert!(
+            cells.iter().all(|c| c.y == row.y && c.h == row.h),
+            "{cells:?}"
+        );
+        assert_eq!((cells[0].x, cells[1].x - cells[0].right()), (row.x, 8));
+        assert!(cells[0].w >= 112, "{:?}", cells[0]);
+        let t = &th.targets(row)[0];
+        assert_eq!(t.commit, Commit::Press);
+        assert_eq!(t.needed_class(), Class::Performance);
+        assert!(t.short_side() >= Class::Performance.min_px());
         assert_eq!(th.cells(Rect::new(0, 0, 686, 196)).len(), 8);
         assert_eq!(th.cells(Rect::new(0, 0, 374, 196)).len(), 4);
         let r = Rect::new(0, 0, 686, 196);
@@ -5422,5 +5556,52 @@ mod tests {
             "{x} {y}"
         );
         assert_eq!((xy.x, xy.y), (0.5, 0.25), "the dot stays for the page");
+    }
+
+    /// Play's bottom row: the chip is a column of its own at the pad's
+    /// left, and a touch that starts on the pad stays the pad's whatever
+    /// it crosses (the touch design set, tab 3).
+    #[test]
+    fn in_a_short_slot_the_xy_chip_is_a_column_beside_the_pad() {
+        let mut xy = XyPad::default();
+        let r = Rect::new(736, 680, 340, 78);
+        let t = xy.targets(r);
+        let (chip, pad) = (&t[0], &t[1]);
+        assert_eq!(chip.id, "xy-chip");
+        assert_eq!(chip.rect, Rect::new(736, 680, XY_CHIP_W, 78));
+        assert_eq!(chip.needed_class(), Class::Secondary);
+        assert!(chip.short_side() >= Class::Secondary.min_px());
+        assert_eq!(
+            pad.rect,
+            Rect::new(736 + XY_CHIP_W + 8, 680, 340 - XY_CHIP_W - 8, 78)
+        );
+        assert_eq!(pad.movement, Movement::Absolute);
+        assert!(pad.rect.x - chip.rect.right() >= 8, "the gap between them");
+        let p = pad.rect;
+        // A tap on the column opens the list.
+        assert_eq!(
+            xy.touch(1, Touch::Down, r.x + 10, r.y + 10, r),
+            Some(EventKind::Select(0))
+        );
+        // A finger lands on the pad and slides over the column: still the
+        // pad, at its left edge.
+        assert!(matches!(
+            xy.touch(2, Touch::Down, p.x + 20, p.y + 20, r),
+            Some(EventKind::Xy { down: true, .. })
+        ));
+        let Some(EventKind::Xy { x, down, .. }) = xy.touch(2, Touch::Move, r.x + 10, p.y + 20, r)
+        else {
+            panic!("the pad lost the finger");
+        };
+        assert!(down && x == 0.0, "{x}");
+        assert!(matches!(
+            xy.touch(2, Touch::Up, r.x + 10, p.y + 20, r),
+            Some(EventKind::Xy { down: false, .. })
+        ));
+        // The full-screen pad keeps its chip as the head.
+        let big = Rect::new(8, 168, 1068, 520);
+        let t = xy.targets(big);
+        assert_eq!(t[0].rect.w, big.w);
+        assert!(t[1].rect.y > t[0].rect.bottom());
     }
 }

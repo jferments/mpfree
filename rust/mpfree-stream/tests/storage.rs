@@ -11,7 +11,9 @@ use mpfree_stream::coord::{Coordinator, Device, Inline, JobTier, Plan, ReadReply
 use mpfree_stream::cursor::Cursor;
 use mpfree_stream::player::{Config, Player};
 use mpfree_stream::policy::Device as Place;
-use mpfree_stream::storage::{CardHandle, Lease, Refusal, Storage};
+use mpfree_stream::storage::{
+    make_marker, open_under, read_marker, CardHandle, CardMark, Lease, Refusal, Storage, MARKER,
+};
 use mpfree_stream::testkit::{folder, played, wav, PretendCard, Store};
 
 /// A stick folder and a card folder, each with a marked sound.
@@ -346,6 +348,10 @@ fn the_card_pulled_mid_play() {
     );
     assert_eq!(drums_missed, 0, "the stick played on without a gap");
     assert_eq!(r.c.lost(), None);
+    // Nothing on the card stays open for it, so the card can be closed
+    // cleanly; the stick's file stays open.
+    assert_eq!(open_under(&card).unwrap(), Vec::<std::path::PathBuf>::new());
+    assert!(!open_under(&stick).unwrap().is_empty());
 
     // The card back in is a new insertion: the old source stays as it is,
     // and the old find can't open anything.
@@ -447,4 +453,65 @@ fn a_take_still_being_written_on_the_card_is_read_only_while_its_lease_holds() {
     let again = Lease::new(&card);
     assert!(*again != *lease);
     assert!(*lease == *lease);
+}
+
+/// Which card (the SD card plan's B2c): `MPFree/` gets a marker file with a
+/// random id once, made whole or not at all, and kept; one that doesn't
+/// read is made again; and an opening says which card it is once told.
+#[test]
+fn a_card_is_marked_once_and_an_opening_says_which_card_it_is() {
+    let dir = folder("storage-marker");
+    let mpf = dir.join("MPFree");
+    std::fs::create_dir_all(&mpf).unwrap();
+    assert_eq!(read_marker(&mpf).unwrap(), None);
+    let id = make_marker(&mpf).unwrap();
+    assert_ne!(id, [0; 16]);
+    let text = std::fs::read_to_string(mpf.join(MARKER)).unwrap();
+    assert!(
+        text.starts_with("MPFree card ") && text.ends_with('\n'),
+        "{text}"
+    );
+    assert_eq!(text.len(), "MPFree card ".len() + 33);
+    assert!(
+        !mpf.join(".mpfree-card.new").exists(),
+        "nothing left beside it"
+    );
+    // Kept: read again, and made again it is the same.
+    assert_eq!(read_marker(&mpf).unwrap(), Some(id));
+    assert_eq!(make_marker(&mpf).unwrap(), id);
+    // Another card's folder gets an id of its own.
+    let other = dir.join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    assert_ne!(make_marker(&other).unwrap(), id);
+    // One that doesn't read as a marker (cut short, other words, too long,
+    // a link) is no marker, and is made again.
+    for bad in [
+        &text[..text.len() - 2],
+        "MPFree card zz\n",
+        &format!("{text}{text}{text}"),
+    ] {
+        std::fs::write(mpf.join(MARKER), bad).unwrap();
+        assert_eq!(read_marker(&mpf).unwrap(), None, "{bad:?}");
+    }
+    let made = make_marker(&mpf).unwrap();
+    assert_ne!(made, id);
+    assert_eq!(read_marker(&mpf).unwrap(), Some(made));
+    std::fs::remove_file(mpf.join(MARKER)).unwrap();
+    symlink(other.join(MARKER), mpf.join(MARKER)).unwrap();
+    assert_eq!(read_marker(&mpf).unwrap(), None, "a link is not followed");
+    // An opening says which card it is once it is told, and only once.
+    let lease = Lease::new(&dir);
+    assert_eq!(lease.mark(), None);
+    let mark = CardMark {
+        id,
+        serial: 0x5EC0_1A2B,
+    };
+    assert!(lease.set_mark(mark));
+    assert!(!lease.set_mark(CardMark {
+        id: made,
+        serial: 1
+    }));
+    assert_eq!(lease.mark(), Some(mark));
+    lease.revoke();
+    assert_eq!(lease.mark(), Some(mark), "still which card it was");
 }

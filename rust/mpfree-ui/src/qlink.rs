@@ -24,13 +24,18 @@ use crate::draw;
 use crate::geom::Rect;
 use crate::text::{Align, FontId};
 use crate::theme::Theme;
+use crate::touch::{Class, Fingers};
 use crate::ui::{EventKind, PaintCx, Target, Touch, Widget};
 
 /// The column's width on every page that has it, in pixels (168 until
 /// Jay's 17 Nov ask to give the page beside it the room).
 pub const COLUMN_WIDTH: i32 = 128;
-/// The master bar's width on the Play page, in pixels.
-pub const MASTER_WIDTH: i32 = 66;
+/// The master bar's width on the Play page, in pixels: 66 until the touch
+/// design set's tab 3 (25 Nov 2026) put its scale on the meter. Under 48
+/// its level would fall below the Secondary class.
+pub const MASTER_WIDTH: i32 = 52;
+/// A bar narrower than this draws its scale over the meter, not beside it.
+const SCALE_BESIDE_W: i32 = 64;
 /// Pixels of drag per detent of a card's knob.
 pub const DRAG_DETENT: i32 = 8;
 
@@ -308,7 +313,9 @@ impl Widget for QLinkColumn {
 /// level and "LIM" under. Levels sit on the meter's scale
 /// ([`draw::meter_frac`]: -48 dB at the bottom to +6 dB at the top), the
 /// handle too, so a drag on the bar gives the fader's place on that scale
-/// as [`EventKind::Value`] (turn it into dB with [`draw::meter_db`]).
+/// as [`EventKind::Value`] (turn it into dB with [`draw::meter_db`]). The
+/// fader follows the finger from where it lands (layout spec 1a): landing
+/// moves nothing, and a drag moves it as far as the finger goes.
 pub struct MasterBar {
     /// Each side's level now, dBFS (-120 for silence).
     pub peak_db: [f32; 2],
@@ -320,6 +327,9 @@ pub struct MasterBar {
     pub text: String,
     /// The safety limiter's gain reduction, dB (0 when it rests).
     pub limit_db: f32,
+    /// Each finger on the bar: where it landed (y) and the fader's place
+    /// then.
+    drag: Fingers<(i32, f32)>,
 }
 
 impl Default for MasterBar {
@@ -343,6 +353,7 @@ impl MasterBar {
             fader_db: 0.0,
             text: String::new(),
             limit_db: 0.0,
+            drag: Fingers::new(),
         }
     }
 
@@ -382,25 +393,38 @@ impl Widget for MasterBar {
         cx.panel(r);
         let inner = r.inset_xy(8, 12);
         let (top, _) = inner.take_top(18);
+        // Across the whole bar: a slim one's inside is narrower than the
+        // word.
+        let top = Rect::new(r.x, top.y, r.w, top.h);
         cx.text(FontId::Bold, 10.5, top, Align::Center, t.text_dim, "MASTER");
         let (bottom, _) = inner.take_bottom(46);
         let bars = MasterBar::track(r);
-        // The scale on the left, two bars, then the limiter's reduction.
-        let scale = Rect::new(bars.x, bars.y, 20, bars.h);
-        for db in [0.0f32, -6.0, -12.0, -24.0, -36.0] {
-            let y = MasterBar::y_of(bars, db);
-            let txt = format!("{}", db.abs() as i32);
-            cx.text(
-                FontId::Sans,
-                10.0,
-                Rect::new(scale.x, y - 6, scale.w, 12),
-                Align::Right,
-                t.text_faint,
-                &txt,
-            );
-        }
-        let bx = scale.right() + 4;
+        let beside = r.w >= SCALE_BESIDE_W;
+        // The scale on the left, two bars, then the limiter's reduction;
+        // in a slim bar the two bars and the limiter in the middle, and
+        // the scale over them.
         let bw = 9;
+        let scale = Rect::new(bars.x, bars.y, 20, bars.h);
+        let bx = if beside {
+            scale.right() + 4
+        } else {
+            bars.x + (bars.w - (2 * bw + 2 + 6 + 5)) / 2
+        };
+        let marks = [0.0f32, -6.0, -12.0, -24.0, -36.0];
+        if beside {
+            for db in marks {
+                let y = MasterBar::y_of(bars, db);
+                let txt = format!("{}", db.abs() as i32);
+                cx.text(
+                    FontId::Sans,
+                    10.0,
+                    Rect::new(scale.x, y - 6, scale.w, 12),
+                    Align::Right,
+                    t.text_faint,
+                    &txt,
+                );
+            }
+        }
         for side in 0..2 {
             let br = Rect::new(bx + side as i32 * (bw + 2), bars.y, bw, bars.h);
             draw::meter_bar(cx, br, self.peak_db[side], self.hold_db[side], true);
@@ -412,6 +436,20 @@ impl Widget for MasterBar {
             let gh = (self.limit_db / LIMIT_SCALE_DB * bars.h as f32) as i32;
             cx.canvas
                 .fill_rect(Rect::new(gx, bars.y, 5, gh.clamp(3, bars.h.max(3))), t.warn);
+        }
+        if !beside {
+            // The scale on the meter: a tick at the left and the number on
+            // a dark backing, so it reads over the bars at any level.
+            for db in marks {
+                let y = MasterBar::y_of(bars, db);
+                let txt = format!("{}", db.abs() as i32);
+                let w = cx.measure(FontId::Bold, 11.0, &txt) + 6;
+                cx.canvas
+                    .fill_rect(Rect::new(bars.x - 2, y, 5, 1), t.text_dim);
+                let back = Rect::new(bars.right() - w + 2, y - 7, w, 14);
+                cx.canvas.fill_round_rect(back, 3, t.bg.with_alpha(210));
+                cx.text(FontId::Bold, 11.0, back, Align::Center, t.text, &txt);
+            }
         }
         let fy = MasterBar::y_of(bars, self.fader_db);
         cx.canvas
@@ -435,7 +473,9 @@ impl Widget for MasterBar {
         if tr.h <= 0 {
             return Vec::new();
         }
-        vec![Target::drag("level", 0, self.text.clone(), r)]
+        // Secondary: the master level is a setting the wheel also steps,
+        // and the touch design set's tab 3 sized the bar for it (52 px).
+        vec![Target::drag("level", 0, self.text.clone(), r).class(Class::Secondary)]
     }
 
     fn steps(&self, _t: &Target) -> bool {
@@ -459,16 +499,25 @@ impl Widget for MasterBar {
         })
     }
 
-    fn touch(&mut self, _f: u64, phase: Touch, _x: i32, y: i32, r: Rect) -> Option<EventKind> {
-        if !matches!(phase, Touch::Down | Touch::Move) {
-            return None;
-        }
+    fn touch(&mut self, finger: u64, phase: Touch, _x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let tr = MasterBar::track(r);
-        if tr.h <= 0 {
-            return None;
+        match phase {
+            Touch::Down => {
+                if tr.h > 0 {
+                    self.drag.put(finger, (y, draw::meter_frac(self.fader_db)));
+                }
+                None
+            }
+            Touch::Move => {
+                let &(from, start) = self.drag.get(finger)?;
+                let f = (start + (from - y) as f32 / tr.h.max(1) as f32).clamp(0.0, 1.0);
+                (f != start || from != y).then_some(EventKind::Value(f))
+            }
+            Touch::Up | Touch::Cancel => {
+                self.drag.take(finger);
+                None
+            }
         }
-        let f = (tr.bottom() - y) as f32 / tr.h as f32;
-        Some(EventKind::Value(f.clamp(0.0, 1.0)))
     }
 }
 
@@ -578,31 +627,30 @@ mod tests {
     }
 
     #[test]
-    fn the_master_bar_maps_a_drag_to_the_level() {
+    fn the_master_bar_follows_a_drag_from_where_it_lands() {
         let mut m = MasterBar::new();
         let r = Rect::new(1032, 84, MASTER_WIDTH, 666);
         let tr = MasterBar::track(r);
-        assert_eq!(
-            m.touch(1, Touch::Down, tr.x, tr.y, r),
-            Some(EventKind::Value(1.0))
-        );
-        assert_eq!(
-            m.touch(1, Touch::Move, tr.x, tr.bottom(), r),
-            Some(EventKind::Value(0.0))
-        );
+        let at = draw::meter_frac(0.0);
+        // Landing anywhere moves nothing, and a tap changes nothing.
+        assert_eq!(m.touch(1, Touch::Down, tr.x, tr.y, r), None);
         assert_eq!(m.touch(1, Touch::Up, tr.x, tr.y, r), None);
-        assert_eq!(MasterBar::y_of(tr, 6.0), tr.y);
-        assert_eq!(MasterBar::y_of(tr, -48.0), tr.bottom());
-        // The handle sits where a drag to it would put the fader.
-        let y = MasterBar::y_of(tr, -1.5);
-        let Some(EventKind::Value(f)) = m.touch(1, Touch::Down, tr.x, y, r) else {
+        // A drag moves it as far as the finger goes, up or down.
+        let mid = tr.y + tr.h / 2;
+        assert_eq!(m.touch(2, Touch::Down, tr.x, mid, r), None);
+        let Some(EventKind::Value(f)) = m.touch(2, Touch::Move, tr.x, mid - tr.h / 10, r) else {
             panic!("a value");
         };
-        assert!(
-            (draw::meter_db(f) + 1.5).abs() < 0.2,
-            "{}",
-            draw::meter_db(f)
+        assert!((f - (at + 0.1)).abs() < 0.01, "{f}");
+        assert_eq!(
+            m.touch(2, Touch::Move, tr.x, mid + tr.h, r),
+            Some(EventKind::Value(0.0)),
+            "to the bottom of the scale"
         );
+        assert_eq!(m.touch(2, Touch::Cancel, tr.x, mid, r), None);
+        assert_eq!(m.touch(2, Touch::Move, tr.x, tr.y, r), None, "let go");
+        assert_eq!(MasterBar::y_of(tr, 6.0), tr.y);
+        assert_eq!(MasterBar::y_of(tr, -48.0), tr.bottom());
         // Held peaks follow up at once and fall slowly.
         assert!(m.feed([-6.0, -12.0]));
         assert!(m.feed([-30.0, -30.0]));

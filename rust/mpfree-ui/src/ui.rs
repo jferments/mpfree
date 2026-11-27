@@ -733,7 +733,7 @@ impl Ui {
 
     fn add_page_with_margin(&mut self, name: &str, spec: &str, margin: bool) -> Result<(), String> {
         let node = layout::parse(spec)?;
-        let g = self.theme.gap;
+        let g = layout::page_gap(&node, self.theme.gap);
         let area = Rect::new(0, 0, self.size.0, self.size.1).inset(if margin { g } else { 0 });
         let mut slots = Vec::new();
         for (slot, r) in layout::solve(&node, area, g) {

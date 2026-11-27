@@ -649,6 +649,147 @@ impl Hole {
     }
 }
 
+/// Bytes read or written at a time when a take's part is brought back.
+const JOIN_PIECE: usize = 1 << 20;
+
+/// What [`join`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Joined {
+    /// The part is in the take's file, synced, and its hole record gone:
+    /// the take is whole, these frames brought back.
+    Whole(u64),
+    /// The take isn't finished yet (its recording or checkpoint is still
+    /// there): its checks still count the zeros, so it waits.
+    NotFinished,
+    /// None of the places given holds the part, or none reads whole.
+    NoPart,
+    /// A part was there but its bytes don't match the record's check: the
+    /// take is left as it was, zeros and all.
+    Mismatch,
+}
+
+/// Bring the first part of take `stem` in `dir`, which carried on there
+/// when its drive went ([`Take::carry_on`], its [`Hole`] record beside it),
+/// back from the drive it stayed on, into the take's finished file: the
+/// SD card plan's B2c, the take made whole on the stick (the owner's
+/// choice, 2026-11-25). Nothing is written but the take's file and its
+/// hole record; the drive the part is read from may be read-only.
+///
+/// The part is looked for in each of `parts` in turn (its recording file
+/// as the record names it, and where its drive's own recovery may have
+/// put it since), and taken from the first whose `frames` frames, from
+/// [`DATA_AT`], match the record's CRC-32C. Then it is copied over the
+/// zeros in the take's file a piece at a time (`pace` called before each
+/// piece written, so playback can come first; the folder synced first, so
+/// the finished take's checkpoint can't come back), the copy's own CRC checked
+/// again on the way (a part that reads differently the second time is
+/// taken back out: zeros written over it), the file synced, and only then
+/// the hole record removed and the folder synced. A cut at any point
+/// leaves the record, so the join runs again from the start; until then
+/// the take's first frames are zeros or the part's own frames.
+///
+/// The take's file must be the take the record names (its header's id
+/// and format) and hold the part's room. An I/O error on the take's
+/// drive is an error; one on the part's drive moves on to the next
+/// place.
+pub fn join(
+    fs: &mut dyn Fs,
+    dir: &Path,
+    stem: &str,
+    parts: &[PathBuf],
+    pace: &mut dyn FnMut(),
+) -> io::Result<Joined> {
+    let bad = |why: &str| io::Error::new(io::ErrorKind::InvalidData, why.to_string());
+    let record = hole_path(dir, stem);
+    let mut b = vec![0u8; SLOT];
+    if fs.read_at(&record, 0, &mut b)? != SLOT {
+        return Err(bad("its hole record is short"));
+    }
+    let h = Hole::decode(&b).ok_or_else(|| bad("its hole record is damaged"))?;
+    if fs.exists(&recording_path(dir, stem)) || fs.exists(&checkpoint_path(dir, stem)) {
+        return Ok(Joined::NotFinished);
+    }
+    let take = final_path(dir, stem);
+    let mut head = vec![0u8; DATA_AT as usize];
+    if fs.read_at(&take, 0, &mut head)? != head.len()
+        || header_format(&head) != Some(h.fmt)
+        || header_block(&head) != HeaderBlock::Clean(h.id)
+    {
+        return Err(bad("its file isn't the take its hole record names"));
+    }
+    let bytes = h.bytes();
+    if fs.len(&take)? < DATA_AT + bytes {
+        return Err(bad("its file is shorter than its hole"));
+    }
+    let mut buf = vec![0u8; JOIN_PIECE];
+    // The part's CRC, read through from `part`; None if it doesn't read.
+    let crc_of = |fs: &mut dyn Fs, part: &Path, buf: &mut [u8]| -> Option<u32> {
+        let (mut done, mut crc) = (0u64, 0u32);
+        while done < bytes {
+            let n = (bytes - done).min(buf.len() as u64) as usize;
+            if fs.read_at(part, DATA_AT + done, &mut buf[..n]).ok()? != n {
+                return None;
+            }
+            crc = crc32c::update(crc, &buf[..n]);
+            done += n as u64;
+        }
+        Some(crc)
+    };
+    let mut seen = false;
+    for part in parts {
+        if !fs.exists(part) {
+            continue;
+        }
+        match crc_of(fs, part, &mut buf) {
+            Some(c) if c == h.crc => {}
+            Some(_) => {
+                seen = true;
+                continue;
+            }
+            None => continue,
+        }
+        // The checkpoint's removal (the finish's last step, not synced)
+        // made to last first: a cut from here on can't bring it back over
+        // frames this changes, whose zeros its checks count.
+        fs.sync_dir(dir)?;
+        // The copy, checked again as it goes.
+        let (mut done, mut crc, mut read_whole) = (0u64, 0u32, true);
+        while done < bytes {
+            let n = (bytes - done).min(JOIN_PIECE as u64) as usize;
+            if fs.read_at(part, DATA_AT + done, &mut buf[..n]).ok() != Some(n) {
+                read_whole = false;
+                break;
+            }
+            crc = crc32c::update(crc, &buf[..n]);
+            pace();
+            fs.write_at(&take, DATA_AT + done, &buf[..n])?;
+            done += n as u64;
+        }
+        if !read_whole || crc != h.crc {
+            // It read differently this time: the zeros go back.
+            let zeros = vec![0u8; JOIN_PIECE];
+            let mut at = 0u64;
+            while at < done {
+                let n = (done - at).min(JOIN_PIECE as u64) as usize;
+                fs.write_at(&take, DATA_AT + at, &zeros[..n])?;
+                at += n as u64;
+            }
+            fs.sync(&take)?;
+            seen |= read_whole;
+            continue;
+        }
+        fs.sync(&take)?;
+        fs.remove(&record)?;
+        fs.sync_dir(dir)?;
+        return Ok(Joined::Whole(h.frames));
+    }
+    Ok(if seen {
+        Joined::Mismatch
+    } else {
+        Joined::NoPart
+    })
+}
+
 // ---- the writer ---------------------------------------------------------
 
 /// Why a take is at risk or stopped.

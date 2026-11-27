@@ -144,6 +144,8 @@ pub struct Status {
     pub dirty: bool,
     /// The write window's writable folder, the card's `MPFree` (`write=`).
     pub write: Option<PathBuf>,
+    /// exFAT's volume serial number (`serial=`, 8 hex digits).
+    pub serial: Option<u32>,
 }
 
 pub fn parse_status(text: &str) -> Option<Status> {
@@ -162,6 +164,9 @@ pub fn parse_status(text: &str) -> Option<Status> {
             "mount" if !v.is_empty() => s.mount = Some(PathBuf::from(v)),
             "dirty" => s.dirty = v == "yes",
             "write" if !v.is_empty() => s.write = Some(PathBuf::from(v)),
+            "serial" if v.len() == 8 && v.bytes().all(|c| c.is_ascii_hexdigit()) => {
+                s.serial = u32::from_str_radix(v, 16).ok()
+            }
             _ => {}
         }
     }
@@ -204,6 +209,10 @@ pub struct Card {
     /// window's refusal (not exFAT, not safely removed, not clean, its lock
     /// switch on), for the log.
     pub read_only: Option<String>,
+    /// Its filesystem's volume serial (exFAT's, as its window read it):
+    /// with the marker file in `MPFree/` it says which card this is
+    /// (`mpfree_stream::storage::CardMark`).
+    pub serial: Option<u32>,
 }
 
 impl Card {
@@ -496,6 +505,19 @@ impl Drop for SdCard {
 /// and its worker idle. Coming back within it finds the card still open.
 pub const PUT_AWAY: Duration = Duration::from_secs(30);
 
+/// How long an Eject waits for the pad player to let go of every file on
+/// the card (a take carrying on on the stick, a take that played from it,
+/// a copy from it) before closing it ([`Slot::eject`]): the window stops
+/// whatever still holds a file there at its close, which would be the pad
+/// player. Past that, the card stays open and the Eject says why.
+pub const EJECT_WAIT: Duration = Duration::from_secs(15);
+
+/// Lists this process's files open under a folder (the card's mount
+/// point); an error where that can't be known.
+type Held = Box<dyn Fn(&Path) -> std::io::Result<Vec<PathBuf>> + Send>;
+/// An Eject's thread: the close's answer, or the card still open and why.
+type Ejecting = thread::JoinHandle<Result<Result<String, String>, Box<(SdCard, String)>>>;
+
 /// What the Browser's SD card place hears from [`Slot::tick`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Heard {
@@ -508,6 +530,14 @@ pub enum Heard {
     /// It was open and isn't now: taken out, closed by the system, or put
     /// away here once nothing used it. Why, for the log.
     Closed(String),
+    /// Ejected ([`Slot::eject`]): closed for taking out, its window's last
+    /// word; or the close didn't finish, and why (it may not have closed
+    /// cleanly).
+    Ejected(Result<String, String>),
+    /// Not ejected: the pad player still held files on it after
+    /// [`EJECT_WAIT`] (how many, and the first). It stays open, and is
+    /// said open again ([`Heard::Open`]) after this.
+    NotEjected(String),
 }
 
 enum Opening {
@@ -528,6 +558,7 @@ pub struct Slot {
     opening: Option<std::sync::mpsc::Receiver<Opening>>,
     open: Option<SdCard>,
     closing: Option<thread::JoinHandle<Result<String, String>>>,
+    ejecting: Option<Ejecting>,
     unused_since: Option<Instant>,
     looked: Instant,
     heard: Vec<Heard>,
@@ -547,6 +578,7 @@ impl Slot {
             opening: None,
             open: None,
             closing: None,
+            ejecting: None,
             unused_since: None,
             looked: Instant::now(),
             heard: Vec::new(),
@@ -590,7 +622,8 @@ impl Slot {
             self.heard.push(Heard::Open(c.card().clone()));
             return;
         }
-        if self.opening.is_some() {
+        // Being ejected: its answer comes first.
+        if self.opening.is_some() || self.ejecting.is_some() {
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
@@ -617,11 +650,96 @@ impl Slot {
         }
     }
 
+    /// Eject: the card closed now, for taking out, once the pad player
+    /// holds no file on it (its own `/proc/self/fd`), waiting up to
+    /// [`EJECT_WAIT`]; in a thread. The caller first lets go of what it
+    /// can (the takes carry on on the stick, and those that played from it
+    /// let go once its opening is revoked). Then [`Slot::tick`] says
+    /// [`Heard::Ejected`], or [`Heard::NotEjected`] with the card still
+    /// open. Nothing open: nothing happens.
+    pub fn eject(&mut self) {
+        self.eject_with(
+            EJECT_WAIT,
+            Box::new(|root: &Path| mpfree_stream::storage::open_under(root)),
+        );
+    }
+
+    fn eject_with(&mut self, wait: Duration, held: Held) {
+        let Some(c) = self.open.take() else { return };
+        self.unused_since = None;
+        let timing = self.timing.clone();
+        let mount = c.card().mount.clone();
+        self.heard.push(Heard::Say(
+            "sd card: ejecting: waiting for MPFree to let go of its files on it".into(),
+        ));
+        let spawned = thread::Builder::new()
+            .name("sd-card-eject".into())
+            .spawn(move || {
+                let t0 = Instant::now();
+                loop {
+                    match held(&mount) {
+                        // Where open files can't be listed, it closes as a
+                        // put away does.
+                        Ok(v) if !v.is_empty() => {
+                            if t0.elapsed() >= wait {
+                                let why = format!(
+                                    "MPFree still had {} file{} open on it ({}) after {} s",
+                                    v.len(),
+                                    if v.len() == 1 { "" } else { "s" },
+                                    v[0].display(),
+                                    wait.as_secs()
+                                );
+                                return Err(Box::new((c, why)));
+                            }
+                            thread::sleep(Duration::from_millis(50));
+                        }
+                        _ => break,
+                    }
+                }
+                Ok(c.close(&timing))
+            });
+        match spawned {
+            Ok(h) => self.ejecting = Some(h),
+            Err(e) => self
+                .heard
+                .push(Heard::NotEjected(format!("its close couldn't start ({e})"))),
+        }
+    }
+
+    /// An Eject's answer, once its thread is done.
+    fn poll_ejecting(&mut self) {
+        if !self.ejecting.as_ref().is_some_and(|h| h.is_finished()) {
+            return;
+        }
+        let Some(h) = self.ejecting.take() else {
+            return;
+        };
+        match h.join() {
+            Ok(Ok(closed)) => self.heard.push(Heard::Ejected(closed)),
+            Ok(Err(held)) => {
+                let (c, why) = *held;
+                self.heard.push(Heard::NotEjected(why));
+                self.heard.push(Heard::Open(c.card().clone()));
+                self.open = Some(c);
+                self.looked = Instant::now();
+            }
+            Err(_) => self.heard.push(Heard::Ejected(Err(
+                "its close stopped before it finished".into()
+            ))),
+        }
+    }
+
+    /// An Eject is under way.
+    pub fn ejecting(&self) -> bool {
+        self.ejecting.is_some()
+    }
+
     /// Once a frame. `using` says whether anything shows or uses the card
     /// now (the browser shows, or its worker has jobs). What happened since
     /// the last tick, oldest first.
     pub fn tick(&mut self, using: bool) -> Vec<Heard> {
         self.poll_opening();
+        self.poll_ejecting();
         if self.closing.as_ref().is_some_and(|h| h.is_finished()) {
             if let Some(h) = self.closing.take() {
                 self.heard.push(Heard::Say(closed_line(h.join())));
@@ -732,6 +850,7 @@ fn open_card(s: &Status) -> Option<Card> {
         dirty: s.dirty,
         write: s.write.clone(),
         read_only: None,
+        serial: s.serial,
     })
 }
 
@@ -972,6 +1091,20 @@ mod tests {
         .unwrap();
         assert!(!s.dirty);
         assert!(parse_status("state=open\ndirty=yes\n").unwrap().dirty);
+        assert_eq!(s.serial, None);
+        // exFAT's volume serial, as its window says it: 8 hex digits.
+        let x = parse_status("state=open\nmount=/x\nserial=5EC01A2B\n").unwrap();
+        assert_eq!(open_card(&x).unwrap().serial, Some(0x5EC0_1A2B));
+        for bad in [
+            "serial=5EC01A2",
+            "serial=5EC01A2BB",
+            "serial=5EC01A2G",
+            "serial=+5EC01A2",
+            "serial=",
+        ] {
+            let st = parse_status(&format!("state=open\n{bad}\n")).unwrap();
+            assert_eq!(st.serial, None, "{bad}");
+        }
         assert_eq!(s.state, "open");
         assert_eq!(s.ask, "ab12");
         assert_eq!(s.fs, "vfat");
@@ -987,6 +1120,7 @@ mod tests {
             dirty: false,
             write: None,
             read_only: None,
+            serial: None,
         };
         assert_eq!(big.describe(), "exFAT, 63.9 GB");
         assert_eq!(new_word().len(), 32);
@@ -1248,6 +1382,85 @@ mod tests {
         assert!(heard.iter().any(|h| *h
             == Heard::Say("sd card: closed: Closed. Nothing was written to the card.".into())));
         assert!(svc.join().unwrap().len() >= 2);
+    }
+
+    /// Eject (B2c): the card closes only once the pad player has let go
+    /// of every file on it, at once, whatever uses it; it says so.
+    #[test]
+    fn an_eject_closes_the_card_once_nothing_is_open_on_it() {
+        let t = tmp("eject");
+        let p = paths(&t);
+        let svc = service(&t, Answer::Open);
+        let mut slot = Slot::new(p.clone(), quick(), Duration::from_secs(60));
+        slot.open();
+        tick_until(&mut slot, true, opened);
+        // Two files still open on it for the first looks (a take carrying
+        // on, one that played from it), then none.
+        let looks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let n = looks.clone();
+        let mount = t.0.join("card");
+        let close = p.close.clone();
+        slot.eject_with(
+            Duration::from_secs(2),
+            Box::new(move |root: &Path| {
+                assert_eq!(root, mount.as_path());
+                let k = n.fetch_add(1, Ordering::SeqCst);
+                assert!(!close.exists(), "not closed while a file is open");
+                Ok(if k < 3 {
+                    vec![root.join("a.wav"), root.join("b.wav")]
+                } else {
+                    Vec::new()
+                })
+            }),
+        );
+        assert!(slot.ejecting() && slot.open.is_none());
+        // Asked for meanwhile, it isn't opened again.
+        slot.open();
+        let heard = tick_until(&mut slot, true, |h| {
+            h.iter().any(|x| matches!(x, Heard::Ejected(_)))
+        });
+        assert!(
+            heard.iter().any(
+                |h| *h == Heard::Ejected(Ok("Closed. Nothing was written to the card.".into()))
+            ),
+            "{heard:?}"
+        );
+        assert!(!heard.iter().any(|h| matches!(h, Heard::Open(_))));
+        assert!(looks.load(Ordering::SeqCst) >= 4);
+        assert!(!slot.ejecting() && slot.open.is_none() && slot.opening.is_none());
+        svc.join().unwrap();
+    }
+
+    /// A file still open on the card past the wait: it isn't closed (its
+    /// window would stop the pad player), and it is said open again.
+    #[test]
+    fn an_eject_leaves_the_card_open_while_a_file_stays_open_on_it() {
+        let t = tmp("eject-held");
+        let p = paths(&t);
+        let _svc = service(&t, Answer::Open);
+        let mut slot = Slot::new(p.clone(), quick(), Duration::from_secs(60));
+        slot.open();
+        tick_until(&mut slot, true, opened);
+        slot.eject_with(
+            Duration::from_millis(200),
+            Box::new(|root: &Path| Ok(vec![root.join("Recordings/kept.wav")])),
+        );
+        let heard = tick_until(&mut slot, true, opened);
+        assert!(
+            matches!(&heard[..], [.., Heard::NotEjected(why), Heard::Open(_)]
+                if why.contains("1 file open on it") && why.contains("kept.wav")),
+            "{heard:?}"
+        );
+        assert!(slot.open.is_some() && !p.close.exists());
+        // Nothing open: ejected, where open files can't be listed too.
+        slot.eject_with(
+            Duration::from_millis(200),
+            Box::new(|_: &Path| Err(std::io::Error::other("no /proc"))),
+        );
+        let heard = tick_until(&mut slot, true, |h| {
+            h.iter().any(|x| matches!(x, Heard::Ejected(_)))
+        });
+        assert!(heard.iter().any(|h| matches!(h, Heard::Ejected(Ok(_)))));
     }
 
     fn closed_said(h: &[Heard]) -> bool {
@@ -1636,6 +1849,7 @@ mod tests {
                         assert!(held, "closed while not open: {now:?}");
                         held = false;
                     }
+                    Heard::Ejected(_) | Heard::NotEjected(_) => panic!("no eject asked: {h:?}"),
                     Heard::Say(_) => {}
                 }
             }

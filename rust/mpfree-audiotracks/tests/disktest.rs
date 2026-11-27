@@ -866,16 +866,21 @@ fn a_heat_run_keeps_the_cores_busy_until_the_temperature_settles_and_writes_noth
     assert!(text.contains("heat: stopped at 71.0 °C after "), "{text}");
     assert!(text.contains(": the stop is 70 °C"), "{text}");
 
-    // Still rising at the time limit.
+    // Still rising at the time limit. The stand-in zone warms by the clock,
+    // 8 °C a second from 55 °C (under 74 °C), not by a count of its own
+    // writes: the run keeps every core busy, so the warmer may wake only
+    // every few hundred ms on a big machine (CI's 36 cores starved a
+    // count-driven one to 0.4 °C in a window), and each write still says
+    // what the time says, well over 0.5 °C in any 0.5 s.
     let (th3, cpu3) = heat_stand_ins("heat-rising", "55000\n", None);
     let temp = th3.join("thermal_zone0/temp");
     let on = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let warmer = {
         let (on, temp) = (on.clone(), temp.clone());
         std::thread::spawn(move || {
-            let mut m = 55000;
+            let start = std::time::Instant::now();
             while on.load(std::sync::atomic::Ordering::Relaxed) {
-                m += 100;
+                let m = (55_000 + start.elapsed().as_millis() as u64 * 8).min(74_000);
                 let part = temp.with_extension("part");
                 std::fs::write(&part, format!("{m}\n")).unwrap();
                 std::fs::rename(&part, &temp).unwrap();

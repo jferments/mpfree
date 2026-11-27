@@ -2982,6 +2982,10 @@ impl Session {
             FromUi::OpenAudio(a) => self.tracks.open(*a),
             FromUi::AudioFiles(dir) => self.tracks.record_to(dir),
             FromUi::AudioDrive(lease) => self.tracks.own_drive(lease),
+            FromUi::CardUse => self.out.show(ToUi::CardUse(self.tracks.card_use())),
+            FromUi::StorageAsk => self
+                .out
+                .show(ToUi::StorageUse(Box::new(self.tracks.storage_use()))),
             FromUi::AudioSavedInto(dir) => self.tracks.saved_into(dir),
             FromUi::ExportAsk => {
                 // Nothing plays outside here, and every track plays the

@@ -37,6 +37,9 @@ pub const BUTTON: usize = 300;
 pub const SAVE_REPORT: usize = 400;
 /// `Tab(CLEAR_COPIES)`: Clear copies, on Memory's Audio MPFree made card.
 pub const CLEAR_COPIES: usize = 500;
+/// `Tab(FOOT)`: the picked system's own button, left of Save a report
+/// ([`StatusView::foot`]: Storage's Eject card).
+pub const FOOT: usize = 401;
 
 /// The head's height, and a system row's.
 const HEAD_H: i32 = 76;
@@ -132,6 +135,10 @@ pub struct StatusView {
     pub numbers: Vec<(String, String)>,
     /// Memory's Audio MPFree made card, under its numbers.
     pub made: Option<MadeAudio>,
+    /// The picked system's own button, at the foot of the cards panel
+    /// left of Save a report ("Eject card" on Storage while the SD card is
+    /// open, the SD card plan's B2c); None: none.
+    pub foot: Option<String>,
 }
 
 /// The page.
@@ -197,6 +204,15 @@ impl StatusPage {
     fn report_rect(r: Rect) -> Rect {
         let inner = Self::cards_area(r).inset(12);
         Rect::new(inner.right() - 200, inner.bottom() - 44, 200, 44)
+    }
+
+    /// The picked system's own button, left of Save a report, sized to its
+    /// words.
+    fn foot_rect(&self, r: Rect) -> Option<Rect> {
+        let words = self.view.foot.as_ref()?;
+        let save = Self::report_rect(r);
+        let w = 44 + 9 * words.chars().count() as i32;
+        Some(Rect::new(save.x - 12 - w, save.y, w, save.h))
     }
 
     /// The cards and numbers stop above Save a report.
@@ -527,6 +543,17 @@ impl Widget for StatusPage {
             t.button_ink(true),
             "Save a report",
         );
+        if let (Some(f), Some(words)) = (self.foot_rect(r), &v.foot) {
+            cx.canvas.fill_round_rect(f, t.round(10), t.raised);
+            cx.text(
+                FontId::Bold,
+                t.size_small,
+                f,
+                Align::Center,
+                t.button_ink(true),
+                words,
+            );
+        }
         if v.cards.is_empty() {
             let line = inner.take_top(36).0;
             let words = if v.now_only {
@@ -638,6 +665,9 @@ impl Widget for StatusPage {
         if self.clear_drawn.borrow().is_some_and(|c| c.contains(x, y)) {
             return Some(EventKind::Tab(CLEAR_COPIES));
         }
+        if self.foot_rect(r).is_some_and(|f| f.contains(x, y)) {
+            return Some(EventKind::Tab(FOOT));
+        }
         if let Some(i) =
             (0..self.view.systems.len()).find(|&i| Self::system_rect(r, i).contains(x, y))
         {
@@ -686,6 +716,9 @@ impl Widget for StatusPage {
                 Target::tap("clear-copies", CLEAR_COPIES, "Clear copies", c)
                     .class(crate::touch::Class::Secondary),
             );
+        }
+        if let (Some(f), Some(words)) = (self.foot_rect(r), &self.view.foot) {
+            out.push(Target::tap("foot", FOOT, words.clone(), f));
         }
         for (i, s) in self.view.systems.iter().enumerate() {
             out.push(
@@ -744,6 +777,7 @@ mod tests {
                     ..Card::default()
                 },
             ],
+            foot: Some("Eject card".into()),
             ..StatusView::default()
         });
         p
@@ -767,6 +801,22 @@ mod tests {
             fonts: &mut fonts,
         };
         p.paint(&mut cx, AREA);
+    }
+
+    /// The picked system's own button (Storage's Eject card) sits left of
+    /// Save a report, on the same line, apart from it; none without words.
+    #[test]
+    fn the_foot_button_sits_left_of_save_a_report() {
+        let mut p = page();
+        drawn(&p);
+        let f = p.foot_rect(AREA).expect("shown");
+        let save = StatusPage::report_rect(AREA);
+        assert_eq!((f.y, f.h), (save.y, save.h));
+        assert!(f.right() + 8 <= save.x && f.w >= 120, "{f:?} {save:?}");
+        assert!(f.x > StatusPage::cards_area(AREA).x);
+        p.view.foot = None;
+        assert!(p.foot_rect(AREA).is_none());
+        assert!(!p.targets(AREA).iter().any(|t| t.id == "foot"));
     }
 
     #[test]
@@ -798,6 +848,7 @@ mod tests {
                 "card-button" => EventKind::Tab(BUTTON + t.index),
                 "save-report" => EventKind::Tab(SAVE_REPORT),
                 "clear-copies" => EventKind::Tab(CLEAR_COPIES),
+                "foot" => EventKind::Tab(FOOT),
                 _ => EventKind::Tab(CARD + t.index),
             };
             assert_eq!(e, Some(want), "{}", t.id);

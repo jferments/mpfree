@@ -570,6 +570,27 @@ impl Side {
                 live &= self.let_go_of(tag.source, true, answer);
             }
         }
+        // Each card holds while takes play from its files (B2c): it isn't
+        // put away under them.
+        // Which, for what an Eject says goes quiet.
+        for (_, card) in &self.cards {
+            let playing: Vec<(u16, &str)> = self
+                .on_card
+                .iter()
+                .flatten()
+                .filter(|o| {
+                    !o.away
+                        && card_of(&self.cards, &o.path)
+                            .is_some_and(|c| c.insertion == card.insertion)
+                })
+                .map(|o| {
+                    let name = o.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    (o.take, name)
+                })
+                .collect();
+            card.handle.set_users(playing.len());
+            card.handle.set_playing(&playing);
+        }
         let mut tell = |r| live &= answer(FromStream::Problem(r));
         self.watch.admission(&self.c.admission(), &mut tell);
         self.watch.card_lost(lost, &mut tell);

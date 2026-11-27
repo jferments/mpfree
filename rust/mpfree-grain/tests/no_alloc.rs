@@ -97,7 +97,9 @@ fn grains_never_allocate() {
                 let k = (period / 250) as usize + i;
                 v.set_params(Params {
                     position: (k % 10) as f32 / 10.0,
-                    spray: 0.5,
+                    // No spray every third time, where steady stretch
+                    // (step 19) searches.
+                    spray: if k.is_multiple_of(3) { 0.0 } else { 0.5 },
                     size_ms: 5.0 + (k % 7) as f32 * 60.0,
                     density: 40.0 + (k % 5) as f32 * 80.0,
                     pitch: (k % 9) as f32 - 4.0,
@@ -165,6 +167,7 @@ fn grains_never_allocate() {
                         spray: (k % 2) as f32,
                     },
                     quality: Quality::from_index(k % 3),
+                    align: !k.is_multiple_of(2),
                 });
                 if k % 4 == 3 {
                     v.stop()

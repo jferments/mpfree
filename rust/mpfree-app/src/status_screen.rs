@@ -87,6 +87,60 @@ pub fn chip(look: ChipLook, cpu: Option<f64>, ram: Option<f64>, lit: bool) -> Ch
     .lit(lit)
 }
 
+/// What the audio tracks say about the drives for Storage's numbers (the
+/// SD card plan's B2c), asked for about once a second while it shows.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StorageUse {
+    /// The tracks whose takes wait for their first part from the SD card
+    /// that came out, by name.
+    pub parts: Vec<String>,
+    /// What uses the SD card now, as Eject card lists it.
+    pub using: Vec<crate::eject_card::Use>,
+    /// How many tracks are armed to record.
+    pub armed: usize,
+    /// Bytes a second the armed takes record (0 with none armed).
+    pub armed_bps: u64,
+    /// Seconds each armed track could record into memory if the drive
+    /// stopped taking them, with the memory free now.
+    pub memory_s: Option<f64>,
+}
+
+impl StorageUse {
+    /// "Vocals recording, Keys playing".
+    fn using_words(&self) -> String {
+        use crate::eject_card::Use;
+        self.using
+            .iter()
+            .map(|u| match u {
+                Use::Recording { track } => format!("{track} recording"),
+                Use::Playing { track, .. } => format!("{track} playing"),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// "2: Vocals, Guitar".
+    fn parts_words(&self) -> String {
+        format!("{}: {}", self.parts.len(), self.parts.join(", "))
+    }
+
+    /// Seconds of recording `free` bytes hold at the tracks armed now.
+    fn room_s(&self, free: u64) -> Option<f64> {
+        (self.armed_bps > 0).then(|| free as f64 / self.armed_bps as f64)
+    }
+}
+
+/// "about 3 h 40 min", "about 6 min", "under a minute".
+fn duration_words(s: f64) -> String {
+    let min = (s / 60.0).floor() as u64;
+    match min {
+        0 => "under a minute".to_string(),
+        1..=59 => format!("about {min} min"),
+        _ if min.is_multiple_of(60) => format!("about {} h", min / 60),
+        _ => format!("about {} h {} min", min / 60, min % 60),
+    }
+}
+
 /// What the screen thread reads besides the board: the head's meters and
 /// the systems' plain words.
 #[derive(Clone, Debug, Default)]
@@ -104,6 +158,12 @@ pub struct Readings {
     /// That drive is the SD card, not the stick: the takes record on the
     /// card's MPFree folder (the SD card plan's S2b, phase B2b).
     pub card: bool,
+    /// The SD card is open (read-only, or for saving): Storage offers
+    /// Eject card (B2c).
+    pub card_open: bool,
+    /// What the audio tracks last said about their drives, while Storage
+    /// shows ([`StorageUse`]).
+    pub storage: Option<StorageUse>,
     /// The MPC's temperature and processor clock at the last read (every
     /// 2 s, heat.rs).
     pub heat: Option<Heat>,
@@ -522,6 +582,12 @@ pub fn view(
                             line = format!("{line} · CPU {c:.0} %");
                         }
                     }
+                    // The SD card out: where recording went (B2c).
+                    if p.kind == &kinds::CARD_OUT {
+                        line = format!("{line} · recording on the stick");
+                    } else if p.kind == &kinds::CARD_OUT_STOPPED {
+                        line = format!("{line} · recording stopped");
+                    }
                     line
                 }
                 None => all_good_line(s.system, r, board),
@@ -545,17 +611,22 @@ pub fn view(
             tone: tone(p.kind.level).unwrap_or(Tone::Normal),
             now: p.is_now(),
             when: when(p, now),
-            what: p.kind.what.to_string(),
+            what: what(p, r),
             to_try: p.kind.to_try.to_string(),
             button: p.kind.action.map(|a| a.label().to_string()),
         })
         .collect();
-    let numbers = numbers(place.picked, r);
+    let stopped = board
+        .problems(System::Storage, Window::Now)
+        .iter()
+        .any(|p| p.kind == &kinds::CARD_OUT_STOPPED);
+    let numbers = numbers(place.picked, r, stopped);
     let made = r
         .made
         .as_ref()
         .filter(|_| place.picked == System::Memory)
         .map(made_audio);
+    let foot = (place.picked == System::Storage && r.card_open).then(|| "Eject card".to_string());
     StatusView {
         head,
         head_tone,
@@ -567,11 +638,41 @@ pub fn view(
         cards,
         numbers,
         made,
+        foot,
     }
 }
 
-/// A system's own numbers, under its cards.
-fn numbers(system: System, r: &Readings) -> Vec<(String, String)> {
+/// What happened, in the card's words: the kind's, but the SD card nearly
+/// full says how many minutes of recording are left at the tracks armed
+/// now, or that under 1 GB is (B2c).
+fn what(p: &ProblemView, r: &Readings) -> String {
+    if p.kind == &kinds::CARD_NEARLY_FULL && r.card {
+        let room = r
+            .storage
+            .as_ref()
+            .zip(r.stick)
+            .and_then(|(u, s)| u.room_s(s.free));
+        return match room.map(|s| (s / 60.0).floor() as u64) {
+            Some(1) => {
+                "About 1 minute of recording is left on the SD card at the tracks armed now."
+                    .to_string()
+            }
+            Some(0) => {
+                "Less than a minute of recording is left on the SD card at the tracks armed now."
+                    .to_string()
+            }
+            Some(m) => format!(
+                "About {m} minutes of recording are left on the SD card at the tracks armed now."
+            ),
+            None => "Less than 1 GB is left on the SD card.".to_string(),
+        };
+    }
+    p.kind.what.to_string()
+}
+
+/// A system's own numbers, under its cards. `stopped`: the SD card came
+/// out and the stick couldn't take recording over.
+fn numbers(system: System, r: &Readings, stopped: bool) -> Vec<(String, String)> {
     let mut out = Vec::new();
     match system {
         System::Sound => {
@@ -609,19 +710,56 @@ fn numbers(system: System, r: &Readings) -> Vec<(String, String)> {
             }
         }
         System::Storage => {
+            let none = StorageUse::default();
+            let u = r.storage.as_ref().unwrap_or(&none);
+            let out_card = !r.card && !u.parts.is_empty();
             if let Some(s) = r.stick {
-                let (name, label) = if r.card {
-                    ("SD card", "The SD card")
+                let (name, label, on) = if r.card {
+                    ("SD card", "The SD card", "the card")
                 } else {
-                    ("USB stick", "The stick")
+                    ("USB stick", "The stick", "the stick")
                 };
-                out.push(("Takes recorded on".to_string(), name.to_string()));
+                // Where the takes go; with the SD card out, until it is
+                // back, and the takes waiting for their part from it.
+                let to = match (out_card, stopped) {
+                    (true, true) => "none: the card is out and the stick is full",
+                    (true, false) => "USB stick, until the card is back",
+                    _ => name,
+                };
+                out.push(("Takes recorded on".to_string(), to.to_string()));
+                if out_card {
+                    let what = if stopped {
+                        "Takes kept on the card"
+                    } else {
+                        "Takes with a part on the card"
+                    };
+                    out.push((what.to_string(), u.parts_words()));
+                }
+                // How long the armed tracks can record: on the drive, and
+                // in memory should the drive stop taking them.
+                if let (Some(room), false) = (u.room_s(s.free), stopped) {
+                    let mut words = format!("{} on {on}", duration_words(room));
+                    if let Some(m) = u.memory_s {
+                        words = format!("{words}, {} s a track in memory", m.floor() as u64);
+                    }
+                    let what = match u.armed {
+                        0 => "Recording room".to_string(),
+                        1 => "Recording room, 1 track armed".to_string(),
+                        n => format!("Recording room, {n} tracks armed"),
+                    };
+                    out.push((what, words));
+                }
+                if !u.using.is_empty() {
+                    out.push(("Using the card now".to_string(), u.using_words()));
+                }
                 let on = drive_name(r);
                 out.push((format!("Free on the {on}"), bytes(s.free)));
                 out.push((format!("{label}'s size"), bytes(s.total)));
                 if !s.writable {
                     out.push((label.to_string(), "read only".to_string()));
                 }
+            } else if !u.using.is_empty() {
+                out.push(("Using the card now".to_string(), u.using_words()));
             }
         }
         System::Mpc => {
@@ -737,6 +875,8 @@ mod tests {
             free: Some(1_100_000_000),
             stick: None,
             card: false,
+            card_open: true,
+            storage: None,
             heat: None,
             engines: None,
             tracks: None,
@@ -744,6 +884,7 @@ mod tests {
         };
         let v = view(&b, &Watch::default(), &r, &mut place, t);
         assert_eq!(v.head, "The sound dropped out");
+        assert_eq!(v.foot, None, "Eject card is Storage's");
         assert_eq!(v.head_tone, Tone::Bad);
         assert_eq!(v.counts, "2 problems now: tap a system to see why.");
         assert_eq!(v.systems.len(), 9);
@@ -756,8 +897,21 @@ mod tests {
         assert!(v.cards[0].now);
         assert_eq!(v.meters[0].0, "CPU");
         assert_eq!(v.meters[0].3, Tone::Bad);
+        // Storage, with the SD card open: its Eject card button; with
+        // the card closed, none.
+        place.step(2);
+        let v = view(&b, &Watch::default(), &r, &mut place, t);
+        assert_eq!(v.foot.as_deref(), Some("Eject card"));
+        let closed = Readings {
+            card_open: false,
+            ..r.clone()
+        };
+        assert_eq!(
+            view(&b, &Watch::default(), &closed, &mut place, t).foot,
+            None
+        );
         // Step to MIDI and sync: the port's card.
-        for _ in 0..4 {
+        for _ in 0..2 {
             place.step(1);
         }
         let v = view(&b, &Watch::default(), &r, &mut place, t);
@@ -866,6 +1020,181 @@ mod tests {
         b.tick(later);
         let v = view(&b, &Watch::default(), &r, &mut place, later);
         assert_eq!(v.meters[1].3, Tone::Warn);
+    }
+
+    /// Storage with takes on the SD card (B2c, screens 7d and 7e): the
+    /// recording room at the tracks armed, on the card and in memory, and
+    /// what uses the card; nearly full says the minutes left.
+    #[test]
+    fn storage_says_the_recording_room_and_what_uses_the_card() {
+        use crate::eject_card::Use;
+        let t = Instant::now();
+        let mut place = Place {
+            picked: System::Storage,
+            ..Place::default()
+        };
+        // 8 stereo tracks armed at 44.1 kHz: 2 822 400 bytes a second.
+        let u = StorageUse {
+            parts: Vec::new(),
+            using: vec![
+                Use::Recording {
+                    track: "Vocals".into(),
+                },
+                Use::Playing {
+                    track: "Keys".into(),
+                    file: "Rhodes.wav".into(),
+                },
+            ],
+            armed: 8,
+            armed_bps: 2_822_400,
+            memory_s: Some(7.5),
+        };
+        let r = Readings {
+            card: true,
+            card_open: true,
+            stick: Some(Room {
+                writable: true,
+                free: 41_200_000_000,
+                total: 63_900_000_000,
+            }),
+            storage: Some(u.clone()),
+            ..Readings::default()
+        };
+        let v = view(&Board::new(), &Watch::default(), &r, &mut place, t);
+        assert_eq!(v.systems[2].line, "41.2 GB free on the SD card");
+        assert_eq!(
+            v.numbers,
+            [
+                ("Takes recorded on".to_string(), "SD card".to_string()),
+                (
+                    "Recording room, 8 tracks armed".to_string(),
+                    "about 4 h 3 min on the card, 7 s a track in memory".to_string()
+                ),
+                (
+                    "Using the card now".to_string(),
+                    "Vocals recording, Keys playing".to_string()
+                ),
+                ("Free on the SD card".to_string(), "41.2 GB".to_string()),
+                ("The SD card's size".to_string(), "63.9 GB".to_string()),
+            ]
+        );
+        assert_eq!(v.foot.as_deref(), Some("Eject card"));
+        // Nearly full: the minutes left at the tracks armed now.
+        let r = Readings {
+            stick: Some(Room {
+                writable: true,
+                free: 1_100_000_000,
+                total: 63_900_000_000,
+            }),
+            ..r
+        };
+        let mut b = board_with(&[Report::began(&kinds::CARD_NEARLY_FULL)], t);
+        let t = t + Duration::from_secs(2);
+        b.tick(t);
+        let v = view(&b, &Watch::default(), &r, &mut place, t);
+        assert_eq!(
+            v.cards[0].what,
+            "About 6 minutes of recording are left on the SD card at the tracks armed now."
+        );
+        assert_eq!(
+            v.numbers[1].1,
+            "about 6 min on the card, 7 s a track in memory"
+        );
+        // Nothing armed: no room to give, and nearly full says the space.
+        let r = Readings {
+            storage: Some(StorageUse {
+                armed: 0,
+                armed_bps: 0,
+                memory_s: None,
+                using: Vec::new(),
+                ..u
+            }),
+            ..r
+        };
+        let v = view(&b, &Watch::default(), &r, &mut place, t);
+        assert_eq!(v.cards[0].what, "Less than 1 GB is left on the SD card.");
+        assert_eq!(v.numbers.len(), 3);
+    }
+
+    /// The SD card came out while takes recorded on it (B2c, screens 6a
+    /// and 6b): Storage says so on its line, where the takes go now and
+    /// which wait for their part from the card; red once the stick
+    /// couldn't take recording over.
+    #[test]
+    fn a_card_that_came_out_says_where_recording_went() {
+        let t = Instant::now();
+        let mut place = Place {
+            picked: System::Storage,
+            ..Place::default()
+        };
+        let r = Readings {
+            stick: Some(Room {
+                writable: true,
+                free: 12_400_000_000,
+                total: 15_900_000_000,
+            }),
+            storage: Some(StorageUse {
+                parts: vec!["Vocals".into(), "Guitar".into()],
+                armed: 2,
+                armed_bps: 705_600,
+                memory_s: Some(30.0),
+                ..StorageUse::default()
+            }),
+            ..Readings::default()
+        };
+        let mut b = board_with(&[Report::began(&kinds::CARD_OUT)], t);
+        let t = t + Duration::from_secs(2);
+        b.tick(t);
+        let v = view(&b, &Watch::default(), &r, &mut place, t);
+        assert_eq!(v.systems[2].line, "SD card out · recording on the stick");
+        assert_eq!(v.systems[2].tone, Some(Tone::Warn));
+        assert_eq!(v.cards[0].title, "The SD card came out");
+        assert_eq!(
+            v.numbers,
+            [
+                (
+                    "Takes recorded on".to_string(),
+                    "USB stick, until the card is back".to_string()
+                ),
+                (
+                    "Takes with a part on the card".to_string(),
+                    "2: Vocals, Guitar".to_string()
+                ),
+                (
+                    "Recording room, 2 tracks armed".to_string(),
+                    "about 4 h 52 min on the stick, 30 s a track in memory".to_string()
+                ),
+                ("Free on the stick".to_string(), "12.4 GB".to_string()),
+                ("The stick's size".to_string(), "15.9 GB".to_string()),
+            ]
+        );
+        assert_eq!(v.foot, None, "nothing to eject");
+        // The stick couldn't take over: red, and no room to give.
+        let mut b = board_with(&[Report::began(&kinds::CARD_OUT_STOPPED)], t);
+        b.tick(t + Duration::from_secs(2));
+        let v = view(
+            &b,
+            &Watch::default(),
+            &r,
+            &mut place,
+            t + Duration::from_secs(2),
+        );
+        assert_eq!(v.systems[2].line, "SD card out · recording stopped");
+        assert_eq!(v.systems[2].tone, Some(Tone::Bad));
+        assert_eq!(
+            v.numbers[..2],
+            [
+                (
+                    "Takes recorded on".to_string(),
+                    "none: the card is out and the stick is full".to_string()
+                ),
+                (
+                    "Takes kept on the card".to_string(),
+                    "2: Vocals, Guitar".to_string()
+                ),
+            ]
+        );
+        assert_eq!(v.numbers.len(), 4);
     }
 
     /// Sound's numbers say where the sound's time goes, engine by engine,

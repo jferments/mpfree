@@ -1373,7 +1373,14 @@ class StaticTests(unittest.TestCase):
                     # window, S2b) read-only but for its MPFree folder, where only the audio tracks write (above).
                     ("mpfree-app/sd_card.rs", "match fs::remove_file(&tmp) {"),
                     ("mpfree-app/sd_card.rs", "fs::rename(&tmp, path)"),
-                    ("mpfree-app/sd_card.rs", "let _ = fs::remove_file(&paths.request);")} \
+                    ("mpfree-app/sd_card.rs", "let _ = fs::remove_file(&paths.request);"),
+                    # The SD card's marker (storage.rs make_marker, the SD card plan's B2c4): MPFree/.mpfree-card
+                    # holding a random id, made once, before any take records on the card, in the folder the
+                    # write window gives as writable (card_takes.rs passes the card's MPFree folder): written
+                    # whole to .mpfree-card.new there, synced, renamed into place, the folder synced. Made only
+                    # when no marker is there (a damaged one is an error, never written over); kept from then on.
+                    ("mpfree-stream/storage.rs", "let mut f = File::create(&new)?;"),
+                    ("mpfree-stream/storage.rs", "std::fs::rename(&new, folder.join(MARKER))?;")} \
                    | set(LIBRARY_NEEDLES) | set(PLUGIN_STORE_NEEDLES)
         for name, code in self.program_sources():
             for line in code.splitlines():

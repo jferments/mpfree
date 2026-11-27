@@ -14,10 +14,10 @@ use mpfree_stream::crc32c;
 use mpfree_stream::format;
 use mpfree_stream::fsio::Fs;
 use mpfree_stream::rec::{
-    checkpoint_path, final_path, hole_path, recording_path, stem, Hole, Meta, RecFormat, RecId,
-    Take, TakeState, Why, HOLE_PATH_MAX,
+    checkpoint_path, final_path, hole_path, join, recording_path, stem, Hole, Joined, Meta,
+    RecFormat, RecId, Take, TakeState, Why, DATA_AT, HOLE_PATH_MAX,
 };
-use mpfree_stream::recover::{check_whole, recover, Found};
+use mpfree_stream::recover::{check_whole, checked, recover, Found};
 use mpfree_stream::testkit::{played, Cut, Damage, FakeClock, ModelStick, Names};
 use mpfree_stream::writer::{Gate, TakeNo, Writer, WriterConfig};
 
@@ -74,16 +74,23 @@ fn stored(fmt: RecFormat, samples: &[f32]) -> Vec<u8> {
     out
 }
 
-/// The card and the stick: each path goes to the drive it is on.
+/// The card and the stick: each path goes to the drive it is on. The card
+/// can be pulled after its `pull_after`th operation.
 #[derive(Clone, Debug, Default)]
 struct Drives {
     card: ModelStick,
     stick: ModelStick,
+    pull_after: Option<u64>,
+    /// Reads of the card allowed before it is pulled.
+    card_reads: Option<u64>,
 }
 
 impl Drives {
     fn on(&mut self, path: &Path) -> &mut ModelStick {
         if path.starts_with("/card") {
+            if self.pull_after.is_some_and(|n| self.card.ops >= n) {
+                self.card.pulled = true;
+            }
             &mut self.card
         } else {
             &mut self.stick
@@ -99,6 +106,13 @@ impl Fs for Drives {
         self.on(path).write_at(path, at, bytes)
     }
     fn read_at(&mut self, path: &Path, at: u64, buf: &mut [u8]) -> io::Result<usize> {
+        if path.starts_with("/card") {
+            match &mut self.card_reads {
+                Some(0) => self.card.pulled = true,
+                Some(n) => *n -= 1,
+                None => {}
+            }
+        }
         self.on(path).read_at(path, at, buf)
     }
     fn len(&mut self, path: &Path) -> io::Result<u64> {
@@ -612,5 +626,399 @@ fn the_writer_carries_a_take_on_tries_again_until_it_can_and_finishes_it_there()
     assert!(
         !w.carry_on(TakeNo(9), &stick(), CARD_ID, SERIAL),
         "no such take"
+    );
+}
+
+/// Arm on the card and record `frames`, with a checkpoint every third
+/// write, then stop and finish; whenever the card is gone the take carries
+/// on on the stick. None when arming on the card failed.
+fn take_with_a_pull(d: &mut Drives, fmt: RecFormat, frames: u64) -> Option<Take> {
+    let mut t = Take::arm(
+        d,
+        &card(),
+        "Take 3",
+        take_id(),
+        fmt,
+        Meta::default(),
+        1 << 22,
+    )
+    .ok()?;
+    let gone = |t: &Take| matches!(t.state(), TakeState::AtRisk(Why::Gone));
+    let mut at = 0;
+    let mut writes = 0;
+    while at < frames {
+        let n = 1024.min(frames - at);
+        assert_eq!(t.push(&audio(fmt, at, n)), n as usize);
+        at += n;
+        t.write_ready(d);
+        writes += 1;
+        if writes % 3 == 0 {
+            t.checkpoint(d);
+        }
+        if gone(&t) {
+            assert!(t.carry_on(d, &stick(), CARD_ID, SERIAL).unwrap());
+        }
+    }
+    t.stop();
+    for _ in 0..4 {
+        if t.finish(d) {
+            break;
+        }
+        // Gives false once the final record is on the card: the take is
+        // whole there, and the card's recovery finishes it.
+        if gone(&t) && !t.carry_on(d, &stick(), CARD_ID, SERIAL).unwrap() {
+            break;
+        }
+    }
+    Some(t)
+}
+
+/// `got` is `want`'s audio: exactly for float, to the 24-bit step else.
+fn same_audio(fmt: RecFormat, got: &[f32], want: &[f32], what: &str) {
+    assert_eq!(got.len(), want.len(), "{what}");
+    if fmt.float {
+        assert!(got == want, "{what}");
+    } else {
+        let worst = got
+            .iter()
+            .zip(want)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
+        assert!(worst < 2.0 / 8_388_608.0, "{what}: {worst}");
+    }
+}
+
+#[test]
+fn a_card_pulled_after_any_step_keeps_what_its_hole_record_says_and_no_frame_is_lost() {
+    // The fault tests for B2c: the card is pulled after each of its
+    // operations in turn (a pull is a power cut to the card), and comes
+    // back every way a cut can leave it.
+    let backs = [
+        (Cut::Lost, Names::Landed),
+        (Cut::Landed, Names::Landed),
+        (Cut::Torn(3), Names::LastOnly),
+        (Cut::Lost, Names::Lost),
+    ];
+    for (fmt, frames) in [
+        (STEREO_FLOAT, 5 * 8192 + 300),
+        (MONO_24, 4 * unit(MONO_24) + 77),
+    ] {
+        let mut whole = Drives::default();
+        let t = take_with_a_pull(&mut whole, fmt, frames).unwrap();
+        assert_eq!((t.state(), t.dir()), (TakeState::Saved, card().as_path()));
+        let ops = whole.card.ops;
+        assert!(ops > 20, "{ops}");
+        let ch = usize::from(fmt.channels);
+        let all = audio(fmt, 0, frames);
+        let s = name();
+        let (mut on_card, mut carried, mut holes, mut whole_there) = (0, 0, 0, 0);
+        for pull_after in 0..=ops {
+            let what = format!("{fmt:?}, the card pulled after operation {pull_after}");
+            let mut d = Drives {
+                pull_after: Some(pull_after),
+                ..Drives::default()
+            };
+            let Some(t) = take_with_a_pull(&mut d, fmt, frames) else {
+                assert!(d.stick.names().is_empty(), "{what}: arming failed");
+                continue;
+            };
+            if t.state() == TakeState::Saved && t.dir() == card() {
+                // Finished before the pull: it stays finished on the card.
+                on_card += 1;
+                assert!(d.stick.names().is_empty(), "{what}");
+                for (how, names) in backs {
+                    let mut back = d.card.cut(how, names, Damage::default());
+                    let (l, got) = read_wav(&mut back, &final_path(&card(), &s));
+                    assert_eq!(l.frames, frames, "{what}, {how:?}");
+                    same_audio(fmt, &got, &all, &what);
+                }
+            } else if t.state() == TakeState::Saved {
+                // Carried on: the stick holds the whole take's length,
+                // zeros for the card's part and then every frame after it.
+                carried += 1;
+                assert_eq!(t.dir(), stick(), "{what}");
+                let c = t.hole();
+                let (l, got) = read_wav(&mut d, &t.final_path());
+                assert_eq!(l.frames, frames, "{what}");
+                let split = c as usize * ch;
+                assert!(got[..split].iter().all(|&x| x == 0.0), "{what}");
+                same_audio(fmt, &got[split..], &all[split..], &what);
+                let mut left = vec![final_path(&stick(), &s)];
+                if c > 0 {
+                    holes += 1;
+                    left.push(hole_path(&stick(), &s));
+                    let h = read_hole(&mut d);
+                    assert_eq!(h.frames, c, "{what}");
+                    assert_eq!(h.from, recording_path(&card(), &s), "{what}");
+                    // However the card comes back, it holds the part the
+                    // record names, to the byte its check covers.
+                    for (how, names) in backs {
+                        let mut back = d.card.cut(how, names, Damage::default());
+                        let mut b = vec![0u8; h.bytes() as usize];
+                        let n = back.read_at(&h.from, DATA_AT, &mut b);
+                        assert_eq!(n.ok(), Some(b.len()), "{what}, {how:?} {names:?}");
+                        assert_eq!(crc32c::of(&b), h.crc, "{what}, {how:?} {names:?}");
+                    }
+                }
+                left.sort();
+                assert_eq!(d.stick.names(), left, "{what}: nothing else left");
+            } else {
+                // The final record reached the card before the pull: the
+                // take is whole there, and the card's recovery finishes it.
+                whole_there += 1;
+                assert!(matches!(t.state(), TakeState::AtRisk(Why::Gone)), "{what}");
+                assert!(d.stick.names().is_empty(), "{what}");
+                for (how, names) in backs {
+                    let mut back = d.card.cut(how, names, Damage::default());
+                    recover(&mut back, &card()).unwrap();
+                    let (l, got) = read_wav(&mut back, &final_path(&card(), &s));
+                    assert_eq!(l.frames, frames, "{what}, {how:?} {names:?}");
+                    same_audio(fmt, &got, &all, &what);
+                }
+            }
+        }
+        assert!(on_card >= 1 && whole_there >= 1, "{on_card} {whole_there}");
+        assert!(
+            holes > ops as usize / 2,
+            "most pulls cut a take: {holes} of {ops}"
+        );
+        assert!(carried >= holes);
+    }
+}
+
+/// A take that carried on: `before` frames on the card, pulled, carried
+/// on and recorded to `frames` on the stick, finished there; then the card
+/// back, as a pull leaves it. The take's committed frames on the card.
+fn carried_and_finished(d: &mut Drives, fmt: RecFormat, before: u64, frames: u64) -> u64 {
+    let mut t = pulled_mid_take(d, fmt, before);
+    let c = t.committed();
+    assert!(t.carry_on(d, &stick(), CARD_ID, SERIAL).unwrap());
+    let mut at = t.captured();
+    while at < frames {
+        let n = 1024.min(frames - at);
+        assert_eq!(t.push(&audio(fmt, at, n)), n as usize);
+        at += n;
+        t.write_ready(d);
+    }
+    t.stop();
+    assert!(t.finish(d));
+    d.card = d.card.cut(Cut::Lost, Names::Landed, Damage::default());
+    c
+}
+
+/// The take's audio on the stick: all of it, as recorded, after the join.
+fn whole_on_the_stick(d: &mut Drives, fmt: RecFormat, frames: u64, what: &str) {
+    let (l, got) = read_wav(d, &final_path(&stick(), &name()));
+    assert_eq!(l.frames, frames, "{what}");
+    same_audio(fmt, &got, &audio(fmt, 0, frames), what);
+}
+
+fn part_on_the_card() -> Vec<PathBuf> {
+    vec![recording_path(&card(), &name())]
+}
+
+#[test]
+fn a_take_that_carried_on_is_made_whole_on_the_stick_once_its_card_is_back() {
+    for fmt in [STEREO_FLOAT, MONO_24] {
+        let mut d = Drives::default();
+        let frames = 9 * unit(fmt) + 123;
+        let c = carried_and_finished(&mut d, fmt, 3 * unit(fmt) + 500, frames);
+        let card_ops = d.card.ops;
+        let mut paced = 0;
+        let j = join(&mut d, &stick(), &name(), &part_on_the_card(), &mut || {
+            paced += 1
+        });
+        assert_eq!(j.unwrap(), Joined::Whole(c), "{fmt:?}");
+        assert!(paced >= 1, "playback asked before each piece written");
+        assert!(!d.stick.exists(&hole_path(&stick(), &name())));
+        whole_on_the_stick(&mut d, fmt, frames, &format!("{fmt:?}"));
+        assert_eq!(d.card.ops, card_ops, "nothing written to the card");
+        assert_eq!(
+            d.stick.names(),
+            vec![final_path(&stick(), &name())],
+            "only the take is left"
+        );
+    }
+}
+
+#[test]
+fn a_part_that_doesnt_match_or_isnt_there_is_never_joined() {
+    let fmt = STEREO_FLOAT;
+    let frames = 6 * 8192;
+    let zeros_still = |d: &mut Drives, c: u64, what: &str| {
+        let (_, got) = read_wav(d, &final_path(&stick(), &name()));
+        assert!(got[..c as usize * 2].iter().all(|&x| x == 0.0), "{what}");
+        assert!(d.stick.exists(&hole_path(&stick(), &name())), "{what}");
+    };
+    // A byte changed in the card's part.
+    let mut d = Drives::default();
+    let c = carried_and_finished(&mut d, fmt, 2 * 8192 + 10, frames);
+    let rec = recording_path(&card(), &name());
+    let mut b = d.card.bytes(&rec).unwrap().to_vec();
+    b[DATA_AT as usize + 777] ^= 0x40;
+    d.card.put(&rec, &b);
+    let j = join(&mut d, &stick(), &name(), &part_on_the_card(), &mut || {});
+    assert_eq!(j.unwrap(), Joined::Mismatch);
+    zeros_still(&mut d, c, "a changed byte");
+    // Not there at all, or on a card that reads nothing.
+    let mut d = Drives::default();
+    let c = carried_and_finished(&mut d, fmt, 2 * 8192 + 10, frames);
+    let elsewhere = [PathBuf::from("/card/MPFree/Recordings/nothing.wav")];
+    let j = join(&mut d, &stick(), &name(), &elsewhere, &mut || {});
+    assert_eq!(j.unwrap(), Joined::NoPart);
+    zeros_still(&mut d, c, "not there");
+    d.card.pulled = true;
+    let j = join(&mut d, &stick(), &name(), &part_on_the_card(), &mut || {});
+    assert_eq!(j.unwrap(), Joined::NoPart);
+    zeros_still(&mut d, c, "the card out");
+    // Where the card's own recovery put it: the second place given.
+    d.card.pulled = false;
+    let kept = PathBuf::from("/card/MPFree/Recordings").join(format!("{}.wav", name()));
+    d.card.rename(&rec, &kept).unwrap();
+    let places = [rec.clone(), kept];
+    let j = join(&mut d, &stick(), &name(), &places, &mut || {});
+    assert_eq!(j.unwrap(), Joined::Whole(c));
+    whole_on_the_stick(&mut d, fmt, frames, "from where recovery kept it");
+}
+
+#[test]
+fn a_take_still_recording_on_the_stick_waits_to_be_joined() {
+    let mut d = Drives::default();
+    let mut t = pulled_mid_take(&mut d, STEREO_FLOAT, 2 * 8192 + 10);
+    assert!(t.carry_on(&mut d, &stick(), CARD_ID, SERIAL).unwrap());
+    d.card = d.card.cut(Cut::Lost, Names::Landed, Damage::default());
+    let j = join(&mut d, &stick(), &name(), &part_on_the_card(), &mut || {});
+    assert_eq!(j.unwrap(), Joined::NotFinished);
+    assert!(d.stick.exists(&hole_path(&stick(), &name())));
+    // The take on the stick isn't the one the record names.
+    t.stop();
+    assert!(t.finish(&mut d));
+    let fin = final_path(&stick(), &name());
+    let mut b = d.stick.bytes(&fin).unwrap().to_vec();
+    let at = b.windows(16).position(|w| w == &take_id().0[..]).unwrap();
+    b[at] ^= 1;
+    d.stick.put(&fin, &b);
+    let j = join(&mut d, &stick(), &name(), &part_on_the_card(), &mut || {});
+    assert_eq!(j.unwrap_err().kind(), io::ErrorKind::InvalidData);
+}
+
+#[test]
+fn a_card_pulled_during_the_join_leaves_the_take_as_it_was_until_it_is_back() {
+    // A part longer than one piece read: 20 units of stereo float.
+    let fmt = STEREO_FLOAT;
+    let frames = 24 * 8192;
+    for reads in 0..5 {
+        let mut d = Drives::default();
+        let c = carried_and_finished(&mut d, fmt, 20 * 8192 + 10, frames);
+        assert!(c * 8 > 1 << 20, "{c}");
+        d.card_reads = Some(reads);
+        let what = format!("the card pulled after {reads} reads");
+        let j = join(&mut d, &stick(), &name(), &part_on_the_card(), &mut || {});
+        if d.card.pulled {
+            assert_eq!(j.unwrap(), Joined::NoPart, "{what}");
+            let (_, got) = read_wav(&mut d, &final_path(&stick(), &name()));
+            assert!(got[..c as usize * 2].iter().all(|&x| x == 0.0), "{what}");
+            assert!(d.stick.exists(&hole_path(&stick(), &name())), "{what}");
+            // Back again.
+            d.card = d.card.cut(Cut::Lost, Names::Landed, Damage::default());
+            d.card_reads = None;
+            let j = join(&mut d, &stick(), &name(), &part_on_the_card(), &mut || {});
+            assert_eq!(j.unwrap(), Joined::Whole(c), "{what}");
+        } else {
+            assert_eq!(j.unwrap(), Joined::Whole(c), "{what}");
+        }
+        whole_on_the_stick(&mut d, fmt, frames, &what);
+    }
+}
+
+#[test]
+fn a_cut_on_the_stick_during_the_join_leaves_it_to_run_again() {
+    let fmt = STEREO_FLOAT;
+    let frames = 24 * 8192;
+    let mut whole = Drives::default();
+    let c = carried_and_finished(&mut whole, fmt, 20 * 8192 + 10, frames);
+    let base = whole.stick.ops;
+    assert_eq!(
+        join(
+            &mut whole,
+            &stick(),
+            &name(),
+            &part_on_the_card(),
+            &mut || {}
+        )
+        .unwrap(),
+        Joined::Whole(c)
+    );
+    let ops = whole.stick.ops - base;
+    assert!(
+        ops >= 4,
+        "two pieces, a sync, the record removed, the folder synced: {ops}"
+    );
+    let ch = 2usize;
+    let all = audio(fmt, 0, frames);
+    let mut again = 0;
+    for k in 0..ops {
+        for (how, names) in [
+            (Cut::Lost, Names::Landed),
+            (Cut::Landed, Names::Landed),
+            (Cut::Torn(3), Names::LastOnly),
+            (Cut::Lost, Names::Lost),
+        ] {
+            let what = format!("a cut after the join's operation {k} ({how:?}, {names:?})");
+            let mut d = Drives::default();
+            carried_and_finished(&mut d, fmt, 20 * 8192 + 10, frames);
+            d.stick.cut_after = Some(base + k);
+            assert!(
+                join(&mut d, &stick(), &name(), &part_on_the_card(), &mut || {}).is_err(),
+                "{what}"
+            );
+            let mut after = Drives {
+                card: d.card.clone(),
+                stick: d.stick.cut(how, names, Damage::default()),
+                ..Drives::default()
+            };
+            if after.stick.exists(&checkpoint_path(&stick(), &name())) {
+                // The finish's checkpoint came back (the cut came before
+                // the join made its removal last): the next start's
+                // recovery finishes the take, its zeros untouched.
+                let found = recover(&mut after.stick, &stick()).unwrap();
+                match &found[..] {
+                    [Found::Unchecked { path, record, .. }] => {
+                        assert!(
+                            check_whole(&mut after.stick, path, record).unwrap(),
+                            "{what}"
+                        );
+                        checked(&mut after.stick, &stick(), &name()).unwrap();
+                    }
+                    [Found::Finished { .. }] => {}
+                    other => panic!("{what}: {other:?}"),
+                }
+            }
+            let (l, got) = read_wav(&mut after, &final_path(&stick(), &name()));
+            assert_eq!(l.frames, frames, "{what}");
+            let split = c as usize * ch;
+            same_audio(fmt, &got[split..], &all[split..], &what);
+            if after.stick.exists(&hole_path(&stick(), &name())) {
+                // Each frame of the hole is still zeros or already the
+                // card's own; the join runs again and makes it whole.
+                for (i, (&g, &w)) in got[..split].iter().zip(&all[..split]).enumerate() {
+                    assert!(g == 0.0 || g == w, "{what}: sample {i}");
+                }
+                let j = join(
+                    &mut after,
+                    &stick(),
+                    &name(),
+                    &part_on_the_card(),
+                    &mut || {},
+                );
+                assert_eq!(j.unwrap(), Joined::Whole(c), "{what}");
+                again += 1;
+            }
+            whole_on_the_stick(&mut after, fmt, frames, &what);
+        }
+    }
+    assert!(
+        again as u64 >= 3 * ops,
+        "most cuts leave it to run again: {again}"
     );
 }

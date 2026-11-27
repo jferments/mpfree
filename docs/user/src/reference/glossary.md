@@ -6,6 +6,8 @@ checked: 2026-11-19 f0b39161
 
 # Glossary
 
+**Add a part** — On the Clips grid's title line: listens to a row's clips and writes a new part that fits them (a bass line, chords, a second melody or drums), in their key, chords and groove. See [Adding a part to a row](../making-music/arranging.md#adding-a-part-to-a-row).
+
 **Arm** — Pick the track that records. On the Arrange tab, tap a track's name, or hold **MAIN** and hit the track's pad.
 
 **Arrange** — The tab where clips are recorded, kept as takes and launched, and laid out as a song.
@@ -30,6 +32,8 @@ checked: 2026-11-19 f0b39161
 
 **Condition** — A rule for when a note plays, such as every second time round (1:2) or only during a fill (FILL).
 
+**Continue** — Carries a beat or a clip on: it listens to your bars and plays some more in the same groove or spirit, as tries you can pick from. On a kit's pattern on Steps, and as the last row of the note editor's Edit options.
+
 **Crossfade** — Blending from one sample into the next where two zones or velocity layers meet, instead of a hard switch.
 
 **Cursor** — In the note editor, the line across the roll that the data wheel moves a snap at a time; **Pads write** puts notes there.
@@ -47,6 +51,8 @@ checked: 2026-11-19 f0b39161
 **Flatten** — Recording a pad as it sounds now, with all its settings, into a new sound.
 
 **Fold** — The note editor's chip that hides rows: show every row, only the rows with notes, or only the clip's scale.
+
+**Free loop** — A loop that keeps its own time instead of the song's: it plays on when the song stops and records with the song stopped. **Make song** turns the free loops into the song. See [Free loops](../making-music/looping.md#free-loops).
 
 **I/O view** — The mixer's view of where everything goes: audio, MIDI, sync and CV.
 
@@ -102,6 +108,8 @@ checked: 2026-11-19 f0b39161
 
 **Perform set** — Eight pages of action pads (loop keys, throws, mutes, scenes, macros) that can take over the pads, set up on the Pads tab.
 
+**Phrase** — A short piece of music (a bass line, a riff, a run of chords) that plays from the note you hold, set on the Arp panel's Phrase tab. See [Phrases](../making-music/note-repeat-and-arp.md#phrases).
+
 **Piano roll** — A view of notes as bars against a keyboard: higher notes higher up, time left to right. MPFree's is the note editor on the Sequencer tab.
 
 **Pick** — Choose notes in the note editor (a tap, a box, the Select menu) so the Q-Links, a drag, **Delete** or a tool act on them. The chosen notes are the **picked** notes.
@@ -123,6 +131,8 @@ checked: 2026-11-19 f0b39161
 **Resample** — Record MPFree's own sound (the whole mix, a track or a pad) back onto a pad or into a loop.
 
 **Scene** — A row of the clip grid, launched all at once. The Sample tab also has two scenes of the whole kit to morph between.
+
+**Scene bank** — One of the clip grid's four sets of 16 rows, **A** to **D** (64 rows in all), so you can keep one song's scenes in each. See [Scene banks](../making-music/clips.md#scene-banks).
 
 **Scene card** — The card for one row of the clip grid: its scene's name, what plays after it, its tempo, mutes and program changes, and Capture, Copy row, Insert row and Delete row. Hold the row's number to open it.
 
@@ -148,6 +158,8 @@ checked: 2026-11-19 f0b39161
 
 **Step inspector** — The panel on the Sequencer's Steps that shows and sets the picked step's velocity, length, chance, condition, ratchet and nudge.
 
+**Stretch (audio clip)** — An audio clip's **Tempo** setting that keeps it on its bars at its own pitch when the song's tempo changes, from a copy made for the new tempo. **Repitch** speeds it up and raises it instead, like tape.
+
 **Submix** — A mixer strip that groups several sounds, so one fader and one set of effects serve them all.
 
 **Swing** — Delaying every other step a little, for a shuffled feel.
@@ -164,9 +176,9 @@ checked: 2026-11-19 f0b39161
 
 **Tracker** — A view of a clip as a list of steps from top to bottom, every step's settings in a row.
 
-**Tunings page** — The page with the song's tuning and every instrument's: what each synth and kit plays in, the song's or its own. Open it from the help of the Synth tab's Tuning row.
-
 **Tuning file** — A Scala file (`.scl`, with an optional `.kbm`) that tunes the synths and the kits' keygroups to a scale of your own.
+
+**Tunings page** — The page with the song's tuning and every instrument's: what each synth and kit plays in, the song's or its own. Open it from the help of the Synth tab's Tuning row.
 
 **Velocity** — How hard a pad is hit, from 1 (softest) to 127 (hardest).
 
