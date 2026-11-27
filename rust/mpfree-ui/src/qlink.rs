@@ -24,6 +24,7 @@ use crate::draw;
 use crate::geom::Rect;
 use crate::text::{Align, FontId};
 use crate::theme::Theme;
+use crate::touch::Fingers;
 use crate::ui::{EventKind, PaintCx, Target, Touch, Widget};
 
 /// The column's width on every page that has it, in pixels (168 until
@@ -308,7 +309,9 @@ impl Widget for QLinkColumn {
 /// level and "LIM" under. Levels sit on the meter's scale
 /// ([`draw::meter_frac`]: -48 dB at the bottom to +6 dB at the top), the
 /// handle too, so a drag on the bar gives the fader's place on that scale
-/// as [`EventKind::Value`] (turn it into dB with [`draw::meter_db`]).
+/// as [`EventKind::Value`] (turn it into dB with [`draw::meter_db`]). The
+/// fader follows the finger from where it lands (layout spec 1a): landing
+/// moves nothing, and a drag moves it as far as the finger goes.
 pub struct MasterBar {
     /// Each side's level now, dBFS (-120 for silence).
     pub peak_db: [f32; 2],
@@ -320,6 +323,9 @@ pub struct MasterBar {
     pub text: String,
     /// The safety limiter's gain reduction, dB (0 when it rests).
     pub limit_db: f32,
+    /// Each finger on the bar: where it landed (y) and the fader's place
+    /// then.
+    drag: Fingers<(i32, f32)>,
 }
 
 impl Default for MasterBar {
@@ -343,6 +349,7 @@ impl MasterBar {
             fader_db: 0.0,
             text: String::new(),
             limit_db: 0.0,
+            drag: Fingers::new(),
         }
     }
 
@@ -459,16 +466,25 @@ impl Widget for MasterBar {
         })
     }
 
-    fn touch(&mut self, _f: u64, phase: Touch, _x: i32, y: i32, r: Rect) -> Option<EventKind> {
-        if !matches!(phase, Touch::Down | Touch::Move) {
-            return None;
-        }
+    fn touch(&mut self, finger: u64, phase: Touch, _x: i32, y: i32, r: Rect) -> Option<EventKind> {
         let tr = MasterBar::track(r);
-        if tr.h <= 0 {
-            return None;
+        match phase {
+            Touch::Down => {
+                if tr.h > 0 {
+                    self.drag.put(finger, (y, draw::meter_frac(self.fader_db)));
+                }
+                None
+            }
+            Touch::Move => {
+                let &(from, start) = self.drag.get(finger)?;
+                let f = (start + (from - y) as f32 / tr.h.max(1) as f32).clamp(0.0, 1.0);
+                (f != start || from != y).then_some(EventKind::Value(f))
+            }
+            Touch::Up | Touch::Cancel => {
+                self.drag.take(finger);
+                None
+            }
         }
-        let f = (tr.bottom() - y) as f32 / tr.h as f32;
-        Some(EventKind::Value(f.clamp(0.0, 1.0)))
     }
 }
 
@@ -578,31 +594,30 @@ mod tests {
     }
 
     #[test]
-    fn the_master_bar_maps_a_drag_to_the_level() {
+    fn the_master_bar_follows_a_drag_from_where_it_lands() {
         let mut m = MasterBar::new();
         let r = Rect::new(1032, 84, MASTER_WIDTH, 666);
         let tr = MasterBar::track(r);
-        assert_eq!(
-            m.touch(1, Touch::Down, tr.x, tr.y, r),
-            Some(EventKind::Value(1.0))
-        );
-        assert_eq!(
-            m.touch(1, Touch::Move, tr.x, tr.bottom(), r),
-            Some(EventKind::Value(0.0))
-        );
+        let at = draw::meter_frac(0.0);
+        // Landing anywhere moves nothing, and a tap changes nothing.
+        assert_eq!(m.touch(1, Touch::Down, tr.x, tr.y, r), None);
         assert_eq!(m.touch(1, Touch::Up, tr.x, tr.y, r), None);
-        assert_eq!(MasterBar::y_of(tr, 6.0), tr.y);
-        assert_eq!(MasterBar::y_of(tr, -48.0), tr.bottom());
-        // The handle sits where a drag to it would put the fader.
-        let y = MasterBar::y_of(tr, -1.5);
-        let Some(EventKind::Value(f)) = m.touch(1, Touch::Down, tr.x, y, r) else {
+        // A drag moves it as far as the finger goes, up or down.
+        let mid = tr.y + tr.h / 2;
+        assert_eq!(m.touch(2, Touch::Down, tr.x, mid, r), None);
+        let Some(EventKind::Value(f)) = m.touch(2, Touch::Move, tr.x, mid - tr.h / 10, r) else {
             panic!("a value");
         };
-        assert!(
-            (draw::meter_db(f) + 1.5).abs() < 0.2,
-            "{}",
-            draw::meter_db(f)
+        assert!((f - (at + 0.1)).abs() < 0.01, "{f}");
+        assert_eq!(
+            m.touch(2, Touch::Move, tr.x, mid + tr.h, r),
+            Some(EventKind::Value(0.0)),
+            "to the bottom of the scale"
         );
+        assert_eq!(m.touch(2, Touch::Cancel, tr.x, mid, r), None);
+        assert_eq!(m.touch(2, Touch::Move, tr.x, tr.y, r), None, "let go");
+        assert_eq!(MasterBar::y_of(tr, 6.0), tr.y);
+        assert_eq!(MasterBar::y_of(tr, -48.0), tr.bottom());
         // Held peaks follow up at once and fall slowly.
         assert!(m.feed([-6.0, -12.0]));
         assert!(m.feed([-30.0, -30.0]));

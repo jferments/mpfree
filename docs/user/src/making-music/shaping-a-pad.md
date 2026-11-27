@@ -159,7 +159,7 @@ A pad that keeps its pitch (warped to the tempo, or played as grains) doesn't fo
 The **Scenes** group, on the right of the **Play** page's panel on every section, holds two **scenes** of the whole kit, as on the Octatrack:
 
 - **Store A** keeps every pad of the kit as it is now: its sound, trim, level, tune, filter, envelope, everything. **Store B** keeps a second version. Make A, change some pads (tune the snare down, close the hats' filter, push the kick), then make B.
-- The **crossfader** (touch or drag it; it moves once A and B are both stored) morphs the kit from A to B as it plays: each pad's level, pan, tune, filter, envelope times, LFO depth and pitch envelope move between their values in A and in B. Settings that are the same in both scenes stay as they are. Sliding it changes nothing in the kit itself, so you can perform with it freely.
+- The **crossfader** (drag it: it follows your finger from where you touch it, and moves once A and B are both stored) morphs the kit from A to B as it plays: each pad's level, pan, tune, filter, envelope times, LFO depth and pitch envelope move between their values in A and in B. Settings that are the same in both scenes stay as they are. Sliding it changes nothing in the kit itself, so you can perform with it freely.
 - **Return to A** puts every pad back exactly as A stored it and sets the crossfader to A. Mangle the kit as much as you like, then return. **UNDO** takes the return back.
 
 The scenes are saved with the kit.

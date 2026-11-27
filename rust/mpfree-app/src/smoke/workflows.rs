@@ -3281,8 +3281,8 @@ mod tests {
             let mut s = Session::new();
             let before = s.level_db;
             s.press("master", "level", "");
-            // A tap on the bar sets the level where it lands (which may
-            // be under the -6 dB the level starts at since round 4).
+            // A press drags the bar, as its gesture says: it follows the
+            // finger from where it lands (layout spec 1a).
             assert!(
                 (s.level_db - before).abs() > 0.05,
                 "the bar moved the level"

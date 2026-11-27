@@ -103,7 +103,7 @@ An empty clip in the Sequencer's note editor offers the same panel: see [Editing
 The morph bar under the grid glides the sound from one scene to another, like a crossfader for your mix. Each row can store mixer settings: levels, pans, sends and effect controls.
 
 1. Pick the two rows with the **A** and **B** chips. Tap a chip's left half to step its row down, its right half to step it up.
-2. Move the crossfader. Every setting either row stores moves between A's value and B's.
+2. Drag the crossfader. It follows your finger from where you touch it, so touching it never makes the sound jump. Every setting either row stores moves between A's value and B's.
 3. Let go in one of two ways:
    - **Snap back** returns to the sound from before you started, including any knob you turned while morphing.
    - **Keep** leaves everything where the morph put it.
