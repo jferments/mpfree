@@ -150,6 +150,26 @@ pub struct StripView {
     /// · row 2" (or "take · row 3") and the loop's (or clip's) name under
     /// it, in the track's colour. The app fills it in.
     pub tag: Option<(String, String)>,
+    /// The sequencer track whose mute and solo this strip's M and S are
+    /// (one mute per track, the touch plan's A7b: a track's own strip, and
+    /// Drums for track 1), so they are TRACK MUTE's and the Clips grid's
+    /// too, and in Perform wait for the launch line. The app fills it in;
+    /// `None` for a strip with its own mute (pads, kits, the engines'
+    /// shared strips, inputs, submixes, returns).
+    pub track: Option<usize>,
+}
+
+/// A track's mute or solo waiting in the mute queue for the launch line
+/// (Perform, or SHIFT in Make), as the strips show it: hatched, with what
+/// waits and how soon.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackWait {
+    pub track: usize,
+    /// Its mute and solo once the queue lands.
+    pub mute: bool,
+    pub solo: bool,
+    /// "mutes in 2 beats", "solo off in 1 bar".
+    pub text: String,
 }
 
 /// The parametric EQ's engine id.
@@ -194,6 +214,7 @@ impl StripView {
             audio: None,
             color: None,
             tag: None,
+            track: None,
         }
     }
 

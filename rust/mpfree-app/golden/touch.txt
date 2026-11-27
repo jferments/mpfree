@@ -98,13 +98,9 @@ gap make-phrase/sheet-row-less make-phrase/sheet-row-more 0 8 # before the touch
 gap make-style/style-plan-less make-style/style-plan-more 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap midimon/monitor-clear midimon/monitor-hold 6 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap midimon/monitor-clear midimon/monitor-source 8 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-gap mixer/add-insert mixer/insert 3 8 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
-gap mixer/add-insert mixer/strip-name 6 8 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
 gap mixer/eq mixer/eq-add 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-gap mixer/fader mixer/value 6 8 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
 gap mixer/field mixer/row 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap mixer/fx mixer/fx-add 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-gap mixer/insert mixer/strip-name 6 8 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
 gap mixer/learn-again mixer/learn-remove 8 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap mixer/learn-kept mixer/learn-takeover 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap mixer/learn-mode mixer/learn-range 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -112,14 +108,8 @@ gap mixer/learn-mode mixer/learn-takeover 6 8 # before the touch audit (25 Nov 2
 gap mixer/monitor-clear mixer/monitor-hold 6 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap mixer/monitor-clear mixer/monitor-kind 8 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap mixer/monitor-clear mixer/monitor-save 6 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-gap mixer/mute mixer/output 6 8 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
-gap mixer/mute mixer/solo 4 12 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
-gap mixer/mute mixer/value 6 12 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
-gap mixer/output mixer/solo 6 8 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
 gap mixer/port-clock mixer/port-nudge 5 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap mixer/routing-swap mixer/routing-tile 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-gap mixer/send mixer/send-pre 0 8 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
-gap mixer/solo mixer/value 6 8 # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
 gap morph/row-down morph/row-up 0 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap notes/aim-pick notes/lane-edge 6 8 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 gap notes/button notes/lane 11 24 # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -557,7 +547,6 @@ size midimon/monitor-light 18 normal # before the touch audit (25 Nov 2026 basel
 size midimon/monitor-port 18 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size midimon/monitor-source 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size midimon/monitor-way 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size mixer/add-insert 21 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
 size mixer/eq 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/eq-add 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/eq-name 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -565,7 +554,6 @@ size mixer/field 40 normal # before the touch audit (25 Nov 2026 baseline); unti
 size mixer/fx 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/fx-add 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/fx-name 52 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size mixer/insert 21 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
 size mixer/io-monitor 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/io-name 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/io-output 32 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -591,7 +579,7 @@ size mixer/learn-show 34 normal # before the touch audit (25 Nov 2026 baseline);
 size mixer/learn-show-pick 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/learn-takeover 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/learn-transport 34 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size mixer/look 28 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+size mixer/look 28 normal # the Mix tab's head row (views, looks, page arrows): A7a redrew the strips, the head row comes with a later step of the touch plan
 size mixer/monitor-clear 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/monitor-hold 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/monitor-kind 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -600,10 +588,8 @@ size mixer/monitor-port 18 normal # before the touch audit (25 Nov 2026 baseline
 size mixer/monitor-save 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/monitor-view 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/monitor-way 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size mixer/mute 36 performance # 44 x 36 today; the Perform mixer (touch plan A7) makes Perform's MUTE 85 px
-size mixer/next 36 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
-size mixer/output 30 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
-size mixer/pan 26 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+size mixer/next 36 normal # the Mix tab's head row (views, looks, page arrows): A7a redrew the strips, the head row comes with a later step of the touch plan
+size mixer/pan 44 performance # Perform's pan row, 44 px as drawn on the touch plan's A7 screens: it moves only when dragged, so a stray touch changes nothing; the tap test (A5) decides
 size mixer/port-all-notes-off 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/port-back 44 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/port-clock 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
@@ -615,17 +601,12 @@ size mixer/port-name 40 normal # before the touch audit (25 Nov 2026 baseline); 
 size mixer/port-nudge 30 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/port-profile 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/port-test-note 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size mixer/prev 36 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+size mixer/prev 36 normal # the Mix tab's head row (views, looks, page arrows): A7a redrew the strips, the head row comes with a later step of the touch plan
 size mixer/routing-main 36 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/routing-square 40 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/routing-swap 22 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size mixer/row 56 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
-size mixer/send 17 normal # 2 mm tall today; moves to a Sends look (touch review, section 2)
-size mixer/send-pre 17 normal # 2 mm tall today; moves to a Sends look (touch review, section 2)
-size mixer/solo 36 performance # 44 x 36 today; the Perform mixer (touch plan A7) makes Perform's SOLO 85 px
-size mixer/strip-name 30 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
-size mixer/value 22 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
-size mixer/view 36 normal # the Mix tab's strips; the Perform mixer (touch plan A7) redraws them for Perform, Make's when redrawn
+size mixer/view 36 normal # the Mix tab's head row (views, looks, page arrows): A7a redrew the strips, the head row comes with a later step of the touch plan
 size morph/button 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size morph/crossfader 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone
 size morph/row-down 48 normal # before the touch audit (25 Nov 2026 baseline); until its screen is redone

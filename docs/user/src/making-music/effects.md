@@ -15,10 +15,10 @@ Each strip in the mixer has up to eight **inserts**: effects the sound goes thro
 {{shot: chain | The chain editor on the drum bus, with Drive selected.}}
 
 1. Open the mixer (the **Mix** tab, or **TRACK MIX**) and find the strip.
-2. Tap the strip's **+ FX** button. It fills the strip's empty insert rows, so on a strip with no effects it is a big button under the strip's name. The **chain editor** opens in the mixer's place, with the list of effects already open.
+2. Tap the strip's **FX** box, under its name: the mixer shows its **Effects** look, every strip's chain as a row (see [Every chain at once: Effects](mixing-and-effects.md#every-chain-at-once-effects)). Tap **+ FX** in the strip's row. The **chain editor** opens in the mixer's place, with the list of effects already open.
 3. Pick an effect (see [Choosing an effect](#choosing-an-effect)). It goes at the end of the chain, selected, with its page showing.
 
-Tap an effect already in a strip's insert row to open the chain editor on it. The strip's effects are down the left, the selected effect's page fills the middle, the Q-Links are at the right, and the **Modulate** row runs under the page.
+On the Effects look, tap an effect already in a strip's row to pick it, and again to open the chain editor on it. The strip's effects are down the left, the selected effect's page fills the middle, the Q-Links are at the right, and the **Modulate** row runs under the page.
 
 - The line over the effects says how many the chain holds out of how many it can ("3 of 8"), and how much of the MPC's power the chain takes. Each effect's row has its number, its name, a line on how it is set (or "bypassed"), a dot for each macro that moves it, a **~** when an LFO or follower does, and its **ON** switch, which bypasses it.
 - **+ Add effect** opens the list of effects again, and **Cancel** closes it.
@@ -89,7 +89,7 @@ A track that plays notes (not an audio track) can change its notes before they r
 
 {{shot: chain-notes | A track's chain: NOTES above SOUND, with Scale, Chord, the arp and Humanize (off) in order. Chord's page shows its shapes, what goes in and what comes out on a keyboard, and its settings; the Q-Links turn Chord, Voicing, Inversion and Velocity.}}
 
-Open a track's chain in the chain editor (its strip's **+ FX**, or an effect in its insert row). The left column then has two groups:
+Open a track's chain in the chain editor (**+ FX** in its row on the mixer's Effects look, or a tap on one of its effects there, then another). The left column then has two groups:
 
 - **NOTES**, the track's MIDI effects and its **Arp**, in the order the notes go through them, top to bottom. Each row has its name, a line on how it is set, and its **ON** switch. Four rows show at a time; **‹ ›** on the NOTES line scroll through more. The line says how many MIDI effects the track has out of 8.
 - **Plays on**, between the groups, says where the track's notes go: **Its own sound**, or a MIDI out port and channel. Tap it to change that in the mixer's I/O view, in the MIDI section's **Tracks out** (see [Playing a synth from a track](midi-and-cv.md#playing-a-synth-from-a-track)).

@@ -12,9 +12,9 @@ Every sound in MPFree, from the pads, the synth, the loop, the audio tracks and 
 
 Tap the **Mix** tab, or press **TRACK MIX**. TRACK MIX opens it on the tracks' faders, and pressed again it takes you back to the page you were on; **SHIFT + TRACK MIX** opens it straight on the pads. The Mix tab opens the mixer as you left it. The music carries on whatever page you are on.
 
-The tab has three looks of the same strips, switched with **Faders | Effects | EQ** at the top right: **Faders**, the strips side by side with their levels, **Effects**, every strip's chain of effects at once (see [Every chain at once: Effects](#every-chain-at-once-effects)), and **EQ**, every strip's EQ curve (see [Every EQ at once: EQ](#every-eq-at-once-eq)). The tab opens on the look you used last; TRACK MIX always opens it on Faders.
+The tab has four looks of the same strips, switched with **Faders | Sends | Effects | EQ** at the top right: **Faders**, the strips side by side with their levels, **Sends**, every strip's pan, sends and output as a row (see [Pan, sends and outputs: Sends](#pan-sends-and-outputs-sends)), **Effects**, every strip's chain of effects at once (see [Every chain at once: Effects](#every-chain-at-once-effects)), and **EQ**, every strip's EQ curve (see [Every EQ at once: EQ](#every-eq-at-once-eq)). The tab opens on the look you used last; TRACK MIX always opens it on Faders.
 
-{{shot: mixer | The mixer, shown here with example tracks from the preview: inserts at the top of each strip, sends A to D, pan, the fader and meter, mute and solo, and where the strip goes. The master is on the right, ending in Master safety.}}
+{{shot: mixer | The mixer, shown here with example tracks from the preview: each strip's effects and its sends, pan and output at the top, then the fader and meter and big M and S. The master is on the right, with Master safety.}}
 
 Along the top are the mixer's five views:
 
@@ -36,14 +36,35 @@ The **< >** buttons page through the strips when there are more than fit.
 
 From top to bottom, each strip has:
 
-- **Inserts**: up to eight effects that the sound goes through, in order. Tap **+ FX** to add one, or an effect's name to open it (see [Effects](effects.md#adding-an-effect-the-chain-editor)).
-- **Sends A to D**: how much of the sound goes to each send return. A return holds a shared effect, so several strips can use one reverb or delay. The strip's own sound still goes on to the master, and the return adds the effect alongside it, so a delay or reverb you add to a return starts fully wet (see [Choosing an effect](effects.md#choosing-an-effect)).
-- **Pan**: where the sound sits between left and right.
+- **FX**: how many effects the sound goes through and their names (up to eight, in order; **none** if it has none). Tap it for the Effects look with the strip picked, where you add, open and move its effects (see [Every chain at once: Effects](#every-chain-at-once-effects)). While a strip freezes or prints, this box says so and how far it has got.
+- **Sends, pan and output**: the sends that are on (a send that comes before the fader in yellow, **No sends** on a strip without them), where it sits between left and right, and **→** where it goes. A line input's says its source and how you monitor it instead of its pan. Tap it for the Sends look, where you change them (see [Pan, sends and outputs: Sends](#pan-sends-and-outputs-sends)).
 - **The fader** (from silent up to +6 dB) and the **meter** beside it, with its **level** under it. Tap the level to type one on the number pad (**-80** is silent); nothing changes until you press **Enter**.
-- **M** (mute) and **S** (solo). Solo keeps the strip and everything it feeds or is fed by, so soloing the snare's pad still lets you hear it through the Drums track.
-- **The output**: where the strip goes. A pad goes to its track; a track to the master or a submix; a submix to the master or a higher-numbered submix.
+- **M** (mute) and **S** (solo), each the strip's full width. On a track's strip (**Drums** for track 1, and each track's own strip) they are the track's mute and solo, the same ones as TRACK MUTE's pads and the Clips grid's track heads, so muting a track anywhere lights all three. Drums' M mutes track 1; kit 1's pads played from another track still sound through it. On every other strip (a pad, a kit's own strip, **Synth**, an input, a submix or a return) they are the strip's own: solo keeps the strip and everything it feeds or is fed by, so soloing the snare's pad still lets you hear it through the Drums track. A line input has **Arm** under them.
 
-Drag a fader, pan or send with your finger, and tap M, S or the output to change them. A tap on a pan leaves it where it is, so a finger reaching for the fader never moves it. To put a fader back to 0 dB or a pan back in the middle, tap it so the wheel's outline is on it, then press **SHIFT + push**. With the mixer open, **UNDO** takes back the last change to a strip (one drag of a fader is one UNDO) and **SHIFT + UNDO** puts it back.
+Drag a fader with your finger, and tap M or S to change them: a tap acts when you lift your finger, so a finger that slides off leaves them as they were. A track's M or S with **SHIFT** held waits for the launch line, as TRACK MUTE's pads do. To put a fader back to 0 dB, tap it so the wheel's outline is on it, then press **SHIFT + push**. With the mixer open, **UNDO** takes back the last change to a strip (one drag of a fader is one UNDO) and **SHIFT + UNDO** puts it back. A track's M and S are mutes like TRACK MUTE's, so UNDO leaves them.
+
+The master's strip has its effects, **Master safety** and its fader; under them, how much the limiter takes off, and its pan and output.
+
+**Projects saved with a track's strip muted** (before M and S were the track's) open with the track muted or soloed instead, and the log says which.
+
+### The strips in Perform
+
+{{shot: mixer-perform | The mixer in Perform: each strip is its pan, its fader and big MUTE and SOLO buttons. The bass's mute waits for the bar, hatched; the master keeps Master safety.}}
+
+In **Perform** (the **MAKE** or **PERFORM** chip on the top bar, or **SHIFT + MAIN**; see [Make and Perform](playing-live.md#make-and-perform)), each strip is only what you play live: its **pan**, its **fader** and big **MUTE** and **SOLO** buttons, which take your touch the moment you make it. A track's MUTE and SOLO wait for the launch line, as TRACK MUTE's pads do in Perform: the button is hatched in the colour it will turn, with what waits and how soon ("mutes in 3 beats"), until the line comes. Tap it again before then to call it off, or hold **SHIFT** to make it happen at once. Other strips' MUTE and SOLO act at once. The effects, sends and output go, so nothing you change by accident while playing can reshape the mix; switch back to **Make** to change them. A tap on a pan leaves it where it is: drag it. The master keeps its pan, Master safety and fader.
+
+## Pan, sends and outputs: Sends
+
+{{shot: mixer-sends | The Sends look: each track as a row with its pan, sends A to D (each with its pre button) and its output, and the master's row at the bottom.}}
+
+On **Sends** each strip of the view is a row: its name, its **pan**, its four sends **A to D** and its **output**.
+
+- **Pan**: drag it left or right. A tap leaves it where it is, so it never jumps to your finger.
+- **A send**: how much of the sound goes to that send return. A return holds a shared effect, so several strips can use one reverb or delay. The strip's own sound still goes on to the master, and the return adds the effect alongside it, so a delay or reverb you add to a return starts fully wet (see [Choosing an effect](effects.md#choosing-an-effect)). Drag its bar from where your finger lands; **pre** beside it lights when the send comes before the fader, so the fader doesn't change how much goes to the return.
+- **The output**: tap it to pick where the strip goes. A pad goes to its track; a track to the master or a submix; a submix to the master or a higher-numbered submix.
+- **Tap a strip's name** to select it, as on Faders.
+
+The wheel and **SHIFT + push** work on a pan or a send as on a fader: **SHIFT + push** puts a pan in the middle or a send off. Tracks, Pads, Inputs and Submixes work on Sends as on Faders, and **< >** page through the rows.
 
 ## Every chain at once: Effects
 

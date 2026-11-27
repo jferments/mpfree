@@ -259,7 +259,7 @@ MIDI Learn lets a knob, fader, button, key or pedal on your keyboard or controll
 
 **The quick way: SHIFT + touch.** Hold **SHIFT**, touch the value on the screen, then move the control on your keyboard. Until a control takes it, the hint line reads *LEARNING Volume (Bass): move a knob, a key or a pedal on any controller*; then it says what the control moves (*Learned: CC 74 on Keystep 37 moves Poly cutoff (Track 2)*). While SHIFT is held the touch only picks the value: the fader doesn't move. Touch the same value with SHIFT again to cancel, or another one to learn that instead. It works on:
 
-- the mixer's Faders look: a strip's fader, pan and sends, and its **M** (mute) and **S** (solo);
+- the mixer: a strip's fader and its **M** (mute) and **S** (solo) on the Faders look, and its pan and sends on the Sends look (the pan on Faders too, in Perform);
 - on the Play page: the tempo, the master bar (the master's level), and the Q-Link cards that set a level or a send (the drums' delay send; the looper's and the line input's levels are in the mixer, on the Loop and Line strips). The other cards, such as Swing and the filters, and the XY pad keep their own jobs with SHIFT: learn Swing, the Filter and the XY pad on the Learn section's **Play** card instead;
 - the [chain editor](effects.md#adding-an-effect-the-chain-editor): an effect's knobs, faders, sliders and drawbars;
 - the macros panel: a macro's knob;
@@ -316,7 +316,7 @@ A button, pad, key or footswitch on your controller can press MPFree's transport
 - **PLAY**, **STOP**, **PLAY START**, **REC**, **OVERDUB** and **TAP TEMPO**: each does just what the MPC's own button does on the page you're on: PLAY while playing is FILL, and tapping TAP TEMPO in time sets the tempo. A press counts when the control goes past halfway and lets go when it comes back, so leave these as **Button: while held** or **Knob or fader**.
 - **Tempo**: from 30 to 300 BPM over the control's travel. Narrow it with **Range**, such as 110 to 130 for a fader that nudges, and use **Pick up** so the tempo doesn't jump when you first touch the fader. While the tempo follows another device's clock (Sync's **Tempo from**), the learned tempo control does nothing.
 
-For the tempo the quick way works too: hold **SHIFT** and touch the tempo on the Play page. To mute a track from a controller, hold **SHIFT** and touch its **M** in the mixer, then press a key: each press mutes or unmutes it.
+For the tempo the quick way works too: hold **SHIFT** and touch the tempo on the Play page. To mute a track from a controller, hold **SHIFT** and touch its **M** in the mixer, then press a key: each press mutes or unmutes it. A track's M is the track's own mute, so the key learns that, as the Clips and scenes card would, and in Perform it lands on the launch line; a key learned on a track's M in an older project does the same.
 
 Transport controls are kept in **Rig**, so they work in every project. Nothing here sends anything to your controller.
 
