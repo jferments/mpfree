@@ -1246,6 +1246,13 @@ pub enum ToUi {
     /// lets go; a finger still down does nothing more until it lifts
     /// (layout spec 1a: a momentary action is released on Stop).
     LetGo,
+    /// What still uses the SD card (takes recording on it, takes playing
+    /// from it), for Eject card's sheet (eject_card.rs), after
+    /// [`FromUi::CardUse`].
+    CardUse(Vec<crate::eject_card::Use>),
+    /// What the audio tracks say about the drives for System status's
+    /// Storage, after [`FromUi::StorageAsk`].
+    StorageUse(Box<crate::status_screen::StorageUse>),
     /// What Export needs to know about the song (export.rs), after
     /// [`FromUi::ExportAsk`].
     ExportFacts(Box<crate::export::Facts>),
@@ -1943,6 +1950,16 @@ pub enum FromUi {
     /// says the card is open: the same lease while it stays open, a new
     /// one once it has closed and opened again.
     AudioDrive(std::sync::Arc<mpfree_stream::storage::Lease>),
+    /// The SD card this mark names is in again (S2b's B2c): the audio
+    /// tracks' takes that carried on on the stick when it went get their
+    /// first parts back from it, looked for in these folders too.
+    AudioJoin(mpfree_stream::storage::CardMark, Vec<std::path::PathBuf>),
+    /// Eject card (the SD card plan's B2c): the audio loop says what still
+    /// uses the SD card ([`ToUi::CardUse`]).
+    CardUse,
+    /// System status shows Storage: the audio loop says what it knows of
+    /// the drives ([`ToUi::StorageUse`]), about once a second.
+    StorageAsk,
     /// A project save finished into this folder (the project's
     /// `samples/`): the audio tracks keep their takes' files from there.
     AudioSavedInto(std::path::PathBuf),
@@ -3097,6 +3114,18 @@ pub struct Player {
     /// Where a shut down or restart is handed to the system
     /// (`mpfree app --power-request FILE`); None: it can't be.
     power_request: Option<std::path::PathBuf>,
+    /// Eject card's sheet is open over this page (eject_card.rs).
+    eject: Option<String>,
+    /// Eject card was asked for: what uses the card is on its way
+    /// ([`ToUi::CardUse`]).
+    eject_asked: bool,
+    /// The card being ejected had takes recording on it, which carry on on
+    /// the stick: the ejected place says to put it back for the join.
+    ejected_takes: bool,
+    /// What the audio tracks last said about the drives, for Storage, and
+    /// how long since it was asked for (s).
+    storage_use: Option<crate::status_screen::StorageUse>,
+    storage_asked: f32,
     /// A finger on Play's BPM: which, how long (s) and where it landed.
     tempo_press: Option<(u64, f32, i32, i32)>,
     /// A finger on the Sample page's Keep card, as [`Self::tempo_press`].
@@ -3348,6 +3377,10 @@ impl Player {
         ui.add(NUMPAD, mpfree_ui::numpad::NumPad::default());
         ui.add(TEXTPAD, mpfree_ui::textpad::TextPad::default());
         ui.add(crate::power::CARD, crate::power::PowerCard::default());
+        ui.add(
+            crate::eject_card::CARD,
+            crate::eject_card::EjectSheet::default(),
+        );
         ui.add(HISTORY, mpfree_ui::history::HistoryPanel::default());
         ui.add("guide", Card::new("Button guide"));
         ui.add("found", StatList::new("Buttons"));
@@ -3432,6 +3465,8 @@ impl Player {
             .expect("text keyboard layout");
         ui.add_page(crate::power::PAGE, crate::power::LAYOUT)
             .expect("power card layout");
+        ui.add_page(crate::eject_card::PAGE, crate::eject_card::LAYOUT)
+            .expect("eject card layout");
         ui.add_page(HISTORY_PAGE, HISTORY_LAYOUT)
             .expect("undo history layout");
         ui.add_page(KITS_PAGE, KITS_LAYOUT).expect("kits layout");
@@ -3551,6 +3586,11 @@ impl Player {
             typing: None,
             power: None,
             power_request: None,
+            eject: None,
+            eject_asked: false,
+            ejected_takes: false,
+            storage_use: None,
+            storage_asked: f32::INFINITY,
             tempo_press: None,
             keep_press: None,
             guard_press: None,
@@ -9713,6 +9753,7 @@ impl Player {
             || st.shift
             || st.erase;
         self.power.is_some()
+            || self.eject.is_some()
             || self.typing.is_some()
             || self.learning.is_some()
             || (self.ready && holding)
@@ -9763,6 +9804,8 @@ impl Player {
                 crate::power::HINT
             }
             .to_string()
+        } else if self.eject.is_some() {
+            crate::eject_card::HINT.to_string()
         } else if let Some(t) = &self.typing {
             if t.to.is_text() {
                 TEXTPAD_HINT
@@ -11243,6 +11286,19 @@ impl Player {
                 self.fill_system_status();
             }
         }
+        // Storage's numbers: what the audio tracks know of the drives,
+        // asked for at once and then about once a second while it shows.
+        if self.view == View::SystemStatus
+            && self.status_place.picked == mpfree_status::System::Storage
+        {
+            self.storage_asked += dt;
+            if self.storage_asked >= 1.0 {
+                self.storage_asked = 0.0;
+                self.outbox.push(FromUi::StorageAsk);
+            }
+        } else {
+            self.storage_asked = f32::INFINITY;
+        }
     }
 
     /// System status from the board as it stands. While it shows, every
@@ -11278,7 +11334,7 @@ impl Player {
     /// A touch on System status: a system picked, the switch, a card's
     /// button (its job goes to the app).
     fn status_page_event(&mut self, kind: EventKind) -> Option<FromUi> {
-        use mpfree_ui::status_page::{BUTTON, CARD, CLEAR_COPIES, NOW, SAVE_REPORT, SESSION};
+        use mpfree_ui::status_page::{BUTTON, CARD, CLEAR_COPIES, FOOT, NOW, SAVE_REPORT, SESSION};
         match kind {
             // Clear copies (Memory, 5c.4): the Warps here, the audio
             // tracks' on the loop, which says how many went.
@@ -11286,6 +11342,11 @@ impl Player {
                 let warps = self.sample.clear_copies();
                 self.fill_system_status();
                 return Some(FromUi::ClearCopies { warps });
+            }
+            // Storage's Eject card (B2c).
+            EventKind::Tab(FOOT) => {
+                self.ask_eject();
+                return None;
             }
             // Save a report: its words go to the store (files/reports/).
             EventKind::Tab(SAVE_REPORT) => {
@@ -11487,6 +11548,11 @@ impl Player {
             free: self.mem_free,
             stick: self.drive.as_ref().and_then(|d| d.get()).flatten(),
             card: self.drive.as_ref().is_some_and(|d| d.on_card()),
+            card_open: self.card_lease.as_ref().is_some_and(|l| {
+                use mpfree_stream::storage::CardHandle;
+                l.valid()
+            }),
+            storage: self.storage_use.clone(),
             heat: self.heat,
             engines: self.engines.as_deref().and_then(crate::engines::shares),
             tracks: self.engines.as_deref().and_then(|e| self.status_tracks(e)),
@@ -12321,6 +12387,10 @@ impl Player {
         if self.power.is_some() && self.power_input(&msg) {
             return;
         }
+        // Eject card's sheet: the same, and a change of page cancels it.
+        if self.eject.is_some() && self.eject_input(&msg) {
+            return;
+        }
         // The number pad takes the wheel, - / + and the push while open;
         // a change of page closes it.
         if self.typing.is_some() {
@@ -13077,6 +13147,8 @@ impl Player {
                 self.name_io_kits();
             }
             ToUi::ProjectParts(c) => self.save_project(c),
+            ToUi::CardUse(uses) => self.eject_uses(uses),
+            ToUi::StorageUse(u) => self.storage_use = Some(*u),
             ToUi::ExportFacts(f) => self.export_facts(f),
             ToUi::ExportOver(run) => self.export_over(run),
             ToUi::Printed(name, p) => self.save_print(name, p),
@@ -14588,6 +14660,7 @@ impl Player {
                 Do::Tell(line) => self.tell(line),
                 Do::Ask => self.sd_card.open(),
                 Do::RecordTo(dir) => self.outbox.push(FromUi::AudioFiles(dir)),
+                Do::Join { mark, places } => self.outbox.push(FromUi::AudioJoin(mark, places)),
                 // The opening the takes record on says which card it is
                 // (the audio tracks hold the same lease).
                 Do::Mark(mark) => {
@@ -14861,6 +14934,7 @@ impl Player {
             // BROWSE's SD card place shows: the card is asked for, in a
             // thread; sd_card_tick gives the browser its answer.
             A::OpenCard => self.sd_card.open(),
+            A::EjectCard => self.ask_eject(),
             // Projects (project.rs).
             A::SaveRequested => self.ask_save(),
             A::NewProject => {
@@ -15048,7 +15122,12 @@ impl Player {
                     // and this opening the one their takes there read on.
                     let lease = self.card_lease(&card.mount);
                     self.outbox.push(FromUi::AudioDrive(lease));
+                    let folder = card
+                        .write
+                        .clone()
+                        .unwrap_or_else(|| card.mount.join(crate::card_takes::FOLDER));
                     let dos = self.card_takes.opened(
+                        &folder,
                         card.write.as_deref(),
                         card.read_only.as_deref(),
                         card.serial,
@@ -15078,6 +15157,33 @@ impl Player {
                     self.card_do(dos);
                     (None, CardState::Closed)
                 }
+                // Eject card (B2c): closed for taking out.
+                Heard::Ejected(Ok(line)) => {
+                    self.card_gone();
+                    self.say(format!("sd card: ejected: {line}"));
+                    self.tell("The SD card can be taken out now");
+                    let takes = self.ejected_takes;
+                    (None, CardState::Ejected { takes })
+                }
+                Heard::Ejected(Err(why)) => {
+                    // The counter stopped with the close: its window
+                    // closes by itself within two minutes.
+                    self.card_gone();
+                    self.say(format!(
+                        "sd card: ejected, but its close didn't finish: {why}"
+                    ));
+                    self.tell(
+                        "The SD card didn't say it closed: wait two minutes before taking it out",
+                    );
+                    (None, CardState::Closed)
+                }
+                // The card stays open; the slot says it open again next,
+                // and the takes record on it again.
+                Heard::NotEjected(why) => {
+                    self.say(format!("sd card: not ejected: {why}"));
+                    self.tell("The SD card stays in: MPFree still had files open on it");
+                    continue;
+                }
             };
             if let Some(b) = self.browser.as_mut() {
                 b.library().set_card(mount);
@@ -15086,6 +15192,11 @@ impl Player {
                     mpfree_browser_ui::show(&mut self.ui, b);
                 }
             }
+        }
+        // The card went while its Eject sheet was open: nothing to eject.
+        use mpfree_stream::storage::CardHandle;
+        if self.eject.is_some() && !self.card_lease.as_ref().is_some_and(|l| l.valid()) {
+            self.close_eject();
         }
     }
 
@@ -15113,6 +15224,158 @@ impl Player {
     fn card_gone(&mut self) {
         if let Some(l) = self.card_lease.take() {
             l.revoke();
+        }
+    }
+
+    // ------------------------------------------------------------ Eject card
+
+    /// Eject card (the SD card plan's B2c), from System status's Storage
+    /// or the Browser's SD card place: the audio loop is asked what still
+    /// uses the card ([`FromUi::CardUse`]); with something, the sheet
+    /// says what happens to each ([`Player::eject_uses`]), and with
+    /// nothing the card is ejected at once.
+    fn ask_eject(&mut self) {
+        use mpfree_stream::storage::CardHandle;
+        if self.eject.is_some() || self.eject_asked || self.sd_card.ejecting() {
+            return;
+        }
+        if !self.card_lease.as_ref().is_some_and(|l| l.valid()) {
+            self.tell("The SD card isn't open");
+            return;
+        }
+        self.eject_asked = true;
+        self.outbox.push(FromUi::CardUse);
+        self.say("sd card: eject asked for".to_string());
+    }
+
+    /// What uses the card, after [`Player::ask_eject`]: the sheet, over the
+    /// page showing, or the card ejected at once.
+    fn eject_uses(&mut self, uses: Vec<crate::eject_card::Use>) {
+        use crate::eject_card::{EjectSheet, CARD, PAGE};
+        use mpfree_stream::storage::CardHandle;
+        if !std::mem::take(&mut self.eject_asked) {
+            return;
+        }
+        // Closed meanwhile, or the power card came first.
+        if !self.card_lease.as_ref().is_some_and(|l| l.valid()) || self.power.is_some() {
+            return;
+        }
+        if uses.is_empty() {
+            return self.eject_now(false);
+        }
+        self.close_numpad();
+        if self.history.is_some() {
+            self.close_history();
+        }
+        let n = uses.len();
+        let back = self.ui.page().to_string();
+        if let Some(s) = self.ui.get_mut::<EjectSheet>(CARD) {
+            s.show(uses);
+        }
+        if self.ui.show(PAGE).is_ok() {
+            self.eject = Some(back);
+            self.outbox.push(FromUi::Overlay(true));
+            self.say(format!(
+                "sd card: eject: the sheet is open ({n} thing{} still use{} the card)",
+                if n == 1 { "" } else { "s" },
+                if n == 1 { "s" } else { "" }
+            ));
+            self.refresh_hint();
+        }
+    }
+
+    /// While the sheet is open: the wheel and - / + move its outline and
+    /// the push chooses (true: taken); under it, the Browser and System
+    /// status take nothing. A change of page cancels it.
+    fn eject_input(&mut self, msg: &ToUi) -> bool {
+        use crate::app::{BrowseKey, RowKey, StatusKey};
+        use crate::eject_card::{EjectSheet, CARD};
+        match msg {
+            ToUi::SampleWheel(d) | ToUi::Rows(RowKey::Pick(d) | RowKey::Step(d)) => {
+                if let Some(s) = self.ui.get_mut::<EjectSheet>(CARD) {
+                    s.wheel(*d);
+                }
+                true
+            }
+            // The push: the overlay's Enter, or the push of the Browser or
+            // System status under it.
+            ToUi::Rows(RowKey::Editing(_))
+            | ToUi::Browse(BrowseKey::Push)
+            | ToUi::StatusKey(StatusKey::Open) => {
+                if let Some(i) = self.ui.get::<EjectSheet>(CARD).map(|s| s.picked) {
+                    self.eject_tap(i);
+                }
+                true
+            }
+            ToUi::Browse(_) | ToUi::StatusKey(_) => true,
+            ToUi::Show(_) | ToUi::PlayView(_) => {
+                self.say("sd card: eject cancelled; the card stays in".to_string());
+                self.close_eject();
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// A button on the sheet, by its place (a tap, or the wheel's push).
+    fn eject_tap(&mut self, i: usize) {
+        use crate::eject_card::{Choice, EjectSheet, CARD};
+        let Some((choice, takes)) = self
+            .ui
+            .get::<EjectSheet>(CARD)
+            .and_then(|s| Some((s.buttons().get(i)?.0, s.recording())))
+        else {
+            return;
+        };
+        self.close_eject();
+        match choice {
+            Choice::Cancel => self.say("sd card: eject cancelled; the card stays in".to_string()),
+            Choice::Eject => self.eject_now(takes),
+        }
+    }
+
+    /// Closes the sheet and shows the page it was opened over.
+    fn close_eject(&mut self) {
+        let Some(back) = self.eject.take() else {
+            return;
+        };
+        if let Some(s) = self
+            .ui
+            .get_mut::<crate::eject_card::EjectSheet>(crate::eject_card::CARD)
+        {
+            s.close();
+        }
+        let _ = self.ui.show(&back);
+        self.outbox.push(FromUi::Overlay(false));
+        self.refresh_hint();
+    }
+
+    /// The card ejected: its opening revoked first, so takes recording on
+    /// it carry on on the stick (`takes`: some did) and takes playing from
+    /// it let go of their files; the next takes record on the stick; the
+    /// Browser reads nothing more there. Then the slot closes it once
+    /// nothing holds a file on it ([`crate::sd_card::Slot::eject`]).
+    fn eject_now(&mut self, takes: bool) {
+        use mpfree_browser_ui::CardState;
+        self.ejected_takes = takes;
+        self.say(format!(
+            "sd card: ejecting{}",
+            if takes {
+                "; the takes recording on it carry on on the stick"
+            } else {
+                ""
+            }
+        ));
+        self.card_gone();
+        let dos = self.card_takes.ejected();
+        self.card_do(dos);
+        self.sd_card.eject();
+        if let Some(b) = self.browser.as_mut() {
+            b.library().set_card(None);
+            b.set_card(CardState::Ejecting);
+            if self.view == View::Browser {
+                mpfree_browser_ui::show(&mut self.ui, b);
+            }
         }
     }
 
@@ -17721,6 +17984,9 @@ impl Player {
                 | FromUi::OpenAudio(_)
                 | FromUi::AudioFiles(_)
                 | FromUi::AudioDrive(_)
+                | FromUi::AudioJoin(..)
+                | FromUi::CardUse
+                | FromUi::StorageAsk
                 | FromUi::AudioSavedInto(_)
                 | FromUi::Kit(_)
                 | FromUi::LevelDb(_)
@@ -19419,6 +19685,10 @@ impl Player {
             }
             (crate::power::CARD, EventKind::Tab(i)) => {
                 self.power_tap(i);
+                None
+            }
+            (crate::eject_card::CARD, EventKind::Tab(i)) => {
+                self.eject_tap(i);
                 None
             }
             // What the app told, over Play's tabs: a tap closes it and does
@@ -43048,7 +43318,212 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// S2b phase B2b, switched on here as B2c will: once the stick's own
+    /// Eject card (B2c): System status's button asks the audio loop what
+    /// uses the card; the sheet says it; Cancel leaves the card in, a
+    /// change of page cancels too, and Eject revokes the card's opening
+    /// (takes recording on it carry on on the stick, takes playing from it
+    /// let go) and closes it once nothing holds a file there. The Browser
+    /// then says it can be taken out.
+    #[test]
+    fn eject_card_asks_what_uses_the_card_then_closes_it_for_taking_out() {
+        use crate::app::{RowKey, StatusKey};
+        use crate::eject_card::{Use, HINT, PAGE};
+        use crate::sd_card::{Paths, Slot, Timing};
+        use mpfree_browser_ui::CardState;
+        use mpfree_stream::storage::CardHandle;
+        use mpfree_ui::status_page::FOOT;
+        use std::time::Duration;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir =
+            std::env::temp_dir().join(format!("mpfree-card-eject-{}-{nanos}", std::process::id()));
+        let card = dir.join("card");
+        std::fs::create_dir_all(card.join("MPFree")).unwrap();
+        std::fs::create_dir_all(dir.join("run")).unwrap();
+        std::fs::write(dir.join("setup-sd-card.sh"), "# service\n").unwrap();
+        std::fs::write(
+            dir.join("mounts"),
+            format!("card {} exfat ro 0 0\n", card.display()),
+        )
+        .unwrap();
+        let open = format!(
+            "state=open\nmessage=The SD card is open, read-only.\nask=00ee\ncard=mmcblk1\nfs=exfat\nsectors=124735488\nmount={}\ndirty=no\n",
+            card.display()
+        );
+        std::fs::write(dir.join("run/sd-card-status"), &open).unwrap();
+        let mut p = browser_samples(Fonts::embedded()).unwrap();
+        let paths = Paths {
+            service: dir.join("setup-sd-card.sh"),
+            status: dir.join("run/sd-card-status"),
+            request: dir.join("run/sd-card.request"),
+            close: dir.join("run/sd-card.close"),
+            alive: dir.join("run/sd-card.alive"),
+            mounts: dir.join("mounts"),
+        };
+        let timing = Timing {
+            poll: Duration::from_millis(5),
+            answer: Duration::from_millis(500),
+            close: Duration::from_secs(5),
+            beat: Duration::from_millis(10),
+        };
+        p.sd_card = Slot::new(paths, timing, Duration::from_secs(60));
+        p.apply(ToUi::Show(View::SystemStatus));
+        // Not open yet: nothing to eject.
+        p.status_page_event(EventKind::Tab(FOOT));
+        assert!(!p.outbox.contains(&FromUi::CardUse));
+        assert!(p.told.take().is_some_and(|t| t.0.contains("isn't open")));
+        p.sd_card.open();
+        let end = Instant::now() + Duration::from_secs(5);
+        let lease = loop {
+            let l = p.outbox.iter().find_map(|a| match a {
+                FromUi::AudioDrive(l) => Some(l.clone()),
+                _ => None,
+            });
+            if let Some(l) = l {
+                break l;
+            }
+            assert!(Instant::now() < end, "never opened: {:?}", p.said_all);
+            p.tick(0.01);
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        let uses = || {
+            vec![
+                Use::Recording {
+                    track: "Vocals".into(),
+                },
+                Use::Playing {
+                    track: "Keys".into(),
+                    file: "Rhodes chord.wav".into(),
+                },
+            ]
+        };
+        let ask = |p: &mut Player| {
+            p.outbox.clear();
+            p.status_page_event(EventKind::Tab(FOOT));
+            assert!(
+                p.outbox.contains(&FromUi::CardUse),
+                "asked of the audio loop"
+            );
+            p.apply(ToUi::CardUse(uses()));
+            assert_eq!(p.ui.page(), PAGE);
+            assert!(p.take_actions().contains(&FromUi::Overlay(true)));
+            assert_eq!(p.eject.as_deref(), Some("System status"));
+        };
+        // The sheet, its outline on Eject; the wheel to Cancel and the
+        // push: the card stays in.
+        ask(&mut p);
+        let hint =
+            p.ui.get::<mpfree_ui::widgets::Label>("hint")
+                .map(|l| l.text.clone());
+        assert_eq!(hint.as_deref(), Some(HINT));
+        p.apply(ToUi::Rows(RowKey::Pick(-1)));
+        p.apply(ToUi::Rows(RowKey::Editing(true)));
+        assert_eq!(p.ui.page(), "System status");
+        assert!(p.eject.is_none() && lease.valid() && !p.sd_card.ejecting());
+        // A change of page cancels it too.
+        ask(&mut p);
+        p.apply(ToUi::Show(View::Play));
+        assert!(p.eject.is_none() && lease.valid());
+        p.apply(ToUi::Show(View::SystemStatus));
+        // Eject (System status's push under the sheet): the opening goes
+        // at once, then the card closes.
+        ask(&mut p);
+        p.apply(ToUi::StatusKey(StatusKey::Open));
+        assert_eq!(p.ui.page(), "System status");
+        assert!(!lease.valid(), "revoked: the takes let go of the card");
+        assert!(p.sd_card.ejecting());
+        assert_eq!(p.browser.as_ref().unwrap().card(), &CardState::Ejecting);
+        // The window's service closes it once asked.
+        let close = dir.join("run/sd-card.close");
+        let end = Instant::now() + Duration::from_secs(5);
+        while !close.exists() {
+            assert!(
+                Instant::now() < end,
+                "never asked to close: {:?}",
+                p.said_all
+            );
+            p.tick(0.01);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        std::fs::write(
+            dir.join("run/sd-card-status"),
+            "state=closed\nmessage=Closed. Nothing was written to the card.\nask=00ee\n",
+        )
+        .unwrap();
+        let end = Instant::now() + Duration::from_secs(5);
+        while p.sd_card.ejecting() {
+            assert!(Instant::now() < end, "never ejected: {:?}", p.said_all);
+            p.tick(0.01);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        p.tick(0.01);
+        assert!(
+            p.said_all
+                .iter()
+                .any(|l| l == "sd card: ejected: Closed. Nothing was written to the card."),
+            "{:?}",
+            p.said_all
+        );
+        assert!(p
+            .told
+            .as_ref()
+            .is_some_and(|t| t.0.contains("The SD card can be taken out now")));
+        assert_eq!(
+            p.browser.as_ref().unwrap().card(),
+            &CardState::Ejected { takes: true }
+        );
+        // Closed: Storage offers no Eject, and asking says so.
+        p.outbox.clear();
+        p.status_page_event(EventKind::Tab(FOOT));
+        assert!(!p.outbox.contains(&FromUi::CardUse));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Storage on System status asks the audio tracks for its numbers at
+    /// once and about once a second while it shows, and stops when another
+    /// system or page is picked (the SD card plan's B2c, screen 7d).
+    #[test]
+    fn storage_asks_for_its_numbers_while_it_shows() {
+        use crate::status_screen::StorageUse;
+        use mpfree_status::System;
+        let mut p = browser_samples(Fonts::embedded()).unwrap();
+        let asks = |p: &mut Player| {
+            let n = p
+                .outbox
+                .iter()
+                .filter(|a| **a == FromUi::StorageAsk)
+                .count();
+            p.outbox.clear();
+            n
+        };
+        p.apply(ToUi::Show(View::SystemStatus));
+        p.status_place.picked = System::Sound;
+        p.tick(0.1);
+        assert_eq!(asks(&mut p), 0, "not while another system shows");
+        p.status_place.picked = System::Storage;
+        p.tick(0.1);
+        assert_eq!(asks(&mut p), 1, "at once");
+        p.tick(0.5);
+        assert_eq!(asks(&mut p), 0);
+        p.tick(0.6);
+        assert_eq!(asks(&mut p), 1, "a second on");
+        let got = StorageUse {
+            parts: vec!["Vocals".into()],
+            armed: 1,
+            armed_bps: 288_000,
+            memory_s: Some(30.0),
+            ..Default::default()
+        };
+        p.apply(ToUi::StorageUse(Box::new(got.clone())));
+        assert_eq!(p.status_readings().storage, Some(got));
+        p.apply(ToUi::Show(View::Play));
+        p.tick(1.5);
+        assert_eq!(asks(&mut p), 0, "not once the page is gone");
+    }
+
+    /// S2b phase B2b, switched on as since B2c: once the stick's own
     /// recovery is done, the card is asked for; opened for saving (here a
     /// write window open from before, taken over), its work folder is
     /// looked at and the audio tracks record into `MPFree/.work/audiotracks`
@@ -43083,7 +43558,8 @@ mod tests {
         );
         std::fs::write(dir.join("run/sd-card-write-status"), &open).unwrap();
         let mut p = browser_samples(Fonts::embedded()).unwrap();
-        p.card_takes = crate::card_takes::CardTakes::new(true);
+        // As every start makes it since B2c (RECORD_ON_CARD).
+        p.card_takes = crate::card_takes::CardTakes::default();
         // A library of its own, on disk (the stick's data partition).
         std::fs::create_dir_all(dir.join("data")).unwrap();
         let lib = mpfree_library::Library::at(&dir.join("data")).unwrap();

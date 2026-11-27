@@ -4,18 +4,21 @@
 listening/bass[cloud-moving]/peak_rise_db	3.8131
 listening/bass[cloud]/peak_rise_db	2.251
 listening/bass[repeat]/peak_rise_db	-2.7911
+listening/bass[stretch-half-steady]/peak_rise_db	0.5594
 listening/bass[stretch-half]/peak_rise_db	-0.0006
 listening/bass[stretch]/peak_rise_db	0.1689
 listening/bass[tone]/peak_rise_db	-12.8008
 listening/drum-hits[cloud-moving]/peak_rise_db	1.3028
 listening/drum-hits[cloud]/peak_rise_db	1.1349
 listening/drum-hits[repeat]/peak_rise_db	-7.8049
+listening/drum-hits[stretch-half-steady]/peak_rise_db	-1.0183
 listening/drum-hits[stretch-half]/peak_rise_db	-1.0183
 listening/drum-hits[stretch]/peak_rise_db	0.0092
 listening/drum-hits[tone]/peak_rise_db	-7.2899
 listening/drum-loop[cloud-moving]/peak_rise_db	1.0746
 listening/drum-loop[cloud]/peak_rise_db	2.1227
 listening/drum-loop[repeat]/peak_rise_db	-6.3072
+listening/drum-loop[stretch-half-steady]/peak_rise_db	-0.0412
 listening/drum-loop[stretch-half]/peak_rise_db	-0.0412
 listening/drum-loop[stretch]/peak_rise_db	-0.0412
 listening/drum-loop[tone]/peak_rise_db	-7.6177
@@ -27,6 +30,9 @@ listening/noise[cloud]/peak_rise_db	2.4511
 listening/noise[cloud]/wobble_db	0.1614
 listening/noise[repeat]/peak_rise_db	-0.6047
 listening/noise[repeat]/wobble_db	0.1784
+listening/noise[stretch-half-steady]/level_change_lu	-0.2159
+listening/noise[stretch-half-steady]/peak_rise_db	1.3247
+listening/noise[stretch-half-steady]/wobble_db	0.8674
 listening/noise[stretch-half]/level_change_lu	-0.6486
 listening/noise[stretch-half]/peak_rise_db	1.0991
 listening/noise[stretch-half]/wobble_db	1.0229
@@ -38,6 +44,7 @@ listening/noise[tone]/wobble_db	-0.9468
 listening/piano[cloud-moving]/peak_rise_db	2.3713
 listening/piano[cloud]/peak_rise_db	-3.0828
 listening/piano[repeat]/peak_rise_db	-6.9312
+listening/piano[stretch-half-steady]/peak_rise_db	0.5425
 listening/piano[stretch-half]/peak_rise_db	-0.0101
 listening/piano[stretch]/peak_rise_db	0.7012
 listening/piano[tone]/peak_rise_db	-11.806
@@ -50,6 +57,9 @@ listening/tone-to-noise[cloud]/peak_rise_db	-0.3107
 listening/tone-to-noise[cloud]/wobble_db	0.1166
 listening/tone-to-noise[repeat]/peak_rise_db	-4.3139
 listening/tone-to-noise[repeat]/wobble_db	0.367
+listening/tone-to-noise[stretch-half-steady]/level_change_lu	0.0112
+listening/tone-to-noise[stretch-half-steady]/peak_rise_db	0.5814
+listening/tone-to-noise[stretch-half-steady]/wobble_db	-0.5729
 listening/tone-to-noise[stretch-half]/level_change_lu	-1.9541
 listening/tone-to-noise[stretch-half]/peak_rise_db	-1.122
 listening/tone-to-noise[stretch-half]/wobble_db	-0.4322
@@ -67,6 +77,9 @@ listening/tone[cloud]/peak_rise_db	4.3307
 listening/tone[cloud]/wobble_db	0.8517
 listening/tone[repeat]/peak_rise_db	-0.0164
 listening/tone[repeat]/wobble_db	1.0404
+listening/tone[stretch-half-steady]/level_change_lu	0.1577
+listening/tone[stretch-half-steady]/peak_rise_db	-0.0125
+listening/tone[stretch-half-steady]/wobble_db	0.0014
 listening/tone[stretch-half]/level_change_lu	-2.4219
 listening/tone[stretch-half]/peak_rise_db	-0.6416
 listening/tone[stretch-half]/wobble_db	0.0418
@@ -78,6 +91,7 @@ listening/tone[tone]/wobble_db	0.0007
 listening/vocal[cloud-moving]/peak_rise_db	2.0804
 listening/vocal[cloud]/peak_rise_db	1.0479
 listening/vocal[repeat]/peak_rise_db	-2.1895
+listening/vocal[stretch-half-steady]/peak_rise_db	0.9516
 listening/vocal[stretch-half]/peak_rise_db	-1.6418
 listening/vocal[stretch]/peak_rise_db	0.0011
 listening/vocal[tone]/peak_rise_db	-5.1536
@@ -89,6 +103,9 @@ listening/wide-pad[cloud]/peak_rise_db	0.546
 listening/wide-pad[cloud]/wobble_db	0.1815
 listening/wide-pad[repeat]/peak_rise_db	-1.8531
 listening/wide-pad[repeat]/wobble_db	0.7225
+listening/wide-pad[stretch-half-steady]/level_change_lu	0.2839
+listening/wide-pad[stretch-half-steady]/peak_rise_db	0.2304
+listening/wide-pad[stretch-half-steady]/wobble_db	0.4006
 listening/wide-pad[stretch-half]/level_change_lu	-0.7942
 listening/wide-pad[stretch-half]/peak_rise_db	-1.538
 listening/wide-pad[stretch-half]/wobble_db	-0.1312

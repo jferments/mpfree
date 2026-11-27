@@ -860,6 +860,9 @@ impl Desk<'_> {
             | gui::FromUi::OpenAudio(_)
             | gui::FromUi::AudioFiles(_)
             | gui::FromUi::AudioDrive(_)
+            | gui::FromUi::AudioJoin(..)
+            | gui::FromUi::CardUse
+            | gui::FromUi::StorageAsk
             | gui::FromUi::AudioSavedInto(_)
             | gui::FromUi::TrackInstrument(_)
             // A MIDI file's notes go on the pads the instruments play them on.

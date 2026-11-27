@@ -224,7 +224,7 @@ The audio tracks are saved with the project (**SHIFT + BROWSE**): every take, th
 
 ### Every take goes to the drive as you record
 
-You don't have to save to keep a take safe. Each take is written to a file of its own on the drive while you record, a little at a time, named after its track: a take on **Vocal** becomes a file like `Vocal_1f3a…wav`. The file is made as soon as you arm the track, so if the drive can't take it (it's full, or not there), the track doesn't arm and the log says why. When you save the project, each take's file is copied into the project's `samples` folder as it is.
+You don't have to save to keep a take safe. Each take is written to a file of its own on the drive while you record (the SD card in the MPC's slot when it is open for recording, otherwise the USB stick: see [Recording on the card](saving.md#recording-on-the-card)), a little at a time, named after its track: a take on **Vocal** becomes a file like `Vocal_1f3a…wav`. The file is made as soon as you arm the track, so if the drive can't take it (it's full, or not there), the track doesn't arm and the log says why. When you save the project, each take's file is copied into the project's `samples` folder as it is.
 
 If mpfree stops while you record (a crash, or the power goes), the take is not lost. At the next start, mpfree finishes it up to the last moment that reached the drive (usually all but the last two seconds or so) and puts it in **Recordings** in the browser. Takes you recorded but never saved in a project go there too. The log says what was found, and the screen tells you when takes were recovered. To use one again, load it on the Sample tab and put it on an audio track, as in [A sound from the Sample tab](#record-your-first-take).
 

@@ -229,6 +229,24 @@ pub static CARD_MISSING: Kind = Kind {
     hides: &[&RECORDING_AT_RISK, &NOT_SAVED_YET, &CARD_NEARLY_FULL],
 };
 
+/// The SD card came out while takes recorded on it, and the USB stick
+/// couldn't take them over (the SD card plan's B2c): a take that carried
+/// on there stopped by itself, or recording couldn't move there at all.
+/// What each take saved on the card stays there.
+pub static CARD_OUT_STOPPED: Kind = Kind {
+    id: "storage/card-out-stopped",
+    system: System::Storage,
+    level: Level::Fail,
+    shape: Shape::Stays,
+    short: "SD card out",
+    title: "Recording stopped when the SD card came out",
+    what: "What was recorded is kept. The USB stick had no room to carry on recording.",
+    to_try: "Put the card back in, or make room on the stick, then record again.",
+    action: None,
+    manual: "recording-stopped-when-the-sd-card-came-out",
+    hides: &[&CARD_MISSING, &CARD_OUT],
+};
+
 /// A take is At risk (`TakeState::AtRisk`): writes, syncs or records keep
 /// failing, or the stick is full or gone, so a cut now loses everything
 /// after its last committed frame. It still plays from capture memory.
@@ -404,6 +422,24 @@ pub static STICK_NEARLY_FULL: Kind = Kind {
     action: None,
     manual: "the-stick-is-nearly-full",
     hides: &[],
+};
+
+/// The SD card came out while takes recorded on it, and they carried on
+/// on the USB stick (the SD card plan's B2c): it lasts while any take
+/// waits for its first part from the card, which the same card brings
+/// back when it is in again.
+pub static CARD_OUT: Kind = Kind {
+    id: "storage/card-out",
+    system: System::Storage,
+    level: Level::Warn,
+    shape: Shape::Stays,
+    short: "SD card out",
+    title: "The SD card came out",
+    what: "What each take saved there is still on the card, and recording carries on on the USB stick.",
+    to_try: "Put the same card back in: MPFree joins each take\u{2019}s two parts on the USB stick.",
+    action: None,
+    manual: "the-sd-card-came-out",
+    hides: &[&CARD_MISSING],
 };
 
 /// Under 1 GB, or under 10 minutes of what is armed, left on the SD card
@@ -752,6 +788,7 @@ pub static ALL: &[&Kind] = &[
     &NOT_ENOUGH_MEMORY,
     &STICK_MISSING,
     &CARD_MISSING,
+    &CARD_OUT_STOPPED,
     &RECORDING_AT_RISK,
     &RECORDING_STOPPED,
     &CARD_REMOVED,
@@ -762,6 +799,7 @@ pub static ALL: &[&Kind] = &[
     &RECORDING_MAY_STOP,
     &NOT_SAVED_YET,
     &STREAMING_AT_LIMIT,
+    &CARD_OUT,
     &STICK_NEARLY_FULL,
     &CARD_NEARLY_FULL,
     &TAKE_DAMAGED,
@@ -920,6 +958,7 @@ mod tests {
             &STREAMING_AT_LIMIT,
             &STICK_NEARLY_FULL,
             &CARD_NEARLY_FULL,
+            &CARD_OUT,
             &CLOCK_STOPPED,
             &MPC_HOT,
             &PROCESSOR_SLOWED,
@@ -935,6 +974,7 @@ mod tests {
             &STICK_FELL_BEHIND,
             &CARD_REMOVED,
             &CARD_MISSING,
+            &CARD_OUT_STOPPED,
             &PLUGIN_STOPPED,
             &STICK_ERRORS,
             &STICK_FILES_ERROR,
