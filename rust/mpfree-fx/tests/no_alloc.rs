@@ -429,6 +429,15 @@ fn mixer_never_allocates(lane: bool, pipe: bool) {
         let rec = tracks[rng.next() as usize % tracks.len()];
         let from = m.capture_for((StripId::Master, CapturePoint::BeforeInserts), rec);
         m.set_capture_from(9, from.ok());
+        // The routing check (audio tracks 6.0.4), on the routes as they
+        // are, every way.
+        let pair = [rec, tracks[rng.next() as usize % tracks.len()]];
+        let _ = (
+            m.stand_in(&pair[..1], StandCapture::BeforeFader),
+            m.stand_in(&pair, StandCapture::AfterFader),
+            m.stand_in(&pair, StandCapture::Bus(StripId::Bus(0))),
+            m.stand_in(&strips[..3], StandCapture::Bus(StripId::Bus(1))),
+        );
         // The Loop group's Delay (audio tracks 4e.1): an offset on a
         // track's Send A, coming and going.
         if rng.next().is_multiple_of(10) {

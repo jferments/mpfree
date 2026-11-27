@@ -1358,6 +1358,13 @@ class StaticTests(unittest.TestCase):
                     # samples/, the work folder's copy goes (only a file directly in that folder), and the
                     # layer is read back from the project's copy from then on (phase 4d.4, reads only).
                     ("mpfree-audiotracks/files.rs", "let _ = std::fs::remove_file(&*path);"),
+                    # Cut-off hidden files (files.rs recover_into, audio tracks phase 6.0.3): at start, a file a
+                    # take's, a loop layer's or a render's writer left half made goes. Only a plain file
+                    # (symlink_metadata, so never a link, and unlink never follows one) directly in the work folder,
+                    # whose name starts with '.' and ends with '.part'. No take's file can look like that: a
+                    # track's name loses its leading dots and spaces (files::Name::new), and a take's files end in
+                    # .wav, .wav.recording, .wav.checkpoint, .wav.hole or .unverified.wav/.raw (mpfree-stream rec.rs).
+                    ("mpfree-audiotracks/files.rs", "std::fs::remove_file(&from)?;"),
                     # The SD card's read-only window, the pad player's side (sd_card.rs, SD card step S1): its
                     # request and close are small files in /run/mpfree-app (RAM, Paths::on_the_stick with
                     # REPORT_DIR), written whole under a hidden name there (one an earlier try left removed

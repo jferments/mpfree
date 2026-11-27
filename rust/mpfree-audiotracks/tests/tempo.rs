@@ -57,6 +57,7 @@ fn clicks(id: u16, track: usize, bpm: f64, beats: usize) -> TakeFile {
 
 fn take(id: u16, track: usize, bpm: f64, frames: usize, audio: Vec<f32>) -> TakeFile {
     TakeFile {
+        prov: None,
         id,
         rec: RecordingId(500 + u128::from(id)),
         track,

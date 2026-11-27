@@ -44,6 +44,7 @@ fn lp(id: u128, origin: i64) -> Plays<'static> {
 /// A take of ones on track 0, `frames` long.
 fn ones(frames: usize) -> TakeFile {
     TakeFile {
+        prov: None,
         id: 0,
         rec: RecordingId(100),
         track: 0,

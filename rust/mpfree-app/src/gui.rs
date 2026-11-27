@@ -41513,6 +41513,7 @@ mod tests {
                 }],
             }],
             takes: vec![mpfree_audiotracks::save::TakeFile {
+                prov: None,
                 id: 4,
                 rec: mpfree_audiotracks::RecordingId(0x77),
                 track: 1,

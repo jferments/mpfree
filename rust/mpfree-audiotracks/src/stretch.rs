@@ -93,6 +93,7 @@ impl StretchJob {
         let frames = audio.len() / ch;
         Some((
             TakeFile {
+                prov: None,
                 id: self.new_id,
                 // A copy of its own for now (its own lasting id); a cache
                 // filed under the recording it came from with tempo (phase 5).

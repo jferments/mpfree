@@ -230,6 +230,12 @@ pub const LOOP_RECORDINGS: &str = "loop-recordings";
 /// would skip those words and play the audio at its recorded rate, and
 /// drop them at its next save, so it refuses the project instead.
 pub const AUDIO_TEMPO: &str = "audio-tempo";
+/// A project with a take a render made, which says where it came from
+/// (the audio tracks rethink, phase 6.0.1, `mpfree_audiotracks::render`):
+/// a build from before would skip those words and drop them at its next
+/// save, so the recording could no longer be traced to its source; it
+/// refuses the project instead.
+pub const AUDIO_PROVENANCE: &str = "audio-provenance";
 /// A project with a grain layer's routes from velocity, pressure or the
 /// key (sampler step 17c, `mpfree_sampler::model::GrainRoutes`): an older
 /// build would play the layer without them and drop them at its next
@@ -252,6 +258,7 @@ pub const KNOWN_NEEDS: &[&str] = &[
     GRAIN_ROUTES_NEED,
     LOOP_RECORDINGS,
     AUDIO_TEMPO,
+    AUDIO_PROVENANCE,
 ];
 
 // ------------------------------------------------------------ the loop's side
@@ -544,6 +551,13 @@ pub fn snapshot(c: &Collected, extra: Vec<(String, String)>) -> Snapshot {
             .any(|(name, text)| name == AUDIOTRACKS && mpfree_audiotracks::save::needs_tempo(text))
     {
         needs.push(AUDIO_TEMPO);
+    }
+    // Takes a render made, with where they came from (phase 6.0.1).
+    if parts
+        .iter()
+        .any(|(name, text)| name == AUDIOTRACKS && mpfree_audiotracks::save::needs_provenance(text))
+    {
+        needs.push(AUDIO_PROVENANCE);
     }
     if !needs.is_empty() {
         extra.push((NEEDS_KEY.to_string(), needs.join(" ")));
@@ -3701,6 +3715,7 @@ mod tests {
                 rate: 44_100,
                 tracks: Vec::new(),
                 takes: vec![TakeFile {
+                    prov: None,
                     id: 0,
                     rec: RecordingId(rec),
                     track: 0,
@@ -4061,6 +4076,7 @@ mod tests {
                 regions: vec![region],
             }],
             takes: vec![TakeFile {
+                prov: None,
                 path: None,
                 id: 0,
                 rec: mpfree_audiotracks::RecordingId(9),
@@ -4081,6 +4097,30 @@ mod tests {
         region.follow = mpfree_audiotracks::FollowTempo::Repitch;
         saved.tracks[0].regions[0] = region;
         assert_eq!(needs(&c, part(&saved)).0.as_deref(), Some("audio-tempo"));
+
+        // A take a render made, saying where it came from (phase 6.0.1):
+        // a build from before would drop that at its next save.
+        use mpfree_audiotracks::render::{Provenance, Purpose, RenderDesc};
+        region.follow = mpfree_audiotracks::FollowTempo::Off;
+        saved.tracks[0].regions[0] = region;
+        let rec = mpfree_audiotracks::RecordingId(9);
+        let made = RenderDesc::frames(rec, 88_200, 0, 88_200, Purpose::Recording);
+        saved.takes[0].prov = Some(Provenance::of(&made, 1_764_100_000));
+        let (line, snap) = needs(&c, part(&saved));
+        assert_eq!(line.as_deref(), Some("audio-provenance"));
+        assert_eq!(check(&snap), Ok(FORMAT));
+        let before: Vec<&str> = KNOWN_NEEDS
+            .iter()
+            .copied()
+            .filter(|&n| n != AUDIO_PROVENANCE)
+            .collect();
+        assert_eq!(
+            check_against(&snap, &before),
+            Err(
+                "it needs audio-provenance, which this MPFree hasn't got. Update MPFree to open it"
+                    .to_string()
+            )
+        );
     }
 
     /// Sampler step 16: a learned control that names a kit's pad or a
@@ -4967,6 +5007,7 @@ mod tests {
                 (0..frames * channels).map(|k| k as f32 / 800.0).collect()
             };
             TakeFile {
+                prov: None,
                 id,
                 rec: rec(id),
                 track: 0,
