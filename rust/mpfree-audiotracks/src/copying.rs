@@ -6,9 +6,13 @@
 //! 1. **What is wanted.** Every few periods, and at the next after a
 //!    command (it may have edited a region) or a copy coming back, once
 //!    the tempo map has held for half a second (a tempo being turned asks
-//!    for nothing): the keys of every song region on Stretch over one
-//!    steady tempo and of the clips' regions on Stretch the app lists
-//!    ([`ClipWant`], at the tempo at the playhead), most urgent first:
+//!    for nothing; the map that comes with the tracks, as a project or a
+//!    set's next song opens, counts as held at once, 5d.3): the keys of every song region on Stretch (over one
+//!    steady tempo, or following the map where it changes over the
+//!    region, 5d.1, the map and its place going with the want to the
+//!    worker: [`Over`]) and of the clips' regions on Stretch the app lists
+//!    ([`ClipWant`], at the tempo at the playhead, and at each tempo a
+//!    tempo point in the next eight bars brings, 5d.2), most urgent first:
 //!    song regions from the playhead to two bars on and the clips the app
 //!    says play, and the copies the regions drifting on Keep pitch wait
 //!    for ([`Priority::Protect`]), then what comes in the next eight
@@ -35,7 +39,7 @@
 //!    dropped, never played.
 //!
 //! Not yet: copies of a take on its file (it plays Repitch; streaming
-//! stays off on the MPC for now), and ramps and steps (5d).
+//! stays off on the MPC for now).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -45,7 +49,7 @@ use mpfree_stretch::sched::Priority;
 use mpfree_transport::time::{TempoMap, Tick, PPQ};
 
 use crate::clips::{ClipPlay, ClipRegion, MAX_CLIP_REGIONS};
-use crate::copies::{CopyKey, CopySpec};
+use crate::copies::{CopyKey, CopySpec, Over};
 use crate::{AudioTracks, FollowTempo, RecordingId, MAX_TRACKS};
 
 /// Copies wanted at once, at most: past it the least urgent are left
@@ -84,6 +88,9 @@ pub(crate) struct Want {
     pub take: u16,
     pub channels: u8,
     pub priority: Priority,
+    /// For a song region over a tempo change, the map and place its copy
+    /// follows (5d.1).
+    pub over: Option<Over>,
 }
 
 /// What the copies have done, for the debug lines and tests.
@@ -185,7 +192,10 @@ impl CopyState {
     }
 }
 
-/// What the host tells its worker about copies.
+/// What the host tells its worker about copies. Sent from the audio
+/// thread, so [`Ask::Make`] isn't boxed, though a copy over a tempo change
+/// carries the song's map (5d.1).
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum Ask {
     /// A zeroed buffer of this many samples, for `key`'s source.
     Buffer { n: usize, key: CopyKey, gen: u32 },
@@ -245,6 +255,9 @@ pub(crate) struct CopySide {
     /// What all derived audio used at the last look: once it is less,
     /// copies that found no room are asked for again.
     used_at_look: u64,
+    /// The takes still copying in at the last period: one done may have
+    /// copies to make, so it is looked at again (5d.3).
+    loading: usize,
 }
 
 impl CopySide {
@@ -265,6 +278,7 @@ impl CopySide {
             periods: 0,
             relook: false,
             used_at_look: 0,
+            loading: 0,
         }
     }
 
@@ -374,10 +388,22 @@ impl CopySide {
         self.periods += 1;
         if self.map.as_ref() == Some(map) {
             self.held_for += frames as u64;
+        } else if self.map.is_none() {
+            // The map that came with the tracks (a project or a set's song
+            // opening, or the first): nobody is turning it, so it counts
+            // as held, and the copies are asked for at once (5d.3).
+            self.map = Some(*map);
+            self.held_for = u64::from(tracks.rate()) / 2;
+            self.relook = true;
         } else {
             self.map = Some(*map);
             self.held_for = 0;
         }
+        let loading = tracks.loading();
+        if loading < self.loading {
+            self.relook = true;
+        }
+        self.loading = loading;
         let steady = self.held_for >= u64::from(tracks.rate()) / 2;
         if steady && (self.relook || self.periods.is_multiple_of(WANT_EVERY)) {
             self.relook = false;
@@ -433,19 +459,44 @@ impl CopySide {
                     stamp: 0,
                 };
                 let at = if c.bpm > 0.0 { c.bpm } else { bpm };
-                tracks.clip_copy_keys(&play, at, &mut |_, key| {
-                    let Some(take) = tracks.take_of(key.rec) else {
-                        return;
-                    };
-                    let channels = tracks.take(take).map_or(1, |i| i.channels as u8);
-                    let w = Want {
-                        key,
-                        take,
-                        channels,
-                        priority: c.priority,
-                    };
-                    push(out, w);
-                });
+                let mut want = |out: &mut Vec<Want>, bpm: f64, priority: Priority| {
+                    tracks.clip_copy_keys(&play, bpm, &mut |_, key| {
+                        let Some(take) = tracks.take_of(key.rec) else {
+                            return;
+                        };
+                        let channels = tracks.take(take).map_or(1, |i| i.channels as u8);
+                        let w = Want {
+                            key,
+                            take,
+                            channels,
+                            priority,
+                            over: None,
+                        };
+                        push(out, w);
+                    });
+                };
+                want(out, at, c.priority);
+                // Each tempo the song's map plays steadily at from a tempo
+                // point in the next eight bars (a ramp's end tempo where it
+                // ends), so a clip playing switches to its copy there
+                // (5d.2).
+                let segs = map.segments();
+                for (i, s) in segs.iter().enumerate().skip(1) {
+                    let st = s.start as f64;
+                    if st > now + 8.0 * bar {
+                        break;
+                    }
+                    if st > now && !map.is_ramp(i) && s.bpm != at {
+                        // Within two bars as needed next, as a song
+                        // region's; never more urgent than the clip.
+                        let soon = if st <= now + 2.0 * bar {
+                            Priority::Protect
+                        } else {
+                            Priority::Prepared
+                        };
+                        want(out, s.bpm, c.priority.max(soon));
+                    }
+                }
             };
         // The clips launched and waiting for their copies (5b.4), then
         // the regions drifting on Keep pitch: they rejoin the bars once
@@ -463,6 +514,7 @@ impl CopySide {
                 take,
                 channels,
                 priority: Priority::Protect,
+                over: None,
             };
             push(&mut out, w);
         });
@@ -474,10 +526,15 @@ impl CopySide {
                 let Some(key) = tracks.song_copy_key(r, map) else {
                     continue;
                 };
+                let (s, e) = (r.start as f64, r.end as f64);
+                let over = (key.shape != 0).then_some(Over {
+                    map: *map,
+                    at: s,
+                    len: e - s,
+                });
                 let Some(info) = tracks.take(r.take) else {
                     continue;
                 };
-                let (s, e) = (r.start as f64, r.end as f64);
                 let priority = if s <= now + 2.0 * bar && e > now {
                     Priority::Protect
                 } else if s <= now + 8.0 * bar {
@@ -490,6 +547,7 @@ impl CopySide {
                     take: r.take,
                     channels: info.channels as u8,
                     priority,
+                    over,
                 };
                 push(&mut out, w);
             }
@@ -694,6 +752,7 @@ impl CopySide {
                 key,
                 channels: want.channels,
                 audio,
+                over: want.over,
             },
             priority: want.priority,
             need,

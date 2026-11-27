@@ -203,6 +203,10 @@ pub struct TakeWave {
     pub columns: Vec<(f32, f32)>,
 }
 
+// The audio thread sends these, so a large one ([`Ask::Make`], whose copy
+// over a tempo change carries the song's map, 5d.1) isn't boxed: a box
+// would be made on the audio thread.
+#[allow(clippy::large_enum_variant)]
 enum ToWorker {
     /// Room for a save (`Saved::room`), for the audio thread to fill.
     Room,

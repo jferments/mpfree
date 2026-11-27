@@ -25,7 +25,7 @@ use mpfree_audiotracks::{
     ClipRegion, Command as A, FollowTempo, Input, Monitor, RecordingId, Region, MAX_CLIP_REGIONS,
 };
 use mpfree_stretch::sched::{Config, Priority, Sched};
-use mpfree_transport::time::PPQ;
+use mpfree_transport::time::{Segment, TempoMap, PPQ};
 use mpfree_transport::{Block, Command as T, Transport};
 
 const RATE: u32 = 22_050;
@@ -161,11 +161,6 @@ impl Rig {
 #[test]
 fn a_song_regions_copy_is_read_made_on_the_scheduler_and_played() {
     let mut r = Rig::new(90.0, vec![stretch_region()]);
-    // Nothing is asked for until the tempo has held for half a second.
-    for _ in 0..RATE as u64 / 2 / P - 2 {
-        r.period();
-    }
-    assert!(r.s.is_empty() && r.h.copy_memory().2 == 0);
     r.run_until(true, |r| r.copies() == 1);
     let c = r.h.copy_counts();
     assert_eq!(
@@ -289,11 +284,14 @@ fn play(w: &ClipWant) -> ClipPlay<'_> {
 
 #[test]
 fn where_a_clips_copy_stands_goes_from_waiting_through_making_to_ready() {
-    let mut r = Rig::new(90.0, vec![]);
+    let mut r = Rig::new(100.0, vec![]);
     let w = clip_of(FollowTempo::Stretch);
     r.h.clip_copies(vec![w]);
-    // Once its take is in, and until the tempo has held long enough to
-    // ask for it (half a second), it waits its turn.
+    // The tempo turned to 90 as its take copies in: once the take is in,
+    // and until the tempo has held long enough to ask for its copy (half a
+    // second), it waits its turn.
+    r.period();
+    assert!(r.t.command(r.frame, T::SetTempo(90.0)));
     r.run_until(false, |r| {
         r.h.clip_copy_state(&play(&w), 90.0) != CopyState::None
     });
@@ -550,4 +548,114 @@ fn a_region_on_keep_pitch_drifts_through_a_tempo_change_until_its_copy_is_made_t
         (st.drifted as f64 - drift).abs() <= 2.0 * P as f64 + 64.0,
         "drifted to bar 2's line: {st:?}, {drift}"
     );
+}
+
+#[test]
+fn a_song_region_over_a_ramp_gets_the_copy_that_follows_it_and_keeps_its_pitch() {
+    // 120 ramping to 140 over the region's two bars (5d.1).
+    let mut r = Rig::new(120.0, vec![stretch_region()]);
+    let map = TempoMap::new(&[
+        Segment {
+            start: 0,
+            bpm: 120.0,
+        },
+        Segment {
+            start: 2 * BAR,
+            bpm: 140.0,
+        },
+    ])
+    .unwrap()
+    .ramp(0)
+    .unwrap();
+    assert!(r.t.set_tempo_map(map).is_ok());
+    r.run_until(true, |r| r.copies() == 1);
+    let key =
+        r.h.tracks
+            .song_copy_key(&r.h.tracks.regions(0)[0], &map)
+            .unwrap();
+    assert_ne!(key.shape, 0);
+    assert!(r.h.tracks.has_copy(&key), "the copy that follows the ramp");
+    let at = r.frame;
+    assert!(r.t.command(at, T::PlayStart));
+    let end = at + map.frames_between(0.0, (2 * BAR) as f64, RATE) as u64;
+    r.run_until(false, |r| r.frame >= end);
+    let half = (at + end) / 2;
+    for (a, b) in [(at + 1_000, half), (half, end - 500)] {
+        let hz = r.hz(a, b);
+        assert!((hz - 441.0).abs() <= 1.5, "{a}..{b}: {hz} Hz");
+    }
+    let st = r.h.tracks.stats();
+    assert!(st.copied > 0 && st.for_now == 0, "{st:?}");
+}
+
+#[test]
+fn a_listed_clip_gets_its_copies_for_each_tempo_point_in_the_next_eight_bars() {
+    // 90, 100 from bar 3, a ramp from bar 5 to 110 at bar 7, and 120 from
+    // bar 12 (past eight bars from the playhead): copies at 90, 100 and
+    // 110, none for the ramp's glide or for 120 (5d.2).
+    let mut r = Rig::new(90.0, vec![]);
+    let map = TempoMap::new(&[
+        Segment {
+            start: 0,
+            bpm: 90.0,
+        },
+        Segment {
+            start: 2 * BAR,
+            bpm: 100.0,
+        },
+        Segment {
+            start: 4 * BAR,
+            bpm: 100.0,
+        },
+        Segment {
+            start: 6 * BAR,
+            bpm: 110.0,
+        },
+        Segment {
+            start: 11 * BAR,
+            bpm: 120.0,
+        },
+    ])
+    .unwrap()
+    .ramp(2)
+    .unwrap();
+    assert!(r.t.set_tempo_map(map).is_ok());
+    r.h.clip_copies(vec![clip_of(FollowTempo::Stretch)]);
+    r.run_until(true, |r| r.copies() == 3);
+    // Room to make a fourth, if one were wanted.
+    for _ in 0..200 {
+        r.period();
+        r.s.step();
+    }
+    let mut tempos: Vec<f64> =
+        r.h.tracks
+            .copies()
+            .map(|v| f64::from_bits(v.key.tempo))
+            .collect();
+    tempos.sort_by(f64::total_cmp);
+    assert_eq!(tempos, vec![90.0, 100.0, 110.0]);
+}
+
+#[test]
+fn an_opened_projects_copies_are_asked_at_once_and_a_tempo_turned_waits_half_a_second() {
+    // The map that comes with the tracks (a project or a set's next song
+    // opening) is nobody turning it: its copies are asked for at once
+    // (5d.3), while the takes still copy in.
+    let mut r = Rig::new(90.0, vec![stretch_region(), later_region()]);
+    let t0 = r.frame;
+    r.run_until(false, |r| !r.s.is_empty());
+    assert!(
+        r.frame - t0 < u64::from(RATE) / 4,
+        "{} frames",
+        r.frame - t0
+    );
+    r.run_until(true, |r| r.copies() == 2);
+    // A tempo turned asks for nothing until it has held for half a
+    // second.
+    assert!(r.t.command(r.frame, T::SetTempo(100.0)));
+    for _ in 0..RATE as u64 / 2 / P - 2 {
+        r.period();
+    }
+    assert!(r.s.is_empty() && r.h.copy_memory().2 == 0);
+    r.run_until(true, |r| r.copies() == 4);
 }

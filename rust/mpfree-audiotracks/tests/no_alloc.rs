@@ -8,7 +8,8 @@
 //! stops, a take loaded from a save and takes read for one, at period
 //! sizes from 1 to 4096; takes played from their files, by the tracks
 //! alone and in the host; and Stretch's copies made and played through
-//! the host (phase 5b).
+//! the host (phase 5b), and a clip switching copies at tempo points
+//! (5d.2).
 //!
 //! This test file is its own program, so its global allocator (the only
 //! unsafe code here, a pass-through to the system allocator) does not
@@ -1245,4 +1246,153 @@ fn copies_made_and_played(keep_pitch: bool) {
     // None, the three sent to the worker included (see above).
     assert_eq!(cleared, 0, "allocations clearing the copies");
     assert_eq!(calls, 0, "allocations in the host's period");
+}
+
+/// Phase 5d.2: a clip on Stretch playing across a tempo point (switching
+/// to its copy there, crossfaded), into a ramp (crossfading to Repitch)
+/// and out of it with no copy for its end tempo, on Play on time and on
+/// Keep pitch, at periods from 1 to 4096: no allocation.
+#[test]
+fn a_clip_switching_copies_at_tempo_points_never_allocates() {
+    use mpfree_audiotracks::copies::{self, CopySpec};
+    use mpfree_audiotracks::{Answer, ClipPlay, ClipRegion, Plays, RecordingId};
+    use mpfree_transport::time::{Segment, TempoMap};
+    const RATE: u32 = 22_050;
+    let bar = 4 * i64::from(mpfree_transport::time::PPQ);
+    let rec = RecordingId(950);
+    let frames = (8.0 * 60.0 * f64::from(RATE) / 120.0) as usize;
+    let audio: Vec<f32> = (0..frames)
+        .map(|j| ((j * 31) % 97) as f32 / 97.0 - 0.5)
+        .collect();
+    let map = TempoMap::new(&[
+        Segment {
+            start: 0,
+            bpm: 90.0,
+        },
+        Segment {
+            start: bar,
+            bpm: 100.0,
+        },
+        Segment {
+            start: 3 * bar,
+            bpm: 100.0,
+        },
+        Segment {
+            start: 4 * bar,
+            bpm: 110.0,
+        },
+    ])
+    .unwrap()
+    .ramp(2)
+    .unwrap();
+    for keep_pitch in [false, true] {
+        let regions = [ClipRegion {
+            start: 0,
+            end: 2 * bar,
+            rec,
+            src: 0,
+            phase: 0.0,
+            gain: 1.0,
+            fade_in: 0,
+            fade_out: 0,
+            into: 0,
+            left: 0,
+            follow: FollowTempo::Stretch,
+            keep_pitch,
+            bpm: 0.0,
+        }];
+        let clip = ClipPlay {
+            regions: &regions,
+            origin: 0.0,
+            len: 2 * bar,
+            last_frame: frames as i64,
+            gain: 1.0,
+            clip: 1,
+            stamp: 1,
+        };
+        for period in [1usize, 64, 333, 4096] {
+            let mut a = AudioTracks::new(RATE, 20);
+            let take = TakeFile {
+                id: 0,
+                rec,
+                track: 0,
+                group: 0,
+                pass: 0,
+                bpm: 120.0,
+                varied: false,
+                anchor: 0.0,
+                frames,
+                channels: 1,
+                file: String::new(),
+                path: None,
+                audio: audio.clone(),
+            };
+            assert!(a.load_take(take).is_ok());
+            let mut t = Transport::new(RATE, 90.0).unwrap();
+            assert!(t.set_tempo_map(map).is_ok());
+            let mut b = Block::new();
+            let input = vec![0.0f32; 2 * period];
+            let mut out = vec![0.0f32; 2 * period];
+            // The take copied in, then its copies for 90 and 100.
+            let mut frame = 0u64;
+            while a.loading() > 0 {
+                assert!(t.process(period as u32, &mut b));
+                let m = *t.tempo_map();
+                a.process_with(&b, &m, &input, &mut out, &[]);
+                frame += period as u64;
+            }
+            for bpm in [90.0, 100.0] {
+                let mut key = None;
+                a.clip_copy_keys(&clip, bpm, &mut |_, k| key = Some(k));
+                let key = key.unwrap();
+                let from = CopySpec::frames_from(&key);
+                let n = CopySpec::frames_in(&key);
+                let src = (0..n as i64)
+                    .map(|i| {
+                        let g = from + i;
+                        if g >= 0 && (g as usize) < audio.len() {
+                            audio[g as usize]
+                        } else {
+                            0.0
+                        }
+                    })
+                    .collect();
+                let c = copies::make(CopySpec {
+                    key,
+                    channels: 1,
+                    audio: src,
+                    over: None,
+                })
+                .unwrap();
+                assert!(a.put_copy(c).is_ok());
+            }
+            assert!(t.command(frame, T::PlayStart));
+            let answers = [Answer {
+                start: Plays::Clip(clip),
+                muted: false,
+                changes: &[],
+                superseded: 0,
+            }];
+            // Past the ramp's end, into bar 6.
+            let end = frame + (11.0 * 4.0 * 60.0 * f64::from(RATE) / 90.0) as u64;
+            CALLS.with(|c| c.set(0));
+            let mut calls = 0;
+            while frame < end {
+                watch(true);
+                assert!(t.process(period as u32, &mut b));
+                let m = *t.tempo_map();
+                a.process_with(&b, &m, &input, &mut out, &answers);
+                let _ = a.stats();
+                let _ = a.on_stretch(0, 1);
+                watch(false);
+                calls += CALLS.with(Cell::get);
+                CALLS.with(|c| c.set(0));
+                frame += period as u64;
+            }
+            let st = a.stats();
+            assert!(st.copied > 0 && st.for_now > 0, "{st:?}");
+            assert_eq!(calls, 0, "period {period}, keep pitch {keep_pitch}");
+            while a.take_dropped_copy().is_some() {}
+        }
+    }
 }
