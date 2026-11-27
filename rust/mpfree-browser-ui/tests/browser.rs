@@ -2086,7 +2086,11 @@ fn the_sd_card_opens_when_its_place_shows_and_is_read_like_a_place() {
     assert_eq!(names(&b), ["Breaks", "Rhodes chord.wav"]);
     let s = b.screen();
     assert_eq!(s.path, "SD card \u{b7} exFAT, 63.9 GB \u{b7} read only");
-    assert!(s.list_buttons.is_empty(), "no New folder or Paste");
+    assert_eq!(
+        s.list_buttons,
+        [Button::EjectCard],
+        "no New folder or Paste: Eject card only"
+    );
     assert_eq!(s.status, None);
     // A sound: heard, loaded and copied, nothing else.
     select(&mut b, "Rhodes chord.wav");
@@ -2229,6 +2233,60 @@ fn once_the_card_closes_its_place_is_empty_and_a_copy_from_it_is_dropped() {
     );
     b.go_source(src("Samples"));
     assert!(!b.screen().list_buttons.contains(&Button::Paste));
+}
+
+/// Eject card (the SD card plan's B2c): on the open card's place; the app
+/// closes the card, and the place says it can be taken out until Use the
+/// card again, which opens it again. Showing the place doesn't.
+#[test]
+fn an_open_card_can_be_ejected_and_used_again() {
+    let (mut b, lib) = browser();
+    let card = card_beside(&lib);
+    assert!(!b.screen().list_buttons.contains(&Button::EjectCard));
+    open_card(&mut b, &lib, &card, false);
+    assert_eq!(b.screen().list_buttons, [Button::EjectCard]);
+    b.input(Input::Button(Button::EjectCard));
+    assert_eq!(b.take_actions(), [BrowseAction::EjectCard]);
+    b.set_card(CardState::Ejecting);
+    let s = b.screen();
+    assert_eq!(s.path, "SD card \u{b7} ejecting");
+    assert!(s.rows.is_empty() && s.list_buttons.is_empty());
+    // Pressed again meanwhile: nothing.
+    b.input(Input::Button(Button::EjectCard));
+    assert!(b.take_actions().is_empty());
+    lib.set_card(None);
+    b.set_card(CardState::Ejected { takes: true });
+    let s = b.screen();
+    assert_eq!(s.path, "SD card \u{b7} ejected");
+    assert!(s.card_ejected && s.card_takes_out);
+    assert_eq!(s.detail.kind, "The SD card can be taken out now");
+    // Its place shown again, or the browser again: it stays ejected.
+    b.go_source(src("Samples"));
+    assert!(b.screen().card_ejected, "the place says out from anywhere");
+    b.go_source(src("SD card"));
+    b.shown_again();
+    assert!(b.take_actions().is_empty());
+    // Use the card again: opened again.
+    use mpfree_ui::{Touch, Widget};
+    let r = mpfree_ui::Rect::new(0, 0, 1280, 714);
+    let mut view = mpfree_browser_ui::BrowserView::new(b.screen());
+    let again = view
+        .targets(r)
+        .into_iter()
+        .find(|t| t.label == "Use the card again")
+        .expect("the button");
+    let (x, y) = (
+        again.rect.x + again.rect.w / 2,
+        again.rect.y + again.rect.h / 2,
+    );
+    view.touch(1, Touch::Down, x, y, r);
+    view.touch(1, Touch::Up, x, y, r);
+    let hit = view.take_inputs();
+    assert_eq!(hit, [Input::Button(Button::UseCardAgain)]);
+    b.input(hit[0].clone());
+    assert_eq!(b.take_actions(), [BrowseAction::OpenCard]);
+    assert_eq!(b.card(), &CardState::Opening);
+    assert!(!b.screen().card_ejected);
 }
 
 #[test]

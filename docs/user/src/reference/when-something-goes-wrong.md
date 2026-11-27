@@ -36,6 +36,7 @@ Tap the status chip, or pick **System status** in Prefs, to open the page over t
 - **The tracks using the most**: under Sound's cards, after the sound's share of the CPU, the five tracks that took the most of it in the last moment, most first ("Track 3 · Drums: 12 %"). A track's share counts everything it plays: its kit's sounds, its own synth or plugin, its pads' synths and the effects on its channel and its pads' channels. A kit that no track plays, only the pads, is listed as "Kit 2 · pads only", and the effects on its own kit strip count to it. When the sound is near its limit or drops out, this says which track to play less of, or which effect to turn off. A track that played nothing isn't listed. The numbers are a close guess, measured every few moments: the pads' share is split between the kits by how much each kit is playing.
 - **By part**: under the tracks, where the same share goes by part of MPFree: the pads, synths, the looper and line input, clips and the arp, mixing, and MPFree's own work (the screen, MIDI and the lights). They add up to about the sound's share. With no track listed (nothing playing), these come straight after the sound's share.
 - **Audio MPFree made**: under Memory's numbers, the memory set aside for the audio MPFree makes from your recordings: the copies a clip or region on **Stretch** plays at the song's tempo ([audio tracks](../making-music/audio-tracks.md)), the sampler's **Warps**, and later the looper's. The card says how much they use of the room they may have ("85 MB of 210 MB"), a bar of each one's share, a line for each with how many there are ("12 copies · 3 playing", "9 regions"), and what is being made now and whose ("2 jobs: Vocal, 1 pad"). Memory's line on the left adds "copies 85 MB" once there are some. **Clear copies** throws away every copy that isn't playing or about to play (a region at or just ahead of the playhead, a clip you cued, a pad its kit plays). Each is made again when it's next needed, no recording is lost, and it isn't an UNDO step; the line at the bottom of the screen says how many went. Use it after trying a song at several tempos, when copies for tempos you left still hold memory.
+- **Storage's numbers**: under Storage's cards, where takes record; **Recording room**, how long the tracks armed now can record on that drive, and how many seconds each could record into memory if the drive stopped taking them; **Using the card now**, the tracks recording on the SD card or playing a take from a file on it; then the drive's free space and size. If the SD card came out mid-take, they also say which tracks have a take waiting for its part from it.
 - **Now | This session**, at the top right, shows only what is happening now, or everything since MPFree started.
 - **Save a report**, at the bottom right, saves a plain text file about this session on the stick: every problem with when and how often, the page's numbers, which MPFree and which MPC, and the last status lines. The line at the bottom of the screen says where it went (`files/reports/`, named by the date and time). Send it with a bug report. It never holds serial numbers, network addresses, or the names of your projects, samples, tracks or takes (the tracks using the most are listed by number, "track 3"); a MIDI device keeps its name, since that is often the point.
 
@@ -103,6 +104,10 @@ Each problem below starts with its colour. A **Note** is listed on the System st
 
 **Red.** The SD card that audio track takes record onto stopped taking them (it came out, or the system closed it), so takes since then are only in memory. **Try:** save the project now: it goes to the stick with every take. Then put the card back in.
 
+### Recording stopped when the SD card came out
+
+**Red.** The SD card came out while audio track takes were recording on it, and the USB stick couldn't take them over: it was full or out too. What was recorded is kept: each take's first part is still on the card. **Try:** put the card back in, or make room on the stick, then record again.
+
 ### A recording isn't being saved
 
 **Red.** The stick isn't taking a take: it may be full, out or failing. The take is kept in memory and MPFree keeps trying, but if the power goes now, everything since it was last saved is lost. **Try:** keep the MPC on, and check the stick is in and has room. The take is saved as soon as the stick works again.
@@ -142,6 +147,10 @@ Each problem below starts with its colour. A **Note** is listed on the System st
 ### Too much is playing from the stick or card
 
 **Yellow.** More is playing from the stick or SD card than MPFree can safely read ahead, so a slow moment there could make a sound go quiet. **Try:** play fewer audio tracks or long samples at once.
+
+### The SD card came out
+
+**Yellow.** The SD card came out while audio track takes were recording on it. What each take saved there is still on the card, and recording carries on on the USB stick, so nothing is lost. **Try:** put the same card back in: MPFree joins each take's two parts into one take on the USB stick, and nothing is written to the card for it. Until then, each take plays silence where its first part is. System status's **Storage** lists the takes waiting for their part.
 
 ### The stick is nearly full
 
