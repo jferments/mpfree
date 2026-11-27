@@ -180,6 +180,10 @@ console pads-perform-scenes 7 # a window page: its empty cells' faint "empty", t
 console pads-types 17 # before the theme refactor (phase 0 baseline)
 console play 1 # before the theme refactor (phase 0 baseline)
 console play-controller 1 # before the theme refactor (phase 0 baseline)
+console play-hints-new 1 # new screen (touch plan A6b, Play without its hint line): as many runs as play, the Play page drawn under it
+console play-hints-quiet 1 # new screen (touch plan A6b, Play without its hint line): as many runs as play, the Play page drawn under it
+console play-hints-shift 1 # new screen (touch plan A6b, Play without its hint line): as many runs as play, the Play page drawn under it
+console play-hints-told 1 # new screen (touch plan A6b, Play without its hint line): as many runs as play, the Play page drawn under it
 console play-keys 1 # the Play page's own runs (Capture, the loop row's + marks, the master scale), as on play (live shows C1)
 console play-macros 1 # before the theme refactor (phase 0 baseline)
 console play-pad-types 1 # before the theme refactor (phase 0 baseline)
@@ -354,6 +358,10 @@ default play 9 # before the theme refactor (phase 0 baseline)
 default play-all-loop 4 # before the theme refactor (phase 0 baseline)
 default play-controller 9 # before the theme refactor (phase 0 baseline)
 default play-free-loops 7 # before the theme refactor (phase 0 baseline)
+default play-hints-new 9 # new screen (touch plan A6b, Play without its hint line): as many runs as play, the Play page drawn under it
+default play-hints-quiet 9 # new screen (touch plan A6b, Play without its hint line): as many runs as play, the Play page drawn under it
+default play-hints-shift 9 # new screen (touch plan A6b, Play without its hint line): as many runs as play, the Play page drawn under it
+default play-hints-told 9 # new screen (touch plan A6b, Play without its hint line): as many runs as play, the Play page drawn under it
 default play-keys 9 # the Play page's own runs (Capture, the loop row's + marks, the master scale), as on play (live shows C1)
 default play-loop 7 # before the theme refactor (phase 0 baseline)
 default play-macros 9 # before the theme refactor (phase 0 baseline)
@@ -667,6 +675,10 @@ spaceship play 12 # before the theme refactor (phase 0 baseline)
 spaceship play-all-loop 8 # before the theme refactor (phase 0 baseline); 4e.5b: one more faint label on the page (Spaceship's faint text is under 3:1 on its background), now that the sample has no Loop track
 spaceship play-controller 12 # before the theme refactor (phase 0 baseline)
 spaceship play-free-loops 11 # before the theme refactor (phase 0 baseline); 4e.5b: one more faint label on the page (Spaceship's faint text is under 3:1 on its background), now that the sample has no Loop track
+spaceship play-hints-new 12 # new screen (touch plan A6b, Play without its hint line): as many runs as play, the Play page drawn under it
+spaceship play-hints-quiet 12 # new screen (touch plan A6b, Play without its hint line): as many runs as play, the Play page drawn under it
+spaceship play-hints-shift 12 # new screen (touch plan A6b, Play without its hint line): as many runs as play, the Play page drawn under it
+spaceship play-hints-told 12 # new screen (touch plan A6b, Play without its hint line): as many runs as play, the Play page drawn under it
 spaceship play-keys 13 # the Play page's own runs (Capture, the loop row's + marks, the master scale), as on play (live shows C1); 4e.5b: one more faint label on the page (Spaceship's faint text is under 3:1 on its background), now that the sample has no Loop track
 spaceship play-loop 11 # before the theme refactor (phase 0 baseline)
 spaceship play-macros 12 # before the theme refactor (phase 0 baseline)

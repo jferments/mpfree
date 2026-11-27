@@ -132,7 +132,10 @@ impl App {
         out.set_str("held-pad", s.held_pad.key());
         out.set_str("pads-show", s.pads_show.key());
         out.set_str("empty-pads", s.empty_pads.key());
-        out.set_bool("hint-line", s.hint_line);
+        out.set_str("hints", s.hints.key());
+        if s.hints_seen != crate::hints::Seen::default() {
+            out.set_str("hints-seen", &s.hints_seen.text());
+        }
         out.set_i64("curve-shape", i64::from(s.curve_bend.shape));
         out.set_i64("curve-softest", i64::from(s.curve_bend.softest));
         out.set_i64("curve-loudest", i64::from(s.curve_bend.loudest));
@@ -389,7 +392,23 @@ impl App {
                 "empty-pads" => crate::pad_look::EmptyPads::parse(v)
                     .map(|e| s.empty_pads = e)
                     .is_some(),
-                "hint-line" => app.get_bool(k).map(|b| s.hint_line = b).is_some(),
+                "hints" => crate::hints::Hints::parse(v).map(|h| s.hints = h).is_some(),
+                // Prefs redesign 3's switch, before the four ways: On was
+                // Persistent, Off is Off.
+                "hint-line" => app
+                    .get_bool(k)
+                    .map(|b| {
+                        s.hints = if b {
+                            crate::hints::Hints::Persistent
+                        } else {
+                            crate::hints::Hints::Off
+                        }
+                    })
+                    .is_some(),
+                "hints-seen" => {
+                    s.hints_seen = crate::hints::Seen::parse(v);
+                    true
+                }
                 "loop-level" => app
                     .get_i64(k)
                     .filter(|n| (-24..=6).contains(n))
@@ -707,15 +726,18 @@ mod tests {
     /// Screen and lights' settings are kept, and a value out of range or
     /// unknown leaves the default.
     #[test]
-    fn pad_lights_and_the_hint_line_are_kept() {
+    fn pad_lights_and_the_hints_are_kept() {
         use crate::pad_look::{EmptyPads, HeldPad, PadsShow};
         let mut a = App::new(44_100, false);
         a.settings.pad_brightness = 40;
         a.settings.held_pad = HeldPad::White;
         a.settings.pads_show = PadsShow::Heat;
         a.settings.empty_pads = EmptyPads::Dim;
-        a.settings.hint_line = false;
+        a.settings.hints = crate::hints::Hints::OnDemand;
+        a.settings.hints_seen.visit("play");
         let text = a.app_settings().to_text();
+        assert!(text.contains("hints = on-demand"), "{text}");
+        assert!(text.contains("hints-seen = play 1"), "{text}");
         assert!(text.contains("pads-show = heat"), "{text}");
         let mut b = App::new(44_100, false);
         b.restore(&Settings::parse(&text), &Settings::default());
@@ -726,10 +748,25 @@ mod tests {
                 s.held_pad,
                 s.pads_show,
                 s.empty_pads,
-                s.hint_line
+                s.hints,
+                s.hints_seen.visits("play"),
             ),
-            (40, HeldPad::White, PadsShow::Heat, EmptyPads::Dim, false)
+            (
+                40,
+                HeldPad::White,
+                PadsShow::Heat,
+                EmptyPads::Dim,
+                crate::hints::Hints::OnDemand,
+                1
+            )
         );
+        // The switch Prefs had before the four ways: Off stays Off.
+        let mut old = App::new(44_100, false);
+        old.restore(
+            &Settings::parse("hint-line = false\n"),
+            &Settings::default(),
+        );
+        assert_eq!(old.settings.hints, crate::hints::Hints::Off);
         let mut c = App::new(44_100, false);
         c.restore(
             &Settings::parse("pad-brightness = 0\nheld-pad = purple\n"),

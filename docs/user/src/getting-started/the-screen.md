@@ -96,7 +96,15 @@ Next to it, the **master bar** shows how loud MPFree's output is: two meters (le
 
 ## The hint line
 
-The line along the bottom of the screen always says what the buttons and taps do on the page you are on. If you're not sure what to press, look there first.
+The line along the bottom of the screen says what the buttons and taps do on the page you are on. If you're not sure what to press, look there first.
+
+How much it says is up to you: **Hints** in [Prefs](../reference/prefs.md) (Appearance, Screen and lights). **Persistent**, the way MPFree comes, says it all the time. **Contextual** says it on a page's first three visits, until you first touch the screen; MPFree remembers the pages you know, so they stay quiet after a restart too. **On demand** keeps the line quiet until you hold **SHIFT** for a second: a quick SHIFT still shows SHIFT's own keys, and held on, the line says the page's help until you let go. **Off** never says the page's help. Whichever you pick, the line still says what a held button does (MAIN, FULL LEVEL, COPY, SHIFT and the like), what MPFree tells you (such as **Saved**), the Looper's questions, and the keys of the letters pad, the power card and Eject card.
+
+Away from Persistent, the Play page has no hint line at all, and its throws and XY pad grow into the room. What the line would say shows over the foot of the throws instead, only while there is something to say (SHIFT's keys, say), and a touch there does nothing, so it never fires a throw by mistake. What MPFree tells you shows over the tabs for a few seconds; tap it to close it sooner.
+
+{{shot: play-hints-shift | Play without the hint line (Hints On demand), SHIFT held: SHIFT's keys over the foot of the throws.}}
+
+{{shot: play-hints-told | Play without the hint line: a message over the tabs, which a tap closes.}}
 
 When something you asked for can't happen, or does nothing, the hint line says why in amber for a few seconds, then goes back to the hint. For example: "The chain is full", or why a sample edit was refused.
 

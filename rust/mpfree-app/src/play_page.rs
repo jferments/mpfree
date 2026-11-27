@@ -103,6 +103,9 @@ pub const FRAME_GAP: i32 = 8;
 /// All's bottom row: the throws and the XY pad, with the hint line kept
 /// under it (the touch design set, tab 3, Persistent hints).
 pub const BOTTOM_H: i32 = 78;
+/// All's bottom row without the hint line (Prefs' Hints away from
+/// Persistent): the line's 26 px and its gap go to the throws and the pad.
+pub const BOTTOM_BARE_H: i32 = BOTTOM_H + 26 + FRAME_GAP;
 /// The XY pad's width in All's bottom row, its chip's column included.
 pub const XY_W: i32 = 340;
 
@@ -149,8 +152,9 @@ impl PlayView {
 
     /// The view under the transport card, as the mockups lay it out. With
     /// `band`, NOTE REPEAT's strip takes the top of the first panel, so
-    /// nothing else moves.
-    fn body(self, band: bool, timing: bool) -> String {
+    /// nothing else moves. Without the `line` (All only), the bottom row
+    /// takes its room.
+    fn body(self, band: bool, timing: bool, line: bool) -> String {
         let first = |slot: &str| {
             if band {
                 format!("col({}:{}, {slot}:*):*", arp_view::MINI, arp_view::MINI_H)
@@ -161,8 +165,9 @@ impl PlayView {
         let row = crate::loop_row::LOOP_ROW;
         match self {
             PlayView::All => format!(
-                "{row}:150, {}, row({THROWS}:*, {XY}:{XY_W}):{BOTTOM_H}",
-                first(STEPS)
+                "{row}:150, {}, row({THROWS}:*, {XY}:{XY_W}):{}",
+                first(STEPS),
+                if line { BOTTOM_H } else { BOTTOM_BARE_H }
             ),
             PlayView::Beats if timing => {
                 format!("{}, {TIMING}:{TIMING_STRIP_H}, {THROWS}:196", first(STEPS))
@@ -177,7 +182,15 @@ impl PlayView {
 
     /// The layout of [`PlayView::page_with`]`(timing, false)`.
     pub fn layout_for(self, timing: bool) -> String {
-        frame(&self.body(false, timing))
+        frame(&self.body(false, timing, true))
+    }
+
+    /// The layout of Play's own view (All) with or without the hint
+    /// `line` (Prefs' Hints: only Persistent keeps it on Play). Beats
+    /// always keeps it.
+    pub fn layout_lined(self, line: bool) -> String {
+        let line = line || self != PlayView::All;
+        frame_lined(&self.body(false, false, line), line)
     }
 
     /// Beats' layout with the step inspector in the throws' place (the
@@ -198,12 +211,14 @@ impl PlayView {
 
     /// The view while NOTE REPEAT is held or pads are latched.
     pub fn quick_layout(self) -> String {
-        self.quick_layout_for(false)
+        self.quick_layout_for(false, true)
     }
 
-    /// [`PlayView::quick_layout`] with or without the timing strip.
-    pub fn quick_layout_for(self, timing: bool) -> String {
-        frame(&self.body(true, timing))
+    /// [`PlayView::quick_layout`] with or without the timing strip, and
+    /// on All with or without the hint `line`.
+    pub fn quick_layout_for(self, timing: bool, line: bool) -> String {
+        let line = line || self != PlayView::All;
+        frame_lined(&self.body(true, timing, line), line)
     }
 }
 
@@ -211,9 +226,17 @@ impl PlayView {
 /// transport card over it, the master meter and the Q-Link cards beside,
 /// [`FRAME_GAP`] apart.
 pub fn frame(body: &str) -> String {
+    frame_lined(body, true)
+}
+
+/// [`frame`] with or without the hint line at its foot. Without it, the
+/// panels reach the frame's bottom edge, and what the line would say shows
+/// over the bottom row (Prefs' Hints; `hints.rs`).
+pub fn frame_lined(body: &str, line: bool) -> String {
+    let foot = if line { ", hint:26" } else { "" };
     format!(
         "gap{FRAME_GAP}(col(header:60, row(col({TRANSPORT}:{TRANSPORT_H}, {body}):*, \
-             {MASTER}:{MASTER_WIDTH}, {QLINKS}:{COLUMN_WIDTH}):*, hint:26))"
+             {MASTER}:{MASTER_WIDTH}, {QLINKS}:{COLUMN_WIDTH}):*{foot}))"
     )
 }
 
@@ -4708,7 +4731,7 @@ mod tests {
     #[test]
     fn every_view_keeps_the_frame() {
         for v in PlayView::ALL {
-            let timing = [v.layout_for(true), v.quick_layout_for(true)];
+            let timing = [v.layout_for(true), v.quick_layout_for(true, true)];
             for spec in [v.layout(), v.quick_layout()].into_iter().chain(timing) {
                 assert_eq!(
                     rect(&spec, TRANSPORT),
@@ -4770,7 +4793,7 @@ mod tests {
     fn the_band_never_moves_the_panels_below_it() {
         for v in PlayView::ALL {
             for timing in [false, true] {
-                let (plain, band) = (v.layout_for(timing), v.quick_layout_for(timing));
+                let (plain, band) = (v.layout_for(timing), v.quick_layout_for(timing, true));
                 assert_eq!(rect(&plain, THROWS), rect(&band, THROWS), "{v:?}");
                 assert_eq!(rect(&band, arp_view::MINI).h, arp_view::MINI_H, "{v:?}");
             }
