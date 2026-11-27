@@ -17,8 +17,10 @@
 //! - **The cases** ([`CASES`]): a pad of the sound in each grain mode as
 //!   the Grain tool starts it (`mpfree_sampler_ui::grain_tab::
 //!   mode_settings`): Cloud frozen on one spot and Cloud moving through
-//!   the sound (scan 1), Stretch at the sound's speed and at half speed,
-//!   Repeat (sixteenths at 120 BPM) and Tone (A2), both on one spot. The
+//!   the sound (scan 1), Stretch at the sound's speed and at half speed
+//!   (and at half speed with steady stretch on, step 19,
+//!   `GrainParams::align`), Repeat (sixteenths at 120 BPM) and Tone (A2),
+//!   both on one spot. The
 //!   spot is 40 % into the sound, or a snare's start for the drums. 5 s
 //!   each, the pad held, its envelope open.
 //! - **The numbers**, against the same pad playing the sound plainly
