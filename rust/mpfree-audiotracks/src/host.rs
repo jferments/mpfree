@@ -3382,7 +3382,15 @@ impl Worker {
                 self.cards.push(card);
                 return None;
             }
-            ToWorker::CarryOn(dir) => match files.carry_on(dir) {
+            ToWorker::CarryOn(dir) => match files.carry_on(dir, {
+                // Which card went: the one the folder was on.
+                let was = files.work_dir();
+                let card = self
+                    .cards
+                    .iter()
+                    .find(|c| was.is_some_and(|d| d.starts_with(c.root())));
+                card.and_then(|c| c.mark())
+            }) {
                 Ok(_) => {
                     if let Some(st) = &self.stream {
                         if let Some(d) = files.work_dir() {

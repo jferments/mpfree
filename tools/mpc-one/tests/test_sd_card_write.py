@@ -448,7 +448,7 @@ class WriteWindowTests(unittest.TestCase):
         self.assertEqual(st, {"state": "open", "message": "The SD card is open: MPFree writes inside its MPFree "
                                                           "folder only.",
                               "card": "mmcblk1", "fs": "exfat", "sectors": "4096", "mount": MNT, "write": MPF,
-                              "fsck": "exfatprogs version : 1.2.2"})
+                              "serial": "5EC01A2B", "fsck": "exfatprogs version : 1.2.2"})
         self.assertEqual(self.kernel.rule, RO_RULE, "read-only as it appears, as the read-only window")
         # The check ran on the read-only disk; only then was the disk made writable.
         self.assertEqual(self.calls("fsck.exfat: "), ["-n /dev/mmcblk1p1 ro=1"])

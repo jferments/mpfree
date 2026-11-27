@@ -68,6 +68,7 @@ dirty=''
 card=''
 fs=''
 sectors=''
+serial=''
 name=''
 devdir=''
 
@@ -83,6 +84,7 @@ status() {   # state message
   { echo "state=$1"; echo "message=$2"; echo "ask=$ask"
     if [ "$1" = open ]; then
       echo "card=$card"; echo "fs=$fs"; echo "sectors=$sectors"; echo "mount=$MNT"; echo "dirty=$dirty"
+      if [ -n "$serial" ]; then echo "serial=$serial"; fi
     fi
   } > "$S/sd-card-status.new" && mv "$S/sd-card-status.new" "$S/sd-card-status"
 }
@@ -264,6 +266,12 @@ first=$(tr -c 'A-Z0-9' '.' < "$SECTOR")
 byte() {   # the byte at offset $1 of the sector, in octal (Akai's BusyBox has no od -t)
   dd if="$SECTOR" bs=1 skip="$1" count=1 2>/dev/null | od -b | { read -r _ b _; echo "${b:-0}"; }
 }
+volume_serial() {   # exFAT's volume serial number (bytes 100-103, little-endian) as 8 hex digits, as a
+  # computer shows it: with MPFree/'s marker file it tells this card from another (the SD card plan's B2c)
+  v=''
+  for o in 103 102 101 100; do v="$v$(printf '%02X' "$((0$(byte "$o")))")"; done
+  echo "$v"
+}
 kind=''
 case "$(printf '%s' "$first" | cut -c4-11)" in
   EXFAT...) fs=exfat; kind=exFAT ;;
@@ -279,6 +287,7 @@ fi
 [ -n "$fs" ] || fail "the card is $kind; MPFree reads FAT and exFAT"
 grep -q "[[:space:]]$fs\$" "$R/proc/filesystems" 2>/dev/null ||
   fail "the card is $kind, and this kernel has no $fs filesystem loaded (the stick must load it before the switch)"
+if [ "$kind" = exFAT ]; then serial=$(volume_serial); fi
 # Left marked as in use: the last system that wrote to it did not unmount it (a cut, or a card pulled out).
 # Linux sets the mark when it mounts FAT for writing and exFAT at its first write, and clears it at the
 # unmount; a read-only mount leaves it as it is (fs/fat/inode.c fat_set_state, fs/exfat/super.c

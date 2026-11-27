@@ -144,6 +144,8 @@ pub struct Status {
     pub dirty: bool,
     /// The write window's writable folder, the card's `MPFree` (`write=`).
     pub write: Option<PathBuf>,
+    /// exFAT's volume serial number (`serial=`, 8 hex digits).
+    pub serial: Option<u32>,
 }
 
 pub fn parse_status(text: &str) -> Option<Status> {
@@ -162,6 +164,9 @@ pub fn parse_status(text: &str) -> Option<Status> {
             "mount" if !v.is_empty() => s.mount = Some(PathBuf::from(v)),
             "dirty" => s.dirty = v == "yes",
             "write" if !v.is_empty() => s.write = Some(PathBuf::from(v)),
+            "serial" if v.len() == 8 && v.bytes().all(|c| c.is_ascii_hexdigit()) => {
+                s.serial = u32::from_str_radix(v, 16).ok()
+            }
             _ => {}
         }
     }
@@ -204,6 +209,10 @@ pub struct Card {
     /// window's refusal (not exFAT, not safely removed, not clean, its lock
     /// switch on), for the log.
     pub read_only: Option<String>,
+    /// Its filesystem's volume serial (exFAT's, as its window read it):
+    /// with the marker file in `MPFree/` it says which card this is
+    /// (`mpfree_stream::storage::CardMark`).
+    pub serial: Option<u32>,
 }
 
 impl Card {
@@ -732,6 +741,7 @@ fn open_card(s: &Status) -> Option<Card> {
         dirty: s.dirty,
         write: s.write.clone(),
         read_only: None,
+        serial: s.serial,
     })
 }
 
@@ -972,6 +982,20 @@ mod tests {
         .unwrap();
         assert!(!s.dirty);
         assert!(parse_status("state=open\ndirty=yes\n").unwrap().dirty);
+        assert_eq!(s.serial, None);
+        // exFAT's volume serial, as its window says it: 8 hex digits.
+        let x = parse_status("state=open\nmount=/x\nserial=5EC01A2B\n").unwrap();
+        assert_eq!(open_card(&x).unwrap().serial, Some(0x5EC0_1A2B));
+        for bad in [
+            "serial=5EC01A2",
+            "serial=5EC01A2BB",
+            "serial=5EC01A2G",
+            "serial=+5EC01A2",
+            "serial=",
+        ] {
+            let st = parse_status(&format!("state=open\n{bad}\n")).unwrap();
+            assert_eq!(st.serial, None, "{bad}");
+        }
         assert_eq!(s.state, "open");
         assert_eq!(s.ask, "ab12");
         assert_eq!(s.fs, "vfat");
@@ -987,6 +1011,7 @@ mod tests {
             dirty: false,
             write: None,
             read_only: None,
+            serial: None,
         };
         assert_eq!(big.describe(), "exFAT, 63.9 GB");
         assert_eq!(new_word().len(), 32);

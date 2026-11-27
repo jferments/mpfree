@@ -6,6 +6,13 @@
 //! into the card's `MPFree/Recordings`. With no card, a card that opens
 //! read-only, or the card closing, takes record on the stick as before.
 //!
+//! Before any take records there, the card is marked (B2c): `MPFree/`
+//! gets a marker file with a random id if it has none
+//! (`mpfree_stream::storage::make_marker`), and the id with the card's
+//! volume serial goes to the card's lease ([`Do::Mark`]), so a take that
+//! carries on on the stick when the card goes names the card it left its
+//! first part on.
+//!
 //! The card is asked for once the stick's own recovery is done, if the
 //! stick has the write window. An answer that may change (the window
 //! failed: the first-start backup running, the internal drive open, no
@@ -28,6 +35,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use mpfree_audiotracks::files::{recover_into, Recovered};
+use mpfree_stream::storage::{make_marker, CardMark};
 
 /// The card's work folder for the audio tracks, under its `MPFree`
 /// folder.
@@ -55,13 +63,18 @@ pub enum Do {
     Tell(&'static str),
     /// Ask the slot for the card.
     Ask,
+    /// Which card the opening is (its marker in `MPFree/`, made if it had
+    /// none, and its volume serial), before any take records there: the
+    /// screen tells the card's lease, so a take that carries on elsewhere
+    /// when the card goes names it.
+    Mark(CardMark),
     /// The audio tracks record each take into this folder from now on.
     RecordTo(PathBuf),
     /// What the card's recovery found, for System status.
     Found(Recovered),
 }
 
-type Recovering = Receiver<(PathBuf, std::io::Result<Recovered>)>;
+type Recovering = Receiver<(PathBuf, std::io::Result<(Recovered, [u8; 16])>)>;
 
 #[derive(Default)]
 enum State {
@@ -73,8 +86,10 @@ enum State {
         tries: u32,
         again_at: Option<Instant>,
     },
-    /// The card's work folder is being recovered, on a thread.
-    Recovering(Recovering),
+    /// The card's work folder is being recovered (and the card's marker
+    /// read or made), on a thread; the card's volume serial, as its window
+    /// said it.
+    Recovering(Recovering, Option<u32>),
     /// Takes record into the card's work folder.
     On,
 }
@@ -120,29 +135,38 @@ impl CardTakes {
     }
 
     /// The card opened, its `MPFree` folder writable at `write` (None:
-    /// read-only, for `why`).
-    pub fn opened(&mut self, write: Option<&Path>, why: Option<&str>) -> Vec<Do> {
+    /// read-only, for `why`), its volume serial `serial` as its window
+    /// said it.
+    pub fn opened(
+        &mut self,
+        write: Option<&Path>,
+        why: Option<&str>,
+        serial: Option<u32>,
+    ) -> Vec<Do> {
         if !self.on {
             return Vec::new();
         }
         match (&self.state, write) {
-            (State::Recovering(_) | State::On, _) => Vec::new(),
+            (State::Recovering(..) | State::On, _) => Vec::new(),
             // Not until the stick's own folder is set up: it comes first.
             (_, Some(_)) if self.stick.is_none() => Vec::new(),
             (_, Some(folder)) => {
+                let mpfree = folder.to_path_buf();
                 let work = folder.join(WORK);
                 let keep = folder.join(KEEP);
                 let (tx, rx) = std::sync::mpsc::channel();
                 let spawned = std::thread::Builder::new()
                     .name("card-recover".into())
                     .spawn(move || {
-                        let r = std::fs::create_dir_all(&work)
-                            .and_then(|()| recover_into(&work, &keep));
+                        let r = make_marker(&mpfree).and_then(|id| {
+                            std::fs::create_dir_all(&work)?;
+                            Ok((recover_into(&work, &keep)?, id))
+                        });
                         let _ = tx.send((work, r));
                     });
                 match spawned {
                     Ok(_) => {
-                        self.state = State::Recovering(rx);
+                        self.state = State::Recovering(rx, serial);
                         vec![Do::Say(format!(
                             "audio tracks: the SD card opened for saving; looking at {} first",
                             folder.join(WORK).display()
@@ -192,7 +216,7 @@ impl CardTakes {
     /// The card closed (taken out, or closed by the system): takes record
     /// on the stick again.
     pub fn closed(&mut self) -> Vec<Do> {
-        if !matches!(self.state, State::Recovering(_) | State::On) {
+        if !matches!(self.state, State::Recovering(..) | State::On) {
             return Vec::new();
         }
         self.state = State::Off;
@@ -217,7 +241,7 @@ impl CardTakes {
                 }
                 vec![Do::Ask]
             }
-            State::Recovering(rx) => match rx.try_recv() {
+            State::Recovering(rx, serial) => match rx.try_recv() {
                 Err(TryRecvError::Empty) => Vec::new(),
                 Err(TryRecvError::Disconnected) => {
                     self.state = State::Off;
@@ -233,7 +257,13 @@ impl CardTakes {
                         work.display()
                     ))]
                 }
-                Ok((work, Ok(found))) => {
+                Ok((work, Ok((found, id)))) => {
+                    // A window that didn't say the serial: zeros, as for a
+                    // card not known.
+                    let mark = CardMark {
+                        id,
+                        serial: serial.unwrap_or(0),
+                    };
                     let mut out: Vec<Do> = found
                         .lines
                         .iter()
@@ -245,6 +275,7 @@ impl CardTakes {
                         ));
                     }
                     out.push(Do::Found(found));
+                    out.push(Do::Mark(mark));
                     out.push(Do::Say(format!(
                         "audio tracks: each take is saved to a file as it records, on the SD card, in {}",
                         work.display()
@@ -260,7 +291,7 @@ impl CardTakes {
 
     /// Whether the card is in use for the takes (it isn't put away).
     pub fn holds(&self) -> bool {
-        matches!(self.state, State::Recovering(_) | State::On)
+        matches!(self.state, State::Recovering(..) | State::On)
     }
 }
 
@@ -310,7 +341,7 @@ mod tests {
         assert!(!c.holds());
         // Opened for saving: the card's work folder is made and recovered
         // on a thread, and only then do the takes move there.
-        let dos = c.opened(Some(&mpfree), None);
+        let dos = c.opened(Some(&mpfree), None, Some(0x5EC0_1A2B));
         assert!(record_to(&dos).is_none());
         assert!(c.holds(), "the card stays open while it's recovered");
         let dos = until_recovered(&mut c);
@@ -318,16 +349,29 @@ mod tests {
         assert_eq!(record_to(&dos), Some(work.as_path()));
         assert!(dos.iter().any(|d| matches!(d, Do::Found(_))));
         assert!(work.is_dir());
+        // Which card it is, said before the takes move there: its marker,
+        // made in MPFree/, and its serial.
+        let id = mpfree_stream::storage::read_marker(&mpfree)
+            .unwrap()
+            .expect("marked");
+        let mark = dos
+            .iter()
+            .position(|d| matches!(d, Do::Mark(m) if *m == CardMark { id, serial: 0x5EC0_1A2B }));
+        let to = dos.iter().position(|d| matches!(d, Do::RecordTo(_)));
+        assert!(mark.is_some() && mark < to, "{dos:?}");
         assert!(c.holds());
         // Opened again (the browser's place): nothing changes.
-        assert!(c.opened(Some(&mpfree), None).is_empty());
+        assert!(c.opened(Some(&mpfree), None, Some(0x5EC0_1A2B)).is_empty());
         // Closed: back to the stick.
         let dos = c.closed();
         assert_eq!(record_to(&dos), Some(stick.as_path()));
         assert!(!c.holds());
-        // A card the browser opens later takes the takes again.
-        assert!(record_to(&c.opened(Some(&mpfree), None)).is_none());
-        assert_eq!(record_to(&until_recovered(&mut c)), Some(work.as_path()));
+        // A card the browser opens later takes the takes again, the same
+        // card by its marker, kept.
+        assert!(record_to(&c.opened(Some(&mpfree), None, Some(0x5EC0_1A2B))).is_none());
+        let dos = until_recovered(&mut c);
+        assert_eq!(record_to(&dos), Some(work.as_path()));
+        assert!(dos.iter().any(|d| matches!(d, Do::Mark(m) if m.id == id)));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -342,7 +386,7 @@ mod tests {
         std::fs::write(work.join("loop_00000000000000000000000000000001.wav"), wav).unwrap();
         let mut c = CardTakes::new(true);
         c.stick_ready(root.join("stick"), true);
-        c.opened(Some(&mpfree), None);
+        c.opened(Some(&mpfree), None, Some(0x5EC0_1A2B));
         let dos = until_recovered(&mut c);
         assert!(mpfree
             .join(KEEP)
@@ -359,7 +403,7 @@ mod tests {
     fn a_read_only_card_leaves_the_takes_on_the_stick() {
         let mut c = CardTakes::new(true);
         c.stick_ready(PathBuf::from("/stick"), true);
-        let dos = c.opened(None, Some("the card is not exFAT"));
+        let dos = c.opened(None, Some("the card is not exFAT"), None);
         assert!(record_to(&dos).is_none());
         assert!(matches!(dos.as_slice(), [Do::Say(l)] if l.contains("not exFAT")));
         assert!(!c.holds());
@@ -413,11 +457,12 @@ mod tests {
         std::fs::create_dir_all(&mpfree).unwrap();
         let mut c = CardTakes::new(false);
         assert!(c.stick_ready(root.join("stick"), true).is_empty());
-        assert!(c.opened(Some(&mpfree), None).is_empty());
+        assert!(c.opened(Some(&mpfree), None, Some(0x5EC0_1A2B)).is_empty());
         assert!(!c.holds());
         assert!(c.tick(Instant::now()).is_empty());
         assert!(c.closed().is_empty());
         assert!(!mpfree.join(WORK).exists(), "nothing made on the card");
+        assert!(!mpfree.join(mpfree_stream::storage::MARKER).exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -426,7 +471,7 @@ mod tests {
         let root = scratch("early");
         let mut c = CardTakes::new(true);
         // The browser opened the card before the stick's recovery was done.
-        assert!(c.opened(Some(&root), None).is_empty());
+        assert!(c.opened(Some(&root), None, None).is_empty());
         assert!(!c.holds());
         let _ = std::fs::remove_dir_all(&root);
     }
