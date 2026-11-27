@@ -561,16 +561,24 @@ mod tests {
         c.opened(&mpfree, None, Some("not safely removed"), Some(0x5EC0_1A2B));
         c.closed();
         assert!(c.tick(Instant::now()).is_empty());
-        // A card with no marker holds no take's part: nothing is said.
-        std::fs::remove_file(mpfree.join(mpfree_stream::storage::MARKER)).unwrap();
-        c.opened(&mpfree, None, Some("not safely removed"), Some(0x5EC0_1A2B));
+        // A card with no marker holds no take's part: nothing is said,
+        // and none is made on a card opened read-only. (Another card, so
+        // the app's sources hold no file delete: CI's static step.)
+        let unmarked = root.join("other/MPFree");
+        std::fs::create_dir_all(&unmarked).unwrap();
+        c.opened(
+            &unmarked,
+            None,
+            Some("not safely removed"),
+            Some(0x5EC0_1A2B),
+        );
         let t0 = Instant::now();
         while c.marking.is_some() {
             assert!(c.tick(Instant::now()).is_empty());
             assert!(t0.elapsed() < Duration::from_secs(10), "no answer");
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(!mpfree.join(mpfree_stream::storage::MARKER).exists());
+        assert!(!unmarked.join(mpfree_stream::storage::MARKER).exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 
