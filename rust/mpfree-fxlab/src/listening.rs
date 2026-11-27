@@ -17,8 +17,10 @@
 //! - **The cases** ([`CASES`]): a pad of the sound in each grain mode as
 //!   the Grain tool starts it (`mpfree_sampler_ui::grain_tab::
 //!   mode_settings`): Cloud frozen on one spot and Cloud moving through
-//!   the sound (scan 1), Stretch at the sound's speed and at half speed,
-//!   Repeat (sixteenths at 120 BPM) and Tone (A2), both on one spot. The
+//!   the sound (scan 1), Stretch at the sound's speed and at half speed
+//!   (and at half speed with steady stretch on, step 19,
+//!   `GrainParams::align`), Repeat (sixteenths at 120 BPM) and Tone (A2),
+//!   both on one spot. The
 //!   spot is 40 % into the sound, or a snare's start for the drums. 5 s
 //!   each, the pad held, its envelope open.
 //! - **The numbers**, against the same pad playing the sound plainly
@@ -101,16 +103,19 @@ pub struct Case {
     /// Where it reads from, across the sound; `None` reads the sound's
     /// own spot ([`Sound::at`]).
     pub position: Option<f32>,
+    /// Steady stretch (step 19) on.
+    pub align: bool,
 }
 
 /// Every case, in order.
-pub const CASES: [Case; 6] = [
+pub const CASES: [Case; 7] = [
     Case {
         name: "cloud",
         about: "Cloud, frozen on one spot",
         mode: GrainMode::Cloud,
         scan: None,
         position: None,
+        align: false,
     },
     Case {
         name: "cloud-moving",
@@ -118,6 +123,7 @@ pub const CASES: [Case; 6] = [
         mode: GrainMode::Cloud,
         scan: Some(1.0),
         position: Some(0.0),
+        align: false,
     },
     Case {
         name: "stretch",
@@ -125,6 +131,7 @@ pub const CASES: [Case; 6] = [
         mode: GrainMode::Stretch,
         scan: None,
         position: Some(0.0),
+        align: false,
     },
     Case {
         name: "stretch-half",
@@ -132,6 +139,15 @@ pub const CASES: [Case; 6] = [
         mode: GrainMode::Stretch,
         scan: Some(0.5),
         position: Some(0.0),
+        align: false,
+    },
+    Case {
+        name: "stretch-half-steady",
+        about: "Stretch at half speed, steady (step 19)",
+        mode: GrainMode::Stretch,
+        scan: Some(0.5),
+        position: Some(0.0),
+        align: true,
     },
     Case {
         name: "repeat",
@@ -139,6 +155,7 @@ pub const CASES: [Case; 6] = [
         mode: GrainMode::Repeat,
         scan: None,
         position: None,
+        align: false,
     },
     Case {
         name: "tone",
@@ -146,6 +163,7 @@ pub const CASES: [Case; 6] = [
         mode: GrainMode::Tone,
         scan: None,
         position: None,
+        align: false,
     },
 ];
 
@@ -417,6 +435,7 @@ fn play(sound: &Sound, case: Option<&Case>, rate: u32) -> Stereo {
         if let Some(s) = case.scan {
             g.scan = s;
         }
+        g.align = case.align;
         r.grain = g;
     }
     let mut pad = Pad::new(sound.name, Layer::new(r));

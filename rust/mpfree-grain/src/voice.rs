@@ -58,6 +58,18 @@ const LFO_SEED: u64 = 0x1F0D_5EED_0A7E_B3B3;
 /// The per-grain filter's cutoff spray has a random sequence of its own,
 /// so turning it on leaves every other draw where it was.
 const FILTER_SEED: u64 = 0xF117_E25E_ED00_C4C4;
+/// Steady Stretch (sampler plan step 19): how far either side of its
+/// place a grain may start to follow on from the grain before (seconds:
+/// half a cycle of a 62 Hz note).
+const ALIGN_SECS: f64 = 0.008;
+/// The search's coarse step, in frames of the source, at 11,025 frames a
+/// second (4 at 44.1 kHz): the search looks at every this many frames,
+/// then every frame around the best.
+const ALIGN_RATE: u32 = 5_512;
+/// The coarse search's offsets either side, and the stretch of sound it
+/// compares (both in coarse steps: ALIGN_SECS at ALIGN_RATE).
+const ALIGN_STEPS: usize = 44;
+const _: () = assert!(ALIGN_STEPS == (ALIGN_SECS * ALIGN_RATE as f64) as usize);
 /// A grain varied all the way down in level (`Params::level_spray` 1) is
 /// this many decibels down.
 const LEVEL_SPRAY_DB: f32 = 24.0;
@@ -162,6 +174,12 @@ pub struct Params {
     /// How the cloud is coloured on its way out: Clean (the default, as
     /// it is), Tape or Lo-fi ([`crate::quality`]).
     pub quality: Quality,
+    /// Steady stretch (sampler plan step 19): each new grain reading
+    /// forward, without spray, starts up to 8 ms either side of its place
+    /// where it best follows on from the youngest grain playing, so a
+    /// slowed or sped-up pitched sound doesn't phase. Only while the
+    /// grains read at another speed than the scan moves. Off by default.
+    pub align: bool,
 }
 
 impl Default for Params {
@@ -189,6 +207,7 @@ impl Default for Params {
             env: GrainEnv::default(),
             filter: GrainFilter::default(),
             quality: Quality::Clean,
+            align: false,
         }
     }
 }
@@ -849,10 +868,12 @@ impl GrainVoice {
         // reads the same audio as the one before it at the same moment.
         let p = &self.moved;
         let ratio = (p.pitch.clamp(-48.0, 48.0) / 12.0).exp2();
+        // Steady stretch (step 19) puts grains in step at any scan where
+        // the sound allows it, a pitched one most of all.
         let in_step = p.spray <= 0.0
             && p.pitch_spray <= 0.0
             && p.reverse <= 0.0
-            && (p.scan.clamp(-4.0, 4.0) - ratio).abs() < 0.01;
+            && (p.align || (p.scan.clamp(-4.0, 4.0) - ratio).abs() < 0.01);
         self.coherence = if in_step { 1.0 } else { 0.0 };
         self.coherence_to = self.coherence;
         self.ey = 0.0;
@@ -1518,6 +1539,84 @@ impl GrainVoice {
     /// Makes one grain. `age` (frames) makes it as if it had been born
     /// that long ago: read from where the scan was then (`scan`, source
     /// frames an output frame) and already that far through its window.
+    /// Steady stretch ([`Params::align`]): where within [`ALIGN_SECS`]
+    /// either side of `now` (the frame a new grain would read now, moving
+    /// `inc` a frame) it best follows on from the youngest grain reading
+    /// forward: the offset in source frames, 0 when no grain plays. The
+    /// sound the two would read next is compared by normalised
+    /// correlation, every few frames over the whole range and then every
+    /// frame around the best. A fixed amount of work a grain, with no
+    /// allocation.
+    fn align<S: GrainSource>(&self, src: &S, now: f64, inc: f64) -> f64 {
+        let Some(prev) = self.grains[..self.active]
+            .iter()
+            .filter(|g| g.inc > 0.0)
+            .min_by_key(|g| g.age)
+        else {
+            return 0.0;
+        };
+        let (start, end) = src.span();
+        let two = src.channels() > 1;
+        let at = |f: f64| -> f32 {
+            let k = (f.max(start as f64) as i64).min(end - 1);
+            if two {
+                src.sample(0, k) + src.sample(1, k)
+            } else {
+                src.sample(0, k)
+            }
+        };
+        let step = (src.rate() / ALIGN_RATE).max(1) as f64;
+        const N: usize = ALIGN_STEPS;
+        // What the youngest grain reads next, and the new grain's sound
+        // from the furthest back it may start to past the furthest on.
+        let mut want = [0.0f32; N];
+        for (k, w) in want.iter_mut().enumerate() {
+            *w = at(prev.pos + k as f64 * step * prev.inc);
+        }
+        // Read at the grain's own speed, so offset j's sound is
+        // `near[j..j + N]` (offsets of a step at that speed).
+        let hop = step * inc;
+        let mut near = [0.0f32; 3 * N];
+        let from = now - N as f64 * hop;
+        for (k, x) in near.iter_mut().enumerate() {
+            *x = at(from + k as f64 * hop);
+        }
+        // Coarse: every offset of a step, the candidate's power slid along.
+        let score = |c: f32, e: f32| if e > 1e-12 { c * c.abs() / e } else { f32::MIN };
+        let mut e: f32 = near[..N].iter().map(|x| x * x).sum();
+        let (mut best, mut best_score) = (N, f32::MIN);
+        for j in 0..=2 * N {
+            if j > 0 {
+                e += near[j + N - 1] * near[j + N - 1] - near[j - 1] * near[j - 1];
+            }
+            let c: f32 = want.iter().zip(&near[j..j + N]).map(|(a, b)| a * b).sum();
+            let sc = score(c, e.max(0.0));
+            // Ties keep the offset nearest the grain's own place.
+            let nearer = (j as isize - N as isize).abs() < (best as isize - N as isize).abs();
+            if sc > best_score || (sc == best_score && nearer) {
+                (best, best_score) = (j, sc);
+            }
+        }
+        // Fine: every frame within a step of the best, read directly.
+        let coarse = (best as f64 - N as f64) * hop;
+        let (mut off, mut fine_score) = (coarse, f32::MIN);
+        let reach = hop.ceil() as i64 - 1;
+        for d in -reach..=reach {
+            let o = coarse + d as f64;
+            let (mut c, mut e) = (0.0f32, 0.0f32);
+            for (k, w) in want.iter().enumerate() {
+                let x = at(now + o + k as f64 * hop);
+                c += w * x;
+                e += x * x;
+            }
+            let sc = score(c, e);
+            if sc > fine_score {
+                (off, fine_score) = (o, sc);
+            }
+        }
+        off
+    }
+
     fn spawn<S: GrainSource>(
         &mut self,
         src: &S,
@@ -1600,6 +1699,13 @@ impl GrainVoice {
             pos.clamp(lo - speed * past, hi - extent)
         };
         let inc = if reverse { -speed } else { speed };
+        let pos = if p.align && !reverse && spray == 0.0 && (scan - speed).abs() > 1e-6 {
+            let now = pos + inc * (past + frac);
+            let d = self.align(src, now, inc);
+            (pos + d).clamp(lo - speed * past, hi - extent)
+        } else {
+            pos
+        };
         // In a forward scan, a grain reading forward stops at the next hit
         // (see `render`, "Hits"): its window fitted to end there.
         let mut size = size;

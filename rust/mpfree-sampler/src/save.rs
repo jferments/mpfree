@@ -909,6 +909,7 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
         env,
         filter,
         quality,
+        align,
     } = g;
     f.num("position", position);
     f.num("spray", spray);
@@ -987,6 +988,12 @@ fn visit_grain<F: Fields>(f: &mut F, g: &mut GrainParams) {
     });
     // Saves before quality modes open Clean.
     f.word("quality", quality, GRAIN_QUALITIES);
+    // Steady stretch (step 19), written only when on, so a kit without it
+    // saves as before; saves before it open with it off, and an older
+    // build plays the layer without it.
+    if f.reading() || *align {
+        f.flag("align", align);
+    }
     let none = TempoSync {
         frames_per_beat: 22_050.0,
         grains_per_beat: None,

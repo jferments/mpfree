@@ -176,6 +176,7 @@ fn busy_kit() -> Project {
             spray: 0.35,
         },
         quality: GrainQuality::Tape,
+        align: true,
     };
     g.grain_mode = GrainMode::Repeat;
     g.grain_keys = GrainKeys {
