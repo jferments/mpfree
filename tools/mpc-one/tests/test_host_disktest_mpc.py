@@ -433,8 +433,13 @@ class DiskTestTests(unittest.TestCase):
         th.write(f"{self.root}/run/mpfree-setup/sd-card-write-log.txt",
                  "the card checks clean (fsck.exfat -n)\nclosed cleanly after writing 812 MiB\n")
         th.write(f"{self.root}/run/mpfree-setup/sd-card-write-status", "state=closed\nwritten=812\n")
+        # The card's volume serial (the SD card plan's B2c) never reaches the round's results.
+        th.write(f"{self.root}/run/mpfree-setup/sd-card-status", "state=open\nfs=exfat\nserial=5EC01A2B\n")
         res = self.run_helper(extra=["--sd-card"])
         self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertIn("    fs=exfat", res.stdout)
+        self.assertNotIn("serial=", res.stdout)
+        self.assertNotIn("5EC01A2B", res.stdout)
         for text in ("MPFree SD card test on the test build", "copied; its hash on the MPC matches",
                      "[4/4] The SD card test: READS the card's own files through the read-only window, then "
                      "WRITES test files in the card's MPFree/mpfree-disktest",

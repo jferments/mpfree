@@ -88,6 +88,7 @@ card=''
 dev=''
 fs=''
 sectors=''
+serial=''
 name=''
 devdir=''
 version=''
@@ -111,6 +112,7 @@ status() {   # state message
   { echo "state=$1"; echo "message=$2"; echo "ask=$ask"
     if [ "$1" = open ]; then
       echo "card=$card"; echo "fs=$fs"; echo "sectors=$sectors"; echo "mount=$MNT"; echo "write=$MPF"
+      if [ -n "$serial" ]; then echo "serial=$serial"; fi
       echo "fsck=$version"
     fi
     if [ -n "$written" ]; then echo "written=$written"; fi
@@ -279,6 +281,12 @@ SECTOR="$S/sd-card-write-sector"
 byte() {   # the byte at offset $1 of the sector's copy, in octal (Akai's BusyBox has no od -t)
   dd if="$SECTOR" bs=1 skip="$1" count=1 2>/dev/null | od -b | { read -r _ b _; echo "${b:-0}"; }
 }
+volume_serial() {   # exFAT's volume serial number (bytes 100-103, little-endian) as 8 hex digits, as a
+  # computer shows it: with MPFree/'s marker file it tells this card from another (the SD card plan's B2c)
+  v=''
+  for o in 103 102 101 100; do v="$v$(printf '%02X' "$((0$(byte "$o")))")"; done
+  echo "$v"
+}
 fsck_card() {   # fsck.exfat -n on the card's filesystem; its words go to the notes
   echo "--- fsck.exfat -n /dev/$dev ($1)" >> "$S/sd-card-write-log.txt"
   fsck.exfat -n "$R/dev/$dev" >> "$S/sd-card-write-log.txt" 2>&1 < /dev/null
@@ -378,6 +386,7 @@ case "$(tr -c 'A-Z0-9' '.' < "$SECTOR" | cut -c4-11)" in
 esac
 grep -q "[[:space:]]exfat\$" "$R/proc/filesystems" 2>/dev/null ||
   refuse "this kernel has no exfat filesystem loaded (the stick must load it before the switch)"
+serial=$(volume_serial)
 need=$(marks)
 if [ -n "$need" ]; then
   [ -n "$repair" ] || refuse "$need: check it on a computer first, or ask for a repair in the MPC"

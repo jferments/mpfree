@@ -608,9 +608,14 @@ impl Files {
     /// ([`Recorder::carry_on`]), and takes record into `to` from now on.
     /// What they committed stays on the drive that went. Each take's file
     /// opens again to play from once it is there ([`Said::CarriedOn`]).
-    /// Gives how many were carried; nothing when recording is already in
-    /// `to`.
-    pub fn carry_on(&mut self, to: PathBuf) -> io::Result<usize> {
+    /// `card` is which card went, when known, for the hole records
+    /// ([`mpfree_stream::rec::Hole`]). Gives how many were carried; nothing
+    /// when recording is already in `to`.
+    pub fn carry_on(
+        &mut self,
+        to: PathBuf,
+        card: Option<mpfree_stream::storage::CardMark>,
+    ) -> io::Result<usize> {
         let Some(w) = &mut self.writing else {
             return Ok(0);
         };
@@ -628,7 +633,8 @@ impl Files {
             if f.dir.as_deref() != Some(old.as_path()) {
                 continue;
             }
-            w.rec.carry_on(no, &to, [0; 16], 0);
+            let (id, serial) = card.map_or(([0; 16], 0), |c| (c.id, c.serial));
+            w.rec.carry_on(no, &to, id, serial);
             f.dir = Some(to.clone());
             f.moving = true;
             n += 1;
