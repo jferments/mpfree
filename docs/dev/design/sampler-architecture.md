@@ -69,7 +69,7 @@ The engine stays as it is. Two new pieces sit around it: sampler commands, which
 | 1. Fix what can break a show | 1 the grain start from the loudness summary (#729); 2 let-gos always land (#733); 3 grains keep their window (#739); 4 the edges of a sound (#746); 5 a quick Normalize and memory checks (#751) | Done, 20 Nov |
 | 2. Dependable on the MPC | 6 this page; 7 one job service; 8 sounds held once; 9 grains by priority; 10 show the trade; 11 the engine in modules; 12 sampler commands; 13 a worst-case grain bench | Done, 23 Nov |
 | 3. Kits become instruments | 14 kits join the instrument list; 15 one way in for notes; 16 pads named by instrument; 17 grain settings join automation | Done, 24 Nov (steps [14](#kits-in-the-list-of-instruments-step-14), [15](#kits-play-like-any-instrument-step-15), [17](#grain-settings-join-automation-step-17)) |
-| 4. Better sound, judged by ear | 18 a listening set; 19 steadier Stretch; 20 the level law; 21 extras if wanted; 22 long sounds from the stick | Started 24 Nov (the owner's go, 20:16 UTC): step 18 [built](#the-listening-set-step-18); each change to the sound goes to the owner's ear |
+| 4. Better sound, judged by ear | 18 a listening set; 19 steadier Stretch; 20 the level law; 21 extras if wanted; 22 long sounds from the stick | Started 24 Nov (the owner's go, 20:16 UTC): step 18 [built](#the-listening-set-step-18) (#989); step 19's engine [built, off](#steady-stretch-step-19), waiting on the owner's blind A/B; step 20 measured, no change; 21 and 22 not started |
 
 ### The job service (step 7)
 
@@ -228,7 +228,7 @@ A layer's grain settings become parameters, named by instrument, pad, layer and 
 Phase 4 changes how grains sound only where the owner's ear agrees, so it starts with sounds to listen to and numbers that move when the sound does (`mpfree_fxlab::listening`, `mpfree-fxlab/src/listening.rs`).
 
 - **The sounds**, 4 s each, all made in MPFree (no samples, nothing of Akai's): drum hits (a factory kit's kick, snare and hat, one at a time), a drum loop (two bars at 100 BPM), an electric piano (Keys, Soft Tines), a bass line (Bass, Round Mono), a sung line (Choir, Aah Choir), and four steady sounds at -20 dBFS RMS: a 220 Hz tone, pink noise, the tone turning into the noise over 1 s at one loudness, and a wide pad (different on each side).
-- **The cases:** a pad of each sound in each grain mode, as the Grain tool starts the mode (`grain_tab::mode_settings`): Cloud frozen on one spot and moving through the sound (scan 1), Stretch at the sound's speed and at half speed, Repeat and Tone on one spot (40 % in, or a snare's start for the drums). The pad is held for 5 s with its envelope open, through the engine as the app plays it.
+- **The cases:** a pad of each sound in each grain mode, as the Grain tool starts the mode (`grain_tab::mode_settings`): Cloud frozen on one spot and moving through the sound (scan 1), Stretch at the sound's speed and at half speed (and at half speed steady, [step 19](#steady-stretch-step-19)), Repeat and Tone on one spot (40 % in, or a snare's start for the drums). The pad is held for 5 s with its envelope open, through the engine as the app plays it.
 - **The numbers**, against the same pad playing the sound plainly (so the pad's pan law and velocity cancel out): the level change (LU), the wobble (how far the level swings over 50 ms windows, less the plain play's; steady sounds only), the peak rise, and for the tone into noise read through at its own speed, the jump from the tone's level to the noise's (step 20's number). The ratchet (`tests/listening.rs` against `quality/listening.tsv`, in a debug build) holds every one; the steady sounds' level is held near 0 outside Repeat and Tone.
 - **Listening:** `fxlab listening --out DIR` writes each sound as the pad plays it plainly, every render and `report.txt`. The page for the owner is made from those files (mpfree-claude `sampler/refactor/step18.md`).
 - **First findings** (24 Nov 2026):
@@ -236,6 +236,19 @@ Phase 4 changes how grains sound only where the owner's ear agrees, so it starts
   - Stretch at half speed loses 2.4 LU on the steady tone (3.1 dB of level) and adds a phasing colour; the noise holds its level but wobbles 1 dB. Each grain reads from half a grain gap's worth of sound further on than the one before, which lands at another point in the tone's cycle, so neighbours partly cancel. This is what step 19 (each grain looks for the best match to the one before) is for.
   - The level law follows the tone into the noise: in a moving cloud the tone sits 0.6 dB under the noise (the jump), and the tone's level swings 0.9 dB as grains in different places in its cycle meet. Its adapt speed tried at 20, 50, 100 and 200 ms moves the jump by only 0.1 dB and the tone's wobble from 0.83 to 1.03 dB, so the speed is left at 50 ms until the owner's ear says otherwise (step 20).
   - Cloud peaks rise up to 4.3 dB over the plain play (the steady tone; the bass 3.8 dB moving): grains that overlap add up.
+
+
+### Steady Stretch (step 19)
+
+Stretch at half speed lost 2.4 LU on a steady tone and phased ([the listening set](#the-listening-set-step-18)): its regular grains read half a grain gap further on each time, which lands at another point in a pitched sound's cycle, so neighbours partly cancel. Step 19 lines each new grain up with the one before, as a time stretch by waveform similarity does (`GrainParams::align`, `mpfree-grain/src/voice.rs` `GrainVoice::align`).
+
+- **The search.** A new grain reading forward, without spray, while the grains read at another speed than the scan moves, may start up to 8 ms either side of its place (`ALIGN_SECS`, half a cycle at 62 Hz). What the youngest grain reading forward plays next is compared with the new grain's sound at each offset by normalised correlation (left and right summed): every 8 frames at 44.1 kHz over the whole range (`ALIGN_RATE` 5,512 frames a second, `ALIGN_STEPS` 44), then every frame around the best. A fixed amount of work a grain, on the stack, no allocation (`tests/no_alloc.rs` runs it). Hits still play from their own grains.
+- **The level law** guesses a steady cloud is in step from its first frame (`GrainVoice::start`), as it does for a stretch at the sound's own speed, so the start doesn't jump 4 dB.
+- **Off by default.** Nothing plays differently until it is turned on: the Grain tool has no row for it yet (it needs a mockup and the owner's approval), and `mode_settings` doesn't set it. A kit saves it only when on (`align yes` in the grain scope), so a kit without it saves as before; an older build plays the layer without it.
+- **Measured** (`fxlab listening`, case `stretch-half-steady`): the steady tone at half speed +0.16 LU (was -2.4) with no peak rise and no wobble; the tone into noise within 0.1 LU; noise as before (its wobble is half-speed noise read twice, which no alignment fixes).
+- **Cost** (instruction gate, x86, rustc 1.97.0): "Sampler, 4 Stretch pads at half speed" 448,674 instructions a block, ", steady" 477,273 (+6.4 %); off, it costs nothing (one check as a grain is made). Not yet counted on the MPC's ARMv7 under qemu.
+- **The owner's ear decides.** A blind A/B of eight sounds at half speed, matched in loudness (mpfree-claude `sampler/refactor/step19-ab/`), went to the owner on 24 Nov; until it is answered, steady stays off and has no row.
+- **Tests:** `mpfree-grain` `tests/no_alloc.rs` (with it on); `mpfree-sampler` `tests/save.rs` (it saves and opens); the listening ratchet's steady rows.
 
 ## Crates
 

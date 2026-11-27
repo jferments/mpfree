@@ -207,6 +207,8 @@
 501519	Sampler x4 held, 4 layers each
 1430435	Sampler, 20 pads
 2083227	Sampler, 20 pads + master grains
+448674	Sampler, 4 Stretch pads at half speed
+477273	Sampler, 4 Stretch pads at half speed, steady
 80988	Sampler, 4 drum kits, 64 voices
 82335	Sampler, 4 drum kits, 64 voices, counted for System status
 43447	Sampler, drum kit, 24 voices
