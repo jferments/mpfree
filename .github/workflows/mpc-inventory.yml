@@ -108,6 +108,19 @@ jobs:
           python3 tools/mpc-one/tests/test_offline_update_image.py
           python3 tools/mpc-one/tests/test_offline_update_extract.py
           python3 tools/mpc-one/tests/test_offline_rk3288_rom.py
+          python3 tools/mpc-one/tests/test_offline_boot_artifacts_wide.py
+          python3 tools/mpc-one/tests/test_private_boot_audit_archive.py
+          python3 tools/mpc-one/tests/test_bootchain_v3.py
+          python3 tools/mpc-one/tests/test_bootchain_v4.py
+          python3 tools/mpc-one/tests/test_bootchain_v5.py
+          python3 tools/mpc-one/tests/test_bootchain_v5_incremental.py
+          python3 tools/mpc-one/tests/test_bootchain_v6.py
+          python3 tools/mpc-one/tests/test_bootchain_v7.py
+          python3 tools/mpc-one/tests/test_qemu_arm_lab_preflight.py
+          python3 tools/mpc-one/tests/test_boot_updater_v8.py
+          python3 tools/mpc-one/tests/test_boot_updater_v9.py
+          python3 tools/mpc-one/tests/test_boot_updater_v10.py
+          python3 tools/mpc-one/tests/test_boot_updater_v11.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_rootfs_survey.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_firmware_compare.py
           MPFREE_REQUIRE_OFFLINE_TOOLS=1 python3 tools/mpc-one/tests/test_offline_akai_scan.py
